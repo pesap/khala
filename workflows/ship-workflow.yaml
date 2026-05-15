@@ -43,7 +43,7 @@ guards:
   - never use git write commands after GitButler mode has been detected
   - select exactly one ship target branch/stack; if ambiguous, show a branch/change table and ask before shipping
   - treat other applied branches/stacks as parallel work unless explicitly requested
-  - update the latest default/base branch before simplify, commit, push, or PR
+  - update the latest default/base branch before commit, push, or PR
   - stop if the target branch was already merged, reused after squash merge, stale against latest base, or lacks unique unmerged work
   - verify requested edits are in the current repo/worktree diff, not external skill/cache paths
   - ensure a GitButler branch/stack exists before commit/push/PR
