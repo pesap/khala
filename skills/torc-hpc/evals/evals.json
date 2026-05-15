@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "name": "local-smoke-test-mode-selection",
+      "prompt": "Help me run a Torc workflow locally before I submit it to HPC.",
+      "expected": {
+        "mustMention": ["local", "torc -s --in-memory run"],
+        "mustNotMention": ["rsync the whole repo", "generic Slurm tutorial"]
+      }
+    },
+    {
+      "name": "slurm-generated-spec-boundary",
+      "prompt": "How do I submit this Torc workflow to Slurm?",
+      "expected": {
+        "mustMention": ["torc slurm generate", "-o", "torc submit"],
+        "mustNotMention": ["submit the source spec directly"]
+      }
+    },
+    {
+      "name": "hpc-profile-discovery",
+      "prompt": "How do I see whether Torc knows my HPC system and what partitions it can use?",
+      "expected": {
+        "mustMention": ["torc hpc detect", "torc hpc partitions"],
+        "mustNotMention": ["generic Slurm tutorial"]
+      }
+    },
+    {
+      "name": "remote-workers-native-flow",
+      "prompt": "Set up Torc remote workers on two SSH hosts and show me how to collect logs.",
+      "expected": {
+        "mustMention": ["torc remote add-workers", "torc remote run", "torc remote collect-logs"],
+        "mustNotMention": ["custom ssh loop as the primary flow"]
+      }
+    },
+    {
+      "name": "remote-workers-version-mismatch",
+      "prompt": "torc remote run says the worker versions do not match. What should I do?",
+      "expected": {
+        "mustMention": ["matching Torc versions", "--skip-version-check"],
+        "mustNotMention": ["ignore the version mismatch permanently"]
+      }
+    },
+    {
+      "name": "manual-remote-fallback-boundary",
+      "prompt": "I need to run a non-Torc remote command on the cluster and fetch logs back. Should I use run-remote?",
+      "expected": {
+        "mustMention": ["manual remote command fallback", "existing remote workdir", "run-remote.sh"],
+        "mustNotMention": ["repo sync tool"]
+      }
+    },
+    {
+      "name": "versioned-remote-run-no-repo-rsync",
+      "prompt": "I need to run branch feature-x remotely on the cluster without rsyncing the whole repo.",
+      "expected": {
+        "mustMention": ["git fetch", "checkout/worktree", "existing remote workdir"],
+        "mustNotMention": ["rsync the whole repo"]
+      }
+    },
+    {
+      "name": "cleanup-edge-case",
+      "prompt": "We create temporary remote worktrees for versioned runs. How should cleanup work if the job fails?",
+      "expected": {
+        "mustMention": ["trap", "git worktree remove", "git worktree prune", "temporary refs"],
+        "mustNotMention": ["leave stale worktrees behind"]
+      }
+    }
+  ]
+}
