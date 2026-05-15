@@ -531,7 +531,6 @@ export function createWorkflowCommandHandlers(params: {
           extraInstruction: extraInstruction || null,
         },
         sections: [
-<<<<<<< HEAD
           "Scope: publish one focused branch/stack safely",
           "Instruction: Follow the workflow order exactly: detect -> target -> sync -> validate -> publish -> PR/MR -> summarize.",
           "Instruction: Start with `but status -fv`; identify the current VCS mode and the candidate ship target.",
@@ -540,27 +539,9 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Sync the target with the latest base/default branch and stop if there is no unique unmerged work.",
           "Instruction: Simplify the selected scope, run project CI/test command(s), then create a signed commit if needed and push only after green validation.",
           "Instruction: Reuse an existing PR/MR when present; otherwise open one against the default branch and verify the real remote artifact.",
-=======
-          "Scope: ship one focused branch/stack only.",
-          `Source reference: ${constants.SHIP_COMMAND_SOURCE}`,
-          "",
-          "Instruction: Detect VCS mode first with `but status -fv`.",
-          "Instruction: Pick exactly one target; if ambiguous, ask before changing anything.",
-          "Instruction: Keep other branches/stacks out of scope unless explicitly requested.",
-          "Instruction: Sync the latest base, validate only the selected scope, then commit, push, and reuse or open the PR/MR.",
-          "Instruction: Stop on failed validation, unsigned commit, or non-unique work.",
->>>>>>> 2dd28e3 (refactor(ship): simplify ship workflow prompt)
           extraInstruction ? `Additional instruction: ${extraInstruction}` : "",
         ],
-<<<<<<< HEAD
         startedMessage: "Started ship workflow (detect -> target -> sync -> validate -> publish -> PR).",
-=======
-        entry: {
-          extraInstruction: extraInstruction || null,
-          source: constants.SHIP_COMMAND_SOURCE,
-        },
-        startedMessage: "Started ship workflow.",
->>>>>>> 2dd28e3 (refactor(ship): simplify ship workflow prompt)
       });
     },
 

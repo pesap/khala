@@ -5,7 +5,16 @@ Meaning: local shell is not an HPC login shell or module init was not sourced.
 
 Fix:
 - source the site module init script if the system uses one
+- use the site load-balanced login entrypoint and a login shell when available
 - or skip module loading locally and provide equivalent env vars manually
+
+## module appears missing on one login node but `ml spider` shows it elsewhere
+Meaning: the shell/module setup or direct-node target is wrong, not necessarily the module name.
+
+Fix:
+- use the site's load-balanced login hostname instead of direct login nodes
+- start a login shell, then run `ml spider <name>` and `ml load <full/versioned/name>`
+- for NLR Kestrel, use `kestrel.hpc.nlr.gov`; `ml spider gams` should show versions such as `gams/51.3.0`
 
 ## `conda command not available after module load`
 Meaning: the expected module did not expose conda, or the shell hook was not initialized.
@@ -36,7 +45,16 @@ Meaning: submission is happening where Slurm CLI tools are unavailable.
 Fix:
 - generate the Slurm-enabled spec with `torc slurm generate ... -o <generated>.yaml`
 - submit from the environment that actually has Slurm access
+- use the load-balanced login host when available
 - inspect the generated scheduler scripts if needed
+
+## Login-node command starts building, installing, or solving
+Meaning: the agent/operator is running payload work on the login node instead of only orchestrating submission.
+
+Fix:
+- stop the command
+- move build/install/solve work into Torc job commands or Slurm allocations
+- on login nodes run only lightweight checks, Git/worktree preparation, `torc submit`, `squeue`, and status inspection
 
 ## Submitted the wrong workflow file
 Meaning: the source spec was submitted instead of the generated Slurm-backed spec.
@@ -50,6 +68,7 @@ Meaning: wrong `TORC_API_URL`, wrong bind host, or the remote side cannot see ex
 
 Fix:
 - verify the server bind host and the client URL
+- if local `torc status <workflow-id>` works with `TORC_API_URL`, do not SSH just to check Torc workflow status
 - confirm the remote environment can access the workflow paths it needs
 - debug connectivity before blaming runtime dependencies
 
@@ -86,3 +105,4 @@ Fix:
 - run `git worktree remove --force <path>` and `git worktree prune`
 - delete temporary refs after the run
 - keep logs and outputs, not the checkout
+
