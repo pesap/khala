@@ -114,6 +114,7 @@ These are registered and enabled by default unless `runtime/profile.yaml` disabl
 
 ```bash
 pi -e https://github.com/pesap/agents -p "/review README.md --extra 'focus on correctness'"
+pi -e https://github.com/pesap/agents -p "/review https://github.com/owner/repo/pull/123"
 pi -e https://github.com/pesap/agents -p "/simplify src/commands/review.ts"
 pi -e https://github.com/pesap/agents -p "/ship"
 pi -e https://github.com/pesap/agents -p "/tdd 'Add retry policy for hook loading' --lang rust"

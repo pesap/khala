@@ -366,6 +366,13 @@ function isResolvableReviewPath(entry: string, cwd: string): boolean {
   );
 }
 
+function parsePullRequestReference(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^[1-9]\d*$/.test(trimmed)) return trimmed;
+  const match = trimmed.match(/github\.com\/[^/\s]+\/[^/\s]+\/pull\/([1-9]\d*)/i);
+  return match?.[1] ?? null;
+}
+
 export function parseReviewArgs(
   args: string,
   cwd: string,
@@ -406,6 +413,11 @@ export function parseReviewArgs(
   const [modeToken, ...rest] = positional;
   const mode = modeToken.toLowerCase();
 
+  const directPr = parsePullRequestReference(modeToken);
+  if (directPr && rest.length === 0) {
+    return { mode: "pr", pr: directPr, extraInstruction };
+  }
+
   if (mode === "uncommitted") {
     if (rest.length > 0) {
       return { error: "`uncommitted` does not accept additional arguments." };
@@ -436,13 +448,14 @@ export function parseReviewArgs(
 
   if (mode === "pr") {
     const pr = rest[0]?.trim();
-    if (!pr || rest.length !== 1) {
+    const parsedPr = pr ? parsePullRequestReference(pr) : null;
+    if (!parsedPr || rest.length !== 1) {
       return {
         error: `Usage: /${commandName} pr <number|url> [--extra "focus"]`,
       };
     }
 
-    return { mode: "pr", pr, extraInstruction };
+    return { mode: "pr", pr: parsedPr, extraInstruction };
   }
 
   if (mode === "folder" || mode === "file") {
@@ -528,8 +541,10 @@ export function buildReviewTarget(parsed: ParsedReviewArgs): ScopedTarget {
       `Review only changes introduced by commit \`${commit}\` (use \`git show ${commit}\` or equivalent).`,
     pr: (pr) =>
       [
-        `Review pull request reference \`${pr}\`.`,
-        "If GitHub CLI is available, resolve PR metadata and checkout or diff PR branch against its base branch before reviewing.",
+        `Review pull request #${pr}.`,
+        "Require GitHub CLI (`gh`) for PR metadata/checkout; if it is missing or unauthenticated, stop with setup guidance instead of guessing.",
+        "Before checkout, verify there are no staged or unstaged tracked-file changes; untracked files alone must not block PR review.",
+        "Resolve PR title, head branch, and base branch with `gh pr view`, checkout with `gh pr checkout`, compute the merge base against the base branch, then review `git diff <merge-base>`.",
       ].join(" "),
     folder: (paths) =>
       `Snapshot review only for files/folders in: ${paths.join(", ")}. Read files directly, do not assume git diff context.`,
