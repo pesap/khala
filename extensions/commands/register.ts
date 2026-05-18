@@ -38,6 +38,14 @@ export interface CommandRegistrarDeps {
     workflowList: CommandHandler;
     workflowShow: CommandHandler;
     workflowRun: CommandHandler;
+    ruleList: CommandHandler;
+    ruleShow: CommandHandler;
+    rulePromote: CommandHandler;
+    ruleSession: CommandHandler;
+    ruleReplace: CommandHandler;
+    ruleDisable: CommandHandler;
+    ruleAudit: CommandHandler;
+    ruleReload: CommandHandler;
   };
   completions?: {
     learnedSkills?: ArgumentCompletions;
@@ -76,6 +84,14 @@ export function registerCommands({
     { name: "workflow-list", description: "List khala learned workflows promoted from repeated outcomes", handler: handlers.workflowList },
     { name: "workflow-show", description: "Show a khala learned workflow artifact and prompt template", handler: handlers.workflowShow },
     { name: "workflow-run", description: "Run a khala learned workflow by sending it to the agent", handler: handlers.workflowRun },
+    { name: "rule-list", description: "List active khala runtime rules", handler: handlers.ruleList },
+    { name: "rule-show", description: "Show a khala runtime rule by id", handler: handlers.ruleShow },
+    { name: "rule-promote", description: "Promote a khala runtime rule candidate", handler: handlers.rulePromote },
+    { name: "rule-session", description: "Add a per-session khala runtime rule", handler: handlers.ruleSession },
+    { name: "rule-replace", description: "Append a replacement record for a khala runtime rule", handler: handlers.ruleReplace },
+    { name: "rule-disable", description: "Disable a khala runtime rule", handler: handlers.ruleDisable },
+    { name: "rule-audit", description: "Show recent khala runtime rule audit events", handler: handlers.ruleAudit },
+    { name: "rule-reload", description: "Reload user-edited khala rules/RULES.md", handler: handlers.ruleReload },
   ] as const;
 
   for (const command of commands) {

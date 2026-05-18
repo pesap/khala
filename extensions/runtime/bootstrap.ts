@@ -5,8 +5,13 @@ import {
   getActiveLearningLessonsTail,
   getLearnedSkillsList,
   getLearningMemoryTail,
+  ensureLearningStore,
   type LearningPaths,
 } from "../learning/store.ts";
+import {
+  formatRuntimeRulesForPrompt,
+  selectRuntimeRules,
+} from "../learning/rules.ts";
 import {
   parseFirstPrinciplesConfig,
   type FirstPrinciplesConfig,
@@ -57,9 +62,13 @@ export async function getBootstrapPayload(params: {
   learningPathCache: Map<string, LearningPaths>;
   memoryTailLines: number;
   memoryToolCallLimit: number;
+  ruleQuery?: string;
+  workflowType?: string;
+  workflowId?: string;
+  loadedSkills?: string[];
+  policyWarnings?: string[];
 }): Promise<string> {
   const [
-    soul,
     rules,
     duties,
     instructions,
@@ -68,8 +77,8 @@ export async function getBootstrapPayload(params: {
     memoryTail,
     learnedSkills,
     activeLessons,
+    activeRuntimeRules,
   ] = await Promise.all([
-    readTextIfExists(path.join(params.runtimeDir, "SOUL.md")),
     readTextIfExists(path.join(params.runtimeDir, "RULES.md")),
     readTextIfExists(path.join(params.runtimeDir, "DUTIES.md")),
     readTextIfExists(path.join(params.runtimeDir, "INSTRUCTIONS.md")),
@@ -88,16 +97,30 @@ export async function getBootstrapPayload(params: {
     ),
     getLearnedSkillsList(params.cwd, params.learningPathCache),
     getActiveLearningLessonsTail(params.cwd, params.learningPathCache, 8),
+    (async () => {
+      const paths = await ensureLearningStore(params.cwd, params.learningPathCache);
+      return selectRuntimeRules({
+        paths,
+        context: {
+          query: params.ruleQuery,
+          workflowType: params.workflowType,
+          workflowId: params.workflowId,
+          loadedSkills: params.loadedSkills,
+          policyWarnings: params.policyWarnings,
+          limit: 12,
+        },
+      });
+    })(),
   ]);
+  const runtimeRules = formatRuntimeRulesForPrompt(activeRuntimeRules);
 
   return [
     "Khala agent bootstrap context (single-agent runtime):",
     "",
-    "[SOUL]",
-    soul.trim(),
-    "",
     "[RULES]",
     rules.trim(),
+    runtimeRules ? "[ACTIVE RUNTIME RULES]" : "",
+    runtimeRules,
     duties.trim() ? "[DUTIES]" : "",
     duties.trim(),
     "",

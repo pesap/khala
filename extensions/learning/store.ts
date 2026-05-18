@@ -41,11 +41,17 @@ export interface LearningPaths {
   promptsDir: string;
   skillsDir: string;
   archivedSkillsDir: string;
+  rulesDir: string;
   learningJsonl: string;
   lessonsJsonl: string;
   khalaLearningJsonl: string;
   memoryMd: string;
   promotionQueue: string;
+  rulesActiveJsonl: string;
+  rulesSessionJsonl: string;
+  rulesCandidatesJsonl: string;
+  rulesAuditJsonl: string;
+  rulesMd: string;
   stateJson: string;
   curatorReport: string;
 }
@@ -195,11 +201,17 @@ function buildLearningPaths(root: string): LearningPaths {
     promptsDir: path.join(root, "prompts"),
     skillsDir: path.join(root, "skills"),
     archivedSkillsDir: path.join(root, "archive", "skills"),
+    rulesDir: path.join(root, "rules"),
     learningJsonl: path.join(root, "memory", "learning.jsonl"),
     lessonsJsonl: path.join(root, "memory", "lessons.jsonl"),
     khalaLearningJsonl: path.join(root, "memory", "khala-learning.jsonl"),
     memoryMd: path.join(root, "memory", "MEMORY.md"),
     promotionQueue: path.join(root, "memory", "promotion-queue.md"),
+    rulesActiveJsonl: path.join(root, "rules", "active.jsonl"),
+    rulesSessionJsonl: path.join(root, "rules", "session.jsonl"),
+    rulesCandidatesJsonl: path.join(root, "rules", "candidates.jsonl"),
+    rulesAuditJsonl: path.join(root, "rules", "audit.jsonl"),
+    rulesMd: path.join(root, "rules", "RULES.md"),
     stateJson: path.join(root, "state.json"),
     curatorReport: path.join(root, "memory", "skill-curator-report.md"),
   };
@@ -234,6 +246,7 @@ async function initializeLearningStore(paths: LearningPaths): Promise<void> {
     fs.mkdir(paths.promptsDir, { recursive: true }),
     fs.mkdir(paths.skillsDir, { recursive: true }),
     fs.mkdir(paths.archivedSkillsDir, { recursive: true }),
+    fs.mkdir(paths.rulesDir, { recursive: true }),
   ]);
   await Promise.all([
     ensureFile(paths.learningJsonl, ""),
@@ -241,6 +254,11 @@ async function initializeLearningStore(paths: LearningPaths): Promise<void> {
     ensureFile(paths.khalaLearningJsonl, ""),
     ensureFile(paths.memoryMd, "# MEMORY\n"),
     ensureFile(paths.promotionQueue, "# Promotion Queue\n"),
+    ensureFile(paths.rulesActiveJsonl, ""),
+    ensureFile(paths.rulesSessionJsonl, ""),
+    ensureFile(paths.rulesCandidatesJsonl, ""),
+    ensureFile(paths.rulesAuditJsonl, ""),
+    ensureFile(paths.rulesMd, "# Khala Active Rules\n\n<!-- khala-rules-version: 1 -->\n"),
     ensureFile(paths.curatorReport, "# Skill Curator Report\n"),
     ensureFile(paths.stateJson, JSON.stringify({ hints: {} }, null, 2)),
   ]);

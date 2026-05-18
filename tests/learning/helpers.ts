@@ -16,11 +16,17 @@ export async function createTempLearningPaths(
     promptsDir: path.join(root, "prompts"),
     skillsDir: path.join(root, "skills"),
     archivedSkillsDir: path.join(root, "archive", "skills"),
+    rulesDir: path.join(root, "rules"),
     learningJsonl: path.join(memoryDir, "learning.jsonl"),
     lessonsJsonl: path.join(memoryDir, "lessons.jsonl"),
     khalaLearningJsonl: path.join(memoryDir, "khala-learning.jsonl"),
     memoryMd: path.join(memoryDir, "MEMORY.md"),
     promotionQueue: path.join(memoryDir, "promotion-queue.md"),
+    rulesActiveJsonl: path.join(root, "rules", "active.jsonl"),
+    rulesSessionJsonl: path.join(root, "rules", "session.jsonl"),
+    rulesCandidatesJsonl: path.join(root, "rules", "candidates.jsonl"),
+    rulesAuditJsonl: path.join(root, "rules", "audit.jsonl"),
+    rulesMd: path.join(root, "rules", "RULES.md"),
     stateJson: path.join(root, "state.json"),
     curatorReport: path.join(memoryDir, "skill-curator-report.md"),
   };
@@ -32,6 +38,7 @@ export async function createTempLearningPaths(
     fs.mkdir(paths.promptsDir, { recursive: true }),
     fs.mkdir(paths.skillsDir, { recursive: true }),
     fs.mkdir(paths.archivedSkillsDir, { recursive: true }),
+    fs.mkdir(paths.rulesDir, { recursive: true }),
   ]);
 
   return paths;
