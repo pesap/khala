@@ -23,7 +23,7 @@ export const ADDRESS_OPEN_ISSUES_COMMAND_SOURCE = "khala://workflow/address-open
 
 export const PREFLIGHT_LINE_REGEX = /^Preflight:\s+skill=([a-zA-Z0-9_.-]+|none)\s+reason="([^"]{1,200})"\s+clarify=(yes|no)\s*$/;
 export const POSTFLIGHT_LINE_REGEX = /^Postflight:\s+verify="([^"]{1,280})"\s+result=(pass|fail|not-run)\s*$/;
-export const MUTATION_BASH_PATTERN = /(?:^|\n|[;|&]{1,2})\s*(?:git\s+(?:add|apply|am|commit|checkout|switch|merge|rebase|cherry-pick|revert|reset|restore|clean|stash|tag|branch|push|pull)|rm\b|mv\b|cp\b|mkdir\b|rmdir\b|touch\b|chmod\b|chown\b|sed\b[^\n;|&]*\s-i\b|perl\b[^\n;|&]*\s-i\b|tee\b|truncate\b|dd\b)/m;
+export const MUTATION_BASH_PATTERN = /(?:^|\n|[;|&]{1,2})\s*(?:git\s+(?:add|apply|am|commit|checkout|switch|merge|rebase|cherry-pick|revert|reset|restore|clean|stash|tag|branch|push|pull)(?=\s|$)|rm\b|mv\b|cp\b|mkdir\b|rmdir\b|touch\b|chmod\b|chown\b|sed\b[^\n;|&]*\s-i\b|perl\b[^\n;|&]*\s-i\b|tee\b|truncate\b|dd\b)/m;
 export const POSTFLIGHT_INSTRUCTION = "Instruction: If you ran any mutation tool (edit/write/mutating bash), include exactly one line: `Postflight: verify=\"<command_or_check>\" result=<pass|fail|not-run>`.";
 export const REQUIRED_WORKFLOW_FOOTER_INSTRUCTION = "Instruction: End your final response with `Result: success|partial|failed` and `Confidence: <0..1>`. Missing either line is treated as failed.";
 

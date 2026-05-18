@@ -138,6 +138,7 @@ import {
   hasRequiredWorkflowFooter,
   inferOutcomeFromText,
   inferTurnObligation,
+  isActionOrApprovalObligation,
   isAssistantClarification,
   isEmptyTerminalAssistantResponse,
 } from "./runtime/assistant.ts";
@@ -1795,15 +1796,15 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     if (
       runtimeState.agentEnabled &&
       lastAssistantMessage?.stopReason === "stop" &&
-      obligation.obligation === "tool_required" &&
+      isActionOrApprovalObligation(obligation.obligation) &&
       !assistantMessageHasToolCall(lastAssistantMessage) &&
       !isAssistantClarification(lastAssistantMessage)
     ) {
       const reason = [
         "TURN OBLIGATION NOT SATISFIED",
         "",
-        `The latest user request requires tool-backed work (${obligation.reason}).`,
-        "Retry this turn with at least one relevant tool call, or ask one blocking clarification question if no safe tool action exists.",
+        `The latest user request requires action before a final response (${obligation.reason}).`,
+        "Retry this turn with at least one relevant tool call, or ask one blocking clarification or approval question if no safe tool action exists.",
         "Do not acknowledge or promise future work without a tool call.",
       ].join("\n");
 

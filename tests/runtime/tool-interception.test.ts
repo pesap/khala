@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { isMutationCapableBash } from "../../extensions/policy/first-principles.ts";
 import {
   getToolInterceptionCounters,
   isSkillMemoryReadToolCall,
@@ -54,6 +55,18 @@ test("skill-memory detection handles noisy inputs without throwing", () => {
   );
 
   assert.deepEqual(matches, [false, false, false, false, false, true, true]);
+});
+
+test("bash mutation detection does not treat read-only git merge-base as merge", () => {
+  assert.equal(isMutationCapableBash("git merge-base HEAD origin/main"), false);
+  assert.equal(
+    isMutationCapableBash(
+      "git diff --name-only $(git merge-base HEAD origin/main)",
+    ),
+    false,
+  );
+  assert.equal(isMutationCapableBash("git merge feature-branch"), true);
+  assert.equal(isMutationCapableBash("git checkout feature-branch"), true);
 });
 
 test("fresh-memory decision is bounded under many intercepted tool calls", () => {
