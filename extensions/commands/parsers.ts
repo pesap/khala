@@ -586,7 +586,7 @@ export function chooseAvailableSkillName(params: {
   slugify: (value: string) => string;
 }): string {
   const sourceHint = params.fromUrl || params.fromFile || "";
-  const baseHint = params.topic || sourceHint || "new-skill";
+  const baseHint = params.topic || (sourceHint ? "learned-skill" : "new-skill");
   const slug = params.slugify(baseHint) || "new-skill";
   const preferredName = slug.startsWith("khala-") ? slug : `khala-${slug}`;
 

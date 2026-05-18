@@ -80,6 +80,17 @@ export function buildAutonomousSkillName(params: {
   return slug.startsWith("khala-") ? slug : `khala-${slug}`;
 }
 
+export function chooseAvailableGeneratedSkillName(params: {
+  preferredName: string;
+  reservedNames: ReadonlySet<string>;
+}): string {
+  if (!params.reservedNames.has(params.preferredName)) return params.preferredName;
+
+  let suffix = 2;
+  while (params.reservedNames.has(`${params.preferredName}-${suffix}`)) suffix += 1;
+  return `${params.preferredName}-${suffix}`;
+}
+
 function toYamlQuotedScalar(value: string): string {
   return JSON.stringify(value);
 }

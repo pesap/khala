@@ -622,7 +622,7 @@ export function createWorkflowCommandHandlers(params: {
       const skillHint =
         parsed.topic || parsed.fromFile || parsed.fromUrl || "new-skill";
       const reservedNames = new Set<string>();
-      for (const root of [paths.skillsDir, packageSkillsPath]) {
+      for (const root of [packageSkillsPath]) {
         try {
           const entries = await fs.readdir(root, { withFileTypes: true });
           for (const entry of entries) {

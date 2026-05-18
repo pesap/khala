@@ -70,6 +70,21 @@ test("chooseAvailableSkillName always namespaces learned skills under khala", ()
   assert.equal(skillName, "khala-bash-script");
 });
 
+test("chooseAvailableSkillName uses a stable fallback for source-only imports", () => {
+  const skillName = chooseAvailableSkillName({
+    topic: "",
+    fromUrl: "https://example.com/one",
+    reservedNames: new Set(),
+    slugify: (value) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, ""),
+  });
+
+  assert.equal(skillName, "khala-learned-skill");
+});
+
 test("chooseAvailableSkillName preserves an existing khala prefix", () => {
   const skillName = chooseAvailableSkillName({
     topic: "khala-librarian",

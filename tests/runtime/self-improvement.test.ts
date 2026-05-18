@@ -7,6 +7,7 @@ import {
   appendBackgroundReviewLearningSection,
   buildAutonomousSkillName,
   buildAutonomousSkillText,
+  chooseAvailableGeneratedSkillName,
   chooseWritableLearnedSkillTarget,
   formatSkillPromotionQueueLine,
   shouldRunSelfImprovementReview,
@@ -167,6 +168,16 @@ test("builds safe autonomous skill names and skill content", () => {
   assert.match(skillText, /## Use when/);
   assert.match(skillText, /patch the learned procedure immediately/);
   assert.match(skillText, /do not rely on stale memory/);
+});
+
+test("chooses a collision-free generated skill name", () => {
+  assert.equal(
+    chooseAvailableGeneratedSkillName({
+      preferredName: "khala-review-skill",
+      reservedNames: new Set(["khala-review-skill", "khala-review-skill-2"]),
+    }),
+    "khala-review-skill-3",
+  );
 });
 
 test("builds autonomous workflow artifact for repeated successful actions", () => {
