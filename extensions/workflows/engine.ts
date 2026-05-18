@@ -7,6 +7,7 @@ import { load as loadYaml } from "js-yaml";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isRecord } from "../lib/io";
+import type { LearningObservation, WorkflowFlags } from "../learning/store";
 import type {
   PostflightRecord,
   PreflightRecord,
@@ -17,7 +18,7 @@ export type NotifyType = "info" | "error" | "warning" | "success";
 
 export interface PendingWorkflow<
   TWorkflowType extends string = string,
-  TWorkflowFlags = Record<string, unknown>,
+  TWorkflowFlags extends WorkflowFlags = WorkflowFlags,
 > {
   id: string;
   type: TWorkflowType;
@@ -34,6 +35,10 @@ export interface LearningPathsLike {
   runsDir: string;
   learningJsonl: string;
   memoryMd: string;
+  promotionQueue: string;
+  stateJson: string;
+  workflowsDir: string;
+  promptsDir: string;
 }
 
 export interface WorkflowInference<TWorkflowOutcome extends string = string> {
@@ -44,7 +49,7 @@ export interface WorkflowInference<TWorkflowOutcome extends string = string> {
 
 export function ensureWorkflowSlotAvailable<TWorkflowType extends string>(
   ctx: ExtensionCommandContext,
-  pendingWorkflow: PendingWorkflow<TWorkflowType, unknown> | null,
+  pendingWorkflow: PendingWorkflow<TWorkflowType> | null,
   notify: (
     ctx: ExtensionCommandContext,
     message: string,
@@ -206,7 +211,7 @@ export async function enqueueWorkflow(params: {
 
 export async function beginWorkflowTracking<
   TWorkflowType extends string,
-  TWorkflowFlags,
+  TWorkflowFlags extends WorkflowFlags,
 >(params: {
   pi: ExtensionAPI;
   ctx: ExtensionCommandContext;
@@ -278,7 +283,7 @@ export async function beginWorkflowTracking<
 
 export async function completeWorkflowTracking<
   TWorkflowType extends string,
-  TWorkflowFlags,
+  TWorkflowFlags extends WorkflowFlags,
   TWorkflowOutcome extends string,
 >(params: {
   pi: ExtensionAPI;
@@ -306,18 +311,11 @@ export async function completeWorkflowTracking<
   summarizeEvidence: (text: string, max?: number) => string;
   appendLine: (filePath: string, content: string) => Promise<void>;
   ensureLearningStore: (cwd: string) => Promise<LearningPathsLike>;
-  maybeEmitPromotionHint: (paths: LearningPathsLike, observation: {
-    version: number;
-    id: string;
-    timestamp: string;
-    taskType: TWorkflowType;
-    input: string;
-    flags: TWorkflowFlags;
-    outcome: TWorkflowOutcome;
-    confidence: number;
-    evidenceSnippet: string;
-    workflowId: string;
-  }, ctx: ExtensionContext) => Promise<void>;
+  maybeEmitPromotionHint: (
+    paths: LearningPathsLike,
+    observation: LearningObservation<TWorkflowType, TWorkflowOutcome>,
+    ctx: ExtensionContext,
+  ) => Promise<void>;
   notify: (ctx: ExtensionContext, message: string, type: NotifyType) => void;
   onLowConfidence: (event: {
     at: string;
@@ -423,7 +421,7 @@ export async function completeWorkflowTracking<
     "utf8",
   );
 
-  const observation = {
+  const observation: LearningObservation<TWorkflowType, TWorkflowOutcome> = {
     version: params.learningVersion,
     id: params.workflow.id,
     timestamp: finishedAt,

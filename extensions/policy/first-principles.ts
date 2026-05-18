@@ -1,8 +1,8 @@
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { load as loadYaml } from "js-yaml";
-import { MUTATION_BASH_PATTERN, POSTFLIGHT_LINE_REGEX, PREFLIGHT_LINE_REGEX } from "../lib/constants";
-import { isRecord } from "../lib/io";
+import { MUTATION_BASH_PATTERN, POSTFLIGHT_LINE_REGEX, PREFLIGHT_LINE_REGEX } from "../lib/constants.ts";
+import { isRecord } from "../lib/io.ts";
 
 export type PolicyMode = "monitor" | "warn" | "enforce";
 export type PolicyOutcome = "allow" | "warn" | "block";

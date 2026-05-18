@@ -2,18 +2,22 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
-  ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
+import {
+  createBashTool,
+  createLocalBashOperations,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import registerFffExtension from "@ff-labs/pi-fff/src/index.ts";
 import { spawn, spawnSync } from "node:child_process";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import registerSubagentExtension from "pi-subagents/src/extension/index.ts";
 import { createAgentCommandHandlers } from "./commands/agent";
 import { createComplianceCommandHandlers } from "./commands/compliance";
 import { createCuratorCommandHandlers } from "./commands/curator";
+import { createLearnedWorkflowCommandHandlers } from "./commands/learned-workflows";
 import {
   buildReviewTarget,
   buildSimplifyTarget,
@@ -69,6 +73,7 @@ import {
   type KhalaLearningAssessment,
   type KhalaLearningRecord,
 } from "./learning/khala-learn";
+import { searchKhalaMemory, type KhalaMemorySearchResult } from "./learning/search";
 import {
   ensureLearningStore,
   getActiveLearningLessonsTail,
@@ -76,14 +81,16 @@ import {
   loadProjectReviewGuidelines,
   maybeEmitPromotionHint,
   type LearningLesson,
-  type LearningObservation,
   type LearningPaths,
 } from "./learning/store";
 import {
   ensureLearnedSkillLayout,
+  listLearnedSkillRecords,
+  markLearnedSkillPatched,
   readLearnedSkillMetadata,
   touchLearnedSkillUsage,
 } from "./learning/skills";
+import { listLearnedWorkflows } from "./learning/workflows";
 import { validateGeneratedSkillDir } from "./learning/skill-guard";
 import {
   extractPostflightFromAssistantText,
@@ -133,13 +140,27 @@ import {
   inferTurnObligation,
   isAssistantClarification,
   isEmptyTerminalAssistantResponse,
-  type WorkflowOutcome,
 } from "./runtime/assistant";
+import {
+  appendBackgroundReviewLearningSection,
+  buildAutonomousSkillName,
+  buildAutonomousSkillText,
+  chooseWritableLearnedSkillTarget,
+  formatSelfImprovementBullet,
+  formatSkillPromotionQueueLine,
+  formatSkillReviewQueueLine,
+  shouldRunSelfImprovementReview,
+} from "./runtime/self-improvement";
 import {
   createWorkflowReaders,
   getBootstrapPayload,
   loadFirstPrinciplesConfig,
 } from "./runtime/bootstrap";
+import {
+  getToolInterceptionCounters,
+  isMemoryPersistenceToolName,
+  requiresFreshMemoryToolCall,
+} from "./runtime/tool-interception";
 import {
   runSessionEndHooks,
   type LowConfidenceEvent,
@@ -171,13 +192,19 @@ let lowConfidenceEvents: LowConfidenceEvent[] = [];
 let bundledExtensionsInitialized = false;
 const runtimeState = createRuntimeState();
 let taskToolCallCount = 0;
+let learnedSkillCompletionCache: string[] = [];
+let learnedWorkflowCompletionCache: string[] = [];
 let memoryGate = {
   hasRead: false,
   toolCallsSinceRead: 0,
   invalidReason: "task start",
 };
 
-function clampPositiveInt(value: unknown, fallback: number, max: number): number {
+function clampPositiveInt(
+  value: unknown,
+  fallback: number,
+  max: number,
+): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   const int = Math.floor(value);
   return Math.max(1, Math.min(max, int));
@@ -254,7 +281,7 @@ function detectPowerShellParentOnWindows(): boolean {
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      `$proc = Get-CimInstance Win32_Process -Filter \"ProcessId = ${process.ppid}\"; if ($null -ne $proc) { $proc.Name }`,
+      `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = ${process.ppid}"; if ($null -ne $proc) { $proc.Name }`,
     ],
     {
       windowsHide: true,
@@ -300,7 +327,8 @@ async function runPowerShellCommand(params: {
   signal?: AbortSignal;
 }): Promise<PowerShellBashResult> {
   const timeoutSeconds =
-    typeof params.timeoutSeconds === "number" && Number.isFinite(params.timeoutSeconds)
+    typeof params.timeoutSeconds === "number" &&
+    Number.isFinite(params.timeoutSeconds)
       ? Math.max(1, Math.floor(params.timeoutSeconds))
       : null;
   const timeoutMs = timeoutSeconds ? timeoutSeconds * 1000 : null;
@@ -413,7 +441,9 @@ async function runPowerShellCommandWithFallback(params: {
     }
   }
 
-  throw lastError ?? new Error("No PowerShell executable found for bash override.");
+  throw (
+    lastError ?? new Error("No PowerShell executable found for bash override.")
+  );
 }
 
 function createPowerShellBashTool(): Record<string, unknown> {
@@ -468,9 +498,10 @@ function createPowerShellBashTool(): Record<string, unknown> {
         signal,
       });
 
-      const text = [result.stdout.trimEnd(), result.stderr.trimEnd()]
-        .filter((entry) => entry.length > 0)
-        .join(result.stdout && result.stderr ? "\n" : "") ||
+      const text =
+        [result.stdout.trimEnd(), result.stderr.trimEnd()]
+          .filter((entry) => entry.length > 0)
+          .join(result.stdout && result.stderr ? "\n" : "") ||
         `(no output; exit=${result.exitCode})`;
 
       return {
@@ -622,6 +653,172 @@ async function maybeAssessAndLearn(params: {
   return assessment;
 }
 
+async function runSelfImprovementReview(params: {
+  pi: ExtensionAPI;
+  ctx: ExtensionContext;
+  workflow: PendingWorkflow | null;
+  userText: string;
+  assistantText: string;
+  assessment: KhalaLearningAssessment | null;
+}): Promise<void> {
+  const loadedSkills = params.workflow?.loadedSkills ?? [];
+  const assessment = params.assessment;
+  const skillPatchSignal = inferSkillPatchSignal(params.assistantText);
+
+  if (
+    !shouldRunSelfImprovementReview({
+      hasMeaningfulWorkflow: Boolean(
+        params.workflow && shouldRunActiveLearningReview(params.workflow),
+      ),
+      assessment,
+      userCorrection: USER_CORRECTION_PATTERN.test(params.userText),
+      skillPatchSignal,
+    })
+  ) {
+    return;
+  }
+
+  const paths = await ensureLearningStore(params.ctx.cwd, learningPathCache);
+  const actions: string[] = [];
+
+  if (
+    assessment?.shouldLearn &&
+    !assessment.sensitive &&
+    assessment.lesson.trim()
+  ) {
+    const records = await Promise.all(
+      loadedSkills.map((skillName) =>
+        readLearnedSkillMetadata(paths, skillName),
+      ),
+    );
+    const target = chooseWritableLearnedSkillTarget(records);
+
+    if (target) {
+      const original = await readText(target.skillFile);
+      const bullet = formatSelfImprovementBullet({
+        date: nowIso().slice(0, 10),
+        lesson: assessment.lesson,
+        trigger: assessment.trigger,
+        evidence: summarizeEvidence(
+          params.assistantText || params.userText,
+          180,
+        ),
+      });
+      await fs.writeFile(
+        target.skillFile,
+        appendBackgroundReviewLearningSection(original, bullet),
+        "utf8",
+      );
+      const guard = await validateGeneratedSkillDir(target.dir);
+      if (!guard.ok) {
+        await fs.writeFile(target.skillFile, original, "utf8");
+        await appendLine(
+          paths.promotionQueue,
+          formatSkillPromotionQueueLine({
+            date: nowIso().slice(0, 10),
+            target: target.metadata.name,
+            trigger: assessment.trigger,
+            lesson: assessment.lesson,
+          }),
+        );
+        actions.push(
+          `Promotion queue updated after ${target.metadata.name} guard failure`,
+        );
+      } else {
+        await markLearnedSkillPatched({
+          paths,
+          skillName: target.metadata.name,
+          nowIso: nowIso(),
+        });
+        actions.push(`Skill ${target.metadata.name} patched`);
+      }
+    } else {
+      const date = nowIso().slice(0, 10);
+      if (assessment.promotable) {
+        const skillName = buildAutonomousSkillName({
+          trigger: assessment.trigger,
+          fallback: assessment.lesson,
+          slugify,
+        });
+        const learnedSkill = await ensureLearnedSkillLayout({
+          paths,
+          skillName,
+          nowIso: nowIso(),
+          provenance: "background-review-authored",
+          sourceRunId: params.workflow?.id ?? null,
+        });
+        const skillText = buildAutonomousSkillText({
+          skillName,
+          trigger: assessment.trigger,
+          lesson: assessment.lesson,
+          evidence: summarizeEvidence(
+            params.assistantText || params.userText,
+            220,
+          ),
+          date,
+        });
+        await fs.writeFile(learnedSkill.skillFile, skillText, "utf8");
+        const guard = await validateGeneratedSkillDir(learnedSkill.dir);
+        if (!guard.ok) {
+          await fs.rm(learnedSkill.dir, { recursive: true, force: true });
+          await appendLine(
+            paths.promotionQueue,
+            formatSkillPromotionQueueLine({
+              date,
+              target: skillName,
+              trigger: assessment.trigger,
+              lesson: assessment.lesson,
+            }),
+          );
+          actions.push(`Promotion queue updated after ${skillName} guard failure`);
+        } else {
+          actions.push(`Learned skill ${skillName} created`);
+        }
+      } else {
+        await appendLine(
+          paths.promotionQueue,
+          formatSkillPromotionQueueLine({
+            date,
+            target: loadedSkills[0] ?? "existing umbrella skill",
+            trigger: assessment.trigger,
+            lesson: assessment.lesson,
+          }),
+        );
+        actions.push("Promotion queue updated");
+      }
+    }
+  } else if (
+    USER_CORRECTION_PATTERN.test(params.userText) ||
+    skillPatchSignal
+  ) {
+    await appendLine(
+      paths.promotionQueue,
+      formatSkillReviewQueueLine({
+        date: nowIso().slice(0, 10),
+        loadedSkills:
+          loadedSkills.length > 0 ? loadedSkills : ["existing umbrella skill"],
+        evidence: summarizeEvidence(
+          params.assistantText || params.userText,
+          220,
+        ),
+      }),
+    );
+    actions.push("Promotion queue updated");
+  }
+
+  if (actions.length === 0) return;
+  const summary = Array.from(new Set(actions)).join(" · ");
+  params.pi.appendEntry("khala-self-improvement-review", {
+    at: nowIso(),
+    workflowId: params.workflow?.id ?? null,
+    workflowType: params.workflow?.type ?? null,
+    actions,
+    loadedSkills,
+    trigger: assessment?.trigger ?? null,
+  });
+  notify(params.ctx, `💾 Self-improvement review: ${summary}`, "info");
+}
+
 function shouldRunActiveLearningReview(workflow: PendingWorkflow): boolean {
   return (
     workflow.type !== "learn-skill" &&
@@ -656,14 +853,6 @@ function markMemoryRead(): void {
   };
 }
 
-function isMemoryPersistenceToolCall(event: { toolName: string }): boolean {
-  return event.toolName === "khala_learn";
-}
-
-function requiresFreshMemory(event: ToolCallEvent): boolean {
-  return isMutationToolCall(event) || isMemoryPersistenceToolCall(event);
-}
-
 function isMemoryFresh(): boolean {
   return (
     memoryGate.hasRead &&
@@ -677,22 +866,6 @@ function staleMemoryReason(): string {
     return `${memoryGate.toolCallsSinceRead} tool calls since last memory read (limit=${runtimeState.memoryToolCallLimit})`;
   }
   return "unknown";
-}
-
-function isSkillMemoryToolCall(event: { toolName: string; input?: unknown }): boolean {
-  if (event.toolName !== "read") return false;
-  const input = event.input as { path?: unknown } | undefined;
-  if (typeof input?.path !== "string") return false;
-
-  const normalizedPath = input.path.replaceAll("\\", "/");
-  return (
-    normalizedPath.startsWith("skills/") ||
-    normalizedPath.startsWith(".agents/skills/") ||
-    normalizedPath.startsWith(".pi/khala/skills/") ||
-    normalizedPath.includes("/skills/") ||
-    normalizedPath.includes("/.agents/skills/") ||
-    normalizedPath.includes("/.pi/khala/skills/")
-  );
 }
 
 function inferSkillPatchSignal(text: string): boolean {
@@ -798,6 +971,29 @@ function addPolicyEvent(pi: ExtensionAPI, event: PolicyEvent): void {
   appendPolicyEvent(pi, runtimeState, event);
 }
 
+async function refreshLearnedResourceCompletions(cwd: string): Promise<void> {
+  const paths = await ensureLearningStore(cwd, learningPathCache);
+  const [skills, workflows] = await Promise.all([
+    listLearnedSkillRecords(paths),
+    listLearnedWorkflows(paths),
+  ]);
+  learnedSkillCompletionCache = skills
+    .filter((record) => record.metadata.state !== "archived")
+    .map((record) => record.metadata.name)
+    .sort();
+  learnedWorkflowCompletionCache = workflows.map((workflow) => workflow.name);
+}
+
+function completeFromCache(items: string[], prefix: string) {
+  const normalized = prefix.trim().toLowerCase();
+  const matches = items.filter((item) =>
+    item.toLowerCase().startsWith(normalized),
+  );
+  return matches.length > 0
+    ? matches.map((item) => ({ value: item, label: item }))
+    : null;
+}
+
 function ensureWorkflowSlotAvailable(ctx: ExtensionCommandContext): boolean {
   return ensureWorkflowSlotAvailableForCommand(ctx, pendingWorkflow, notify);
 }
@@ -869,11 +1065,8 @@ async function completeWorkflowTracking(
     ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
     maybeEmitPromotionHint: (paths, observation, context) =>
       maybeEmitPromotionHint({
-        paths: paths as LearningPaths,
-        observation: observation as LearningObservation<
-          WorkflowType,
-          WorkflowOutcome
-        >,
+        paths,
+        observation,
         ctx: context,
         promotionMinObservations: PROMOTION_MIN_OBSERVATIONS,
         promotionSuccessThreshold: PROMOTION_SUCCESS_THRESHOLD,
@@ -908,12 +1101,17 @@ async function completeWorkflowTracking(
 }
 
 function clipDisplay(text: unknown, maxLength = 120): string {
-  const normalized = String(text ?? "").replace(/\s+/g, " ").trim();
+  const normalized = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
-type KhalaToolRenderResult = { details?: unknown; content?: Array<{ text?: string }> };
+type KhalaToolRenderResult = {
+  details?: unknown;
+  content?: Array<{ text?: string }>;
+};
 type KhalaToolTheme = {
   fg: (name: string, value: string) => string;
   bold: (value: string) => string;
@@ -921,12 +1119,18 @@ type KhalaToolTheme = {
 
 type LooseExtensionAPI = {
   registerTool: (tool: Record<string, unknown>) => void;
-  on: (eventName: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => void;
+  on: (
+    eventName: string,
+    handler: (event: unknown, ctx: ExtensionContext) => unknown,
+  ) => void;
 };
 
 function parseToolJsonDetails<T>(result: KhalaToolRenderResult): T | null {
-  if (result.details && typeof result.details === "object") return result.details as T;
-  const text = result.content?.find((item) => typeof item.text === "string")?.text;
+  if (result.details && typeof result.details === "object")
+    return result.details as T;
+  const text = result.content?.find(
+    (item) => typeof item.text === "string",
+  )?.text;
   if (!text) return null;
   try {
     return JSON.parse(text) as T;
@@ -945,19 +1149,27 @@ function renderKhalaAssessResult(
   theme: KhalaToolTheme,
 ): Text {
   const assessment = parseToolJsonDetails<KhalaLearningAssessment>(result);
-  if (!assessment) return new Text(theme.fg("muted", "assessment complete"), 0, 0);
+  if (!assessment)
+    return new Text(theme.fg("muted", "assessment complete"), 0, 0);
 
   const decision = assessment.shouldLearn ? "learn" : "skip";
   let text = `${theme.fg(assessment.shouldLearn ? "success" : "muted", decision)} `;
   text += `${assessment.kind}/${assessment.scope} `;
-  text += theme.fg("muted", `score=${assessment.score.toFixed(2)} conf=${assessment.confidence.toFixed(2)}`);
+  text += theme.fg(
+    "muted",
+    `score=${assessment.score.toFixed(2)} conf=${assessment.confidence.toFixed(2)}`,
+  );
   text += ` — ${clipDisplay(assessment.trigger, 90)}${expandHint(expanded)}`;
 
   if (expanded) {
     text += `\nlesson: ${clipDisplay(assessment.lesson || assessment.reason, 220)}`;
     if (assessment.evidence.length > 0) {
-      text += `\nevidence: ${assessment.evidence.slice(0, 3).map((item) => clipDisplay(item, 90)).join("; ")}`;
-      if (assessment.evidence.length > 3) text += `; +${assessment.evidence.length - 3} more`;
+      text += `\nevidence: ${assessment.evidence
+        .slice(0, 3)
+        .map((item) => clipDisplay(item, 90))
+        .join("; ")}`;
+      if (assessment.evidence.length > 3)
+        text += `; +${assessment.evidence.length - 3} more`;
     }
   }
 
@@ -973,14 +1185,21 @@ function renderKhalaMemoryResult(
     storeRoot: string;
     memoryTail: string;
     activeLessons: string;
-    recentLearnings: Array<{ trigger: string; kind: string; confidence: number }>;
+    recentLearnings: Array<{
+      trigger: string;
+      kind: string;
+      confidence: number;
+    }>;
   }>(result);
   if (!payload) return new Text(theme.fg("muted", "memory read"), 0, 0);
 
   const lessonCount = payload.activeLessons.split("\n").filter(Boolean).length;
   const tailCount = payload.memoryTail.split("\n").filter(Boolean).length;
   let text = `${theme.fg("success", "memory read")} `;
-  text += theme.fg("muted", `${payload.recentLearnings.length} recent, ${lessonCount} active, ${tailCount} tail lines`);
+  text += theme.fg(
+    "muted",
+    `${payload.recentLearnings.length} recent, ${lessonCount} active, ${tailCount} tail lines`,
+  );
   text += expandHint(expanded);
 
   if (expanded) {
@@ -993,16 +1212,47 @@ function renderKhalaMemoryResult(
   return new Text(text, 0, 0);
 }
 
+function renderKhalaMemorySearchResult(
+  result: KhalaToolRenderResult,
+  expanded: boolean,
+  theme: KhalaToolTheme,
+): Text {
+  const payload = parseToolJsonDetails<{
+    query: string;
+    results: KhalaMemorySearchResult[];
+  }>(result);
+  if (!payload) return new Text(theme.fg("muted", "memory search"), 0, 0);
+
+  let text = `${theme.fg("success", "memory search")} `;
+  text += theme.fg(
+    "muted",
+    `${payload.results.length} result${payload.results.length === 1 ? "" : "s"} for ${clipDisplay(payload.query, 70)}`,
+  );
+  text += expandHint(expanded);
+
+  if (expanded) {
+    for (const item of payload.results.slice(0, 5)) {
+      text += `\n- ${item.score.toFixed(2)} ${item.kind} ${item.path}: ${clipDisplay(item.snippet, 120)}`;
+    }
+  }
+
+  return new Text(text, 0, 0);
+}
+
 function renderKhalaLearnResult(
   result: KhalaToolRenderResult,
   expanded: boolean,
   theme: KhalaToolTheme,
 ): Text {
   const record = parseToolJsonDetails<KhalaLearningRecord>(result);
-  if (!record) return new Text(theme.fg("success", "stored khala learning"), 0, 0);
+  if (!record)
+    return new Text(theme.fg("success", "stored khala learning"), 0, 0);
 
   let text = `${theme.fg("success", "stored")} ${record.kind}/${record.scope} `;
-  text += theme.fg("muted", `score=${record.score.toFixed(2)} conf=${record.confidence.toFixed(2)}`);
+  text += theme.fg(
+    "muted",
+    `score=${record.score.toFixed(2)} conf=${record.confidence.toFixed(2)}`,
+  );
   text += ` — ${clipDisplay(record.trigger, 90)}${expandHint(expanded)}`;
 
   if (expanded) {
@@ -1055,12 +1305,14 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     parameters: Type.Object({
       tailLines: Type.Optional(
         Type.Number({
-          description: "Number of tail lines to include from memory/lessons (default 8, max 50)",
+          description:
+            "Number of tail lines to include from memory/lessons (default 8, max 50)",
         }),
       ),
       recentLimit: Type.Optional(
         Type.Number({
-          description: "Number of recent khala learned records to include (default 8, max 50)",
+          description:
+            "Number of recent khala learned records to include (default 8, max 50)",
         }),
       ),
     }),
@@ -1100,6 +1352,75 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           kind: record.kind,
           workflowType: record.workflowType ?? null,
         })),
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(payload, null, 2),
+          },
+        ],
+        details: payload,
+      };
+    },
+  });
+
+  loosePi.registerTool({
+    name: "khala_search_memory",
+    label: "Khala Search Memory",
+    description:
+      "Search khala memory, learned skills, and promoted workflow artifacts with results sorted by relevance. Use a task-specific query to retrieve older relevant memory beyond the recent tail.",
+    parameters: Type.Object({
+      query: Type.String({
+        description:
+          "Task-specific search query, ideally including the workflow, technology, files, error, or correction being handled.",
+      }),
+      limit: Type.Optional(
+        Type.Number({
+          description: "Maximum relevant results to return (default 8, max 25)",
+        }),
+      ),
+      snippetLength: Type.Optional(
+        Type.Number({
+          description: "Maximum snippet characters per result (default 220, max 500)",
+        }),
+      ),
+    }),
+    renderCall: (args, theme) =>
+      new Text(
+        `${theme.fg("toolTitle", theme.bold("khala_search_memory"))} ${theme.fg(
+          "muted",
+          clipDisplay(args.query, 90),
+        )}`,
+        0,
+        0,
+      ),
+    renderResult: (result, { expanded }, theme) =>
+      renderKhalaMemorySearchResult(
+        result as KhalaToolRenderResult,
+        expanded,
+        theme,
+      ),
+    execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+      const query = typeof params.query === "string" ? params.query.trim() : "";
+      if (!query) {
+        throw new Error("khala_search_memory requires a non-empty query.");
+      }
+      const limit = clampPositiveInt(params.limit, 8, 25);
+      const snippetLength = clampPositiveInt(params.snippetLength, 220, 500);
+      const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
+      const results = await searchKhalaMemory({
+        paths,
+        query,
+        limit,
+        snippetLength,
+      });
+      const payload = {
+        storeRoot: paths.root,
+        query,
+        resultCount: results.length,
+        results,
       };
 
       return {
@@ -1217,7 +1538,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       }) as unknown as Record<string, unknown>);
 
   loosePi.registerTool(bashTool);
-  loosePi.on("user_bash", () => ({ operations: createInterceptedUserBashOperations() }));
+  loosePi.on("user_bash", () => ({
+    operations: createInterceptedUserBashOperations(),
+  }));
 
   pi.on("session_start", async (_event, ctx) => {
     const [hookConfig, profileLoad] = await Promise.all([
@@ -1270,6 +1593,13 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       isPreflightSource,
     });
     setAgentEnabledState(ctx, getAgentEnabledFromSession(ctx));
+    await refreshLearnedResourceCompletions(ctx.cwd).catch((error) => {
+      notify(
+        ctx,
+        `Failed to refresh khala learned resource completions: ${error instanceof Error ? error.message : String(error)}`,
+        "warning",
+      );
+    });
 
     if (runtimeState.agentEnabled) {
       notify(
@@ -1278,6 +1608,16 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         "info",
       );
     }
+  });
+
+  pi.on("resources_discover", async (event, ctx) => {
+    const cwd = typeof event.cwd === "string" ? event.cwd : ctx.cwd;
+    const paths = await ensureLearningStore(cwd, learningPathCache);
+    await refreshLearnedResourceCompletions(cwd);
+    return {
+      skillPaths: [paths.skillsDir],
+      promptPaths: [paths.promptsDir],
+    };
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
@@ -1346,19 +1686,19 @@ export default function khalaExtension(pi: ExtensionAPI): void {
   pi.on("tool_call", async (event, ctx) => {
     if (!runtimeState.agentEnabled) return;
 
-    if (event.toolName !== "khala_read_memory") {
+    const counters = getToolInterceptionCounters(event);
+    if (counters.incrementTaskToolCall) {
       taskToolCallCount += 1;
-      if (!isSkillMemoryToolCall(event)) {
-        memoryGate.toolCallsSinceRead += 1;
-      }
     }
-
-    if (event.toolName === "khala_read_memory") {
+    if (counters.incrementMemoryToolCallsSinceRead) {
+      memoryGate.toolCallsSinceRead += 1;
+    }
+    if (counters.isMemoryRead) {
       markMemoryRead();
       return;
     }
 
-    const needsFreshMemory = requiresFreshMemory(event);
+    const needsFreshMemory = requiresFreshMemoryToolCall(event);
     if (needsFreshMemory && !isMemoryFresh()) {
       return {
         block: true,
@@ -1367,7 +1707,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     }
 
     if (!isMutationToolCall(event)) {
-      if (isMemoryPersistenceToolCall(event)) {
+      if (isMemoryPersistenceToolName(event.toolName)) {
         resetMemoryGate("memory was updated");
       }
       return;
@@ -1406,7 +1746,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
   loosePi.on("agent_end", async (event, ctx) => {
     const workflow = pendingWorkflow;
-    const messages = (event as { messages: Parameters<typeof extractLastAssistantText>[0] }).messages;
+    const messages = (
+      event as { messages: Parameters<typeof extractLastAssistantText>[0] }
+    ).messages;
     const lastAssistantMessage = getLastAssistantMessage(messages);
     const assistantText = extractLastAssistantText(messages);
     const text = assistantText || "No assistant output captured.";
@@ -1431,7 +1773,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       };
     }
 
-    if (pendingMemoryGateRecovery && lastAssistantMessage?.stopReason === "stop") {
+    if (
+      pendingMemoryGateRecovery &&
+      lastAssistantMessage?.stopReason === "stop"
+    ) {
       return {
         block: true,
         reason: [
@@ -1461,7 +1806,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         "Do not acknowledge or promise future work without a tool call.",
       ].join("\n");
 
-      if (runtimeState.firstPrinciplesConfig.responseComplianceMode === "enforce") {
+      if (
+        runtimeState.firstPrinciplesConfig.responseComplianceMode === "enforce"
+      ) {
         return { block: true, reason };
       }
 
@@ -1470,7 +1817,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
     if (workflow && !hasWorkflowFooter) {
       if (
-        runtimeState.firstPrinciplesConfig.responseComplianceMode === "enforce" &&
+        runtimeState.firstPrinciplesConfig.responseComplianceMode ===
+          "enforce" &&
         lastAssistantMessage?.stopReason === "stop"
       ) {
         return {
@@ -1496,7 +1844,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    if (workflow && workflow.type === "learn-skill" && workflow.flags.dryRun !== true) {
+    if (
+      workflow &&
+      workflow.type === "learn-skill" &&
+      workflow.flags.dryRun !== true
+    ) {
       const targetSkill =
         typeof workflow.flags.targetSkill === "string"
           ? workflow.flags.targetSkill
@@ -1512,7 +1864,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
               reason: [
                 "LEARNED SKILL SAFETY CHECK FAILED",
                 "",
-                ...guard.issues.map((issue) => `- ${issue.file}: ${issue.reason}`),
+                ...guard.issues.map(
+                  (issue) => `- ${issue.file}: ${issue.reason}`,
+                ),
                 "",
                 "Remove the unsafe content and retry.",
               ].join("\n"),
@@ -1526,12 +1880,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       if (workflow) {
         await completeWorkflowTracking(pi, ctx, workflow, text);
       }
-      await maybeAssessAndLearn({
+      const assessment = await maybeAssessAndLearn({
         pi,
         ctx,
         workflow,
         userText,
         assistantText: text,
+      });
+      await runSelfImprovementReview({
+        pi,
+        ctx,
+        workflow,
+        userText,
+        assistantText: text,
+        assessment,
       });
     } finally {
       pendingWorkflow = null;
@@ -1641,12 +2003,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     notify,
   });
 
+  const learnedWorkflowHandlers = createLearnedWorkflowCommandHandlers({
+    pi,
+    ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
+    notify,
+  });
+
   const khala = async (
     args: string | undefined,
     ctx: ExtensionCommandContext,
   ): Promise<void> => {
     const rawArgs = args ?? "";
-    const limitMatch = rawArgs.match(/(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+(\d+)(?=\s|$)/);
+    const limitMatch = rawArgs.match(
+      /(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+(\d+)(?=\s|$)/,
+    );
     if (limitMatch) {
       runtimeState.memoryToolCallLimit = Math.max(
         1,
@@ -1654,7 +2024,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       );
     }
     const complianceArgs = normalizeWhitespace(
-      rawArgs.replace(/(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+\d+(?=\s|$)/, " "),
+      rawArgs.replace(
+        /(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+\d+(?=\s|$)/,
+        " ",
+      ),
     );
 
     if (!runtimeState.agentEnabled) {
@@ -1686,8 +2059,15 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ...complianceGateHandlers,
       ...workflowHandlers,
       ...curatorHandlers,
+      ...learnedWorkflowHandlers,
       endAgent: agentHandlers.endAgent,
       khala,
+    },
+    completions: {
+      learnedSkills: (prefix) =>
+        completeFromCache(learnedSkillCompletionCache, prefix),
+      learnedWorkflows: (prefix) =>
+        completeFromCache(learnedWorkflowCompletionCache, prefix),
     },
   });
 }

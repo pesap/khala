@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { LEARNING_STORE_DIRNAME } from "../lib/constants";
+import { LEARNING_STORE_DIRNAME } from "../lib/constants.ts";
 import {
   appendLine,
   ensureFile,
@@ -13,7 +13,12 @@ import {
   isRecoverableLearningStoreError,
   readTextIfExists,
   statIfExists,
-} from "../lib/io";
+} from "../lib/io.ts";
+import {
+  buildLearnedWorkflowArtifact,
+  normalizeLearnedWorkflowName,
+  writeLearnedWorkflowPromptTemplate,
+} from "./workflows.ts";
 
 export type WorkflowFlagValue = string | number | boolean | null | string[];
 export type WorkflowFlags = Record<string, WorkflowFlagValue>;
@@ -31,6 +36,8 @@ export interface LearningPaths {
   root: string;
   memoryDir: string;
   runsDir: string;
+  workflowsDir: string;
+  promptsDir: string;
   skillsDir: string;
   archivedSkillsDir: string;
   learningJsonl: string;
@@ -180,6 +187,8 @@ function buildLearningPaths(root: string): LearningPaths {
     root,
     memoryDir: path.join(root, "memory"),
     runsDir: path.join(root, "runs"),
+    workflowsDir: path.join(root, "workflows"),
+    promptsDir: path.join(root, "prompts"),
     skillsDir: path.join(root, "skills"),
     archivedSkillsDir: path.join(root, "archive", "skills"),
     learningJsonl: path.join(root, "memory", "learning.jsonl"),
@@ -216,6 +225,8 @@ async function resolveLearningPaths(
 async function initializeLearningStore(paths: LearningPaths): Promise<void> {
   await fs.mkdir(paths.memoryDir, { recursive: true });
   await fs.mkdir(paths.runsDir, { recursive: true });
+  await fs.mkdir(paths.workflowsDir, { recursive: true });
+  await fs.mkdir(paths.promptsDir, { recursive: true });
   await fs.mkdir(paths.skillsDir, { recursive: true });
   await fs.mkdir(paths.archivedSkillsDir, { recursive: true });
   await ensureFile(paths.learningJsonl, "");
@@ -365,7 +376,7 @@ export async function getActiveLearningLessonsTail(
 
 type LearningHintPaths = Pick<
   LearningPaths,
-  "learningJsonl" | "promotionQueue" | "stateJson"
+  "learningJsonl" | "promotionQueue" | "stateJson" | "workflowsDir" | "promptsDir"
 >;
 
 async function readLearningState(
@@ -491,6 +502,32 @@ export async function maybeEmitPromotionHint<
     params.paths.promotionQueue,
     `- ${now.slice(0, 10)} [${params.observation.taskType}/${kind}] ${summary}`,
   );
+
+  if (kind === "promote" && "workflowsDir" in params.paths) {
+    const workflowName = normalizeLearnedWorkflowName(
+      `${params.observation.taskType}-autonomous-workflow`,
+    );
+    const workflowPath = path.join(params.paths.workflowsDir, `${workflowName}.yaml`);
+    const workflowArtifact = buildLearnedWorkflowArtifact({
+      workflowName,
+      taskType: params.observation.taskType,
+      date: now.slice(0, 10),
+      sampleSize: relevant.length,
+      scoreRate,
+      summary,
+    });
+    await fs.writeFile(workflowPath, workflowArtifact, "utf8");
+    await writeLearnedWorkflowPromptTemplate({
+      paths: params.paths,
+      workflowName,
+      taskType: params.observation.taskType,
+      summary,
+    });
+    await appendLine(
+      params.paths.promotionQueue,
+      `- ${now.slice(0, 10)} [${params.observation.taskType}/workflow-created] ${workflowPath}`,
+    );
+  }
 
   state.hints[key] = {
     kind,

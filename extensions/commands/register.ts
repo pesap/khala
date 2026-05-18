@@ -2,11 +2,13 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 type CommandHandler = (
   args: string | undefined,
   ctx: ExtensionCommandContext,
 ) => Promise<void>;
+type ArgumentCompletions = (prefix: string) => AutocompleteItem[] | null;
 
 export interface CommandRegistrarDeps {
   pi: ExtensionAPI;
@@ -32,10 +34,22 @@ export interface CommandRegistrarDeps {
     pinSkill: CommandHandler;
     archiveSkill: CommandHandler;
     restoreSkill: CommandHandler;
+    khalaReload: CommandHandler;
+    workflowList: CommandHandler;
+    workflowShow: CommandHandler;
+    workflowRun: CommandHandler;
+  };
+  completions?: {
+    learnedSkills?: ArgumentCompletions;
+    learnedWorkflows?: ArgumentCompletions;
   };
 }
 
-export function registerCommands({ pi, handlers }: CommandRegistrarDeps): void {
+export function registerCommands({
+  pi,
+  handlers,
+  completions,
+}: CommandRegistrarDeps): void {
   const commands = [
     { name: "khala", description: "Initialize khala context injection, enable end-of-turn learning assessment, and optionally set compliance mode or memory threshold (/khala warn --learn-tool-limit 15)", handler: handlers.khala },
     { name: "end-agent", description: "Stop khala context injection for this session", handler: handlers.endAgent },
@@ -58,11 +72,25 @@ export function registerCommands({ pi, handlers }: CommandRegistrarDeps): void {
     { name: "pin-skill", description: "Pin or unpin a learned skill to exclude it from autonomous curation", handler: handlers.pinSkill },
     { name: "archive-skill", description: "Archive a learned skill without deleting it", handler: handlers.archiveSkill },
     { name: "restore-skill", description: "Restore an archived learned skill", handler: handlers.restoreSkill },
+    { name: "khala-reload", description: "Reload Pi resources so khala learned skills and workflow prompts become slash commands", handler: handlers.khalaReload },
+    { name: "workflow-list", description: "List khala learned workflows promoted from repeated outcomes", handler: handlers.workflowList },
+    { name: "workflow-show", description: "Show a khala learned workflow artifact and prompt template", handler: handlers.workflowShow },
+    { name: "workflow-run", description: "Run a khala learned workflow by sending it to the agent", handler: handlers.workflowRun },
   ] as const;
 
   for (const command of commands) {
+    const getArgumentCompletions =
+      command.name === "skill-status" ||
+      command.name === "pin-skill" ||
+      command.name === "archive-skill" ||
+      command.name === "restore-skill"
+        ? completions?.learnedSkills
+        : command.name === "workflow-show" || command.name === "workflow-run"
+          ? completions?.learnedWorkflows
+          : undefined;
     pi.registerCommand(command.name, {
       description: command.description,
+      ...(getArgumentCompletions ? { getArgumentCompletions } : {}),
       handler: command.handler,
     });
   }

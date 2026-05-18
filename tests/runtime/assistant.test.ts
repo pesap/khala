@@ -28,7 +28,9 @@ function memoryReadRequired(toolName: string): Message {
   return {
     role: "toolResult",
     toolName,
-    content: [{ type: "text", text: "MEMORY READ REQUIRED\n\nCall khala_read_memory." }],
+    content: [
+      { type: "text", text: "MEMORY READ REQUIRED\n\nCall khala_read_memory." },
+    ],
   };
 }
 
@@ -67,22 +69,37 @@ test("ignores memory-read-required when no memory read happened yet", () => {
 
 test("infers tool obligation for concrete inspection requests", () => {
   assert.equal(
-    inferTurnObligation("Load your librarian skill and inspect the Torc repo").obligation,
+    inferTurnObligation("Load your librarian skill and inspect the Torc repo")
+      .obligation,
     "tool_required",
   );
   assert.equal(
-    inferTurnObligation("Can you analyze the pi-session at /tmp/session.jsonl?").obligation,
+    inferTurnObligation("Can you analyze the pi-session at /tmp/session.jsonl?")
+      .obligation,
     "tool_required",
   );
   assert.equal(inferTurnObligation("do it").obligation, "tool_required");
 });
 
 test("allows normal explanation questions without tools", () => {
-  assert.equal(inferTurnObligation("Is there a way I can avoid this?").obligation, "answer_allowed");
+  assert.equal(
+    inferTurnObligation("Is there a way I can avoid this?").obligation,
+    "answer_allowed",
+  );
 });
 
 test("detects assistant tool-call and clarification output shapes", () => {
   assert.equal(assistantMessageHasToolCall(assistantToolCall("read")), true);
-  assert.equal(isAssistantClarification(textMessage("assistant", "Which file should I inspect?")), true);
-  assert.equal(isAssistantClarification(textMessage("assistant", "I will inspect that next.")), false);
+  assert.equal(
+    isAssistantClarification(
+      textMessage("assistant", "Which file should I inspect?"),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage("assistant", "I will inspect that next."),
+    ),
+    false,
+  );
 });
