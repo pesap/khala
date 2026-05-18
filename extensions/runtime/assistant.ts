@@ -20,17 +20,21 @@ export type TurnObligation =
   | "clarify_required"
   | "approval_required";
 
+export type ResponseComplianceMode = "monitor" | "warn" | "enforce";
+
 interface TurnObligationResult {
   obligation: TurnObligation;
   reason: string;
 }
 
 const TOOL_ACTION_REQUEST_REGEX =
-  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|let'?s\s+|can you\s+|could you\s+|would you\s+)?(?:read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy|add|address|commit|push|open|ship)\b/;
+  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|let'?s\s+|can you\s+|could you\s+|would you\s+)?(?:read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy|add|address|commit|push|open|ship|create|draft|save|update|patch|modify)\b/;
 const DESTRUCTIVE_REQUEST_REGEX =
   /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|can you\s+|could you\s+|would you\s+)?(?:delete|remove|rm -rf|force push|reset --hard|rewrite history|drop table)\b/;
 const BLOCKING_CLARIFICATION_REGEX =
   /^(?:which|what|where|when|who|how)\b|\b(?:should i|should we|do you want|would you like|can you confirm|please confirm|confirm whether|can you share|can you provide|can you choose|can you clarify|can you send|can you paste)\b/;
+const APPROVAL_QUESTION_REGEX =
+  /\b(?:can i|may i|is it ok if i|is it okay if i|do you want me to|should i)\b/;
 
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
@@ -112,6 +116,23 @@ export function assistantMessageHasToolCall(
   return Boolean(message?.content.some((item) => item.type === "toolCall"));
 }
 
+export function shouldBlockUnsatisfiedTurnObligation(params: {
+  mode: ResponseComplianceMode;
+  obligation: TurnObligation;
+}): boolean {
+  if (params.mode === "monitor") return false;
+  return (
+    params.obligation === "tool_required" ||
+    params.obligation === "approval_required"
+  );
+}
+
+export function isActionOrApprovalObligation(
+  obligation: TurnObligation,
+): boolean {
+  return obligation === "tool_required" || obligation === "approval_required";
+}
+
 export function inferTurnObligation(userText: string): TurnObligationResult {
   const text = userText.trim().toLowerCase();
   if (!text) return { obligation: "none", reason: "no user request text" };
@@ -181,14 +202,16 @@ export function isAssistantClarification(
     .map((sentence) => sentence.trim())
     .filter(Boolean);
   const lastSentence = sentences.at(-1) ?? text.trim();
+  const normalized = lastSentence.toLowerCase();
   return (
     lastSentence.includes("?") &&
-    BLOCKING_CLARIFICATION_REGEX.test(lastSentence.toLowerCase())
+    (BLOCKING_CLARIFICATION_REGEX.test(normalized) ||
+      APPROVAL_QUESTION_REGEX.test(normalized))
   );
 }
 
-function isMutationToolName(name: string): boolean {
-  return name === "edit" || name === "write" || name === "bash";
+function isMemoryGateRetryToolName(name: string): boolean {
+  return name === "edit" || name === "write" || name === "bash" || name === "khala_learn";
 }
 
 function extractToolCallNames(message: AgentEndEventMessage): string[] {
@@ -229,7 +252,13 @@ export function findPendingMemoryGateRecovery(
         continue;
       }
 
-      if (sawMemoryRead && isMutationToolName(toolName)) {
+      const matchesBlockedTool = toolName === blockedToolName;
+      const allowFallbackRetry = blockedToolName === "mutation";
+      if (
+        sawMemoryRead &&
+        ((matchesBlockedTool && isMemoryGateRetryToolName(toolName)) ||
+          (allowFallbackRetry && isMemoryGateRetryToolName(toolName)))
+      ) {
         blockedToolName = null;
         sawMemoryRead = false;
         break;
