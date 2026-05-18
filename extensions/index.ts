@@ -22,6 +22,7 @@ import {
   buildReviewTarget,
   buildSimplifyTarget,
   buildSkillTemplate,
+  chooseAvailableSkillName,
   parseAddressOpenIssuesArgs,
   parseApproveRiskArgs,
   parseComplianceArgs,
@@ -147,6 +148,7 @@ import {
   appendBackgroundReviewLearningSection,
   buildAutonomousSkillName,
   buildAutonomousSkillText,
+  chooseAvailableGeneratedSkillName,
   chooseWritableLearnedSkillTarget,
   formatSelfImprovementBullet,
   formatSkillPromotionQueueLine,
@@ -737,10 +739,17 @@ async function runSelfImprovementReview(params: {
     } else {
       const date = nowIso().slice(0, 10);
       if (assessment.promotable) {
-        const skillName = buildAutonomousSkillName({
+        const preferredSkillName = buildAutonomousSkillName({
           trigger: assessment.trigger,
           fallback: assessment.lesson,
           slugify,
+        });
+        const reservedNames = new Set(
+          (await listLearnedSkillRecords(paths)).map((record) => record.metadata.name),
+        );
+        const skillName = chooseAvailableGeneratedSkillName({
+          preferredName: preferredSkillName,
+          reservedNames,
         });
         const learnedSkill = await ensureLearnedSkillLayout({
           paths,
@@ -1988,6 +1997,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     exists,
     readText,
     buildSkillTemplate,
+    chooseAvailableSkillName,
+    packageSkillsPath: RUNTIME_PATHS.packageSkillsPath,
     buildSimplifyTarget,
     constants: {
       POSTFLIGHT_INSTRUCTION,

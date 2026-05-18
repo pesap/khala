@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   buildReviewTarget,
+  buildSkillTemplate,
+  chooseAvailableSkillName,
   parseReviewArgs,
 } from "../../extensions/commands/parsers.ts";
 
@@ -45,4 +47,68 @@ test("builds PR review instructions with pi-review checkout safeguards", () => {
   assert.match(target.instruction, /Require GitHub CLI/);
   assert.match(target.instruction, /no staged or unstaged tracked-file changes/);
   assert.match(target.instruction, /compute the merge base/);
+});
+
+test("buildSkillTemplate quotes YAML frontmatter values with colons", () => {
+  const skill = buildSkillTemplate("good-api", "good-api --from=https://example.com/a:b");
+
+  assert.match(skill, /^---\nname: "good-api"\ndescription: "Reusable workflow for good-api --from=https:\/\/example.com\/a:b"\n---/);
+});
+
+test("chooseAvailableSkillName always namespaces learned skills under khala", () => {
+  const skillName = chooseAvailableSkillName({
+    topic: "bash-script",
+    fromUrl: "https://www.mechanicalrock.io/blog/modern-bash",
+    reservedNames: new Set(),
+    slugify: (value) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, ""),
+  });
+
+  assert.equal(skillName, "khala-bash-script");
+});
+
+test("chooseAvailableSkillName uses a stable fallback for source-only imports", () => {
+  const skillName = chooseAvailableSkillName({
+    topic: "",
+    fromUrl: "https://example.com/one",
+    reservedNames: new Set(),
+    slugify: (value) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, ""),
+  });
+
+  assert.equal(skillName, "khala-learned-skill");
+});
+
+test("chooseAvailableSkillName preserves an existing khala prefix", () => {
+  const skillName = chooseAvailableSkillName({
+    topic: "khala-librarian",
+    reservedNames: new Set(),
+    slugify: (value) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, ""),
+  });
+
+  assert.equal(skillName, "khala-librarian");
+});
+
+test("chooseAvailableSkillName adds numeric suffix only when companion name is taken", () => {
+  const skillName = chooseAvailableSkillName({
+    topic: "librarian",
+    reservedNames: new Set(["khala-librarian"]),
+    slugify: (value) =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, ""),
+  });
+
+  assert.equal(skillName, "khala-librarian-2");
 });

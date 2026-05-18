@@ -574,12 +574,35 @@ export function buildSimplifyTarget(parsed: ParsedReviewArgs): ScopedTarget {
   });
 }
 
+function toYamlQuotedScalar(value: string): string {
+  return JSON.stringify(value);
+}
+
+export function chooseAvailableSkillName(params: {
+  topic: string;
+  fromFile?: string;
+  fromUrl?: string;
+  reservedNames: ReadonlySet<string>;
+  slugify: (value: string) => string;
+}): string {
+  const sourceHint = params.fromUrl || params.fromFile || "";
+  const baseHint = params.topic || (sourceHint ? "learned-skill" : "new-skill");
+  const slug = params.slugify(baseHint) || "new-skill";
+  const preferredName = slug.startsWith("khala-") ? slug : `khala-${slug}`;
+
+  if (!params.reservedNames.has(preferredName)) return preferredName;
+
+  let suffix = 2;
+  while (params.reservedNames.has(`${preferredName}-${suffix}`)) suffix += 1;
+  return `${preferredName}-${suffix}`;
+}
+
 export function buildSkillTemplate(skillName: string, topic: string): string {
   const summary = topic || skillName;
   return [
     "---",
-    `name: ${skillName}`,
-    `description: Reusable workflow for ${summary}`,
+    `name: ${toYamlQuotedScalar(skillName)}`,
+    `description: ${toYamlQuotedScalar(`Reusable workflow for ${summary}`)}`,
     "---",
     "",
     "## Use when",

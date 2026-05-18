@@ -7,6 +7,7 @@ import {
   appendBackgroundReviewLearningSection,
   buildAutonomousSkillName,
   buildAutonomousSkillText,
+  chooseAvailableGeneratedSkillName,
   chooseWritableLearnedSkillTarget,
   formatSkillPromotionQueueLine,
   shouldRunSelfImprovementReview,
@@ -154,7 +155,7 @@ test("builds safe autonomous skill names and skill content", () => {
     slugify: (value) => value.toLowerCase().replaceAll(" ", "-"),
   });
 
-  assert.equal(skillName, "user-corrects-stale-review-workflow-behavior");
+  assert.equal(skillName, "khala-user-corrects-stale-review-workflow-behavior");
   const skillText = buildAutonomousSkillText({
     skillName,
     trigger: "user corrects stale workflow behavior",
@@ -163,9 +164,20 @@ test("builds safe autonomous skill names and skill content", () => {
     date: "2026-05-18",
   });
 
+  assert.match(skillText, /^---\nname: "khala-user-corrects-stale-review-workflow-behavior"\ndescription: "Background-learned procedure for user corrects stale workflow behavior"\n---/);
   assert.match(skillText, /## Use when/);
   assert.match(skillText, /patch the learned procedure immediately/);
   assert.match(skillText, /do not rely on stale memory/);
+});
+
+test("chooses a collision-free generated skill name", () => {
+  assert.equal(
+    chooseAvailableGeneratedSkillName({
+      preferredName: "khala-review-skill",
+      reservedNames: new Set(["khala-review-skill", "khala-review-skill-2"]),
+    }),
+    "khala-review-skill-3",
+  );
 });
 
 test("builds autonomous workflow artifact for repeated successful actions", () => {
