@@ -6,7 +6,6 @@ import {
 } from "../lib/io.ts";
 import { normalizeWhitespace, slugify } from "../lib/text.ts";
 import type { LearningPaths } from "./store.ts";
-import { searchKhalaCorpus } from "./search.ts";
 
 export type RuntimeRuleScope = "repo" | "global";
 export type RuntimeRuleLifetime = "durable" | "session";
@@ -281,41 +280,29 @@ export async function selectRuntimeRules(params: {
   const query = contextQuery(params.context);
   if (!query) return rules.slice(0, limit);
 
-  const results = await searchKhalaCorpus({
-    paths: params.paths,
-    query,
-    limit: Math.max(limit, 25),
-    snippetLength: 160,
-    includeKinds: ["rule"],
-  });
-  const pathsByRank = new Map(
-    results.map((result, index) => [result.path, index]),
-  );
-
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const matched = rules
     .map((rule) => {
-      const pathRank =
-        pathsByRank.get("rules/active.jsonl") ??
-        pathsByRank.get("rules/session.jsonl") ??
-        Number.MAX_SAFE_INTEGER;
       const text = ruleSearchText(rule).toLowerCase();
-      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const matchCount = terms.reduce(
+        (acc, term) => acc + (text.includes(term) ? 1 : 0),
+        0,
+      );
       const score =
-        terms.reduce(
-          (acc, term) => acc + (text.includes(term) ? 1 : 0),
-          0,
-        ) +
+        matchCount +
         severityRank(rule.severity) +
-        rule.priority / 10 -
-        pathRank / 1000;
-      return { rule, score };
+        rule.priority / 10 +
+        rule.confidence / 10;
+      return { rule, score, matchCount };
     })
-    .filter((entry) => entry.score > severityRank(entry.rule.severity))
+    .filter((entry) => entry.matchCount > 0)
     .sort(
       (a, b) =>
+        b.matchCount - a.matchCount ||
         b.score - a.score ||
         severityRank(b.rule.severity) - severityRank(a.rule.severity) ||
         b.rule.priority - a.rule.priority ||
+        b.rule.updatedAt.localeCompare(a.rule.updatedAt) ||
         a.rule.id.localeCompare(b.rule.id),
     )
     .map((entry) => entry.rule);

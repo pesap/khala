@@ -10,11 +10,14 @@ import {
   makeRuntimeRule,
   parseRulesMarkdown,
   readEffectiveRuntimeRules,
+  readRuntimeRuleRecords,
+  readRuleAuditTail,
   reloadRulesMarkdown,
   renderRulesMarkdown,
   resolveEffectiveRules,
   selectRuntimeRules,
 } from "../../extensions/learning/rules.ts";
+import { createRuleCommandHandlers } from "../../extensions/commands/rules.ts";
 import { ensureLearningStore } from "../../extensions/learning/store.ts";
 import { searchKhalaCorpus } from "../../extensions/learning/search.ts";
 import { createTempLearningPaths } from "./helpers.ts";
@@ -138,4 +141,60 @@ test("corpus search indexes rules alongside memory", async () => {
 
   assert.equal(results[0].kind, "rule");
   assert.match(results[0].snippet, /subprocess/);
+});
+
+test("rule replacement preserves severity when severity edit is omitted", async () => {
+  const paths = await createTempLearningPaths("khala-rule-replace-");
+  await appendRuntimeRule(
+    paths,
+    makeRuntimeRule({
+      id: "R-preserve",
+      trigger: "review",
+      instruction: "Use original instruction.",
+      severity: "enforce",
+      nowIso: now,
+    }),
+  );
+  const handlers = createRuleCommandHandlers({
+    ensureLearningStore: async () => paths,
+    nowIso: () => "2026-05-18T12:05:00.000Z",
+    notify: () => {},
+  });
+
+  await handlers.ruleReplace(
+    "R-preserve instruction=Use-updated-instruction.",
+    { cwd: paths.root } as never,
+  );
+
+  const [rule] = await readEffectiveRuntimeRules(paths);
+  assert.equal(rule.severity, "enforce");
+  assert.equal(rule.instruction, "Use-updated-instruction.");
+});
+
+test("rule disable reuses one timestamp for record and audit event", async () => {
+  const paths = await createTempLearningPaths("khala-rule-disable-");
+  await appendRuntimeRule(
+    paths,
+    makeRuntimeRule({
+      id: "R-disable",
+      trigger: "mutation",
+      instruction: "Read memory first.",
+      nowIso: now,
+    }),
+  );
+  const handlers = createRuleCommandHandlers({
+    ensureLearningStore: async () => paths,
+    nowIso: () => "2026-05-18T12:06:00.123Z",
+    notify: () => {},
+  });
+
+  await handlers.ruleDisable("R-disable obsolete", { cwd: paths.root } as never);
+
+  const disabled = (await readRuntimeRuleRecords(paths)).find(
+    (rule) => rule.id === "R-disable" && rule.status === "disabled",
+  );
+  const [audit] = await readRuleAuditTail(paths, 1);
+  assert.equal(disabled?.updatedAt, "2026-05-18T12:06:00.123Z");
+  assert.equal(audit.at, "2026-05-18T12:06:00.123Z");
+  assert.equal(audit.id, "audit-2026-05-18T12:06:00.123Z");
 });

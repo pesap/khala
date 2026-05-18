@@ -186,7 +186,9 @@ export function createRuleCommandHandlers(params: {
       const now = params.nowIso();
       const replacement: RuntimeRule = {
         ...previous,
-        severity: parseSeverity(edits.get("severity")) ?? previous.severity,
+        severity: edits.has("severity")
+          ? parseSeverity(edits.get("severity"))
+          : previous.severity,
         trigger: edits.get("trigger") ?? previous.trigger,
         instruction: edits.get("instruction") ?? previous.instruction,
         rationale: edits.get("rationale") ?? previous.rationale,
@@ -209,17 +211,18 @@ export function createRuleCommandHandlers(params: {
         params.notify(ctx, `Khala runtime rule not found: ${id}`, "error");
         return;
       }
+      const now = params.nowIso();
       await appendRuntimeRule(paths, {
         ...previous,
         status: "disabled",
         rationale: reasonParts.join(" ") || previous.rationale,
-        updatedAt: params.nowIso(),
+        updatedAt: now,
       });
       await appendRuleAudit(paths, {
         version: 1,
-        id: `audit-${params.nowIso()}`,
+        id: `audit-${now}`,
         ruleId: previous.id,
-        at: params.nowIso(),
+        at: now,
         action: "disable",
         detail: reasonParts.join(" ") || "Rule disabled by user.",
       });

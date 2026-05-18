@@ -1318,7 +1318,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     name: "khala_read_memory",
     label: "Khala Read Memory",
     description:
-      "Read current khala memory context (active lessons, recent learnings, and memory tail) before tool use.",
+      "Read current khala memory context (active lessons, active runtime rules, recent learnings, and memory tail) before tool use.",
     parameters: Type.Object({
       tailLines: Type.Optional(
         Type.Number({
