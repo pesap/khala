@@ -1,7 +1,9 @@
 import { Type } from "typebox";
 import type { LearningLesson, LearningPaths } from "./store.ts";
-import { appendLine, readTextIfExists } from "../lib/io.ts";
+import { appendLine, readTextTailIfExists } from "../lib/io.ts";
 import { normalizeWhitespace, summarizeEvidence } from "../lib/text.ts";
+
+const RECENT_LEARNING_READ_BYTES = 256_000;
 
 export const KhalaAssessLearningParams = Type.Object({
   taskSummary: Type.String({ description: "Short summary of the user task or prompt" }),
@@ -283,7 +285,10 @@ function parseKhalaLearningRecord(value: unknown): KhalaLearningRecord | null {
 }
 
 export async function readRecentKhalaLearningRecords(paths: LearningPaths, limit = 20): Promise<KhalaLearningRecord[]> {
-  const raw = await readTextIfExists(paths.khalaLearningJsonl);
+  const raw = await readTextTailIfExists(
+    paths.khalaLearningJsonl,
+    RECENT_LEARNING_READ_BYTES,
+  );
   if (!raw.trim()) return [];
   const records: KhalaLearningRecord[] = [];
   for (const line of raw.split(/\r?\n/)) {
