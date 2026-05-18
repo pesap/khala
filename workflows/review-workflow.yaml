@@ -1,5 +1,5 @@
 name: review-workflow
-version: 2
+version: 3
 objective: Run a scoped code review with prioritized, actionable findings and a clear verdict.
 
 command_prompt_policy:
@@ -30,6 +30,9 @@ skill_contracts:
   remote_reference:
     skill: librarian
     load_when: user provides a GitHub URL, repo shorthand, or remote git reference
+  github_pr:
+    skill: github
+    load_before: GitHub PR metadata lookup, checkout, or PR diff review
 
 gates:
   vcs_mode:
@@ -41,6 +44,12 @@ gates:
     - confirm exact review target: uncommitted changes, branch diff, commit, PR, or file/folder snapshot
     - ask before reviewing if scope is ambiguous
     - do not include unrelated parallel GitButler branches/stacks or unrelated normal-Git local branches
+    - for direct GitHub PR URLs, treat the URL as PR mode, not path snapshot mode
+  github_pr:
+    - require GitHub CLI for PR mode; if missing or unauthenticated, stop with setup guidance
+    - before `gh pr checkout`, verify there are no staged or unstaged tracked-file changes; untracked files alone are allowed
+    - resolve PR number, title, head branch, and base branch before review
+    - checkout the PR locally, compute merge base against the base branch, and review the diff from the merge base
   evidence:
     - gather concrete diff or snapshot context before findings
     - cite precise file paths and line references where possible
@@ -51,6 +60,8 @@ gates:
   quality:
     - prioritize correctness, security, data loss, API contract, correctness-by-construction, performance, and maintainability risks
     - flag low-quality code when it creates concrete review risk: fragile control flow, unclear invariants, avoidable coupling, or likely future defects
+    - flag silent local error recovery, swallowed parse failures, unchecked errors, and fallback-to-success behavior unless explicit boundary-level justification and tests exist
+    - treat untrusted input carefully: open redirects, SQL construction, URL fetches, HTML/text output, and authorization boundaries are high-signal review surfaces
     - avoid speculative style-only findings unless listed as non-blocking callouts
 
 steps:
