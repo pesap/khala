@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { exists, isRecord, readTextIfExists } from "../lib/io";
-import type { LearningPaths } from "./store";
+import { exists, isRecord, readTextIfExists } from "../lib/io.ts";
+import type { LearningPaths } from "./store.ts";
 
 export type LearnedSkillProvenance =
   | "user-authored"

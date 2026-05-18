@@ -14,6 +14,7 @@
     "smoke": "npm run lint && npm run test",
     "test": "npm run typecheck && npm run test:node",
     "test:node": "node --test --experimental-strip-types tests/**/*.test.ts",
+    "test:pi": "bash scripts/test-pi-khala-memory.sh",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",

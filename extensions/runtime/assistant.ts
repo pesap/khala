@@ -13,6 +13,25 @@ interface PendingMemoryGateRecovery {
   blockedToolName: string;
 }
 
+export type TurnObligation =
+  | "none"
+  | "answer_allowed"
+  | "tool_required"
+  | "clarify_required"
+  | "approval_required";
+
+interface TurnObligationResult {
+  obligation: TurnObligation;
+  reason: string;
+}
+
+const TOOL_ACTION_REQUEST_REGEX =
+  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|let'?s\s+|can you\s+|could you\s+|would you\s+)?(?:read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy|add|address|commit|push|open|ship)\b/;
+const DESTRUCTIVE_REQUEST_REGEX =
+  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|can you\s+|could you\s+|would you\s+)?(?:delete|remove|rm -rf|force push|reset --hard|rewrite history|drop table)\b/;
+const BLOCKING_CLARIFICATION_REGEX =
+  /^(?:which|what|where|when|who|how)\b|\b(?:should i|should we|do you want|would you like|can you confirm|please confirm|confirm whether|can you share|can you provide|can you choose|can you clarify|can you send|can you paste)\b/;
+
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
   if (value < 0) return 0;
@@ -24,7 +43,9 @@ function isWorkflowOutcome(value: unknown): value is WorkflowOutcome {
   return value === "success" || value === "partial" || value === "failed";
 }
 
-function extractTextFromMessageContent(content: AssistantMessage["content"]): string {
+function extractTextFromMessageContent(
+  content: AssistantMessage["content"],
+): string {
   const parts = content
     .filter((item): item is TextContent => item.type === "text")
     .map((item) => item.text);
@@ -41,7 +62,9 @@ export function getLastAssistantMessage(
   return null;
 }
 
-export function extractLastAssistantText(messages: AgentEndEventMessages): string {
+export function extractLastAssistantText(
+  messages: AgentEndEventMessages,
+): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message.role !== "assistant") continue;
@@ -64,8 +87,10 @@ export function extractLastUserText(messages: AgentEndEventMessages): string {
 }
 
 export function hasRequiredWorkflowFooter(text: string): boolean {
-  return /(?:^|\n)\s*Result\s*:\s*(success|partial|failed)\b/i.test(text) &&
-    /(?:^|\n)\s*Confidence\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?%?)/i.test(text);
+  return (
+    /(?:^|\n)\s*Result\s*:\s*(success|partial|failed)\b/i.test(text) &&
+    /(?:^|\n)\s*Confidence\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?%?)/i.test(text)
+  );
 }
 
 export function isEmptyTerminalAssistantResponse(
@@ -81,6 +106,87 @@ export function isEmptyTerminalAssistantResponse(
   });
 }
 
+export function assistantMessageHasToolCall(
+  message: AgentEndEventMessage | null,
+): boolean {
+  return Boolean(message?.content.some((item) => item.type === "toolCall"));
+}
+
+export function inferTurnObligation(userText: string): TurnObligationResult {
+  const text = userText.trim().toLowerCase();
+  if (!text) return { obligation: "none", reason: "no user request text" };
+
+  if (DESTRUCTIVE_REQUEST_REGEX.test(text)) {
+    return {
+      obligation: "approval_required",
+      reason: "destructive or high-risk request",
+    };
+  }
+
+  if (TOOL_ACTION_REQUEST_REGEX.test(text)) {
+    return {
+      obligation: "tool_required",
+      reason: "user requested concrete tool-backed action",
+    };
+  }
+
+  if (
+    /\b(do it|run it|try it|make it|apply it|ship it|continue|proceed)\b/.test(
+      text,
+    )
+  ) {
+    return {
+      obligation: "tool_required",
+      reason: "user confirmed a prior action request",
+    };
+  }
+
+  if (
+    /\b(where (did|do)|source|citation|from source|from docs|is this true|confirm from|verify from)\b/.test(
+      text,
+    )
+  ) {
+    return {
+      obligation: "tool_required",
+      reason: "user requested evidence from source material",
+    };
+  }
+
+  if (
+    /\b(can you|could you|please)\b/.test(text) &&
+    /(?:\b(file|path|repo|session|log|diff|branch|pr|issue|skill|docs?)\b|\/|\.[a-z0-9]{1,8}\b)/.test(
+      text,
+    )
+  ) {
+    return {
+      obligation: "tool_required",
+      reason: "user referenced an artifact that should be inspected",
+    };
+  }
+
+  return {
+    obligation: "answer_allowed",
+    reason: "request can be answered without tools",
+  };
+}
+
+export function isAssistantClarification(
+  message: AgentEndEventMessage | null,
+): boolean {
+  if (!message) return false;
+  const text = extractTextFromMessageContent(message.content);
+  if (!text || text.length > 1200) return false;
+  const sentences = text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  const lastSentence = sentences.at(-1) ?? text.trim();
+  return (
+    lastSentence.includes("?") &&
+    BLOCKING_CLARIFICATION_REGEX.test(lastSentence.toLowerCase())
+  );
+}
+
 function isMutationToolName(name: string): boolean {
   return name === "edit" || name === "write" || name === "bash";
 }
@@ -92,9 +198,13 @@ function extractToolCallNames(message: AgentEndEventMessage): string[] {
   });
 }
 
-function isMemoryReadRequiredToolResult(message: AgentEndEventMessage): boolean {
+function isMemoryReadRequiredToolResult(
+  message: AgentEndEventMessage,
+): boolean {
   if (message.role !== "toolResult") return false;
-  return /^MEMORY READ REQUIRED\b/.test(extractTextFromMessageContent(message.content));
+  return /^MEMORY READ REQUIRED\b/.test(
+    extractTextFromMessageContent(message.content),
+  );
 }
 
 export function findPendingMemoryGateRecovery(
@@ -136,8 +246,12 @@ export function inferOutcomeFromText(text: string): {
   confidence: number;
   strictViolation?: string;
 } {
-  const resultMatch = text.match(/(?:^|\n)\s*Result\s*:\s*(success|partial|failed)\b/i);
-  const confidenceMatch = text.match(/(?:^|\n)\s*Confidence\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?%?)/i);
+  const resultMatch = text.match(
+    /(?:^|\n)\s*Result\s*:\s*(success|partial|failed)\b/i,
+  );
+  const confidenceMatch = text.match(
+    /(?:^|\n)\s*Confidence\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?%?)/i,
+  );
 
   if (!resultMatch || !confidenceMatch) {
     const missingFields: string[] = [];
@@ -174,7 +288,8 @@ export function inferOutcomeFromText(text: string): {
     return {
       outcome: "failed",
       confidence: 0,
-      strictViolation: "Invalid Confidence value. Use a numeric value like `0.82`.",
+      strictViolation:
+        "Invalid Confidence value. Use a numeric value like `0.82`.",
     };
   }
 

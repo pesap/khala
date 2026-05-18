@@ -4,9 +4,9 @@ import {
   readLearnedSkillMetadata,
   restoreLearnedSkill,
   setLearnedSkillPinned,
-} from "../learning/skills";
-import type { LearningPaths } from "../learning/store";
-import { generateCuratorReport, refreshCuratorReport } from "../learning/curator";
+} from "../learning/skills.ts";
+import type { LearningPaths } from "../learning/store.ts";
+import { generateCuratorReport, refreshCuratorReport } from "../learning/curator.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (

@@ -1,10 +1,10 @@
 import { load as loadYaml } from "js-yaml";
 import path from "node:path";
-import { exists, isRecord, readTextIfExists } from "../lib/io";
+import { exists, isRecord, readTextIfExists } from "../lib/io.ts";
 import {
   parsePolicyMode,
   type FirstPrinciplesConfig,
-} from "../policy/first-principles";
+} from "../policy/first-principles.ts";
 
 export const WORKFLOW_TYPES = [
   "debug",

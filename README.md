@@ -86,6 +86,10 @@ flowchart LR
 | `/pin-skill <name> [on\|off]` | Pin or unpin a learned skill. |
 | `/archive-skill <name>` | Archive a learned skill without deleting it. |
 | `/restore-skill <name>` | Restore an archived learned skill. |
+| `/khala-reload` | Reload Pi resources so learned skills and workflow prompts become slash commands. |
+| `/workflow-list` | List khala learned workflows promoted from repeated outcomes. |
+| `/workflow-show <name>` | Show a learned workflow artifact and its generated prompt template. |
+| `/workflow-run <name> [input]` | Run a learned workflow by sending it to the agent with optional input. |
 
 ### Workflow commands
 
@@ -173,6 +177,23 @@ Packaged skills include `librarian`, copied from `https://github.com/mitsuhiko/a
 
 `/learn-skill` writes learning artifacts to the khala learning store, not to package `skills/`, and does not automatically add them to package manifests or workflow skill frontmatter.
 
+When end-of-turn assessment finds a high-confidence, non-sensitive promotable lesson, khala can also create a background-authored learned skill under `skills/<name>/`. If the lesson applies to a loaded background-authored skill, khala patches that skill instead. User-authored/imported skills are never edited directly; khala records a review/promotion queue item for them.
+
+Khala exposes learned skills to Pi through `resources_discover`, so after `/khala-reload` they are available as normal Pi skills and can be invoked with `/skill:<name>` when skill commands are enabled.
+
+### Memory tools
+
+Khala also registers model-facing tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `khala_read_memory` | Read recent memory tail, active lessons, and recent structured learnings. |
+| `khala_search_memory` | Search older memory, learned skills, prompt templates, and workflow artifacts by relevance. |
+| `khala_assess_learning` | Score whether a task produced a durable, non-sensitive lesson. |
+| `khala_learn` | Persist a structured learning record. |
+
+`khala_read_memory` is recency-based. `khala_search_memory` is relevance-based and accepts a task-specific `query`, optional `limit`, and optional `snippetLength`.
+
 ## Learning model
 
 Learning is event-based memory, not model fine-tuning.
@@ -189,7 +210,7 @@ sequenceDiagram
   K->>K: execute + validate
   K->>M: append learning.jsonl + MEMORY.md
   U->>K: corrective feedback
-  K->>M: append compact lesson when clear
+  K->>M: append compact lesson, skill patch, or reusable workflow artifact when clear
 ```
 
 Durable artifacts are written to:
@@ -205,6 +226,8 @@ Durable artifacts are written to:
 | `memory/promotion-queue.md` | Promotion/improvement hints from repeated outcomes. |
 | `memory/skill-curator-report.md` | Post-workflow learned-skill review notes and patch recommendations. |
 | `runs/*.json` | Per-run workflow records. |
+| `workflows/*.yaml` | Autonomous reusable workflow artifacts promoted from repeated successful workflow outcomes. |
+| `prompts/*.md` | Pi prompt templates generated for promoted workflows. Run `/khala-reload` to expose them as slash commands. |
 | `skills/<name>/SKILL.md` | Main learned skill instructions. |
 | `skills/<name>/metadata.json` | Learned skill provenance and lifecycle metadata. |
 | `skills/<name>/{references,templates,scripts}/` | Optional learned skill support assets. |
@@ -222,6 +245,7 @@ Durable artifacts are written to:
 **Not automatic:**
 
 - no automatic edits to `README.md`, `INSTRUCTIONS.md`, or user-authored/imported skills from learning
+- no automatic hot-reload after background learning; run `/khala-reload` to refresh Pi resources
 - no model training/fine-tuning
 - no raw transcript or full tool-output storage for passive normal-chat learning
 
@@ -250,3 +274,4 @@ Expected strict behavior:
 3. Stay concise/token-efficient by default.
 4. Prefer transparent file-backed learning (`learning.jsonl`, `lessons.jsonl`, `MEMORY.md`).
 5. Enable safe self-improvement with explicit guardrails.
+6. Keep memory fresh during long or mutating tasks by requiring `khala_read_memory` before mutation and after stale-memory thresholds.

@@ -1,5 +1,5 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { RuntimeState } from "../state/runtime";
+import type { RuntimeState } from "../state/runtime.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (args: string | undefined, ctx: ExtensionCommandContext) => Promise<void>;

@@ -1,6 +1,6 @@
-import { getBlockedCommandMessage } from "./blocked-commands";
-import { buildPreflightRawLine, modeOutcome, type PolicyMode, type PolicyOutcome, type PreflightRecord } from "./first-principles";
-import { evaluateRiskPolicy, type RiskPolicyEvent, type RiskPolicyHookConfig } from "./risk";
+import { getBlockedCommandMessage } from "./blocked-commands.ts";
+import { buildPreflightRawLine, modeOutcome, type PolicyMode, type PolicyOutcome, type PreflightRecord } from "./first-principles.ts";
+import { evaluateRiskPolicy, type RiskPolicyEvent, type RiskPolicyHookConfig } from "./risk.ts";
 
 export interface SpawnPolicyResult {
   blockedMessage: string | null;

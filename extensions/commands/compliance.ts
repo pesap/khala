@@ -1,6 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { PolicyMode, PostflightRecord, PreflightRecord } from "../policy/first-principles";
-import type { RuntimeState } from "../state/runtime";
+import type { PolicyMode, PostflightRecord, PreflightRecord } from "../policy/first-principles.ts";
+import type { RuntimeState } from "../state/runtime.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (args: string | undefined, ctx: ExtensionCommandContext) => Promise<void>;
