@@ -4,8 +4,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile";
-import type { PendingWorkflow } from "../workflows/engine";
+import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
+import type { PendingWorkflow } from "../workflows/engine.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (

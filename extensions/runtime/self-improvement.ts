@@ -1,5 +1,5 @@
-import type { KhalaLearningAssessment } from "../learning/khala-learn";
-import type { LearnedSkillRecord } from "../learning/skills";
+import type { KhalaLearningAssessment } from "../learning/khala-learn.ts";
+import type { LearnedSkillRecord } from "../learning/skills.ts";
 
 export interface SelfImprovementReviewInput {
   hasMeaningfulWorkflow: boolean;

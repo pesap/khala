@@ -25,6 +25,13 @@ interface TurnObligationResult {
   reason: string;
 }
 
+const TOOL_ACTION_REQUEST_REGEX =
+  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|let'?s\s+|can you\s+|could you\s+|would you\s+)?(?:read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy|add|address|commit|push|open|ship)\b/;
+const DESTRUCTIVE_REQUEST_REGEX =
+  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|can you\s+|could you\s+|would you\s+)?(?:delete|remove|rm -rf|force push|reset --hard|rewrite history|drop table)\b/;
+const BLOCKING_CLARIFICATION_REGEX =
+  /^(?:which|what|where|when|who|how)\b|\b(?:should i|should we|do you want|would you like|can you confirm|please confirm|confirm whether|can you share|can you provide|can you choose|can you clarify|can you send|can you paste)\b/;
+
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
   if (value < 0) return 0;
@@ -109,22 +116,14 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
   const text = userText.trim().toLowerCase();
   if (!text) return { obligation: "none", reason: "no user request text" };
 
-  if (
-    /(^|\b)(delete|remove|rm -rf|force push|reset --hard|rewrite history|drop table)\b/.test(
-      text,
-    )
-  ) {
+  if (DESTRUCTIVE_REQUEST_REGEX.test(text)) {
     return {
       obligation: "approval_required",
       reason: "destructive or high-risk request",
     };
   }
 
-  if (
-    /(^|\b)(read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy)\b/.test(
-      text,
-    )
-  ) {
+  if (TOOL_ACTION_REQUEST_REGEX.test(text)) {
     return {
       obligation: "tool_required",
       reason: "user requested concrete tool-backed action",
@@ -177,7 +176,15 @@ export function isAssistantClarification(
   if (!message) return false;
   const text = extractTextFromMessageContent(message.content);
   if (!text || text.length > 1200) return false;
-  return text.includes("?");
+  const sentences = text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  const lastSentence = sentences.at(-1) ?? text.trim();
+  return (
+    lastSentence.includes("?") &&
+    BLOCKING_CLARIFICATION_REGEX.test(lastSentence.toLowerCase())
+  );
 }
 
 function isMutationToolName(name: string): boolean {

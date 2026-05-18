@@ -2,12 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import {
   buildLifecycleHookMarkdown,
   type HookConfig,
-} from "../hooks/config";
-import { appendLine, formatErrorMessage } from "../lib/io";
+} from "../hooks/config.ts";
+import { appendLine, formatErrorMessage } from "../lib/io.ts";
 import {
   resetSessionComplianceState,
   type RuntimeState,
-} from "../state/runtime";
+} from "../state/runtime.ts";
 
 export interface LowConfidenceEvent {
   at: string;

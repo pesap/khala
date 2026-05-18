@@ -1,5 +1,5 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { NotifyType } from "./engine";
+import type { NotifyType } from "./engine.ts";
 
 export function notifyWorkflowStarted(
   ctx: ExtensionCommandContext,

@@ -1,5 +1,5 @@
-import { DESTRUCTIVE_COMMAND_PATTERNS, SENSITIVE_COMMAND_PATTERNS } from "../lib/constants";
-import { summarizeEvidence } from "../lib/text";
+import { DESTRUCTIVE_COMMAND_PATTERNS, SENSITIVE_COMMAND_PATTERNS } from "../lib/constants.ts";
+import { summarizeEvidence } from "../lib/text.ts";
 
 export type RiskCategory = "destructive_operation" | "secret_or_pii_exposure_risk";
 

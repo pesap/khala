@@ -1,11 +1,11 @@
 import { promises as fs } from "node:fs";
-import { formatErrorMessage } from "../lib/io";
+import { formatErrorMessage } from "../lib/io.ts";
 import {
   listLearnedSkillRecords,
   setLearnedSkillState,
   type LearnedSkillRecord,
-} from "./skills";
-import type { LearningPaths } from "./store";
+} from "./skills.ts";
+import type { LearningPaths } from "./store.ts";
 
 const STALE_DAYS = 30;
 const RECENT_DAYS = 14;

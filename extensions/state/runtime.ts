@@ -1,5 +1,5 @@
-import type { FirstPrinciplesConfig, PolicyMode, PolicyOutcome, PostflightRecord, PreflightRecord } from "../policy/first-principles";
-import type { RiskCategory } from "../policy/risk";
+import type { FirstPrinciplesConfig, PolicyMode, PolicyOutcome, PostflightRecord, PreflightRecord } from "../policy/first-principles.ts";
+import type { RiskCategory } from "../policy/risk.ts";
 
 export interface RiskApproval {
   reason: string;

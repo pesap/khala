@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants";
-import { removeFlag } from "../lib/flags";
-import { normalizeWhitespace } from "../lib/text";
+import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
+import { removeFlag } from "../lib/flags.ts";
+import { normalizeWhitespace } from "../lib/text.ts";
 import type {
   PolicyMode,
   PostflightRecord,
   PreflightRecord,
-} from "../policy/first-principles";
+} from "../policy/first-principles.ts";
 
 export type WorkflowFlagValue = string | number | boolean | null | string[];
 export type WorkflowFlags = Record<string, WorkflowFlagValue>;

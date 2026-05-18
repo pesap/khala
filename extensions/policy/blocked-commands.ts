@@ -1,7 +1,7 @@
 import {
   BLOCKED_COMMAND_PATTERNS,
   UV_INSTALL_GUIDANCE,
-} from "../lib/constants";
+} from "../lib/constants.ts";
 
 function formatBlockedCommandMessage(
   headline: string,

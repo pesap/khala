@@ -14,10 +14,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import registerSubagentExtension from "pi-subagents/src/extension/index.ts";
-import { createAgentCommandHandlers } from "./commands/agent";
-import { createComplianceCommandHandlers } from "./commands/compliance";
-import { createCuratorCommandHandlers } from "./commands/curator";
-import { createLearnedWorkflowCommandHandlers } from "./commands/learned-workflows";
+import { createAgentCommandHandlers } from "./commands/agent.ts";
+import { createComplianceCommandHandlers } from "./commands/compliance.ts";
+import { createCuratorCommandHandlers } from "./commands/curator.ts";
+import { createLearnedWorkflowCommandHandlers } from "./commands/learned-workflows.ts";
 import {
   buildReviewTarget,
   buildSimplifyTarget,
@@ -35,9 +35,9 @@ import {
   parseTddArgs,
   parseTriageIssueArgs,
   type WorkflowFlags,
-} from "./commands/parsers";
-import { registerCommands } from "./commands/register";
-import { createWorkflowCommandHandlers } from "./commands/workflow-handlers";
+} from "./commands/parsers.ts";
+import { registerCommands } from "./commands/register.ts";
+import { createWorkflowCommandHandlers } from "./commands/workflow-handlers.ts";
 import {
   ADDRESS_OPEN_ISSUES_COMMAND_SOURCE,
   PLAN_COMMAND_SOURCE,
@@ -54,16 +54,16 @@ import {
   SIMPLIFY_COMMAND_SOURCE,
   TDD_COMMAND_SOURCE,
   TRIAGE_ISSUE_COMMAND_SOURCE,
-} from "./lib/constants";
-import { appendLine, exists, readText } from "./lib/io";
-import { normalizeWhitespace, slugify, summarizeEvidence } from "./lib/text";
-import { makeId, nowIso } from "./lib/time";
+} from "./lib/constants.ts";
+import { appendLine, exists, readText } from "./lib/io.ts";
+import { normalizeWhitespace, slugify, summarizeEvidence } from "./lib/text.ts";
+import { makeId, nowIso } from "./lib/time.ts";
 import {
   DEFAULT_HOOK_CONFIG,
   loadHooksConfig,
   type HookConfig,
-} from "./hooks/config";
-import { refreshCuratorReport } from "./learning/curator";
+} from "./hooks/config.ts";
+import { refreshCuratorReport } from "./learning/curator.ts";
 import {
   KhalaAssessLearningParams,
   KhalaLearnParams,
@@ -72,8 +72,8 @@ import {
   readRecentKhalaLearningRecords,
   type KhalaLearningAssessment,
   type KhalaLearningRecord,
-} from "./learning/khala-learn";
-import { searchKhalaMemory, type KhalaMemorySearchResult } from "./learning/search";
+} from "./learning/khala-learn.ts";
+import { searchKhalaMemory, type KhalaMemorySearchResult } from "./learning/search.ts";
 import {
   ensureLearningStore,
   getActiveLearningLessonsTail,
@@ -82,16 +82,16 @@ import {
   maybeEmitPromotionHint,
   type LearningLesson,
   type LearningPaths,
-} from "./learning/store";
+} from "./learning/store.ts";
 import {
   ensureLearnedSkillLayout,
   listLearnedSkillRecords,
   markLearnedSkillPatched,
   readLearnedSkillMetadata,
   touchLearnedSkillUsage,
-} from "./learning/skills";
-import { listLearnedWorkflows } from "./learning/workflows";
-import { validateGeneratedSkillDir } from "./learning/skill-guard";
+} from "./learning/skills.ts";
+import { listLearnedWorkflows } from "./learning/workflows.ts";
+import { validateGeneratedSkillDir } from "./learning/skill-guard.ts";
 import {
   extractPostflightFromAssistantText,
   isMutationToolCall,
@@ -99,17 +99,17 @@ import {
   parsePostflightLine,
   parsePreflightLine,
   type PreflightRecord,
-} from "./policy/first-principles";
+} from "./policy/first-principles.ts";
 import {
   evaluateMutationPreflightPolicy,
   evaluateSpawnPolicy,
-} from "./policy/pipeline";
+} from "./policy/pipeline.ts";
 import {
   createRuntimeState,
   hasValidRiskApproval,
   setAgentEnabled,
   type PolicyEvent,
-} from "./state/runtime";
+} from "./state/runtime.ts";
 import {
   appendAgentStateEntry,
   appendComplianceModeEntry,
@@ -121,14 +121,14 @@ import {
   getComplianceModeFromSession,
   getPreflightFromSession,
   getRiskApprovalFromSession,
-} from "./state/session";
+} from "./state/session.ts";
 import {
   beginWorkflowTracking as beginTrackedWorkflow,
   completeWorkflowTracking as completeTrackedWorkflow,
   enqueueWorkflow as enqueueWorkflowMessage,
   ensureWorkflowSlotAvailable as ensureWorkflowSlotAvailableForCommand,
-} from "./workflows/engine";
-import { notifyWorkflowStarted } from "./workflows/notifications";
+} from "./workflows/engine.ts";
+import { notifyWorkflowStarted } from "./workflows/notifications.ts";
 import {
   extractLastAssistantText,
   assistantMessageHasToolCall,
@@ -140,7 +140,7 @@ import {
   inferTurnObligation,
   isAssistantClarification,
   isEmptyTerminalAssistantResponse,
-} from "./runtime/assistant";
+} from "./runtime/assistant.ts";
 import {
   appendBackgroundReviewLearningSection,
   buildAutonomousSkillName,
@@ -150,22 +150,22 @@ import {
   formatSkillPromotionQueueLine,
   formatSkillReviewQueueLine,
   shouldRunSelfImprovementReview,
-} from "./runtime/self-improvement";
+} from "./runtime/self-improvement.ts";
 import {
   createWorkflowReaders,
   getBootstrapPayload,
   loadFirstPrinciplesConfig,
-} from "./runtime/bootstrap";
+} from "./runtime/bootstrap.ts";
 import {
   getToolInterceptionCounters,
   isMemoryPersistenceToolName,
   requiresFreshMemoryToolCall,
-} from "./runtime/tool-interception";
+} from "./runtime/tool-interception.ts";
 import {
   runSessionEndHooks,
   type LowConfidenceEvent,
-} from "./runtime/lifecycle";
-import { RUNTIME_PATHS } from "./runtime/paths";
+} from "./runtime/lifecycle.ts";
+import { RUNTIME_PATHS } from "./runtime/paths.ts";
 import {
   cloneRuntimeProfile,
   DEFAULT_RUNTIME_PROFILE,
@@ -174,8 +174,8 @@ import {
   validateRuntimeProfile,
   type RuntimeProfile,
   type WorkflowType,
-} from "./runtime/profile";
-import { notify, setKhalaStatus } from "./runtime/ui";
+} from "./runtime/profile.ts";
+import { notify, setKhalaStatus } from "./runtime/ui.ts";
 type PreflightClarify = PreflightRecord["clarify"];
 type PreflightSource = PreflightRecord["source"];
 
@@ -1538,9 +1538,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       }) as unknown as Record<string, unknown>);
 
   loosePi.registerTool(bashTool);
-  loosePi.on("user_bash", () => ({
-    operations: createInterceptedUserBashOperations(),
-  }));
+  loosePi.on("user_bash", () => {
+    if (!runtimeState.agentEnabled) return;
+    return { operations: createInterceptedUserBashOperations() };
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     const [hookConfig, profileLoad] = await Promise.all([

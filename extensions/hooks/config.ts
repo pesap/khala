@@ -1,6 +1,6 @@
 import { load as loadYaml } from "js-yaml";
 import path from "node:path";
-import { isRecord, readTextIfExists } from "../lib/io";
+import { isRecord, readTextIfExists } from "../lib/io.ts";
 
 export type HookLifecycle = "on_session_start" | "pre_risky_action" | "on_session_end";
 export type HookType = "markdown" | "policy";

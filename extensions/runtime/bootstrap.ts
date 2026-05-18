@@ -1,16 +1,16 @@
 import path from "node:path";
-import { buildLifecycleHookMarkdown, type HookConfig } from "../hooks/config";
-import { readText, readTextIfExists } from "../lib/io";
+import { buildLifecycleHookMarkdown, type HookConfig } from "../hooks/config.ts";
+import { readText, readTextIfExists } from "../lib/io.ts";
 import {
   getActiveLearningLessonsTail,
   getLearnedSkillsList,
   getLearningMemoryTail,
   type LearningPaths,
-} from "../learning/store";
+} from "../learning/store.ts";
 import {
   parseFirstPrinciplesConfig,
   type FirstPrinciplesConfig,
-} from "../policy/first-principles";
+} from "../policy/first-principles.ts";
 
 export async function loadFirstPrinciplesConfig(
   firstPrinciplesConfigPath: string,

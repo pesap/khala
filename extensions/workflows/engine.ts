@@ -6,13 +6,13 @@ import type {
 import { load as loadYaml } from "js-yaml";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { isRecord } from "../lib/io";
-import type { LearningObservation, WorkflowFlags } from "../learning/store";
+import { isRecord } from "../lib/io.ts";
+import type { LearningObservation, WorkflowFlags } from "../learning/store.ts";
 import type {
   PostflightRecord,
   PreflightRecord,
-} from "../policy/first-principles";
-import type { RuntimeState } from "../state/runtime";
+} from "../policy/first-principles.ts";
+import type { RuntimeState } from "../state/runtime.ts";
 
 export type NotifyType = "info" | "error" | "warning" | "success";
 

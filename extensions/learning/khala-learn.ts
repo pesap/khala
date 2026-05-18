@@ -1,7 +1,7 @@
 import { Type } from "typebox";
-import type { LearningLesson, LearningPaths } from "./store";
-import { appendLine, readTextIfExists } from "../lib/io";
-import { normalizeWhitespace, summarizeEvidence } from "../lib/text";
+import type { LearningLesson, LearningPaths } from "./store.ts";
+import { appendLine, readTextIfExists } from "../lib/io.ts";
+import { normalizeWhitespace, summarizeEvidence } from "../lib/text.ts";
 
 export const KhalaAssessLearningParams = Type.Object({
   taskSummary: Type.String({ description: "Short summary of the user task or prompt" }),

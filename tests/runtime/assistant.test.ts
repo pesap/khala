@@ -79,11 +79,27 @@ test("infers tool obligation for concrete inspection requests", () => {
     "tool_required",
   );
   assert.equal(inferTurnObligation("do it").obligation, "tool_required");
+  assert.equal(
+    inferTurnObligation("Please address the Copilot comments").obligation,
+    "tool_required",
+  );
 });
 
 test("allows normal explanation questions without tools", () => {
   assert.equal(
     inferTurnObligation("Is there a way I can avoid this?").obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("I read that already and want your opinion").obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("Have you seen this find?").obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("this is a great review").obligation,
     "answer_allowed",
   );
 });
@@ -95,6 +111,12 @@ test("detects assistant tool-call and clarification output shapes", () => {
       textMessage("assistant", "Which file should I inspect?"),
     ),
     true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage("assistant", "Here is the answer. Does that match what you expected?"),
+    ),
+    false,
   );
   assert.equal(
     isAssistantClarification(

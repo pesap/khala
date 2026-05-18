@@ -5,8 +5,8 @@ import type {
 import {
   listLearnedWorkflows,
   readLearnedWorkflow,
-} from "../learning/workflows";
-import type { LearningPaths } from "../learning/store";
+} from "../learning/workflows.ts";
+import type { LearningPaths } from "../learning/store.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (
