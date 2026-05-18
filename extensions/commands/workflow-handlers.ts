@@ -110,6 +110,14 @@ export function createWorkflowCommandHandlers(params: {
   exists: (filePath: string) => Promise<boolean>;
   readText: (filePath: string) => Promise<string>;
   buildSkillTemplate: (skillName: string, topic: string) => string;
+  chooseAvailableSkillName: (params: {
+    topic: string;
+    fromFile?: string;
+    fromUrl?: string;
+    reservedNames: ReadonlySet<string>;
+    slugify: (value: string) => string;
+  }) => string;
+  packageSkillsPath: string;
   buildSimplifyTarget: (
     parsed: Exclude<ReviewArgsResult, { error: string }>,
   ) => ScopedTarget;
@@ -164,6 +172,8 @@ export function createWorkflowCommandHandlers(params: {
     exists,
     readText,
     buildSkillTemplate,
+    chooseAvailableSkillName,
+    packageSkillsPath,
     buildSimplifyTarget,
     constants,
   } = params;
@@ -611,7 +621,24 @@ export function createWorkflowCommandHandlers(params: {
 
       const skillHint =
         parsed.topic || parsed.fromFile || parsed.fromUrl || "new-skill";
-      const skillName = slugify(skillHint);
+      const reservedNames = new Set<string>();
+      for (const root of [paths.skillsDir, packageSkillsPath]) {
+        try {
+          const entries = await fs.readdir(root, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory()) reservedNames.add(entry.name);
+          }
+        } catch {
+          // best effort only
+        }
+      }
+      const skillName = chooseAvailableSkillName({
+        topic: parsed.topic,
+        fromFile: parsed.fromFile,
+        fromUrl: parsed.fromUrl,
+        reservedNames,
+        slugify,
+      });
       const skillFile = path.join(paths.skillsDir, skillName, "SKILL.md");
 
       if (!parsed.dryRun) {

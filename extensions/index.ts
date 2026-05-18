@@ -22,6 +22,7 @@ import {
   buildReviewTarget,
   buildSimplifyTarget,
   buildSkillTemplate,
+  chooseAvailableSkillName,
   parseAddressOpenIssuesArgs,
   parseApproveRiskArgs,
   parseComplianceArgs,
@@ -140,6 +141,7 @@ import {
   inferTurnObligation,
   isAssistantClarification,
   isEmptyTerminalAssistantResponse,
+  shouldBlockUnsatisfiedTurnObligation,
 } from "./runtime/assistant.ts";
 import {
   appendBackgroundReviewLearningSection,
@@ -1808,7 +1810,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ].join("\n");
 
       if (
-        runtimeState.firstPrinciplesConfig.responseComplianceMode === "enforce"
+        shouldBlockUnsatisfiedTurnObligation({
+          mode: runtimeState.firstPrinciplesConfig.responseComplianceMode,
+          obligation: obligation.obligation,
+        })
       ) {
         return { block: true, reason };
       }
@@ -1983,6 +1988,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     exists,
     readText,
     buildSkillTemplate,
+    chooseAvailableSkillName,
+    packageSkillsPath: RUNTIME_PATHS.packageSkillsPath,
     buildSimplifyTarget,
     constants: {
       POSTFLIGHT_INSTRUCTION,

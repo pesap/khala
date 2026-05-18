@@ -76,7 +76,12 @@ export function buildAutonomousSkillName(params: {
   slugify: (value: string) => string;
 }): string {
   const source = params.trigger.trim() || params.fallback.trim() || "learned-action";
-  return params.slugify(source).slice(0, 80) || "learned-action";
+  const slug = params.slugify(source).slice(0, 74) || "learned-action";
+  return slug.startsWith("khala-") ? slug : `khala-${slug}`;
+}
+
+function toYamlQuotedScalar(value: string): string {
+  return JSON.stringify(value);
 }
 
 export function buildAutonomousSkillText(params: {
@@ -88,8 +93,8 @@ export function buildAutonomousSkillText(params: {
 }): string {
   return [
     "---",
-    `name: ${params.skillName}`,
-    `description: Background-learned procedure for ${params.trigger}`,
+    `name: ${toYamlQuotedScalar(params.skillName)}`,
+    `description: ${toYamlQuotedScalar(`Background-learned procedure for ${params.trigger}`)}`,
     "---",
     "",
     "## Use when",
