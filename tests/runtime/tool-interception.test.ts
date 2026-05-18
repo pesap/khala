@@ -66,6 +66,8 @@ test("bash mutation detection does not treat read-only git merge-base as merge",
     false,
   );
   assert.equal(isMutationCapableBash("git merge feature-branch"), true);
+  assert.equal(isMutationCapableBash("git merge;git status"), true);
+  assert.equal(isMutationCapableBash("git commit&& echo ok"), true);
   assert.equal(isMutationCapableBash("git checkout feature-branch"), true);
 });
 

@@ -141,6 +141,7 @@ import {
   isActionOrApprovalObligation,
   isAssistantClarification,
   isEmptyTerminalAssistantResponse,
+  shouldBlockUnsatisfiedTurnObligation,
 } from "./runtime/assistant.ts";
 import {
   appendBackgroundReviewLearningSection,
@@ -1809,7 +1810,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ].join("\n");
 
       if (
-        runtimeState.firstPrinciplesConfig.responseComplianceMode === "enforce"
+        shouldBlockUnsatisfiedTurnObligation({
+          mode: runtimeState.firstPrinciplesConfig.responseComplianceMode,
+          obligation: obligation.obligation,
+        })
       ) {
         return { block: true, reason };
       }

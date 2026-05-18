@@ -71,6 +71,19 @@ test("clears recovery requirement once a blocked khala_learn is retried", () => 
   assert.equal(findPendingMemoryGateRecovery(messages), null);
 });
 
+test("does not clear recovery when a different retry-capable tool runs", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("write"),
+    memoryReadRequired("write"),
+    assistantToolCall("khala_read_memory"),
+    assistantToolCall("khala_learn"),
+  ];
+
+  assert.deepEqual(findPendingMemoryGateRecovery(messages), {
+    blockedToolName: "write",
+  });
+});
+
 test("ignores memory-read-required when no memory read happened yet", () => {
   const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
     memoryReadRequired("edit"),
@@ -177,6 +190,12 @@ test("detects assistant tool-call and clarification output shapes", () => {
   assert.equal(
     isAssistantClarification(
       textMessage("assistant", "Which file should I inspect?"),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage("assistant", "Can I proceed with deleting the generated files?"),
     ),
     true,
   );
