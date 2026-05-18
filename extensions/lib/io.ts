@@ -41,6 +41,29 @@ export async function readTextIfExists(filePath: string): Promise<string> {
   }
 }
 
+export async function readTextTailIfExists(
+  filePath: string,
+  maxBytes: number,
+): Promise<string> {
+  const stats = await statIfExists(filePath);
+  if (!stats?.isFile()) return "";
+
+  const byteLimit = Math.max(1, Math.floor(maxBytes));
+  if (stats.size <= byteLimit) return readText(filePath);
+
+  const start = stats.size - byteLimit;
+  const handle = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(byteLimit);
+    const { bytesRead } = await handle.read(buffer, 0, byteLimit, start);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    const firstNewline = text.indexOf("\n");
+    return firstNewline >= 0 ? text.slice(firstNewline + 1) : text;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function exists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);

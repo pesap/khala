@@ -12,6 +12,7 @@ import {
   isRecord,
   isRecoverableLearningStoreError,
   readTextIfExists,
+  readTextTailIfExists,
   statIfExists,
 } from "../lib/io.ts";
 import {
@@ -81,6 +82,9 @@ export interface LearningObservation<
 interface LearningState {
   hints: Record<string, LearningHint>;
 }
+
+const MEMORY_TAIL_READ_BYTES = 64_000;
+const LESSONS_TAIL_READ_BYTES = 256_000;
 
 function isStringArray(value: unknown): value is string[] {
   return (
@@ -223,19 +227,23 @@ async function resolveLearningPaths(
 }
 
 async function initializeLearningStore(paths: LearningPaths): Promise<void> {
-  await fs.mkdir(paths.memoryDir, { recursive: true });
-  await fs.mkdir(paths.runsDir, { recursive: true });
-  await fs.mkdir(paths.workflowsDir, { recursive: true });
-  await fs.mkdir(paths.promptsDir, { recursive: true });
-  await fs.mkdir(paths.skillsDir, { recursive: true });
-  await fs.mkdir(paths.archivedSkillsDir, { recursive: true });
-  await ensureFile(paths.learningJsonl, "");
-  await ensureFile(paths.lessonsJsonl, "");
-  await ensureFile(paths.khalaLearningJsonl, "");
-  await ensureFile(paths.memoryMd, "# MEMORY\n");
-  await ensureFile(paths.promotionQueue, "# Promotion Queue\n");
-  await ensureFile(paths.curatorReport, "# Skill Curator Report\n");
-  await ensureFile(paths.stateJson, JSON.stringify({ hints: {} }, null, 2));
+  await Promise.all([
+    fs.mkdir(paths.memoryDir, { recursive: true }),
+    fs.mkdir(paths.runsDir, { recursive: true }),
+    fs.mkdir(paths.workflowsDir, { recursive: true }),
+    fs.mkdir(paths.promptsDir, { recursive: true }),
+    fs.mkdir(paths.skillsDir, { recursive: true }),
+    fs.mkdir(paths.archivedSkillsDir, { recursive: true }),
+  ]);
+  await Promise.all([
+    ensureFile(paths.learningJsonl, ""),
+    ensureFile(paths.lessonsJsonl, ""),
+    ensureFile(paths.khalaLearningJsonl, ""),
+    ensureFile(paths.memoryMd, "# MEMORY\n"),
+    ensureFile(paths.promotionQueue, "# Promotion Queue\n"),
+    ensureFile(paths.curatorReport, "# Skill Curator Report\n"),
+    ensureFile(paths.stateJson, JSON.stringify({ hints: {} }, null, 2)),
+  ]);
 }
 
 export async function ensureLearningStore(
@@ -265,7 +273,7 @@ export async function getLearningMemoryTail(
   tailLines: number,
 ): Promise<string> {
   const paths = await ensureLearningStore(cwd, cache);
-  const memory = await readTextIfExists(paths.memoryMd);
+  const memory = await readTextTailIfExists(paths.memoryMd, MEMORY_TAIL_READ_BYTES);
   if (!memory.trim()) return "";
 
   const lines = memory
@@ -364,7 +372,7 @@ export async function getActiveLearningLessonsTail(
   tailLines: number,
 ): Promise<string> {
   const paths = await ensureLearningStore(cwd, cache);
-  const raw = await readTextIfExists(paths.lessonsJsonl);
+  const raw = await readTextTailIfExists(paths.lessonsJsonl, LESSONS_TAIL_READ_BYTES);
   if (!raw.trim()) return "";
 
   return parseLearningLessonsJsonl(raw)

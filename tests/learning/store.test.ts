@@ -1,9 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
+  ensureLearningStore,
+  getActiveLearningLessonsTail,
+  getLearningMemoryTail,
   maybeEmitPromotionHint,
   type LearningObservation,
 } from "../../extensions/learning/store.ts";
@@ -73,4 +77,87 @@ test("promotion hint creates reusable workflow artifact for repeated successes",
   );
   assert.match(prompt, /\$ARGUMENTS/);
   assert.equal(notifications.length, 1);
+});
+
+test("memory tail reads recent entries from large memory files", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "khala-memory-tail-"));
+  await fs.mkdir(path.join(cwd, ".pi"));
+  const paths = await ensureLearningStore(cwd, new Map());
+  await fs.writeFile(
+    paths.memoryMd,
+    [
+      "# MEMORY",
+      ...Array.from(
+        { length: 6_000 },
+        (_, index) => `- 2026-05-18 old memory line ${index}`,
+      ),
+      "- 2026-05-18 recent alpha",
+      "- 2026-05-18 recent beta",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const tail = await getLearningMemoryTail(cwd, new Map(), 2);
+
+  assert.equal(
+    tail,
+    "- 2026-05-18 recent alpha\n- 2026-05-18 recent beta",
+  );
+});
+
+test("active lessons tail reads recent records from large lessons files", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "khala-lessons-tail-"));
+  await fs.mkdir(path.join(cwd, ".pi"));
+  const paths = await ensureLearningStore(cwd, new Map());
+  await fs.writeFile(
+    paths.lessonsJsonl,
+    [
+      ...Array.from({ length: 4_000 }, (_, index) =>
+        JSON.stringify({
+          version: 1,
+          id: `old-${index}`,
+          timestamp: "2026-05-18T00:00:00.000Z",
+          scope: "repo",
+          type: "project_fact",
+          trigger: `old trigger ${index}`,
+          lesson: `old lesson ${index}`,
+          evidenceSnippet: "old",
+          confidence: 0.8,
+          status: "active",
+        }),
+      ),
+      JSON.stringify({
+        version: 1,
+        id: "recent-one",
+        timestamp: "2026-05-18T00:00:00.000Z",
+        scope: "repo",
+        type: "tool_rule",
+        trigger: "recent trigger one",
+        lesson: "recent lesson one",
+        evidenceSnippet: "recent",
+        confidence: 0.9,
+        status: "active",
+      }),
+      JSON.stringify({
+        version: 1,
+        id: "recent-two",
+        timestamp: "2026-05-18T00:00:00.000Z",
+        scope: "repo",
+        type: "tool_rule",
+        trigger: "recent trigger two",
+        lesson: "recent lesson two",
+        evidenceSnippet: "recent",
+        confidence: 0.9,
+        status: "active",
+      }),
+    ].join("\n"),
+    "utf8",
+  );
+
+  const lessons = await getActiveLearningLessonsTail(cwd, new Map(), 2);
+
+  assert.equal(
+    lessons,
+    "- When recent trigger one: recent lesson one\n- When recent trigger two: recent lesson two",
+  );
 });
