@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { findPendingMemoryGateRecovery } from "../../extensions/runtime/assistant.ts";
+import {
+  assistantMessageHasToolCall,
+  findPendingMemoryGateRecovery,
+  inferTurnObligation,
+  isAssistantClarification,
+} from "../../extensions/runtime/assistant.ts";
 
 type Message = Parameters<typeof findPendingMemoryGateRecovery>[0][number];
 
@@ -58,4 +63,26 @@ test("ignores memory-read-required when no memory read happened yet", () => {
   ];
 
   assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
+test("infers tool obligation for concrete inspection requests", () => {
+  assert.equal(
+    inferTurnObligation("Load your librarian skill and inspect the Torc repo").obligation,
+    "tool_required",
+  );
+  assert.equal(
+    inferTurnObligation("Can you analyze the pi-session at /tmp/session.jsonl?").obligation,
+    "tool_required",
+  );
+  assert.equal(inferTurnObligation("do it").obligation, "tool_required");
+});
+
+test("allows normal explanation questions without tools", () => {
+  assert.equal(inferTurnObligation("Is there a way I can avoid this?").obligation, "answer_allowed");
+});
+
+test("detects assistant tool-call and clarification output shapes", () => {
+  assert.equal(assistantMessageHasToolCall(assistantToolCall("read")), true);
+  assert.equal(isAssistantClarification(textMessage("assistant", "Which file should I inspect?")), true);
+  assert.equal(isAssistantClarification(textMessage("assistant", "I will inspect that next.")), false);
 });

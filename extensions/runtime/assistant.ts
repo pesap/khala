@@ -13,6 +13,13 @@ interface PendingMemoryGateRecovery {
   blockedToolName: string;
 }
 
+export type TurnObligation = "none" | "answer_allowed" | "tool_required" | "clarify_required" | "approval_required";
+
+interface TurnObligationResult {
+  obligation: TurnObligation;
+  reason: string;
+}
+
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
   if (value < 0) return 0;
@@ -79,6 +86,44 @@ export function isEmptyTerminalAssistantResponse(
     if (item.type === "text") return item.text.trim().length > 0;
     return false;
   });
+}
+
+export function assistantMessageHasToolCall(message: AgentEndEventMessage | null): boolean {
+  return Boolean(message?.content.some((item) => item.type === "toolCall"));
+}
+
+export function inferTurnObligation(userText: string): TurnObligationResult {
+  const text = userText.trim().toLowerCase();
+  if (!text) return { obligation: "none", reason: "no user request text" };
+
+  if (/(^|\b)(delete|remove|rm -rf|force push|reset --hard|rewrite history|drop table)\b/.test(text)) {
+    return { obligation: "approval_required", reason: "destructive or high-risk request" };
+  }
+
+  if (/(^|\b)(read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy)\b/.test(text)) {
+    return { obligation: "tool_required", reason: "user requested concrete tool-backed action" };
+  }
+
+  if (/\b(do it|run it|try it|make it|apply it|ship it|continue|proceed)\b/.test(text)) {
+    return { obligation: "tool_required", reason: "user confirmed a prior action request" };
+  }
+
+  if (/\b(where (did|do)|source|citation|from source|from docs|is this true|confirm from|verify from)\b/.test(text)) {
+    return { obligation: "tool_required", reason: "user requested evidence from source material" };
+  }
+
+  if (/\b(can you|could you|please)\b/.test(text) && /(?:\b(file|path|repo|session|log|diff|branch|pr|issue|skill|docs?)\b|\/|\.[a-z0-9]{1,8}\b)/.test(text)) {
+    return { obligation: "tool_required", reason: "user referenced an artifact that should be inspected" };
+  }
+
+  return { obligation: "answer_allowed", reason: "request can be answered without tools" };
+}
+
+export function isAssistantClarification(message: AgentEndEventMessage | null): boolean {
+  if (!message) return false;
+  const text = extractTextFromMessageContent(message.content);
+  if (!text || text.length > 1200) return false;
+  return text.includes("?");
 }
 
 function isMutationToolName(name: string): boolean {

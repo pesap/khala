@@ -4,7 +4,7 @@ import type {
   ExtensionContext,
   ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { createBashTool } from "@earendil-works/pi-coding-agent";
+import { createBashTool, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import registerFffExtension from "@ff-labs/pi-fff/src/index.ts";
@@ -124,11 +124,14 @@ import {
 import { notifyWorkflowStarted } from "./workflows/notifications";
 import {
   extractLastAssistantText,
+  assistantMessageHasToolCall,
   extractLastUserText,
   findPendingMemoryGateRecovery,
   getLastAssistantMessage,
   hasRequiredWorkflowFooter,
   inferOutcomeFromText,
+  inferTurnObligation,
+  isAssistantClarification,
   isEmptyTerminalAssistantResponse,
   type WorkflowOutcome,
 } from "./runtime/assistant";
@@ -212,6 +215,26 @@ function withInterceptedPathEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     ...baseEnv,
     PATH: mergedPath,
     Path: mergedPath,
+  };
+}
+
+function createInterceptedUserBashOperations() {
+  const local = createLocalBashOperations();
+  return {
+    exec: (
+      command: string,
+      cwd: string,
+      options: {
+        onData: (data: Buffer) => void;
+        signal?: AbortSignal;
+        timeout?: number;
+        env?: NodeJS.ProcessEnv;
+      },
+    ) =>
+      local.exec(command, cwd, {
+        ...options,
+        env: withInterceptedPathEnv(options.env ?? process.env),
+      }),
   };
 }
 
@@ -1194,6 +1217,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       }) as unknown as Record<string, unknown>);
 
   loosePi.registerTool(bashTool);
+  loosePi.on("user_bash", () => ({ operations: createInterceptedUserBashOperations() }));
+
   pi.on("session_start", async (_event, ctx) => {
     const [hookConfig, profileLoad] = await Promise.all([
       loadHooksConfig(RUNTIME_PATHS.hooksConfigPath, DEFAULT_HOOK_CONFIG),
@@ -1418,6 +1443,29 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           "Do not switch to explanation, next-turn promises, or ask the user to continue.",
         ].join("\n"),
       };
+    }
+
+    const obligation = inferTurnObligation(userText);
+    if (
+      runtimeState.agentEnabled &&
+      lastAssistantMessage?.stopReason === "stop" &&
+      obligation.obligation === "tool_required" &&
+      !assistantMessageHasToolCall(lastAssistantMessage) &&
+      !isAssistantClarification(lastAssistantMessage)
+    ) {
+      const reason = [
+        "TURN OBLIGATION NOT SATISFIED",
+        "",
+        `The latest user request requires tool-backed work (${obligation.reason}).`,
+        "Retry this turn with at least one relevant tool call, or ask one blocking clarification question if no safe tool action exists.",
+        "Do not acknowledge or promise future work without a tool call.",
+      ].join("\n");
+
+      if (runtimeState.firstPrinciplesConfig.responseComplianceMode === "enforce") {
+        return { block: true, reason };
+      }
+
+      notify(ctx, reason, "warning");
     }
 
     if (workflow && !hasWorkflowFooter) {
