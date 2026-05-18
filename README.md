@@ -90,6 +90,14 @@ flowchart LR
 | `/workflow-list` | List khala learned workflows promoted from repeated outcomes. |
 | `/workflow-show <name>` | Show a learned workflow artifact and its generated prompt template. |
 | `/workflow-run <name> [input]` | Run a learned workflow by sending it to the agent with optional input. |
+| `/rule-list [--all]` | List active khala runtime rules. |
+| `/rule-show <id>` | Show a runtime rule and its structured metadata. |
+| `/rule-promote <candidate-id> [--enforce\|--warn\|--advisory]` | Promote a candidate rule to active. |
+| `/rule-session <trigger> => <instruction>` | Add a per-session runtime rule that expires on session shutdown. |
+| `/rule-replace <id> key=value [...]` | Append a replacement record for a runtime rule. |
+| `/rule-disable <id> <reason>` | Disable a runtime rule. |
+| `/rule-audit [--limit N]` | Show recent rule promotion, disable, reload, hit, warn, and block events. |
+| `/rule-reload` | Parse user edits from `rules/RULES.md` and append valid replacements. |
 
 ### Workflow commands
 
@@ -134,6 +142,7 @@ When khala is enabled (`/khala` or any khala workflow command):
   <li>Direct Python package/runtime commands are steered to <code>uv</code>.</li>
   <li>Workflow commands create auto-preflight records.</li>
   <li>Mutation workflows are checked for postflight evidence.</li>
+  <li>Selected active runtime rules are injected as <code>[ACTIVE RUNTIME RULES]</code> before agent start.</li>
   <li>Final workflow responses are checked for <code>Result: success|partial|failed</code> and <code>Confidence: &lt;0..1&gt;</code> when response compliance is enabled.</li>
 </ul>
 
@@ -190,8 +199,8 @@ Khala also registers model-facing tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `khala_read_memory` | Read recent memory tail, active lessons, and recent structured learnings. |
-| `khala_search_memory` | Search older memory, learned skills, prompt templates, and workflow artifacts by relevance. |
+| `khala_read_memory` | Read recent memory tail, active lessons, active runtime rules, and recent structured learnings. |
+| `khala_search_memory` | Search older memory, runtime rules, learned skills, prompt templates, and workflow artifacts by relevance. |
 | `khala_assess_learning` | Score whether a task produced a durable, non-sensitive lesson. |
 | `khala_learn` | Persist a structured learning record. |
 
@@ -228,6 +237,11 @@ Durable artifacts are written to:
 | `memory/MEMORY.md` | Concise chronological learnings. |
 | `memory/promotion-queue.md` | Promotion/improvement hints from repeated outcomes. |
 | `memory/skill-curator-report.md` | Post-workflow learned-skill review notes and patch recommendations. |
+| `rules/active.jsonl` | Durable active runtime rules with replacement records. |
+| `rules/session.jsonl` | Per-session active runtime rules, cleared on session shutdown. |
+| `rules/candidates.jsonl` | Proposed rules that are not yet active. |
+| `rules/audit.jsonl` | Runtime rule hit/warn/block/reload audit events. |
+| `rules/RULES.md` | User-editable rendered active-rule view. |
 | `runs/*.json` | Per-run workflow records. |
 | `workflows/*.yaml` | Autonomous reusable workflow artifacts promoted from repeated successful workflow outcomes. |
 | `prompts/*.md` | Pi prompt templates generated for promoted workflows. Run `/khala-reload` to expose them as slash commands. |
@@ -244,6 +258,7 @@ Durable artifacts are written to:
 - preflight before mutation tools (`edit`, `write`, mutating `bash`)
 - postflight evidence after mutation
 - workflow response footer lines: `Result: ...` and `Confidence: 0..1`
+- runtime checks for promise-only tool work, incomplete memory-gate recovery, and approval-required destructive requests
 
 **Not automatic:**
 

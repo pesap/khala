@@ -3,20 +3,27 @@ import path from "node:path";
 import { isMissingPathError, readTextIfExists } from "../lib/io.ts";
 import type { LearningPaths } from "./store.ts";
 
-export interface KhalaMemorySearchResult {
+export type KhalaCorpusKind =
+  | "memory"
+  | "lesson"
+  | "learning"
+  | "curator"
+  | "rule"
+  | "rule_candidate"
+  | "rule_audit"
+  | "skill"
+  | "workflow"
+  | "prompt";
+
+export interface KhalaCorpusSearchResult {
   path: string;
-  kind:
-    | "memory"
-    | "lesson"
-    | "learning"
-    | "curator"
-    | "skill"
-    | "workflow"
-    | "prompt";
+  kind: KhalaCorpusKind;
   score: number;
   title: string;
   snippet: string;
 }
+
+export type KhalaMemorySearchResult = KhalaCorpusSearchResult;
 
 const SEARCH_FILE_LIMIT = 500;
 const MAX_FILE_BYTES = 250_000;
@@ -32,12 +39,15 @@ function tokenize(value: string): string[] {
   );
 }
 
-function classifyMemoryPath(filePath: string, paths: LearningPaths): KhalaMemorySearchResult["kind"] {
+function classifyCorpusPath(filePath: string, paths: LearningPaths): KhalaCorpusKind {
   const normalized = filePath.replaceAll("\\", "/");
   if (filePath === paths.memoryMd) return "memory";
   if (filePath === paths.lessonsJsonl) return "lesson";
   if (filePath === paths.khalaLearningJsonl) return "learning";
   if (filePath === paths.curatorReport) return "curator";
+  if (filePath === paths.rulesActiveJsonl || filePath === paths.rulesSessionJsonl || filePath === paths.rulesMd) return "rule";
+  if (filePath === paths.rulesCandidatesJsonl) return "rule_candidate";
+  if (filePath === paths.rulesAuditJsonl) return "rule_audit";
   if (normalized.includes("/skills/")) return "skill";
   if (normalized.includes("/workflows/")) return "workflow";
   if (normalized.includes("/prompts/")) return "prompt";
@@ -119,7 +129,7 @@ function scoreMemoryText(params: {
   terms: string[];
   filePath: string;
   text: string;
-  kind: KhalaMemorySearchResult["kind"];
+  kind: KhalaCorpusKind;
 }): number {
   const lowerText = params.text.toLowerCase();
   const lowerPath = params.filePath.toLowerCase();
@@ -142,19 +152,24 @@ function scoreMemoryText(params: {
   if (params.kind === "skill") score += 1.5;
   if (params.kind === "workflow" || params.kind === "prompt") score += 1.25;
   if (params.kind === "lesson" || params.kind === "learning") score += 1;
+  if (params.kind === "rule" || params.kind === "rule_candidate") score += 2;
   return score;
 }
 
-export async function searchKhalaMemory(params: {
+export async function searchKhalaCorpus(params: {
   paths: LearningPaths;
   query: string;
   limit: number;
   snippetLength: number;
-}): Promise<KhalaMemorySearchResult[]> {
+  includeKinds?: KhalaCorpusKind[];
+}): Promise<KhalaCorpusSearchResult[]> {
   const query = params.query.trim();
   if (!query) return [];
   const terms = tokenize(query);
   if (terms.length === 0) return [];
+  const includeKinds = params.includeKinds
+    ? new Set<KhalaCorpusKind>(params.includeKinds)
+    : null;
 
   const fixedFiles = [
     params.paths.memoryMd,
@@ -162,18 +177,25 @@ export async function searchKhalaMemory(params: {
     params.paths.khalaLearningJsonl,
     params.paths.curatorReport,
     params.paths.promotionQueue,
+    params.paths.rulesActiveJsonl,
+    params.paths.rulesSessionJsonl,
+    params.paths.rulesCandidatesJsonl,
+    params.paths.rulesAuditJsonl,
+    params.paths.rulesMd,
   ];
   const files = await collectCandidateFiles(fixedFiles, [
     params.paths.skillsDir,
     params.paths.workflowsDir,
     params.paths.promptsDir,
+    params.paths.rulesDir,
   ]);
 
-  const results: KhalaMemorySearchResult[] = [];
+  const results: KhalaCorpusSearchResult[] = [];
   for (const file of files) {
     const text = await readSearchableFile(file);
     if (!text.trim()) continue;
-    const kind = classifyMemoryPath(file, params.paths);
+    const kind = classifyCorpusPath(file, params.paths);
+    if (includeKinds && !includeKinds.has(kind)) continue;
     const score = scoreMemoryText({
       query,
       terms,
@@ -194,4 +216,13 @@ export async function searchKhalaMemory(params: {
   return results
     .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
     .slice(0, params.limit);
+}
+
+export async function searchKhalaMemory(params: {
+  paths: LearningPaths;
+  query: string;
+  limit: number;
+  snippetLength: number;
+}): Promise<KhalaMemorySearchResult[]> {
+  return searchKhalaCorpus(params);
 }

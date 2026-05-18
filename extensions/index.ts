@@ -18,6 +18,7 @@ import { createAgentCommandHandlers } from "./commands/agent.ts";
 import { createComplianceCommandHandlers } from "./commands/compliance.ts";
 import { createCuratorCommandHandlers } from "./commands/curator.ts";
 import { createLearnedWorkflowCommandHandlers } from "./commands/learned-workflows.ts";
+import { createRuleCommandHandlers } from "./commands/rules.ts";
 import {
   buildReviewTarget,
   buildSimplifyTarget,
@@ -75,6 +76,10 @@ import {
   type KhalaLearningRecord,
 } from "./learning/khala-learn.ts";
 import { searchKhalaMemory, type KhalaMemorySearchResult } from "./learning/search.ts";
+import {
+  clearSessionRules,
+  readEffectiveRuntimeRules,
+} from "./learning/rules.ts";
 import {
   ensureLearningStore,
   getActiveLearningLessonsTail,
@@ -196,6 +201,7 @@ let lowConfidenceEvents: LowConfidenceEvent[] = [];
 let bundledExtensionsInitialized = false;
 const runtimeState = createRuntimeState();
 let taskToolCallCount = 0;
+let latestUserInput = "";
 let learnedSkillCompletionCache: string[] = [];
 let learnedWorkflowCompletionCache: string[] = [];
 let memoryGate = {
@@ -1342,10 +1348,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       const tailLines = clampPositiveInt(params.tailLines, 8, 50);
       const recentLimit = clampPositiveInt(params.recentLimit, 8, 50);
       const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
-      const [memoryTail, activeLessons, recentRecords] = await Promise.all([
+      const [memoryTail, activeLessons, recentRecords, activeRules] = await Promise.all([
         getLearningMemoryTail(ctx.cwd, learningPathCache, tailLines),
         getActiveLearningLessonsTail(ctx.cwd, learningPathCache, tailLines),
         readRecentKhalaLearningRecords(paths, recentLimit),
+        readEffectiveRuntimeRules(paths),
       ]);
 
       markMemoryRead();
@@ -1354,6 +1361,14 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         storeRoot: paths.root,
         memoryTail,
         activeLessons,
+        activeRules: activeRules.slice(0, tailLines).map((rule) => ({
+          id: rule.id,
+          scope: rule.scope,
+          lifetime: rule.lifetime,
+          severity: rule.severity,
+          trigger: rule.trigger,
+          instruction: rule.instruction,
+        })),
         recentLearnings: recentRecords.map((record) => ({
           timestamp: record.timestamp,
           trigger: record.trigger,
@@ -1635,6 +1650,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     if (!runtimeState.agentEnabled) return;
     pendingWorkflow = null;
+    const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
+    await clearSessionRules(paths);
     await runSessionEndHooks({
       pi,
       ctx,
@@ -1660,6 +1677,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       learningPathCache,
       memoryTailLines: MEMORY_TAIL_LINES,
       memoryToolCallLimit: runtimeState.memoryToolCallLimit,
+      ruleQuery: latestUserInput,
+      workflowType: pendingWorkflow?.type,
+      workflowId: pendingWorkflow?.id,
+      loadedSkills: pendingWorkflow?.loadedSkills,
+      policyWarnings: pendingWorkflow?.policyWarnings,
     });
     if (!bootstrap.trim()) return;
     return {
@@ -1670,6 +1692,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
   pi.on("input", async (event, _ctx) => {
     const text = typeof event.text === "string" ? event.text.trim() : "";
     if (!text) return;
+    latestUserInput = text;
     if (!isContinuationInput(text)) {
       taskToolCallCount = 0;
       resetMemoryGate("new task or scope change");
@@ -2026,6 +2049,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     notify,
   });
 
+  const ruleHandlers = createRuleCommandHandlers({
+    ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
+    nowIso,
+    notify,
+  });
+
   const khala = async (
     args: string | undefined,
     ctx: ExtensionCommandContext,
@@ -2077,6 +2106,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ...workflowHandlers,
       ...curatorHandlers,
       ...learnedWorkflowHandlers,
+      ...ruleHandlers,
       endAgent: agentHandlers.endAgent,
       khala,
     },

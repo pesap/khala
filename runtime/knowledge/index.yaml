@@ -1,6 +1,4 @@
 documents:
-  - path: SOUL.md
-    purpose: identity
   - path: RULES.md
     purpose: constraints
   - path: INSTRUCTIONS.md
@@ -17,8 +15,6 @@ documents:
     purpose: startup compliance checklist
   - path: hooks/teardown.md
     purpose: shutdown compliance checklist
-  - path: memory/memory.yaml
-    purpose: memory layer configuration
   - path: hooks/hooks.yaml
     purpose: lifecycle hook policy
   - path: tools/search.yaml
