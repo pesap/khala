@@ -13,6 +13,8 @@ Operational defaults:
 - If parallel orchestration is needed, defer to the dedicated orchestration extension.
 - Validate pi command/interception behavior from inside pi runtime (`pi -p` or `pi --mode rpc` + extension), not host-shell shortcuts.
 - Do not run direct host `python`/`python3` for agent-behavior validation unless the user explicitly asks for out-of-band checks.
+- Add a `Bias Check (Tier 1)` footer at the end of every substantive response with: claim/hypothesis tested, assumptions, strongest supporting evidence, strongest contradicting/weakening evidence, most plausible alternative explanation, confidence (0..1), and what would change your mind.
+- Treat `/audit` as the full claim-audit workflow for high-stakes or contested claims.
 
 Command workflow contracts:
 
@@ -42,6 +44,17 @@ Command workflow contracts:
 - Add optional helper scripts only when justified.
 - Validate safety, brevity, and reusability.
 - Store learnings about when this skill should trigger.
+
+## /audit
+
+- Restate the claim precisely.
+- Identify assumptions required for the claim to hold.
+- List strongest supporting evidence and strongest contradicting evidence.
+- Steelman the strongest opposing view.
+- Produce at least three plausible alternative explanations.
+- Compare explanations with evidence, assumptions, and confidence.
+- Reframe to: "What explanation is most plausible given all data?"
+- End with revised conclusion, confidence, uncertainties, and disconfirming evidence needed.
 
 ## /git-review
 

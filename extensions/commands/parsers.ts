@@ -175,6 +175,10 @@ export function parsePlanArgs(args: string): { plan: string } {
   return { plan: normalizeWhitespace(args) };
 }
 
+export function parseAuditArgs(args: string): { claim: string } {
+  return { claim: normalizeWhitespace(args) };
+}
+
 export function parseTriageIssueArgs(args: string): { problem: string } {
   return { problem: normalizeWhitespace(args) };
 }

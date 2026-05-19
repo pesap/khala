@@ -29,3 +29,5 @@ documents:
     purpose: git history diagnostics orchestration
   - path: ../workflows/learn-skill-workflow.yaml
     purpose: skill creation orchestration
+  - path: ../workflows/audit-workflow.yaml
+    purpose: claim audit orchestration

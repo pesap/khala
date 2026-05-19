@@ -92,6 +92,7 @@ export function createWorkflowCommandHandlers(params: {
   ) => ScopedTarget;
   loadProjectReviewGuidelines: (cwd: string) => Promise<string | null>;
   parsePlanArgs: (args: string) => { plan: string };
+  parseAuditArgs: (args: string) => { claim: string };
   parseTriageIssueArgs: (args: string) => { problem: string };
   parseTddArgs: (args: string) => { goal: string; language: string };
   parseAddressOpenIssuesArgs: (args: string) => { limit: number; repo: string };
@@ -128,6 +129,7 @@ export function createWorkflowCommandHandlers(params: {
     GIT_REVIEW_COMMAND_SOURCE: string;
     SIMPLIFY_COMMAND_SOURCE: string;
     PLAN_COMMAND_SOURCE: string;
+    AUDIT_COMMAND_SOURCE: string;
     SHIP_COMMAND_SOURCE: string;
     TRIAGE_ISSUE_COMMAND_SOURCE: string;
     TDD_COMMAND_SOURCE: string;
@@ -141,6 +143,7 @@ export function createWorkflowCommandHandlers(params: {
   simplify: CommandHandler;
   ship: CommandHandler;
   plan: CommandHandler;
+  audit: CommandHandler;
   triageIssue: CommandHandler;
   tdd: CommandHandler;
   addressOpenIssues: CommandHandler;
@@ -164,6 +167,7 @@ export function createWorkflowCommandHandlers(params: {
     buildReviewTarget,
     loadProjectReviewGuidelines,
     parsePlanArgs,
+    parseAuditArgs,
     parseTriageIssueArgs,
     parseTddArgs,
     parseAddressOpenIssuesArgs,
@@ -445,6 +449,37 @@ export function createWorkflowCommandHandlers(params: {
           source: constants.PLAN_COMMAND_SOURCE,
         },
         startedMessage: `Started plan workflow (${plan}).`,
+      });
+    },
+
+    audit: async (args, ctx) => {
+      const parsed = parseAuditArgs(args ?? "");
+      if (!ensureWorkflowSlotAvailable(ctx)) return;
+      if (!parsed.claim) {
+        notify(ctx, "Usage: /audit <claim>", "error");
+        return;
+      }
+
+      await runWorkflowCommand({
+        ctx,
+        type: "audit",
+        input: parsed.claim,
+        flags: {
+          source: constants.AUDIT_COMMAND_SOURCE,
+        },
+        sections: [
+          `Claim: ${parsed.claim}`,
+          `Source reference: ${constants.AUDIT_COMMAND_SOURCE}`,
+          "",
+          "Instruction: Run the full anti-confirmation-bias claim audit workflow and treat the original claim as one hypothesis among several.",
+          constants.POSTFLIGHT_INSTRUCTION,
+          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
+        ],
+        entry: {
+          claim: parsed.claim,
+          source: constants.AUDIT_COMMAND_SOURCE,
+        },
+        startedMessage: `Started audit workflow (${parsed.claim}).`,
       });
     },
 

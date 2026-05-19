@@ -39,6 +39,10 @@ commands:
     enabled: true
     prompt: plan-workflow.md
     workflow: plan-workflow.yaml
+  audit:
+    enabled: true
+    prompt: audit-workflow.md
+    workflow: audit-workflow.yaml
   triage-issue:
     enabled: true
     prompt: triage-issue-workflow.md

@@ -112,6 +112,7 @@ These are registered and enabled by default unless `runtime/profile.yaml` disabl
 | `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |
 | `/ship [extra instruction]` | Simplify, validate, commit, push, and open/confirm PR/MR. Uses GitButler target selection. |
 | `/plan <plan_or_topic>` | Stress-test a plan and capture terms/ADRs when needed. |
+| `/audit <claim>` | Run a full anti-confirmation-bias claim audit and revise confidence from evidence. |
 | `/triage-issue <problem_statement>` | Investigate a bug and prepare a TDD fix plan/PR. |
 | `/tdd <goal> [--lang auto\|python\|rust\|c]` | Run strict red-green-refactor delivery. |
 | `/address-open-issues [--limit N] [--repo owner/repo]` | Sweep open GitHub issues authored by the current user. |
@@ -143,7 +144,7 @@ When khala is enabled (`/khala` or any khala workflow command):
   <li>Workflow commands create auto-preflight records.</li>
   <li>Mutation workflows are checked for postflight evidence.</li>
   <li>Selected active runtime rules are injected as <code>[ACTIVE RUNTIME RULES]</code> before agent start.</li>
-  <li>Final workflow responses are checked for <code>Result: success|partial|failed</code> and <code>Confidence: &lt;0..1&gt;</code> when response compliance is enabled.</li>
+  <li>Final workflow responses are checked for <code>Bias Check (Tier 1)</code> plus <code>Result: success|partial|failed</code> and <code>Confidence: &lt;0..1&gt;</code> when response compliance is enabled.</li>
 </ul>
 
 Blocked/steered command families include `pip`, `pip3`, `poetry`, `python -m pip`, `python -m venv`, `python -m py_compile`, and path-qualified Python executables. Intercepted `python`/`python3` route through `uv run`.

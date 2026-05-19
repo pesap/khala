@@ -26,6 +26,7 @@ import {
   chooseAvailableSkillName,
   parseAddressOpenIssuesArgs,
   parseApproveRiskArgs,
+  parseAuditArgs,
   parseComplianceArgs,
   parseDebugArgs,
   parsePlanArgs,
@@ -42,6 +43,7 @@ import { registerCommands } from "./commands/register.ts";
 import { createWorkflowCommandHandlers } from "./commands/workflow-handlers.ts";
 import {
   ADDRESS_OPEN_ISSUES_COMMAND_SOURCE,
+  AUDIT_COMMAND_SOURCE,
   PLAN_COMMAND_SOURCE,
   GIT_REVIEW_COMMAND_SOURCE,
   LEARNING_VERSION,
@@ -2002,6 +2004,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     buildReviewTarget,
     loadProjectReviewGuidelines,
     parsePlanArgs,
+    parseAuditArgs,
     parseTriageIssueArgs,
     parseTddArgs,
     parseAddressOpenIssuesArgs,
@@ -2030,6 +2033,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       GIT_REVIEW_COMMAND_SOURCE,
       SIMPLIFY_COMMAND_SOURCE,
       PLAN_COMMAND_SOURCE,
+      AUDIT_COMMAND_SOURCE,
       SHIP_COMMAND_SOURCE,
       TRIAGE_ISSUE_COMMAND_SOURCE,
       TDD_COMMAND_SOURCE,
