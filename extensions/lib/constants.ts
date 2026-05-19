@@ -17,6 +17,7 @@ export const GIT_REVIEW_COMMAND_SOURCE = "https://piechowski.io/post/git-command
 export const SIMPLIFY_COMMAND_SOURCE = "https://github.com/anthropics/claude-plugins-official/blob/main/plugins/code-simplifier/agents/code-simplifier.md";
 export const PLAN_COMMAND_SOURCE = "https://github.com/mattpocock/skills/tree/main/skills/engineering/grill-with-docs";
 export const SHIP_COMMAND_SOURCE = "khala://workflow/ship";
+export const AUDIT_COMMAND_SOURCE = "khala://workflow/audit";
 export const TRIAGE_ISSUE_COMMAND_SOURCE = "https://github.com/mattpocock/skills/tree/main/skills/engineering/triage";
 export const TDD_COMMAND_SOURCE = "https://github.com/mattpocock/skills/tree/main/skills/engineering/tdd";
 export const ADDRESS_OPEN_ISSUES_COMMAND_SOURCE = "khala://workflow/address-open-issues";
@@ -25,7 +26,7 @@ export const PREFLIGHT_LINE_REGEX = /^Preflight:\s+skill=([a-zA-Z0-9_.-]+|none)\
 export const POSTFLIGHT_LINE_REGEX = /^Postflight:\s+verify="([^"]{1,280})"\s+result=(pass|fail|not-run)\s*$/;
 export const MUTATION_BASH_PATTERN = /(?:^|\n|[;|&]{1,2})\s*(?:git\s+(?:add|apply|am|commit|checkout|switch|merge|rebase|cherry-pick|revert|reset|restore|clean|stash|tag|branch|push|pull)(?=\s|$|[;|&])|rm\b|mv\b|cp\b|mkdir\b|rmdir\b|touch\b|chmod\b|chown\b|sed\b[^\n;|&]*\s-i\b|perl\b[^\n;|&]*\s-i\b|tee\b|truncate\b|dd\b)/m;
 export const POSTFLIGHT_INSTRUCTION = "Instruction: If you ran any mutation tool (edit/write/mutating bash), include exactly one line: `Postflight: verify=\"<command_or_check>\" result=<pass|fail|not-run>`.";
-export const REQUIRED_WORKFLOW_FOOTER_INSTRUCTION = "Instruction: End your final response with `Result: success|partial|failed` and `Confidence: <0..1>`. Missing either line is treated as failed.";
+export const REQUIRED_WORKFLOW_FOOTER_INSTRUCTION = "Instruction: End your final response with a `Bias Check (Tier 1)` section containing: claim/hypothesis tested, key assumptions, strongest supporting evidence, strongest contradicting/weakening evidence, most plausible alternative explanation, confidence (0..1), and what would change your mind; then include `Result: success|partial|failed` and `Confidence: <0..1>`. Missing result or confidence line is treated as failed.";
 
 export const BLOCKED_COMMAND_PATTERNS = {
   pip: /(?:^|\n|[;|&]{1,2})\s*(?:\S+\/)?pip\s*(?:$|\s)/m,

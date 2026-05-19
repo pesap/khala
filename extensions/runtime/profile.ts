@@ -15,6 +15,7 @@ export const WORKFLOW_TYPES = [
   "ship",
   "learn-skill",
   "plan",
+  "audit",
   "triage-issue",
   "tdd",
   "address-open-issues",
@@ -89,6 +90,12 @@ const DEFAULT_WORKFLOWS: Record<WorkflowType, WorkflowCommandConfig> = {
     promptFile: "plan-workflow.md",
     workflowFile: "plan-workflow.yaml",
     entryType: "khala-plan-command",
+  },
+  audit: {
+    enabled: true,
+    promptFile: "audit-workflow.md",
+    workflowFile: "audit-workflow.yaml",
+    entryType: "khala-audit-command",
   },
   "triage-issue": {
     enabled: true,

@@ -1,0 +1,29 @@
+name: audit-workflow
+version: 1
+objective: Evaluate a claim with explicit anti-confirmation-bias reasoning and alternatives
+version_control:
+  local_tool: gitbutler
+  setup_check: but status -fv
+  setup_when_missing: but setup --status-after
+  write_operations: use but instead of git write commands
+steps:
+  - id: claim
+    action: restate_claim_precisely
+  - id: assumptions
+    action: list_required_assumptions
+  - id: support
+    action: gather_strongest_supporting_evidence
+  - id: contradict
+    action: gather_strongest_contradicting_or_weakening_evidence
+  - id: steelman
+    action: steelman_best_opposing_view
+  - id: alternatives
+    action: generate_plausible_alternative_explanations
+  - id: compare
+    action: compare_hypotheses_with_evidence_assumptions_and_confidence
+  - id: reframe
+    action: reframe_to_most_plausible_explanation
+  - id: conclude
+    action: provide_revised_conclusion_confidence_uncertainties_and_update_triggers
+  - id: learn
+    action: persist_learnings
