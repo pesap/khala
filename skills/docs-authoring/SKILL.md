@@ -1,37 +1,71 @@
 ---
 name: docs-authoring
-description: Use this skill when writing or revising README/docs content that must be technically accurate, easy to scan, and render cleanly on GitHub. Use for setup guides, API docs, troubleshooting, and release notes, even if the user only asks to "clean up docs" or "improve README".
+description: Draft or revise technical docs (README, setup, API, troubleshooting, release notes) so they are accurate, scannable, and GitHub-friendly. Use when users ask to improve docs clarity/structure/rendering, not marketing copy.
 ---
 
 ## Use when
-- User asks to write, rewrite, or improve README/docs.
-- User asks for clearer setup, usage, API, or troubleshooting sections.
-- User asks for better Markdown structure or GitHub rendering.
-- User asks for badges, alerts, tables, Mermaid diagrams, or collapsible sections.
+- User asks to write, rewrite, clean up, or expand README/docs.
+- User asks for setup, usage, API, troubleshooting, migration, or release-note docs.
+- User asks to improve Markdown structure, navigation, links, tables, diagrams, or callouts.
+- User asks for “make this clearer/easier to follow” and the artifact is documentation.
 
 ## Avoid when
-- Task is code implementation/debugging without doc changes.
-- User asks for marketing copy, branding, or opinion pieces.
+- Task is implementation/debugging with no doc deliverable.
+- User wants persuasion/marketing voice rather than technical accuracy.
+- Requirements are unknown and no source of truth is available.
 
-## Instructions
-1. Start with user outcome first, then only the details needed to achieve it.
-2. Keep terminology consistent with code/CLI/API naming.
-3. Use scan-friendly structure: short sections, short paragraphs, bullets where useful.
-4. Use strict heading hierarchy (no skipped levels).
-5. Use fenced code blocks with language hints (`bash`, `json`, `yaml`, etc.).
-6. Prefer relative links for repo-local docs/assets.
-7. Use tables only for true comparisons/reference data.
-8. Validate technical claims against repo artifacts before stating as fact.
-9. Label assumptions explicitly when uncertain.
+## Workflow
+1. **Anchor on user outcome**
+   - Identify target reader, primary job-to-be-done, and success path.
+   - Prefer “quickstart-first” ordering for end-user docs.
+2. **Ground claims in source truth**
+   - Verify commands, flags, paths, APIs, versions, and behaviors from repo artifacts.
+   - If unverifiable, mark as assumption and reduce certainty language.
+3. **Restructure for scanability**
+   - Use strict heading hierarchy.
+   - Keep paragraphs short; prefer bullets/checklists for procedures.
+   - Put prerequisites before steps; put validation checks after steps.
+4. **Harden examples**
+   - Use fenced code blocks with language tags.
+   - Keep examples copy-paste safe (realistic placeholders, no hidden steps).
+   - Show expected output when it materially reduces ambiguity.
+5. **Optimize GitHub rendering**
+   - Use relative links for repo-local references.
+   - Use tables only for reference/comparison, not prose.
+   - Use callouts and `<details>` sparingly to control noise.
+6. **Close with operator clarity**
+   - Summarize changed sections/files.
+   - List assumptions, open questions, and follow-up docs gaps.
+
+## README section defaults (good-api aligned)
+- Structure README as a learning ladder:
+  - **Convenient first**: 30-90 second Quickstart with exact install/run commands and expected output.
+  - **Gradual second**: Installation options, core concepts, and command/API reference that extend the same mental model.
+  - **Flexible third**: advanced composition, architecture, extension points, and escape hatches for experts.
+- Use a concise top summary (what it is, who it helps, constraints/disclaimer if needed).
+- Add a short nav row/table of contents for long READMEs.
+- Prefer command tables for CLI discoverability (`command` + `what it does`).
+- Show at least one realistic end-to-end example before deep reference sections.
+- Use collapsible `<details>` for optional advanced depth so default path stays fast.
+- Keep badges minimal and meaningful; avoid decorative clutter.
+
+## Quality gate
+- Accurate technical statements tied to evidence.
+- Reader can complete the primary task in one pass.
+- No skipped heading levels.
+- Code blocks are typed and runnable in context.
+- Internal links resolve and section labels are specific.
+- README flow matches learning ladder (quick win → deeper usage → expert flexibility).
 
 ## GitHub formatting defaults
-- Keep badges concise (CI/version/license/coverage), and link each badge to its target.
-- Use callouts sparingly: `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`.
-- Use `<details><summary>...</summary>...</details>` for non-critical long sections.
-- Use Mermaid for simple architecture/flow diagrams when it improves comprehension.
-- Use `<kbd>` for keyboard shortcuts.
+- Badges: keep minimal and meaningful (CI/version/license/coverage).
+- Callouts: `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]` only when signal is high.
+- `<details><summary>`: use for optional depth, not required steps.
+- Mermaid: use for simple flows/architecture only.
+- `<kbd>`: use for keyboard shortcuts.
 
 ## Output
-- What changed (sections/files)
-- Rendering/format choices made
-- Any assumptions or unverifiable claims
+- Files/sections changed
+- Documentation strategy used (ordering/structure decisions)
+- Assumptions + unverifiable claims
+- Remaining risks or follow-up improvements
