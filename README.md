@@ -99,6 +99,16 @@ flowchart LR
 | `/rule-audit [--limit N]` | Show recent rule promotion, disable, reload, hit, warn, and block events. |
 | `/rule-reload` | Parse user edits from `rules/RULES.md` and append valid replacements. |
 
+### Rules, simplified
+
+There are three rule layers:
+
+1. **Packaged defaults** — always-on rules shipped in `runtime/RULES.md`.
+2. **Persistent user/repo rules** — editable rules stored in `.pi/khala/rules/RULES.md` (or `~/.pi/khala/rules/RULES.md` when no repo-local `.pi/` exists). After editing that file, run `/rule-reload`.
+3. **Session-only rules** — temporary rules added with `/rule-session <trigger> => <instruction>`.
+
+Use `runtime/RULES.md` when changing the default behavior that ships with khala. Use `.pi/khala/rules/RULES.md` for local or repo-specific persistent rules. Use `/rule-session` for temporary guidance.
+
 ### Workflow commands
 
 These are registered and enabled by default unless `runtime/profile.yaml` disables them or their prompt/spec files fail validation.
@@ -242,7 +252,7 @@ Durable artifacts are written to:
 | `rules/session.jsonl` | Per-session active runtime rules, cleared on session shutdown. |
 | `rules/candidates.jsonl` | Proposed rules that are not yet active. |
 | `rules/audit.jsonl` | Runtime rule hit/warn/block/reload audit events. |
-| `rules/RULES.md` | User-editable rendered active-rule view. |
+| `rules/RULES.md` | User-editable persistent rule file; edit it, then run `/rule-reload`. |
 | `runs/*.json` | Per-run workflow records. |
 | `workflows/*.yaml` | Autonomous reusable workflow artifacts promoted from repeated successful workflow outcomes. |
 | `prompts/*.md` | Pi prompt templates generated for promoted workflows. Run `/khala-reload` to expose them as slash commands. |
