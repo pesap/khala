@@ -1,18 +1,6 @@
 ---
 name: python-developer
 description: Deliver Python feature work, bug fixes, refactors, and production hardening with uv-based tooling, explicit typing, focused pytest validation, and strict quality gates. Use when users ask to implement, debug, clean up, type-harden, or test Python code, even if they do not mention uv, pytest, Ruff, or ty.
-license: MIT
-allowed-tools:
-  - Read
-  - Edit
-  - Grep
-  - Glob
-  - Bash
-  - Write
-metadata:
-  author: psanchez
-  version: "2.0.0"
-  category: python-delivery
 ---
 
 # python-developer

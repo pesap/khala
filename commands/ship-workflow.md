@@ -3,7 +3,6 @@ skills:
   - but
   - simplify
   - commit
-  - caveman
   - github
   - gitlab
   - librarian

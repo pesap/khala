@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Implement this new feature end to end with tests.", "should_trigger": true},
+  {"id": "pos-2", "query": "Add support for this enhancement and update validation.", "should_trigger": true},
+  {"id": "pos-3", "query": "Deliver the scoped functionality from these acceptance criteria.", "should_trigger": true},
+  {"id": "pos-4", "query": "Build this behavior and cover it with tests.", "should_trigger": true},
+  {"id": "neg-1", "query": "Review this pull request only.", "should_trigger": false},
+  {"id": "neg-2", "query": "Plan the feature but do not code.", "should_trigger": false},
+  {"id": "neg-3", "query": "Simplify the finished code without behavior changes.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit my changes.", "should_trigger": false}
+]

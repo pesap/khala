@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Build this feature with red-green-refactor TDD.", "should_trigger": true},
+  {"id": "pos-2", "query": "Write the failing test first, then implement the fix.", "should_trigger": true},
+  {"id": "pos-3", "query": "Use test-driven development for this behavior change.", "should_trigger": true},
+  {"id": "pos-4", "query": "Slice this bugfix into small TDD cycles.", "should_trigger": true},
+  {"id": "neg-1", "query": "Review this PR for bugs.", "should_trigger": false},
+  {"id": "neg-2", "query": "Run the existing test suite only.", "should_trigger": false},
+  {"id": "neg-3", "query": "Explain what TDD is without editing code.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit the finished implementation.", "should_trigger": false}
+]

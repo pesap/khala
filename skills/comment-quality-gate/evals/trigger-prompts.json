@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Remove stale and noisy comments from this code.", "should_trigger": true},
+  {"id": "pos-2", "query": "Clean up AI comment slop without changing behavior.", "should_trigger": true},
+  {"id": "pos-3", "query": "Keep only comments that explain invariants or intent.", "should_trigger": true},
+  {"id": "pos-4", "query": "Review these comments for redundancy and drift.", "should_trigger": true},
+  {"id": "neg-1", "query": "Add user-facing documentation.", "should_trigger": false},
+  {"id": "neg-2", "query": "Refactor this code for performance.", "should_trigger": false},
+  {"id": "neg-3", "query": "Review this PR for bugs.", "should_trigger": false},
+  {"id": "neg-4", "query": "Explain this commented algorithm.", "should_trigger": false}
+]

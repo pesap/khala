@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Triage the open issues and show what needs attention.", "should_trigger": true},
+  {"id": "pos-2", "query": "Move issue #42 to ready-for-agent with a useful brief.", "should_trigger": true},
+  {"id": "pos-3", "query": "Review incoming bug reports and decide needs-info vs ready-for-human.", "should_trigger": true},
+  {"id": "pos-4", "query": "Create an issue from this report and label it for triage.", "should_trigger": true},
+  {"id": "neg-1", "query": "Fix issue #42 now.", "should_trigger": false},
+  {"id": "neg-2", "query": "Review this pull request.", "should_trigger": false},
+  {"id": "neg-3", "query": "Debug this failing test.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit the issue fix.", "should_trigger": false}
+]

@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Run this Python script with dependencies using uv.", "should_trigger": true},
+  {"id": "pos-2", "query": "Convert this pip install workflow to uv run.", "should_trigger": true},
+  {"id": "pos-3", "query": "Add inline dependencies to this standalone Python script.", "should_trigger": true},
+  {"id": "pos-4", "query": "Make this script reproducible with uv lock --script.", "should_trigger": true},
+  {"id": "neg-1", "query": "Refactor this Python package API.", "should_trigger": false},
+  {"id": "neg-2", "query": "Write pytest tests for this module.", "should_trigger": false},
+  {"id": "neg-3", "query": "Debug a TypeScript build error.", "should_trigger": false},
+  {"id": "neg-4", "query": "Explain what virtual environments are.", "should_trigger": false}
+]

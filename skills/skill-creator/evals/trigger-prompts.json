@@ -1,0 +1,42 @@
+[
+  {
+    "id": "pos-1",
+    "query": "Clean up this skill and score it against our Agent Skills rubric.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-2",
+    "query": "Create a reusable skill for debugging flaky Playwright tests.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-3",
+    "query": "Improve the trigger description and boundaries in this SKILL.md.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-4",
+    "query": "Find missing skill coverage and add eval prompts for the important ones.",
+    "should_trigger": true
+  },
+  {
+    "id": "neg-1",
+    "query": "Use the existing Python skill to fix this bug.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-2",
+    "query": "Review this pull request for security bugs.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-3",
+    "query": "Explain this academic paper in simpler words.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-4",
+    "query": "Commit the current changes.",
+    "should_trigger": false
+  }
+]

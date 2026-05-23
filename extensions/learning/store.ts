@@ -15,11 +15,7 @@ import {
   readTextTailIfExists,
   statIfExists,
 } from "../lib/io.ts";
-import {
-  buildLearnedWorkflowArtifact,
-  normalizeLearnedWorkflowName,
-  writeLearnedWorkflowPromptTemplate,
-} from "./workflows.ts";
+import { normalizeLearnedWorkflowName } from "./workflows.ts";
 
 export type WorkflowFlagValue = string | number | boolean | null | string[];
 export type WorkflowFlags = Record<string, WorkflowFlagValue>;
@@ -534,24 +530,9 @@ export async function maybeEmitPromotionHint<
       `${params.observation.taskType}-autonomous-workflow`,
     );
     const workflowPath = path.join(params.paths.workflowsDir, `${workflowName}.yaml`);
-    const workflowArtifact = buildLearnedWorkflowArtifact({
-      workflowName,
-      taskType: params.observation.taskType,
-      date: now.slice(0, 10),
-      sampleSize: relevant.length,
-      scoreRate,
-      summary,
-    });
-    await fs.writeFile(workflowPath, workflowArtifact, "utf8");
-    await writeLearnedWorkflowPromptTemplate({
-      paths: params.paths,
-      workflowName,
-      taskType: params.observation.taskType,
-      summary,
-    });
     await appendLine(
       params.paths.promotionQueue,
-      `- ${now.slice(0, 10)} [${params.observation.taskType}/workflow-created] ${workflowPath}`,
+      `- ${now.slice(0, 10)} [${params.observation.taskType}/workflow-candidate] Candidate learned workflow: ${workflowName}. Review the evidence before creating ${workflowPath}.`,
     );
   }
 

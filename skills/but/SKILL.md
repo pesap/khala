@@ -1,17 +1,27 @@
 ---
 name: but
-version: 0.19.10
-description: "Commit, push, branch, and manage version control with GitButler. Use for: commit my changes, check what changed, create a PR, push my branch, view diff, create branches, stage files, edit commit history, squash commits, amend commits, undo commits, pull requests, merge, stash work. Replaces git - use 'but' instead of git commit, git status, git push, git checkout, git add, git diff, git branch, git rebase, git stash, git merge. Covers all git, version control, and source control operations."
-author: GitButler Team
+description: "Commit, push, branch, and manage version control with GitButler. Use when users ask to commit changes, check status, view diffs, create branches, push, open PRs, edit history, squash, amend, undo commits, merge, stash, or run git write operations that should be translated to `but`."
 ---
 
 # GitButler CLI Skill
+
+Source: GitButler CLI skill, version 0.19.10.
 
 Use GitButler CLI (`but`) as the default version-control interface.
 
 Skill audit line for meaningful GitButler execution:
 - `Skill audit: full-read=yes native-path-confirmed=yes fallback-needed=no|yes`
 - Use `fallback-needed=yes` only after checking the documented GitButler-native path in this skill and its references.
+
+## Use when
+- User asks for local version-control status, diffs, branch creation, commits, pushes, PR publishing, or history edits.
+- A workflow mentions GitButler, `but`, or converting git write operations to GitButler-native commands.
+- The task may mutate branch, commit, stack, stash, merge, rebase, or remote state.
+
+## Avoid when
+- The task is only explaining Git concepts and requires no repository inspection or mutation.
+- The current workspace is not a Git repository; report that GitButler cannot operate there.
+- The user explicitly asks to use another VCS tool and no GitButler policy applies.
 
 ## Non-Negotiable Rules
 

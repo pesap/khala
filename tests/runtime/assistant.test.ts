@@ -7,6 +7,7 @@ import {
   inferTurnObligation,
   isActionOrApprovalObligation,
   isAssistantClarification,
+  isAssistantClarificationAllowedForObligation,
   shouldBlockUnsatisfiedTurnObligation,
 } from "../../extensions/runtime/assistant.ts";
 
@@ -105,6 +106,14 @@ test("infers tool obligation for concrete inspection requests", () => {
     "tool_required",
   );
   assert.equal(inferTurnObligation("do it").obligation, "tool_required");
+  assert.equal(
+    inferTurnObligation("Keep working on the agent feedback loop").obligation,
+    "tool_required",
+  );
+  assert.equal(
+    inferTurnObligation("Clean up the repo and improve the runtime").obligation,
+    "tool_required",
+  );
   assert.equal(
     inferTurnObligation("Please address the Copilot comments").obligation,
     "tool_required",
@@ -210,5 +219,29 @@ test("detects assistant tool-call and clarification output shapes", () => {
       textMessage("assistant", "I will inspect that next."),
     ),
     false,
+  );
+});
+
+test("generic permission questions do not satisfy concrete tool obligations", () => {
+  assert.equal(
+    isAssistantClarificationAllowedForObligation(
+      textMessage("assistant", "Should I proceed?"),
+      "tool_required",
+    ),
+    false,
+  );
+  assert.equal(
+    isAssistantClarificationAllowedForObligation(
+      textMessage("assistant", "Which file should I inspect?"),
+      "tool_required",
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarificationAllowedForObligation(
+      textMessage("assistant", "Can I proceed with deleting the generated files?"),
+      "approval_required",
+    ),
+    true,
   );
 });

@@ -92,11 +92,68 @@ interface RecentLearningLike {
   lesson: string;
 }
 
+export interface LearningCandidateQuality {
+  ok: boolean;
+  issues: string[];
+}
+
+const VAGUE_LESSON_PATTERN =
+  /\b(?:be careful|do better|handle properly|remember this|improve quality|fix it|avoid mistakes|use best practices|be smarter|do the right thing)\b/i;
+const MIN_TRIGGER_WORDS = 3;
+const MIN_LESSON_WORDS = 6;
+
 function clamp(value: number): number {
   if (!Number.isFinite(value)) return 0;
   if (value < 0) return 0;
   if (value > 1) return 1;
   return value;
+}
+
+function wordCount(value: string): number {
+  return value.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function hasConcreteEvidence(input: AssessInput, evidence: string[]): boolean {
+  return Boolean(
+    input.userCorrection ||
+      input.workflowType ||
+      (input.mutationCount ?? 0) > 0 ||
+      (input.policyWarnings?.length ?? 0) > 0 ||
+      evidence.length >= 2,
+  );
+}
+
+export function validateLearningCandidateQuality(params: {
+  trigger: string;
+  lesson: string;
+  evidence: string[];
+  hasConcreteEvidence: boolean;
+  evidenceSnippet?: string;
+}): LearningCandidateQuality {
+  const issues: string[] = [];
+  const trigger = normalizeWhitespace(params.trigger);
+  const lesson = normalizeWhitespace(params.lesson);
+
+  if (wordCount(trigger) < MIN_TRIGGER_WORDS) {
+    issues.push("trigger is too broad to recall reliably");
+  }
+  if (trigger.toLowerCase() === "task outcome") {
+    issues.push("trigger is generic task outcome");
+  }
+  if (wordCount(lesson) < MIN_LESSON_WORDS) {
+    issues.push("lesson is too short to guide future behavior");
+  }
+  if (VAGUE_LESSON_PATTERN.test(lesson)) {
+    issues.push("lesson uses vague quality language instead of a concrete operating rule");
+  }
+  if (!params.hasConcreteEvidence) {
+    issues.push("candidate lacks concrete evidence");
+  }
+  if (/(?:token|secret|password|private key|credential)/i.test(params.evidenceSnippet ?? "")) {
+    issues.push("candidate may contain sensitive material");
+  }
+
+  return { ok: issues.length === 0, issues };
 }
 
 function inferCorrectionLesson(taskSummary: string): { trigger: string; lesson: string } | null {
@@ -234,13 +291,27 @@ export function assessLearning(input: AssessInput, recent: RecentLearningLike[] 
     input.confidenceHint ?? (score * 0.7 + evidenceStrength * 0.2 + clarity * 0.1),
   );
   const sensitive = /token|secret|password|private key|credential/i.test(evidenceSnippet);
-  const shouldLearn = !sensitive && lesson.length > 0 && score >= 0.75 && confidence >= 0.75;
+  const quality = validateLearningCandidateQuality({
+    trigger,
+    lesson,
+    evidence,
+    hasConcreteEvidence: hasConcreteEvidence(input, evidence),
+    evidenceSnippet,
+  });
+  const shouldLearn =
+    !sensitive &&
+    quality.ok &&
+    lesson.length > 0 &&
+    score >= 0.75 &&
+    confidence >= 0.75;
   const promotable = shouldLearn && score >= 0.9 && confidence >= 0.9;
   const kind = workflowLesson?.kind ?? chooseKind(input, correction !== null);
   const reason = shouldLearn
     ? "Reusable, evidence-backed learning worth storing."
     : sensitive
       ? "Potentially sensitive content; do not store."
+      : !quality.ok
+        ? `Learning candidate failed quality gate: ${quality.issues.join("; ")}.`
       : lesson.length === 0
         ? "No durable lesson candidate inferred."
         : `Score/confidence below threshold (score=${score.toFixed(2)}, confidence=${confidence.toFixed(2)}).`;
@@ -315,26 +386,64 @@ function isDuplicateKhalaLearningRecord(
   );
 }
 
+export function normalizeKhalaLearningRecordForPersistence(
+  record: KhalaLearningRecord,
+): KhalaLearningRecord | null {
+  const score = clamp(record.score);
+  const confidence = clamp(record.confidence);
+  const quality = validateLearningCandidateQuality({
+    trigger: record.trigger,
+    lesson: record.lesson,
+    evidence: record.evidence,
+    hasConcreteEvidence:
+      Boolean(record.evidenceSnippet.trim()) ||
+      record.evidence.length >= 2 ||
+      Boolean(record.workflowType),
+    evidenceSnippet: record.evidenceSnippet,
+  });
+
+  if (
+    !record.shouldLearn ||
+    record.sensitive ||
+    score < 0.75 ||
+    confidence < 0.75 ||
+    !quality.ok
+  ) {
+    return null;
+  }
+
+  return {
+    ...record,
+    score,
+    confidence,
+    promotable: record.promotable && score >= 0.9 && confidence >= 0.9,
+  };
+}
+
 export async function appendKhalaLearningRecord(paths: LearningPaths, record: KhalaLearningRecord): Promise<boolean> {
+  const normalized = normalizeKhalaLearningRecordForPersistence(record);
+  if (!normalized) return false;
   const recents = await readRecentKhalaLearningRecords(paths, 20);
   const duplicate = recents.some((entry) =>
-    isDuplicateKhalaLearningRecord(entry, record),
+    isDuplicateKhalaLearningRecord(entry, normalized),
   );
   if (duplicate) return false;
-  await appendLine(paths.khalaLearningJsonl, JSON.stringify(record));
+  await appendLine(paths.khalaLearningJsonl, JSON.stringify(normalized));
   await appendLine(
     paths.memoryMd,
-    `- ${record.timestamp.slice(0, 10)} [khala-learn/${record.kind}] ${record.lesson} (score=${record.score.toFixed(2)}, confidence=${record.confidence.toFixed(2)})`,
+    `- ${normalized.timestamp.slice(0, 10)} [khala-learn/${normalized.kind}] ${normalized.lesson} (score=${normalized.score.toFixed(2)}, confidence=${normalized.confidence.toFixed(2)})`,
   );
   return true;
 }
 
 export async function persistKhalaLearningRecord(paths: LearningPaths, record: KhalaLearningRecord): Promise<boolean> {
-  const stored = await appendKhalaLearningRecord(paths, record);
-  if (!stored || !record.promotable) return stored;
+  const normalized = normalizeKhalaLearningRecordForPersistence(record);
+  if (!normalized) return false;
+  const stored = await appendKhalaLearningRecord(paths, normalized);
+  if (!stored || !normalized.promotable) return stored;
   await appendLine(
     paths.promotionQueue,
-    `- ${record.timestamp.slice(0, 10)} [khala-learn/promote] ${record.lesson} (score=${record.score.toFixed(2)}, confidence=${record.confidence.toFixed(2)})`,
+    `- ${normalized.timestamp.slice(0, 10)} [khala-learn/promote] ${normalized.lesson} (score=${normalized.score.toFixed(2)}, confidence=${normalized.confidence.toFixed(2)})`,
   );
   return stored;
 }

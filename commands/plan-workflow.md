@@ -14,8 +14,8 @@ Requirements:
 - Be concise.
 - Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
 - Always use `plan` skill behavior.
-- Ask one question at a time and wait for user feedback before continuing.
-- If a question can be answered from code/docs, inspect first and then ask the next unresolved question.
+- Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.
+- If a question can be answered from code/docs, inspect first and do not ask it.
 - Challenge ambiguous/conflicting terms against existing `CONTEXT.md` language.
 - Capture edge cases, constraints, and trade-offs before implementation.
 - Update `CONTEXT.md` inline when terms are resolved.

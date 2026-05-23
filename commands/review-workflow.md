@@ -3,6 +3,7 @@ skills:
   - librarian
   - but
   - code-review
+  - github
 ---
 
 # Review command prompt

@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Audit this change for security vulnerabilities before release.", "should_trigger": true},
+  {"id": "pos-2", "query": "Check this endpoint for OWASP Top 10 risks.", "should_trigger": true},
+  {"id": "pos-3", "query": "Find auth, authorization, and secrets exposure issues.", "should_trigger": true},
+  {"id": "pos-4", "query": "Do a security hardening review of this code path.", "should_trigger": true},
+  {"id": "neg-1", "query": "Review this diff for ordinary logic bugs.", "should_trigger": false},
+  {"id": "neg-2", "query": "Implement OAuth login.", "should_trigger": false},
+  {"id": "neg-3", "query": "Explain what XSS means.", "should_trigger": false},
+  {"id": "neg-4", "query": "Run the unit tests.", "should_trigger": false}
+]

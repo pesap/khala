@@ -1,6 +1,6 @@
 ---
 name: surgical-dev
-description: Default guardrail for all code edits. Keep changes minimal, explicit, verifiable, and low-risk.
+description: Default guardrail for focused code edits. Use when a task creates, edits, renames, or deletes code and needs minimal diffs, explicit assumptions, targeted validation, rollback awareness, and low-risk implementation discipline.
 ---
 
 ## Trigger conditions

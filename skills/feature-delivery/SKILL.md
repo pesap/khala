@@ -11,7 +11,7 @@ description: Deliver features from acceptance criteria to validated implementati
 - Requirements are intentionally open-ended and user does not want scoping.
 
 ## Workflow
-1. Clarify acceptance criteria.
+1. Extract acceptance criteria from the request and repo context; ask at most one blocking clarification only when the criteria cannot be inferred safely.
 2. Plan minimal implementation.
 3. Implement incrementally.
 4. Add or update tests.

@@ -1,12 +1,6 @@
 ---
 name: code-review
 description: Review code changes for bugs, performance issues, and best-practice violations. Use when users ask for a PR/diff review, risk assessment, or actionable quality findings.
-license: MIT
-allowed-tools: Read Grep Glob Bash
-metadata:
-  author: pesap
-  version: "1.0.0"
-  category: developer-tools
 ---
 
 # Code Review

@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Investigate this bug and file a GitHub issue with a TDD fix plan.", "should_trigger": true},
+  {"id": "pos-2", "query": "Turn this reported regression into a well-scoped issue.", "should_trigger": true},
+  {"id": "pos-3", "query": "Triage this problem statement and create the fix plan issue.", "should_trigger": true},
+  {"id": "pos-4", "query": "Find the likely root cause and write an issue for an AFK agent.", "should_trigger": true},
+  {"id": "neg-1", "query": "Fix the bug immediately.", "should_trigger": false},
+  {"id": "neg-2", "query": "Triage all open issues.", "should_trigger": false},
+  {"id": "neg-3", "query": "Review this PR.", "should_trigger": false},
+  {"id": "neg-4", "query": "Create a feature roadmap.", "should_trigger": false}
+]

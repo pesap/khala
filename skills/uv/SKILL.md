@@ -1,6 +1,6 @@
 ---
 name: uv
-description: Use uv for Python scripts with reproducible dependencies via `uv run`, `uv init --script`, `uv add --script`, and `uv lock --script`.
+description: Use uv for Python scripts with reproducible dependencies via `uv run`, `uv init --script`, `uv add --script`, and `uv lock --script`. Use when users ask to run Python scripts, add script dependencies, replace pip/venv flows, or make standalone scripts reproducible.
 ---
 
 ## Trigger conditions

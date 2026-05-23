@@ -23,11 +23,11 @@
   </tr>
   <tr>
     <td><strong>Safety gates</strong></td>
-    <td>Risk approval, preflight/postflight evidence, blocked destructive commands, and response compliance.</td>
+    <td>Risk approval, preflight/postflight evidence, blocked destructive commands, response compliance, and anti-stall turn obligations.</td>
   </tr>
   <tr>
     <td><strong>Local-first learning</strong></td>
-    <td>File-backed workflow observations and corrective lessons; no model fine-tuning or transcript storage.</td>
+    <td>File-backed workflow observations and corrective lessons with quality gates; no model fine-tuning or transcript storage.</td>
   </tr>
   <tr>
     <td><strong>Bundled tooling</strong></td>
@@ -87,7 +87,7 @@ flowchart LR
 | `/archive-skill <name>` | Archive a learned skill without deleting it. |
 | `/restore-skill <name>` | Restore an archived learned skill. |
 | `/khala-reload` | Reload Pi resources so learned skills and workflow prompts become slash commands. |
-| `/workflow-list` | List khala learned workflows promoted from repeated outcomes. |
+| `/workflow-list` | List reviewed khala learned workflows. |
 | `/workflow-show <name>` | Show a learned workflow artifact and its generated prompt template. |
 | `/workflow-run <name> [input]` | Run a learned workflow by sending it to the agent with optional input. |
 | `/rule-list [--all]` | List active khala runtime rules. |
@@ -154,6 +154,7 @@ When khala is enabled (`/khala` or any khala workflow command):
   <li>Workflow commands create auto-preflight records.</li>
   <li>Mutation workflows are checked for postflight evidence.</li>
   <li>Selected active runtime rules are injected as <code>[ACTIVE RUNTIME RULES]</code> before agent start.</li>
+  <li>Concrete tool-work requests must be satisfied with a relevant tool call or a real blocking clarification; generic permission questions such as “Should I proceed?” do not satisfy the turn.</li>
   <li>Final workflow responses are checked for <code>Bias Check (Tier 1)</code> plus <code>Result: success|partial|failed</code> and <code>Confidence: &lt;0..1&gt;</code> when response compliance is enabled.</li>
 </ul>
 
@@ -200,7 +201,7 @@ Packaged skills include `librarian`, copied from `https://github.com/mitsuhiko/a
 
 Khala names learned skills with a `khala-` prefix so they do not collide with packaged/global Pi skills. For source-backed additions (`--from`, `--from-file`, `--from-url`), khala reuses that stable companion-skill name instead of creating one new skill per source URL. This follows Pi skill best practice better: keep the reusable capability under one unique skill name and put source-specific material in that skill's support files instead of proliferating colliding sibling skills.
 
-When end-of-turn assessment finds a high-confidence, non-sensitive promotable lesson, khala can also create a background-authored learned skill under `skills/<name>/`. If the lesson applies to a loaded background-authored skill, khala patches that skill instead. User-authored/imported skills are never edited directly; khala records a review/promotion queue item for them.
+When end-of-turn assessment finds a high-confidence, non-sensitive promotable lesson, khala can create a background-authored learned skill in the khala learning store. If the lesson applies to a loaded background-authored skill, khala patches that skill instead. User-authored/imported skills are never edited directly; khala records a review/promotion queue item for them.
 
 Khala exposes learned skills to Pi through `resources_discover`, so after `/khala-reload` they are available as normal Pi skills and can be invoked with `/skill:<name>` when skill commands are enabled.
 
@@ -216,6 +217,8 @@ Khala also registers model-facing tools:
 | `khala_learn` | Persist a structured learning record. |
 
 `khala_read_memory` is recency-based. `khala_search_memory` is relevance-based and accepts a task-specific `query`, optional `limit`, and optional `snippetLength`.
+
+Learning persistence is conservative. A candidate must have a concrete trigger, a specific operating lesson, enough evidence, no sensitive material, and score/confidence at or above the storage threshold. Promotion requires higher score/confidence and repeated workflow success only creates a review candidate; it no longer creates runnable workflow artifacts automatically.
 
 ## Learning model
 
@@ -233,7 +236,7 @@ sequenceDiagram
   K->>K: execute + validate
   K->>M: append learning.jsonl + MEMORY.md
   U->>K: corrective feedback
-  K->>M: append compact lesson, skill patch, or reusable workflow artifact when clear
+  K->>M: append compact lesson, safe skill patch, or promotion candidate when clear
 ```
 
 Durable artifacts are written to:
@@ -246,7 +249,7 @@ Durable artifacts are written to:
 | `memory/learning.jsonl` | Structured observations per workflow run. |
 | `memory/lessons.jsonl` | Passive lessons inferred from corrective normal prompts. |
 | `memory/MEMORY.md` | Concise chronological learnings. |
-| `memory/promotion-queue.md` | Promotion/improvement hints from repeated outcomes. |
+| `memory/promotion-queue.md` | Promotion/improvement candidates from repeated outcomes; review before creating reusable workflows. |
 | `memory/skill-curator-report.md` | Post-workflow learned-skill review notes and patch recommendations. |
 | `rules/active.jsonl` | Durable active runtime rules with replacement records. |
 | `rules/session.jsonl` | Per-session active runtime rules, cleared on session shutdown. |
@@ -254,8 +257,8 @@ Durable artifacts are written to:
 | `rules/audit.jsonl` | Runtime rule hit/warn/block/reload audit events. |
 | `rules/RULES.md` | User-editable persistent rule file; edit it, then run `/rule-reload`. |
 | `runs/*.json` | Per-run workflow records. |
-| `workflows/*.yaml` | Autonomous reusable workflow artifacts promoted from repeated successful workflow outcomes. |
-| `prompts/*.md` | Pi prompt templates generated for promoted workflows. Run `/khala-reload` to expose them as slash commands. |
+| `workflows/*.yaml` | Reviewed reusable workflow artifacts. |
+| `prompts/*.md` | Pi prompt templates for reviewed workflows. Run `/khala-reload` to expose them as slash commands. |
 | `skills/<name>/SKILL.md` | Main learned skill instructions. |
 | `skills/<name>/metadata.json` | Learned skill provenance and lifecycle metadata. |
 | `skills/<name>/{references,templates,scripts}/` | Optional learned skill support assets. |
@@ -269,12 +272,14 @@ Durable artifacts are written to:
 - preflight before mutation tools (`edit`, `write`, mutating `bash`)
 - postflight evidence after mutation
 - workflow response footer lines: `Result: ...` and `Confidence: 0..1`
-- runtime checks for promise-only tool work, incomplete memory-gate recovery, and approval-required destructive requests
+- runtime checks for promise-only tool work, generic permission-question stalls, incomplete memory-gate recovery, and approval-required destructive requests
+- learning quality gates before storage or promotion
 
 **Not automatic:**
 
 - no automatic edits to `README.md`, `INSTRUCTIONS.md`, or user-authored/imported skills from learning
 - no automatic hot-reload after background learning; run `/khala-reload` to refresh Pi resources
+- no automatic runnable workflow creation from repeated success statistics; repeated outcomes create review candidates
 - no model training/fine-tuning
 - no raw transcript or full tool-output storage for passive normal-chat learning
 

@@ -28,7 +28,7 @@ function observation(id: string): LearningObservation<"review", "success"> {
   };
 }
 
-test("promotion hint creates reusable workflow artifact for repeated successes", async () => {
+test("promotion hint queues workflow candidates instead of auto-creating runnable workflows", async () => {
   const paths = await createTempLearningPaths();
   await fs.writeFile(paths.promotionQueue, "# Promotion Queue\n", "utf8");
   await fs.writeFile(paths.stateJson, JSON.stringify({ hints: {} }), "utf8");
@@ -57,25 +57,22 @@ test("promotion hint creates reusable workflow artifact for repeated successes",
 
   const queue = await fs.readFile(paths.promotionQueue, "utf8");
   assert.match(queue, /\[review\/promote\]/);
-  assert.match(queue, /\[review\/workflow-created\]/);
+  assert.match(queue, /\[review\/workflow-candidate\]/);
 
   const workflowPath = path.join(
     paths.workflowsDir,
     "review-autonomous-workflow.yaml",
   );
-  const workflow = await fs.readFile(workflowPath, "utf8");
-  assert.match(workflow, /source: khala-autonomous-memory/);
-  assert.match(workflow, /read_memory: call khala_read_memory/);
+  await assert.rejects(fs.access(workflowPath), {
+    code: "ENOENT",
+  });
   const promptPath = path.join(
     paths.promptsDir,
     "review-autonomous-workflow.md",
   );
-  const prompt = await fs.readFile(promptPath, "utf8");
-  assert.match(
-    prompt,
-    /description: Run khala learned workflow review-autonomous-workflow/,
-  );
-  assert.match(prompt, /\$ARGUMENTS/);
+  await assert.rejects(fs.access(promptPath), {
+    code: "ENOENT",
+  });
   assert.equal(notifications.length, 1);
 });
 

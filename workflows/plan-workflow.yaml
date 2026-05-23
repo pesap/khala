@@ -12,7 +12,7 @@ steps:
   - id: discover
     action: locate_context_docs_and_relevant_code
   - id: question-loop
-    action: ask_one_question_at_a_time_and_wait
+    action: ask_only_blocking_questions_after_inspecting_available_context
   - id: reconcile
     action: resolve_terminology_conflicts_and_code_contradictions
   - id: update-context

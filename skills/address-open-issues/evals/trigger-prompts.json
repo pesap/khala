@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Sweep my open GitHub issues and close what you can safely.", "should_trigger": true},
+  {"id": "pos-2", "query": "Address my assigned open issues one by one.", "should_trigger": true},
+  {"id": "pos-3", "query": "Triage, fix, review, and simplify the issues I own.", "should_trigger": true},
+  {"id": "pos-4", "query": "Work through the open issue queue with TDD and PRs.", "should_trigger": true},
+  {"id": "neg-1", "query": "Triage a single bug report into an issue.", "should_trigger": false},
+  {"id": "neg-2", "query": "Review this one pull request.", "should_trigger": false},
+  {"id": "neg-3", "query": "Implement this standalone feature.", "should_trigger": false},
+  {"id": "neg-4", "query": "List issues without changing anything.", "should_trigger": false}
+]

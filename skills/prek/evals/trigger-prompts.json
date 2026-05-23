@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Migrate this pre-commit setup to prek.", "should_trigger": true},
+  {"id": "pos-2", "query": "Debug why this prek hook fails in CI.", "should_trigger": true},
+  {"id": "pos-3", "query": "Speed up our Git hooks using prek.", "should_trigger": true},
+  {"id": "pos-4", "query": "Configure skip/include behavior for prek hooks.", "should_trigger": true},
+  {"id": "neg-1", "query": "Fix a failing application unit test.", "should_trigger": false},
+  {"id": "neg-2", "query": "Write a Bash deploy script.", "should_trigger": false},
+  {"id": "neg-3", "query": "Run npm format.", "should_trigger": false},
+  {"id": "neg-4", "query": "Explain Git branches.", "should_trigger": false}
+]

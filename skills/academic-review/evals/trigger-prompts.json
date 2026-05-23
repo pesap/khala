@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Explain this paper simply and from first principles.", "should_trigger": true},
+  {"id": "pos-2", "query": "Be reviewer 2 and challenge this argument hard.", "should_trigger": true},
+  {"id": "pos-3", "query": "Decomplexify this academic claim without losing rigor.", "should_trigger": true},
+  {"id": "pos-4", "query": "Give me a Feynman-style explanation of this method.", "should_trigger": true},
+  {"id": "neg-1", "query": "Review this pull request diff.", "should_trigger": false},
+  {"id": "neg-2", "query": "Implement this feature.", "should_trigger": false},
+  {"id": "neg-3", "query": "Commit my code changes.", "should_trigger": false},
+  {"id": "neg-4", "query": "Triage this GitHub issue.", "should_trigger": false}
+]

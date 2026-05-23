@@ -1,0 +1,42 @@
+[
+  {
+    "id": "pos-1",
+    "query": "Turn this approved plan into vertical implementation issues.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-2",
+    "query": "Split this design into AFK and HITL slices with dependencies.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-3",
+    "query": "Create issue-ready acceptance criteria for each delivery slice.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-4",
+    "query": "Sequence this plan into thin end-to-end tasks for agents.",
+    "should_trigger": true
+  },
+  {
+    "id": "neg-1",
+    "query": "Help me decide between these two architectures.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-2",
+    "query": "Implement the first feature slice now.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-3",
+    "query": "Review this GitHub issue for bugs.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-4",
+    "query": "Debug this failing test.",
+    "should_trigger": false
+  }
+]
