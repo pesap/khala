@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Open a GitLab merge request for this branch.", "should_trigger": true},
+  {"id": "pos-2", "query": "Inspect the failing GitLab pipeline.", "should_trigger": true},
+  {"id": "pos-3", "query": "Debug this .gitlab-ci.yml rules problem.", "should_trigger": true},
+  {"id": "pos-4", "query": "Update GitLab release metadata from the terminal.", "should_trigger": true},
+  {"id": "neg-1", "query": "Open a GitHub pull request.", "should_trigger": false},
+  {"id": "neg-2", "query": "Review the local code diff.", "should_trigger": false},
+  {"id": "neg-3", "query": "Explain CI/CD generally.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit my current changes.", "should_trigger": false}
+]

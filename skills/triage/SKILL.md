@@ -7,6 +7,16 @@ description: Triage issues through a state machine driven by triage roles. Use w
 
 Move issues on the project issue tracker through a small state machine of triage roles.
 
+## Use when
+- User asks to triage, label, route, or prepare issues for agent or human follow-up.
+- User asks what issues need attention, which reports need information, or what can be delegated.
+- User wants durable issue comments, agent briefs, or out-of-scope records.
+
+## Avoid when
+- User asks to fix an issue immediately rather than triage it.
+- The target tracker cannot be accessed and the user needs live labels/comments changed.
+- User wants a code review, CI investigation, or release workflow instead of issue routing.
+
 Every comment or issue posted to the issue tracker during triage **must** start with this disclaimer:
 
 ```

@@ -1,0 +1,151 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { load as loadYaml } from "js-yaml";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function parsePromptSkills(promptText: string): string[] {
+  const match = promptText.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!match) return [];
+  const parsed = loadYaml(match[1]);
+  if (!isRecord(parsed) || !Array.isArray(parsed.skills)) return [];
+  return parsed.skills.filter((skill): skill is string => typeof skill === "string");
+}
+
+test("command prompt skill frontmatter resolves to packaged skills", async () => {
+  const repoRoot = process.cwd();
+  const commandsDir = path.join(repoRoot, "commands");
+  const entries = await fs.readdir(commandsDir, { withFileTypes: true });
+  const missing: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+    const promptPath = path.join(commandsDir, entry.name);
+    const promptText = await fs.readFile(promptPath, "utf8");
+
+    for (const skillName of parsePromptSkills(promptText)) {
+      const skillPath = path.join(repoRoot, "skills", skillName, "SKILL.md");
+      try {
+        await fs.access(skillPath);
+      } catch {
+        missing.push(`${entry.name}: ${skillName}`);
+      }
+    }
+  }
+
+  assert.deepEqual(missing, []);
+});
+
+test("runtime agent skill registry resolves to packaged skills", async () => {
+  const repoRoot = process.cwd();
+  const agentYamlPath = path.join(repoRoot, "runtime", "agent.yaml");
+  const parsed = loadYaml(await fs.readFile(agentYamlPath, "utf8"));
+  const missing: string[] = [];
+
+  if (!isRecord(parsed) || !Array.isArray(parsed.skills)) {
+    assert.fail("runtime/agent.yaml must define a skills list");
+  }
+
+  for (const skillName of parsed.skills) {
+    if (typeof skillName !== "string") {
+      missing.push(String(skillName));
+      continue;
+    }
+    const skillPath = path.join(repoRoot, "skills", skillName, "SKILL.md");
+    try {
+      await fs.access(skillPath);
+    } catch {
+      missing.push(skillName);
+    }
+  }
+
+  assert.deepEqual(missing, []);
+});
+
+test("command prompts do not contain unconditional clarification stalls", async () => {
+  const repoRoot = process.cwd();
+  const commandsDir = path.join(repoRoot, "commands");
+  const entries = await fs.readdir(commandsDir, { withFileTypes: true });
+  const offenders: string[] = [];
+  const unconditionalPatterns = [
+    /\bClarify acceptance criteria before coding\b/i,
+    /\bAsk one question at a time and wait\b/i,
+    /\bAsk clarifying questions when\b/i,
+  ];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+    const promptText = await fs.readFile(path.join(commandsDir, entry.name), "utf8");
+    if (unconditionalPatterns.some((pattern) => pattern.test(promptText))) {
+      offenders.push(entry.name);
+    }
+  }
+
+  assert.deepEqual(offenders, []);
+});
+
+test("workflow handler instructions do not contain unconditional clarification stalls", async () => {
+  const repoRoot = process.cwd();
+  const handlerText = await fs.readFile(
+    path.join(repoRoot, "extensions", "commands", "workflow-handlers.ts"),
+    "utf8",
+  );
+  const unconditionalPatterns = [
+    /\bClarify acceptance criteria before coding\b/i,
+    /\bAsk one question at a time and wait\b/i,
+    /\bAsk clarifying questions when\b/i,
+  ];
+
+  assert.equal(
+    unconditionalPatterns.some((pattern) => pattern.test(handlerText)),
+    false,
+  );
+});
+
+test("runtime instructions do not require noisy default footers or unconditional clarification", async () => {
+  const repoRoot = process.cwd();
+  const instructions = await fs.readFile(
+    path.join(repoRoot, "runtime", "INSTRUCTIONS.md"),
+    "utf8",
+  );
+  const slopPatterns = [
+    /\bClarify acceptance criteria\./i,
+    /\bAdd a `Bias Check \(Tier 1\)` footer at the end of every substantive response\b/i,
+    /\bMust request approval before applying self-edits\b/i,
+  ];
+
+  assert.equal(slopPatterns.some((pattern) => pattern.test(instructions)), false);
+});
+
+test("packaged skills do not require approval or clarification before ordinary coding", async () => {
+  const repoRoot = process.cwd();
+  const skillsDir = path.join(repoRoot, "skills");
+  const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  const offenders: string[] = [];
+  const slopPatterns = [
+    /\bConfirm with user what interface changes are needed\b/i,
+    /\bConfirm with user which behaviors to test\b/i,
+    /\bGet user approval on the plan\b/i,
+    /\bClarify acceptance criteria\./i,
+    /\bAsk: "What should the public interface look like\?/i,
+  ];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillPath = path.join(skillsDir, entry.name, "SKILL.md");
+    try {
+      const skillText = await fs.readFile(skillPath, "utf8");
+      if (slopPatterns.some((pattern) => pattern.test(skillText))) {
+        offenders.push(entry.name);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
+  assert.deepEqual(offenders, []);
+});

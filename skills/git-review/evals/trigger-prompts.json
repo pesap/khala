@@ -1,0 +1,42 @@
+[
+  {
+    "id": "pos-1",
+    "query": "Run a git review and tell me which files we should inspect first.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-2",
+    "query": "Find churn hotspots and bug clusters in this repository history.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-3",
+    "query": "Before reading code, use git history to rank the risky areas.",
+    "should_trigger": true
+  },
+  {
+    "id": "pos-4",
+    "query": "Who owns this repo lately, and where are the rollback/hotfix signals?",
+    "should_trigger": true
+  },
+  {
+    "id": "neg-1",
+    "query": "Review this pull request diff for correctness issues.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-2",
+    "query": "Commit my current changes and push a branch.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-3",
+    "query": "Explain how git rebase works.",
+    "should_trigger": false
+  },
+  {
+    "id": "neg-4",
+    "query": "Open the most recent GitHub Actions failure.",
+    "should_trigger": false
+  }
+]

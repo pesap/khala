@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Fix this Python bug and validate it with pytest.", "should_trigger": true},
+  {"id": "pos-2", "query": "Clean up this Python module with stronger typing.", "should_trigger": true},
+  {"id": "pos-3", "query": "Implement this Python feature using uv-based tooling.", "should_trigger": true},
+  {"id": "pos-4", "query": "Harden this Python package before production.", "should_trigger": true},
+  {"id": "neg-1", "query": "Write a Bash deployment script.", "should_trigger": false},
+  {"id": "neg-2", "query": "Design a TypeScript type for this API.", "should_trigger": false},
+  {"id": "neg-3", "query": "Explain pytest fixtures without editing code.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit my changes.", "should_trigger": false}
+]

@@ -83,7 +83,7 @@ export function registerCommands({
     { name: "archive-skill", description: "Archive a learned skill without deleting it", handler: handlers.archiveSkill },
     { name: "restore-skill", description: "Restore an archived learned skill", handler: handlers.restoreSkill },
     { name: "khala-reload", description: "Reload Pi resources so khala learned skills and workflow prompts become slash commands", handler: handlers.khalaReload },
-    { name: "workflow-list", description: "List khala learned workflows promoted from repeated outcomes", handler: handlers.workflowList },
+    { name: "workflow-list", description: "List reviewed khala learned workflows", handler: handlers.workflowList },
     { name: "workflow-show", description: "Show a khala learned workflow artifact and prompt template", handler: handlers.workflowShow },
     { name: "workflow-run", description: "Run a khala learned workflow by sending it to the agent", handler: handlers.workflowRun },
     { name: "rule-list", description: "List active khala runtime rules", handler: handlers.ruleList },

@@ -2,7 +2,7 @@
 
 Operational defaults:
 
-- Use caveman style by default (terse, direct, technically exact).
+- Use concise, direct technical communication by default.
 - Focus on single-agent execution in this extension runtime.
 - Capture durable learnings after meaningful tasks using file-backed workflow observations and khala learning assessment.
 - When `/khala` is enabled, run end-of-turn learning assessment after meaningful prompts. If the assessment score and confidence both pass threshold and the lesson is reusable and non-sensitive, persist it through `khala_learn` semantics.
@@ -13,7 +13,7 @@ Operational defaults:
 - If parallel orchestration is needed, defer to the dedicated orchestration extension.
 - Validate pi command/interception behavior from inside pi runtime (`pi -p` or `pi --mode rpc` + extension), not host-shell shortcuts.
 - Do not run direct host `python`/`python3` for agent-behavior validation unless the user explicitly asks for out-of-band checks.
-- Add a `Bias Check (Tier 1)` footer at the end of every substantive response with: claim/hypothesis tested, assumptions, strongest supporting evidence, strongest contradicting/weakening evidence, most plausible alternative explanation, confidence (0..1), and what would change your mind.
+- Add the full `Bias Check (Tier 1)` footer only for workflow final responses, `/audit`, contested claims, high-stakes decisions, or when response compliance explicitly requires it. For ordinary task updates and handoffs, keep the bias check implicit and report only concrete evidence, validation, risks, and confidence when useful.
 - Treat `/audit` as the full claim-audit workflow for high-stakes or contested claims.
 
 Command workflow contracts:
@@ -30,7 +30,7 @@ Command workflow contracts:
 
 ## /feature
 
-- Clarify acceptance criteria.
+- Extract acceptance criteria from the request and repo context; ask only one blocking clarification question if the criteria cannot be inferred safely.
 - Plan minimal implementation.
 - Sequence implementation/tests/docs tracks clearly and keep integration coherent.
 - Integrate and verify.
@@ -65,9 +65,8 @@ Command workflow contracts:
 
 Self-improvement policy:
 
-- May propose edits to `INSTRUCTIONS.md` and skills.
-- Must request approval before applying self-edits.
-- Must explain expected benefit and rollback path.
+- May patch `INSTRUCTIONS.md`, command prompts, and agent-authored skills when the user requested agent/runtime improvement or when a loaded instruction caused a verified failure.
+- Explain expected benefit and rollback path for risky self-edits; keep low-risk wording/guardrail fixes small and validated.
 - Use repeated observations in `memory/learning.jsonl` and passive lessons in `memory/lessons.jsonl` to suggest promotion hints into `memory/promotion-queue.md`.
 - When a loaded skill proves stale, incomplete, or wrong during a meaningful task, patch it before closing the task if it is agent-authored; otherwise propose the patch to the user.
 - If you miss a documented capability or instruction that was already present in a loaded skill/reference, treat it as failure-triggered remediation: patch the relevant skill/workflow immediately with a stronger read/verification requirement before closing the task.

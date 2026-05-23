@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Build an r2x-core translator plugin for this model format.", "should_trigger": true},
+  {"id": "pos-2", "query": "Debug r2x-core rule mapping and datastore ingestion.", "should_trigger": true},
+  {"id": "pos-3", "query": "Fix units handling in an r2x-core conversion.", "should_trigger": true},
+  {"id": "pos-4", "query": "Upgrade this r2x-core plugin across versioned schemas.", "should_trigger": true},
+  {"id": "neg-1", "query": "Inspect a generic infrasys component graph.", "should_trigger": false},
+  {"id": "neg-2", "query": "Write a standalone Python script.", "should_trigger": false},
+  {"id": "neg-3", "query": "Review this PR for bugs.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit the current changes.", "should_trigger": false}
+]

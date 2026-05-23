@@ -35,6 +35,8 @@ const BLOCKING_CLARIFICATION_REGEX =
   /^(?:which|what|where|when|who|how)\b|\b(?:should i|should we|do you want|would you like|can you confirm|please confirm|confirm whether|can you share|can you provide|can you choose|can you clarify|can you send|can you paste)\b/;
 const APPROVAL_QUESTION_REGEX =
   /\b(?:can i|may i|is it ok if i|is it okay if i|do you want me to|should i)\b/;
+const GENERIC_PERMISSION_QUESTION_REGEX =
+  /^\s*(?:can i|may i|should i|should we|do you want me to|would you like me to)\s+(?:proceed|continue|start|get started|begin|do (?:it|that|this)|work on (?:it|that|this)|implement|fix|run|inspect|check|review|apply|make|update|patch|edit|write)\b/;
 
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
@@ -163,6 +165,17 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
   }
 
   if (
+    /\b(keep going|keep working|continue working|make progress|work on (?:it|this|that)|clean (?:up )?(?:the )?(?:repo|repository|codebase)|improve (?:the )?(?:repo|repository|codebase|workflow|agent|skill|skills|runtime))\b/.test(
+      text,
+    )
+  ) {
+    return {
+      obligation: "tool_required",
+      reason: "user requested continued concrete work",
+    };
+  }
+
+  if (
     /\b(where (did|do)|source|citation|from source|from docs|is this true|confirm from|verify from)\b/.test(
       text,
     )
@@ -208,6 +221,17 @@ export function isAssistantClarification(
     (BLOCKING_CLARIFICATION_REGEX.test(normalized) ||
       APPROVAL_QUESTION_REGEX.test(normalized))
   );
+}
+
+export function isAssistantClarificationAllowedForObligation(
+  message: AgentEndEventMessage | null,
+  obligation: TurnObligation,
+): boolean {
+  if (!isAssistantClarification(message)) return false;
+  if (obligation !== "tool_required") return true;
+
+  const text = message ? extractTextFromMessageContent(message.content) : "";
+  return !GENERIC_PERMISSION_QUESTION_REGEX.test(text.toLowerCase());
 }
 
 function isMemoryGateRetryToolName(name: string): boolean {

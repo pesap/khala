@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Commit these changes with a good Conventional Commit message.", "should_trigger": true},
+  {"id": "pos-2", "query": "Make a local commit for only the files I touched in src/api.", "should_trigger": true},
+  {"id": "pos-3", "query": "Write and create the commit, but do not push.", "should_trigger": true},
+  {"id": "pos-4", "query": "Use GitButler to commit the staged fix.", "should_trigger": true},
+  {"id": "neg-1", "query": "Push my branch and open a pull request.", "should_trigger": false},
+  {"id": "neg-2", "query": "Review this commit for bugs.", "should_trigger": false},
+  {"id": "neg-3", "query": "Explain Conventional Commits.", "should_trigger": false},
+  {"id": "neg-4", "query": "Show me the current diff.", "should_trigger": false}
+]

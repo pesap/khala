@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Rewrite this README so setup and usage are clearer.", "should_trigger": true},
+  {"id": "pos-2", "query": "Draft troubleshooting docs for these common errors.", "should_trigger": true},
+  {"id": "pos-3", "query": "Improve the API docs without turning them into marketing copy.", "should_trigger": true},
+  {"id": "pos-4", "query": "Write release notes from these changes.", "should_trigger": true},
+  {"id": "neg-1", "query": "Implement the API endpoint.", "should_trigger": false},
+  {"id": "neg-2", "query": "Review this code diff for bugs.", "should_trigger": false},
+  {"id": "neg-3", "query": "Design a brand landing page.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit the docs changes.", "should_trigger": false}
+]

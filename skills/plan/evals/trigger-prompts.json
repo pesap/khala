@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Stress-test this implementation plan against the codebase.", "should_trigger": true},
+  {"id": "pos-2", "query": "Grill my design and update ADRs as decisions solidify.", "should_trigger": true},
+  {"id": "pos-3", "query": "Help me sharpen the domain language before we build.", "should_trigger": true},
+  {"id": "pos-4", "query": "Validate this plan against existing docs and architecture.", "should_trigger": true},
+  {"id": "neg-1", "query": "Implement the approved plan now.", "should_trigger": false},
+  {"id": "neg-2", "query": "Split this approved plan into issues.", "should_trigger": false},
+  {"id": "neg-3", "query": "Review the current diff.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit the implementation.", "should_trigger": false}
+]

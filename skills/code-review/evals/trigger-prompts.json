@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Review this pull request for correctness issues.", "should_trigger": true},
+  {"id": "pos-2", "query": "Look at my diff and find bugs or risky regressions.", "should_trigger": true},
+  {"id": "pos-3", "query": "Do a code review with prioritized findings.", "should_trigger": true},
+  {"id": "pos-4", "query": "Assess this change for performance and missing tests.", "should_trigger": true},
+  {"id": "neg-1", "query": "Implement the requested feature.", "should_trigger": false},
+  {"id": "neg-2", "query": "Commit the current diff.", "should_trigger": false},
+  {"id": "neg-3", "query": "Explain how this module works.", "should_trigger": false},
+  {"id": "neg-4", "query": "Run git churn diagnostics before reading code.", "should_trigger": false}
+]

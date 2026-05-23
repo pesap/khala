@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Tighten these weak types without changing behavior.", "should_trigger": true},
+  {"id": "pos-2", "query": "Remove broad any/unknown usage from this interface.", "should_trigger": true},
+  {"id": "pos-3", "query": "Improve static analysis signal at this boundary.", "should_trigger": true},
+  {"id": "pos-4", "query": "Harden nullable contracts during this refactor.", "should_trigger": true},
+  {"id": "neg-1", "query": "Design a new data model schema.", "should_trigger": false},
+  {"id": "neg-2", "query": "Fix a runtime bug without type changes.", "should_trigger": false},
+  {"id": "neg-3", "query": "Review this pull request.", "should_trigger": false},
+  {"id": "neg-4", "query": "Explain TypeScript generics.", "should_trigger": false}
+]

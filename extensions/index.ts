@@ -74,6 +74,7 @@ import {
   assessLearning,
   persistKhalaLearningRecord,
   readRecentKhalaLearningRecords,
+  validateLearningCandidateQuality,
   type KhalaLearningAssessment,
   type KhalaLearningRecord,
 } from "./learning/khala-learn.ts";
@@ -147,7 +148,7 @@ import {
   inferOutcomeFromText,
   inferTurnObligation,
   isActionOrApprovalObligation,
-  isAssistantClarification,
+  isAssistantClarificationAllowedForObligation,
   isEmptyTerminalAssistantResponse,
   shouldBlockUnsatisfiedTurnObligation,
 } from "./runtime/assistant.ts";
@@ -220,6 +221,11 @@ function clampPositiveInt(
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   const int = Math.floor(value);
   return Math.max(1, Math.min(max, int));
+}
+
+function clampUnit(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
 let sessionFirstPrinciplesDefaults = { ...runtimeState.firstPrinciplesConfig };
 
@@ -620,7 +626,8 @@ async function maybeAssessAndLearn(params: {
     taskToolCallCount > runtimeState.memoryToolCallLimit &&
     !assessment.sensitive &&
     !assessment.shouldLearn &&
-    assessment.lesson.length > 0
+    assessment.lesson.length > 0 &&
+    !assessment.reason.startsWith("Learning candidate failed quality gate:")
   ) {
     assessment = {
       ...assessment,
@@ -1398,7 +1405,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     name: "khala_search_memory",
     label: "Khala Search Memory",
     description:
-      "Search khala memory, learned skills, and promoted workflow artifacts with results sorted by relevance. Use a task-specific query to retrieve older relevant memory beyond the recent tail.",
+      "Search khala memory, learned skills, and reviewed workflow artifacts with results sorted by relevance. Use a task-specific query to retrieve older relevant memory beyond the recent tail.",
     parameters: Type.Object({
       query: Type.String({
         description:
@@ -1493,6 +1500,29 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           ? (params.scope as LearningLesson["scope"])
           : "repo";
       const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
+      const quality = validateLearningCandidateQuality({
+        trigger: params.trigger,
+        lesson: params.lesson,
+        evidence: [params.evidenceSnippet, ...(params.actionTaken ?? [])].filter(
+          Boolean,
+        ),
+        hasConcreteEvidence:
+          Boolean(params.evidenceSnippet.trim()) ||
+          (params.actionTaken?.length ?? 0) > 0,
+        evidenceSnippet: params.evidenceSnippet,
+      });
+      if (!quality.ok) {
+        throw new Error(
+          `khala_learn rejected low-quality learning candidate: ${quality.issues.join("; ")}`,
+        );
+      }
+      const score = clampUnit(params.score);
+      const confidence = clampUnit(params.confidence);
+      if (score < 0.75 || confidence < 0.75) {
+        throw new Error(
+          `khala_learn rejected candidate below storage threshold (score=${score.toFixed(2)}, confidence=${confidence.toFixed(2)}).`,
+        );
+      }
       const record: KhalaLearningRecord = {
         version: LEARNING_VERSION,
         id: makeId("khala-learn"),
@@ -1502,8 +1532,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         workflowId: params.workflowId,
         actionTaken: params.actionTaken,
         shouldLearn: true,
-        score: params.score,
-        confidence: params.confidence,
+        score,
+        confidence,
         kind,
         scope,
         trigger: params.trigger,
@@ -1511,7 +1541,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         reason: "Stored by khala_learn tool.",
         evidence: [],
         evidenceSnippet: params.evidenceSnippet,
-        promotable: params.promotable ?? false,
+        promotable: Boolean(params.promotable && score >= 0.9 && confidence >= 0.9),
         sensitive: false,
         components: {
           reusability: 1,
@@ -1833,7 +1863,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       lastAssistantMessage?.stopReason === "stop" &&
       isActionOrApprovalObligation(obligation.obligation) &&
       !assistantMessageHasToolCall(lastAssistantMessage) &&
-      !isAssistantClarification(lastAssistantMessage)
+      !isAssistantClarificationAllowedForObligation(
+        lastAssistantMessage,
+        obligation.obligation,
+      )
     ) {
       const reason = [
         "TURN OBLIGATION NOT SATISFIED",

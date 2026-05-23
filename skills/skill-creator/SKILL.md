@@ -50,6 +50,7 @@ description: Create or improve reusable agent skills with strong trigger descrip
    - Score the skill against the Agent Skills spec and best practices before calling it done.
    - Use this rubric (0-10 each, weighted): spec compliance 25%, progressive disclosure 20%, trigger quality 20%, scope/boundary clarity 15%, reference/resource quality 10%, eval readiness 10%.
    - Report the weighted total and the biggest gaps preventing a higher score.
+   - For repo-wide audits, run `scripts/score_skills.py <skills-dir>` and use the output to prioritize the lowest-scoring, highest-traffic skills.
 8. **Refine from execution, not just drafting**
    - Compare with-skill behavior against a baseline when practical.
    - Inspect false triggers, missed triggers, failed assertions, execution traces, and human review comments.

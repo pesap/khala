@@ -56,7 +56,7 @@ const DEFAULT_WORKFLOWS: Record<WorkflowType, WorkflowCommandConfig> = {
     entryType: "khala-debug-command",
   },
   feature: {
-    enabled: false,
+    enabled: true,
     promptFile: "feature-workflow.md",
     workflowFile: "feature-workflow.yaml",
     entryType: "khala-feature-command",

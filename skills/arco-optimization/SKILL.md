@@ -1,6 +1,6 @@
 ---
 name: arco-optimization
-description: Debug and optimize Arco .kdl models with spec-first validation, minimal edits, and solver-safe checks.
+description: Debug and optimize Arco `.kdl` models with spec-first validation, minimal edits, and solver-safe checks. Use when users ask to fix Arco parse/validation/solve failures, improve model feasibility or objective behavior, or tune Arco scenario performance.
 ---
 
 ## Use when

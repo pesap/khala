@@ -3,6 +3,11 @@ skills:
   - librarian
   - but
   - address-open-issues
+  - triage-issue
+  - tdd-core
+  - code-review
+  - simplify
+  - github
 ---
 
 # Address-Open-Issues command prompt
@@ -12,7 +17,7 @@ You are running the khala `/address-open-issues` workflow.
 Requirements:
 - Be concise.
 - Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
-- Use `address-open-issues` + `triage-issue` + `tdd-core` (+ language adapter) + `review` + `simplify` + `github` skills.
+- Use `address-open-issues` + `triage-issue` + `tdd-core` (+ language adapter) + `code-review` + `simplify` + `github` skills.
 - Enumerate open issues authored by current user via `gh issue list --author @me --state open --json number,title,url,labels,author` (respect limit/repo hints from command input).
 - Skip issues labeled `blocked` (or repo-equivalent blocked label) and mark them skipped-blocked.
 - Before any implementation stage, evaluate issue description quality.

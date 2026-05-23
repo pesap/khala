@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Design pytest fixtures for this behavior test.", "should_trigger": true},
+  {"id": "pos-2", "query": "Refactor these pytest tests into parametrized cases.", "should_trigger": true},
+  {"id": "pos-3", "query": "Debug why this pytest test is flaky.", "should_trigger": true},
+  {"id": "pos-4", "query": "Use pytest in a red-green-refactor loop.", "should_trigger": true},
+  {"id": "neg-1", "query": "Write Rust unit tests.", "should_trigger": false},
+  {"id": "neg-2", "query": "Design a Pydantic model.", "should_trigger": false},
+  {"id": "neg-3", "query": "Run a security audit.", "should_trigger": false},
+  {"id": "neg-4", "query": "Explain Python packaging.", "should_trigger": false}
+]

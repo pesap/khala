@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Make the smallest safe code change to fix this bug.", "should_trigger": true},
+  {"id": "pos-2", "query": "Patch this function and validate only the touched behavior.", "should_trigger": true},
+  {"id": "pos-3", "query": "Implement this small edit without unrelated refactors.", "should_trigger": true},
+  {"id": "pos-4", "query": "Rename this exported helper and keep the diff minimal.", "should_trigger": true},
+  {"id": "neg-1", "query": "Plan the implementation but do not edit files.", "should_trigger": false},
+  {"id": "neg-2", "query": "Write user-facing documentation only.", "should_trigger": false},
+  {"id": "neg-3", "query": "Review this pull request without applying changes.", "should_trigger": false},
+  {"id": "neg-4", "query": "Explain how this algorithm works.", "should_trigger": false}
+]

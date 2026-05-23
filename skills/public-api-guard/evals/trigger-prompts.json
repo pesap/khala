@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Refactor this package without breaking its public API.", "should_trigger": true},
+  {"id": "pos-2", "query": "Check whether this cleanup changes exported interfaces.", "should_trigger": true},
+  {"id": "pos-3", "query": "Preserve CLI and schema compatibility during this refactor.", "should_trigger": true},
+  {"id": "pos-4", "query": "Guard public contracts while simplifying internals.", "should_trigger": true},
+  {"id": "neg-1", "query": "Design a brand-new API from scratch.", "should_trigger": false},
+  {"id": "neg-2", "query": "Review a private helper function.", "should_trigger": false},
+  {"id": "neg-3", "query": "Delete proven dead code.", "should_trigger": false},
+  {"id": "neg-4", "query": "Explain semantic versioning.", "should_trigger": false}
+]

@@ -16,7 +16,7 @@ commands:
     prompt: debug-workflow.md
     workflow: debug-workflow.yaml
   feature:
-    enabled: false
+    enabled: true
     prompt: feature-workflow.md
     workflow: feature-workflow.yaml
   review:

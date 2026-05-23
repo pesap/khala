@@ -2,6 +2,7 @@
 skills:
   - librarian
   - but
+  - git-review
   - github
 ---
 
@@ -11,6 +12,7 @@ You are running the khala `/git-review` workflow.
 
 Requirements:
 - Do not read source code before running git diagnostics.
+- Use the `git-review` skill for diagnostic order, caveats, and output shape.
 - Run these commands in the current repository:
 
 ```bash

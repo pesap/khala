@@ -1,12 +1,6 @@
 ---
 name: security-audit
 description: Audit code for security vulnerabilities including OWASP Top 10 and secrets exposure. Use when users ask for security review, hardening, or risk triage before shipping.
-license: MIT
-allowed-tools: Read Grep Glob Bash
-metadata:
-  author: pesap
-  version: "1.0.0"
-  category: security
 ---
 
 # Security Audit

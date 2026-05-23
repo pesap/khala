@@ -15,7 +15,7 @@ Requirements:
 - Be concise.
 - Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
 - This is the default feature-delivery path.
-- Clarify acceptance criteria before coding.
+- Extract acceptance criteria from the request and repo context before coding; ask at most one blocking clarification question only if the criteria cannot be inferred safely.
 - Use `tdd-core` and pick language adapter skill as needed (e.g., `testing-pytest` for Python).
 - Run strict red-green-refactor in vertical slices.
 - One behavior per cycle; no horizontal test/code batching.

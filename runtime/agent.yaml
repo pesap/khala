@@ -39,9 +39,7 @@ skills:
   - type-hardening
   - comment-quality-gate
   - public-api-guard
-  - caveman
   - infrasys
-  - ast-grep
 pi:
   scope: project
   tools: "read,edit,write,grep,ast_search,nu,bash,gitagent_remember"

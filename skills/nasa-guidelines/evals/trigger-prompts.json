@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Apply NASA Power of Ten constraints to harden this code.", "should_trigger": true},
+  {"id": "pos-2", "query": "Make this code more predictable and safety-oriented.", "should_trigger": true},
+  {"id": "pos-3", "query": "Audit this implementation for strict error handling and simplicity.", "should_trigger": true},
+  {"id": "pos-4", "query": "Use NASA-style standards to remove risky slop.", "should_trigger": true},
+  {"id": "neg-1", "query": "Explain a NASA mission.", "should_trigger": false},
+  {"id": "neg-2", "query": "Write normal project docs.", "should_trigger": false},
+  {"id": "neg-3", "query": "Commit my current changes.", "should_trigger": false},
+  {"id": "neg-4", "query": "Create a GitHub issue.", "should_trigger": false}
+]

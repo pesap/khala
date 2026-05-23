@@ -7,6 +7,16 @@ Source attribution: copied from Armin Ronacher's `agent-stuff` librarian skill (
 
 Use this skill whenever the user points you to a remote git repository (GitHub/GitLab/Bitbucket URLs, `git@...`, or `owner/repo` shorthand). For GitHub references, `owner/repo`, `github.com/owner/repo`, and `https://github.com/owner/repo` all require this skill before inspecting files or drawing conclusions.
 
+## Use when
+- User provides a remote repository URL or `owner/repo` shorthand as source material.
+- User asks to inspect, compare, borrow from, or review a remote repository.
+- A workflow needs a stable local checkout of a referenced repo.
+
+## Avoid when
+- The repository is already the current working tree and no remote reference was provided.
+- User asks for live GitHub issue/PR metadata rather than repository files; use the GitHub skill.
+- The reference is a single webpage, package docs page, or artifact that is not a git repository.
+
 The goal is to keep a reusable local checkout that is:
 
 - **stable** (predictable path)

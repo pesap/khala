@@ -1,9 +1,15 @@
 ---
 name: commit
-description: "Read this skill before making commits with GitButler"
+description: "Create one intentional GitButler commit with a concise Conventional Commits-style message and verified scope. Use when users ask to commit current changes, commit selected files, write a commit message, or prepare a local commit without pushing."
 ---
 
 Create a GitButler commit for the current changes using a concise Conventional Commits-style subject.
+
+## Avoid when
+
+- User asks to push, open a PR, merge, or publish without explicitly committing; use the broader VCS workflow first.
+- The working tree contains unrelated ambiguous changes and the user did not specify scope.
+- Commit signing cannot be verified; stop for user assistance before creating the commit.
 
 ## Tool
 

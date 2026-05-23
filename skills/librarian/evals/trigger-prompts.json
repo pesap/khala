@@ -1,0 +1,10 @@
+[
+  {"id": "pos-1", "query": "Inspect https://github.com/mitsuhiko/minijinja and compare its parser layout.", "should_trigger": true},
+  {"id": "pos-2", "query": "Use owner/repo as a reference implementation.", "should_trigger": true},
+  {"id": "pos-3", "query": "Clone this GitLab repo to review its CI config.", "should_trigger": true},
+  {"id": "pos-4", "query": "Borrow the approach from github.com/org/project.", "should_trigger": true},
+  {"id": "neg-1", "query": "Open GitHub issue #42 in the current repo.", "should_trigger": false},
+  {"id": "neg-2", "query": "Review the local working tree diff.", "should_trigger": false},
+  {"id": "neg-3", "query": "Search the web for docs about this library.", "should_trigger": false},
+  {"id": "neg-4", "query": "Commit my local changes.", "should_trigger": false}
+]
