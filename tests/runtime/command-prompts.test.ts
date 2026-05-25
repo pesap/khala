@@ -149,3 +149,17 @@ test("packaged skills do not require approval or clarification before ordinary c
 
   assert.deepEqual(offenders, []);
 });
+
+test("khala_search_memory tool enforces focused query quality before search", async () => {
+  const repoRoot = process.cwd();
+  const extensionText = await fs.readFile(
+    path.join(repoRoot, "extensions", "index.ts"),
+    "utf8",
+  );
+
+  assert.match(extensionText, /memorySearchQueryQuality\(query\)/);
+  assert.match(
+    extensionText,
+    /khala_search_memory requires a focused task-specific query/,
+  );
+});

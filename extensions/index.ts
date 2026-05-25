@@ -46,6 +46,7 @@ import {
   AUDIT_COMMAND_SOURCE,
   PLAN_COMMAND_SOURCE,
   GIT_REVIEW_COMMAND_SOURCE,
+  HARNESS_ISSUE_TYPE,
   LEARNING_VERSION,
   MEMORY_TAIL_LINES,
   PROMOTION_IMPROVEMENT_THRESHOLD,
@@ -78,7 +79,10 @@ import {
   type KhalaLearningAssessment,
   type KhalaLearningRecord,
 } from "./learning/khala-learn.ts";
-import { searchKhalaMemory, type KhalaMemorySearchResult } from "./learning/search.ts";
+import {
+  searchKhalaMemory,
+  type KhalaMemorySearchResult,
+} from "./learning/search.ts";
 import {
   clearSessionRules,
   readEffectiveRuntimeRules,
@@ -177,6 +181,11 @@ import {
   runSessionEndHooks,
   type LowConfidenceEvent,
 } from "./runtime/lifecycle.ts";
+import {
+  evaluateHarnessTurn,
+  memorySearchQueryQuality,
+  type HarnessTurnIssue,
+} from "./runtime/escalation.ts";
 import { RUNTIME_PATHS } from "./runtime/paths.ts";
 import {
   cloneRuntimeProfile,
@@ -564,7 +573,9 @@ function shouldConsiderKhalaLearning(params: {
   userText: string;
   assistantText: string;
   workflow: PendingWorkflow | null;
+  harnessIssueSummaries?: string[];
 }): boolean {
+  if ((params.harnessIssueSummaries?.length ?? 0) > 0) return true;
   const combined = normalizeWhitespace(
     `${params.userText} ${params.assistantText}`,
   );
@@ -582,6 +593,7 @@ async function maybeAssessAndLearn(params: {
   workflow: PendingWorkflow | null;
   userText: string;
   assistantText: string;
+  harnessIssueSummaries?: string[];
 }): Promise<KhalaLearningAssessment | null> {
   if (!runtimeState.agentEnabled) return null;
   if (
@@ -589,6 +601,7 @@ async function maybeAssessAndLearn(params: {
       userText: params.userText,
       assistantText: params.assistantText,
       workflow: params.workflow,
+      harnessIssueSummaries: params.harnessIssueSummaries,
     })
   ) {
     return null;
@@ -604,7 +617,10 @@ async function maybeAssessAndLearn(params: {
       workflowId: params.workflow?.id,
       mutationCount: params.workflow?.mutationCount ?? 0,
       loadedSkills: params.workflow?.loadedSkills ?? [],
-      policyWarnings: params.workflow?.policyWarnings ?? [],
+      policyWarnings: [
+        ...(params.workflow?.policyWarnings ?? []),
+        ...(params.harnessIssueSummaries ?? []),
+      ],
       userCorrection: USER_CORRECTION_PATTERN.test(params.userText),
       ...(taskToolCallCount > runtimeState.memoryToolCallLimit
         ? {
@@ -760,7 +776,9 @@ async function runSelfImprovementReview(params: {
           slugify,
         });
         const reservedNames = new Set(
-          (await listLearnedSkillRecords(paths)).map((record) => record.metadata.name),
+          (await listLearnedSkillRecords(paths)).map(
+            (record) => record.metadata.name,
+          ),
         );
         const skillName = chooseAvailableGeneratedSkillName({
           preferredName: preferredSkillName,
@@ -796,7 +814,9 @@ async function runSelfImprovementReview(params: {
               lesson: assessment.lesson,
             }),
           );
-          actions.push(`Promotion queue updated after ${skillName} guard failure`);
+          actions.push(
+            `Promotion queue updated after ${skillName} guard failure`,
+          );
         } else {
           actions.push(`Learned skill ${skillName} created`);
         }
@@ -995,6 +1015,32 @@ function ensureAgentEnabledForCommand(
 
 function addPolicyEvent(pi: ExtensionAPI, event: PolicyEvent): void {
   appendPolicyEvent(pi, runtimeState, event);
+}
+
+function appendHarnessIssueEntry(
+  pi: ExtensionAPI,
+  issue: {
+    code: string;
+    title: string;
+    block: boolean;
+    message: string;
+  },
+  context: {
+    workflow: PendingWorkflow | null;
+    userText: string;
+  },
+): void {
+  pi.appendEntry(HARNESS_ISSUE_TYPE, {
+    at: nowIso(),
+    code: issue.code,
+    title: issue.title,
+    block: issue.block,
+    mode: runtimeState.firstPrinciplesConfig.responseComplianceMode,
+    workflowId: context.workflow?.id ?? null,
+    workflowType: context.workflow?.type ?? null,
+    userSummary: summarizeEvidence(context.userText, 180),
+    message: issue.message,
+  });
 }
 
 async function refreshLearnedResourceCompletions(cwd: string): Promise<void> {
@@ -1357,12 +1403,13 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       const tailLines = clampPositiveInt(params.tailLines, 8, 50);
       const recentLimit = clampPositiveInt(params.recentLimit, 8, 50);
       const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
-      const [memoryTail, activeLessons, recentRecords, activeRules] = await Promise.all([
-        getLearningMemoryTail(ctx.cwd, learningPathCache, tailLines),
-        getActiveLearningLessonsTail(ctx.cwd, learningPathCache, tailLines),
-        readRecentKhalaLearningRecords(paths, recentLimit),
-        readEffectiveRuntimeRules(paths),
-      ]);
+      const [memoryTail, activeLessons, recentRecords, activeRules] =
+        await Promise.all([
+          getLearningMemoryTail(ctx.cwd, learningPathCache, tailLines),
+          getActiveLearningLessonsTail(ctx.cwd, learningPathCache, tailLines),
+          readRecentKhalaLearningRecords(paths, recentLimit),
+          readEffectiveRuntimeRules(paths),
+        ]);
 
       markMemoryRead();
 
@@ -1405,11 +1452,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     name: "khala_search_memory",
     label: "Khala Search Memory",
     description:
-      "Search khala memory, learned skills, and reviewed workflow artifacts with results sorted by relevance. Use a task-specific query to retrieve older relevant memory beyond the recent tail.",
+      "Search khala memory, learned skills, and reviewed workflow artifacts with results sorted by relevance. Use a focused task-specific query to retrieve older relevant memory beyond the recent tail.",
     parameters: Type.Object({
       query: Type.String({
         description:
-          "Task-specific search query, ideally including the workflow, technology, files, error, or correction being handled.",
+          "Focused task-specific search query including concrete workflow, technology, file, symbol, error, correction, or user intent signals.",
       }),
       limit: Type.Optional(
         Type.Number({
@@ -1418,7 +1465,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ),
       snippetLength: Type.Optional(
         Type.Number({
-          description: "Maximum snippet characters per result (default 220, max 500)",
+          description:
+            "Maximum snippet characters per result (default 220, max 500)",
         }),
       ),
     }),
@@ -1441,6 +1489,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       const query = typeof params.query === "string" ? params.query.trim() : "";
       if (!query) {
         throw new Error("khala_search_memory requires a non-empty query.");
+      }
+      const queryQuality = memorySearchQueryQuality(query);
+      if (!queryQuality.focused) {
+        throw new Error(
+          `khala_search_memory requires a focused task-specific query: ${queryQuality.reason}`,
+        );
       }
       const limit = clampPositiveInt(params.limit, 8, 25);
       const snippetLength = clampPositiveInt(params.snippetLength, 220, 500);
@@ -1503,9 +1557,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       const quality = validateLearningCandidateQuality({
         trigger: params.trigger,
         lesson: params.lesson,
-        evidence: [params.evidenceSnippet, ...(params.actionTaken ?? [])].filter(
-          Boolean,
-        ),
+        evidence: [
+          params.evidenceSnippet,
+          ...(params.actionTaken ?? []),
+        ].filter(Boolean),
         hasConcreteEvidence:
           Boolean(params.evidenceSnippet.trim()) ||
           (params.actionTaken?.length ?? 0) > 0,
@@ -1541,7 +1596,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         reason: "Stored by khala_learn tool.",
         evidence: [],
         evidenceSnippet: params.evidenceSnippet,
-        promotable: Boolean(params.promotable && score >= 0.9 && confidence >= 0.9),
+        promotable: Boolean(
+          params.promotable && score >= 0.9 && confidence >= 0.9,
+        ),
         sensitive: false,
         components: {
           reusability: 1,
@@ -1709,6 +1766,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       learningPathCache,
       memoryTailLines: MEMORY_TAIL_LINES,
       memoryToolCallLimit: runtimeState.memoryToolCallLimit,
+      lowConfidenceThreshold: activeRuntimeProfile.lowConfidenceThreshold,
+      harnessLimits: activeRuntimeProfile.harnessLimits,
       ruleQuery: latestUserInput,
       workflowType: pendingWorkflow?.type,
       workflowId: pendingWorkflow?.id,
@@ -1822,6 +1881,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     const userText = extractLastUserText(messages);
     const hasWorkflowFooter = hasRequiredWorkflowFooter(assistantText);
     const pendingMemoryGateRecovery = findPendingMemoryGateRecovery(messages);
+    let harnessIssues: HarnessTurnIssue[] = [];
 
     if (isEmptyTerminalAssistantResponse(messages)) {
       return {
@@ -1886,6 +1946,27 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       }
 
       notify(ctx, reason, "warning");
+    }
+
+    if (
+      runtimeState.agentEnabled &&
+      lastAssistantMessage?.stopReason === "stop"
+    ) {
+      harnessIssues = evaluateHarnessTurn({
+        messages,
+        userText,
+        assistantText,
+        lowConfidenceThreshold: activeRuntimeProfile.lowConfidenceThreshold,
+        responseComplianceMode:
+          runtimeState.firstPrinciplesConfig.responseComplianceMode,
+        harnessLimits: activeRuntimeProfile.harnessLimits,
+      });
+
+      for (const issue of harnessIssues) {
+        appendHarnessIssueEntry(pi, issue, { workflow, userText });
+        if (issue.block) return { block: true, reason: issue.message };
+        notify(ctx, issue.message, "warning");
+      }
     }
 
     if (workflow && !hasWorkflowFooter) {
@@ -1959,6 +2040,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         workflow,
         userText,
         assistantText: text,
+        harnessIssueSummaries: harnessIssues.map(
+          (issue) => `harness issue: ${issue.code} - ${issue.title}`,
+        ),
       });
       await runSelfImprovementReview({
         pi,
