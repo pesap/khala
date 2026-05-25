@@ -1,0 +1,29 @@
+# Local runtime state and agent scratch data
+.codex
+.pi/
+agent/
+runtime/memory/
+
+# Repository and development-only metadata
+.git/
+.github/
+.gitbutler/
+.idea/
+.vscode/
+.tmp/
+docs/
+examples/
+tests/
+
+# Tooling-only inputs
+biome.json
+tsconfig*.json
+*.tsbuildinfo
+extensions/package-lock.json
+
+# Transient language/runtime artifacts
+dist/
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store

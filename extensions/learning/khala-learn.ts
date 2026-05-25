@@ -216,6 +216,54 @@ function inferWorkflowLesson(input: AssessInput): { kind: LearningKind; trigger:
         "Always include concrete postflight verification after mutation work so outcomes are auditable and policy-compliant.",
     };
   }
+  if ((input.policyWarnings ?? []).some((line) => /harness issue: tool_efficiency/i.test(line))) {
+    return {
+      kind: "tool_rule",
+      trigger: "evidence collection during tool-backed work",
+      lesson:
+        "Reuse existing observations and prefer bounded read/search tools; avoid duplicate evidence calls and unbounded shell dumps.",
+    };
+  }
+  if ((input.policyWarnings ?? []).some((line) => /harness issue: memory_search/i.test(line))) {
+    return {
+      kind: "tool_rule",
+      trigger: "substantial tool-backed work or mutation",
+      lesson:
+        "Call khala_search_memory with a focused query containing workflow, technology, file, symbol, error, correction, or user intent before substantial work.",
+    };
+  }
+  if ((input.policyWarnings ?? []).some((line) => /harness issue: skill_routing/i.test(line))) {
+    return {
+      kind: "tool_rule",
+      trigger: "task matches a packaged skill route",
+      lesson:
+        "Read the relevant packaged SKILL.md before finalizing so task-specific best practices guide the answer.",
+    };
+  }
+  if ((input.policyWarnings ?? []).some((line) => /harness issue: evidence_routing/i.test(line))) {
+    return {
+      kind: "tool_rule",
+      trigger: "source-backed, current, URL, docs, or artifact-specific request",
+      lesson:
+        "Use matching evidence before answering: local read/search for local artifacts and focused web/search/researcher tools for external or current facts.",
+    };
+  }
+  if ((input.policyWarnings ?? []).some((line) => /harness issue: model_escalation/i.test(line))) {
+    return {
+      kind: "tool_rule",
+      trigger: "low confidence, knowledge gap, or repeated tool failures",
+      lesson:
+        "Escalate through a stronger advisory model after the uncertainty or repeated-failure trigger before finalizing.",
+    };
+  }
+  if ((input.policyWarnings ?? []).some((line) => /harness issue: learning_capture/i.test(line))) {
+    return {
+      kind: "tool_rule",
+      trigger: "user asks for durable memory capture or assistant claims storage",
+      lesson:
+        "Call khala_learn with concrete trigger, lesson, evidence, score, and confidence before claiming durable memory storage.",
+    };
+  }
   return null;
 }
 

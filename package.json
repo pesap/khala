@@ -27,9 +27,6 @@
     "skills": [
       "./skills",
       "./node_modules/pi-subagents/skills"
-    ],
-    "themes": [
-      "./themes"
     ]
   },
   "peerDependencies": {
