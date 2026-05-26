@@ -1,0 +1,151 @@
+{
+  "cases": [
+    {
+      "name": "rejects duplicate local evidence collection",
+      "userText": "Inspect README.md and summarize the runtime harness.",
+      "assistantText": "I inspected README.md and summarized the runtime harness.",
+      "messages": [
+        { "role": "user", "text": "Inspect README.md and summarize the runtime harness." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README runtime harness documentation" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README runtime harness documentation" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency"],
+      "expectedMetrics": {
+        "toolCallCount": 2,
+        "wasteSignalCount": 1,
+        "duplicateEvidence": true
+      }
+    },
+    {
+      "name": "rejects broad memory search before mutation",
+      "userText": "Update README.md to document the runtime harness memory search behavior.",
+      "assistantText": "I updated README.md with the runtime harness memory search behavior.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Update README.md to document the runtime harness memory search behavior."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "khala_search_memory", "arguments": { "query": "fix repo" } }
+        },
+        { "role": "toolResult", "text": "generic memory result" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md runtime harness docs" }
+      ],
+      "expectedIssueCodes": [
+        "tool_efficiency",
+        "memory_search",
+        "skill_routing",
+        "evidence_routing"
+      ]
+    },
+    {
+      "name": "rejects missing proactive skill route",
+      "userText": "Review this TypeScript API change for public compatibility.",
+      "assistantText": "I reviewed the TypeScript API change for public compatibility.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Review this TypeScript API change for public compatibility."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "rejects broad external evidence for current docs",
+      "userText": "Use official docs to confirm the latest TypeScript release notes.",
+      "assistantText": "According to the latest TypeScript release notes, the behavior changed. Source: https://example.com/typescript",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs to confirm the latest TypeScript release notes."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "web_search", "arguments": { "query": "latest docs" } }
+        },
+        { "role": "toolResult", "text": "generic latest docs result" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency", "skill_routing", "evidence_routing"]
+    },
+    {
+      "name": "rejects unresolved knowledge gap without stronger model",
+      "userText": "Tell me whether the current OpenAI API supports this option.",
+      "assistantText": "I am not sure because I cannot access current docs.\nConfidence: 0.52",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Tell me whether the current OpenAI API supports this option."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing", "evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "accepts composed cheap-model harness path",
+      "userText": "Use the TypeScript skill and confirm the docs at https://www.typescriptlang.org/docs/.",
+      "assistantText": "Using the TypeScript skill plus focused memory and docs evidence, the TypeScript docs are at https://www.typescriptlang.org/docs/.\nConfidence: 0.88",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use the TypeScript skill and confirm the docs at https://www.typescriptlang.org/docs/."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript docs URL skill answer" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant TypeScript docs URL answer memory" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill instructions for code and docs changes" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "TypeScript docs https://www.typescriptlang.org/docs/" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript docs source https://www.typescriptlang.org/docs/ confirms the TypeScript docs URL"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript documentation page at https://www.typescriptlang.org/docs/ confirms the TypeScript docs URL"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 4,
+        "focusedMemorySearches": 1,
+        "successfulMemorySearches": 1,
+        "skillLoads": 1,
+        "externalEvidenceCalls": 2,
+        "wasteSignalCount": 0
+      }
+    }
+  ]
+}

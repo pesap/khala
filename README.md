@@ -198,6 +198,8 @@ harness:
 
 The bootstrap limits keep the stable prompt prefix cache-friendly; substantial turns should retrieve task-specific context with `khala_search_memory` instead of expanding startup memory.
 
+`evaluateHarnessTurnMetrics` exposes compact per-turn observability for the same transcript surface as `evaluateHarnessTurn`: scoped message count, tool-call count, focused/successful memory searches, skill loads, external evidence calls, command evidence, mutations, learning captures, model escalations, and token-waste signals such as duplicate evidence, broad queries, inefficient shell evidence, or duplicate learning writes. Use these metrics to tune harness limits and verify that cheap-model runs reuse cached observations instead of spending extra tool calls.
+
 ## Configuration and package layout
 
 ```text
@@ -255,6 +257,8 @@ Khala also registers model-facing tools:
 
 Learning persistence is conservative. A candidate must have a concrete trigger, a specific operating lesson, enough evidence, no sensitive material, and score/confidence at or above the storage threshold. Promotion requires higher score/confidence and repeated workflow success only creates a review candidate; it no longer creates runnable workflow artifacts automatically.
 
+The expected memory loop is learn -> retrieve -> apply: `khala_learn` persists compact durable lessons into searchable memory, later turns use focused `khala_search_memory` queries to retrieve lessons even when they have fallen out of the short recency tail, and the final answer or tool plan should visibly apply the retrieved lesson. The integration test in `tests/learning/search.test.ts` covers that full loop.
+
 ## Learning model
 
 Learning is event-based memory, not model fine-tuning.
@@ -309,6 +313,7 @@ Durable artifacts are written to:
 - workflow response footer lines: `Result: ...` and `Confidence: 0..1`
 - runtime checks for promise-only tool work, generic permission-question stalls, incomplete memory-gate recovery, and approval-required destructive requests
 - learning quality gates before storage or promotion
+- replay fixtures in `tests/runtime/fixtures/harness-replay.json` exercise end-to-end cheap-model failure modes through the same `evaluateHarnessTurn` runtime entrypoint, so new harness gaps can be added as transcript slices rather than only helper-level assertions
 
 **Not automatic:**
 

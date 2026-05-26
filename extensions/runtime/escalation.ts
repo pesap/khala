@@ -60,6 +60,29 @@ export interface HarnessTurnIssue {
   message: string;
 }
 
+export interface HarnessTurnMetrics {
+  scopedMessageCount: number;
+  toolCallCount: number;
+  memorySearches: {
+    total: number;
+    focused: number;
+    successful: number;
+  };
+  skillLoads: number;
+  externalEvidenceCalls: number;
+  commandEvidenceCalls: number;
+  mutationCalls: number;
+  learningCaptures: number;
+  modelEscalations: number;
+  wasteSignals: {
+    duplicateEvidence: boolean;
+    inefficientShell: boolean;
+    broadQuery: boolean;
+    duplicateLearning: boolean;
+    count: number;
+  };
+}
+
 const KNOWLEDGE_GAP_REGEX =
   /\b(?:i do not know|i don't know|not sure|uncertain|unclear|unknown|best guess|guessing|may be wrong|might be wrong|could be wrong|can't tell|cannot tell|can't determine|cannot determine|could(?: not|n't) determine|(?:can't|cannot|could(?: not|n't)|unable to) (?:verify|validate|confirm|determine|check|test|run|execute|inspect|reproduce|build|lint|typecheck)|low[- ]confidence|(?:not|no) confidence|not confident|knowledge cutoff|training data|no (?:live |current )?(?:web|internet|browser|browsing) access|(?:i|we) (?:do not|don't) have (?:live |current )?(?:web|internet|browser|browsing) access|(?:i|we) (?:do not|don't) have visibility into|(?:can't|cannot|unable to) (?:browse|search (?:the )?web|access (?:the )?(?:web|internet|browser|browsing|current docs?))|cannot verify|can't verify|could(?: not|n't) verify|(?:was|were)(?: not|n't) able to (?:verify|validate|confirm|determine|check|test|run|execute|inspect|access|look up|search|review|build|lint|typecheck)|unable to (?:verify|validate|confirm|determine|check|test|run|execute|inspect|build|lint|typecheck)|no way to verify|(?:i|we) (?:haven't|have not|didn't|did not) (?:check(?:ed)?|validat(?:e|ed)|verif(?:y|ied)|confirm(?:ed)?|test(?:ed)?|run|execute(?:d)?|inspect(?:ed)?|look(?:ed)? up|search(?:ed)?|review(?:ed)?|build|built|lint(?:ed)?|typecheck(?:ed)?)|not yet verified|not verified|unverified|cannot access|can't access|without (?:seeing|access to|the) (?:the )?(?:file|files|logs?|output|diff|source|docs?|context|evidence|artifact|command output|test output)|(?:i|we) (?:do not|don't) have (?:the )?(?:file|files|logs?|output|diff|source|docs?|context|evidence|artifact|command output|test output)|(?:i|we)(?:'d| would)? need (?:to see|access to|the) (?:the )?(?:file|files|logs?|output|diff|source|docs?|context|evidence|artifact|command output|test output)(?:\s+to\s+(?:confirm|verify|validate|know|tell|determine))?|do not have enough (?:context|information|data)|don't have enough (?:context|information|data)|not enough (?:context|information|evidence|data)|insufficient (?:evidence|data)|knowledge gap|need(?:s)? (?:a )?(?:better|stronger) model|escalat(?:e|ion))\b/i;
 
@@ -4868,6 +4891,110 @@ export function evaluateToolEfficiency(params: {
           ? `repeated external URL evidence for ${duplicateToolName.replace(/^external URL /, "")} without an intervening mutation`
       : `repeated identical ${duplicateToolName} call without an intervening mutation`,
   };
+}
+
+export function evaluateHarnessTurnMetrics(params: {
+  messages: AgentEndEventMessage[];
+}): HarnessTurnMetrics {
+  const scopedMessages = scopedMessagesAfterLatestUser(params.messages);
+  const metrics: HarnessTurnMetrics = {
+    scopedMessageCount: scopedMessages.length,
+    toolCallCount: 0,
+    memorySearches: {
+      total: 0,
+      focused: 0,
+      successful: 0,
+    },
+    skillLoads: 0,
+    externalEvidenceCalls: 0,
+    commandEvidenceCalls: 0,
+    mutationCalls: 0,
+    learningCaptures: 0,
+    modelEscalations: 0,
+    wasteSignals: {
+      duplicateEvidence: findRedundantEvidenceToolCall(params.messages) !== null,
+      inefficientShell: findInefficientShellEvidenceCall(params.messages) !== null,
+      broadQuery: findBroadEvidenceQueryCall(params.messages) !== null,
+      duplicateLearning: findRedundantLearningCaptureCall(params.messages) !== null,
+      count: 0,
+    },
+  };
+  metrics.wasteSignals.count = [
+    metrics.wasteSignals.duplicateEvidence,
+    metrics.wasteSignals.inefficientShell,
+    metrics.wasteSignals.broadQuery,
+    metrics.wasteSignals.duplicateLearning,
+  ].filter(Boolean).length;
+
+  for (const [messageIndex, message] of scopedMessages.entries()) {
+    for (const item of message.content) {
+      if (item.type !== "toolCall") continue;
+      if (typeof item.name !== "string") continue;
+      metrics.toolCallCount += 1;
+
+      if (item.name === "khala_search_memory") {
+        metrics.memorySearches.total += 1;
+        if (memorySearchQueryQuality(extractQueryArgument(item.arguments)).focused) {
+          metrics.memorySearches.focused += 1;
+        }
+        if (
+          memorySearchToolResultHasSubstantiveEvidence(
+            scopedMessages[messageIndex + 1],
+          )
+        ) {
+          metrics.memorySearches.successful += 1;
+        }
+      }
+
+      if (item.name === "khala_learn") {
+        metrics.learningCaptures += 1;
+      }
+
+      if (
+        item.name === "read" &&
+        skillReadPathTargetsFromArgs(item.arguments).some((target) =>
+          SKILL_READ_PATH_REGEX.test(target),
+        )
+      ) {
+        metrics.skillLoads += 1;
+      } else if (
+        /\b(?:readSkill|loadSkill|skill_read|skill_load)\b/i.test(item.name) &&
+        skillLoaderTargetsFromArgs(item.arguments).length > 0
+      ) {
+        metrics.skillLoads += 1;
+      } else if (
+        item.name === "subagent" &&
+        /\b(?:skills?|assignedSkills?)\b/i.test(stringifyToolArguments(item.arguments))
+      ) {
+        metrics.skillLoads += 1;
+      }
+
+      if (
+        EXTERNAL_EVIDENCE_TOOL_NAMES.has(item.name) ||
+        toolNameLooksLikeExternalEvidence(item.name)
+      ) {
+        metrics.externalEvidenceCalls += 1;
+      }
+
+      if (COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)) {
+        metrics.commandEvidenceCalls += 1;
+      }
+
+      if (
+        MUTATION_TOOL_NAMES.has(item.name) &&
+        (item.name !== "bash" ||
+          isMutatingShellCommand(extractCommandArgument(item.arguments)))
+      ) {
+        metrics.mutationCalls += 1;
+      }
+
+      if (isModelEscalationToolCall(item.name, stringifyToolArguments(item.arguments))) {
+        metrics.modelEscalations += 1;
+      }
+    }
+  }
+
+  return metrics;
 }
 
 function shouldBlockHarnessIssue(mode: string): boolean {
