@@ -143,11 +143,12 @@ export function parseTddArgs(args: string): { goal: string; language: string } {
 
   const languageResult = removeFlag(rest, /(^|\s)--lang\s+(\S+)(\s|$)/);
   rest = languageResult.value;
-  const language = normalizeWhitespace(languageResult.match?.[2] ?? "auto").toLowerCase();
 
   return {
     goal: rest,
-    language: language || "auto",
+    language:
+      normalizeWhitespace(languageResult.match?.[2] ?? "auto").toLowerCase() ||
+      "auto",
   };
 }
 
@@ -159,8 +160,8 @@ export function parseAddressOpenIssuesArgs(args: string): {
 
   const limitResult = removeFlag(rest, /(^|\s)--limit\s+(\d+)(\s|$)/);
   rest = limitResult.value;
-  const limitRaw = Number(limitResult.match?.[2] ?? 20);
-  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 20;
+  const parsedLimit = Number(limitResult.match?.[2] ?? 20);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20;
 
   const repoResult = removeFlag(rest, /(^|\s)--repo\s+(\S+)(\s|$)/);
   const repo = normalizeWhitespace(repoResult.match?.[2] ?? "");
@@ -202,18 +203,20 @@ export function parseLearnSkillArgs(args: string): {
   };
 }
 
-export const parseKhalaMemorySetupArgs = (
-  args: string,
-): { scope: "project" | "global"; error?: string } =>
-  parseScopeArg(args, "Usage: /khala-memory-setup [project|global]");
-export const parseKhalaMemoryRestartArgs = (
-  args: string,
-): { scope: "project" | "global"; error?: string } =>
-  parseScopeArg(args, "Usage: /khala-memory-restart [project|global]");
-export const parseKhalaMemoryRemoveArgs = (
-  args: string,
-): { scope: "project" | "global"; error?: string } =>
-  parseScopeArg(args, "Usage: /khala-memory-remove [project|global]");
+const makeMemoryScopeParser =
+  (usage: string) =>
+  (args: string): { scope: "project" | "global"; error?: string } =>
+    parseScopeArg(args, usage);
+
+export const parseKhalaMemorySetupArgs = makeMemoryScopeParser(
+  "Usage: /khala-memory-setup [project|global]",
+);
+export const parseKhalaMemoryRestartArgs = makeMemoryScopeParser(
+  "Usage: /khala-memory-restart [project|global]",
+);
+export const parseKhalaMemoryRemoveArgs = makeMemoryScopeParser(
+  "Usage: /khala-memory-remove [project|global]",
+);
 
 function parseRecordLine<T>(
   args: string,
