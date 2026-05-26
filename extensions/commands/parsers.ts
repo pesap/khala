@@ -332,6 +332,8 @@ export function parseReviewArgs(
   commandName = "review",
 ): ParsedReviewArgsResult {
   const usage = `Usage: /${commandName} [uncommitted|branch <name>|commit <sha>|pr <number|url>|folder <paths...>|file <paths...>|<paths...>] [--extra "focus"]`;
+  const modeUsage = (value: string): string =>
+    `Usage: /${commandName} ${value} [--extra "focus"]`;
   const trimmed = args.trim();
   if (!trimmed) {
     return { mode: "uncommitted" };
@@ -349,9 +351,9 @@ export function parseReviewArgs(
   const [modeToken, ...rest] = positional;
   const mode = modeToken.toLowerCase();
   const commandUsage = {
-    branch: `Usage: /${commandName} branch <base-branch> [--extra "focus"]`,
-    commit: `Usage: /${commandName} commit <sha> [--extra "focus"]`,
-    pr: `Usage: /${commandName} pr <number|url> [--extra "focus"]`,
+    branch: modeUsage("branch <base-branch>"),
+    commit: modeUsage("commit <sha>"),
+    pr: modeUsage("pr <number|url>"),
   } as const;
   const cleanEntries = (entries: string[]): string[] =>
     entries.map((entry) => entry.trim()).filter(Boolean);
@@ -386,11 +388,7 @@ export function parseReviewArgs(
     case "folder":
     case "file": {
       const paths = cleanEntries(rest);
-      if (paths.length === 0) {
-        return {
-          error: `Usage: /${commandName} ${mode} <path ...> [--extra "focus"]`,
-        };
-      }
+      if (paths.length === 0) return { error: modeUsage(`${mode} <path ...>`) };
       return { mode: "folder", paths, extraInstruction };
     }
   }
