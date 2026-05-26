@@ -139,10 +139,12 @@ function bestSnippet(text: string, terms: string[], maxLength: number): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return "";
   const lower = normalized.toLowerCase();
-  const firstHit = terms
-    .map((term) => lower.indexOf(term))
-    .filter((index) => index >= 0)
-    .sort((a, b) => a - b)[0];
+  const firstHit = terms.reduce<number | null>((earliest, term) => {
+    const index = lower.indexOf(term);
+    if (index < 0) return earliest;
+    if (earliest === null) return index;
+    return Math.min(earliest, index);
+  }, null);
   const center = firstHit ?? 0;
   const start = Math.max(0, center - Math.floor(maxLength / 3));
   const snippet = normalized.slice(start, start + maxLength).trim();
@@ -150,7 +152,7 @@ function bestSnippet(text: string, terms: string[], maxLength: number): string {
 }
 
 function scoreMemoryText(params: {
-  query: string;
+  queryLower: string;
   terms: string[];
   filePath: string;
   text: string;
@@ -158,12 +160,11 @@ function scoreMemoryText(params: {
 }): number {
   const lowerText = params.text.toLowerCase();
   const lowerPath = params.filePath.toLowerCase();
-  const query = params.query.toLowerCase().trim();
   let score = 0;
 
-  if (query) {
-    if (lowerText.includes(query)) score += 12;
-    if (lowerPath.includes(query)) score += 4;
+  if (params.queryLower) {
+    if (lowerText.includes(params.queryLower)) score += 12;
+    if (lowerPath.includes(params.queryLower)) score += 4;
   }
 
   for (const term of params.terms) {
@@ -187,6 +188,7 @@ export async function searchKhalaCorpus(params: {
 }): Promise<KhalaCorpusSearchResult[]> {
   const query = params.query.trim();
   if (!query) return [];
+  const queryLower = query.toLowerCase();
   const terms = tokenize(query);
   if (terms.length === 0) return [];
   const includeKinds = params.includeKinds
@@ -207,7 +209,7 @@ export async function searchKhalaCorpus(params: {
     const kind = classifyCorpusPath(file, params.paths);
     if (includeKinds && !includeKinds.has(kind)) continue;
     const score = scoreMemoryText({
-      query,
+      queryLower,
       terms,
       filePath: file,
       text,
