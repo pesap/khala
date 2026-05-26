@@ -269,7 +269,7 @@ sequenceDiagram
   participant M as Memory files
 
   U->>K: workflow command
-  K->>R: open runs/&lt;id&gt;.json
+  K->>R: open runs/{id}.json
   K->>K: execute + validate
   K->>M: append learning.jsonl + MEMORY.md
   U->>K: corrective feedback
