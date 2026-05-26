@@ -33,6 +33,8 @@ export interface RuntimeState {
   latestPostflight: PostflightRecord | null;
   policyEvents: PolicyEvent[];
   memoryToolCallLimit: number;
+  lastObligationBlockKey: string | null;
+  lastObligationBlockCount: number;
 }
 
 export function createRuntimeState(): RuntimeState {
@@ -45,6 +47,8 @@ export function createRuntimeState(): RuntimeState {
     latestPostflight: null,
     policyEvents: [],
     memoryToolCallLimit: 15,
+    lastObligationBlockKey: null,
+    lastObligationBlockCount: 0,
   };
 }
 
@@ -63,4 +67,6 @@ export function resetSessionComplianceState(state: RuntimeState): void {
   state.riskApproval = null;
   state.activePreflight = null;
   state.latestPostflight = null;
+  state.lastObligationBlockKey = null;
+  state.lastObligationBlockCount = 0;
 }

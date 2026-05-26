@@ -1785,6 +1785,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     const text = typeof event.text === "string" ? event.text.trim() : "";
     if (!text) return;
     latestUserInput = text;
+    runtimeState.lastObligationBlockKey = null;
+    runtimeState.lastObligationBlockCount = 0;
     if (!isContinuationInput(text)) {
       taskToolCallCount = 0;
       resetMemoryGate("new task or scope change");
@@ -1944,10 +1946,34 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           obligation: obligation.obligation,
         })
       ) {
+        const normalizedUserText = userText.trim().toLowerCase();
+        const obligationBlockKey = `${obligation.obligation}:${normalizedUserText}`;
+        if (runtimeState.lastObligationBlockKey === obligationBlockKey) {
+          runtimeState.lastObligationBlockCount += 1;
+        } else {
+          runtimeState.lastObligationBlockKey = obligationBlockKey;
+          runtimeState.lastObligationBlockCount = 1;
+        }
+
+        if (runtimeState.lastObligationBlockCount >= 3) {
+          notify(
+            ctx,
+            [
+              reason,
+              "",
+              "Loop guard: repeated identical obligation block detected; downgraded to warning for this turn.",
+            ].join("\n"),
+            "warning",
+          );
+          return;
+        }
         return { block: true, reason };
       }
 
       notify(ctx, reason, "warning");
+    } else {
+      runtimeState.lastObligationBlockKey = null;
+      runtimeState.lastObligationBlockCount = 0;
     }
 
     if (
