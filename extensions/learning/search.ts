@@ -62,6 +62,18 @@ function classifyCorpusPath(filePath: string, paths: LearningPaths): KhalaCorpus
   if (normalized.includes("/prompts/")) return "prompt";
   return "memory";
 }
+const fixedCorpusFiles = (paths: LearningPaths): string[] => [
+  paths.memoryMd,
+  paths.lessonsJsonl,
+  paths.khalaLearningJsonl,
+  paths.curatorReport,
+  paths.promotionQueue,
+  paths.rulesActiveJsonl,
+  paths.rulesSessionJsonl,
+  paths.rulesCandidatesJsonl,
+  paths.rulesAuditJsonl,
+  paths.rulesMd,
+];
 
 async function walkCandidateFiles(
   root: string,
@@ -174,19 +186,7 @@ export async function searchKhalaCorpus(params: {
     ? new Set<KhalaCorpusKind>(params.includeKinds)
     : null;
 
-  const fixedFiles = [
-    params.paths.memoryMd,
-    params.paths.lessonsJsonl,
-    params.paths.khalaLearningJsonl,
-    params.paths.curatorReport,
-    params.paths.promotionQueue,
-    params.paths.rulesActiveJsonl,
-    params.paths.rulesSessionJsonl,
-    params.paths.rulesCandidatesJsonl,
-    params.paths.rulesAuditJsonl,
-    params.paths.rulesMd,
-  ];
-  const files = await collectCandidateFiles(fixedFiles, [
+  const files = await collectCandidateFiles(fixedCorpusFiles(params.paths), [
     params.paths.skillsDir,
     params.paths.workflowsDir,
     params.paths.promptsDir,
