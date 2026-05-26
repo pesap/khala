@@ -259,6 +259,18 @@ test("allows normal explanation questions without tools", () => {
     ).obligation,
     "answer_allowed",
   );
+  assert.equal(
+    inferTurnObligation("Can you review this architecture idea?").obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("Could you analyze this design approach?").obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("Please verify this strategy proposal.").obligation,
+    "answer_allowed",
+  );
 });
 
 test("detects assistant tool-call and clarification output shapes", () => {

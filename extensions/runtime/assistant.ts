@@ -39,6 +39,10 @@ const GENERIC_PERMISSION_QUESTION_REGEX =
   /^\s*(?:can i|may i|should i|should we|do you want me to|would you like me to)\s+(?:proceed|continue|start|get started|begin|do (?:it|that|this)|work on (?:it|that|this))\b/;
 const ARTIFACT_ACTION_VERB_REGEX =
   /\b(inspect|check|review|analyze|verify|confirm|open|read|load|grep|find|locate|test|run|execute|edit|write|fix|implement|update|patch|modify|create|draft|address)\b/;
+const CONCEPTUAL_REQUEST_REGEX =
+  /\b(?:idea|approach|plan|strategy|design|opinion|trade-?offs?|reasoning|architecture|concept|proposal)\b/;
+const ARTIFACT_OR_COMMAND_TARGET_REGEX =
+  /(?:\b(file|path|repo|repository|session|log|diff|branch|pr|issue|skill|docs?|command|script|test|build|typecheck|lint)\b|\/|\.[a-z0-9]{1,8}\b|`[^`]+`)/;
 
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
@@ -156,6 +160,18 @@ export function isActionOrApprovalObligation(
 export function inferTurnObligation(userText: string): TurnObligationResult {
   const text = userText.trim().toLowerCase();
   if (!text) return { obligation: "none", reason: "no user request text" };
+
+  if (
+    /\b(can you|could you|please)\b/.test(text) &&
+    /\b(check|review|analyze|verify|confirm)\b/.test(text) &&
+    CONCEPTUAL_REQUEST_REGEX.test(text) &&
+    !ARTIFACT_OR_COMMAND_TARGET_REGEX.test(text)
+  ) {
+    return {
+      obligation: "answer_allowed",
+      reason: "conceptual request can be answered without tools",
+    };
+  }
 
   if (DESTRUCTIVE_REQUEST_REGEX.test(text)) {
     return {
