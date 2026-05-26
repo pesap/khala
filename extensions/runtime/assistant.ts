@@ -228,7 +228,7 @@ export function isAssistantClarification(
 ): boolean {
   if (!message) return false;
   const text = extractTextFromMessageContent(message.content);
-  if (!text || text.length > 1200) return false;
+  if (!text) return false;
   const sentences = text
     .split(/(?<=[.!?])\s+|\n+/)
     .map((sentence) => sentence.trim())
