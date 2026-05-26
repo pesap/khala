@@ -374,12 +374,8 @@ export function parseReviewArgs(
   }
 
   const directPaths = cleanEntries(positional);
-  if (
-    directPaths.length > 0 &&
-    directPaths.every((entry) => isResolvableReviewPath(entry, cwd))
-  ) {
+  if (directPaths.length > 0 && directPaths.every((entry) => isResolvableReviewPath(entry, cwd)))
     return { mode: "folder", paths: directPaths, extraInstruction };
-  }
 
   return { error: usage };
 }
