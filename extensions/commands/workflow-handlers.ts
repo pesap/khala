@@ -666,23 +666,16 @@ export function createWorkflowCommandHandlers(params: {
           );
         }
       }
-      const sourceFields = {
-        fromFile: parsed.fromFile ?? null,
-        fromUrl: parsed.fromUrl ?? null,
-      };
-      const targetFields = {
-        targetSkill: skillName,
-        targetFile: skillFile,
-      };
-
       await runWorkflowCommand({
         ctx,
         type: "learn-skill",
         input: parsed.topic || skillHint,
         flags: {
-          ...sourceFields,
+          fromFile: parsed.fromFile ?? null,
+          fromUrl: parsed.fromUrl ?? null,
           dryRun: parsed.dryRun,
-          ...targetFields,
+          targetSkill: skillName,
+          targetFile: skillFile,
         },
         sections: withFooter([
           `Topic: ${parsed.topic || "(derived from source)"}`,
@@ -701,9 +694,11 @@ export function createWorkflowCommandHandlers(params: {
         ]),
         entry: {
           topic: parsed.topic || null,
-          ...sourceFields,
+          fromFile: parsed.fromFile ?? null,
+          fromUrl: parsed.fromUrl ?? null,
           dryRun: parsed.dryRun,
-          ...targetFields,
+          targetSkill: skillName,
+          targetFile: skillFile,
         },
         startedMessage: parsed.dryRun
           ? `Started learn-skill dry run for ${skillName}.`
