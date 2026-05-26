@@ -199,6 +199,10 @@ test("infers approval obligation for destructive requests", () => {
     inferTurnObligation("Please reset --hard and clean the repo.").obligation,
     "approval_required",
   );
+  assert.equal(
+    inferTurnObligation("Please remove dead code in runtime helpers.").obligation,
+    "tool_required",
+  );
 });
 
 test("allows normal explanation questions without tools", () => {

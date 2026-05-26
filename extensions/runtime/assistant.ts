@@ -28,9 +28,9 @@ interface TurnObligationResult {
 }
 
 const TOOL_ACTION_REQUEST_REGEX =
-  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|let'?s\s+|can you\s+|could you\s+|would you\s+)?(?:read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy|add|address|commit|push|open|ship|create|draft|save|update|patch|modify)\b/;
+  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|let'?s\s+|can you\s+|could you\s+|would you\s+)?(?:read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy|add|address|commit|push|open|ship|create|draft|save|update|patch|modify|remove|delete)\b/;
 const DESTRUCTIVE_REQUEST_REGEX =
-  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|can you\s+|could you\s+|would you\s+)?(?:delete|remove|rm -rf|force push|reset --hard|rewrite history|drop table)\b/;
+  /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|can you\s+|could you\s+|would you\s+)?(?:(?:rm -rf|force push|reset --hard|rewrite history|drop table)|(?:(?:delete|remove)\s+(?:(?:the|all)\s+)?(?:[\w-]+\s+){0,3}(?:data|database|table|records?|history|repo|repository|branch|branches|files?|folders?|directories?)))\b/;
 const BLOCKING_CLARIFICATION_REGEX =
   /^(?:which|what|where|when|who|how)\b|\b(?:should i|should we|do you want|would you like|can you confirm|please confirm|confirm whether|can you share|can you provide|can you choose|can you clarify|can you send|can you paste)\b/;
 const APPROVAL_QUESTION_REGEX =
