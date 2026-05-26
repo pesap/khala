@@ -156,8 +156,10 @@ function scoreMemoryText(params: {
   const query = params.query.toLowerCase().trim();
   let score = 0;
 
-  if (query.length > 0 && lowerText.includes(query)) score += 12;
-  if (query.length > 0 && lowerPath.includes(query)) score += 4;
+  if (query) {
+    if (lowerText.includes(query)) score += 12;
+    if (lowerPath.includes(query)) score += 4;
+  }
 
   for (const term of params.terms) {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
