@@ -521,4 +521,6 @@ test("normalizeLoopGuardText collapses punctuation and spacing noise", () => {
     normalizeLoopGuardText("Please review src/app.ts."),
     "please review src/app.ts",
   );
+  assert.equal(normalizeLoopGuardText("..."), "_empty_");
+  assert.equal(normalizeLoopGuardText("(`...`)"), "_empty_");
 });

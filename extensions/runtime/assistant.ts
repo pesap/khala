@@ -186,13 +186,14 @@ export function evaluateObligationLoopGuard(params: {
 }
 
 export function normalizeLoopGuardText(text: string): string {
-  return text
+  const normalized = text
     .trim()
     .toLowerCase()
     .replace(/^["'`([{]+/, "")
     .replace(/["'`)\]}]+$/, "")
     .replace(/[.!?]+$/g, "")
     .replace(/\s+/g, " ");
+  return normalized || "_empty_";
 }
 
 export function inferTurnObligation(userText: string): TurnObligationResult {
