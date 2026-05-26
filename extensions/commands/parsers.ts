@@ -365,37 +365,36 @@ export function parseReviewArgs(
     return { mode: "pr", pr: directPr, extraInstruction };
   }
 
-  if (mode === "uncommitted") {
-    if (rest.length > 0) {
-      return { error: "`uncommitted` does not accept additional arguments." };
-    }
-
-    return { mode: "uncommitted", extraInstruction };
-  }
-
-  if (mode === "branch" || mode === "commit" || mode === "pr") {
-    const value =
-      mode === "pr"
-        ? singleArg(rest[0], parsePullRequestReference)
-        : singleArg(rest[0]);
-    if (!value) return { error: commandUsage[mode] };
-    if (mode === "branch") return { mode, branch: value, extraInstruction };
-    if (mode === "commit") return { mode, commit: value, extraInstruction };
-    return { mode, pr: value, extraInstruction };
-  }
-
   const toPaths = (entries: string[]): string[] =>
     entries.map((entry) => entry.trim()).filter(Boolean);
-
-  if (mode === "folder" || mode === "file") {
-    const paths = toPaths(rest);
-    if (paths.length === 0) {
-      return {
-        error: `Usage: /${commandName} ${mode} <path ...> [--extra "focus"]`,
-      };
+  switch (mode) {
+    case "uncommitted":
+      if (rest.length > 0) {
+        return { error: "`uncommitted` does not accept additional arguments." };
+      }
+      return { mode: "uncommitted", extraInstruction };
+    case "branch":
+    case "commit":
+    case "pr": {
+      const value =
+        mode === "pr"
+          ? singleArg(rest[0], parsePullRequestReference)
+          : singleArg(rest[0]);
+      if (!value) return { error: commandUsage[mode] };
+      if (mode === "branch") return { mode, branch: value, extraInstruction };
+      if (mode === "commit") return { mode, commit: value, extraInstruction };
+      return { mode, pr: value, extraInstruction };
     }
-
-    return { mode: "folder", paths, extraInstruction };
+    case "folder":
+    case "file": {
+      const paths = toPaths(rest);
+      if (paths.length === 0) {
+        return {
+          error: `Usage: /${commandName} ${mode} <path ...> [--extra "focus"]`,
+        };
+      }
+      return { mode: "folder", paths, extraInstruction };
+    }
   }
 
   const directPaths = toPaths(positional);
