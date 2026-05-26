@@ -319,6 +319,15 @@ export function findPendingMemoryGateRecovery(
   }
 
   if (blockedToolName === null || !sawMemoryRead) return null;
+  const lastAssistantMessage = getLastAssistantMessage(messages);
+  if (
+    isAssistantClarificationAllowedForObligation(
+      lastAssistantMessage,
+      "tool_required",
+    )
+  ) {
+    return null;
+  }
   return { blockedToolName };
 }
 

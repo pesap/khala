@@ -119,6 +119,30 @@ test("does not carry memory-gate recovery requirement across a new user turn", (
   assert.equal(findPendingMemoryGateRecovery(messages), null);
 });
 
+test("allows a blocking clarification instead of forced same-turn mutation retry", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("write"),
+    memoryReadRequired("write"),
+    assistantToolCall("khala_read_memory"),
+    textMessage("assistant", "Which file should I patch first?"),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
+test("does not treat generic permission as valid memory-gate recovery clarification", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("write"),
+    memoryReadRequired("write"),
+    assistantToolCall("khala_read_memory"),
+    textMessage("assistant", "Should I proceed?"),
+  ];
+
+  assert.deepEqual(findPendingMemoryGateRecovery(messages), {
+    blockedToolName: "write",
+  });
+});
+
 test("infers tool obligation for concrete inspection requests", () => {
   assert.equal(
     inferTurnObligation("Load your librarian skill and inspect the Torc repo")
