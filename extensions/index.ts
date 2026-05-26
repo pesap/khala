@@ -1888,21 +1888,48 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     let harnessIssues: HarnessTurnIssue[] = [];
 
     if (isEmptyTerminalAssistantResponse(messages)) {
+      const emptyResponseKey = `empty:${normalizeLoopGuardText(userText)}`;
+      const loopGuard = evaluateObligationLoopGuard({
+        current: {
+          key: runtimeState.lastEmptyResponseBlockKey,
+          count: runtimeState.lastEmptyResponseBlockCount,
+        },
+        key: emptyResponseKey,
+        blockThreshold: REPEATED_BLOCK_GUARD_THRESHOLD,
+      });
+      runtimeState.lastEmptyResponseBlockKey = loopGuard.next.key;
+      runtimeState.lastEmptyResponseBlockCount = loopGuard.next.count;
+      const emptyReason = [
+        "EMPTY ASSISTANT RESPONSE",
+        "",
+        "The assistant stopped without visible output or a tool call.",
+        "Continue with the next tool call or send a final user-visible response.",
+        workflow
+          ? "If this is the workflow conclusion, include the required `Result:` and `Confidence:` footer lines."
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      if (!loopGuard.block) {
+        notify(
+          ctx,
+          [
+            emptyReason,
+            "",
+            "Loop guard: repeated identical empty-response block detected; downgraded to warning for this turn.",
+          ].join("\n"),
+          "warning",
+        );
+        return;
+      }
       return {
         block: true,
-        reason: [
-          "EMPTY ASSISTANT RESPONSE",
-          "",
-          "The assistant stopped without visible output or a tool call.",
-          "Continue with the next tool call or send a final user-visible response.",
-          workflow
-            ? "If this is the workflow conclusion, include the required `Result:` and `Confidence:` footer lines."
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        reason: emptyReason,
       };
     }
+
+    runtimeState.lastEmptyResponseBlockKey = null;
+    runtimeState.lastEmptyResponseBlockCount = 0;
 
     if (
       pendingMemoryGateRecovery &&

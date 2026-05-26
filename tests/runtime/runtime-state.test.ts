@@ -12,6 +12,8 @@ test("runtime state initializes obligation loop guard fields", () => {
   assert.equal(state.lastObligationBlockCount, 0);
   assert.equal(state.lastMemoryGateBlockKey, null);
   assert.equal(state.lastMemoryGateBlockCount, 0);
+  assert.equal(state.lastEmptyResponseBlockKey, null);
+  assert.equal(state.lastEmptyResponseBlockCount, 0);
 });
 
 test("resetSessionComplianceState clears obligation loop guard fields", () => {
@@ -20,6 +22,8 @@ test("resetSessionComplianceState clears obligation loop guard fields", () => {
   state.lastObligationBlockCount = 4;
   state.lastMemoryGateBlockKey = "write:update readme";
   state.lastMemoryGateBlockCount = 5;
+  state.lastEmptyResponseBlockKey = "empty:continue working";
+  state.lastEmptyResponseBlockCount = 3;
 
   resetSessionComplianceState(state);
 
@@ -27,4 +31,6 @@ test("resetSessionComplianceState clears obligation loop guard fields", () => {
   assert.equal(state.lastObligationBlockCount, 0);
   assert.equal(state.lastMemoryGateBlockKey, null);
   assert.equal(state.lastMemoryGateBlockCount, 0);
+  assert.equal(state.lastEmptyResponseBlockKey, null);
+  assert.equal(state.lastEmptyResponseBlockCount, 0);
 });
