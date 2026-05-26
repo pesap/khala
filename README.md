@@ -200,6 +200,20 @@ so a TypeScript release-note request is not satisfied by React docs, handbook
 docs are not release notes, unofficial mirrors do not satisfy official-source
 requests, and a cited URL must be backed by same-turn matching evidence.
 
+Proactive skill routing should stay narrow until a task phrase maps clearly to a
+packaged skill with actionable instructions. Add or expand a route when the
+trigger is unambiguous, common enough to help cheap models, and the skill has
+must-follow behavior that changes the work, such as review finding format,
+GitButler command usage, pytest workflow, API-design review, or docs authoring.
+Keep a route narrow when the wording is generic, overlaps many domains, or would
+force a skill for ordinary prose. Exact skill loading is only the first half of
+the contract: when a loaded skill has observable instructions, the downstream
+harness gate should catch violations through concrete behavior checks such as
+tool efficiency, command evidence, mutation evidence, citation evidence, or a new
+skill-specific gate. For example, loading the GitButler skill and then running
+raw `git status` is reported as a tool-efficiency violation rather than accepted
+as skill-compliant work.
+
 Blocked/steered command families include `pip`, `pip3`, `poetry`, `python -m pip`, `python -m venv`, `python -m py_compile`, and path-qualified Python executables. Intercepted `python`/`python3` route through `uv run`.
 
 > [!NOTE]

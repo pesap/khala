@@ -64,6 +64,383 @@
       "expectedIssueCodes": ["skill_routing"]
     },
     {
+      "name": "rejects review task without code-review skill load",
+      "userText": "Review this change for regressions.",
+      "assistantText": "I reviewed the change for regressions.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts review task with exact code-review skill load",
+      "userText": "Review this change for regressions.",
+      "assistantText": "Findings first, then residual risk and verdict.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Code review skill loaded with prioritized actionable findings and verdict instructions."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: code review regression tasks require code-review skill instructions before findings."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects commit task without commit and GitButler skill loads",
+      "userText": "Plan the GitButler commit workflow for these changes.",
+      "assistantText": "Commit workflow context is missing.",
+      "messages": [
+        { "role": "user", "text": "Plan the GitButler commit workflow for these changes." }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts commit task with exact commit and GitButler skill loads",
+      "userText": "Plan the GitButler commit workflow for these changes.",
+      "assistantText": "Commit and GitButler workflow context is loaded.",
+      "messages": [
+        { "role": "user", "text": "Plan the GitButler commit workflow for these changes." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "GitButler commit workflow exact skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: GitButler commit workflows require commit and but skills."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/commit/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Commit skill loaded with change-scope and message guidance."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/but/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "GitButler skill loaded with non-negotiable but status and but commit instructions."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 2 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects TypeScript task with unrelated skill load",
+      "userText": "Update the TypeScript compile settings.",
+      "assistantText": "I handled the TypeScript settings.",
+      "messages": [
+        { "role": "user", "text": "Update the TypeScript compile settings." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript compile settings skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: TypeScript settings work routes through the TypeScript skill."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Code review skill loaded." }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "accepts TypeScript task with exact TypeScript skill load",
+      "userText": "Update the TypeScript compile settings.",
+      "assistantText": "I followed the TypeScript workflow.",
+      "messages": [
+        { "role": "user", "text": "Update the TypeScript compile settings." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript compile settings exact skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: TypeScript compile settings require exact TypeScript skill instructions."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript skill loaded with tsconfig and typecheck guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects pytest task without Python and pytest skill loads",
+      "userText": "Plan the pytest fixture fix.",
+      "assistantText": "Pytest workflow context is missing.",
+      "messages": [
+        { "role": "user", "text": "Plan the pytest fixture fix." }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts pytest task with exact Python and pytest skill loads",
+      "userText": "Plan the pytest fixture fix.",
+      "assistantText": "Python and pytest workflow context is loaded.",
+      "messages": [
+        { "role": "user", "text": "Plan the pytest fixture fix." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "pytest fixture fix Python pytest skills" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: pytest fixture fix planning requires Python and pytest skills."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/python-developer/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Python developer skill loaded with uv and package guidance."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/testing-pytest/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Pytest skill loaded with fixture and focused test guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 2 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects API design task without good-api skill load",
+      "userText": "Review this SDK design for API ergonomics.",
+      "assistantText": "I reviewed the SDK API ergonomics.",
+      "messages": [
+        { "role": "user", "text": "Review this SDK design for API ergonomics." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "SDK API ergonomics review good-api skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: SDK ergonomics reviews require code-review and good-api skills."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Code review skill loaded with findings guidance."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "accepts API design task with review and good-api skill loads",
+      "userText": "Review this SDK design for API ergonomics.",
+      "assistantText": "I reviewed API ergonomics with developer-facing API guidance.",
+      "messages": [
+        { "role": "user", "text": "Review this SDK design for API ergonomics." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "SDK API ergonomics review exact good-api skills" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: API ergonomics review should load code-review and good-api instructions."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Code review skill loaded with actionable findings guidance."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/good-api/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Good API skill loaded with ergonomics and learning ladder guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 2 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects docs task without docs-authoring skill load",
+      "userText": "Author README wording for runtime skill routing.",
+      "assistantText": "Docs workflow context is missing.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Author README wording for runtime skill routing."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts docs task with exact docs-authoring skill load",
+      "userText": "Author README wording for runtime skill routing.",
+      "assistantText": "Docs authoring workflow context is loaded.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Author README wording for runtime skill routing."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "README wording runtime skill routing docs authoring" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: README wording tasks route through docs-authoring."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Docs authoring skill loaded with audience and structure guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects manifest-only skill mention",
+      "userText": "Review this change for regressions.",
+      "assistantText": "I used the code-review skill.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "read",
+            "arguments": { "path": "package.json", "note": "skills/code-review/SKILL.md" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "package manifest mentions code-review skill metadata"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: review tasks need exact code-review skill load, not metadata mentions."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedMetrics": { "skillLoads": 0 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects loaded GitButler skill when behavior violates its command rule",
+      "userText": "Use GitButler to inspect the change state.",
+      "assistantText": "I inspected the change state.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use GitButler to inspect the change state."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "GitButler inspect change state but status rule" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: GitButler change-state inspection should use but status -fv."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/but/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "GitButler skill loaded with non-negotiable rule to use but status -fv."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "git status" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "On branch harness-mvp-closing with clean working tree."
+        }
+      ],
+      "expectedIssueCodes": ["tool_efficiency"],
+      "expectedMetrics": { "skillLoads": 1, "wasteSignalCount": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
       "name": "rejects broad external evidence for current docs",
       "userText": "Use official docs to confirm the latest TypeScript release notes.",
       "assistantText": "According to the latest TypeScript release notes, the behavior changed. Source: https://example.com/typescript",
