@@ -226,8 +226,8 @@ function parseRecordLine<T>(
 ): ParseRecordResult<T> {
   const trimmed = args.trim();
   if (!trimmed) return { error: usageError };
-  const parsed = parseLine(trimmed);
-  return parsed ? { record: parsed } : { error: invalidError };
+  const record = parseLine(trimmed);
+  return record ? { record } : { error: invalidError };
 }
 
 function parseToggleArg(
