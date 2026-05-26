@@ -1786,8 +1786,6 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     const text = typeof event.text === "string" ? event.text.trim() : "";
     if (!text) return;
     latestUserInput = text;
-    runtimeState.lastObligationBlockKey = null;
-    runtimeState.lastObligationBlockCount = 0;
     if (!isContinuationInput(text)) {
       taskToolCallCount = 0;
       resetMemoryGate("new task or scope change");
