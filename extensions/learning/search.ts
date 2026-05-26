@@ -49,11 +49,16 @@ function tokenize(value: string): string[] {
 }
 
 function classifyCorpusPath(filePath: string, paths: LearningPaths): KhalaCorpusKind {
+  const ruleFiles = new Set([
+    paths.rulesActiveJsonl,
+    paths.rulesSessionJsonl,
+    paths.rulesMd,
+  ]);
   if (filePath === paths.memoryMd) return "memory";
   if (filePath === paths.lessonsJsonl) return "lesson";
   if (filePath === paths.khalaLearningJsonl) return "learning";
   if (filePath === paths.curatorReport) return "curator";
-  if (filePath === paths.rulesActiveJsonl || filePath === paths.rulesSessionJsonl || filePath === paths.rulesMd) return "rule";
+  if (ruleFiles.has(filePath)) return "rule";
   if (filePath === paths.rulesCandidatesJsonl) return "rule_candidate";
   if (filePath === paths.rulesAuditJsonl) return "rule_audit";
   const normalized = filePath.replaceAll("\\", "/");
