@@ -307,8 +307,7 @@ function isResolvableReviewPath(entry: string, cwd: string): boolean {
 function parsePullRequestReference(value: string): string | null {
   const trimmed = value.trim();
   if (/^[1-9]\d*$/.test(trimmed)) return trimmed;
-  const match = trimmed.match(/github\.com\/[^/\s]+\/[^/\s]+\/pull\/([1-9]\d*)/i);
-  return match?.[1] ?? null;
+  return trimmed.match(/github\.com\/[^/\s]+\/[^/\s]+\/pull\/([1-9]\d*)/i)?.[1] ?? null;
 }
 
 export function parseReviewArgs(
