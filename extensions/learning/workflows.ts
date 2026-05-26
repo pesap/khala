@@ -128,14 +128,15 @@ export async function listLearnedWorkflows(
     throw error;
   }
 
-  const records: LearnedWorkflowRecord[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(WORKFLOW_EXT)) continue;
-    const name = entry.name.slice(0, -WORKFLOW_EXT.length);
-    const record = getLearnedWorkflowPaths(paths, name);
-    records.push(record);
-  }
-  return records.sort((a, b) => a.name.localeCompare(b.name));
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(WORKFLOW_EXT))
+    .map((entry) =>
+      getLearnedWorkflowPaths(
+        paths,
+        entry.name.slice(0, -WORKFLOW_EXT.length),
+      ),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function readLearnedWorkflow(
