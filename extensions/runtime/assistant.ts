@@ -31,6 +31,8 @@ const TOOL_ACTION_REQUEST_REGEX =
   /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|let'?s\s+|can you\s+|could you\s+|would you\s+)?(?:read|load|inspect|check|grep|find|locate|analyze|review|run|execute|test|verify|restore|edit|write|fix|implement|submit|deploy|add|address|commit|push|open|ship|create|draft|save|update|patch|modify|remove|delete)\b/;
 const DESTRUCTIVE_REQUEST_REGEX =
   /(?:^|[.!?;]\s+)(?:please\s+|go ahead and\s+|can you\s+|could you\s+|would you\s+)?(?:(?:rm -rf|force push|reset --hard|rewrite history|drop table)|(?:(?:delete|remove)\s+(?:(?:the|all)\s+)?(?:[\w-]+\s+){0,3}(?:data|database|table|records?|history|repo|repository|branch|branches|files?|folders?|directories?)))\b/;
+const DESTRUCTIVE_INLINE_REGEX =
+  /\b(?:(?:rm -rf|force push|reset --hard|rewrite history|drop table)|(?:(?:delete|remove)\s+(?:(?:the|all)\s+)?(?:[\w-]+\s+){0,3}(?:data|database|table|records?|history|repo|repository|branch|branches|files?|folders?|directories?)))\b/;
 const BLOCKING_CLARIFICATION_REGEX =
   /^(?:which|what|where|when|who|how)\b|\b(?:should i|should we|do you want|would you like|can you confirm|please confirm|confirm whether|can you share|can you provide|can you choose|can you clarify|can you send|can you paste)\b/;
 const APPROVAL_QUESTION_REGEX =
@@ -163,6 +165,13 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
   const text = userText.trim().toLowerCase();
   if (!text) return { obligation: "none", reason: "no user request text" };
 
+  if (DESTRUCTIVE_REQUEST_REGEX.test(text) || DESTRUCTIVE_INLINE_REGEX.test(text)) {
+    return {
+      obligation: "approval_required",
+      reason: "destructive or high-risk request",
+    };
+  }
+
   if (
     /\b(can you|could you|please)\b/.test(text) &&
     /\b(check|review|analyze|verify|confirm)\b/.test(text) &&
@@ -172,13 +181,6 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
     return {
       obligation: "answer_allowed",
       reason: "conceptual request can be answered without tools",
-    };
-  }
-
-  if (DESTRUCTIVE_REQUEST_REGEX.test(text)) {
-    return {
-      obligation: "approval_required",
-      reason: "destructive or high-risk request",
     };
   }
 

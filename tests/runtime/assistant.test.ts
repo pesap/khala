@@ -237,6 +237,12 @@ test("infers approval obligation for destructive requests", () => {
     inferTurnObligation("Please remove dead code in runtime helpers.").obligation,
     "tool_required",
   );
+  assert.equal(
+    inferTurnObligation(
+      "Can you verify this strategy to delete all repository files?",
+    ).obligation,
+    "approval_required",
+  );
 });
 
 test("allows normal explanation questions without tools", () => {
