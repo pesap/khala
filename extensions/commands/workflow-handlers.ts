@@ -450,15 +450,11 @@ export function createWorkflowCommandHandlers(params: {
     gitReview: async (args, ctx) => {
       const extraFocus = normalizeWhitespace(args ?? "");
 
-      const summary = extraFocus
-        ? `current repository (${extraFocus})`
-        : "current repository";
-
       await runMirroredSourceWorkflow({
         ctx,
         type: "git-review",
         source: constants.GIT_REVIEW_COMMAND_SOURCE,
-        input: summary,
+        input: extraFocus ? `current repository (${extraFocus})` : "current repository",
         fields: {
           extraFocus: extraFocus || null,
         },
