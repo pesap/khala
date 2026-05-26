@@ -230,7 +230,6 @@ export function createWorkflowCommandHandlers(params: {
     notify(ctx, usage, "error");
     return null;
   };
-  const toNullable = (value: string): string | null => value || null;
   const withFooter = (sections: string[]): string[] => [
     ...sections,
     constants.POSTFLIGHT_INSTRUCTION,
@@ -471,7 +470,7 @@ export function createWorkflowCommandHandlers(params: {
         source: constants.GIT_REVIEW_COMMAND_SOURCE,
         input: summary,
         fields: {
-          extraFocus: toNullable(extraFocus),
+          extraFocus: extraFocus || null,
         },
         sections: [
           "Repository scope: current working tree",
@@ -544,7 +543,7 @@ export function createWorkflowCommandHandlers(params: {
         source: constants.SHIP_COMMAND_SOURCE,
         input: extraInstruction || "GitButler workspace",
         fields: {
-          extraInstruction: toNullable(extraInstruction),
+          extraInstruction: extraInstruction || null,
         },
         sections: [
           "Scope: publish one focused branch/stack safely",
@@ -614,7 +613,7 @@ export function createWorkflowCommandHandlers(params: {
         input: `open issues by me (limit=${parsed.limit})`,
         fields: {
           limit: parsed.limit,
-          repo: toNullable(parsed.repo),
+          repo: parsed.repo || null,
         },
         sections: [
           "Issue query: author:@me state:open",
