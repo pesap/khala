@@ -70,9 +70,7 @@ export function createLearnedWorkflowCommandHandlers(params: {
   };
 
   return {
-    khalaReload: async (_args, ctx) => {
-      await ctx.reload();
-    },
+    khalaReload: async (_args, ctx) => ctx.reload(),
 
     workflowList: async (_args, ctx) => {
       const paths = await params.ensureLearningStore(ctx.cwd);
