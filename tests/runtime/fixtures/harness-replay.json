@@ -1,0 +1,1503 @@
+{
+  "cases": [
+    {
+      "name": "rejects duplicate local evidence collection",
+      "userText": "Inspect README.md and summarize the runtime harness.",
+      "assistantText": "I inspected README.md and summarized the runtime harness.",
+      "messages": [
+        { "role": "user", "text": "Inspect README.md and summarize the runtime harness." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README runtime harness documentation" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README runtime harness documentation" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency"],
+      "expectedMetrics": {
+        "toolCallCount": 2,
+        "wasteSignalCount": 1,
+        "duplicateEvidence": true
+      }
+    },
+    {
+      "name": "rejects broad memory search before mutation",
+      "userText": "Update README.md to document the runtime harness memory search behavior.",
+      "assistantText": "I updated README.md with the runtime harness memory search behavior.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Update README.md to document the runtime harness memory search behavior."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "khala_search_memory", "arguments": { "query": "fix repo" } }
+        },
+        { "role": "toolResult", "text": "generic memory result" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md runtime harness docs" }
+      ],
+      "expectedIssueCodes": [
+        "tool_efficiency",
+        "memory_search",
+        "skill_routing",
+        "evidence_routing"
+      ]
+    },
+    {
+      "name": "rejects missing proactive skill route",
+      "userText": "Review this TypeScript API change for public compatibility.",
+      "assistantText": "I reviewed the TypeScript API change for public compatibility.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Review this TypeScript API change for public compatibility."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "rejects review task without code-review skill load",
+      "userText": "Review this change for regressions.",
+      "assistantText": "I reviewed the change for regressions.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts review task with exact code-review skill load",
+      "userText": "Review this change for regressions.",
+      "assistantText": "Findings first, then residual risk and verdict.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Code review skill loaded with prioritized actionable findings and verdict instructions."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: code review regression tasks require code-review skill instructions before findings."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects commit task without commit and GitButler skill loads",
+      "userText": "Plan the GitButler commit workflow for these changes.",
+      "assistantText": "Commit workflow context is missing.",
+      "messages": [
+        { "role": "user", "text": "Plan the GitButler commit workflow for these changes." }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts commit task with exact commit and GitButler skill loads",
+      "userText": "Plan the GitButler commit workflow for these changes.",
+      "assistantText": "Commit and GitButler workflow context is loaded.",
+      "messages": [
+        { "role": "user", "text": "Plan the GitButler commit workflow for these changes." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "GitButler commit workflow exact skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: GitButler commit workflows require commit and but skills."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/commit/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Commit skill loaded with change-scope and message guidance."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/but/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "GitButler skill loaded with non-negotiable but status and but commit instructions."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 2 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects TypeScript task with unrelated skill load",
+      "userText": "Update the TypeScript compile settings.",
+      "assistantText": "I handled the TypeScript settings.",
+      "messages": [
+        { "role": "user", "text": "Update the TypeScript compile settings." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript compile settings skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: TypeScript settings work routes through the TypeScript skill."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Code review skill loaded." }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "accepts TypeScript task with exact TypeScript skill load",
+      "userText": "Update the TypeScript compile settings.",
+      "assistantText": "I followed the TypeScript workflow.",
+      "messages": [
+        { "role": "user", "text": "Update the TypeScript compile settings." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript compile settings exact skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: TypeScript compile settings require exact TypeScript skill instructions."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript skill loaded with tsconfig and typecheck guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects pytest task without Python and pytest skill loads",
+      "userText": "Plan the pytest fixture fix.",
+      "assistantText": "Pytest workflow context is missing.",
+      "messages": [
+        { "role": "user", "text": "Plan the pytest fixture fix." }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts pytest task with exact Python and pytest skill loads",
+      "userText": "Plan the pytest fixture fix.",
+      "assistantText": "Python and pytest workflow context is loaded.",
+      "messages": [
+        { "role": "user", "text": "Plan the pytest fixture fix." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "pytest fixture fix Python pytest skills" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: pytest fixture fix planning requires Python and pytest skills."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/python-developer/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Python developer skill loaded with uv and package guidance."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/testing-pytest/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Pytest skill loaded with fixture and focused test guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 2 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects API design task without good-api skill load",
+      "userText": "Review this SDK design for API ergonomics.",
+      "assistantText": "I reviewed the SDK API ergonomics.",
+      "messages": [
+        { "role": "user", "text": "Review this SDK design for API ergonomics." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "SDK API ergonomics review good-api skill routing" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: SDK ergonomics reviews require code-review and good-api skills."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Code review skill loaded with findings guidance."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "accepts API design task with review and good-api skill loads",
+      "userText": "Review this SDK design for API ergonomics.",
+      "assistantText": "I reviewed API ergonomics with developer-facing API guidance.",
+      "messages": [
+        { "role": "user", "text": "Review this SDK design for API ergonomics." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "SDK API ergonomics review exact good-api skills" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: API ergonomics review should load code-review and good-api instructions."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Code review skill loaded with actionable findings guidance."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/good-api/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Good API skill loaded with ergonomics and learning ladder guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 2 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects docs task without docs-authoring skill load",
+      "userText": "Author README wording for runtime skill routing.",
+      "assistantText": "Docs workflow context is missing.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Author README wording for runtime skill routing."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"]
+    },
+    {
+      "name": "accepts docs task with exact docs-authoring skill load",
+      "userText": "Author README wording for runtime skill routing.",
+      "assistantText": "Docs authoring workflow context is loaded.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Author README wording for runtime skill routing."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "README wording runtime skill routing docs authoring" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: README wording tasks route through docs-authoring."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "Docs authoring skill loaded with audience and structure guidance."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects manifest-only skill mention",
+      "userText": "Review this change for regressions.",
+      "assistantText": "I used the code-review skill.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "read",
+            "arguments": { "path": "package.json", "note": "skills/code-review/SKILL.md" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "package manifest mentions code-review skill metadata"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: review tasks need exact code-review skill load, not metadata mentions."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedMetrics": { "skillLoads": 0 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects loaded GitButler skill when behavior violates its command rule",
+      "userText": "Use GitButler to inspect the change state.",
+      "assistantText": "I inspected the change state.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use GitButler to inspect the change state."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "GitButler inspect change state but status rule" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: GitButler change-state inspection should use but status -fv."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/but/SKILL.md" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "GitButler skill loaded with non-negotiable rule to use but status -fv."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "git status" } }
+        },
+        {
+          "role": "toolResult",
+          "text": "On branch harness-mvp-closing with clean working tree."
+        }
+      ],
+      "expectedIssueCodes": ["tool_efficiency"],
+      "expectedMetrics": { "skillLoads": 1, "wasteSignalCount": 1 },
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "rejects broad external evidence for current docs",
+      "userText": "Use official docs to confirm the latest TypeScript release notes.",
+      "assistantText": "According to the latest TypeScript release notes, the behavior changed. Source: https://example.com/typescript",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs to confirm the latest TypeScript release notes."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "web_search", "arguments": { "query": "latest docs" } }
+        },
+        { "role": "toolResult", "text": "generic latest docs result" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency", "skill_routing", "evidence_routing"]
+    },
+    {
+      "name": "rejects missing final citation for source-backed current docs",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects unrelated final citation URL",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://react.dev/reference/react",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects wrong product evidence for source-backed docs",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official React decorators docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official React docs source at https://react.dev/reference/react"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects wrong fact category for source-backed release claim",
+      "userText": "Use official docs and cite the latest TypeScript release notes for decorators.",
+      "assistantText": "The latest TypeScript release notes mention decorators. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the latest TypeScript release notes for decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript handbook docs source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects unofficial source for official-source request",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://mirror.example.com/typescript/decorators",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "unofficial TypeScript decorators mirror at https://mirror.example.com/typescript/decorators"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects generic page-loaded evidence for source-backed docs",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        { "role": "toolResult", "text": "page loaded" }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects stale source success after later failure",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        { "role": "toolResult", "text": "HTTP 404 not found" }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects unresolved knowledge gap without stronger model",
+      "userText": "Tell me whether the current OpenAI API supports this option.",
+      "assistantText": "I am not sure because I cannot access current docs.\nConfidence: 0.52",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Tell me whether the current OpenAI API supports this option."
+        }
+      ],
+      "expectedIssueCodes": ["skill_routing", "evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "rejects bare low confidence without stronger model",
+      "userText": "Answer the uncertain architecture question.",
+      "assistantText": "The architecture answer is probably acceptable.\nConfidence: 0.51",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Answer the uncertain architecture question."
+        }
+      ],
+      "expectedIssueCodes": ["model_escalation"]
+    },
+    {
+      "name": "rejects vague latest-docs escalation for current fact uncertainty",
+      "userText": "Use official docs to resolve whether the latest TypeScript decorators behavior changed.",
+      "assistantText": "I am still not sure whether the latest TypeScript decorators behavior changed. Source: https://www.typescriptlang.org/docs/handbook/decorators.html\nConfidence: 0.56",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs to resolve whether the latest TypeScript decorators behavior changed."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript latest decorators release notes behavior" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators docs at https://www.typescriptlang.org/docs/handbook/decorators.html confirm decorator behavior details"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "verify latest docs"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: latest docs verified" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript decorators latest behavior official docs uncertainty" }
+          }
+        },
+        { "role": "toolResult", "text": "Prior TypeScript decorators docs check used the official handbook URL for decorator behavior." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript official decorator documentation confirms decorator behavior details at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "rejects same-model delegation for missing artifact uncertainty",
+      "userText": "Explain the failure in logs/build.log.",
+      "assistantText": "I cannot verify the failure without seeing logs/build.log.\nConfidence: 0.48",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Explain the failure in logs/build.log."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "logs/build.log" } }
+        },
+        { "role": "toolResult", "text": "ENOENT: no such file or directory, open logs/build.log" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "task": "resolve missing logs/build.log ENOENT failure"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: logs/build.log ENOENT failure resolved" }
+      ],
+      "expectedIssueCodes": ["evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "rejects hedged advisory result after repeated failures",
+      "userText": "Diagnose the repeated npm test failures.",
+      "assistantText": "The npm test failure root cause is in the test setup.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Diagnose the repeated npm test failures."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test repeated failure diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant memory for npm test failure diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "debug investigation skill guidance" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for test diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test" } }
+        },
+        { "role": "toolResult", "text": "process exited with exit status 1" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test -- --runInBand" } }
+        },
+        { "role": "toolResult", "text": "Error: no such file" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm run test:node" } }
+        },
+        { "role": "toolResult", "text": "exited with code 127" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test exit status 1 no such file code 127 diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "Cached diagnostic note: npm test with missing file symptoms can indicate a missing test setup file." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "diagnose repeated npm test failures: exit status 1, Error no such file, exited with code 127"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: npm test root cause is likely the missing setup file" }
+      ],
+      "expectedIssueCodes": ["model_escalation"]
+    },
+    {
+      "name": "rejects advisory echo result after repeated failures",
+      "userText": "Diagnose the repeated npm test failures.",
+      "assistantText": "The repeated npm test failure has been escalated.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Diagnose the repeated npm test failures."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test repeated failure diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant memory for npm test failure diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "debug investigation skill guidance" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for test diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test" } }
+        },
+        { "role": "toolResult", "text": "failed" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test -- --runInBand" } }
+        },
+        { "role": "toolResult", "text": "Error: no such file" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm run test:node" } }
+        },
+        { "role": "toolResult", "text": "exited with code 127" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test failed no such file code 127 diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "Cached diagnostic note: npm test with missing file symptoms can indicate a missing test setup file." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "diagnose repeated npm test failures"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: diagnose repeated npm test failures" }
+      ],
+      "expectedIssueCodes": ["model_escalation"]
+    },
+    {
+      "name": "rejects unresolved final answer after substantive escalation",
+      "userText": "Tell me whether the current package API supports the retry option.",
+      "assistantText": "I still cannot verify whether the current package API supports the retry option. Source: https://example.com/package-api/retry\nConfidence: 0.58",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Tell me whether the current package API supports the retry option."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "current package API retry option official docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official package API docs at https://example.com/package-api/retry confirm retry option behavior"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "verify current package API retry option from official docs"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: package API retry option is verified from official docs" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "current package API retry option official docs uncertainty" }
+          }
+        },
+        { "role": "toolResult", "text": "Prior package API retry docs check used the official retry option page." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://example.com/package-api/retry" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Package API retry documentation confirms retry option behavior at https://example.com/package-api/retry"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "remediation loop blocks missing memory search before mutation",
+      "userText": "Update README.md remediation loop notes.",
+      "assistantText": "I updated README.md.",
+      "messages": [
+        { "role": "user", "text": "Update README.md remediation loop notes." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Docs authoring skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README current remediation section." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md remediation loop notes" }
+      ],
+      "expectedIssueCodes": ["memory_search"],
+      "expectedIssueActions": ["run_focused_memory_search"],
+      "expectedIssueCheapestTools": ["khala_search_memory"]
+    },
+    {
+      "name": "remediation loop accepts focused memory search retry",
+      "userText": "Update README.md remediation loop notes.",
+      "assistantText": "I updated README.md.",
+      "messages": [
+        { "role": "user", "text": "Update README.md remediation loop notes." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Update README.md remediation loop notes" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: remediation loop notes should describe blocked turn then retry."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Docs authoring skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README current remediation section." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md remediation loop notes" }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "focusedMemorySearches": 1,
+        "successfulMemorySearches": 1,
+        "skillLoads": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop rejects broad memory retry",
+      "userText": "Update README.md remediation loop notes.",
+      "assistantText": "I updated README.md.",
+      "messages": [
+        { "role": "user", "text": "Update README.md remediation loop notes." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "khala_search_memory", "arguments": { "query": "fix repo" } }
+        },
+        { "role": "toolResult", "text": "generic memory result" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Docs authoring skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README current remediation section." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md remediation loop notes" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency", "memory_search"],
+      "expectedIssueActions": ["reuse_cached_or_narrow_tool", "run_focused_memory_search"]
+    },
+    {
+      "name": "remediation loop blocks missing skill route",
+      "userText": "Review this change for regressions.",
+      "assistantText": "I reviewed the change.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        { "role": "toolResult", "text": "Memory: review tasks need code-review skill." }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedIssueActions": ["load_required_skill"],
+      "expectedIssueCheapestTools": ["read SKILL.md"]
+    },
+    {
+      "name": "remediation loop accepts exact skill read retry",
+      "userText": "Review this change for regressions.",
+      "assistantText": "Findings first, verdict correct.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Code review skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        { "role": "toolResult", "text": "Memory: review tasks need code-review skill." }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "focusedMemorySearches": 1,
+        "successfulMemorySearches": 1,
+        "skillLoads": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop blocks weak source evidence",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "web_search", "arguments": { "query": "latest docs" } }
+        },
+        { "role": "toolResult", "text": "generic docs result" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency", "skill_routing", "evidence_routing"],
+      "expectedIssueActions": [
+        "reuse_cached_or_narrow_tool",
+        "load_required_skill",
+        "collect_matching_evidence"
+      ]
+    },
+    {
+      "name": "remediation loop accepts focused source evidence retry",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators. Sources: https://www.typescriptlang.org/docs/handbook/decorators.html\nConfidence: 0.89",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "use official docs cite source TypeScript decorators documented handbook" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "skillLoads": 1,
+        "externalEvidenceCalls": 2,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop blocks missing command evidence",
+      "userText": "Run `make check` and tell me whether it passed.",
+      "assistantText": "`make check` passed.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Run `make check` and tell me whether it passed."
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"],
+      "expectedIssueActions": ["collect_matching_evidence"]
+    },
+    {
+      "name": "remediation loop accepts command evidence retry",
+      "userText": "Run `make check` and tell me whether it passed.",
+      "assistantText": "`make check` passed.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Run `make check` and tell me whether it passed."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "make check" } }
+        },
+        { "role": "toolResult", "text": "make check passed: 12 checks ok" }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop rejects placeholder command result",
+      "userText": "Run `make check` and tell me whether it passed.",
+      "assistantText": "`make check` passed.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Run `make check` and tell me whether it passed."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "make check" } }
+        },
+        { "role": "toolResult", "text": "ok" }
+      ],
+      "expectedIssueCodes": ["evidence_routing"],
+      "expectedIssueActions": ["collect_matching_evidence"]
+    },
+    {
+      "name": "remediation loop blocks unresolved uncertainty",
+      "userText": "What is the root cause of the parser failure?",
+      "assistantText": "I do not know without seeing more logs.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "What is the root cause of the parser failure?"
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Debug investigation skill loaded." }
+      ],
+      "expectedIssueCodes": ["model_escalation"],
+      "expectedIssueActions": ["escalate_to_stronger_model"],
+      "expectedIssueCheapestTools": ["stronger advisory subagent"]
+    },
+    {
+      "name": "remediation loop accepts substantive escalation retry",
+      "userText": "What is the root cause of the parser failure?",
+      "assistantText": "The stronger reviewer identified an unhandled empty token as the root cause.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "What is the root cause of the parser failure?"
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Debug investigation skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "gpt-5",
+              "task": "Identify the root cause of the parser failure from the provided context."
+            }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Root cause: the parser receives an empty token and the tokenizer does not guard it."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "skillLoads": 1,
+        "modelEscalations": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop rejects vague escalation retry",
+      "userText": "What is the root cause of the parser failure?",
+      "assistantText": "I am not sure; it is likely a parser issue.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "What is the root cause of the parser failure?"
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Debug investigation skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "gpt-5",
+              "task": "help"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "Likely something failed." }
+      ],
+      "expectedIssueCodes": ["model_escalation"],
+      "expectedIssueActions": ["escalate_to_stronger_model"]
+    },
+    {
+      "name": "accepts substantive escalation after repeated failures",
+      "userText": "Diagnose the repeated npm test failures.",
+      "assistantText": "The stronger-model result identified the root cause: npm test cannot start because the test setup file is missing after exit status 1, Error no such file, and code 127. Recommendation: restore the missing setup file before rerunning npm test.\nConfidence: 0.86",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Diagnose the repeated npm test failures."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test repeated failure diagnostics setup file missing" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant memory for npm test missing setup file diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "debug investigation skill guidance" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for test diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test" } }
+        },
+        { "role": "toolResult", "text": "process exited with exit status 1" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test -- --runInBand" } }
+        },
+        { "role": "toolResult", "text": "Error: no such file" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm run test:node" } }
+        },
+        { "role": "toolResult", "text": "exited with code 127" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test exit status 1 no such file code 127 missing setup file" }
+          }
+        },
+        { "role": "toolResult", "text": "Cached diagnostic note: npm test with missing file symptoms can indicate a missing test setup file." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "diagnose repeated npm test failures: exit status 1, Error no such file, exited with code 127"
+            }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "root cause found: npm test setup file is missing after status 1 and code 127; recommendation: restore the missing setup file"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 8,
+        "focusedMemorySearches": 2,
+        "successfulMemorySearches": 2,
+        "skillLoads": 2,
+        "modelEscalations": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "accepts focused official source with concrete final citation",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators. Sources: https://www.typescriptlang.org/docs/handbook/decorators.html\nConfidence: 0.89",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "use official docs cite source TypeScript decorators documented handbook" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 3,
+        "skillLoads": 1,
+        "externalEvidenceCalls": 2,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "accepts composed cheap-model harness path",
+      "userText": "Use the TypeScript skill and confirm the docs at https://www.typescriptlang.org/docs/.",
+      "assistantText": "Using the TypeScript skill plus focused memory and docs evidence, the TypeScript docs are at https://www.typescriptlang.org/docs/.\nConfidence: 0.88",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use the TypeScript skill and confirm the docs at https://www.typescriptlang.org/docs/."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript docs URL skill answer" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant TypeScript docs URL answer memory" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill instructions for code and docs changes" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "TypeScript docs https://www.typescriptlang.org/docs/" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript docs source https://www.typescriptlang.org/docs/ confirms the TypeScript docs URL"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript documentation page at https://www.typescriptlang.org/docs/ confirms the TypeScript docs URL"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 4,
+        "focusedMemorySearches": 1,
+        "successfulMemorySearches": 1,
+        "skillLoads": 1,
+        "externalEvidenceCalls": 2,
+        "wasteSignalCount": 0
+      }
+    }
+  ]
+}

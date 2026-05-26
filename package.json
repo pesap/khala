@@ -10,6 +10,10 @@
     "gitagent"
   ],
   "license": "MIT",
+  "exports": {
+    ".": "./khala/index.ts",
+    "./harness": "./khala/harness.ts"
+  },
   "scripts": {
     "smoke": "npm run lint && npm run test",
     "test": "npm run typecheck && npm run test:node",
@@ -27,9 +31,6 @@
     "skills": [
       "./skills",
       "./node_modules/pi-subagents/skills"
-    ],
-    "themes": [
-      "./themes"
     ]
   },
   "peerDependencies": {

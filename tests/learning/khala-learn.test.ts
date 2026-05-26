@@ -125,6 +125,24 @@ test("learning assessment accepts concrete correction lessons with evidence", ()
   );
 });
 
+test("learning assessment turns harness issues into concrete tool rules", () => {
+  const assessment = assessLearning({
+    taskSummary: "Patch README.md after checking project conventions.",
+    assistantSummary: "Harness warned that task-specific memory was missing.",
+    mutationCount: 1,
+    confidenceHint: 0.9,
+    policyWarnings: ["harness issue: memory_search - MEMORY SEARCH REQUIRED"],
+  });
+
+  assert.equal(assessment.shouldLearn, true);
+  assert.equal(assessment.kind, "tool_rule");
+  assert.equal(
+    assessment.lesson,
+    "Call khala_search_memory with a focused query containing workflow, technology, file, symbol, error, correction, or user intent before substantial work.",
+  );
+  assert.match(assessment.evidenceSnippet, /harness issue: memory_search/);
+});
+
 test("learning candidate quality requires concrete trigger, lesson, and evidence", () => {
   assert.deepEqual(
     validateLearningCandidateQuality({

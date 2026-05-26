@@ -4,6 +4,14 @@ quality:
   # Workflows below this confidence are tracked for follow-up in teardown summaries.
   low_confidence_threshold: 0.7
 
+harness:
+  # Keep startup context small for provider prompt-cache reuse; use khala_search_memory for task-specific recall.
+  bootstrap_memory_tail_lines: 8
+  bootstrap_runtime_rules: 8
+  # Substantial tool fanout or repeated failures force stronger harness behavior.
+  substantial_tool_call_threshold: 4
+  tool_failure_escalation_threshold: 3
+
 first_principles:
   # Used as defaults before first-principles-gate.yaml overrides are applied.
   preflight_mode: warn

@@ -30,8 +30,16 @@ export interface WorkflowCommandConfig {
   entryType: string;
 }
 
+export interface HarnessLimits {
+  bootstrapMemoryTailLines: number;
+  bootstrapRuntimeRules: number;
+  substantialToolCallThreshold: number;
+  toolFailureEscalationThreshold: number;
+}
+
 export interface RuntimeProfile {
   lowConfidenceThreshold: number;
+  harnessLimits: HarnessLimits;
   firstPrinciplesDefaults: FirstPrinciplesConfig;
   workflows: Record<WorkflowType, WorkflowCommandConfig>;
 }
@@ -125,6 +133,12 @@ const DEFAULT_WORKFLOWS: Record<WorkflowType, WorkflowCommandConfig> = {
 
 export const DEFAULT_RUNTIME_PROFILE: RuntimeProfile = {
   lowConfidenceThreshold: 0.7,
+  harnessLimits: {
+    bootstrapMemoryTailLines: 8,
+    bootstrapRuntimeRules: 8,
+    substantialToolCallThreshold: 4,
+    toolFailureEscalationThreshold: 3,
+  },
   firstPrinciplesDefaults: {
     preflightMode: "warn",
     postflightMode: "warn",
@@ -136,6 +150,7 @@ export const DEFAULT_RUNTIME_PROFILE: RuntimeProfile = {
 export function cloneRuntimeProfile(profile: RuntimeProfile): RuntimeProfile {
   return {
     lowConfidenceThreshold: profile.lowConfidenceThreshold,
+    harnessLimits: { ...profile.harnessLimits },
     firstPrinciplesDefaults: {
       ...profile.firstPrinciplesDefaults,
     },
@@ -161,6 +176,12 @@ function parseNonEmptyStringField(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function parsePositiveIntegerField(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (!Number.isInteger(value) || value < 1) return null;
+  return value;
 }
 
 export function parseRuntimeProfile(
@@ -223,6 +244,43 @@ export function parseRuntimeProfile(
       warnings.push(
         "runtime/profile.yaml: quality.low_confidence_threshold must be numeric; default kept.",
       );
+    }
+  }
+
+  const harness = parsedYaml.harness;
+  if (harness !== undefined && !isRecord(harness)) {
+    warnings.push(
+      "runtime/profile.yaml: harness must be a mapping; defaults kept.",
+    );
+  }
+
+  if (isRecord(harness)) {
+    const integerFields = {
+      bootstrap_memory_tail_lines: "bootstrapMemoryTailLines",
+      bootstrap_runtime_rules: "bootstrapRuntimeRules",
+      substantial_tool_call_threshold: "substantialToolCallThreshold",
+      tool_failure_escalation_threshold: "toolFailureEscalationThreshold",
+    } as const;
+
+    for (const [field, target] of Object.entries(integerFields)) {
+      const rawValue = harness[field];
+      if (rawValue === undefined) continue;
+      const parsedValue = parsePositiveIntegerField(rawValue);
+      if (parsedValue === null) {
+        warnings.push(
+          `runtime/profile.yaml: harness.${field} must be a positive integer; default kept.`,
+        );
+        continue;
+      }
+      profile.harnessLimits[target] = parsedValue;
+    }
+
+    for (const key of Object.keys(harness)) {
+      if (!(key in integerFields)) {
+        warnings.push(
+          `runtime/profile.yaml: unknown harness key '${key}' ignored.`,
+        );
+      }
     }
   }
 
@@ -339,6 +397,7 @@ export function parseRuntimeProfile(
     if (
       key !== "version" &&
       key !== "quality" &&
+      key !== "harness" &&
       key !== "first_principles" &&
       key !== "commands"
     ) {

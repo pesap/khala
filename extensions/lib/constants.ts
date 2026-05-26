@@ -10,6 +10,7 @@ export const RISK_APPROVAL_TTL_MINUTES = 20;
 export const PREFLIGHT_STATE_TYPE = "khala-preflight-state";
 export const POSTFLIGHT_EVENT_TYPE = "khala-postflight-event";
 export const POLICY_EVENT_TYPE = "khala-policy-event";
+export const HARNESS_ISSUE_TYPE = "khala-harness-issue";
 export const COMPLIANCE_MODE_TYPE = "khala-compliance-mode";
 
 export const REVIEW_COMMAND_SOURCE = "https://github.com/earendil-works/pi-review";
