@@ -180,6 +180,15 @@ test("infers tool obligation for concrete inspection requests", () => {
       .obligation,
     "tool_required",
   );
+  assert.equal(
+    inferTurnObligation("Can you review this PR and suggest fixes?").obligation,
+    "tool_required",
+  );
+  assert.equal(
+    inferTurnObligation("Could you analyze src/runtime/assistant.ts for bugs?")
+      .obligation,
+    "tool_required",
+  );
 });
 
 test("blocks unsatisfied action and approval obligations outside monitor mode", () => {
