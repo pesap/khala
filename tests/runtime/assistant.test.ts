@@ -396,4 +396,14 @@ test("generic permission questions do not satisfy concrete tool obligations", ()
     ),
     true,
   );
+  assert.equal(
+    isAssistantClarificationAllowedForObligation(
+      textMessage(
+        "assistant",
+        "Should I proceed with inspecting src/app.ts or src/server.ts first?",
+      ),
+      "tool_required",
+    ),
+    true,
+  );
 });
