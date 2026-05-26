@@ -86,13 +86,12 @@ export function createLearnedWorkflowCommandHandlers(params: {
       const loaded = await requireWorkflow(ctx, args, "Usage: /workflow-show <name>");
       if (!loaded) return;
       const { workflow } = loaded;
-      const prompt = workflow.promptText.trim();
       params.notify(
         ctx,
         [
           `Workflow ${workflow.record.name}:`,
           workflow.workflowText.trim(),
-          prompt ? `\nPrompt template:\n${prompt}` : "",
+          workflow.promptText.trim() ? `\nPrompt template:\n${workflow.promptText.trim()}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
