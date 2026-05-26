@@ -130,6 +130,8 @@ test("infers tool obligation for concrete inspection requests", () => {
     "tool_required",
   );
   assert.equal(inferTurnObligation("do it").obligation, "tool_required");
+  assert.equal(inferTurnObligation("continue").obligation, "answer_allowed");
+  assert.equal(inferTurnObligation("proceed").obligation, "answer_allowed");
   assert.equal(
     inferTurnObligation("Keep working on the agent feedback loop").obligation,
     "tool_required",

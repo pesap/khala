@@ -154,7 +154,7 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
   }
 
   if (
-    /\b(do it|run it|try it|make it|apply it|ship it|continue|proceed)\b/.test(
+    /\b(do it|run it|try it|make it|apply it|ship it)\b/.test(
       text,
     )
   ) {
