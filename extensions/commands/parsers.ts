@@ -453,16 +453,24 @@ function buildScopedTarget(
   }
 }
 
+const scopedBranchInstruction = (
+  verb: "Review" | "Simplify",
+  branch: string,
+): string =>
+  [
+    `${verb} changes against base branch \`${branch}\`${verb === "Simplify" ? " while preserving exact behavior." : "."}`,
+    `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then ${verb === "Simplify" ? "work from that diff scope." : "inspect diff from that SHA."}`,
+  ].join(" ");
+
+const scopedPathInstruction = (
+  prefix: "Snapshot review" | "Simplify code",
+  paths: string[],
+): string =>
+  `${prefix} only for files/folders in: ${paths.join(", ")}. Read files directly, do not assume git diff context.`;
+
 export function buildReviewTarget(parsed: ParsedReviewArgs): ScopedTarget {
-  const againstBaseBranch = (verb: "Review" | "Simplify", branch: string) =>
-    [
-      `${verb} changes against base branch \`${branch}\`${verb === "Simplify" ? " while preserving exact behavior." : "."}`,
-      `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then ${verb === "Simplify" ? "work from that diff scope." : "inspect diff from that SHA."}`,
-    ].join(" ");
-  const inPaths = (verb: "Snapshot review" | "Simplify code", paths: string[]) =>
-    `${verb} only for files/folders in: ${paths.join(", ")}. Read files directly, do not assume git diff context.`;
   return buildScopedTarget(parsed, {
-    branch: (branch) => againstBaseBranch("Review", branch),
+    branch: (branch) => scopedBranchInstruction("Review", branch),
     commit: (commit) =>
       `Review only changes introduced by commit \`${commit}\` (use \`git show ${commit}\` or equivalent).`,
     pr: (pr) =>
@@ -472,20 +480,15 @@ export function buildReviewTarget(parsed: ParsedReviewArgs): ScopedTarget {
         "Before checkout, verify there are no staged or unstaged tracked-file changes; untracked files alone must not block PR review.",
         "Resolve PR title, head branch, and base branch with `gh pr view`, checkout with `gh pr checkout`, compute the merge base against the base branch, then review `git diff <merge-base>`.",
       ].join(" "),
-    folder: (paths) => inPaths("Snapshot review", paths),
+    folder: (paths) => scopedPathInstruction("Snapshot review", paths),
     uncommitted:
       "Review staged, unstaged, and untracked changes in the current workspace.",
   });
 }
 
 export function buildSimplifyTarget(parsed: ParsedReviewArgs): ScopedTarget {
-  const againstBaseBranch = (branch: string) =>
-    [
-      `Simplify code changed against base branch \`${branch}\` while preserving exact behavior.`,
-      `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then work from that diff scope.`,
-    ].join(" ");
   return buildScopedTarget(parsed, {
-    branch: againstBaseBranch,
+    branch: (branch) => scopedBranchInstruction("Simplify", branch),
     commit: (commit) =>
       `Simplify only code introduced by commit \`${commit}\` while keeping output and API behavior unchanged.`,
     pr: (pr) =>
@@ -493,8 +496,7 @@ export function buildSimplifyTarget(parsed: ParsedReviewArgs): ScopedTarget {
         `Simplify code in pull request reference \`${pr}\` with no behavior drift.`,
         "If GitHub CLI is available, resolve PR metadata and checkout or diff PR branch against its base branch first.",
       ].join(" "),
-    folder: (paths) =>
-      `Simplify code only in these files/folders: ${paths.join(", ")}. Read files directly, do not assume git diff context.`,
+    folder: (paths) => scopedPathInstruction("Simplify code", paths),
     uncommitted:
       "Simplify staged, unstaged, and untracked code in the current workspace while preserving exact functionality.",
   });
