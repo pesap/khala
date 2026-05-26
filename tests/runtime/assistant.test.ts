@@ -197,10 +197,17 @@ test("infers tool obligation for concrete inspection requests", () => {
 test("blocks unsatisfied action and approval obligations outside monitor mode", () => {
   assert.equal(
     shouldBlockUnsatisfiedTurnObligation({
-      mode: "warn",
+      mode: "enforce",
       obligation: "tool_required",
     }),
     true,
+  );
+  assert.equal(
+    shouldBlockUnsatisfiedTurnObligation({
+      mode: "warn",
+      obligation: "tool_required",
+    }),
+    false,
   );
   assert.equal(
     shouldBlockUnsatisfiedTurnObligation({
@@ -218,10 +225,17 @@ test("blocks unsatisfied action and approval obligations outside monitor mode", 
   );
   assert.equal(
     shouldBlockUnsatisfiedTurnObligation({
-      mode: "warn",
+      mode: "enforce",
       obligation: "approval_required",
     }),
     true,
+  );
+  assert.equal(
+    shouldBlockUnsatisfiedTurnObligation({
+      mode: "warn",
+      obligation: "approval_required",
+    }),
+    false,
   );
   assert.equal(isActionOrApprovalObligation("approval_required"), true);
   assert.equal(isActionOrApprovalObligation("answer_allowed"), false);

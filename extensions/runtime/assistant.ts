@@ -159,7 +159,7 @@ export function shouldBlockUnsatisfiedTurnObligation(params: {
   mode: ResponseComplianceMode;
   obligation: TurnObligation;
 }): boolean {
-  if (params.mode === "monitor") return false;
+  if (params.mode !== "enforce") return false;
   return (
     params.obligation === "tool_required" ||
     params.obligation === "approval_required"
