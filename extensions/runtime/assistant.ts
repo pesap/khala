@@ -185,6 +185,14 @@ export function evaluateObligationLoopGuard(params: {
   };
 }
 
+export function normalizeLoopGuardText(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?]+$/g, "")
+    .replace(/\s+/g, " ");
+}
+
 export function inferTurnObligation(userText: string): TurnObligationResult {
   const text = userText.trim().toLowerCase();
   if (!text) return { obligation: "none", reason: "no user request text" };

@@ -8,6 +8,7 @@ import {
   findPendingMemoryGateRecovery,
   inferTurnObligation,
   isEmptyTerminalAssistantResponse,
+  normalizeLoopGuardText,
   isActionOrApprovalObligation,
   isAssistantClarification,
   isAssistantClarificationAllowedForObligation,
@@ -500,4 +501,16 @@ test("obligation loop guard resets count when key changes", () => {
     key: "approval_required:delete files",
     count: 1,
   });
+});
+
+test("normalizeLoopGuardText collapses punctuation and spacing noise", () => {
+  assert.equal(normalizeLoopGuardText(" Continue   working... "), "continue working");
+  assert.equal(
+    normalizeLoopGuardText("CONTINUE working!?"),
+    "continue working",
+  );
+  assert.equal(
+    normalizeLoopGuardText("Please review src/app.ts."),
+    "please review src/app.ts",
+  );
 });

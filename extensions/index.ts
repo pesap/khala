@@ -155,6 +155,7 @@ import {
   isActionOrApprovalObligation,
   isAssistantClarificationAllowedForObligation,
   isEmptyTerminalAssistantResponse,
+  normalizeLoopGuardText,
   evaluateObligationLoopGuard,
   shouldBlockUnsatisfiedTurnObligation,
 } from "./runtime/assistant.ts";
@@ -1915,7 +1916,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         `Immediately retry the blocked ${pendingMemoryGateRecovery.blockedToolName} in the same assistant turn.`,
         "Do not switch to explanation, next-turn promises, or ask the user to continue.",
       ].join("\n");
-      const memoryGateBlockKey = `${pendingMemoryGateRecovery.blockedToolName}:${userText.trim().toLowerCase()}`;
+      const memoryGateBlockKey = `${pendingMemoryGateRecovery.blockedToolName}:${normalizeLoopGuardText(userText)}`;
       const loopGuard = evaluateObligationLoopGuard({
         current: {
           key: runtimeState.lastMemoryGateBlockKey,
@@ -1975,8 +1976,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           obligation: obligation.obligation,
         })
       ) {
-        const normalizedUserText = userText.trim().toLowerCase();
-        const obligationBlockKey = `${obligation.obligation}:${normalizedUserText}`;
+        const obligationBlockKey = `${obligation.obligation}:${normalizeLoopGuardText(userText)}`;
         const loopGuard = evaluateObligationLoopGuard({
           current: {
             key: runtimeState.lastObligationBlockKey,
