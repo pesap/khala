@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 
 import {
   assistantMessageHasToolCall,
+  assistantTurnHasToolCallSinceLatestUser,
+  evaluateObligationLoopGuard,
   findPendingMemoryGateRecovery,
   inferTurnObligation,
+  isEmptyTerminalAssistantResponse,
+  normalizeLoopGuardText,
   isActionOrApprovalObligation,
   isAssistantClarification,
   isAssistantClarificationAllowedForObligation,
@@ -85,6 +89,17 @@ test("does not clear recovery when a different retry-capable tool runs", () => {
   });
 });
 
+test("clears recovery when blocked tool name is unknown but a retry-capable tool runs", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("custom_mutation_tool"),
+    memoryReadRequired("custom_mutation_tool"),
+    assistantToolCall("khala_read_memory"),
+    assistantToolCall("write"),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
 test("ignores memory-read-required when no memory read happened yet", () => {
   const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
     memoryReadRequired("edit"),
@@ -92,6 +107,43 @@ test("ignores memory-read-required when no memory read happened yet", () => {
   ];
 
   assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
+test("does not carry memory-gate recovery requirement across a new user turn", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("write"),
+    memoryReadRequired("write"),
+    assistantToolCall("khala_read_memory"),
+    textMessage("assistant", "I refreshed memory and will retry."),
+    textMessage("user", "Different request: explain what happened."),
+    textMessage("assistant", "Here is an explanation."),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
+test("allows a blocking clarification instead of forced same-turn mutation retry", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("write"),
+    memoryReadRequired("write"),
+    assistantToolCall("khala_read_memory"),
+    textMessage("assistant", "Which file should I patch first?"),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
+test("does not treat generic permission as valid memory-gate recovery clarification", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("write"),
+    memoryReadRequired("write"),
+    assistantToolCall("khala_read_memory"),
+    textMessage("assistant", "Should I proceed?"),
+  ];
+
+  assert.deepEqual(findPendingMemoryGateRecovery(messages), {
+    blockedToolName: "write",
+  });
 });
 
 test("infers tool obligation for concrete inspection requests", () => {
@@ -106,6 +158,8 @@ test("infers tool obligation for concrete inspection requests", () => {
     "tool_required",
   );
   assert.equal(inferTurnObligation("do it").obligation, "tool_required");
+  assert.equal(inferTurnObligation("continue").obligation, "answer_allowed");
+  assert.equal(inferTurnObligation("proceed").obligation, "answer_allowed");
   assert.equal(
     inferTurnObligation("Keep working on the agent feedback loop").obligation,
     "tool_required",
@@ -129,15 +183,31 @@ test("infers tool obligation for concrete inspection requests", () => {
       .obligation,
     "tool_required",
   );
+  assert.equal(
+    inferTurnObligation("Can you review this PR and suggest fixes?").obligation,
+    "tool_required",
+  );
+  assert.equal(
+    inferTurnObligation("Could you analyze src/runtime/assistant.ts for bugs?")
+      .obligation,
+    "tool_required",
+  );
 });
 
 test("blocks unsatisfied action and approval obligations outside monitor mode", () => {
   assert.equal(
     shouldBlockUnsatisfiedTurnObligation({
-      mode: "warn",
+      mode: "enforce",
       obligation: "tool_required",
     }),
     true,
+  );
+  assert.equal(
+    shouldBlockUnsatisfiedTurnObligation({
+      mode: "warn",
+      obligation: "tool_required",
+    }),
+    false,
   );
   assert.equal(
     shouldBlockUnsatisfiedTurnObligation({
@@ -155,10 +225,17 @@ test("blocks unsatisfied action and approval obligations outside monitor mode", 
   );
   assert.equal(
     shouldBlockUnsatisfiedTurnObligation({
-      mode: "warn",
+      mode: "enforce",
       obligation: "approval_required",
     }),
     true,
+  );
+  assert.equal(
+    shouldBlockUnsatisfiedTurnObligation({
+      mode: "warn",
+      obligation: "approval_required",
+    }),
+    false,
   );
   assert.equal(isActionOrApprovalObligation("approval_required"), true);
   assert.equal(isActionOrApprovalObligation("answer_allowed"), false);
@@ -171,6 +248,16 @@ test("infers approval obligation for destructive requests", () => {
   );
   assert.equal(
     inferTurnObligation("Please reset --hard and clean the repo.").obligation,
+    "approval_required",
+  );
+  assert.equal(
+    inferTurnObligation("Please remove dead code in runtime helpers.").obligation,
+    "tool_required",
+  );
+  assert.equal(
+    inferTurnObligation(
+      "Can you verify this strategy to delete all repository files?",
+    ).obligation,
     "approval_required",
   );
 });
@@ -192,6 +279,30 @@ test("allows normal explanation questions without tools", () => {
     inferTurnObligation("this is a great review").obligation,
     "answer_allowed",
   );
+  assert.equal(
+    inferTurnObligation(
+      "Can you explain why this path is used in the config file?",
+    ).obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation(
+      "Please explain what changed in the README.md and why.",
+    ).obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("Can you review this architecture idea?").obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("Could you analyze this design approach?").obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation("Please verify this strategy proposal.").obligation,
+    "answer_allowed",
+  );
 });
 
 test("detects assistant tool-call and clarification output shapes", () => {
@@ -210,6 +321,45 @@ test("detects assistant tool-call and clarification output shapes", () => {
   );
   assert.equal(
     isAssistantClarification(
+      textMessage("assistant", "Which file should I inspect first"),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage("assistant", "Please confirm whether I should patch src/app.ts or src/server.ts first"),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage(
+        "assistant",
+        "Before I continue, can you confirm the target file to patch first",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage(
+        "assistant",
+        "Which file should I inspect first? I can proceed once you confirm.",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage(
+        "assistant",
+        `${"Context ".repeat(400)} Which file should I inspect first?`,
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
       textMessage("assistant", "Here is the answer. Does that match what you expected?"),
     ),
     false,
@@ -220,6 +370,64 @@ test("detects assistant tool-call and clarification output shapes", () => {
     ),
     false,
   );
+});
+
+test("detects tool usage across the whole assistant turn span", () => {
+  const withEarlierToolCall: Parameters<
+    typeof findPendingMemoryGateRecovery
+  >[0] = [
+    textMessage("user", "Please inspect runtime behavior."),
+    assistantToolCall("read"),
+    textMessage("assistant", "I inspected it and found the issue."),
+  ];
+  assert.equal(assistantTurnHasToolCallSinceLatestUser(withEarlierToolCall), true);
+
+  const noToolCall: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    textMessage("user", "Please inspect runtime behavior."),
+    textMessage("assistant", "I can inspect that next."),
+  ];
+  assert.equal(assistantTurnHasToolCallSinceLatestUser(noToolCall), false);
+
+  const toolCallBeforeLatestUser: Parameters<
+    typeof findPendingMemoryGateRecovery
+  >[0] = [
+    assistantToolCall("read"),
+    textMessage("user", "Different request now."),
+    textMessage("assistant", "Acknowledged."),
+  ];
+  assert.equal(
+    assistantTurnHasToolCallSinceLatestUser(toolCallBeforeLatestUser),
+    false,
+  );
+});
+
+test("does not treat blank terminal assistant stop as empty when earlier tool call exists", () => {
+  const messagesWithToolCallBeforeBlank: Parameters<
+    typeof findPendingMemoryGateRecovery
+  >[0] = [
+    textMessage("user", "Inspect the runtime."),
+    assistantToolCall("read"),
+    {
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "   " }],
+    },
+  ];
+  assert.equal(
+    isEmptyTerminalAssistantResponse(messagesWithToolCallBeforeBlank),
+    false,
+  );
+
+  const trulyEmptyTerminal: Parameters<typeof findPendingMemoryGateRecovery>[0] =
+    [
+      textMessage("user", "Inspect the runtime."),
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "   " }],
+      },
+    ];
+  assert.equal(isEmptyTerminalAssistantResponse(trulyEmptyTerminal), true);
 });
 
 test("generic permission questions do not satisfy concrete tool obligations", () => {
@@ -244,4 +452,130 @@ test("generic permission questions do not satisfy concrete tool obligations", ()
     ),
     true,
   );
+  assert.equal(
+    isAssistantClarificationAllowedForObligation(
+      textMessage("assistant", "Can I inspect src/app.ts or src/server.ts first?"),
+      "tool_required",
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarificationAllowedForObligation(
+      textMessage("assistant", "Should I review the API docs or runtime tests first?"),
+      "tool_required",
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarificationAllowedForObligation(
+      textMessage(
+        "assistant",
+        "Should I proceed with inspecting src/app.ts or src/server.ts first?",
+      ),
+      "tool_required",
+    ),
+    true,
+  );
+});
+
+test("obligation loop guard blocks first two repeats then warns", () => {
+  const first = evaluateObligationLoopGuard({
+    current: { key: null, count: 0 },
+    key: "tool_required:continue",
+    blockThreshold: 3,
+  });
+  assert.equal(first.block, true);
+  assert.deepEqual(first.next, { key: "tool_required:continue", count: 1 });
+
+  const second = evaluateObligationLoopGuard({
+    current: first.next,
+    key: "tool_required:continue",
+    blockThreshold: 3,
+  });
+  assert.equal(second.block, true);
+  assert.deepEqual(second.next, { key: "tool_required:continue", count: 2 });
+
+  const third = evaluateObligationLoopGuard({
+    current: second.next,
+    key: "tool_required:continue",
+    blockThreshold: 3,
+  });
+  assert.equal(third.block, false);
+  assert.deepEqual(third.next, { key: "tool_required:continue", count: 3 });
+});
+
+test("obligation loop guard resets count when key changes", () => {
+  const decision = evaluateObligationLoopGuard({
+    current: { key: "tool_required:continue", count: 2 },
+    key: "approval_required:delete files",
+    blockThreshold: 3,
+  });
+  assert.equal(decision.block, true);
+  assert.deepEqual(decision.next, {
+    key: "approval_required:delete files",
+    count: 1,
+  });
+});
+
+test("loop guard counts normalized prompt variants as the same key", () => {
+  const key1 = `tool_required:${normalizeLoopGuardText("Continue working...")}`;
+  const key2 = `tool_required:${normalizeLoopGuardText("  `Continue   working!`  ")}`;
+  const key3 = `tool_required:${normalizeLoopGuardText("(continue working?)")}`;
+  assert.equal(key1, key2);
+  assert.equal(key2, key3);
+
+  const first = evaluateObligationLoopGuard({
+    current: { key: null, count: 0 },
+    key: key1,
+    blockThreshold: 3,
+  });
+  const second = evaluateObligationLoopGuard({
+    current: first.next,
+    key: key2,
+    blockThreshold: 3,
+  });
+  const third = evaluateObligationLoopGuard({
+    current: second.next,
+    key: key3,
+    blockThreshold: 3,
+  });
+
+  assert.equal(first.block, true);
+  assert.equal(second.block, true);
+  assert.equal(third.block, false);
+});
+
+test("normalizeLoopGuardText collapses punctuation and spacing noise", () => {
+  assert.equal(normalizeLoopGuardText(" Continue   working... "), "continue working");
+  assert.equal(
+    normalizeLoopGuardText("CONTINUE working!?"),
+    "continue working",
+  );
+  assert.equal(
+    normalizeLoopGuardText("Continue working;"),
+    "continue working",
+  );
+  assert.equal(
+    normalizeLoopGuardText("Continue working,"),
+    "continue working",
+  );
+  assert.equal(
+    normalizeLoopGuardText("`Continue working.`"),
+    "continue working",
+  );
+  assert.equal(
+    normalizeLoopGuardText("(Continue working!)"),
+    "continue working",
+  );
+  assert.equal(
+    normalizeLoopGuardText("Please review src/app.ts."),
+    "please review src/app.ts",
+  );
+  assert.equal(
+    normalizeLoopGuardText(`"'(\`Continue working...\`)!'"`),
+    "continue working",
+  );
+  assert.equal(normalizeLoopGuardText("..."), "_empty_");
+  assert.equal(normalizeLoopGuardText("(`...`)"), "_empty_");
+  assert.equal(normalizeLoopGuardText(`"'(\`...\`)!'"`), "_empty_");
 });

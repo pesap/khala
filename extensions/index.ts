@@ -145,6 +145,7 @@ import { notifyWorkflowStarted } from "./workflows/notifications.ts";
 import {
   extractLastAssistantText,
   assistantMessageHasToolCall,
+  assistantTurnHasToolCallSinceLatestUser,
   extractLastUserText,
   findPendingMemoryGateRecovery,
   getLastAssistantMessage,
@@ -154,6 +155,8 @@ import {
   isActionOrApprovalObligation,
   isAssistantClarificationAllowedForObligation,
   isEmptyTerminalAssistantResponse,
+  normalizeLoopGuardText,
+  evaluateObligationLoopGuard,
   shouldBlockUnsatisfiedTurnObligation,
 } from "./runtime/assistant.ts";
 import {
@@ -212,6 +215,7 @@ let activeRuntimeProfile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE;
 let lowConfidenceEvents: LowConfidenceEvent[] = [];
 let bundledExtensionsInitialized = false;
 const runtimeState = createRuntimeState();
+const REPEATED_BLOCK_GUARD_THRESHOLD = 3;
 let taskToolCallCount = 0;
 let latestUserInput = "";
 let learnedSkillCompletionCache: string[] = [];
@@ -1884,38 +1888,96 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     let harnessIssues: HarnessTurnIssue[] = [];
 
     if (isEmptyTerminalAssistantResponse(messages)) {
+      const emptyResponseKey = `empty:${normalizeLoopGuardText(userText)}`;
+      const loopGuard = evaluateObligationLoopGuard({
+        current: {
+          key: runtimeState.lastEmptyResponseBlockKey,
+          count: runtimeState.lastEmptyResponseBlockCount,
+        },
+        key: emptyResponseKey,
+        blockThreshold: REPEATED_BLOCK_GUARD_THRESHOLD,
+      });
+      runtimeState.lastEmptyResponseBlockKey = loopGuard.next.key;
+      runtimeState.lastEmptyResponseBlockCount = loopGuard.next.count;
+      const emptyReason = [
+        "EMPTY ASSISTANT RESPONSE",
+        "",
+        "The assistant stopped without visible output or a tool call.",
+        "Continue with the next tool call or send a final user-visible response.",
+        workflow
+          ? "If this is the workflow conclusion, include the required `Result:` and `Confidence:` footer lines."
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      if (!loopGuard.block) {
+        notify(
+          ctx,
+          [
+            emptyReason,
+            "",
+            "Loop guard: repeated identical empty-response block detected; downgraded to warning for this turn.",
+          ].join("\n"),
+          "warning",
+        );
+        return;
+      }
       return {
         block: true,
-        reason: [
-          "EMPTY ASSISTANT RESPONSE",
-          "",
-          "The assistant stopped without visible output or a tool call.",
-          "Continue with the next tool call or send a final user-visible response.",
-          workflow
-            ? "If this is the workflow conclusion, include the required `Result:` and `Confidence:` footer lines."
-            : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        reason: emptyReason,
       };
     }
+
+    runtimeState.lastEmptyResponseBlockKey = null;
+    runtimeState.lastEmptyResponseBlockCount = 0;
 
     if (
       pendingMemoryGateRecovery &&
       lastAssistantMessage?.stopReason === "stop"
     ) {
+      runtimeState.lastObligationBlockKey = null;
+      runtimeState.lastObligationBlockCount = 0;
+      const memoryGateReason = [
+        "MEMORY GATE RECOVERY INCOMPLETE",
+        "",
+        `A previous ${pendingMemoryGateRecovery.blockedToolName} was blocked by MEMORY READ REQUIRED.`,
+        "You already called khala_read_memory.",
+        `Immediately retry the blocked ${pendingMemoryGateRecovery.blockedToolName} in the same assistant turn.`,
+        "Do not switch to explanation, next-turn promises, or ask the user to continue.",
+      ].join("\n");
+      const memoryGateBlockKey = `${pendingMemoryGateRecovery.blockedToolName}:${normalizeLoopGuardText(userText)}`;
+      const loopGuard = evaluateObligationLoopGuard({
+        current: {
+          key: runtimeState.lastMemoryGateBlockKey,
+          count: runtimeState.lastMemoryGateBlockCount,
+        },
+        key: memoryGateBlockKey,
+        blockThreshold: REPEATED_BLOCK_GUARD_THRESHOLD,
+      });
+      runtimeState.lastMemoryGateBlockKey = loopGuard.next.key;
+      runtimeState.lastMemoryGateBlockCount = loopGuard.next.count;
+
+      if (!loopGuard.block) {
+        notify(
+          ctx,
+          [
+            memoryGateReason,
+            "",
+            "Loop guard: repeated identical memory-gate block detected; downgraded to warning for this turn.",
+          ].join("\n"),
+          "warning",
+        );
+        return;
+      }
+
       return {
         block: true,
-        reason: [
-          "MEMORY GATE RECOVERY INCOMPLETE",
-          "",
-          `A previous ${pendingMemoryGateRecovery.blockedToolName} was blocked by MEMORY READ REQUIRED.`,
-          "You already called khala_read_memory.",
-          `Immediately retry the blocked ${pendingMemoryGateRecovery.blockedToolName} in the same assistant turn.`,
-          "Do not switch to explanation, next-turn promises, or ask the user to continue.",
-        ].join("\n"),
+        reason: memoryGateReason,
       };
     }
+
+    runtimeState.lastMemoryGateBlockKey = null;
+    runtimeState.lastMemoryGateBlockCount = 0;
 
     const obligation = inferTurnObligation(userText);
     if (
@@ -1923,6 +1985,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       lastAssistantMessage?.stopReason === "stop" &&
       isActionOrApprovalObligation(obligation.obligation) &&
       !assistantMessageHasToolCall(lastAssistantMessage) &&
+      !assistantTurnHasToolCallSinceLatestUser(messages) &&
       !isAssistantClarificationAllowedForObligation(
         lastAssistantMessage,
         obligation.obligation,
@@ -1942,10 +2005,39 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           obligation: obligation.obligation,
         })
       ) {
+        const obligationBlockKey = `${obligation.obligation}:${normalizeLoopGuardText(userText)}`;
+        const loopGuard = evaluateObligationLoopGuard({
+          current: {
+            key: runtimeState.lastObligationBlockKey,
+            count: runtimeState.lastObligationBlockCount,
+          },
+          key: obligationBlockKey,
+          blockThreshold: REPEATED_BLOCK_GUARD_THRESHOLD,
+        });
+        runtimeState.lastObligationBlockKey = loopGuard.next.key;
+        runtimeState.lastObligationBlockCount = loopGuard.next.count;
+
+        if (!loopGuard.block) {
+          notify(
+            ctx,
+            [
+              reason,
+              "",
+              "Loop guard: repeated identical obligation block detected; downgraded to warning for this turn.",
+            ].join("\n"),
+            "warning",
+          );
+          return;
+        }
         return { block: true, reason };
       }
 
       notify(ctx, reason, "warning");
+      runtimeState.lastObligationBlockKey = null;
+      runtimeState.lastObligationBlockCount = 0;
+    } else {
+      runtimeState.lastObligationBlockKey = null;
+      runtimeState.lastObligationBlockCount = 0;
     }
 
     if (
