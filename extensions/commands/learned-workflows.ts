@@ -39,6 +39,20 @@ export function createLearnedWorkflowCommandHandlers(params: {
   workflowShow: CommandHandler;
   workflowRun: CommandHandler;
 } {
+  const withPromptTemplate = (prompt: string): string =>
+    prompt ? `\nPrompt template:\n${prompt}` : "";
+  const sendWorkflowMessage = (
+    ctx: ExtensionCommandContext,
+    message: string,
+    workflowName: string,
+  ): void => {
+    if (ctx.isIdle()) {
+      params.pi.sendUserMessage(message);
+      return;
+    }
+    params.pi.sendUserMessage(message, { deliverAs: "followUp" });
+    params.notify(ctx, `Queued learned workflow ${workflowName}.`, "info");
+  };
   const requireWorkflow = async (
     ctx: ExtensionCommandContext,
     args: string | undefined,
@@ -82,7 +96,7 @@ export function createLearnedWorkflowCommandHandlers(params: {
         [
           `Workflow ${workflow.record.name}:`,
           workflow.workflowText.trim(),
-          prompt ? `\nPrompt template:\n${prompt}` : "",
+          withPromptTemplate(prompt),
         ]
           .filter(Boolean)
           .join("\n"),
@@ -109,12 +123,7 @@ export function createLearnedWorkflowCommandHandlers(params: {
         .filter(Boolean)
         .join("\n");
 
-      if (ctx.isIdle()) {
-        params.pi.sendUserMessage(message);
-      } else {
-        params.pi.sendUserMessage(message, { deliverAs: "followUp" });
-        params.notify(ctx, `Queued learned workflow ${workflow.record.name}.`, "info");
-      }
+      sendWorkflowMessage(ctx, message, workflow.record.name);
     },
   };
 }
