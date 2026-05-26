@@ -221,8 +221,9 @@ function parseRecordLine<T>(
   usageError: string,
   invalidError: string,
 ): ParseRecordResult<T> {
-  if (!args.trim()) return { error: usageError };
-  const parsed = parseLine(args.trim());
+  const trimmed = args.trim();
+  if (!trimmed) return { error: usageError };
+  const parsed = parseLine(trimmed);
   return parsed ? { record: parsed } : { error: invalidError };
 }
 
@@ -243,9 +244,8 @@ function parseScopeArg(
   usage: string,
 ): { scope: "project" | "global"; error?: string } {
   const scope = normalizeWhitespace(args).toLowerCase();
-  if (!scope || scope === "project" || scope === "global") {
-    return { scope: (scope || "project") as "project" | "global" };
-  }
+  if (!scope || scope === "project") return { scope: "project" };
+  if (scope === "global") return { scope: "global" };
   return { scope: "project", error: usage };
 }
 
