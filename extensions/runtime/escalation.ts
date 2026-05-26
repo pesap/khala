@@ -58,6 +58,12 @@ export interface HarnessTurnIssue {
   title: string;
   block: boolean;
   message: string;
+  remediation: {
+    action: string;
+    cheapestTool: string;
+    retry: string;
+    avoid: string[];
+  };
 }
 
 export interface HarnessTurnMetrics {
@@ -5023,6 +5029,18 @@ export function evaluateHarnessTurn(params: {
       code: "tool_efficiency",
       title: "TOOL EFFICIENCY WARNING",
       block,
+      remediation: {
+        action: "reuse_cached_or_narrow_tool",
+        cheapestTool: "cached observation or focused evidence tool",
+        retry:
+          "Reuse the first successful result, narrow the query, or switch to a different evidence source before answering.",
+        avoid: [
+          "duplicate evidence calls",
+          "broad searches",
+          "unbounded shell output",
+          "placeholder tool results",
+        ],
+      },
       message: [
         "TOOL EFFICIENCY WARNING",
         "",
@@ -5043,6 +5061,17 @@ export function evaluateHarnessTurn(params: {
       code: "memory_search",
       title: "MEMORY SEARCH REQUIRED",
       block,
+      remediation: {
+        action: "run_focused_memory_search",
+        cheapestTool: "khala_search_memory",
+        retry:
+          "Call khala_search_memory with concrete task terms from the latest user request, then retry with the memory result synthesized.",
+        avoid: [
+          "broad memory searches",
+          "duplicate searches",
+          "placeholder memory results",
+        ],
+      },
       message: [
         "MEMORY SEARCH REQUIRED",
         "",
@@ -5063,6 +5092,17 @@ export function evaluateHarnessTurn(params: {
       code: "learning_capture",
       title: "LEARNING CAPTURE REQUIRED",
       block,
+      remediation: {
+        action: "store_durable_learning",
+        cheapestTool: "khala_learn",
+        retry:
+          "Persist the concrete trigger, lesson, evidence snippet, score, and confidence, then retry without promising memory that was not stored.",
+        avoid: [
+          "vague triggers",
+          "low-confidence lessons",
+          "placeholder storage results",
+        ],
+      },
       message: [
         "LEARNING CAPTURE REQUIRED",
         "",
@@ -5083,6 +5123,17 @@ export function evaluateHarnessTurn(params: {
       code: "skill_routing",
       title: "SKILL READ REQUIRED",
       block,
+      remediation: {
+        action: "load_required_skill",
+        cheapestTool: "read SKILL.md",
+        retry:
+          "Read the exact required SKILL.md, or delegate to a subagent with that skill explicitly assigned, then retry using the loaded instructions.",
+        avoid: [
+          "manifest-only skill mentions",
+          "unrelated skill loads",
+          "placeholder skill results",
+        ],
+      },
       message: [
         "SKILL READ REQUIRED",
         "",
@@ -5103,6 +5154,18 @@ export function evaluateHarnessTurn(params: {
       code: "evidence_routing",
       title: "EVIDENCE ROUTING REQUIRED",
       block,
+      remediation: {
+        action: "collect_matching_evidence",
+        cheapestTool: "matching local, memory, command, or focused external evidence",
+        retry:
+          "Use the cheapest evidence source that matches the requested artifact, command, source, citation, or current fact, then retry with the result.",
+        avoid: [
+          "unrelated local reads",
+          "unrun command claims",
+          "broad external searches",
+          "generic page-loaded results",
+        ],
+      },
       message: [
         "EVIDENCE ROUTING REQUIRED",
         "",
@@ -5124,6 +5187,18 @@ export function evaluateHarnessTurn(params: {
       code: "model_escalation",
       title: "MODEL ESCALATION REQUIRED",
       block,
+      remediation: {
+        action: "escalate_to_stronger_model",
+        cheapestTool: "stronger advisory subagent",
+        retry:
+          "Ask an oracle, researcher, or reviewer subagent with a strong model or high-effort override a concrete question, then synthesize its substantive answer.",
+        avoid: [
+          "same-model delegation",
+          "vague escalation tasks",
+          "hedged advisory results",
+          "echoed escalation prompts",
+        ],
+      },
       message: [
         "MODEL ESCALATION REQUIRED",
         "",

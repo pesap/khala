@@ -976,6 +976,354 @@
       "expectedIssueCodes": ["evidence_routing", "model_escalation"]
     },
     {
+      "name": "remediation loop blocks missing memory search before mutation",
+      "userText": "Update README.md remediation loop notes.",
+      "assistantText": "I updated README.md.",
+      "messages": [
+        { "role": "user", "text": "Update README.md remediation loop notes." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Docs authoring skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README current remediation section." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md remediation loop notes" }
+      ],
+      "expectedIssueCodes": ["memory_search"],
+      "expectedIssueActions": ["run_focused_memory_search"],
+      "expectedIssueCheapestTools": ["khala_search_memory"]
+    },
+    {
+      "name": "remediation loop accepts focused memory search retry",
+      "userText": "Update README.md remediation loop notes.",
+      "assistantText": "I updated README.md.",
+      "messages": [
+        { "role": "user", "text": "Update README.md remediation loop notes." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Update README.md remediation loop notes" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: remediation loop notes should describe blocked turn then retry."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Docs authoring skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README current remediation section." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md remediation loop notes" }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "focusedMemorySearches": 1,
+        "successfulMemorySearches": 1,
+        "skillLoads": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop rejects broad memory retry",
+      "userText": "Update README.md remediation loop notes.",
+      "assistantText": "I updated README.md.",
+      "messages": [
+        { "role": "user", "text": "Update README.md remediation loop notes." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "khala_search_memory", "arguments": { "query": "fix repo" } }
+        },
+        { "role": "toolResult", "text": "generic memory result" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/docs-authoring/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Docs authoring skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README current remediation section." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "apply_patch", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "patched README.md remediation loop notes" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency", "memory_search"],
+      "expectedIssueActions": ["reuse_cached_or_narrow_tool", "run_focused_memory_search"]
+    },
+    {
+      "name": "remediation loop blocks missing skill route",
+      "userText": "Review this change for regressions.",
+      "assistantText": "I reviewed the change.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        { "role": "toolResult", "text": "Memory: review tasks need code-review skill." }
+      ],
+      "expectedIssueCodes": ["skill_routing"],
+      "expectedIssueActions": ["load_required_skill"],
+      "expectedIssueCheapestTools": ["read SKILL.md"]
+    },
+    {
+      "name": "remediation loop accepts exact skill read retry",
+      "userText": "Review this change for regressions.",
+      "assistantText": "Findings first, verdict correct.",
+      "messages": [
+        { "role": "user", "text": "Review this change for regressions." },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Code review skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "Review this change regressions code-review skill" }
+          }
+        },
+        { "role": "toolResult", "text": "Memory: review tasks need code-review skill." }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "focusedMemorySearches": 1,
+        "successfulMemorySearches": 1,
+        "skillLoads": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop blocks weak source evidence",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "web_search", "arguments": { "query": "latest docs" } }
+        },
+        { "role": "toolResult", "text": "generic docs result" }
+      ],
+      "expectedIssueCodes": ["tool_efficiency", "skill_routing", "evidence_routing"],
+      "expectedIssueActions": [
+        "reuse_cached_or_narrow_tool",
+        "load_required_skill",
+        "collect_matching_evidence"
+      ]
+    },
+    {
+      "name": "remediation loop accepts focused source evidence retry",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators. Sources: https://www.typescriptlang.org/docs/handbook/decorators.html\nConfidence: 0.89",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "use official docs cite source TypeScript decorators documented handbook" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "skillLoads": 1,
+        "externalEvidenceCalls": 2,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop blocks missing command evidence",
+      "userText": "Run `make check` and tell me whether it passed.",
+      "assistantText": "`make check` passed.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Run `make check` and tell me whether it passed."
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"],
+      "expectedIssueActions": ["collect_matching_evidence"]
+    },
+    {
+      "name": "remediation loop accepts command evidence retry",
+      "userText": "Run `make check` and tell me whether it passed.",
+      "assistantText": "`make check` passed.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Run `make check` and tell me whether it passed."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "make check" } }
+        },
+        { "role": "toolResult", "text": "make check passed: 12 checks ok" }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop rejects placeholder command result",
+      "userText": "Run `make check` and tell me whether it passed.",
+      "assistantText": "`make check` passed.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Run `make check` and tell me whether it passed."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "make check" } }
+        },
+        { "role": "toolResult", "text": "ok" }
+      ],
+      "expectedIssueCodes": ["evidence_routing"],
+      "expectedIssueActions": ["collect_matching_evidence"]
+    },
+    {
+      "name": "remediation loop blocks unresolved uncertainty",
+      "userText": "What is the root cause of the parser failure?",
+      "assistantText": "I do not know without seeing more logs.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "What is the root cause of the parser failure?"
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Debug investigation skill loaded." }
+      ],
+      "expectedIssueCodes": ["model_escalation"],
+      "expectedIssueActions": ["escalate_to_stronger_model"],
+      "expectedIssueCheapestTools": ["stronger advisory subagent"]
+    },
+    {
+      "name": "remediation loop accepts substantive escalation retry",
+      "userText": "What is the root cause of the parser failure?",
+      "assistantText": "The stronger reviewer identified an unhandled empty token as the root cause.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "What is the root cause of the parser failure?"
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Debug investigation skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "gpt-5",
+              "task": "Identify the root cause of the parser failure from the provided context."
+            }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Root cause: the parser receives an empty token and the tokenizer does not guard it."
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "skillLoads": 1,
+        "modelEscalations": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "remediation loop rejects vague escalation retry",
+      "userText": "What is the root cause of the parser failure?",
+      "assistantText": "I am not sure; it is likely a parser issue.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "What is the root cause of the parser failure?"
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "Debug investigation skill loaded." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "gpt-5",
+              "task": "help"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "Likely something failed." }
+      ],
+      "expectedIssueCodes": ["model_escalation"],
+      "expectedIssueActions": ["escalate_to_stronger_model"]
+    },
+    {
       "name": "accepts substantive escalation after repeated failures",
       "userText": "Diagnose the repeated npm test failures.",
       "assistantText": "The stronger-model result identified the root cause: npm test cannot start because the test setup file is missing after exit status 1, Error no such file, and code 127. Recommendation: restore the missing setup file before rerunning npm test.\nConfidence: 0.86",

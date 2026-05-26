@@ -25,6 +25,8 @@ type ReplayCase = {
   assistantText: string;
   messages: ReplayMessage[];
   expectedIssueCodes: HarnessTurnIssue["code"][];
+  expectedIssueActions?: string[];
+  expectedIssueCheapestTools?: string[];
   expectedMetrics?: {
     toolCallCount?: number;
     focusedMemorySearches?: number;
@@ -96,6 +98,18 @@ test("harness replay fixtures evaluate expected issue codes", async (t) => {
         issues.map((issue) => issue.code),
         replayCase.expectedIssueCodes,
       );
+      if (replayCase.expectedIssueActions) {
+        assert.deepEqual(
+          issues.map((issue) => issue.remediation.action),
+          replayCase.expectedIssueActions,
+        );
+      }
+      if (replayCase.expectedIssueCheapestTools) {
+        assert.deepEqual(
+          issues.map((issue) => issue.remediation.cheapestTool),
+          replayCase.expectedIssueCheapestTools,
+        );
+      }
 
       if (replayCase.expectedMetrics) {
         const metrics = evaluateHarnessTurnMetrics({ messages });

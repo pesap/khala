@@ -214,6 +214,18 @@ skill-specific gate. For example, loading the GitButler skill and then running
 raw `git status` is reported as a tool-efficiency violation rather than accepted
 as skill-compliant work.
 
+Blocked harness issues include structured remediation metadata in addition to
+the human-readable message. Each issue reports the stable code, whether it blocks
+the turn, a concrete `remediation.action`, the `remediation.cheapestTool`, retry
+guidance, and anti-patterns to avoid. Callers should use that metadata to run the
+smallest satisfying retry: focused `khala_search_memory` for memory misses, exact
+`SKILL.md` reads for skill routes, matching local/command/source evidence for
+evidence misses, and a concrete stronger advisory subagent only for unresolved
+knowledge gaps or repeated failures. A retry is still evaluated normally, so broad
+memory searches, duplicate evidence, placeholder command results, generic page
+loads, and vague escalations remain blocked instead of being accepted as
+remediation.
+
 Blocked/steered command families include `pip`, `pip3`, `poetry`, `python -m pip`, `python -m venv`, `python -m py_compile`, and path-qualified Python executables. Intercepted `python`/`python3` route through `uv run`.
 
 > [!NOTE]
