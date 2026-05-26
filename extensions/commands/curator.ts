@@ -49,23 +49,28 @@ export function createCuratorCommandHandlers(params: {
   archiveSkill: CommandHandler;
   restoreSkill: CommandHandler;
 } {
-  async function refreshReport(paths: LearningPaths, nowIso: string): Promise<void> {
-    await refreshCuratorReport({ paths, nowIso });
-  }
+  const refreshReport = (paths: LearningPaths, nowIso: string) =>
+    refreshCuratorReport({ paths, nowIso });
+  const requireSkillName = (
+    ctx: ExtensionCommandContext,
+    args: string | undefined,
+    usage: string,
+  ): string | null => {
+    const skillName = normalizeArg(args);
+    if (skillName) return skillName;
+    params.notify(ctx, usage, "error");
+    return null;
+  };
+  const notifyMissing = (ctx: ExtensionCommandContext, message: string) =>
+    params.notify(ctx, message, "error");
 
   return {
     skillStatus: async (args, ctx) => {
-      const skillName = normalizeArg(args);
-      if (!skillName) {
-        params.notify(ctx, "Usage: /skill-status <name>", "error");
-        return;
-      }
+      const skillName = requireSkillName(ctx, args, "Usage: /skill-status <name>");
+      if (!skillName) return;
       const paths = await params.ensureLearningStore(ctx.cwd);
       const record = await readLearnedSkillMetadata(paths, skillName);
-      if (!record) {
-        params.notify(ctx, `Learned skill not found: ${skillName}`, "error");
-        return;
-      }
+      if (!record) return notifyMissing(ctx, `Learned skill not found: ${skillName}`);
       params.notify(
         ctx,
         `Skill ${record.metadata.name}: provenance=${record.metadata.provenance}, state=${record.metadata.state}, pinned=${record.metadata.pinned ? "yes" : "no"}, uses=${record.metadata.useCount}, patches=${record.metadata.patchCount}.`,
@@ -114,17 +119,11 @@ export function createCuratorCommandHandlers(params: {
     },
 
     archiveSkill: async (args, ctx) => {
-      const skillName = normalizeArg(args);
-      if (!skillName) {
-        params.notify(ctx, "Usage: /archive-skill <name>", "error");
-        return;
-      }
+      const skillName = requireSkillName(ctx, args, "Usage: /archive-skill <name>");
+      if (!skillName) return;
       const paths = await params.ensureLearningStore(ctx.cwd);
       const record = await archiveLearnedSkill({ paths, skillName });
-      if (!record) {
-        params.notify(ctx, `Active learned skill not found: ${skillName}`, "error");
-        return;
-      }
+      if (!record) return notifyMissing(ctx, `Active learned skill not found: ${skillName}`);
       await refreshReport(paths, params.nowIso());
       params.notify(
         ctx,
@@ -134,21 +133,11 @@ export function createCuratorCommandHandlers(params: {
     },
 
     restoreSkill: async (args, ctx) => {
-      const skillName = normalizeArg(args);
-      if (!skillName) {
-        params.notify(ctx, "Usage: /restore-skill <name>", "error");
-        return;
-      }
+      const skillName = requireSkillName(ctx, args, "Usage: /restore-skill <name>");
+      if (!skillName) return;
       const paths = await params.ensureLearningStore(ctx.cwd);
       const record = await restoreLearnedSkill({ paths, skillName });
-      if (!record) {
-        params.notify(
-          ctx,
-          `Archived learned skill not found: ${skillName}`,
-          "error",
-        );
-        return;
-      }
+      if (!record) return notifyMissing(ctx, `Archived learned skill not found: ${skillName}`);
       await refreshReport(paths, params.nowIso());
       params.notify(
         ctx,

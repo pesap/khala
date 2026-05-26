@@ -27,6 +27,15 @@ export type KhalaMemorySearchResult = KhalaCorpusSearchResult;
 
 const SEARCH_FILE_LIMIT = 500;
 const MAX_FILE_BYTES = 250_000;
+const KIND_SCORE_BONUS: Partial<Record<KhalaCorpusKind, number>> = {
+  skill: 1.5,
+  workflow: 1.25,
+  prompt: 1.25,
+  lesson: 1,
+  learning: 1,
+  rule: 2,
+  rule_candidate: 2,
+};
 
 function tokenize(value: string): string[] {
   return Array.from(
@@ -40,7 +49,6 @@ function tokenize(value: string): string[] {
 }
 
 function classifyCorpusPath(filePath: string, paths: LearningPaths): KhalaCorpusKind {
-  const normalized = filePath.replaceAll("\\", "/");
   if (filePath === paths.memoryMd) return "memory";
   if (filePath === paths.lessonsJsonl) return "lesson";
   if (filePath === paths.khalaLearningJsonl) return "learning";
@@ -48,6 +56,7 @@ function classifyCorpusPath(filePath: string, paths: LearningPaths): KhalaCorpus
   if (filePath === paths.rulesActiveJsonl || filePath === paths.rulesSessionJsonl || filePath === paths.rulesMd) return "rule";
   if (filePath === paths.rulesCandidatesJsonl) return "rule_candidate";
   if (filePath === paths.rulesAuditJsonl) return "rule_audit";
+  const normalized = filePath.replaceAll("\\", "/");
   if (normalized.includes("/skills/")) return "skill";
   if (normalized.includes("/workflows/")) return "workflow";
   if (normalized.includes("/prompts/")) return "prompt";
@@ -77,8 +86,7 @@ async function walkCandidateFiles(
         await walk(next);
         continue;
       }
-      if (!entry.isFile()) continue;
-      if (!/\.(?:md|jsonl|ya?ml)$/i.test(entry.name)) continue;
+      if (!entry.isFile() || !/\.(?:md|jsonl|ya?ml)$/i.test(entry.name)) continue;
       files.push(next);
       budget.remaining -= 1;
     }
@@ -143,17 +151,12 @@ function scoreMemoryText(params: {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const textMatches = lowerText.match(new RegExp(`\\b${escaped}\\b`, "g"));
     const fuzzyMatches = lowerText.match(new RegExp(escaped, "g"));
-    const pathMatches = lowerPath.includes(term) ? 1 : 0;
     score += (textMatches?.length ?? 0) * 3;
     score += Math.min((fuzzyMatches?.length ?? 0), 8);
-    score += pathMatches * 2;
+    score += lowerPath.includes(term) ? 2 : 0;
   }
 
-  if (params.kind === "skill") score += 1.5;
-  if (params.kind === "workflow" || params.kind === "prompt") score += 1.25;
-  if (params.kind === "lesson" || params.kind === "learning") score += 1;
-  if (params.kind === "rule" || params.kind === "rule_candidate") score += 2;
-  return score;
+  return score + (KIND_SCORE_BONUS[params.kind] ?? 0);
 }
 
 export async function searchKhalaCorpus(params: {

@@ -51,19 +51,14 @@ export function parseComplianceArgs(args: string): {
   error?: string;
 } {
   const value = normalizeWhitespace(args).toLowerCase();
-  if (!value) {
-    return { preset: "status" };
-  }
-
+  if (!value) return { preset: "status" };
   const preset = COMPLIANCE_PRESET_ALIASES[value];
-  if (preset) {
-    return { preset };
-  }
-
-  return {
-    preset: "status",
-    error: "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
-  };
+  return preset
+    ? { preset }
+    : {
+        preset: "status",
+        error: "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
+      };
 }
 
 export function parseApproveRiskArgs(args: string): {
@@ -99,98 +94,56 @@ export function parsePreflightArgs(
   args: string,
   parsePreflightLine: (line: string) => PreflightRecord | null,
 ): ParseRecordResult<PreflightRecord> {
-  const candidate = args.trim();
-  if (!candidate) {
-    return {
-      error:
-        'Usage: /preflight Preflight: skill=<name|none> reason="<short>" clarify=<yes|no>',
-    };
-  }
-
-  const parsed = parsePreflightLine(candidate);
-  if (!parsed) {
-    return {
-      error:
-        'Invalid preflight. Expected: Preflight: skill=<name|none> reason="<short>" clarify=<yes|no>',
-    };
-  }
-
-  return { record: parsed };
+  return parseRecordLine(
+    args,
+    parsePreflightLine,
+    'Usage: /preflight Preflight: skill=<name|none> reason="<short>" clarify=<yes|no>',
+    'Invalid preflight. Expected: Preflight: skill=<name|none> reason="<short>" clarify=<yes|no>',
+  );
 }
 
 export function parsePostflightArgs(
   args: string,
   parsePostflightLine: (line: string) => PostflightRecord | null,
 ): ParseRecordResult<PostflightRecord> {
-  const candidate = args.trim();
-  if (!candidate) {
-    return {
-      error:
-        'Usage: /postflight Postflight: verify="<command_or_check>" result=<pass|fail|not-run>',
-    };
-  }
-
-  const parsed = parsePostflightLine(candidate);
-  if (!parsed) {
-    return {
-      error:
-        'Invalid postflight. Expected: Postflight: verify="<command_or_check>" result=<pass|fail|not-run>',
-    };
-  }
-
-  return { record: parsed };
+  return parseRecordLine(
+    args,
+    parsePostflightLine,
+    'Usage: /postflight Postflight: verify="<command_or_check>" result=<pass|fail|not-run>',
+    'Invalid postflight. Expected: Postflight: verify="<command_or_check>" result=<pass|fail|not-run>',
+  );
 }
 
-export function parseDebugArgs(args: string): {
-  problem: string;
-  fix: boolean;
-} {
-  let rest = normalizeWhitespace(args);
-  const fix = /(^|\s)--fix(\s|$)/.test(rest);
-  rest = normalizeWhitespace(rest.replace(/(^|\s)--fix(\s|$)/g, " "));
-  rest = removeFlag(rest, /(^|\s)--parallel\s+\d+(\s|$)/).value;
-
-  return {
-    problem: rest,
-    fix,
-  };
+export function parseDebugArgs(
+  args: string,
+): { problem: string; fix: boolean } {
+  const { rest, enabled } = parseToggleArg(args, "--fix");
+  return { problem: rest, fix: enabled };
 }
 
-export function parseFeatureArgs(args: string): {
-  request: string;
-  ship: boolean;
-} {
-  let rest = normalizeWhitespace(args);
-  const ship = /(^|\s)--ship(\s|$)/.test(rest);
-  rest = normalizeWhitespace(rest.replace(/(^|\s)--ship(\s|$)/g, " "));
-  rest = removeFlag(rest, /(^|\s)--parallel\s+\d+(\s|$)/).value;
-
-  return {
-    request: rest,
-    ship,
-  };
+export function parseFeatureArgs(
+  args: string,
+): { request: string; ship: boolean } {
+  const { rest, enabled } = parseToggleArg(args, "--ship");
+  return { request: rest, ship: enabled };
 }
 
-export function parsePlanArgs(args: string): { plan: string } {
-  return { plan: normalizeWhitespace(args) };
-}
-
-export function parseAuditArgs(args: string): { claim: string } {
-  return { claim: normalizeWhitespace(args) };
-}
-
-export function parseTriageIssueArgs(args: string): { problem: string } {
-  return { problem: normalizeWhitespace(args) };
-}
+export const parsePlanArgs = (args: string): { plan: string } => ({
+  plan: normalizeWhitespace(args),
+});
+export const parseAuditArgs = (args: string): { claim: string } => ({
+  claim: normalizeWhitespace(args),
+});
+export const parseTriageIssueArgs = (
+  args: string,
+): { problem: string } => ({ problem: normalizeWhitespace(args) });
 
 export function parseTddArgs(args: string): { goal: string; language: string } {
   let rest = normalizeWhitespace(args);
 
   const languageResult = removeFlag(rest, /(^|\s)--lang\s+(\S+)(\s|$)/);
   rest = languageResult.value;
-  const language = normalizeWhitespace(
-    languageResult.match?.[2] ?? "auto",
-  ).toLowerCase();
+  const language = normalizeWhitespace(languageResult.match?.[2] ?? "auto").toLowerCase();
 
   return {
     goal: rest,
@@ -237,11 +190,9 @@ export function parseLearnSkillArgs(args: string): {
   const from = fromResult.match?.[2];
 
   if (from && !fromFile && !fromUrl) {
-    if (/^(?:https?:\/\/|ssh:\/\/|file:\/\/|git@)/.test(from)) {
-      fromUrl = from;
-    } else {
-      fromFile = from;
-    }
+    (from.match(/^(?:https?:\/\/|ssh:\/\/|file:\/\/|git@)/)
+      ? (fromUrl = from)
+      : (fromFile = from));
   }
   return {
     topic: rest,
@@ -251,61 +202,51 @@ export function parseLearnSkillArgs(args: string): {
   };
 }
 
-export function parseKhalaMemorySetupArgs(args: string): {
-  scope: "project" | "global";
-  error?: string;
-} {
-  const scope = normalizeWhitespace(args).toLowerCase();
-  if (!scope) {
-    return { scope: "project" };
-  }
+export const parseKhalaMemorySetupArgs = (
+  args: string,
+): { scope: "project" | "global"; error?: string } =>
+  parseScopeArg(args, "Usage: /khala-memory-setup [project|global]");
+export const parseKhalaMemoryRestartArgs = (
+  args: string,
+): { scope: "project" | "global"; error?: string } =>
+  parseScopeArg(args, "Usage: /khala-memory-restart [project|global]");
+export const parseKhalaMemoryRemoveArgs = (
+  args: string,
+): { scope: "project" | "global"; error?: string } =>
+  parseScopeArg(args, "Usage: /khala-memory-remove [project|global]");
 
-  if (scope === "project" || scope === "global") {
-    return { scope };
-  }
-
-  return {
-    scope: "project",
-    error: "Usage: /khala-memory-setup [project|global]",
-  };
+function parseRecordLine<T>(
+  args: string,
+  parseLine: (line: string) => T | null,
+  usageError: string,
+  invalidError: string,
+): ParseRecordResult<T> {
+  if (!args.trim()) return { error: usageError };
+  const parsed = parseLine(args.trim());
+  return parsed ? { record: parsed } : { error: invalidError };
 }
 
-export function parseKhalaMemoryRestartArgs(args: string): {
-  scope: "project" | "global";
-  error?: string;
-} {
-  const scope = normalizeWhitespace(args).toLowerCase();
-  if (!scope) {
-    return { scope: "project" };
-  }
-
-  if (scope === "project" || scope === "global") {
-    return { scope };
-  }
-
-  return {
-    scope: "project",
-    error: "Usage: /khala-memory-restart [project|global]",
-  };
+function parseToggleArg(
+  args: string,
+  flag: "--fix" | "--ship",
+): { rest: string; enabled: boolean } {
+  let rest = normalizeWhitespace(args);
+  const pattern = new RegExp(`(^|\\s)${flag}(\\s|$)`);
+  const enabled = pattern.test(rest);
+  rest = normalizeWhitespace(rest.replace(new RegExp(pattern, "g"), " "));
+  rest = removeFlag(rest, /(^|\s)--parallel\s+\d+(\s|$)/).value;
+  return { rest, enabled };
 }
 
-export function parseKhalaMemoryRemoveArgs(args: string): {
-  scope: "project" | "global";
-  error?: string;
-} {
+function parseScopeArg(
+  args: string,
+  usage: string,
+): { scope: "project" | "global"; error?: string } {
   const scope = normalizeWhitespace(args).toLowerCase();
-  if (!scope) {
-    return { scope: "project" };
+  if (!scope || scope === "project" || scope === "global") {
+    return { scope: (scope || "project") as "project" | "global" };
   }
-
-  if (scope === "project" || scope === "global") {
-    return { scope };
-  }
-
-  return {
-    scope: "project",
-    error: "Usage: /khala-memory-remove [project|global]",
-  };
+  return { scope: "project", error: usage };
 }
 
 function tokenizeArgs(value: string): string[] {
@@ -389,25 +330,15 @@ export function parseReviewArgs(
   }
 
   const tokens = tokenizeArgs(trimmed);
-  const positional: string[] = [];
+  const extraIndex = tokens.indexOf("--extra");
+  const positional = extraIndex === -1 ? tokens : tokens.slice(0, extraIndex);
   let extraInstruction: string | undefined;
-
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === "--extra") {
-      const extra = tokens
-        .slice(i + 1)
-        .join(" ")
-        .trim();
-      if (!extra) {
-        return { error: usage };
-      }
-
-      extraInstruction = extra;
-      break;
-    }
-
-    positional.push(token);
+  if (extraIndex !== -1) {
+    extraInstruction = tokens
+      .slice(extraIndex + 1)
+      .join(" ")
+      .trim();
+    if (!extraInstruction) return { error: usage };
   }
 
   if (positional.length === 0) {
@@ -416,6 +347,18 @@ export function parseReviewArgs(
 
   const [modeToken, ...rest] = positional;
   const mode = modeToken.toLowerCase();
+  const commandUsage = {
+    branch: `Usage: /${commandName} branch <base-branch> [--extra "focus"]`,
+    commit: `Usage: /${commandName} commit <sha> [--extra "focus"]`,
+    pr: `Usage: /${commandName} pr <number|url> [--extra "focus"]`,
+  } as const;
+  const singleArg = (
+    value: string | undefined,
+    parser: (input: string) => string | null = (input) => input,
+  ): string | null => {
+    const parsed = value?.trim() ? parser(value.trim()) : null;
+    return parsed && rest.length === 1 ? parsed : null;
+  };
 
   const directPr = parsePullRequestReference(modeToken);
   if (directPr && rest.length === 0) {
@@ -430,42 +373,22 @@ export function parseReviewArgs(
     return { mode: "uncommitted", extraInstruction };
   }
 
-  if (mode === "branch") {
-    const branch = rest[0]?.trim();
-    if (!branch || rest.length !== 1) {
-      return {
-        error: `Usage: /${commandName} branch <base-branch> [--extra "focus"]`,
-      };
-    }
-
-    return { mode: "branch", branch, extraInstruction };
+  if (mode === "branch" || mode === "commit" || mode === "pr") {
+    const value =
+      mode === "pr"
+        ? singleArg(rest[0], parsePullRequestReference)
+        : singleArg(rest[0]);
+    if (!value) return { error: commandUsage[mode] };
+    if (mode === "branch") return { mode, branch: value, extraInstruction };
+    if (mode === "commit") return { mode, commit: value, extraInstruction };
+    return { mode, pr: value, extraInstruction };
   }
 
-  if (mode === "commit") {
-    const commit = rest[0]?.trim();
-    if (!commit || rest.length !== 1) {
-      return { error: `Usage: /${commandName} commit <sha> [--extra "focus"]` };
-    }
-
-    return { mode: "commit", commit, extraInstruction };
-  }
-
-  if (mode === "pr") {
-    const pr = rest[0]?.trim();
-    const parsedPr = pr ? parsePullRequestReference(pr) : null;
-    if (!parsedPr || rest.length !== 1) {
-      return {
-        error: `Usage: /${commandName} pr <number|url> [--extra "focus"]`,
-      };
-    }
-
-    return { mode: "pr", pr: parsedPr, extraInstruction };
-  }
+  const toPaths = (entries: string[]): string[] =>
+    entries.map((entry) => entry.trim()).filter(Boolean);
 
   if (mode === "folder" || mode === "file") {
-    const paths = rest
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
+    const paths = toPaths(rest);
     if (paths.length === 0) {
       return {
         error: `Usage: /${commandName} ${mode} <path ...> [--extra "focus"]`,
@@ -475,9 +398,7 @@ export function parseReviewArgs(
     return { mode: "folder", paths, extraInstruction };
   }
 
-  const directPaths = positional
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
+  const directPaths = toPaths(positional);
   if (
     directPaths.length > 0 &&
     directPaths.every((entry) => isResolvableReviewPath(entry, cwd))
@@ -498,49 +419,50 @@ function buildScopedTarget(
     uncommitted: string;
   },
 ): ScopedTarget {
-  if (parsed.mode === "branch") {
-    return {
-      summary: `branch ${parsed.branch}`,
-      instruction: copy.branch(parsed.branch),
-      flags: { mode: "branch", branch: parsed.branch },
-    };
+  switch (parsed.mode) {
+    case "branch":
+      return {
+        summary: `branch ${parsed.branch}`,
+        instruction: copy.branch(parsed.branch),
+        flags: { mode: "branch", branch: parsed.branch },
+      };
+    case "commit":
+      return {
+        summary: `commit ${parsed.commit}`,
+        instruction: copy.commit(parsed.commit),
+        flags: { mode: "commit", commit: parsed.commit },
+      };
+    case "pr":
+      return {
+        summary: `pull request ${parsed.pr}`,
+        instruction: copy.pr(parsed.pr),
+        flags: { mode: "pr", pr: parsed.pr },
+      };
+    case "folder":
+      return {
+        summary: `paths ${parsed.paths.join(", ")}`,
+        instruction: copy.folder(parsed.paths),
+        flags: { mode: "folder", paths: parsed.paths },
+      };
+    default:
+      return {
+        summary: "uncommitted changes",
+        instruction: copy.uncommitted,
+        flags: { mode: "uncommitted" },
+      };
   }
-  if (parsed.mode === "commit") {
-    return {
-      summary: `commit ${parsed.commit}`,
-      instruction: copy.commit(parsed.commit),
-      flags: { mode: "commit", commit: parsed.commit },
-    };
-  }
-  if (parsed.mode === "pr") {
-    return {
-      summary: `pull request ${parsed.pr}`,
-      instruction: copy.pr(parsed.pr),
-      flags: { mode: "pr", pr: parsed.pr },
-    };
-  }
-  if (parsed.mode === "folder") {
-    return {
-      summary: `paths ${parsed.paths.join(", ")}`,
-      instruction: copy.folder(parsed.paths),
-      flags: { mode: "folder", paths: parsed.paths },
-    };
-  }
-
-  return {
-    summary: "uncommitted changes",
-    instruction: copy.uncommitted,
-    flags: { mode: "uncommitted" },
-  };
 }
 
 export function buildReviewTarget(parsed: ParsedReviewArgs): ScopedTarget {
+  const againstBaseBranch = (verb: "Review" | "Simplify", branch: string) =>
+    [
+      `${verb} changes against base branch \`${branch}\`${verb === "Simplify" ? " while preserving exact behavior." : "."}`,
+      `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then ${verb === "Simplify" ? "work from that diff scope." : "inspect diff from that SHA."}`,
+    ].join(" ");
+  const inPaths = (verb: "Snapshot review" | "Simplify code", paths: string[]) =>
+    `${verb} only for files/folders in: ${paths.join(", ")}. Read files directly, do not assume git diff context.`;
   return buildScopedTarget(parsed, {
-    branch: (branch) =>
-      [
-        `Review changes against base branch \`${branch}\`.`,
-        `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then inspect diff from that SHA.`,
-      ].join(" "),
+    branch: (branch) => againstBaseBranch("Review", branch),
     commit: (commit) =>
       `Review only changes introduced by commit \`${commit}\` (use \`git show ${commit}\` or equivalent).`,
     pr: (pr) =>
@@ -550,20 +472,20 @@ export function buildReviewTarget(parsed: ParsedReviewArgs): ScopedTarget {
         "Before checkout, verify there are no staged or unstaged tracked-file changes; untracked files alone must not block PR review.",
         "Resolve PR title, head branch, and base branch with `gh pr view`, checkout with `gh pr checkout`, compute the merge base against the base branch, then review `git diff <merge-base>`.",
       ].join(" "),
-    folder: (paths) =>
-      `Snapshot review only for files/folders in: ${paths.join(", ")}. Read files directly, do not assume git diff context.`,
+    folder: (paths) => inPaths("Snapshot review", paths),
     uncommitted:
       "Review staged, unstaged, and untracked changes in the current workspace.",
   });
 }
 
 export function buildSimplifyTarget(parsed: ParsedReviewArgs): ScopedTarget {
+  const againstBaseBranch = (branch: string) =>
+    [
+      `Simplify code changed against base branch \`${branch}\` while preserving exact behavior.`,
+      `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then work from that diff scope.`,
+    ].join(" ");
   return buildScopedTarget(parsed, {
-    branch: (branch) =>
-      [
-        `Simplify code changed against base branch \`${branch}\` while preserving exact behavior.`,
-        `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then work from that diff scope.`,
-      ].join(" "),
+    branch: againstBaseBranch,
     commit: (commit) =>
       `Simplify only code introduced by commit \`${commit}\` while keeping output and API behavior unchanged.`,
     pr: (pr) =>
@@ -576,10 +498,6 @@ export function buildSimplifyTarget(parsed: ParsedReviewArgs): ScopedTarget {
     uncommitted:
       "Simplify staged, unstaged, and untracked code in the current workspace while preserving exact functionality.",
   });
-}
-
-function toYamlQuotedScalar(value: string): string {
-  return JSON.stringify(value);
 }
 
 export function chooseAvailableSkillName(params: {
@@ -605,8 +523,8 @@ export function buildSkillTemplate(skillName: string, topic: string): string {
   const summary = topic || skillName;
   return [
     "---",
-    `name: ${toYamlQuotedScalar(skillName)}`,
-    `description: ${toYamlQuotedScalar(`Reusable workflow for ${summary}`)}`,
+    `name: ${JSON.stringify(skillName)}`,
+    `description: ${JSON.stringify(`Reusable workflow for ${summary}`)}`,
     "---",
     "",
     "## Use when",

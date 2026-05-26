@@ -13,6 +13,7 @@ type CommandHandler = (
   args: string | undefined,
   ctx: ExtensionCommandContext,
 ) => Promise<void>;
+type WorkflowRecord = Awaited<ReturnType<typeof readLearnedWorkflow>>;
 
 function splitNameAndRest(args: string | undefined): {
   name: string;
@@ -38,10 +39,27 @@ export function createLearnedWorkflowCommandHandlers(params: {
   workflowShow: CommandHandler;
   workflowRun: CommandHandler;
 } {
+  const requireWorkflow = async (
+    ctx: ExtensionCommandContext,
+    args: string | undefined,
+    usage: string,
+  ): Promise<{ rest: string; workflow: NonNullable<WorkflowRecord> } | null> => {
+    const { name, rest } = splitNameAndRest(args);
+    if (!name) {
+      params.notify(ctx, usage, "error");
+      return null;
+    }
+    const workflow = await readLearnedWorkflow(await params.ensureLearningStore(ctx.cwd), name);
+    if (!workflow) {
+      params.notify(ctx, `Khala learned workflow not found: ${name}`, "error");
+      return null;
+    }
+    return { rest, workflow };
+  };
+
   return {
     khalaReload: async (_args, ctx) => {
       await ctx.reload();
-      return;
     },
 
     workflowList: async (_args, ctx) => {
@@ -51,33 +69,20 @@ export function createLearnedWorkflowCommandHandlers(params: {
         params.notify(ctx, "No khala learned workflows found.", "info");
         return;
       }
-      params.notify(
-        ctx,
-        `Khala learned workflows:\n${workflows.map((workflow) => `- ${workflow.name}`).join("\n")}`,
-        "info",
-      );
+      params.notify(ctx, `Khala learned workflows:\n${workflows.map((workflow) => `- ${workflow.name}`).join("\n")}`, "info");
     },
 
     workflowShow: async (args, ctx) => {
-      const { name } = splitNameAndRest(args);
-      if (!name) {
-        params.notify(ctx, "Usage: /workflow-show <name>", "error");
-        return;
-      }
-      const paths = await params.ensureLearningStore(ctx.cwd);
-      const workflow = await readLearnedWorkflow(paths, name);
-      if (!workflow) {
-        params.notify(ctx, `Khala learned workflow not found: ${name}`, "error");
-        return;
-      }
+      const loaded = await requireWorkflow(ctx, args, "Usage: /workflow-show <name>");
+      if (!loaded) return;
+      const { workflow } = loaded;
+      const prompt = workflow.promptText.trim();
       params.notify(
         ctx,
         [
           `Workflow ${workflow.record.name}:`,
           workflow.workflowText.trim(),
-          workflow.promptText.trim()
-            ? `\nPrompt template:\n${workflow.promptText.trim()}`
-            : "",
+          prompt ? `\nPrompt template:\n${prompt}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -86,17 +91,10 @@ export function createLearnedWorkflowCommandHandlers(params: {
     },
 
     workflowRun: async (args, ctx) => {
-      const { name, rest } = splitNameAndRest(args);
-      if (!name) {
-        params.notify(ctx, "Usage: /workflow-run <name> [input]", "error");
-        return;
-      }
-      const paths = await params.ensureLearningStore(ctx.cwd);
-      const workflow = await readLearnedWorkflow(paths, name);
-      if (!workflow) {
-        params.notify(ctx, `Khala learned workflow not found: ${name}`, "error");
-        return;
-      }
+      const loaded = await requireWorkflow(ctx, args, "Usage: /workflow-run <name> [input]");
+      if (!loaded) return;
+      const { workflow, rest } = loaded;
+      const prompt = workflow.promptText.trim();
       const message = [
         `Run khala learned workflow \`${workflow.record.name}\`.`,
         "",
@@ -104,11 +102,7 @@ export function createLearnedWorkflowCommandHandlers(params: {
         "```yaml",
         workflow.workflowText.trim(),
         "```",
-        workflow.promptText.trim()
-          ? ["", "Prompt template:", "```markdown", workflow.promptText.trim(), "```"].join(
-              "\n",
-            )
-          : "",
+        prompt ? ["", "Prompt template:", "```markdown", prompt, "```"].join("\n") : "",
         "",
         `User input: ${rest || "(none)"}`,
       ]

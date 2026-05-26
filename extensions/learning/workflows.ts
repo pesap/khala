@@ -13,6 +13,7 @@ export interface LearnedWorkflowRecord {
   workflowFile: string;
   promptFile: string;
 }
+const WORKFLOW_EXT = ".yaml";
 
 export function normalizeLearnedWorkflowName(value: string): string {
   return (
@@ -129,8 +130,8 @@ export async function listLearnedWorkflows(
 
   const records: LearnedWorkflowRecord[] = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".yaml")) continue;
-    const name = entry.name.slice(0, -".yaml".length);
+    if (!entry.isFile() || !entry.name.endsWith(WORKFLOW_EXT)) continue;
+    const name = entry.name.slice(0, -WORKFLOW_EXT.length);
     const record = getLearnedWorkflowPaths(paths, name);
     records.push(record);
   }
