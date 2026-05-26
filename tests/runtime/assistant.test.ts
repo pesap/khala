@@ -218,6 +218,18 @@ test("allows normal explanation questions without tools", () => {
     inferTurnObligation("this is a great review").obligation,
     "answer_allowed",
   );
+  assert.equal(
+    inferTurnObligation(
+      "Can you explain why this path is used in the config file?",
+    ).obligation,
+    "answer_allowed",
+  );
+  assert.equal(
+    inferTurnObligation(
+      "Please explain what changed in the README.md and why.",
+    ).obligation,
+    "answer_allowed",
+  );
 });
 
 test("detects assistant tool-call and clarification output shapes", () => {

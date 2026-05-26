@@ -37,6 +37,8 @@ const APPROVAL_QUESTION_REGEX =
   /\b(?:can i|may i|is it ok if i|is it okay if i|do you want me to|should i)\b/;
 const GENERIC_PERMISSION_QUESTION_REGEX =
   /^\s*(?:can i|may i|should i|should we|do you want me to|would you like me to)\s+(?:proceed|continue|start|get started|begin|do (?:it|that|this)|work on (?:it|that|this)|implement|fix|run|inspect|check|review|apply|make|update|patch|edit|write)\b/;
+const ARTIFACT_ACTION_VERB_REGEX =
+  /\b(inspect|check|review|analyze|verify|confirm|open|read|load|grep|find|locate|test|run|execute|edit|write|fix|implement|update|patch|modify|create|draft|address)\b/;
 
 function clampConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0.5;
@@ -188,6 +190,7 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
 
   if (
     /\b(can you|could you|please)\b/.test(text) &&
+    ARTIFACT_ACTION_VERB_REGEX.test(text) &&
     /(?:\b(file|path|repo|session|log|diff|branch|pr|issue|skill|docs?)\b|\/|\.[a-z0-9]{1,8}\b)/.test(
       text,
     )
