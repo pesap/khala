@@ -18,6 +18,11 @@
       "pi-subagents/src/extension/index.ts": ["types/stubs/pi-subagents-extension.d.ts"]
     }
   },
-  "include": ["extensions/**/*.ts", "tests/**/*.ts", "types/**/*.d.ts"],
+  "include": [
+    "extensions/**/*.ts",
+    "khala/**/*.ts",
+    "tests/**/*.ts",
+    "types/**/*.d.ts"
+  ],
   "exclude": ["node_modules", "dist", "build", ".pi"]
 }
