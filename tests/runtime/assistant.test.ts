@@ -552,6 +552,14 @@ test("normalizeLoopGuardText collapses punctuation and spacing noise", () => {
     "continue working",
   );
   assert.equal(
+    normalizeLoopGuardText("Continue working;"),
+    "continue working",
+  );
+  assert.equal(
+    normalizeLoopGuardText("Continue working,"),
+    "continue working",
+  );
+  assert.equal(
     normalizeLoopGuardText("`Continue working.`"),
     "continue working",
   );

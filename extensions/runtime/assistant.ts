@@ -193,7 +193,7 @@ export function normalizeLoopGuardText(text: string): string {
     normalized = normalized
       .replace(/^["'`([{]+/, "")
       .replace(/["'`)\]}]+$/, "")
-      .replace(/[.!?]+$/g, "")
+      .replace(/[.,!?;:]+$/g, "")
       .trim();
   }
   normalized = normalized.replace(/\s+/g, " ");
