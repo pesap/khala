@@ -283,6 +283,12 @@ test("detects assistant tool-call and clarification output shapes", () => {
   );
   assert.equal(
     isAssistantClarification(
+      textMessage("assistant", "Please confirm whether I should patch src/app.ts or src/server.ts first"),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
       textMessage(
         "assistant",
         "Which file should I inspect first? I can proceed once you confirm.",
