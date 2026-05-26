@@ -419,10 +419,7 @@ const scopedBranchInstruction = (
     `Find merge base first, e.g. \`git merge-base HEAD ${branch}\`, then ${verb === "Simplify" ? "work from that diff scope." : "inspect diff from that SHA."}`,
   ].join(" ");
 
-const scopedPathInstruction = (
-  prefix: "Snapshot review" | "Simplify code",
-  paths: string[],
-): string =>
+const scopedPathInstruction = (prefix: "Snapshot review" | "Simplify code", paths: string[]): string =>
   `${prefix} only for files/folders in: ${paths.join(", ")}. Read files directly, do not assume git diff context.`;
 
 export function buildReviewTarget(parsed: ParsedReviewArgs): ScopedTarget {
