@@ -2004,6 +2004,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       }
 
       notify(ctx, reason, "warning");
+      runtimeState.lastObligationBlockKey = null;
+      runtimeState.lastObligationBlockCount = 0;
     } else {
       runtimeState.lastObligationBlockKey = null;
       runtimeState.lastObligationBlockCount = 0;
