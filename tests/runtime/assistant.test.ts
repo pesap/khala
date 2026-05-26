@@ -503,6 +503,34 @@ test("obligation loop guard resets count when key changes", () => {
   });
 });
 
+test("loop guard counts normalized prompt variants as the same key", () => {
+  const key1 = `tool_required:${normalizeLoopGuardText("Continue working...")}`;
+  const key2 = `tool_required:${normalizeLoopGuardText("  `Continue   working!`  ")}`;
+  const key3 = `tool_required:${normalizeLoopGuardText("(continue working?)")}`;
+  assert.equal(key1, key2);
+  assert.equal(key2, key3);
+
+  const first = evaluateObligationLoopGuard({
+    current: { key: null, count: 0 },
+    key: key1,
+    blockThreshold: 3,
+  });
+  const second = evaluateObligationLoopGuard({
+    current: first.next,
+    key: key2,
+    blockThreshold: 3,
+  });
+  const third = evaluateObligationLoopGuard({
+    current: second.next,
+    key: key3,
+    blockThreshold: 3,
+  });
+
+  assert.equal(first.block, true);
+  assert.equal(second.block, true);
+  assert.equal(third.block, false);
+});
+
 test("normalizeLoopGuardText collapses punctuation and spacing noise", () => {
   assert.equal(normalizeLoopGuardText(" Continue   working... "), "continue working");
   assert.equal(
