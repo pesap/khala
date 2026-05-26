@@ -221,11 +221,4 @@ export async function searchKhalaCorpus(params: {
     .slice(0, params.limit);
 }
 
-export async function searchKhalaMemory(params: {
-  paths: LearningPaths;
-  query: string;
-  limit: number;
-  snippetLength: number;
-}): Promise<KhalaMemorySearchResult[]> {
-  return searchKhalaCorpus(params);
-}
+export const searchKhalaMemory = searchKhalaCorpus;
