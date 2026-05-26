@@ -1908,6 +1908,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       pendingMemoryGateRecovery &&
       lastAssistantMessage?.stopReason === "stop"
     ) {
+      runtimeState.lastObligationBlockKey = null;
+      runtimeState.lastObligationBlockCount = 0;
       const memoryGateReason = [
         "MEMORY GATE RECOVERY INCOMPLETE",
         "",
