@@ -81,6 +81,229 @@
       "expectedIssueCodes": ["tool_efficiency", "skill_routing", "evidence_routing"]
     },
     {
+      "name": "rejects missing final citation for source-backed current docs",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects unrelated final citation URL",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://react.dev/reference/react",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects wrong product evidence for source-backed docs",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official React decorators docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official React docs source at https://react.dev/reference/react"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects wrong fact category for source-backed release claim",
+      "userText": "Use official docs and cite the latest TypeScript release notes for decorators.",
+      "assistantText": "The latest TypeScript release notes mention decorators. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the latest TypeScript release notes for decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript handbook docs source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects unofficial source for official-source request",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://mirror.example.com/typescript/decorators",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "unofficial TypeScript decorators mirror at https://mirror.example.com/typescript/decorators"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects generic page-loaded evidence for source-backed docs",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        { "role": "toolResult", "text": "page loaded" }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
+      "name": "rejects stale source success after later failure",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators are documented in the handbook. Source: https://www.typescriptlang.org/docs/handbook/decorators.html",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript decorators handbook docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        { "role": "toolResult", "text": "HTTP 404 not found" }
+      ],
+      "expectedIssueCodes": ["evidence_routing"]
+    },
+    {
       "name": "rejects unresolved knowledge gap without stronger model",
       "userText": "Tell me whether the current OpenAI API supports this option.",
       "assistantText": "I am not sure because I cannot access current docs.\nConfidence: 0.52",
@@ -448,6 +671,51 @@
         "successfulMemorySearches": 2,
         "skillLoads": 2,
         "modelEscalations": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
+      "name": "accepts focused official source with concrete final citation",
+      "userText": "Use official docs and cite the source for TypeScript decorators.",
+      "assistantText": "TypeScript decorators. Sources: https://www.typescriptlang.org/docs/handbook/decorators.html\nConfidence: 0.89",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs and cite the source for TypeScript decorators."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "use official docs cite source TypeScript decorators documented handbook" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook source at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators handbook confirms decorator documentation at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 3,
+        "skillLoads": 1,
+        "externalEvidenceCalls": 2,
         "wasteSignalCount": 0
       }
     },

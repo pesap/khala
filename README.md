@@ -190,6 +190,16 @@ vague tasks such as `verify latest docs`, hedged results such as "likely" or
 "appears resolved", echo responses that merely restate the escalation task, and
 final answers that still contain unresolved uncertainty remain blocked.
 
+Source targets are inferred from both the user request and the assistant answer.
+Current/latest/docs/API/source wording routes to external evidence; file paths
+route to local evidence; test/build claims route to command evidence; and
+assistant phrases such as "according to the docs", "current", "latest", or a
+final citation URL add their own source target. External targets keep concrete
+product/API/package/URL/fact-category terms while dropping generic source words,
+so a TypeScript release-note request is not satisfied by React docs, handbook
+docs are not release notes, unofficial mirrors do not satisfy official-source
+requests, and a cited URL must be backed by same-turn matching evidence.
+
 Blocked/steered command families include `pip`, `pip3`, `poetry`, `python -m pip`, `python -m venv`, `python -m py_compile`, and path-qualified Python executables. Intercepted `python`/`python3` route through `uv run`.
 
 > [!NOTE]
