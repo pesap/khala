@@ -39,8 +39,6 @@ export function createLearnedWorkflowCommandHandlers(params: {
   workflowShow: CommandHandler;
   workflowRun: CommandHandler;
 } {
-  const withPromptTemplate = (prompt: string): string =>
-    prompt ? `\nPrompt template:\n${prompt}` : "";
   const sendWorkflowMessage = (
     ctx: ExtensionCommandContext,
     message: string,
@@ -96,7 +94,7 @@ export function createLearnedWorkflowCommandHandlers(params: {
         [
           `Workflow ${workflow.record.name}:`,
           workflow.workflowText.trim(),
-          withPromptTemplate(prompt),
+          prompt ? `\nPrompt template:\n${prompt}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
