@@ -30,6 +30,13 @@ export interface LearnedSkillRecord {
   metadataFile: string;
   metadata: LearnedSkillMetadata;
 }
+const SKILL_PROVENANCE = new Set<LearnedSkillProvenance>([
+  "user-authored",
+  "agent-authored",
+  "background-review-authored",
+  "imported",
+]);
+const SKILL_STATE = new Set<LearnedSkillState>(["active", "stale", "archived"]);
 
 interface SkillPaths {
   dir: string;
@@ -40,8 +47,8 @@ interface SkillPaths {
   scriptsDir: string;
 }
 
-function buildActiveSkillPaths(paths: LearningPaths, skillName: string): SkillPaths {
-  const dir = path.join(paths.skillsDir, skillName);
+function buildSkillPaths(root: string, skillName: string): SkillPaths {
+  const dir = path.join(root, skillName);
   return {
     dir,
     skillFile: path.join(dir, "SKILL.md"),
@@ -51,24 +58,18 @@ function buildActiveSkillPaths(paths: LearningPaths, skillName: string): SkillPa
     scriptsDir: path.join(dir, "scripts"),
   };
 }
+function buildActiveSkillPaths(paths: LearningPaths, skillName: string): SkillPaths {
+  return buildSkillPaths(paths.skillsDir, skillName);
+}
 
-function buildArchivedSkillPaths(
-  paths: LearningPaths,
-  skillName: string,
-): SkillPaths {
-  const dir = path.join(paths.archivedSkillsDir, skillName);
-  return {
-    dir,
-    skillFile: path.join(dir, "SKILL.md"),
-    metadataFile: path.join(dir, "metadata.json"),
-    referencesDir: path.join(dir, "references"),
-    templatesDir: path.join(dir, "templates"),
-    scriptsDir: path.join(dir, "scripts"),
-  };
+function buildArchivedSkillPaths(paths: LearningPaths, skillName: string): SkillPaths {
+  return buildSkillPaths(paths.archivedSkillsDir, skillName);
 }
 
 function parseMetadata(value: unknown): LearnedSkillMetadata | null {
   if (!isRecord(value)) return null;
+  const isStringOrNull = (v: unknown): v is string | null =>
+    v === null || typeof v === "string";
   const {
     name,
     provenance,
@@ -84,34 +85,33 @@ function parseMetadata(value: unknown): LearnedSkillMetadata | null {
 
   if (
     typeof name !== "string" ||
-    (provenance !== "user-authored" &&
-      provenance !== "agent-authored" &&
-      provenance !== "background-review-authored" &&
-      provenance !== "imported") ||
+    typeof provenance !== "string" ||
+    !SKILL_PROVENANCE.has(provenance as LearnedSkillProvenance) ||
     typeof createdAt !== "string" ||
-    (lastUsedAt !== null && typeof lastUsedAt !== "string") ||
-    (lastPatchedAt !== null && typeof lastPatchedAt !== "string") ||
+    !isStringOrNull(lastUsedAt) ||
+    !isStringOrNull(lastPatchedAt) ||
     typeof useCount !== "number" ||
     typeof patchCount !== "number" ||
-    (state !== "active" && state !== "stale" && state !== "archived") ||
+    typeof state !== "string" ||
+    !SKILL_STATE.has(state as LearnedSkillState) ||
     typeof pinned !== "boolean" ||
-    (sourceRunId !== null && typeof sourceRunId !== "string")
+    !isStringOrNull(sourceRunId)
   ) {
     return null;
   }
 
   return {
-    name: name as string,
-    provenance: provenance as LearnedSkillProvenance,
-    createdAt: createdAt as string,
-    lastUsedAt: lastUsedAt as string | null,
-    lastPatchedAt: lastPatchedAt as string | null,
-    useCount: useCount as number,
-    patchCount: patchCount as number,
-    state: state as LearnedSkillState,
-    pinned: pinned as boolean,
-    sourceRunId: sourceRunId as string | null,
-  };
+    name,
+    provenance,
+    createdAt,
+    lastUsedAt,
+    lastPatchedAt,
+    useCount,
+    patchCount,
+    state,
+    pinned,
+    sourceRunId,
+  } as LearnedSkillMetadata;
 }
 
 async function writeLearnedSkillMetadata(
@@ -144,6 +144,43 @@ async function moveDir(fromDir: string, toDir: string): Promise<void> {
   await fs.mkdir(path.dirname(toDir), { recursive: true });
   await fs.rm(toDir, { recursive: true, force: true });
   await fs.rename(fromDir, toDir);
+}
+async function updateLearnedSkillMetadata(
+  record: LearnedSkillRecord,
+  update: (metadata: LearnedSkillMetadata) => LearnedSkillMetadata,
+): Promise<LearnedSkillRecord> {
+  const metadata = update(record.metadata);
+  await writeLearnedSkillMetadata(record.metadataFile, metadata);
+  return { ...record, metadata };
+}
+
+async function updateSkillByName(params: {
+  paths: LearningPaths;
+  skillName: string;
+  update: (metadata: LearnedSkillMetadata) => LearnedSkillMetadata;
+  skipArchived?: boolean;
+}): Promise<LearnedSkillRecord | null> {
+  const record = await readLearnedSkillMetadata(params.paths, params.skillName);
+  if (!record) return null;
+  if (params.skipArchived && record.metadata.state === "archived") return record;
+  return updateLearnedSkillMetadata(record, params.update);
+}
+async function transitionSkillDir(params: {
+  from: SkillPaths;
+  to: SkillPaths;
+  nextState: LearnedSkillState;
+}): Promise<LearnedSkillRecord | null> {
+  const record = await readRecordFromPaths(params.from);
+  if (!record) return null;
+  await moveDir(params.from.dir, params.to.dir);
+  const metadata: LearnedSkillMetadata = { ...record.metadata, state: params.nextState };
+  await writeLearnedSkillMetadata(params.to.metadataFile, metadata);
+  return {
+    dir: params.to.dir,
+    skillFile: params.to.skillFile,
+    metadataFile: params.to.metadataFile,
+    metadata,
+  };
 }
 
 export async function ensureLearnedSkillLayout(params: {
@@ -205,16 +242,7 @@ export async function listLearnedSkillRecords(
     const entries = await fs.readdir(root, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const metadataFile = path.join(root, entry.name, "metadata.json");
-      const skillFile = path.join(root, entry.name, "SKILL.md");
-      const record = await readRecordFromPaths({
-        dir: path.join(root, entry.name),
-        skillFile,
-        metadataFile,
-        referencesDir: path.join(root, entry.name, "references"),
-        templatesDir: path.join(root, entry.name, "templates"),
-        scriptsDir: path.join(root, entry.name, "scripts"),
-      });
+      const record = await readRecordFromPaths(buildSkillPaths(root, entry.name));
       if (record) records.push(record);
     }
   }
@@ -227,16 +255,16 @@ export async function touchLearnedSkillUsage(params: {
   skillName: string;
   nowIso: string;
 }): Promise<LearnedSkillRecord | null> {
-  const record = await readLearnedSkillMetadata(params.paths, params.skillName);
-  if (!record) return null;
-  const metadata: LearnedSkillMetadata = {
-    ...record.metadata,
+  return updateSkillByName({
+    paths: params.paths,
+    skillName: params.skillName,
+    update: (metadata) => ({
+    ...metadata,
     lastUsedAt: params.nowIso,
-    useCount: record.metadata.useCount + 1,
-    state: record.metadata.state === "archived" ? "archived" : "active",
-  };
-  await writeLearnedSkillMetadata(record.metadataFile, metadata);
-  return { ...record, metadata };
+    useCount: metadata.useCount + 1,
+    state: metadata.state === "archived" ? "archived" : "active",
+    }),
+  });
 }
 
 export async function markLearnedSkillPatched(params: {
@@ -244,16 +272,16 @@ export async function markLearnedSkillPatched(params: {
   skillName: string;
   nowIso: string;
 }): Promise<LearnedSkillRecord | null> {
-  const record = await readLearnedSkillMetadata(params.paths, params.skillName);
-  if (!record) return null;
-  const metadata: LearnedSkillMetadata = {
-    ...record.metadata,
+  return updateSkillByName({
+    paths: params.paths,
+    skillName: params.skillName,
+    update: (metadata) => ({
+    ...metadata,
     lastPatchedAt: params.nowIso,
-    patchCount: record.metadata.patchCount + 1,
-    state: record.metadata.state === "archived" ? "archived" : "active",
-  };
-  await writeLearnedSkillMetadata(record.metadataFile, metadata);
-  return { ...record, metadata };
+    patchCount: metadata.patchCount + 1,
+    state: metadata.state === "archived" ? "archived" : "active",
+    }),
+  });
 }
 
 export async function setLearnedSkillPinned(params: {
@@ -261,14 +289,11 @@ export async function setLearnedSkillPinned(params: {
   skillName: string;
   pinned: boolean;
 }): Promise<LearnedSkillRecord | null> {
-  const record = await readLearnedSkillMetadata(params.paths, params.skillName);
-  if (!record) return null;
-  const metadata: LearnedSkillMetadata = {
-    ...record.metadata,
-    pinned: params.pinned,
-  };
-  await writeLearnedSkillMetadata(record.metadataFile, metadata);
-  return { ...record, metadata };
+  return updateSkillByName({
+    paths: params.paths,
+    skillName: params.skillName,
+    update: (metadata) => ({ ...metadata, pinned: params.pinned }),
+  });
 }
 
 export async function setLearnedSkillState(params: {
@@ -276,58 +301,32 @@ export async function setLearnedSkillState(params: {
   skillName: string;
   state: Exclude<LearnedSkillState, "archived">;
 }): Promise<LearnedSkillRecord | null> {
-  const record = await readLearnedSkillMetadata(params.paths, params.skillName);
-  if (!record || record.metadata.state === "archived") return record;
-  const metadata: LearnedSkillMetadata = {
-    ...record.metadata,
-    state: params.state,
-  };
-  await writeLearnedSkillMetadata(record.metadataFile, metadata);
-  return { ...record, metadata };
+  return updateSkillByName({
+    paths: params.paths,
+    skillName: params.skillName,
+    skipArchived: true,
+    update: (metadata) => ({ ...metadata, state: params.state }),
+  });
 }
 
 export async function archiveLearnedSkill(params: {
   paths: LearningPaths;
   skillName: string;
 }): Promise<LearnedSkillRecord | null> {
-  const activePaths = buildActiveSkillPaths(params.paths, params.skillName);
-  const record = await readRecordFromPaths(activePaths);
-  if (!record) return null;
-
-  const archivedPaths = buildArchivedSkillPaths(params.paths, params.skillName);
-  await moveDir(activePaths.dir, archivedPaths.dir);
-  const metadata: LearnedSkillMetadata = {
-    ...record.metadata,
-    state: "archived",
-  };
-  await writeLearnedSkillMetadata(archivedPaths.metadataFile, metadata);
-  return {
-    dir: archivedPaths.dir,
-    skillFile: archivedPaths.skillFile,
-    metadataFile: archivedPaths.metadataFile,
-    metadata,
-  };
+  return transitionSkillDir({
+    from: buildActiveSkillPaths(params.paths, params.skillName),
+    to: buildArchivedSkillPaths(params.paths, params.skillName),
+    nextState: "archived",
+  });
 }
 
 export async function restoreLearnedSkill(params: {
   paths: LearningPaths;
   skillName: string;
 }): Promise<LearnedSkillRecord | null> {
-  const archivedPaths = buildArchivedSkillPaths(params.paths, params.skillName);
-  const record = await readRecordFromPaths(archivedPaths);
-  if (!record) return null;
-
-  const activePaths = buildActiveSkillPaths(params.paths, params.skillName);
-  await moveDir(archivedPaths.dir, activePaths.dir);
-  const metadata: LearnedSkillMetadata = {
-    ...record.metadata,
-    state: "active",
-  };
-  await writeLearnedSkillMetadata(activePaths.metadataFile, metadata);
-  return {
-    dir: activePaths.dir,
-    skillFile: activePaths.skillFile,
-    metadataFile: activePaths.metadataFile,
-    metadata,
-  };
+  return transitionSkillDir({
+    from: buildArchivedSkillPaths(params.paths, params.skillName),
+    to: buildActiveSkillPaths(params.paths, params.skillName),
+    nextState: "active",
+  });
 }

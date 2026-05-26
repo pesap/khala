@@ -13,6 +13,7 @@ export interface LearnedWorkflowRecord {
   workflowFile: string;
   promptFile: string;
 }
+const WORKFLOW_EXT = ".yaml";
 
 export function normalizeLearnedWorkflowName(value: string): string {
   return (
@@ -91,7 +92,7 @@ export function getLearnedWorkflowPaths(
   const name = normalizeLearnedWorkflowName(workflowName);
   return {
     name,
-    workflowFile: path.join(paths.workflowsDir, `${name}.yaml`),
+    workflowFile: path.join(paths.workflowsDir, `${name}${WORKFLOW_EXT}`),
     promptFile: path.join(paths.promptsDir, `${name}.md`),
   };
 }
@@ -127,14 +128,10 @@ export async function listLearnedWorkflows(
     throw error;
   }
 
-  const records: LearnedWorkflowRecord[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".yaml")) continue;
-    const name = entry.name.slice(0, -".yaml".length);
-    const record = getLearnedWorkflowPaths(paths, name);
-    records.push(record);
-  }
-  return records.sort((a, b) => a.name.localeCompare(b.name));
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(WORKFLOW_EXT))
+    .map((entry) => getLearnedWorkflowPaths(paths, entry.name.slice(0, -WORKFLOW_EXT.length)))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function readLearnedWorkflow(

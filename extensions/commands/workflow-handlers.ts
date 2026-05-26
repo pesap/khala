@@ -30,6 +30,7 @@ interface ScopedTarget {
   instruction: string;
   flags: WorkflowFlags;
 }
+type ParsedScopedTarget = Exclude<ReviewArgsResult, { error: string }>;
 
 interface RunWorkflowCommandParams {
   ctx: ExtensionCommandContext;
@@ -218,102 +219,219 @@ export function createWorkflowCommandHandlers(params: {
 
     notifyWorkflowStarted(config.ctx, config.startedMessage, notify);
   }
-
+  const requireInput = (
+    ctx: ExtensionCommandContext,
+    value: string,
+    usage: string,
+  ): string | null => {
+    if (value) return value;
+    notify(ctx, usage, "error");
+    return null;
+  };
+  const withFooter = (sections: string[]): string[] => [
+    ...sections,
+    constants.POSTFLIGHT_INSTRUCTION,
+    constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
+  ];
+  const readReservedSkillNames = async (root: string): Promise<Set<string>> => {
+    const names = new Set<string>();
+    try {
+      const entries = await fs.readdir(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) names.add(entry.name);
+      }
+    } catch {
+      // best effort only
+    }
+    return names;
+  };
+  const readSourceExcerpt = async (
+    ctx: ExtensionCommandContext,
+    fromFile?: string,
+  ): Promise<{ excerpt: string; resolvedSourcePath: string | null }> => {
+    if (!fromFile) return { excerpt: "", resolvedSourcePath: null };
+    const resolvedSourcePath = path.resolve(ctx.cwd, fromFile);
+    if (!(await exists(resolvedSourcePath))) {
+      notify(ctx, `Source file not found: ${resolvedSourcePath}`, "error");
+      return { excerpt: "", resolvedSourcePath: null };
+    }
+    const raw = await readText(resolvedSourcePath);
+    return { excerpt: raw.slice(0, 4000), resolvedSourcePath };
+  };
+  const runScopedWorkflow = async (params: {
+    args: string | undefined;
+    ctx: ExtensionCommandContext;
+    commandName?: string;
+    type: "review" | "simplify";
+    source: string;
+    targetBuilder: (parsed: ParsedScopedTarget) => ScopedTarget;
+    header: (summary: string) => string;
+    extraSections?: string[];
+  }): Promise<void> => {
+    const parsed = parseReviewArgs(params.args ?? "", params.ctx.cwd, params.commandName);
+    if (!ensureWorkflowSlotAvailable(params.ctx)) return;
+    if ("error" in parsed) return notify(params.ctx, parsed.error, "error");
+    const target = params.targetBuilder(parsed);
+    const scopedFields = {
+      ...target.flags,
+      extraInstruction: parsed.extraInstruction ?? null,
+    };
+    await runMirroredSourceWorkflow({
+      ctx: params.ctx,
+      type: params.type,
+      source: params.source,
+      input: target.summary,
+      fields: scopedFields,
+      sections: [
+        params.header(target.summary),
+        `Target mode: ${parsed.mode}`,
+        `Instruction: ${target.instruction}`,
+        parsed.extraInstruction
+          ? `Additional focus: ${parsed.extraInstruction}`
+          : "",
+        ...(params.extraSections ?? []),
+      ],
+      startedMessage: `Started ${params.type} workflow (${target.summary}).`,
+    });
+  };
+  const runSourceWorkflow = async (params: {
+    ctx: ExtensionCommandContext;
+    type: WorkflowType;
+    source: string;
+    input: string;
+    sections: string[];
+    flags: WorkflowFlags;
+    entry: WorkflowFlags;
+    startedMessage: string;
+  }): Promise<void> => {
+    if (!ensureWorkflowSlotAvailable(params.ctx)) return;
+    return runWorkflowCommand({
+      ctx: params.ctx,
+      type: params.type,
+      input: params.input,
+      flags: { ...params.flags, source: params.source },
+      sections: withFooter([
+        `Source reference: ${params.source}`,
+        "",
+        ...params.sections,
+      ]),
+      entry: { ...params.entry, source: params.source },
+      startedMessage: params.startedMessage,
+    });
+  };
+  const runMirroredSourceWorkflow = async (params: {
+    ctx: ExtensionCommandContext;
+    type: WorkflowType;
+    source: string;
+    input: string;
+    sections: string[];
+    fields: WorkflowFlags;
+    startedMessage: string;
+  }): Promise<void> =>
+    runSourceWorkflow({
+      ...params,
+      flags: params.fields,
+      entry: params.fields,
+    });
+  const runRequiredSourceWorkflow = async (params: {
+    ctx: ExtensionCommandContext;
+    type: WorkflowType;
+    source: string;
+    value: string;
+    usage: string;
+    sections: (value: string) => string[];
+    flags?: (value: string) => WorkflowFlags;
+    entry?: (value: string) => WorkflowFlags;
+    startedMessage: (value: string) => string;
+  }): Promise<void> => {
+    const value = requireInput(params.ctx, params.value, params.usage);
+    if (!value) return;
+    await runSourceWorkflow({
+      ctx: params.ctx,
+      type: params.type,
+      source: params.source,
+      input: value,
+      sections: params.sections(value),
+      flags: params.flags?.(value) ?? {},
+      entry: params.entry?.(value) ?? {},
+      startedMessage: params.startedMessage(value),
+    });
+  };
+  const runToggleWorkflow = async (params: {
+    ctx: ExtensionCommandContext;
+    type: "debug" | "feature";
+    value: string;
+    enabled: boolean;
+    usage: string;
+    valueLabel: string;
+    enabledLabel: string;
+    instruction: string;
+    entryKey: "problem" | "request";
+    flagKey: "fix" | "ship";
+  }): Promise<void> => {
+    if (!ensureWorkflowSlotAvailable(params.ctx)) return;
+    const value = requireInput(params.ctx, params.value, params.usage);
+    if (!value) return;
+    await runWorkflowCommand({
+      ctx: params.ctx,
+      type: params.type,
+      input: value,
+      flags: { [params.flagKey]: params.enabled },
+      sections: withFooter([
+        `${params.valueLabel}: ${value}`,
+        `${params.enabledLabel}: ${params.enabled ? "yes" : "no"}`,
+        "",
+        params.instruction,
+      ]),
+      entry: { [params.entryKey]: value, [params.flagKey]: params.enabled },
+      startedMessage: `Started ${params.type} workflow (${params.flagKey}=${params.enabled ? "on" : "off"}).`,
+    });
+  };
   return {
     debug: async (args, ctx) => {
       const parsed = parseDebugArgs(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-      if (!parsed.problem) {
-        notify(ctx, "Usage: /debug <problem> [--fix]", "error");
-        return;
-      }
-
-      const applyFixMode = parsed.fix ? "yes" : "no";
-
-      await runWorkflowCommand({
+      await runToggleWorkflow({
         ctx,
         type: "debug",
-        input: parsed.problem,
-        flags: {
-          fix: parsed.fix,
-        },
-        sections: [
-          `User problem: ${parsed.problem}`,
-          `Apply fix: ${applyFixMode}`,
-          "",
+        value: parsed.problem,
+        enabled: parsed.fix,
+        usage: "Usage: /debug <problem> [--fix]",
+        valueLabel: "User problem",
+        enabledLabel: "Apply fix",
+        instruction:
           "Instruction: Investigate hypotheses rigorously and converge on the highest-confidence root cause before applying changes.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
-        ],
-        entry: {
-          problem: parsed.problem,
-          fix: parsed.fix,
-        },
-        startedMessage: `Started debug workflow (fix=${parsed.fix ? "on" : "off"}).`,
+        entryKey: "problem",
+        flagKey: "fix",
       });
     },
 
     feature: async (args, ctx) => {
       const parsed = parseFeatureArgs(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-      if (!parsed.request) {
-        notify(ctx, "Usage: /feature <request> [--ship]", "error");
-        return;
-      }
-
-      await runWorkflowCommand({
+      await runToggleWorkflow({
         ctx,
         type: "feature",
-        input: parsed.request,
-        flags: {
-          ship: parsed.ship,
-        },
-        sections: [
-          `Feature request: ${parsed.request}`,
-          `Ship mode: ${parsed.ship ? "yes" : "no"}`,
-          "",
+        value: parsed.request,
+        enabled: parsed.ship,
+        usage: "Usage: /feature <request> [--ship]",
+        valueLabel: "Feature request",
+        enabledLabel: "Ship mode",
+        instruction:
           "Instruction: Execute implementation, tests, and docs tracks in a disciplined sequence unless another extension orchestrates parallelism.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
-        ],
-        entry: {
-          request: parsed.request,
-          ship: parsed.ship,
-        },
-        startedMessage: `Started feature workflow (ship=${parsed.ship ? "on" : "off"}).`,
+        entryKey: "request",
+        flagKey: "ship",
       });
     },
 
     review: async (args, ctx) => {
-      const parsed = parseReviewArgs(args ?? "", ctx.cwd);
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-
-      if ("error" in parsed) {
-        notify(ctx, parsed.error, "error");
-        return;
-      }
-
-      const target = buildReviewTarget(parsed);
       const projectGuidelines = await loadProjectReviewGuidelines(ctx.cwd);
-
-      await runWorkflowCommand({
+      await runScopedWorkflow({
+        args,
         ctx,
         type: "review",
-        input: target.summary,
-        flags: {
-          ...target.flags,
-          extraInstruction: parsed.extraInstruction ?? null,
-          source: constants.REVIEW_COMMAND_SOURCE,
-        },
-        sections: [
-          `Review target: ${target.summary}`,
-          `Target mode: ${parsed.mode}`,
-          `Source reference: ${constants.REVIEW_COMMAND_SOURCE}`,
-          "",
-          `Instruction: ${target.instruction}`,
-          parsed.extraInstruction
-            ? `Additional focus: ${parsed.extraInstruction}`
-            : "",
+        source: constants.REVIEW_COMMAND_SOURCE,
+        targetBuilder: buildReviewTarget,
+        header: (summary) => `Review target: ${summary}`,
+        extraSections: [
           projectGuidelines
             ? [
                 "",
@@ -324,181 +442,96 @@ export function createWorkflowCommandHandlers(params: {
               ].join("\n")
             : "",
           "Instruction: Prioritize correctness, security, performance, and maintainability findings with concrete evidence.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          mode: parsed.mode,
-          ...target.flags,
-          extraInstruction: parsed.extraInstruction ?? null,
-          source: constants.REVIEW_COMMAND_SOURCE,
-        },
-        startedMessage: `Started review workflow (${target.summary}).`,
       });
     },
 
     gitReview: async (args, ctx) => {
       const extraFocus = normalizeWhitespace(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
 
-      const summary = extraFocus
-        ? `current repository (${extraFocus})`
-        : "current repository";
-
-      await runWorkflowCommand({
+      await runMirroredSourceWorkflow({
         ctx,
         type: "git-review",
-        input: summary,
-        flags: {
+        source: constants.GIT_REVIEW_COMMAND_SOURCE,
+        input: extraFocus ? `current repository (${extraFocus})` : "current repository",
+        fields: {
           extraFocus: extraFocus || null,
-          source: constants.GIT_REVIEW_COMMAND_SOURCE,
         },
         sections: [
           "Repository scope: current working tree",
-          `Source reference: ${constants.GIT_REVIEW_COMMAND_SOURCE}`,
-          "",
           "Instruction: Run the git diagnostics from the prompt before reading code.",
           extraFocus ? `Additional focus: ${extraFocus}` : "",
           "Instruction: Compare churn, authorship, bug clusters, velocity, and firefighting signals.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          extraFocus: extraFocus || null,
-          source: constants.GIT_REVIEW_COMMAND_SOURCE,
-        },
         startedMessage: `Started git-review workflow${extraFocus ? ` (${extraFocus})` : ""}.`,
       });
     },
 
     simplify: async (args, ctx) => {
-      const parsed = parseReviewArgs(args ?? "", ctx.cwd, "simplify");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-
-      if ("error" in parsed) {
-        notify(ctx, parsed.error, "error");
-        return;
-      }
-
-      const target = buildSimplifyTarget(parsed);
-
-      await runWorkflowCommand({
+      await runScopedWorkflow({
+        args,
         ctx,
         type: "simplify",
-        input: target.summary,
-        flags: {
-          ...target.flags,
-          extraInstruction: parsed.extraInstruction ?? null,
-          source: constants.SIMPLIFY_COMMAND_SOURCE,
-        },
-        sections: [
-          `Simplify target: ${target.summary}`,
-          `Target mode: ${parsed.mode}`,
-          `Source reference: ${constants.SIMPLIFY_COMMAND_SOURCE}`,
-          "",
-          `Instruction: ${target.instruction}`,
-          parsed.extraInstruction
-            ? `Additional focus: ${parsed.extraInstruction}`
-            : "",
+        commandName: "simplify",
+        source: constants.SIMPLIFY_COMMAND_SOURCE,
+        targetBuilder: buildSimplifyTarget,
+        header: (summary) => `Simplify target: ${summary}`,
+        extraSections: [
           "Instruction: Preserve exact behavior, API shape, and outputs. Ask before any semantic change.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          mode: parsed.mode,
-          ...target.flags,
-          extraInstruction: parsed.extraInstruction ?? null,
-          source: constants.SIMPLIFY_COMMAND_SOURCE,
-        },
-        startedMessage: `Started simplify workflow (${target.summary}).`,
       });
     },
 
     plan: async (args, ctx) => {
-      const parsed = parsePlanArgs(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-
-      const plan = parsed.plan;
-      if (!plan) {
-        notify(ctx, "Usage: /plan <plan_or_topic>", "error");
-        return;
-      }
-
-      await runWorkflowCommand({
+      await runRequiredSourceWorkflow({
         ctx,
         type: "plan",
-        input: plan,
-        flags: {
-          source: constants.PLAN_COMMAND_SOURCE,
-        },
-        sections: [
+        source: constants.PLAN_COMMAND_SOURCE,
+        value: parsePlanArgs(args ?? "").plan,
+        usage: "Usage: /plan <plan_or_topic>",
+        sections: (plan) => [
           `Plan/topic: ${plan}`,
-          `Source reference: ${constants.PLAN_COMMAND_SOURCE}`,
-          "",
           "Instruction: Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.",
           "Instruction: If a question can be answered from code/docs, inspect first and do not ask it.",
           "Instruction: Capture edge cases and trade-offs, then update CONTEXT.md/ADR docs lazily when terms/decisions are resolved.",
           "Instruction: When plan is complete, ask the user exactly once whether to create vertical-slice issues now.",
           "Instruction: If user says yes, produce a vertical-slice issue breakdown (AFK/HITL + dependencies) and then create issues.",
           "Instruction: Detect issue tracker platform first and use matching skill: github for GitHub, gitlab for GitLab.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          plan,
-          source: constants.PLAN_COMMAND_SOURCE,
-        },
-        startedMessage: `Started plan workflow (${plan}).`,
+        entry: (plan) => ({ plan }),
+        startedMessage: (plan) => `Started plan workflow (${plan}).`,
       });
     },
 
     audit: async (args, ctx) => {
-      const parsed = parseAuditArgs(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-      if (!parsed.claim) {
-        notify(ctx, "Usage: /audit <claim>", "error");
-        return;
-      }
-
-      await runWorkflowCommand({
+      await runRequiredSourceWorkflow({
         ctx,
         type: "audit",
-        input: parsed.claim,
-        flags: {
-          source: constants.AUDIT_COMMAND_SOURCE,
-        },
-        sections: [
-          `Claim: ${parsed.claim}`,
-          `Source reference: ${constants.AUDIT_COMMAND_SOURCE}`,
-          "",
+        source: constants.AUDIT_COMMAND_SOURCE,
+        value: parseAuditArgs(args ?? "").claim,
+        usage: "Usage: /audit <claim>",
+        sections: (claim) => [
+          `Claim: ${claim}`,
           "Instruction: Run the full anti-confirmation-bias claim audit workflow and treat the original claim as one hypothesis among several.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          claim: parsed.claim,
-          source: constants.AUDIT_COMMAND_SOURCE,
-        },
-        startedMessage: `Started audit workflow (${parsed.claim}).`,
+        entry: (claim) => ({ claim }),
+        startedMessage: (claim) => `Started audit workflow (${claim}).`,
       });
     },
 
     ship: async (args, ctx) => {
       const extraInstruction = normalizeWhitespace(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
 
-      await runWorkflowCommand({
+      await runMirroredSourceWorkflow({
         ctx,
         type: "ship",
+        source: constants.SHIP_COMMAND_SOURCE,
         input: extraInstruction || "GitButler workspace",
-        flags: {
+        fields: {
           extraInstruction: extraInstruction || null,
-          source: constants.SHIP_COMMAND_SOURCE,
         },
         sections: [
           "Scope: publish one focused branch/stack safely",
-          `Source reference: ${constants.SHIP_COMMAND_SOURCE}`,
-          "",
           "Instruction: Follow the workflow order exactly: detect -> target -> sync -> validate -> publish -> PR/MR -> summarize.",
           "Instruction: Start with `but status -fv`; identify the current VCS mode and the candidate ship target.",
           "Instruction: Select exactly one ship target branch/stack; if ambiguous, show a branch/change table and ask before shipping.",
@@ -507,115 +540,75 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Simplify the selected scope, run project CI/test command(s), then create a signed commit if needed and push only after green validation.",
           "Instruction: Reuse an existing PR/MR when present; otherwise open one against the default branch and verify the real remote artifact.",
           extraInstruction ? `Additional instruction: ${extraInstruction}` : "",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          extraInstruction: extraInstruction || null,
-          source: constants.SHIP_COMMAND_SOURCE,
-        },
         startedMessage: "Started ship workflow (detect -> target -> sync -> validate -> publish -> PR).",
       });
     },
 
     triageIssue: async (args, ctx) => {
-      const parsed = parseTriageIssueArgs(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-      if (!parsed.problem) {
-        notify(ctx, "Usage: /triage-issue <problem_statement>", "error");
-        return;
-      }
-
-      await runWorkflowCommand({
+      await runRequiredSourceWorkflow({
         ctx,
         type: "triage-issue",
-        input: parsed.problem,
-        flags: {
-          source: constants.TRIAGE_ISSUE_COMMAND_SOURCE,
-        },
-        sections: [
-          `Problem statement: ${parsed.problem}`,
-          `Source reference: ${constants.TRIAGE_ISSUE_COMMAND_SOURCE}`,
-          "",
+        source: constants.TRIAGE_ISSUE_COMMAND_SOURCE,
+        value: parseTriageIssueArgs(args ?? "").problem,
+        usage: "Usage: /triage-issue <problem_statement>",
+        sections: (problem) => [
+          `Problem statement: ${problem}`,
           "Instruction: Ask at most one initial clarification question if needed, then investigate immediately.",
           "Instruction: Create a GitHub issue with durable root-cause analysis and RED/GREEN TDD fix plan.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          problem: parsed.problem,
-          source: constants.TRIAGE_ISSUE_COMMAND_SOURCE,
-        },
-        startedMessage: `Started triage-issue workflow (${parsed.problem}).`,
+        entry: (problem) => ({ problem }),
+        startedMessage: (problem) => `Started triage-issue workflow (${problem}).`,
       });
     },
 
     tdd: async (args, ctx) => {
       const parsed = parseTddArgs(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
-      if (!parsed.goal) {
-        notify(ctx, "Usage: /tdd <goal> [--lang auto|python|rust|c]", "error");
-        return;
-      }
-
-      await runWorkflowCommand({
+      await runRequiredSourceWorkflow({
         ctx,
         type: "tdd",
-        input: parsed.goal,
-        flags: {
+        source: constants.TDD_COMMAND_SOURCE,
+        value: parsed.goal,
+        usage: "Usage: /tdd <goal> [--lang auto|python|rust|c]",
+        flags: () => ({
           language: parsed.language,
-          source: constants.TDD_COMMAND_SOURCE,
-        },
-        sections: [
-          `TDD goal: ${parsed.goal}`,
+        }),
+        sections: (goal) => [
+          `TDD goal: ${goal}`,
           `Language hint: ${parsed.language}`,
-          `Source reference: ${constants.TDD_COMMAND_SOURCE}`,
-          "",
           "Instruction: Use tdd-core doctrine and select language-specific adapter skill as needed.",
           "Instruction: Execute strict red-green-refactor in vertical slices only.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          goal: parsed.goal,
+        entry: (goal) => ({
+          goal,
           language: parsed.language,
-          source: constants.TDD_COMMAND_SOURCE,
-        },
-        startedMessage: `Started tdd workflow (goal=${parsed.goal}, lang=${parsed.language}).`,
+        }),
+        startedMessage: (goal) =>
+          `Started tdd workflow (goal=${goal}, lang=${parsed.language}).`,
       });
     },
 
     addressOpenIssues: async (args, ctx) => {
       const parsed = parseAddressOpenIssuesArgs(args ?? "");
-      if (!ensureWorkflowSlotAvailable(ctx)) return;
 
-      await runWorkflowCommand({
+      await runMirroredSourceWorkflow({
         ctx,
         type: "address-open-issues",
+        source: constants.ADDRESS_OPEN_ISSUES_COMMAND_SOURCE,
         input: `open issues by me (limit=${parsed.limit})`,
-        flags: {
+        fields: {
           limit: parsed.limit,
           repo: parsed.repo || null,
-          source: constants.ADDRESS_OPEN_ISSUES_COMMAND_SOURCE,
         },
         sections: [
           "Issue query: author:@me state:open",
           `Limit: ${parsed.limit}`,
           `Repo override: ${parsed.repo || "(current repo)"}`,
-          `Source reference: ${constants.ADDRESS_OPEN_ISSUES_COMMAND_SOURCE}`,
-          "",
           "Instruction: Skip issues labeled blocked (or equivalent blocked label) and mark them skipped-blocked.",
           "Instruction: If an issue description is unclear/incomplete, post a clarification comment tagging the issue creator and abort remaining stages for that issue.",
           "Instruction: For well-described issues, run stages in order: triage-issue -> tdd -> review -> simplify -> review -> address review findings.",
           "Instruction: Re-review after remediation up to 2 loops per issue, then mark blocked if unresolved.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
         ],
-        entry: {
-          limit: parsed.limit,
-          repo: parsed.repo || null,
-          source: constants.ADDRESS_OPEN_ISSUES_COMMAND_SOURCE,
-        },
         startedMessage: `Started address-open-issues workflow (limit=${parsed.limit}, repo=${parsed.repo || "current"}).`,
       });
     },
@@ -642,31 +635,15 @@ export function createWorkflowCommandHandlers(params: {
       }
 
       const paths = await ensureLearningStore(ctx.cwd);
-
-      let sourceExcerpt = "";
-      if (parsed.fromFile) {
-        const resolvedSourcePath = path.resolve(ctx.cwd, parsed.fromFile);
-        if (!(await exists(resolvedSourcePath))) {
-          notify(ctx, `Source file not found: ${resolvedSourcePath}`, "error");
-          return;
-        }
-        const raw = await readText(resolvedSourcePath);
-        sourceExcerpt = raw.slice(0, 4000);
-      }
+      const { excerpt: sourceExcerpt, resolvedSourcePath } = await readSourceExcerpt(
+        ctx,
+        parsed.fromFile,
+      );
+      if (parsed.fromFile && !resolvedSourcePath) return;
 
       const skillHint =
         parsed.topic || parsed.fromFile || parsed.fromUrl || "new-skill";
-      const reservedNames = new Set<string>();
-      for (const root of [packageSkillsPath]) {
-        try {
-          const entries = await fs.readdir(root, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.isDirectory()) reservedNames.add(entry.name);
-          }
-        } catch {
-          // best effort only
-        }
-      }
+      const reservedNames = await readReservedSkillNames(packageSkillsPath);
       const skillName = chooseAvailableSkillName({
         topic: parsed.topic,
         fromFile: parsed.fromFile,
@@ -689,7 +666,6 @@ export function createWorkflowCommandHandlers(params: {
           );
         }
       }
-
       await runWorkflowCommand({
         ctx,
         type: "learn-skill",
@@ -701,14 +677,12 @@ export function createWorkflowCommandHandlers(params: {
           targetSkill: skillName,
           targetFile: skillFile,
         },
-        sections: [
+        sections: withFooter([
           `Topic: ${parsed.topic || "(derived from source)"}`,
           `Target skill: ${skillName}`,
           `Target file: ${skillFile}`,
           `Dry run: ${parsed.dryRun ? "yes" : "no"}`,
-          parsed.fromFile
-            ? `Source file: ${path.resolve(ctx.cwd, parsed.fromFile)}`
-            : "",
+          resolvedSourcePath ? `Source file: ${resolvedSourcePath}` : "",
           parsed.fromUrl ? `Source URL: ${parsed.fromUrl}` : "",
           sourceExcerpt
             ? ["", "Source excerpt:", "```text", sourceExcerpt, "```"].join(
@@ -717,9 +691,7 @@ export function createWorkflowCommandHandlers(params: {
             : "",
           "",
           "Instruction: Keep the skill concise and include explicit 'Use when' and 'Avoid when' sections.",
-          constants.POSTFLIGHT_INSTRUCTION,
-          constants.REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
-        ],
+        ]),
         entry: {
           topic: parsed.topic || null,
           fromFile: parsed.fromFile ?? null,
