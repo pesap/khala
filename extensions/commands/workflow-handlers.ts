@@ -461,16 +461,15 @@ export function createWorkflowCommandHandlers(params: {
       const summary = extraFocus
         ? `current repository (${extraFocus})`
         : "current repository";
-      const fields = {
-        extraFocus: toNullable(extraFocus),
-      };
 
       await runMirroredSourceWorkflow({
         ctx,
         type: "git-review",
         source: constants.GIT_REVIEW_COMMAND_SOURCE,
         input: summary,
-        fields,
+        fields: {
+          extraFocus: toNullable(extraFocus),
+        },
         sections: [
           "Repository scope: current working tree",
           "Instruction: Run the git diagnostics from the prompt before reading code.",
@@ -539,16 +538,15 @@ export function createWorkflowCommandHandlers(params: {
 
     ship: async (args, ctx) => {
       const extraInstruction = normalizeWhitespace(args ?? "");
-      const fields = {
-        extraInstruction: toNullable(extraInstruction),
-      };
 
       await runMirroredSourceWorkflow({
         ctx,
         type: "ship",
         source: constants.SHIP_COMMAND_SOURCE,
         input: extraInstruction || "GitButler workspace",
-        fields,
+        fields: {
+          extraInstruction: toNullable(extraInstruction),
+        },
         sections: [
           "Scope: publish one focused branch/stack safely",
           "Instruction: Follow the workflow order exactly: detect -> target -> sync -> validate -> publish -> PR/MR -> summarize.",
@@ -611,17 +609,16 @@ export function createWorkflowCommandHandlers(params: {
 
     addressOpenIssues: async (args, ctx) => {
       const parsed = parseAddressOpenIssuesArgs(args ?? "");
-      const fields = {
-        limit: parsed.limit,
-        repo: toNullable(parsed.repo),
-      };
 
       await runMirroredSourceWorkflow({
         ctx,
         type: "address-open-issues",
         source: constants.ADDRESS_OPEN_ISSUES_COMMAND_SOURCE,
         input: `open issues by me (limit=${parsed.limit})`,
-        fields,
+        fields: {
+          limit: parsed.limit,
+          repo: toNullable(parsed.repo),
+        },
         sections: [
           "Issue query: author:@me state:open",
           `Limit: ${parsed.limit}`,
