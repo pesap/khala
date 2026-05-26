@@ -261,6 +261,12 @@ export function findPendingMemoryGateRecovery(
   let sawMemoryRead = false;
 
   for (const message of messages) {
+    if (message.role === "user" && blockedToolName !== null) {
+      blockedToolName = null;
+      sawMemoryRead = false;
+      continue;
+    }
+
     if (isMemoryReadRequiredToolResult(message)) {
       blockedToolName = isMemoryGateRetryToolName(message.toolName ?? "")
         ? (message.toolName ?? "mutation")

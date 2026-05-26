@@ -105,6 +105,19 @@ test("ignores memory-read-required when no memory read happened yet", () => {
   assert.equal(findPendingMemoryGateRecovery(messages), null);
 });
 
+test("does not carry memory-gate recovery requirement across a new user turn", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("write"),
+    memoryReadRequired("write"),
+    assistantToolCall("khala_read_memory"),
+    textMessage("assistant", "I refreshed memory and will retry."),
+    textMessage("user", "Different request: explain what happened."),
+    textMessage("assistant", "Here is an explanation."),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
 test("infers tool obligation for concrete inspection requests", () => {
   assert.equal(
     inferTurnObligation("Load your librarian skill and inspect the Torc repo")
