@@ -381,9 +381,7 @@ export function parseReviewArgs(
           ? singleArg(rest[0], parsePullRequestReference)
           : singleArg(rest[0]);
       if (!value) return { error: commandUsage[mode] };
-      if (mode === "branch") return { mode, branch: value, extraInstruction };
-      if (mode === "commit") return { mode, commit: value, extraInstruction };
-      return { mode, pr: value, extraInstruction };
+      return mode === "pr" ? { mode, pr: value, extraInstruction } : mode === "branch" ? { mode, branch: value, extraInstruction } : { mode, commit: value, extraInstruction };
     }
     case "folder":
     case "file": {
