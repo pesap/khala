@@ -92,7 +92,7 @@ export function getLearnedWorkflowPaths(
   const name = normalizeLearnedWorkflowName(workflowName);
   return {
     name,
-    workflowFile: path.join(paths.workflowsDir, `${name}.yaml`),
+    workflowFile: path.join(paths.workflowsDir, `${name}${WORKFLOW_EXT}`),
     promptFile: path.join(paths.promptsDir, `${name}.md`),
   };
 }
@@ -130,12 +130,7 @@ export async function listLearnedWorkflows(
 
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(WORKFLOW_EXT))
-    .map((entry) =>
-      getLearnedWorkflowPaths(
-        paths,
-        entry.name.slice(0, -WORKFLOW_EXT.length),
-      ),
-    )
+    .map((entry) => getLearnedWorkflowPaths(paths, entry.name.slice(0, -WORKFLOW_EXT.length)))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
