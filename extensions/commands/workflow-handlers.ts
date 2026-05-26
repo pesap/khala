@@ -286,12 +286,12 @@ export function createWorkflowCommandHandlers(params: {
     const extraInstruction = parsed.extraInstruction
       ? `Additional focus: ${parsed.extraInstruction}`
       : "";
-    await runSourceWorkflow({
+    await runMirroredSourceWorkflow({
       ctx: params.ctx,
       type: params.type,
       source: params.source,
       input: target.summary,
-      flags: scopedFields,
+      fields: scopedFields,
       sections: [
         params.header(target.summary),
         `Target mode: ${parsed.mode}`,
@@ -299,7 +299,6 @@ export function createWorkflowCommandHandlers(params: {
         extraInstruction,
         ...(params.extraSections ?? []),
       ],
-      entry: scopedFields,
       startedMessage: `Started ${params.type} workflow (${target.summary}).`,
     });
   };
