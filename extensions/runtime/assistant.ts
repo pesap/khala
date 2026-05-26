@@ -114,6 +114,7 @@ export function isEmptyTerminalAssistantResponse(
 ): boolean {
   const lastAssistant = getLastAssistantMessage(messages);
   if (!lastAssistant || lastAssistant.stopReason !== "stop") return false;
+  if (assistantTurnHasToolCallSinceLatestUser(messages)) return false;
 
   return !lastAssistant.content.some((item) => {
     if (item.type === "toolCall") return true;

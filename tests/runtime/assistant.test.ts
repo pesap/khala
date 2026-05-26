@@ -6,6 +6,7 @@ import {
   assistantTurnHasToolCallSinceLatestUser,
   findPendingMemoryGateRecovery,
   inferTurnObligation,
+  isEmptyTerminalAssistantResponse,
   isActionOrApprovalObligation,
   isAssistantClarification,
   isAssistantClarificationAllowedForObligation,
@@ -382,6 +383,35 @@ test("detects tool usage across the whole assistant turn span", () => {
     assistantTurnHasToolCallSinceLatestUser(toolCallBeforeLatestUser),
     false,
   );
+});
+
+test("does not treat blank terminal assistant stop as empty when earlier tool call exists", () => {
+  const messagesWithToolCallBeforeBlank: Parameters<
+    typeof findPendingMemoryGateRecovery
+  >[0] = [
+    textMessage("user", "Inspect the runtime."),
+    assistantToolCall("read"),
+    {
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "   " }],
+    },
+  ];
+  assert.equal(
+    isEmptyTerminalAssistantResponse(messagesWithToolCallBeforeBlank),
+    false,
+  );
+
+  const trulyEmptyTerminal: Parameters<typeof findPendingMemoryGateRecovery>[0] =
+    [
+      textMessage("user", "Inspect the runtime."),
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "   " }],
+      },
+    ];
+  assert.equal(isEmptyTerminalAssistantResponse(trulyEmptyTerminal), true);
 });
 
 test("generic permission questions do not satisfy concrete tool obligations", () => {
