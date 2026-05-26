@@ -312,6 +312,15 @@ test("detects assistant tool-call and clarification output shapes", () => {
     isAssistantClarification(
       textMessage(
         "assistant",
+        "Before I continue, can you confirm the target file to patch first",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    isAssistantClarification(
+      textMessage(
+        "assistant",
         "Which file should I inspect first? I can proceed once you confirm.",
       ),
     ),

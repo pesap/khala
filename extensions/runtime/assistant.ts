@@ -37,6 +37,8 @@ const APPROVAL_QUESTION_REGEX =
   /\b(?:can i|may i|is it ok if i|is it okay if i|do you want me to|should i)\b/;
 const GENERIC_PERMISSION_QUESTION_REGEX =
   /^\s*(?:can i|may i|should i|should we|do you want me to|would you like me to)\s+(?:proceed|continue|start|get started|begin|do (?:it|that|this)|work on (?:it|that|this))(?:\s*[?.!])?\s*$/;
+const NO_QUESTION_CLARIFICATION_DIRECTIVE_REGEX =
+  /\b(?:please confirm|confirm whether|can you confirm|can you clarify|can you choose|can you share|can you provide|can you send|can you paste)\b/;
 const ARTIFACT_ACTION_VERB_REGEX =
   /\b(inspect|check|review|analyze|verify|confirm|open|read|load|grep|find|locate|test|run|execute|edit|write|fix|implement|update|patch|modify|create|draft|address)\b/;
 const CONCEPTUAL_REQUEST_REGEX =
@@ -259,7 +261,8 @@ export function isAssistantClarification(
       sentence.includes("?") ||
       /^(?:which|what|where|when|who|how|can i|may i|is it ok if i|is it okay if i|do you want me to|should i|should we|would you like|please confirm|confirm whether|can you confirm|can you clarify|can you choose)\b/.test(
         normalized,
-      );
+      ) ||
+      NO_QUESTION_CLARIFICATION_DIRECTIVE_REGEX.test(normalized);
     if (!questionLike) return false;
     return true;
   });
