@@ -63,6 +63,41 @@ export function createCuratorCommandHandlers(params: {
   };
   const notifyMissing = (ctx: ExtensionCommandContext, message: string) =>
     params.notify(ctx, message, "error");
+  const runSkillMutation = async (paramsForMutation: {
+    ctx: ExtensionCommandContext;
+    args: string | undefined;
+    usage: string;
+    missingMessage: (skillName: string) => string;
+    mutate: (params: {
+      paths: LearningPaths;
+      skillName: string;
+    }) => Promise<{ metadata: { name: string }; dir: string } | null>;
+    successMessage: (params: { name: string; dir: string }) => string;
+  }): Promise<void> => {
+    const skillName = requireSkillName(
+      paramsForMutation.ctx,
+      paramsForMutation.args,
+      paramsForMutation.usage,
+    );
+    if (!skillName) return;
+    const paths = await params.ensureLearningStore(paramsForMutation.ctx.cwd);
+    const record = await paramsForMutation.mutate({ paths, skillName });
+    if (!record) {
+      return notifyMissing(
+        paramsForMutation.ctx,
+        paramsForMutation.missingMessage(skillName),
+      );
+    }
+    await refreshReport(paths, params.nowIso());
+    params.notify(
+      paramsForMutation.ctx,
+      paramsForMutation.successMessage({
+        name: record.metadata.name,
+        dir: record.dir,
+      }),
+      "success",
+    );
+  };
 
   return {
     skillStatus: async (args, ctx) => {
@@ -119,31 +154,29 @@ export function createCuratorCommandHandlers(params: {
     },
 
     archiveSkill: async (args, ctx) => {
-      const skillName = requireSkillName(ctx, args, "Usage: /archive-skill <name>");
-      if (!skillName) return;
-      const paths = await params.ensureLearningStore(ctx.cwd);
-      const record = await archiveLearnedSkill({ paths, skillName });
-      if (!record) return notifyMissing(ctx, `Active learned skill not found: ${skillName}`);
-      await refreshReport(paths, params.nowIso());
-      params.notify(
+      await runSkillMutation({
         ctx,
-        `Archived learned skill ${record.metadata.name} to ${record.dir}.`,
-        "success",
-      );
+        args,
+        usage: "Usage: /archive-skill <name>",
+        missingMessage: (skillName) =>
+          `Active learned skill not found: ${skillName}`,
+        mutate: archiveLearnedSkill,
+        successMessage: ({ name, dir }) =>
+          `Archived learned skill ${name} to ${dir}.`,
+      });
     },
 
     restoreSkill: async (args, ctx) => {
-      const skillName = requireSkillName(ctx, args, "Usage: /restore-skill <name>");
-      if (!skillName) return;
-      const paths = await params.ensureLearningStore(ctx.cwd);
-      const record = await restoreLearnedSkill({ paths, skillName });
-      if (!record) return notifyMissing(ctx, `Archived learned skill not found: ${skillName}`);
-      await refreshReport(paths, params.nowIso());
-      params.notify(
+      await runSkillMutation({
         ctx,
-        `Restored learned skill ${record.metadata.name} to ${record.dir}.`,
-        "success",
-      );
+        args,
+        usage: "Usage: /restore-skill <name>",
+        missingMessage: (skillName) =>
+          `Archived learned skill not found: ${skillName}`,
+        mutate: restoreLearnedSkill,
+        successMessage: ({ name, dir }) =>
+          `Restored learned skill ${name} to ${dir}.`,
+      });
     },
   };
 }
