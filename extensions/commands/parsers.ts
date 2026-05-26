@@ -51,13 +51,15 @@ export function parseComplianceArgs(args: string): {
   error?: string;
 } {
   const value = normalizeWhitespace(args).toLowerCase();
-  if (!value) return { preset: "status" };
   const preset = COMPLIANCE_PRESET_ALIASES[value];
-  if (preset) return { preset };
-  return {
-    preset: "status",
-    error: "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
-  };
+  return preset
+    ? { preset }
+    : value
+      ? {
+          preset: "status",
+          error: "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
+        }
+      : { preset: "status" };
 }
 
 export function parseApproveRiskArgs(args: string): {
@@ -414,37 +416,25 @@ function buildScopedTarget(
     uncommitted: string;
   },
 ): ScopedTarget {
+  const target = (summary: string, instruction: string, flags: WorkflowFlags): ScopedTarget => ({
+    summary,
+    instruction,
+    flags,
+  });
   switch (parsed.mode) {
     case "branch":
-      return {
-        summary: `branch ${parsed.branch}`,
-        instruction: copy.branch(parsed.branch),
-        flags: { mode: "branch", branch: parsed.branch },
-      };
+      return target(`branch ${parsed.branch}`, copy.branch(parsed.branch), { mode: "branch", branch: parsed.branch });
     case "commit":
-      return {
-        summary: `commit ${parsed.commit}`,
-        instruction: copy.commit(parsed.commit),
-        flags: { mode: "commit", commit: parsed.commit },
-      };
+      return target(`commit ${parsed.commit}`, copy.commit(parsed.commit), { mode: "commit", commit: parsed.commit });
     case "pr":
-      return {
-        summary: `pull request ${parsed.pr}`,
-        instruction: copy.pr(parsed.pr),
-        flags: { mode: "pr", pr: parsed.pr },
-      };
+      return target(`pull request ${parsed.pr}`, copy.pr(parsed.pr), { mode: "pr", pr: parsed.pr });
     case "folder":
-      return {
-        summary: `paths ${parsed.paths.join(", ")}`,
-        instruction: copy.folder(parsed.paths),
-        flags: { mode: "folder", paths: parsed.paths },
-      };
+      return target(`paths ${parsed.paths.join(", ")}`, copy.folder(parsed.paths), {
+        mode: "folder",
+        paths: parsed.paths,
+      });
     default:
-      return {
-        summary: "uncommitted changes",
-        instruction: copy.uncommitted,
-        flags: { mode: "uncommitted" },
-      };
+      return target("uncommitted changes", copy.uncommitted, { mode: "uncommitted" });
   }
 }
 
