@@ -277,7 +277,9 @@ export function findPendingMemoryGateRecovery(
       }
 
       const matchesBlockedTool = toolName === blockedToolName;
-      const allowFallbackRetry = blockedToolName === "mutation";
+      const allowFallbackRetry =
+        blockedToolName === "mutation" ||
+        !isMemoryGateRetryToolName(blockedToolName);
       if (
         sawMemoryRead &&
         ((matchesBlockedTool && isMemoryGateRetryToolName(toolName)) ||

@@ -85,6 +85,17 @@ test("does not clear recovery when a different retry-capable tool runs", () => {
   });
 });
 
+test("clears recovery when blocked tool name is unknown but a retry-capable tool runs", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("custom_mutation_tool"),
+    memoryReadRequired("custom_mutation_tool"),
+    assistantToolCall("khala_read_memory"),
+    assistantToolCall("write"),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
 test("ignores memory-read-required when no memory read happened yet", () => {
   const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
     memoryReadRequired("edit"),
