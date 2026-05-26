@@ -186,13 +186,17 @@ export function evaluateObligationLoopGuard(params: {
 }
 
 export function normalizeLoopGuardText(text: string): string {
-  const normalized = text
-    .trim()
-    .toLowerCase()
-    .replace(/^["'`([{]+/, "")
-    .replace(/["'`)\]}]+$/, "")
-    .replace(/[.!?]+$/g, "")
-    .replace(/\s+/g, " ");
+  let normalized = text.trim().toLowerCase();
+  let previous = "";
+  while (normalized !== previous) {
+    previous = normalized;
+    normalized = normalized
+      .replace(/^["'`([{]+/, "")
+      .replace(/["'`)\]}]+$/, "")
+      .replace(/[.!?]+$/g, "")
+      .trim();
+  }
+  normalized = normalized.replace(/\s+/g, " ");
   return normalized || "_empty_";
 }
 
