@@ -5,7 +5,7 @@
 **A guarded, self-learning Pi coding-agent runtime for pragmatic engineering work.**
 
 <p>
-  <a href="https://github.com/pesap/agents/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/pesap/agents?labelColor=1a1a2e&color=6f42c1"></a>
+  <a href="https://github.com/pesap/agents/blob/main/LICENSE.txt"><img alt="License: MIT" src="https://img.shields.io/github/license/pesap/agents?labelColor=1a1a2e&color=6f42c1"></a>
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white">
   <img alt="Pi package" src="https://img.shields.io/badge/Pi-package-6f42c1?style=flat&logo=gnometerminal&logoColor=white">
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-guarded-22c55e?style=flat">
@@ -13,22 +13,6 @@
 
 </div>
 
----
-
-## Contents
-
-- [Quick start](#quick-start)
-- [What khala adds](#what-khala-adds)
-- [Core flow](#core-flow)
-- [Commands](#commands)
-- [Rules, simplified](#rules-simplified)
-- [Runtime behavior](#runtime-behavior)
-- [Configuration & layout](#configuration--layout)
-- [Learning model](#learning-model)
-- [Compliance modes](#compliance-modes)
-- [Design goals](#design-goals)
-
----
 
 ## Quick start
 
