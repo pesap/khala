@@ -159,8 +159,8 @@ export function parseAddressOpenIssuesArgs(args: string): {
 
   const limitResult = removeFlag(rest, /(^|\s)--limit\s+(\d+)(\s|$)/);
   rest = limitResult.value;
-  const parsedLimit = Number(limitResult.match?.[2] ?? 20);
-  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 20;
+  const limitValue = Number(limitResult.match?.[2] ?? 20);
+  const limit = Number.isFinite(limitValue) && limitValue > 0 ? limitValue : 20;
 
   const repoResult = removeFlag(rest, /(^|\s)--repo\s+(\S+)(\s|$)/);
   const repo = normalizeWhitespace(repoResult.match?.[2] ?? "");
