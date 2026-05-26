@@ -155,6 +155,7 @@ import {
   isActionOrApprovalObligation,
   isAssistantClarificationAllowedForObligation,
   isEmptyTerminalAssistantResponse,
+  evaluateObligationLoopGuard,
   shouldBlockUnsatisfiedTurnObligation,
 } from "./runtime/assistant.ts";
 import {
@@ -1948,14 +1949,18 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ) {
         const normalizedUserText = userText.trim().toLowerCase();
         const obligationBlockKey = `${obligation.obligation}:${normalizedUserText}`;
-        if (runtimeState.lastObligationBlockKey === obligationBlockKey) {
-          runtimeState.lastObligationBlockCount += 1;
-        } else {
-          runtimeState.lastObligationBlockKey = obligationBlockKey;
-          runtimeState.lastObligationBlockCount = 1;
-        }
+        const loopGuard = evaluateObligationLoopGuard({
+          current: {
+            key: runtimeState.lastObligationBlockKey,
+            count: runtimeState.lastObligationBlockCount,
+          },
+          key: obligationBlockKey,
+          blockThreshold: 3,
+        });
+        runtimeState.lastObligationBlockKey = loopGuard.next.key;
+        runtimeState.lastObligationBlockCount = loopGuard.next.count;
 
-        if (runtimeState.lastObligationBlockCount >= 3) {
+        if (!loopGuard.block) {
           notify(
             ctx,
             [

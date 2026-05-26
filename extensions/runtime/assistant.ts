@@ -13,6 +13,16 @@ interface PendingMemoryGateRecovery {
   blockedToolName: string;
 }
 
+export interface ObligationLoopGuardState {
+  key: string | null;
+  count: number;
+}
+
+export interface ObligationLoopGuardDecision {
+  block: boolean;
+  next: ObligationLoopGuardState;
+}
+
 export type TurnObligation =
   | "none"
   | "answer_allowed"
@@ -160,6 +170,19 @@ export function isActionOrApprovalObligation(
   obligation: TurnObligation,
 ): boolean {
   return obligation === "tool_required" || obligation === "approval_required";
+}
+
+export function evaluateObligationLoopGuard(params: {
+  current: ObligationLoopGuardState;
+  key: string;
+  blockThreshold: number;
+}): ObligationLoopGuardDecision {
+  const nextCount =
+    params.current.key === params.key ? params.current.count + 1 : 1;
+  return {
+    block: nextCount < params.blockThreshold,
+    next: { key: params.key, count: nextCount },
+  };
 }
 
 export function inferTurnObligation(userText: string): TurnObligationResult {

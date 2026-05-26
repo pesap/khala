@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   assistantMessageHasToolCall,
   assistantTurnHasToolCallSinceLatestUser,
+  evaluateObligationLoopGuard,
   findPendingMemoryGateRecovery,
   inferTurnObligation,
   isEmptyTerminalAssistantResponse,
@@ -460,4 +461,43 @@ test("generic permission questions do not satisfy concrete tool obligations", ()
     ),
     true,
   );
+});
+
+test("obligation loop guard blocks first two repeats then warns", () => {
+  const first = evaluateObligationLoopGuard({
+    current: { key: null, count: 0 },
+    key: "tool_required:continue",
+    blockThreshold: 3,
+  });
+  assert.equal(first.block, true);
+  assert.deepEqual(first.next, { key: "tool_required:continue", count: 1 });
+
+  const second = evaluateObligationLoopGuard({
+    current: first.next,
+    key: "tool_required:continue",
+    blockThreshold: 3,
+  });
+  assert.equal(second.block, true);
+  assert.deepEqual(second.next, { key: "tool_required:continue", count: 2 });
+
+  const third = evaluateObligationLoopGuard({
+    current: second.next,
+    key: "tool_required:continue",
+    blockThreshold: 3,
+  });
+  assert.equal(third.block, false);
+  assert.deepEqual(third.next, { key: "tool_required:continue", count: 3 });
+});
+
+test("obligation loop guard resets count when key changes", () => {
+  const decision = evaluateObligationLoopGuard({
+    current: { key: "tool_required:continue", count: 2 },
+    key: "approval_required:delete files",
+    blockThreshold: 3,
+  });
+  assert.equal(decision.block, true);
+  assert.deepEqual(decision.next, {
+    key: "approval_required:delete files",
+    count: 1,
+  });
 });
