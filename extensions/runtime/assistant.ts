@@ -233,13 +233,14 @@ export function isAssistantClarification(
     .split(/(?<=[.!?])\s+|\n+/)
     .map((sentence) => sentence.trim())
     .filter(Boolean);
-  const lastSentence = sentences.at(-1) ?? text.trim();
-  const normalized = lastSentence.toLowerCase();
-  return (
-    lastSentence.includes("?") &&
-    (BLOCKING_CLARIFICATION_REGEX.test(normalized) ||
-      APPROVAL_QUESTION_REGEX.test(normalized))
-  );
+  return sentences.some((sentence) => {
+    if (!sentence.includes("?")) return false;
+    const normalized = sentence.toLowerCase();
+    return (
+      BLOCKING_CLARIFICATION_REGEX.test(normalized) ||
+      APPROVAL_QUESTION_REGEX.test(normalized)
+    );
+  });
 }
 
 export function isAssistantClarificationAllowedForObligation(
