@@ -53,12 +53,11 @@ export function parseComplianceArgs(args: string): {
   const value = normalizeWhitespace(args).toLowerCase();
   if (!value) return { preset: "status" };
   const preset = COMPLIANCE_PRESET_ALIASES[value];
-  return preset
-    ? { preset }
-    : {
-        preset: "status",
-        error: "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
-      };
+  if (preset) return { preset };
+  return {
+    preset: "status",
+    error: "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
+  };
 }
 
 export function parseApproveRiskArgs(args: string): {
