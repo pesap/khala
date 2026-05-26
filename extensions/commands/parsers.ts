@@ -368,10 +368,9 @@ export function parseReviewArgs(
 
   switch (mode) {
     case "uncommitted":
-      if (rest.length > 0) {
-        return { error: "`uncommitted` does not accept additional arguments." };
-      }
-      return { mode: "uncommitted", extraInstruction };
+      return rest.length > 0
+        ? { error: "`uncommitted` does not accept additional arguments." }
+        : { mode: "uncommitted", extraInstruction };
     case "branch":
     case "commit":
     case "pr": {
