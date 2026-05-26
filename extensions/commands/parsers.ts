@@ -249,9 +249,11 @@ function parseScopeArg(
   usage: string,
 ): { scope: "project" | "global"; error?: string } {
   const scope = normalizeWhitespace(args).toLowerCase();
-  if (!scope || scope === "project") return { scope: "project" };
-  if (scope === "global") return { scope: "global" };
-  return { scope: "project", error: usage };
+  return !scope || scope === "project"
+    ? { scope: "project" }
+    : scope === "global"
+      ? { scope: "global" }
+      : { scope: "project", error: usage };
 }
 
 function tokenizeArgs(value: string): string[] {
