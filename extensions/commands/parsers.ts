@@ -113,19 +113,19 @@ export function parsePostflightArgs(
   );
 }
 
-export function parseDebugArgs(
+export const parseDebugArgs = (
   args: string,
-): { problem: string; fix: boolean } {
+): { problem: string; fix: boolean } => {
   const { rest, enabled } = parseToggleArg(args, "--fix");
   return { problem: rest, fix: enabled };
-}
+};
 
-export function parseFeatureArgs(
+export const parseFeatureArgs = (
   args: string,
-): { request: string; ship: boolean } {
+): { request: string; ship: boolean } => {
   const { rest, enabled } = parseToggleArg(args, "--ship");
   return { request: rest, ship: enabled };
-}
+};
 
 export const parsePlanArgs = (args: string): { plan: string } => ({
   plan: normalizeWhitespace(args),
