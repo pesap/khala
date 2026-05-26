@@ -341,9 +341,7 @@ export function parseReviewArgs(
     extraIndex === -1 ? undefined : tokens.slice(extraIndex + 1).join(" ").trim();
   if (extraIndex !== -1 && !extraInstruction) return { error: usage };
 
-  if (positional.length === 0) {
-    return { mode: "uncommitted", extraInstruction };
-  }
+  if (positional.length === 0) return { mode: "uncommitted", extraInstruction };
 
   const [modeToken, ...rest] = positional;
   const mode = modeToken.toLowerCase();
@@ -361,9 +359,7 @@ export function parseReviewArgs(
   };
 
   const directPr = parsePullRequestReference(modeToken);
-  if (directPr && rest.length === 0) {
-    return { mode: "pr", pr: directPr, extraInstruction };
-  }
+  if (directPr && rest.length === 0) return { mode: "pr", pr: directPr, extraInstruction };
 
   switch (mode) {
     case "uncommitted":
