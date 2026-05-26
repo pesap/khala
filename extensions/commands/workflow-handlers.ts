@@ -361,6 +361,14 @@ export function createWorkflowCommandHandlers(params: {
       startedMessage: params.startedMessage(value),
     });
   };
+  const asSingleField =
+    <K extends string>(key: K) =>
+    (value: string): WorkflowFlags =>
+      ({ [key]: value }) as WorkflowFlags;
+  const startedWorkflow =
+    (label: string) =>
+    (value: string): string =>
+      `Started ${label} workflow (${value}).`;
   const runToggleWorkflow = async (params: {
     ctx: ExtensionCommandContext;
     type: "debug" | "feature";
@@ -506,10 +514,8 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: If user says yes, produce a vertical-slice issue breakdown (AFK/HITL + dependencies) and then create issues.",
           "Instruction: Detect issue tracker platform first and use matching skill: github for GitHub, gitlab for GitLab.",
         ],
-        entry: (plan) => ({
-          plan,
-        }),
-        startedMessage: (plan) => `Started plan workflow (${plan}).`,
+        entry: asSingleField("plan"),
+        startedMessage: startedWorkflow("plan"),
       });
     },
 
@@ -524,10 +530,8 @@ export function createWorkflowCommandHandlers(params: {
           `Claim: ${claim}`,
           "Instruction: Run the full anti-confirmation-bias claim audit workflow and treat the original claim as one hypothesis among several.",
         ],
-        entry: (claim) => ({
-          claim,
-        }),
-        startedMessage: (claim) => `Started audit workflow (${claim}).`,
+        entry: asSingleField("claim"),
+        startedMessage: startedWorkflow("audit"),
       });
     },
 
@@ -569,10 +573,8 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Ask at most one initial clarification question if needed, then investigate immediately.",
           "Instruction: Create a GitHub issue with durable root-cause analysis and RED/GREEN TDD fix plan.",
         ],
-        entry: (problem) => ({
-          problem,
-        }),
-        startedMessage: (problem) => `Started triage-issue workflow (${problem}).`,
+        entry: asSingleField("problem"),
+        startedMessage: startedWorkflow("triage-issue"),
       });
     },
 
