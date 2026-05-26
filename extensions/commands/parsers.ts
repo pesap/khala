@@ -138,9 +138,7 @@ export function parseTddArgs(args: string): { goal: string; language: string } {
 
   return {
     goal: rest,
-    language:
-      normalizeWhitespace(languageResult.match?.[2] ?? "auto").toLowerCase() ||
-      "auto",
+    language: normalizeWhitespace(languageResult.match?.[2] ?? "auto").toLowerCase(),
   };
 }
 
