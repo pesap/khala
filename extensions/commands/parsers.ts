@@ -126,9 +126,7 @@ export const parsePlanArgs = (args: string): { plan: string } => ({
 export const parseAuditArgs = (args: string): { claim: string } => ({
   claim: normalizeWhitespace(args),
 });
-export const parseTriageIssueArgs = (
-  args: string,
-): { problem: string } => ({ problem: normalizeWhitespace(args) });
+export const parseTriageIssueArgs = (args: string): { problem: string } => ({ problem: normalizeWhitespace(args) });
 
 export function parseTddArgs(args: string): { goal: string; language: string } {
   let rest = normalizeWhitespace(args);
