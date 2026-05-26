@@ -352,6 +352,8 @@ export function parseReviewArgs(
     commit: `Usage: /${commandName} commit <sha> [--extra "focus"]`,
     pr: `Usage: /${commandName} pr <number|url> [--extra "focus"]`,
   } as const;
+  const cleanEntries = (entries: string[]): string[] =>
+    entries.map((entry) => entry.trim()).filter(Boolean);
   const singleArg = (
     value: string | undefined,
     parser: (input: string) => string | null = (input) => input,
@@ -382,7 +384,7 @@ export function parseReviewArgs(
     }
     case "folder":
     case "file": {
-      const paths = rest.map((entry) => entry.trim()).filter(Boolean);
+      const paths = cleanEntries(rest);
       if (paths.length === 0) {
         return {
           error: `Usage: /${commandName} ${mode} <path ...> [--extra "focus"]`,
@@ -392,7 +394,7 @@ export function parseReviewArgs(
     }
   }
 
-  const directPaths = positional.map((entry) => entry.trim()).filter(Boolean);
+  const directPaths = cleanEntries(positional);
   if (
     directPaths.length > 0 &&
     directPaths.every((entry) => isResolvableReviewPath(entry, cwd))
