@@ -176,8 +176,9 @@ export function parseLearnSkillArgs(args: string): {
   dryRun: boolean;
 } {
   let rest = normalizeWhitespace(args);
-  const dryRun = /(^|\s)--dry-run(\s|$)/.test(rest);
-  rest = normalizeWhitespace(rest.replace(/(^|\s)--dry-run(\s|$)/g, " "));
+  const dryRunResult = removeFlag(rest, /(^|\s)--dry-run(\s|$)/);
+  rest = dryRunResult.value;
+  const dryRun = Boolean(dryRunResult.match);
 
   const fromFileResult = removeFlag(rest, /(^|\s)--from-file\s+(\S+)(\s|$)/);
   rest = fromFileResult.value;
