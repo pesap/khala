@@ -93,6 +93,365 @@
       "expectedIssueCodes": ["skill_routing", "evidence_routing", "model_escalation"]
     },
     {
+      "name": "rejects bare low confidence without stronger model",
+      "userText": "Answer the uncertain architecture question.",
+      "assistantText": "The architecture answer is probably acceptable.\nConfidence: 0.51",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Answer the uncertain architecture question."
+        }
+      ],
+      "expectedIssueCodes": ["model_escalation"]
+    },
+    {
+      "name": "rejects vague latest-docs escalation for current fact uncertainty",
+      "userText": "Use official docs to resolve whether the latest TypeScript decorators behavior changed.",
+      "assistantText": "I am still not sure whether the latest TypeScript decorators behavior changed. Source: https://www.typescriptlang.org/docs/handbook/decorators.html\nConfidence: 0.56",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Use official docs to resolve whether the latest TypeScript decorators behavior changed."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for docs questions" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "official TypeScript latest decorators release notes behavior" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official TypeScript decorators docs at https://www.typescriptlang.org/docs/handbook/decorators.html confirm decorator behavior details"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "verify latest docs"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: latest docs verified" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "TypeScript decorators latest behavior official docs uncertainty" }
+          }
+        },
+        { "role": "toolResult", "text": "Prior TypeScript decorators docs check used the official handbook URL for decorator behavior." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://www.typescriptlang.org/docs/handbook/decorators.html" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "TypeScript official decorator documentation confirms decorator behavior details at https://www.typescriptlang.org/docs/handbook/decorators.html"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "rejects same-model delegation for missing artifact uncertainty",
+      "userText": "Explain the failure in logs/build.log.",
+      "assistantText": "I cannot verify the failure without seeing logs/build.log.\nConfidence: 0.48",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Explain the failure in logs/build.log."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "logs/build.log" } }
+        },
+        { "role": "toolResult", "text": "ENOENT: no such file or directory, open logs/build.log" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "task": "resolve missing logs/build.log ENOENT failure"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: logs/build.log ENOENT failure resolved" }
+      ],
+      "expectedIssueCodes": ["evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "rejects hedged advisory result after repeated failures",
+      "userText": "Diagnose the repeated npm test failures.",
+      "assistantText": "The npm test failure root cause is in the test setup.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Diagnose the repeated npm test failures."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test repeated failure diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant memory for npm test failure diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "debug investigation skill guidance" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for test diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test" } }
+        },
+        { "role": "toolResult", "text": "process exited with exit status 1" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test -- --runInBand" } }
+        },
+        { "role": "toolResult", "text": "Error: no such file" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm run test:node" } }
+        },
+        { "role": "toolResult", "text": "exited with code 127" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test exit status 1 no such file code 127 diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "Cached diagnostic note: npm test with missing file symptoms can indicate a missing test setup file." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "diagnose repeated npm test failures: exit status 1, Error no such file, exited with code 127"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: npm test root cause is likely the missing setup file" }
+      ],
+      "expectedIssueCodes": ["model_escalation"]
+    },
+    {
+      "name": "rejects advisory echo result after repeated failures",
+      "userText": "Diagnose the repeated npm test failures.",
+      "assistantText": "The repeated npm test failure has been escalated.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Diagnose the repeated npm test failures."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test repeated failure diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant memory for npm test failure diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "debug investigation skill guidance" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for test diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test" } }
+        },
+        { "role": "toolResult", "text": "failed" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test -- --runInBand" } }
+        },
+        { "role": "toolResult", "text": "Error: no such file" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm run test:node" } }
+        },
+        { "role": "toolResult", "text": "exited with code 127" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test failed no such file code 127 diagnostics" }
+          }
+        },
+        { "role": "toolResult", "text": "Cached diagnostic note: npm test with missing file symptoms can indicate a missing test setup file." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "diagnose repeated npm test failures"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: diagnose repeated npm test failures" }
+      ],
+      "expectedIssueCodes": ["model_escalation"]
+    },
+    {
+      "name": "rejects unresolved final answer after substantive escalation",
+      "userText": "Tell me whether the current package API supports the retry option.",
+      "assistantText": "I still cannot verify whether the current package API supports the retry option. Source: https://example.com/package-api/retry\nConfidence: 0.58",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Tell me whether the current package API supports the retry option."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "web_search",
+            "arguments": { "query": "current package API retry option official docs" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Official package API docs at https://example.com/package-api/retry confirm retry option behavior"
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "verify current package API retry option from official docs"
+            }
+          }
+        },
+        { "role": "toolResult", "text": "advisory result: package API retry option is verified from official docs" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "current package API retry option official docs uncertainty" }
+          }
+        },
+        { "role": "toolResult", "text": "Prior package API retry docs check used the official retry option page." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "browser_open",
+            "arguments": { "url": "https://example.com/package-api/retry" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Package API retry documentation confirms retry option behavior at https://example.com/package-api/retry"
+        }
+      ],
+      "expectedIssueCodes": ["evidence_routing", "model_escalation"]
+    },
+    {
+      "name": "accepts substantive escalation after repeated failures",
+      "userText": "Diagnose the repeated npm test failures.",
+      "assistantText": "The stronger-model result identified the root cause: npm test cannot start because the test setup file is missing after exit status 1, Error no such file, and code 127. Recommendation: restore the missing setup file before rerunning npm test.\nConfidence: 0.86",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Diagnose the repeated npm test failures."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test repeated failure diagnostics setup file missing" }
+          }
+        },
+        { "role": "toolResult", "text": "relevant memory for npm test missing setup file diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/debug-investigation/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "debug investigation skill guidance" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "skills/typescript/SKILL.md" } }
+        },
+        { "role": "toolResult", "text": "TypeScript skill guidance for test diagnostics" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test" } }
+        },
+        { "role": "toolResult", "text": "process exited with exit status 1" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm test -- --runInBand" } }
+        },
+        { "role": "toolResult", "text": "Error: no such file" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "bash", "arguments": { "command": "npm run test:node" } }
+        },
+        { "role": "toolResult", "text": "exited with code 127" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "npm test exit status 1 no such file code 127 missing setup file" }
+          }
+        },
+        { "role": "toolResult", "text": "Cached diagnostic note: npm test with missing file symptoms can indicate a missing test setup file." },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "subagent",
+            "arguments": {
+              "agent": "oracle",
+              "model": "anthropic/claude-sonnet-4:high",
+              "task": "diagnose repeated npm test failures: exit status 1, Error no such file, exited with code 127"
+            }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "root cause found: npm test setup file is missing after status 1 and code 127; recommendation: restore the missing setup file"
+        }
+      ],
+      "expectedIssueCodes": [],
+      "expectedMetrics": {
+        "toolCallCount": 8,
+        "focusedMemorySearches": 2,
+        "successfulMemorySearches": 2,
+        "skillLoads": 2,
+        "modelEscalations": 1,
+        "wasteSignalCount": 0
+      }
+    },
+    {
       "name": "accepts composed cheap-model harness path",
       "userText": "Use the TypeScript skill and confirm the docs at https://www.typescriptlang.org/docs/.",
       "assistantText": "Using the TypeScript skill plus focused memory and docs evidence, the TypeScript docs are at https://www.typescriptlang.org/docs/.\nConfidence: 0.88",

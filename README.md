@@ -181,6 +181,15 @@ When khala is enabled (`/khala` or any khala workflow command):
   <li>Final workflow responses are checked for <code>Bias Check (Tier 1)</code> plus <code>Result: success|partial|failed</code> and <code>Confidence: &lt;0..1&gt;</code> when response compliance is enabled.</li>
 </ul>
 
+Stronger-model escalation is a result contract, not a tool-call checkbox. The
+escalation request must name the concrete uncertainty, failed command/error,
+artifact, API, product, URL, or exact question. The advisory result must be
+substantive and matched to that focus: a verified answer, root cause,
+recommendation, source-backed finding, or explanation. Same-model delegation,
+vague tasks such as `verify latest docs`, hedged results such as "likely" or
+"appears resolved", echo responses that merely restate the escalation task, and
+final answers that still contain unresolved uncertainty remain blocked.
+
 Blocked/steered command families include `pip`, `pip3`, `poetry`, `python -m pip`, `python -m venv`, `python -m py_compile`, and path-qualified Python executables. Intercepted `python`/`python3` route through `uv run`.
 
 > [!NOTE]
