@@ -366,8 +366,6 @@ export function parseReviewArgs(
     return { mode: "pr", pr: directPr, extraInstruction };
   }
 
-  const toPaths = (entries: string[]): string[] =>
-    entries.map((entry) => entry.trim()).filter(Boolean);
   switch (mode) {
     case "uncommitted":
       if (rest.length > 0) {
@@ -388,7 +386,7 @@ export function parseReviewArgs(
     }
     case "folder":
     case "file": {
-      const paths = toPaths(rest);
+      const paths = rest.map((entry) => entry.trim()).filter(Boolean);
       if (paths.length === 0) {
         return {
           error: `Usage: /${commandName} ${mode} <path ...> [--extra "focus"]`,
@@ -398,7 +396,7 @@ export function parseReviewArgs(
     }
   }
 
-  const directPaths = toPaths(positional);
+  const directPaths = positional.map((entry) => entry.trim()).filter(Boolean);
   if (
     directPaths.length > 0 &&
     directPaths.every((entry) => isResolvableReviewPath(entry, cwd))
