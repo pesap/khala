@@ -230,10 +230,6 @@ export function createWorkflowCommandHandlers(params: {
     notify(ctx, usage, "error");
     return null;
   };
-  const withSource = <T extends WorkflowFlags>(source: string, fields: T) => ({
-    ...fields,
-    source,
-  });
   const toNullable = (value: string): string | null => value || null;
   const withFooter = (sections: string[]): string[] => [
     ...sections,
@@ -317,13 +313,13 @@ export function createWorkflowCommandHandlers(params: {
       ctx: params.ctx,
       type: params.type,
       input: params.input,
-      flags: withSource(params.source, params.flags),
+      flags: { ...params.flags, source: params.source },
       sections: withFooter([
         `Source reference: ${params.source}`,
         "",
         ...params.sections,
       ]),
-      entry: withSource(params.source, params.entry),
+      entry: { ...params.entry, source: params.source },
       startedMessage: params.startedMessage,
     });
   };
