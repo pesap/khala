@@ -234,8 +234,13 @@ export function isAssistantClarification(
     .map((sentence) => sentence.trim())
     .filter(Boolean);
   return sentences.some((sentence) => {
-    if (!sentence.includes("?")) return false;
     const normalized = sentence.toLowerCase();
+    const questionLike =
+      sentence.includes("?") ||
+      /^(?:which|what|where|when|who|how|can i|may i|is it ok if i|is it okay if i|do you want me to|should i|should we|would you like)\b/.test(
+        normalized,
+      );
+    if (!questionLike) return false;
     return (
       BLOCKING_CLARIFICATION_REGEX.test(normalized) ||
       APPROVAL_QUESTION_REGEX.test(normalized)
