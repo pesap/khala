@@ -227,9 +227,8 @@ function parseToggleArg(
 ): { rest: string; enabled: boolean } {
   let rest = normalizeWhitespace(args);
   const pattern = `(^|\\s)${flag}(\\s|$)`;
-  const testRegex = new RegExp(pattern);
   const replaceRegex = new RegExp(pattern, "g");
-  const enabled = testRegex.test(rest);
+  const enabled = replaceRegex.test(rest);
   rest = normalizeWhitespace(rest.replace(replaceRegex, " "));
   rest = removeFlag(rest, /(^|\s)--parallel\s+\d+(\s|$)/).value;
   return { rest, enabled };
