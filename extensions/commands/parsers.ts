@@ -327,9 +327,7 @@ export function parseReviewArgs(
   const modeUsage = (value: string): string =>
     `Usage: /${commandName} ${value} [--extra "focus"]`;
   const trimmed = args.trim();
-  if (!trimmed) {
-    return { mode: "uncommitted" };
-  }
+  if (!trimmed) return { mode: "uncommitted" };
 
   const tokens = tokenizeArgs(trimmed);
   const extraIndex = tokens.indexOf("--extra");
