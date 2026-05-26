@@ -235,9 +235,11 @@ function parseToggleArg(
   flag: "--fix" | "--ship",
 ): { rest: string; enabled: boolean } {
   let rest = normalizeWhitespace(args);
-  const pattern = new RegExp(`(^|\\s)${flag}(\\s|$)`);
-  const enabled = pattern.test(rest);
-  rest = normalizeWhitespace(rest.replace(new RegExp(pattern, "g"), " "));
+  const pattern = `(^|\\s)${flag}(\\s|$)`;
+  const testRegex = new RegExp(pattern);
+  const replaceRegex = new RegExp(pattern, "g");
+  const enabled = testRegex.test(rest);
+  rest = normalizeWhitespace(rest.replace(replaceRegex, " "));
   rest = removeFlag(rest, /(^|\s)--parallel\s+\d+(\s|$)/).value;
   return { rest, enabled };
 }
