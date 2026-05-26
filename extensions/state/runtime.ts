@@ -35,6 +35,8 @@ export interface RuntimeState {
   memoryToolCallLimit: number;
   lastObligationBlockKey: string | null;
   lastObligationBlockCount: number;
+  lastMemoryGateBlockKey: string | null;
+  lastMemoryGateBlockCount: number;
 }
 
 export function createRuntimeState(): RuntimeState {
@@ -49,6 +51,8 @@ export function createRuntimeState(): RuntimeState {
     memoryToolCallLimit: 15,
     lastObligationBlockKey: null,
     lastObligationBlockCount: 0,
+    lastMemoryGateBlockKey: null,
+    lastMemoryGateBlockCount: 0,
   };
 }
 
@@ -69,4 +73,6 @@ export function resetSessionComplianceState(state: RuntimeState): void {
   state.latestPostflight = null;
   state.lastObligationBlockKey = null;
   state.lastObligationBlockCount = 0;
+  state.lastMemoryGateBlockKey = null;
+  state.lastMemoryGateBlockCount = 0;
 }

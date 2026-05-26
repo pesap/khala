@@ -214,6 +214,7 @@ let activeRuntimeProfile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE;
 let lowConfidenceEvents: LowConfidenceEvent[] = [];
 let bundledExtensionsInitialized = false;
 const runtimeState = createRuntimeState();
+const REPEATED_BLOCK_GUARD_THRESHOLD = 3;
 let taskToolCallCount = 0;
 let latestUserInput = "";
 let learnedSkillCompletionCache: string[] = [];
@@ -1906,18 +1907,47 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       pendingMemoryGateRecovery &&
       lastAssistantMessage?.stopReason === "stop"
     ) {
+      const memoryGateReason = [
+        "MEMORY GATE RECOVERY INCOMPLETE",
+        "",
+        `A previous ${pendingMemoryGateRecovery.blockedToolName} was blocked by MEMORY READ REQUIRED.`,
+        "You already called khala_read_memory.",
+        `Immediately retry the blocked ${pendingMemoryGateRecovery.blockedToolName} in the same assistant turn.`,
+        "Do not switch to explanation, next-turn promises, or ask the user to continue.",
+      ].join("\n");
+      const memoryGateBlockKey = `${pendingMemoryGateRecovery.blockedToolName}:${userText.trim().toLowerCase()}`;
+      const loopGuard = evaluateObligationLoopGuard({
+        current: {
+          key: runtimeState.lastMemoryGateBlockKey,
+          count: runtimeState.lastMemoryGateBlockCount,
+        },
+        key: memoryGateBlockKey,
+        blockThreshold: REPEATED_BLOCK_GUARD_THRESHOLD,
+      });
+      runtimeState.lastMemoryGateBlockKey = loopGuard.next.key;
+      runtimeState.lastMemoryGateBlockCount = loopGuard.next.count;
+
+      if (!loopGuard.block) {
+        notify(
+          ctx,
+          [
+            memoryGateReason,
+            "",
+            "Loop guard: repeated identical memory-gate block detected; downgraded to warning for this turn.",
+          ].join("\n"),
+          "warning",
+        );
+        return;
+      }
+
       return {
         block: true,
-        reason: [
-          "MEMORY GATE RECOVERY INCOMPLETE",
-          "",
-          `A previous ${pendingMemoryGateRecovery.blockedToolName} was blocked by MEMORY READ REQUIRED.`,
-          "You already called khala_read_memory.",
-          `Immediately retry the blocked ${pendingMemoryGateRecovery.blockedToolName} in the same assistant turn.`,
-          "Do not switch to explanation, next-turn promises, or ask the user to continue.",
-        ].join("\n"),
+        reason: memoryGateReason,
       };
     }
+
+    runtimeState.lastMemoryGateBlockKey = null;
+    runtimeState.lastMemoryGateBlockCount = 0;
 
     const obligation = inferTurnObligation(userText);
     if (
@@ -1953,7 +1983,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
             count: runtimeState.lastObligationBlockCount,
           },
           key: obligationBlockKey,
-          blockThreshold: 3,
+          blockThreshold: REPEATED_BLOCK_GUARD_THRESHOLD,
         });
         runtimeState.lastObligationBlockKey = loopGuard.next.key;
         runtimeState.lastObligationBlockCount = loopGuard.next.count;
