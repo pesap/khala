@@ -189,6 +189,8 @@ export function normalizeLoopGuardText(text: string): string {
   return text
     .trim()
     .toLowerCase()
+    .replace(/^["'`([{]+/, "")
+    .replace(/["'`)\]}]+$/, "")
     .replace(/[.!?]+$/g, "")
     .replace(/\s+/g, " ");
 }
