@@ -77,18 +77,13 @@ export function parseApproveRiskArgs(args: string): {
   const ttlMinutes = Number.isFinite(ttlCandidate)
     ? Math.max(1, Math.min(120, Math.floor(ttlCandidate)))
     : RISK_APPROVAL_TTL_MINUTES;
-  if (!rest) {
-    return {
-      reason: "",
-      ttlMinutes,
-      error: "Usage: /approve-risk <checker approval reason> [--ttl MINUTES]",
-    };
-  }
-
-  return {
-    reason: rest,
-    ttlMinutes,
-  };
+  return rest
+    ? { reason: rest, ttlMinutes }
+    : {
+        reason: "",
+        ttlMinutes,
+        error: "Usage: /approve-risk <checker approval reason> [--ttl MINUTES]",
+      };
 }
 
 export function parsePreflightArgs(
