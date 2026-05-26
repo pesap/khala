@@ -20,7 +20,7 @@ function splitNameAndRest(args: string | undefined): {
   rest: string;
 } {
   const trimmed = (args ?? "").trim();
-  if (!trimmed) return { name: "", rest: "" };
+  if (!trimmed) return { name: "", rest: trimmed };
   const [name = "", ...rest] = trimmed.split(/\s+/);
   return { name, rest: rest.join(" ").trim() };
 }
