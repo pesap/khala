@@ -219,8 +219,6 @@ export function createWorkflowCommandHandlers(params: {
 
     notifyWorkflowStarted(config.ctx, config.startedMessage, notify);
   }
-  const ensureSlot = (ctx: ExtensionCommandContext): boolean =>
-    ensureWorkflowSlotAvailable(ctx);
   const requireInput = (
     ctx: ExtensionCommandContext,
     value: string,
@@ -271,7 +269,7 @@ export function createWorkflowCommandHandlers(params: {
     extraSections?: string[];
   }): Promise<void> => {
     const parsed = parseReviewArgs(params.args ?? "", params.ctx.cwd, params.commandName);
-    if (!ensureSlot(params.ctx)) return;
+    if (!ensureWorkflowSlotAvailable(params.ctx)) return;
     if ("error" in parsed) return notify(params.ctx, parsed.error, "error");
     const target = params.targetBuilder(parsed);
     const scopedFields = {
@@ -307,7 +305,7 @@ export function createWorkflowCommandHandlers(params: {
     entry: WorkflowFlags;
     startedMessage: string;
   }): Promise<void> => {
-    if (!ensureSlot(params.ctx)) return;
+    if (!ensureWorkflowSlotAvailable(params.ctx)) return;
     return runWorkflowCommand({
       ctx: params.ctx,
       type: params.type,
@@ -380,7 +378,7 @@ export function createWorkflowCommandHandlers(params: {
     entryKey: "problem" | "request";
     flagKey: "fix" | "ship";
   }): Promise<void> => {
-    if (!ensureSlot(params.ctx)) return;
+    if (!ensureWorkflowSlotAvailable(params.ctx)) return;
     const value = requireInput(params.ctx, params.value, params.usage);
     if (!value) return;
     await runWorkflowCommand({
@@ -630,7 +628,7 @@ export function createWorkflowCommandHandlers(params: {
 
     learnSkill: async (args, ctx) => {
       const parsed = parseLearnSkillArgs(args ?? "");
-      if (!ensureSlot(ctx)) return;
+      if (!ensureWorkflowSlotAvailable(ctx)) return;
       if (!parsed.topic && !parsed.fromFile && !parsed.fromUrl) {
         notify(
           ctx,
