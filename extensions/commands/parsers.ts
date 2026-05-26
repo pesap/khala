@@ -113,17 +113,16 @@ export function parsePostflightArgs(
   );
 }
 
-export const parseDebugArgs = (
-  args: string,
-): { problem: string; fix: boolean } => {
-  const { rest, enabled } = parseToggleArg(args, "--fix");
+const parseToggledArgs = (args: string, flag: "--fix" | "--ship") =>
+  parseToggleArg(args, flag);
+
+export const parseDebugArgs = (args: string): { problem: string; fix: boolean } => {
+  const { rest, enabled } = parseToggledArgs(args, "--fix");
   return { problem: rest, fix: enabled };
 };
 
-export const parseFeatureArgs = (
-  args: string,
-): { request: string; ship: boolean } => {
-  const { rest, enabled } = parseToggleArg(args, "--ship");
+export const parseFeatureArgs = (args: string): { request: string; ship: boolean } => {
+  const { rest, enabled } = parseToggledArgs(args, "--ship");
   return { request: rest, ship: enabled };
 };
 
