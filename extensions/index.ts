@@ -145,6 +145,7 @@ import { notifyWorkflowStarted } from "./workflows/notifications.ts";
 import {
   extractLastAssistantText,
   assistantMessageHasToolCall,
+  assistantTurnHasToolCallSinceLatestUser,
   extractLastUserText,
   findPendingMemoryGateRecovery,
   getLastAssistantMessage,
@@ -1923,6 +1924,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       lastAssistantMessage?.stopReason === "stop" &&
       isActionOrApprovalObligation(obligation.obligation) &&
       !assistantMessageHasToolCall(lastAssistantMessage) &&
+      !assistantTurnHasToolCallSinceLatestUser(messages) &&
       !isAssistantClarificationAllowedForObligation(
         lastAssistantMessage,
         obligation.obligation,

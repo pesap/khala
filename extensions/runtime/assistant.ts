@@ -120,6 +120,22 @@ export function assistantMessageHasToolCall(
   return Boolean(message?.content.some((item) => item.type === "toolCall"));
 }
 
+export function assistantTurnHasToolCallSinceLatestUser(
+  messages: AgentEndEventMessages,
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role === "user") return false;
+    if (
+      message.role === "assistant" &&
+      message.content.some((item) => item.type === "toolCall")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function shouldBlockUnsatisfiedTurnObligation(params: {
   mode: ResponseComplianceMode;
   obligation: TurnObligation;

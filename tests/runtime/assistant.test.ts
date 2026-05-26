@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   assistantMessageHasToolCall,
+  assistantTurnHasToolCallSinceLatestUser,
   findPendingMemoryGateRecovery,
   inferTurnObligation,
   isActionOrApprovalObligation,
@@ -260,6 +261,35 @@ test("detects assistant tool-call and clarification output shapes", () => {
     isAssistantClarification(
       textMessage("assistant", "I will inspect that next."),
     ),
+    false,
+  );
+});
+
+test("detects tool usage across the whole assistant turn span", () => {
+  const withEarlierToolCall: Parameters<
+    typeof findPendingMemoryGateRecovery
+  >[0] = [
+    textMessage("user", "Please inspect runtime behavior."),
+    assistantToolCall("read"),
+    textMessage("assistant", "I inspected it and found the issue."),
+  ];
+  assert.equal(assistantTurnHasToolCallSinceLatestUser(withEarlierToolCall), true);
+
+  const noToolCall: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    textMessage("user", "Please inspect runtime behavior."),
+    textMessage("assistant", "I can inspect that next."),
+  ];
+  assert.equal(assistantTurnHasToolCallSinceLatestUser(noToolCall), false);
+
+  const toolCallBeforeLatestUser: Parameters<
+    typeof findPendingMemoryGateRecovery
+  >[0] = [
+    assistantToolCall("read"),
+    textMessage("user", "Different request now."),
+    textMessage("assistant", "Acknowledged."),
+  ];
+  assert.equal(
+    assistantTurnHasToolCallSinceLatestUser(toolCallBeforeLatestUser),
     false,
   );
 });
