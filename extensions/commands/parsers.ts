@@ -338,14 +338,9 @@ export function parseReviewArgs(
   const tokens = tokenizeArgs(trimmed);
   const extraIndex = tokens.indexOf("--extra");
   const positional = extraIndex === -1 ? tokens : tokens.slice(0, extraIndex);
-  let extraInstruction: string | undefined;
-  if (extraIndex !== -1) {
-    extraInstruction = tokens
-      .slice(extraIndex + 1)
-      .join(" ")
-      .trim();
-    if (!extraInstruction) return { error: usage };
-  }
+  const extraInstruction =
+    extraIndex === -1 ? undefined : tokens.slice(extraIndex + 1).join(" ").trim();
+  if (extraIndex !== -1 && !extraInstruction) return { error: usage };
 
   if (positional.length === 0) {
     return { mode: "uncommitted", extraInstruction };
