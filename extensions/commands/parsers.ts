@@ -193,10 +193,8 @@ export function parseLearnSkillArgs(args: string): {
   };
 }
 
-const makeMemoryScopeParser =
-  (usage: string) =>
-  (args: string): { scope: "project" | "global"; error?: string } =>
-    parseScopeArg(args, usage);
+const makeMemoryScopeParser = (usage: string) =>
+  (args: string): { scope: "project" | "global"; error?: string } => parseScopeArg(args, usage);
 
 export const parseKhalaMemorySetupArgs = makeMemoryScopeParser(
   "Usage: /khala-memory-setup [project|global]",
