@@ -178,10 +178,13 @@ export function parseLearnSkillArgs(args: string): {
   rest = fromResult.value;
   const from = fromResult.match?.[2];
 
-  if (from && !fromFile && !fromUrl)
-    from.match(/^(?:https?:\/\/|ssh:\/\/|file:\/\/|git@)/)
-      ? (fromUrl = from)
-      : (fromFile = from);
+  if (from && !fromFile && !fromUrl) {
+    if (from.match(/^(?:https?:\/\/|ssh:\/\/|file:\/\/|git@)/)) {
+      fromUrl = from;
+    } else {
+      fromFile = from;
+    }
+  }
   return {
     topic: rest,
     fromFile,
