@@ -25,6 +25,7 @@ type CommandHandler = (
 export interface RuleCommandHandlers {
   ruleList: CommandHandler;
   ruleShow: CommandHandler;
+  ruleAdd: CommandHandler;
   rulePromote: CommandHandler;
   ruleSession: CommandHandler;
   ruleReplace: CommandHandler;
@@ -57,6 +58,23 @@ export function createRuleCommandHandlers(params: {
     return "warn";
   }
 
+  function parseRuleText(args: string | undefined): {
+    trigger: string;
+    instruction: string;
+    severity: RuntimeRuleSeverity;
+  } | null {
+    const rawArgs = args ?? "";
+    const severityMatch = rawArgs.match(/(?:^|\s)--(advisory|warn|enforce)(?=\s|$)/);
+    const raw = rawArgs.replace(/(?:^|\s)--(advisory|warn|enforce)(?=\s|$)/g, " ");
+    const match = raw.match(/^\s*(.*?)\s*=>\s*(.*?)\s*$/);
+    if (!match?.[1]?.trim() || !match[2]?.trim()) return null;
+    return {
+      trigger: normalizeWhitespace(match[1]),
+      instruction: normalizeWhitespace(match[2]),
+      severity: parseSeverity(severityMatch?.[1]),
+    };
+  }
+
   return {
     ruleList: async (args, ctx) => {
       const paths = await params.ensureLearningStore(ctx.cwd);
@@ -65,12 +83,16 @@ export function createRuleCommandHandlers(params: {
         ? await readRuntimeRuleRecords(paths)
         : await readEffectiveRuntimeRules(paths);
       if (visible.length === 0) {
-        params.notify(ctx, "No active khala runtime rules.", "info");
+        params.notify(
+          ctx,
+          `No active khala runtime rules. Store: ${paths.root}`,
+          "info",
+        );
         return;
       }
       params.notify(
         ctx,
-        `Khala runtime rules:\n${visible
+        `Khala runtime rules from ${paths.root}:\n${visible
           .map(
             (rule) =>
               `- ${rule.id} [${rule.status}/${rule.severity}/${rule.lifetime}/${rule.scope}] ${rule.trigger} => ${rule.instruction}`,
@@ -93,6 +115,42 @@ export function createRuleCommandHandlers(params: {
         return;
       }
       params.notify(ctx, JSON.stringify(rule, null, 2), "info");
+    },
+
+    ruleAdd: async (args, ctx) => {
+      const parsed = parseRuleText(args);
+      if (!parsed) {
+        params.notify(
+          ctx,
+          "Usage: /rule-add <trigger> => <instruction> [--advisory|--warn|--enforce]",
+          "error",
+        );
+        return;
+      }
+      const paths = await params.ensureLearningStore(ctx.cwd);
+      const now = params.nowIso();
+      const rule = makeRuntimeRule({
+        trigger: parsed.trigger,
+        instruction: parsed.instruction,
+        severity: parsed.severity,
+        rationale: "Durable rule added by user.",
+        nowIso: now,
+      });
+      await appendRuntimeRule(paths, rule);
+      await appendRuleAudit(paths, {
+        version: 1,
+        id: `audit-${now}`,
+        ruleId: rule.id,
+        at: now,
+        action: "add",
+        detail: `Added durable ${rule.severity} rule ${rule.id}.`,
+      });
+      await refreshRulesMarkdown(paths);
+      params.notify(
+        ctx,
+        `Added durable rule ${rule.id}. Store: ${paths.root}`,
+        "success",
+      );
     },
 
     rulePromote: async (args, ctx) => {
@@ -138,12 +196,11 @@ export function createRuleCommandHandlers(params: {
     },
 
     ruleSession: async (args, ctx) => {
-      const raw = args ?? "";
-      const match = raw.match(/^\s*(.*?)\s*=>\s*(.*?)\s*$/);
-      if (!match?.[1]?.trim() || !match[2]?.trim()) {
+      const parsed = parseRuleText(args);
+      if (!parsed) {
         params.notify(
           ctx,
-          "Usage: /rule-session <trigger> => <instruction>",
+          "Usage: /rule-session <trigger> => <instruction> [--advisory|--warn|--enforce]",
           "error",
         );
         return;
@@ -151,13 +208,14 @@ export function createRuleCommandHandlers(params: {
       const paths = await params.ensureLearningStore(ctx.cwd);
       const rule = makeRuntimeRule({
         lifetime: "session",
-        trigger: normalizeWhitespace(match[1]),
-        instruction: normalizeWhitespace(match[2]),
+        trigger: parsed.trigger,
+        instruction: parsed.instruction,
+        severity: parsed.severity,
         rationale: "Per-session rule added by user.",
         nowIso: params.nowIso(),
       });
       await appendRuntimeRule(paths, rule);
-      params.notify(ctx, `Added session rule ${rule.id}.`, "success");
+      params.notify(ctx, `Added session rule ${rule.id}. Store: ${paths.root}`, "success");
     },
 
     ruleReplace: async (args, ctx) => {
@@ -260,7 +318,11 @@ export function createRuleCommandHandlers(params: {
         paths,
         nowIso: params.nowIso(),
       });
-      params.notify(ctx, `Reloaded ${count} rule(s) from rules/RULES.md.`, "success");
+      params.notify(
+        ctx,
+        `Reloaded ${count} rule(s) from ${paths.rulesMd}.`,
+        "success",
+      );
     },
   };
 }
