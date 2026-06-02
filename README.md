@@ -261,7 +261,7 @@ Package-registered skills come from `package.json` Pi config (`./skills` and `./
 
 | Tool | Purpose |
 |---|---|
-| `khala_read_memory` | Read recent memory tail, active lessons, active runtime rules, and recent learnings. |
+| `khala_read_memory` | Read current memory context filtered by task/edit context when available: active runtime rules, relevant memory snippets, and contextual recent learnings. |
 | `khala_search_memory` | Search older memory, runtime rules, learned skills, prompt templates, and workflow artifacts by relevance. |
 | `khala_assess_learning` | Score whether a task produced a durable, non-sensitive lesson. |
 | `khala_learn` | Persist a structured learning record. |

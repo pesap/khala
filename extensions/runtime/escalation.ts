@@ -235,7 +235,6 @@ const MEMORY_SEARCH_REQUIRED_MUTATION_TOOLS = new Set([
   "apply_patch",
   "edit",
   "write",
-  "khala_learn",
 ]);
 const SUBSTANTIAL_TASK_REGEX =
   /\b(?:implement|fix|debug|review|refactor|audit|investigate|triage|ship|feature|continue working|keep working|make progress|improve|cleanup|clean up)\b/i;
@@ -4272,7 +4271,10 @@ export function memorySearchNeedReason(params: {
     DEFAULT_SUBSTANTIAL_TOOL_CALL_THRESHOLD;
   const toolNames = scopedToolCallNames(params.messages);
   const nonMemoryToolCount = toolNames.filter(
-    (name) => name !== "khala_read_memory" && name !== "khala_search_memory",
+    (name) =>
+      name !== "khala_read_memory" &&
+      name !== "khala_search_memory" &&
+      name !== "khala_learn",
   ).length;
 
   const performedMemorySearchRequiredMutation = scopedMessagesAfterLatestUser(
@@ -4286,7 +4288,7 @@ export function memorySearchNeedReason(params: {
   );
 
   if (performedMemorySearchRequiredMutation) {
-    return "turn performed mutation or memory persistence";
+    return "turn performed mutation";
   }
 
   if (nonMemoryToolCount >= substantialToolCallThreshold) {
@@ -4781,8 +4783,7 @@ export function evaluateMemorySearchRouting(params: {
     };
   }
 
-  const mutationOrPersistence =
-    reason === "turn performed mutation or memory persistence";
+  const mutationOrPersistence = reason === "turn performed mutation";
   const substantialToolCallThreshold =
     params.harnessLimits?.substantialToolCallThreshold ??
     DEFAULT_SUBSTANTIAL_TOOL_CALL_THRESHOLD;

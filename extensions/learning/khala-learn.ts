@@ -69,6 +69,15 @@ export interface KhalaLearningRecord extends KhalaLearningAssessment {
   workflowId?: string;
   source: "auto" | "manual";
   actionTaken?: string[];
+  repoKey?: string;
+  status?: "active" | "superseded";
+  supersedes?: string[];
+}
+
+export interface KhalaLearningSearchHit {
+  record: KhalaLearningRecord;
+  score: number;
+  snippet: string;
 }
 
 interface AssessInput {
@@ -274,7 +283,109 @@ function chooseKind(input: AssessInput, hasCorrection: boolean): LearningKind {
   return "project_fact";
 }
 
-function computeNovelty(trigger: string, lesson: string, recents: RecentLearningLike[]): number {
+function normalizeRecordKey(value: string): string {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+function isAuditOnlyLearningRecord(
+  record: Pick<KhalaLearningRecord, "trigger" | "reason">,
+): boolean {
+  return (
+    normalizeRecordKey(record.trigger) === "task exceeds memory refresh threshold" ||
+    /^Forced learning review after \d+ tool calls exceeded/i.test(record.reason)
+  );
+}
+
+function learningRecordAppliesToRepo(
+  record: Pick<KhalaLearningRecord, "scope" | "repoKey">,
+  repoKey?: string,
+): boolean {
+  if (!repoKey) return true;
+  if (record.scope === "global") return true;
+  if (!record.repoKey) return true;
+  return record.repoKey === repoKey;
+}
+
+function dedupeActiveLearningRecords(
+  records: KhalaLearningRecord[],
+): KhalaLearningRecord[] {
+  const latestByTrigger = new Map<string, KhalaLearningRecord>();
+  for (const record of records) {
+    if (record.status === "superseded") continue;
+    if (isAuditOnlyLearningRecord(record)) continue;
+    latestByTrigger.set(normalizeRecordKey(record.trigger), record);
+  }
+  return Array.from(latestByTrigger.values());
+}
+
+function tokenizeLearningText(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .toLowerCase()
+        .match(/[a-z0-9][a-z0-9_.-]{2,}/g)
+        ?.filter(
+          (term) =>
+            ![
+              "the",
+              "and",
+              "for",
+              "that",
+              "this",
+              "with",
+              "when",
+              "from",
+              "into",
+              "khala",
+              "memory",
+            ].includes(term),
+        ) ?? [],
+    ),
+  );
+}
+
+function learningSnippet(
+  record: KhalaLearningRecord,
+  terms: string[],
+  maxLength = 260,
+): string {
+  const text = normalizeWhitespace(`${record.trigger}: ${record.lesson}`);
+  const lower = text.toLowerCase();
+  const firstHit = terms.reduce<number | null>((earliest, term) => {
+    const index = lower.indexOf(term);
+    if (index < 0) return earliest;
+    return earliest === null ? index : Math.min(earliest, index);
+  }, null);
+  const start = Math.max(0, (firstHit ?? 0) - Math.floor(maxLength / 4));
+  const snippet = text.slice(start, start + maxLength).trim();
+  return `${start > 0 ? "..." : ""}${snippet}${
+    start + maxLength < text.length ? "..." : ""
+  }`;
+}
+
+function scoreLearningRecord(
+  record: KhalaLearningRecord,
+  terms: string[],
+  query: string,
+): number {
+  const haystack = normalizeWhitespace(
+    `${record.trigger} ${record.lesson} ${record.evidenceSnippet} ${record.kind} ${record.workflowType ?? ""}`,
+  ).toLowerCase();
+  let score = haystack.includes(query.toLowerCase()) ? 20 : 0;
+  for (const term of terms) {
+    if (haystack.includes(term)) score += 4;
+    if (record.trigger.toLowerCase().includes(term)) score += 3;
+  }
+  if (record.kind === "preference" || record.kind === "tool_rule") score += 3;
+  if (record.promotable) score += 2;
+  return score;
+}
+
+function computeNovelty(
+  trigger: string,
+  lesson: string,
+  recents: RecentLearningLike[],
+): number {
   const triggerNorm = normalizeWhitespace(trigger).toLowerCase();
   const lessonNorm = normalizeWhitespace(lesson).toLowerCase();
   if (
@@ -289,15 +400,27 @@ function computeNovelty(trigger: string, lesson: string, recents: RecentLearning
   return 0.85;
 }
 
-export function assessLearning(input: AssessInput, recent: RecentLearningLike[] = []): KhalaLearningAssessment {
-  const correction = input.userCorrection ? inferCorrectionLesson(input.taskSummary) : null;
+export function assessLearning(
+  input: AssessInput,
+  recent: RecentLearningLike[] = [],
+): KhalaLearningAssessment {
+  const correction = input.userCorrection
+    ? inferCorrectionLesson(input.taskSummary)
+    : null;
   const workflowLesson = inferWorkflowLesson(input);
-  const lesson = input.lessonCandidate ?? correction?.lesson ?? workflowLesson?.lesson ?? "";
-  const trigger = input.trigger ?? correction?.trigger ?? workflowLesson?.trigger ?? (input.workflowType ? `${input.workflowType} workflow outcome` : "task outcome");
+  const lesson =
+    input.lessonCandidate ?? correction?.lesson ?? workflowLesson?.lesson ?? "";
+  const trigger =
+    input.trigger ??
+    correction?.trigger ??
+    workflowLesson?.trigger ??
+    (input.workflowType ? `${input.workflowType} workflow outcome` : "task outcome");
   const evidence = (input.evidence ?? []).filter(Boolean);
   if (input.userCorrection) evidence.unshift("user correction detected");
-  if ((input.mutationCount ?? 0) > 0) evidence.push(`${input.mutationCount} mutation(s)`);
-  if ((input.loadedSkills?.length ?? 0) > 0) evidence.push(`loaded skills: ${input.loadedSkills?.join(", ")}`);
+  if ((input.mutationCount ?? 0) > 0)
+    evidence.push(`${input.mutationCount} mutation(s)`);
+  if ((input.loadedSkills?.length ?? 0) > 0)
+    evidence.push(`loaded skills: ${input.loadedSkills?.join(", ")}`);
   for (const warning of input.policyWarnings ?? []) {
     evidence.push(`policy warning: ${warning}`);
   }
@@ -314,12 +437,17 @@ export function assessLearning(input: AssessInput, recent: RecentLearningLike[] 
       ? 1
       : correction || workflowLesson
         ? 0.9
-        : input.workflowType || (input.loadedSkills?.length ?? 0) > 0 || (input.mutationCount ?? 0) > 0
+        : input.workflowType ||
+            (input.loadedSkills?.length ?? 0) > 0 ||
+            (input.mutationCount ?? 0) > 0
           ? 0.7
           : 0.35,
   );
   const evidenceStrength = clamp(
-    0.25 + (input.userCorrection ? 0.25 : 0) + Math.min((evidence.length / 4) * 0.3, 0.3) + ((input.mutationCount ?? 0) > 0 ? 0.2 : 0),
+    0.25 +
+      (input.userCorrection ? 0.25 : 0) +
+      Math.min((evidence.length / 4) * 0.3, 0.3) +
+      ((input.mutationCount ?? 0) > 0 ? 0.2 : 0),
   );
   const impact = clamp(
     input.workflowType === "ship" || input.workflowType === "learn-skill"
@@ -331,14 +459,23 @@ export function assessLearning(input: AssessInput, recent: RecentLearningLike[] 
           : 0.45,
   );
   const novelty = computeNovelty(trigger, lesson, recent);
-  const clarity = clamp(lesson.length >= 24 ? 0.9 : lesson.length > 0 ? 0.5 : 0);
+  const clarity = clamp(
+    lesson.length >= 24 ? 0.9 : lesson.length > 0 ? 0.5 : 0,
+  );
   const score = clamp(
-    reusability * 0.3 + evidenceStrength * 0.25 + impact * 0.2 + novelty * 0.15 + clarity * 0.1,
+    reusability * 0.3 +
+      evidenceStrength * 0.25 +
+      impact * 0.2 +
+      novelty * 0.15 +
+      clarity * 0.1,
   );
   const confidence = clamp(
-    input.confidenceHint ?? (score * 0.7 + evidenceStrength * 0.2 + clarity * 0.1),
+    input.confidenceHint ??
+      score * 0.7 + evidenceStrength * 0.2 + clarity * 0.1,
   );
-  const sensitive = /token|secret|password|private key|credential/i.test(evidenceSnippet);
+  const sensitive = /token|secret|password|private key|credential/i.test(
+    evidenceSnippet,
+  );
   const quality = validateLearningCandidateQuality({
     trigger,
     lesson,
@@ -403,7 +540,11 @@ function parseKhalaLearningRecord(value: unknown): KhalaLearningRecord | null {
   return value as KhalaLearningRecord;
 }
 
-export async function readRecentKhalaLearningRecords(paths: LearningPaths, limit = 20): Promise<KhalaLearningRecord[]> {
+export async function readRecentKhalaLearningRecords(
+  paths: LearningPaths,
+  limit = 20,
+  options: { repoKey?: string; includeAuditOnly?: boolean } = {},
+): Promise<KhalaLearningRecord[]> {
   const raw = await readTextTailIfExists(
     paths.khalaLearningJsonl,
     RECENT_LEARNING_READ_BYTES,
@@ -419,7 +560,41 @@ export async function readRecentKhalaLearningRecords(paths: LearningPaths, limit
     } catch {
     }
   }
-  return records.slice(-limit);
+  const filtered = dedupeActiveLearningRecords(records).filter(
+    (record) =>
+      (options.includeAuditOnly || !isAuditOnlyLearningRecord(record)) &&
+      learningRecordAppliesToRepo(record, options.repoKey),
+  );
+  return filtered.slice(-limit);
+}
+
+export async function searchKhalaLearningRecords(params: {
+  paths: LearningPaths;
+  query: string;
+  limit: number;
+  repoKey?: string;
+}): Promise<KhalaLearningSearchHit[]> {
+  const query = normalizeWhitespace(params.query);
+  const terms = tokenizeLearningText(query);
+  if (!query || terms.length === 0) return [];
+  const records = await readRecentKhalaLearningRecords(
+    params.paths,
+    Math.max(params.limit * 16, 200),
+    { repoKey: params.repoKey },
+  );
+  return records
+    .map((record) => ({
+      record,
+      score: scoreLearningRecord(record, terms, query),
+      snippet: learningSnippet(record, terms),
+    }))
+    .filter((hit) => hit.score > 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.record.timestamp.localeCompare(a.record.timestamp),
+    )
+    .slice(0, params.limit);
 }
 
 function isDuplicateKhalaLearningRecord(
@@ -470,17 +645,33 @@ export function normalizeKhalaLearningRecordForPersistence(
 
 export async function appendKhalaLearningRecord(paths: LearningPaths, record: KhalaLearningRecord): Promise<boolean> {
   const normalized = normalizeKhalaLearningRecordForPersistence(record);
-  if (!normalized) return false;
-  const recents = await readRecentKhalaLearningRecords(paths, 20);
+  if (!normalized || isAuditOnlyLearningRecord(normalized)) return false;
+  const recents = await readRecentKhalaLearningRecords(paths, 40, {
+    repoKey: normalized.repoKey,
+  });
   const duplicate = recents.some((entry) =>
     isDuplicateKhalaLearningRecord(entry, normalized),
   );
   if (duplicate) return false;
-  await appendLine(paths.khalaLearningJsonl, JSON.stringify(normalized));
-  await appendLine(
-    paths.memoryMd,
-    `- ${normalized.timestamp.slice(0, 10)} [khala-learn/${normalized.kind}] ${normalized.lesson} (score=${normalized.score.toFixed(2)}, confidence=${normalized.confidence.toFixed(2)})`,
-  );
+  const supersedes = recents
+    .filter(
+      (entry) =>
+        normalizeRecordKey(entry.trigger) === normalizeRecordKey(normalized.trigger) &&
+        normalizeRecordKey(entry.lesson) !== normalizeRecordKey(normalized.lesson),
+    )
+    .map((entry) => entry.id);
+  const recordToStore: KhalaLearningRecord = {
+    ...normalized,
+    status: normalized.status ?? "active",
+    ...(supersedes.length > 0 ? { supersedes } : {}),
+  };
+  await appendLine(paths.khalaLearningJsonl, JSON.stringify(recordToStore));
+  if (recordToStore.kind !== "project_fact" || recordToStore.promotable) {
+    await appendLine(
+      paths.memoryMd,
+      `- ${recordToStore.timestamp.slice(0, 10)} [khala-learn/${recordToStore.kind}] ${recordToStore.lesson} (score=${recordToStore.score.toFixed(2)}, confidence=${recordToStore.confidence.toFixed(2)})`,
+    );
+  }
   return true;
 }
 

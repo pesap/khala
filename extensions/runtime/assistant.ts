@@ -321,7 +321,7 @@ export function isAssistantClarificationAllowedForObligation(
 }
 
 function isMemoryGateRetryToolName(name: string): boolean {
-  return name === "edit" || name === "write" || name === "bash" || name === "khala_learn";
+  return name === "edit" || name === "write" || name === "bash";
 }
 
 function extractToolCallNames(message: AgentEndEventMessage): string[] {
