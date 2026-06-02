@@ -6,6 +6,7 @@ description: Default guardrail for focused code edits. Use when a task creates, 
 ## Trigger conditions
 - Any task that creates, edits, renames, or deletes code.
 - Any bugfix, feature, refactor, or review that changes runtime behavior.
+
 ## Use when
 - You are about to mutate code and need low-risk execution.
 - You need minimal, reviewable diffs with explicit verification.
