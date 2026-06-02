@@ -5,42 +5,118 @@ skills:
   - github
 ---
 
-# Review command prompt
+# /review
 
-You are running the khala `/review` workflow.
+Run a scoped code review as a skeptical maintainer.
 
-Source attribution: adapted from Earendil's pi-review command (`https://github.com/earendil-works/pi-review`).
+Source attribution: adapted from Earendil's pi-review command:
+https://github.com/earendil-works/pi-review
 
-Keep this prompt thin. Use `workflows/review-workflow.yaml` as the workflow state machine and load listed skills only when their concrete track is needed.
+Use this file only for target resolution and response contract.
+Use `code-review` for review judgment.
+Load `github` only for PR targets.
+Load `librarian` only when repository navigation/search is needed.
 
-Supported targets:
-- `/review` or `/review uncommitted`: review staged, unstaged, and untracked changes.
-- `/review branch <base>`: review the diff from the merge base with the base branch.
-- `/review commit <sha>`: review only the selected commit.
-- `/review pr <number|url>` or `/review <github-pr-url>`: review a GitHub PR after resolving metadata and checking it out locally.
-- `/review folder <paths...>`, `/review file <paths...>`, or direct paths: snapshot-review those files/folders, not a diff.
-- `--extra "..."`: append a one-off focus instruction to any mode.
+## Targets
 
-Hard requirements:
-- Be concise and evidence-based.
-- Review only the requested scope: uncommitted changes, branch diff, commit, PR, or file/folder snapshot.
-- Start repo-state reviews by inspecting Git state with a bounded, scope-appropriate command.
-- For PR review, require `gh`; if it is unavailable or unauthenticated, stop with setup guidance. Before checkout, ensure there are no tracked-file pending changes; untracked files alone do not block PR review.
-- For branch and PR review, compute the merge base first and review the diff from that SHA.
-- For snapshot review, read the requested paths directly and do not invent diff context.
-- Do not mutate files unless the user explicitly asks for fixes.
-- Prioritize findings by severity (`[P0]` to `[P3]`) with precise file references.
-- If there are no blocking issues, explicitly say the change looks good.
-- Include `Human Reviewer Callouts (Non-Blocking)`.
-- If you mutate files, include exactly one line: `Postflight: verify="<command_or_check>" result=<pass|fail|not-run>`.
-- Final response must include: review summary, key findings, verdict (`correct` or `needs attention`), callouts, `Result: success|partial|failed`, and `Confidence: 0..1`.
+- `/review` or `/review uncommitted`: staged, unstaged, and untracked changes.
+- `/review branch <base>`: diff from merge-base with `<base>`.
+- `/review commit <sha>`: selected commit only.
+- `/review pr <number|url>` or `/review <github-pr-url>`: GitHub PR.
+- `/review file <paths...>`, `/review folder <paths...>`, or direct paths: snapshot review.
+- `--extra "..."`: append one review focus.
 
-Review rubric:
-- Flag issues that meaningfully affect correctness, performance, security, or maintainability.
-- Flag only discrete, actionable issues introduced in the reviewed scope.
-- Do not rely on unstated assumptions; identify the concrete affected path, caller, invariant, or runtime scenario.
-- Prefer simple fixes over wrappers or abstractions without clear value.
-- Treat silent local error recovery, swallowed parse failures, unchecked errors, and fallback-to-success behavior as high-signal findings unless the boundary and compatibility requirement are explicit and tested.
-- Review untrusted input carefully: redirects must be constrained to trusted destinations, SQL must be parameterized, URL fetches must not allow local-resource access, and escaping is preferred over sanitization when outputting text.
-- Keep each finding short and actionable. Use suggestion blocks only for exact replacement code.
-- Do not report trivial style issues unless they obscure correctness or maintainability.
+## Scope Rules
+
+Review only the requested scope.
+
+For repo-state reviews, start by inspecting bounded repo state with scope-appropriate Git commands.
+
+For uncommitted review:
+- Inspect tracked and untracked changes.
+- Include staged, unstaged, and untracked files.
+- Do not include unrelated committed history.
+
+For branch review:
+- Compute merge-base with `<base>`.
+- Review only the diff from merge-base to current `HEAD`.
+
+For commit review:
+- Review only the selected commit.
+- Do not review unrelated parent or descendant changes.
+
+For PR review:
+- Require `gh`.
+- If `gh` is missing or unauthenticated, stop with setup guidance.
+- Before checkout, ensure there are no tracked-file pending changes.
+- Untracked files alone do not block checkout.
+- Resolve PR metadata.
+- Check out the PR locally.
+- Compute merge-base.
+- Review only the diff from merge-base to PR `HEAD`.
+
+For snapshot review:
+- Read requested files/folders directly.
+- Do not invent diff context.
+- Treat findings as risks in the current snapshot, not necessarily regressions.
+
+Do not mutate files unless the user explicitly asks for fixes.
+
+## Review Method
+
+1. Resolve target.
+2. Determine scope.
+3. Read changed files or requested files.
+4. Read callers, tests, contracts, config, and migrations when needed.
+5. Apply `code-review`.
+6. Produce final report.
+
+## Human Reviewer Callouts (Non-Blocking)
+
+- migrations
+- dependency changes
+- auth/permission behavior
+- public API or contract changes
+- destructive operations
+- feature flags
+- config/default changes
+- observability changes
+- rollout or rollback concerns
+
+Write `- (none)` if none apply.
+
+## Output contract
+
+Return only:
+
+```md
+## Review Summary
+<1-4 sentences>
+
+## Key Findings
+
+- [P<0-3>] <title> 
+  - Evidence: 
+    - <bullets of evidence with fpath if needed>,
+  - Impact(s): 
+    - <bullets of impact with fpath if needed>,
+  - Suggested action(s): 
+    - <bullet of fix direction per file if needed>.
+
+## Human Reviewer Callouts (Non-Blocking)
+<bullets, or "- (none)">
+
+## Verdict
+<correct|needs attention>
+
+Result: <success|partial|failed>
+Confidence: <0..1>
+Confidence breakdown:
+<topic>: <score>
+```
+
+Include exact file and line evidence whenever possible.
+
+If exact line numbers are unavailable, cite the smallest precise symbol, function, or file region.
+
+Use suggestion blocks only for exact, small, high-confidence replacements.

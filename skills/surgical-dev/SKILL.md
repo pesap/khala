@@ -1,40 +1,65 @@
 ---
 name: surgical-dev
-description: Default guardrail for focused code edits. Use when a task creates, edits, renames, or deletes code and needs minimal diffs, explicit assumptions, targeted validation, rollback awareness, and low-risk implementation discipline.
+description: Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.
+license: MIT
 ---
 
-## Trigger conditions
-- Any task that creates, edits, renames, or deletes code.
-- Any bugfix, feature, refactor, or review that changes runtime behavior.
-## Use when
-- You are about to mutate code and need low-risk execution.
-- You need minimal, reviewable diffs with explicit verification.
-- You can run targeted checks for touched paths.
+# Surgical Developer Guidelines
 
-## Avoid when
-- Task is code-free (planning only, docs-only, status updates).
-- User explicitly asks to skip this workflow for a one-off.
-- Required constraints are missing and user does not want clarification.
-## Instructions
-1. Think before coding
-   - State assumptions first. If ambiguous, ask before editing.
-   - If multiple valid interpretations exist, surface tradeoffs.
-2. Simplicity first
-   - Implement the smallest correct change.
-   - No speculative abstractions, configurability, or extra features.
-3. Surgical changes only
-   - Touch only lines required by the request.
-   - No drive-by refactors/formatting/comment churn.
-   - Remove only artifacts your change makes unused.
-4. Goal-driven validation
-   - Define concrete success checks before or during edits.
-   - Run targeted tests/lints and report pass/fail.
-   - If checks cannot run, state why and provide manual verification.
-5. Safety gate
-   - Stop and ask before risky or destructive actions.
-   - Provide a short rollback path for high-risk edits.
-## Output
-- Assumptions and success criteria
-- File-level changes
-- Validation commands + results
-- Risks/open questions (if any)
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
