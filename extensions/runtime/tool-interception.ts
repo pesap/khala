@@ -11,8 +11,17 @@ export function isMemoryPersistenceToolName(toolName: string): boolean {
   return toolName === "khala_learn";
 }
 
+export function isKhalaMemoryToolName(toolName: string): boolean {
+  return (
+    toolName === "khala_read_memory" ||
+    toolName === "khala_search_memory" ||
+    toolName === "khala_learn"
+  );
+}
+
 export function requiresFreshMemoryToolCall(event: ToolCallEvent): boolean {
-  return isMutationToolCall(event) || isMemoryPersistenceToolName(event.toolName);
+  if (isKhalaMemoryToolName(event.toolName)) return false;
+  return isMutationToolCall(event);
 }
 
 export function isSkillMemoryReadToolCall(event: {
@@ -39,10 +48,11 @@ export function getToolInterceptionCounters(event: {
   input?: unknown;
 }): ToolInterceptionCounters {
   const isMemoryRead = event.toolName === "khala_read_memory";
+  const isKhalaMemoryTool = isKhalaMemoryToolName(event.toolName);
   return {
     incrementTaskToolCall: !isMemoryRead,
     incrementMemoryToolCallsSinceRead:
-      !isMemoryRead && !isSkillMemoryReadToolCall(event),
+      !isKhalaMemoryTool && !isSkillMemoryReadToolCall(event),
     isMemoryRead,
   };
 }

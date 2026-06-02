@@ -8,6 +8,7 @@ import {
   normalizeKhalaLearningRecordForPersistence,
   persistKhalaLearningRecord,
   readRecentKhalaLearningRecords,
+  searchKhalaLearningRecords,
   validateLearningCandidateQuality,
   type KhalaLearningRecord,
 } from "../../extensions/learning/khala-learn.ts";
@@ -21,7 +22,10 @@ const components = {
   clarity: 1,
 };
 
-function learningRecord(id: string): KhalaLearningRecord {
+function learningRecord(
+  id: string,
+  overrides: Partial<KhalaLearningRecord> = {},
+): KhalaLearningRecord {
   return {
     version: 1,
     id,
@@ -40,6 +44,7 @@ function learningRecord(id: string): KhalaLearningRecord {
     promotable: false,
     sensitive: false,
     components,
+    ...overrides,
   };
 }
 
@@ -87,6 +92,83 @@ test("recent khala learning reads only bounded tail from large jsonl files", asy
   assert.deepEqual(
     records.map((record) => record.id),
     ["recent-two", "recent-three"],
+  );
+});
+
+test("recent khala learning filters audit-only and mismatched repo records", async () => {
+  const paths = await createTempLearningPaths("khala-recent-filter-");
+  await fs.writeFile(
+    paths.khalaLearningJsonl,
+    [
+      JSON.stringify(
+        learningRecord("other-repo", {
+          repoKey: "github.com/example/other",
+        }),
+      ),
+      JSON.stringify(
+        learningRecord("threshold", {
+          repoKey: "github.com/example/current",
+          trigger: "task exceeds memory refresh threshold",
+          reason: "Forced learning review after 20 tool calls exceeded the 15-tool threshold.",
+        }),
+      ),
+      JSON.stringify(learningRecord("legacy-current")),
+      JSON.stringify(
+        learningRecord("current", {
+          repoKey: "github.com/example/current",
+        }),
+      ),
+    ].join("\n"),
+    "utf8",
+  );
+
+  const records = await readRecentKhalaLearningRecords(paths, 10, {
+    repoKey: "github.com/example/current",
+  });
+
+  assert.deepEqual(
+    records.map((record) => record.id),
+    ["legacy-current", "current"],
+  );
+});
+
+test("search khala learning returns record-level hits for the current repo", async () => {
+  const paths = await createTempLearningPaths("khala-record-search-");
+  await fs.writeFile(
+    paths.khalaLearningJsonl,
+    [
+      JSON.stringify(
+        concreteLearningRecord({
+          id: "forge-release",
+          repoKey: "github.com/example/forge",
+          trigger: "Forge cargo-dist release workflow",
+          lesson:
+            "Configure cargo-dist in dist-workspace.toml and avoid hand-editing generated workflows.",
+        }),
+      ),
+      JSON.stringify(
+        concreteLearningRecord({
+          id: "agents-memory",
+          repoKey: "github.com/example/agents",
+          trigger: "Khala memory retrieval relevance",
+          lesson:
+            "Filter memory retrieval by repo identity and task context before injecting records.",
+        }),
+      ),
+    ].join("\n"),
+    "utf8",
+  );
+
+  const hits = await searchKhalaLearningRecords({
+    paths,
+    query: "memory retrieval relevance",
+    limit: 5,
+    repoKey: "github.com/example/agents",
+  });
+
+  assert.deepEqual(
+    hits.map((hit) => hit.record.id),
+    ["agents-memory"],
   );
 });
 

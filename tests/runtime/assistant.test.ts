@@ -65,18 +65,7 @@ test("clears recovery requirement once the blocked mutation is retried", () => {
   assert.equal(findPendingMemoryGateRecovery(messages), null);
 });
 
-test("clears recovery requirement once a blocked khala_learn is retried", () => {
-  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
-    assistantToolCall("khala_learn"),
-    memoryReadRequired("khala_learn"),
-    assistantToolCall("khala_read_memory"),
-    assistantToolCall("khala_learn"),
-  ];
-
-  assert.equal(findPendingMemoryGateRecovery(messages), null);
-});
-
-test("does not clear recovery when a different retry-capable tool runs", () => {
+test("does not clear recovery when a memory tool runs instead of the blocked mutation", () => {
   const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
     assistantToolCall("write"),
     memoryReadRequired("write"),

@@ -16,11 +16,23 @@ function event(toolName: string, input: unknown = {}): ToolCallEvent {
   } as ToolCallEvent;
 }
 
-test("interception counters avoid aging memory for memory reads and skill reads", () => {
+test("interception counters avoid aging memory for khala memory tools and skill reads", () => {
   assert.deepEqual(getToolInterceptionCounters(event("khala_read_memory")), {
     incrementTaskToolCall: false,
     incrementMemoryToolCallsSinceRead: false,
     isMemoryRead: true,
+  });
+
+  assert.deepEqual(getToolInterceptionCounters(event("khala_search_memory")), {
+    incrementTaskToolCall: true,
+    incrementMemoryToolCallsSinceRead: false,
+    isMemoryRead: false,
+  });
+
+  assert.deepEqual(getToolInterceptionCounters(event("khala_learn")), {
+    incrementTaskToolCall: true,
+    incrementMemoryToolCallsSinceRead: false,
+    isMemoryRead: false,
   });
 
   assert.deepEqual(
@@ -69,6 +81,13 @@ test("bash mutation detection does not treat read-only git merge-base as merge",
   assert.equal(isMutationCapableBash("git merge;git status"), true);
   assert.equal(isMutationCapableBash("git commit&& echo ok"), true);
   assert.equal(isMutationCapableBash("git checkout feature-branch"), true);
+});
+
+test("fresh-memory decision exempts khala memory tools", () => {
+  assert.equal(requiresFreshMemoryToolCall(event("khala_read_memory")), false);
+  assert.equal(requiresFreshMemoryToolCall(event("khala_search_memory")), false);
+  assert.equal(requiresFreshMemoryToolCall(event("khala_learn")), false);
+  assert.equal(requiresFreshMemoryToolCall(event("edit", { path: "README.md" })), true);
 });
 
 test("fresh-memory decision is bounded under many intercepted tool calls", () => {

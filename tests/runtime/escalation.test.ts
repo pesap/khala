@@ -8502,6 +8502,28 @@ test("requires memory search for substantial tool-backed work", () => {
   );
 });
 
+test("does not require memory search for khala memory tools alone", () => {
+  assert.deepEqual(
+    evaluateMemorySearchRouting({
+      messages: [
+        textMessage("user", "Remember to avoid duplicate storage."),
+        assistantToolCall("khala_search_memory", {
+          query: "duplicate storage memory",
+        }),
+        toolResult("relevant duplicate storage memory"),
+        assistantToolCall("khala_learn", concreteLearnArgs),
+        toolResult("stored"),
+      ],
+      userText: "Remember to avoid duplicate storage.",
+    }),
+    {
+      required: false,
+      satisfied: true,
+      reason: "turn was trivial enough for bootstrap memory",
+    },
+  );
+});
+
 test("uses configured substantial tool-call threshold", () => {
   assert.equal(
     memorySearchNeedReason({
@@ -8726,7 +8748,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8745,7 +8767,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8764,7 +8786,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8781,7 +8803,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8798,7 +8820,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8819,7 +8841,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8836,7 +8858,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8853,7 +8875,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8874,7 +8896,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8894,7 +8916,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8911,7 +8933,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8931,7 +8953,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8948,7 +8970,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8967,7 +8989,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -8984,7 +9006,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -9003,7 +9025,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -9020,7 +9042,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -9039,7 +9061,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -9059,7 +9081,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -9079,7 +9101,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: true,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 
@@ -9096,7 +9118,7 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 });
@@ -9175,7 +9197,7 @@ test("requires focused khala_search_memory queries for memory routing", () => {
     {
       required: true,
       satisfied: false,
-      reason: "turn performed mutation or memory persistence",
+      reason: "turn performed mutation",
     },
   );
 });

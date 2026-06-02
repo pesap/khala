@@ -75,9 +75,11 @@ import {
   assessLearning,
   persistKhalaLearningRecord,
   readRecentKhalaLearningRecords,
+  searchKhalaLearningRecords,
   validateLearningCandidateQuality,
   type KhalaLearningAssessment,
   type KhalaLearningRecord,
+  type KhalaLearningSearchHit,
 } from "./learning/khala-learn.ts";
 import {
   searchKhalaMemory,
@@ -218,6 +220,8 @@ const runtimeState = createRuntimeState();
 const REPEATED_BLOCK_GUARD_THRESHOLD = 3;
 let taskToolCallCount = 0;
 let latestUserInput = "";
+let latestTaskInput = "";
+let latestMemoryRefreshQuery = "";
 let learnedSkillCompletionCache: string[] = [];
 let learnedWorkflowCompletionCache: string[] = [];
 let memoryGate = {
@@ -240,6 +244,33 @@ function clampUnit(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
 }
+
+function normalizeRepoRemote(value: string): string {
+  return value
+    .trim()
+    .replace(/^git@([^:]+):/, "$1/")
+    .replace(/^https?:\/\//, "")
+    .replace(/\.git$/, "")
+    .toLowerCase();
+}
+
+function runGitValue(cwd: string, args: string[]): string {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: 1_500,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0 ? result.stdout.trim() : "";
+}
+
+function resolveRepoMemoryKey(cwd: string): string {
+  const remote = runGitValue(cwd, ["config", "--get", "remote.origin.url"]);
+  if (remote) return normalizeRepoRemote(remote);
+  const root = runGitValue(cwd, ["rev-parse", "--show-toplevel"]);
+  return normalizeRepoRemote(root || cwd);
+}
+
 let sessionFirstPrinciplesDefaults = { ...runtimeState.firstPrinciplesConfig };
 
 const workflowReaders = createWorkflowReaders({
@@ -612,8 +643,9 @@ async function maybeAssessAndLearn(params: {
   }
 
   const paths = await ensureLearningStore(params.ctx.cwd, learningPathCache);
-  const recents = await readRecentKhalaLearningRecords(paths, 20);
-  let assessment = assessLearning(
+  const repoKey = resolveRepoMemoryKey(params.ctx.cwd);
+  const recents = await readRecentKhalaLearningRecords(paths, 20, { repoKey });
+  const assessment = assessLearning(
     {
       taskSummary: params.userText,
       assistantSummary: params.assistantText,
@@ -642,22 +674,6 @@ async function maybeAssessAndLearn(params: {
     recents,
   );
 
-  if (
-    taskToolCallCount > runtimeState.memoryToolCallLimit &&
-    !assessment.sensitive &&
-    !assessment.shouldLearn &&
-    assessment.lesson.length > 0 &&
-    !assessment.reason.startsWith("Learning candidate failed quality gate:")
-  ) {
-    assessment = {
-      ...assessment,
-      shouldLearn: true,
-      score: Math.max(assessment.score, 0.76),
-      confidence: Math.max(assessment.confidence, 0.76),
-      reason: `Forced learning review after ${taskToolCallCount} tool calls exceeded the ${runtimeState.memoryToolCallLimit}-tool threshold.`,
-    };
-  }
-
   params.pi.appendEntry("khala-learning-assessment", {
     at: nowIso(),
     workflowId: params.workflow?.id ?? null,
@@ -680,6 +696,8 @@ async function maybeAssessAndLearn(params: {
     workflowType: params.workflow?.type,
     workflowId: params.workflow?.id,
     actionTaken: [],
+    repoKey,
+    status: "active",
     ...assessment,
   };
   await persistKhalaLearningRecord(paths, record);
@@ -893,6 +911,7 @@ function resetMemoryGate(reason: string): void {
     toolCallsSinceRead: 0,
     invalidReason: reason,
   };
+  latestMemoryRefreshQuery = "";
 }
 
 function markMemoryRead(): void {
@@ -901,6 +920,7 @@ function markMemoryRead(): void {
     toolCallsSinceRead: 0,
     invalidReason: "",
   };
+  latestMemoryRefreshQuery = "";
 }
 
 function isMemoryFresh(): boolean {
@@ -913,9 +933,70 @@ function isMemoryFresh(): boolean {
 function staleMemoryReason(): string {
   if (!memoryGate.hasRead) return memoryGate.invalidReason || "task start";
   if (memoryGate.toolCallsSinceRead >= runtimeState.memoryToolCallLimit) {
-    return `${memoryGate.toolCallsSinceRead} tool calls since last memory read (limit=${runtimeState.memoryToolCallLimit})`;
+    return `${memoryGate.toolCallsSinceRead} non-memory tool calls since last memory read (limit=${runtimeState.memoryToolCallLimit})`;
   }
   return "unknown";
+}
+
+function toolCallContextParts(event: { toolName: string; input?: unknown }): string[] {
+  const input = event.input as Record<string, unknown> | undefined;
+  const parts = [event.toolName];
+  for (const key of ["path", "file", "cwd", "command", "pattern", "query"]) {
+    const value = input?.[key];
+    if (typeof value === "string" && value.trim()) {
+      parts.push(`${key}:${value.trim().slice(0, 180)}`);
+    }
+  }
+  return parts;
+}
+
+function buildMemoryRefreshQuery(event: { toolName: string; input?: unknown }): string {
+  return [latestTaskInput || latestUserInput, ...toolCallContextParts(event)]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+const MEMORY_CONTEXT_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "that",
+  "this",
+  "with",
+  "when",
+  "from",
+  "into",
+  "should",
+  "memory",
+  "khala",
+  "read",
+  "write",
+  "edit",
+]);
+
+function memoryContextTokens(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .match(/[a-z0-9][a-z0-9_.-]{2,}/g)
+      ?.filter((term) => !MEMORY_CONTEXT_STOP_WORDS.has(term)) ?? [],
+  );
+}
+
+function learningRecordMatchesContext(
+  record: KhalaLearningRecord,
+  contextQuery: string,
+): boolean {
+  const queryTokens = memoryContextTokens(contextQuery);
+  if (queryTokens.size === 0) return true;
+  const recordTokens = memoryContextTokens(
+    `${record.trigger} ${record.lesson} ${record.kind} ${record.workflowType ?? ""}`,
+  );
+  for (const token of queryTokens) {
+    if (recordTokens.has(token)) return true;
+  }
+  return false;
 }
 
 function inferSkillPatchSignal(text: string): boolean {
@@ -1252,6 +1333,16 @@ function renderKhalaAssessResult(
   return new Text(text, 0, 0);
 }
 
+function learningHitToMemoryResult(hit: KhalaLearningSearchHit) {
+  return {
+    path: `memory/khala-learning.jsonl#${hit.record.id}`,
+    kind: "learning" as const,
+    score: hit.score,
+    title: hit.record.trigger,
+    snippet: hit.snippet,
+  };
+}
+
 function renderKhalaMemoryResult(
   result: KhalaToolRenderResult,
   expanded: boolean,
@@ -1259,6 +1350,13 @@ function renderKhalaMemoryResult(
 ): Text {
   const payload = parseToolJsonDetails<{
     storeRoot: string;
+    contextQuery?: string;
+    relevantMemory?: Array<{
+      kind: string;
+      score: number;
+      title: string;
+      snippet: string;
+    }>;
     memoryTail: string;
     activeLessons: string;
     recentLearnings: Array<{
@@ -1272,14 +1370,21 @@ function renderKhalaMemoryResult(
   const lessonCount = payload.activeLessons.split("\n").filter(Boolean).length;
   const tailCount = payload.memoryTail.split("\n").filter(Boolean).length;
   let text = `${theme.fg("success", "memory read")} `;
+  const relevantCount = payload.relevantMemory?.length ?? 0;
   text += theme.fg(
     "muted",
-    `${payload.recentLearnings.length} recent, ${lessonCount} active, ${tailCount} tail lines`,
+    `${relevantCount} relevant, ${payload.recentLearnings.length} recent, ${lessonCount} active, ${tailCount} tail lines`,
   );
   text += expandHint(expanded);
 
   if (expanded) {
     text += `\nstore: ${payload.storeRoot}`;
+    if (payload.contextQuery) {
+      text += `\ncontext: ${clipDisplay(payload.contextQuery, 120)}`;
+    }
+    for (const item of payload.relevantMemory?.slice(0, 5) ?? []) {
+      text += `\n- relevant ${item.kind} ${item.score.toFixed(2)}: ${clipDisplay(item.snippet, 100)}`;
+    }
     for (const record of payload.recentLearnings.slice(0, 5)) {
       text += `\n- ${record.kind} ${record.confidence.toFixed(2)}: ${clipDisplay(record.trigger, 100)}`;
     }
@@ -1359,7 +1464,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       renderKhalaAssessResult(result as KhalaToolRenderResult, expanded, theme),
     execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
       const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
-      const recents = await readRecentKhalaLearningRecords(paths, 20);
+      const repoKey = resolveRepoMemoryKey(ctx.cwd);
+      const recents = await readRecentKhalaLearningRecords(paths, 20, { repoKey });
       const assessment = assessLearning(params, recents);
       return {
         content: [
@@ -1377,7 +1483,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     name: "khala_read_memory",
     label: "Khala Read Memory",
     description:
-      "Read current khala memory context (active lessons, active runtime rules, recent learnings, and memory tail) before tool use.",
+      "Read current khala memory context, filtered by current task/edit context when available (active lessons, active runtime rules, relevant memory, and contextual recent learnings).",
     parameters: Type.Object({
       tailLines: Type.Optional(
         Type.Number({
@@ -1389,6 +1495,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         Type.Number({
           description:
             "Number of recent khala learned records to include (default 8, max 50)",
+        }),
+      ),
+      contextQuery: Type.Optional(
+        Type.String({
+          description:
+            "Optional current task/edit context used to filter recent memory and retrieve relevant memory snippets.",
         }),
       ),
     }),
@@ -1406,21 +1518,77 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
       const tailLines = clampPositiveInt(params.tailLines, 8, 50);
       const recentLimit = clampPositiveInt(params.recentLimit, 8, 50);
+      const contextQuery =
+        typeof params.contextQuery === "string" && params.contextQuery.trim()
+          ? params.contextQuery.trim()
+          : latestMemoryRefreshQuery || latestTaskInput || latestUserInput;
       const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
-      const [memoryTail, activeLessons, recentRecords, activeRules] =
-        await Promise.all([
-          getLearningMemoryTail(ctx.cwd, learningPathCache, tailLines),
-          getActiveLearningLessonsTail(ctx.cwd, learningPathCache, tailLines),
-          readRecentKhalaLearningRecords(paths, recentLimit),
-          readEffectiveRuntimeRules(paths),
-        ]);
+      const repoKey = resolveRepoMemoryKey(ctx.cwd);
+      const [
+        memoryTail,
+        activeLessons,
+        recentRecords,
+        activeRules,
+        relevantLearningRaw,
+        relevantMemoryRaw,
+      ] = await Promise.all([
+        getLearningMemoryTail(ctx.cwd, learningPathCache, tailLines),
+        getActiveLearningLessonsTail(ctx.cwd, learningPathCache, tailLines),
+        readRecentKhalaLearningRecords(paths, Math.max(recentLimit, 20), {
+          repoKey,
+        }),
+        readEffectiveRuntimeRules(paths),
+        contextQuery
+          ? searchKhalaLearningRecords({
+              paths,
+              query: contextQuery,
+              limit: recentLimit,
+              repoKey,
+            })
+          : Promise.resolve([]),
+        contextQuery
+          ? searchKhalaMemory({
+              paths,
+              query: contextQuery,
+              limit: recentLimit,
+              snippetLength: 240,
+              includeKinds: ["lesson", "rule", "skill", "workflow", "prompt"],
+            })
+          : Promise.resolve([]),
+      ]);
+
+      const relevantLearningMemory = relevantLearningRaw.map(
+        learningHitToMemoryResult,
+      );
+      const relevantMemory = contextQuery
+        ? [
+            ...relevantLearningMemory,
+            ...relevantMemoryRaw.filter((item) => item.score >= 6),
+          ]
+            .sort(
+              (a, b) => b.score - a.score || a.path.localeCompare(b.path),
+            )
+            .slice(0, recentLimit)
+        : [];
+
+      const contextualRecentRecords = contextQuery
+        ? recentRecords
+            .filter((record) =>
+              learningRecordMatchesContext(record, contextQuery),
+            )
+            .slice(0, recentLimit)
+        : recentRecords.slice(0, recentLimit);
 
       markMemoryRead();
 
       const payload = {
         storeRoot: paths.root,
-        memoryTail,
-        activeLessons,
+        repoKey,
+        contextQuery,
+        relevantMemory,
+        memoryTail: contextQuery && relevantMemory.length > 0 ? "" : memoryTail,
+        activeLessons:
+          contextQuery && relevantMemory.length > 0 ? "" : activeLessons,
         activeRules: activeRules.slice(0, tailLines).map((rule) => ({
           id: rule.id,
           scope: rule.scope,
@@ -1429,7 +1597,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           trigger: rule.trigger,
           instruction: rule.instruction,
         })),
-        recentLearnings: recentRecords.map((record) => ({
+        recentLearnings: contextualRecentRecords.map((record) => ({
           timestamp: record.timestamp,
           trigger: record.trigger,
           lesson: record.lesson,
@@ -1503,14 +1671,31 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       const limit = clampPositiveInt(params.limit, 8, 25);
       const snippetLength = clampPositiveInt(params.snippetLength, 220, 500);
       const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
-      const results = await searchKhalaMemory({
+      const repoKey = resolveRepoMemoryKey(ctx.cwd);
+      const learningHits = await searchKhalaLearningRecords({
+        paths,
+        query,
+        limit,
+        repoKey,
+      });
+      const corpusResults = await searchKhalaMemory({
         paths,
         query,
         limit,
         snippetLength,
+        includeKinds: ["lesson", "rule", "skill", "workflow", "prompt"],
       });
+      const results = [
+        ...learningHits.map(learningHitToMemoryResult),
+        ...corpusResults,
+      ]
+        .sort((a, b) =>
+          b.score - a.score || a.path.localeCompare(b.path),
+        )
+        .slice(0, limit);
       const payload = {
         storeRoot: paths.root,
+        repoKey,
         query,
         resultCount: results.length,
         results,
@@ -1558,6 +1743,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           ? (params.scope as LearningLesson["scope"])
           : "repo";
       const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
+      const repoKey = resolveRepoMemoryKey(ctx.cwd);
       const quality = validateLearningCandidateQuality({
         trigger: params.trigger,
         lesson: params.lesson,
@@ -1590,6 +1776,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         workflowType: params.workflowType,
         workflowId: params.workflowId,
         actionTaken: params.actionTaken,
+        ...(scope === "repo" ? { repoKey } : {}),
+        status: "active",
         shouldLearn: true,
         score,
         confidence,
@@ -1789,6 +1977,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     if (!text) return;
     latestUserInput = text;
     if (!isContinuationInput(text)) {
+      latestTaskInput = text;
       taskToolCallCount = 0;
       resetMemoryGate("new task or scope change");
     }
@@ -1830,9 +2019,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
     const needsFreshMemory = requiresFreshMemoryToolCall(event);
     if (needsFreshMemory && !isMemoryFresh()) {
+      latestMemoryRefreshQuery = buildMemoryRefreshQuery(event);
       return {
         block: true,
-        reason: `MEMORY READ REQUIRED\n\nMemory context is stale for this task (${staleMemoryReason()}). Call khala_read_memory, then immediately retry the mutation or memory write. Read-only inspection is allowed without memory refresh.`,
+        reason: `MEMORY READ REQUIRED\n\nMemory context is stale for this task (${staleMemoryReason()}). Call khala_read_memory, then immediately retry the non-memory mutation. Khala memory tools are allowed without memory refresh. Read-only inspection is allowed without memory refresh.`,
       };
     }
 
