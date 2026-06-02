@@ -134,10 +134,42 @@ pi -e https://github.com/pesap/agents -p "/tdd 'Add retry policy for hook loadin
 Three layers of rules:
 
 1. **Packaged defaults** — always-on rules shipped in `runtime/RULES.md`.
-2. **Persistent user/repo rules** — editable rules in `.pi/khala/rules/RULES.md` (or `~/.pi/khala/rules/RULES.md` when no repo-local `.pi/` exists). Edit the file, then run `/rule-reload`.
+2. **Persistent user/repo rules** — durable local rules added with `/rule-add <trigger> => <instruction>` and mirrored to `.pi/khala/rules/RULES.md` (or `~/.pi/khala/rules/RULES.md` when no repo-local `.pi/` exists). If you edit `RULES.md` by hand, run `/rule-reload`.
 3. **Session-only rules** — temporary rules added with `/rule-session <trigger> => <instruction>`.
 
-Use `runtime/RULES.md` to change default shipped behavior. Use `.pi/khala/rules/RULES.md` for local or repo-specific persistent rules. Use `/rule-session` for temporary guidance.
+Use `runtime/RULES.md` to change default shipped behavior. Use `/rule-add` for local or repo-specific persistent rules. Use `/rule-session` for temporary guidance.
+
+### Runtime rule examples
+
+Add a durable repo/user rule that should be available in future sessions:
+
+```text
+/rule-add mutation work => Read memory and search task-specific lessons before editing files. --warn
+```
+
+Add a stricter durable rule:
+
+```text
+/rule-add destructive commands => Stop and ask for explicit approval before destructive filesystem or git operations. --enforce
+```
+
+Add a temporary rule for only the current session:
+
+```text
+/rule-session current debugging task => Prefer evidence-backed root-cause analysis before proposing fixes. --advisory
+```
+
+List active runtime rules and the resolved store path:
+
+```text
+/rule-list
+```
+
+If you manually edit `.pi/khala/rules/RULES.md`, reload it into the runtime JSONL store:
+
+```text
+/rule-reload
+```
 
 ---
 
@@ -273,7 +305,7 @@ Durable artifacts are written to `<repo>/.pi/khala/` when `.pi/` exists in cwd, 
 | `rules/session.jsonl` | Per-session active rules, cleared on shutdown. |
 | `rules/candidates.jsonl` | Proposed rules not yet active. |
 | `rules/audit.jsonl` | Runtime rule hit/warn/block/reload audit events. |
-| `rules/RULES.md` | User-editable persistent rule file; edit, then run `/rule-reload`. |
+| `rules/RULES.md` | Human-readable durable rule mirror. Prefer `/rule-add`; if edited by hand, run `/rule-reload`. |
 | `runs/*.json` | Per-run workflow records. |
 | `workflows/*.yaml` | Reviewed reusable workflow artifacts. |
 | `prompts/*.md` | Pi prompt templates for reviewed workflows. |

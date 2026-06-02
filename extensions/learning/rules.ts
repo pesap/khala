@@ -47,7 +47,15 @@ export interface RuleAuditEvent {
   id: string;
   ruleId: string;
   at: string;
-  action: "hit" | "warn" | "block" | "promote" | "disable" | "replace" | "reload";
+  action:
+    | "hit"
+    | "warn"
+    | "block"
+    | "add"
+    | "promote"
+    | "disable"
+    | "replace"
+    | "reload";
   detail: string;
 }
 

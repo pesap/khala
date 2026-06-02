@@ -41,6 +41,7 @@ export interface CommandRegistrarDeps {
     workflowRun: CommandHandler;
     ruleList: CommandHandler;
     ruleShow: CommandHandler;
+    ruleAdd: CommandHandler;
     rulePromote: CommandHandler;
     ruleSession: CommandHandler;
     ruleReplace: CommandHandler;
@@ -88,6 +89,7 @@ export function registerCommands({
     { name: "workflow-run", description: "Run a khala learned workflow by sending it to the agent", handler: handlers.workflowRun },
     { name: "rule-list", description: "List active khala runtime rules", handler: handlers.ruleList },
     { name: "rule-show", description: "Show a khala runtime rule by id", handler: handlers.ruleShow },
+    { name: "rule-add", description: "Add a durable khala runtime rule", handler: handlers.ruleAdd },
     { name: "rule-promote", description: "Promote a khala runtime rule candidate", handler: handlers.rulePromote },
     { name: "rule-session", description: "Add a per-session khala runtime rule", handler: handlers.ruleSession },
     { name: "rule-replace", description: "Append a replacement record for a khala runtime rule", handler: handlers.ruleReplace },

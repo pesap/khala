@@ -143,6 +143,29 @@ test("corpus search indexes rules alongside memory", async () => {
   assert.match(results[0].snippet, /subprocess/);
 });
 
+test("rule add creates a durable active rule and refreshes markdown", async () => {
+  const paths = await createTempLearningPaths("khala-rule-add-");
+  const notices: string[] = [];
+  const handlers = createRuleCommandHandlers({
+    ensureLearningStore: async () => paths,
+    nowIso: () => "2026-05-18T12:04:00.000Z",
+    notify: (_ctx, message) => notices.push(message),
+  });
+
+  await handlers.ruleAdd(
+    "rule persistence => Save durable rules directly --enforce",
+    { cwd: paths.root } as never,
+  );
+
+  const [rule] = await readEffectiveRuntimeRules(paths);
+  assert.equal(rule.trigger, "rule persistence");
+  assert.equal(rule.instruction, "Save durable rules directly");
+  assert.equal(rule.lifetime, "durable");
+  assert.equal(rule.severity, "enforce");
+  assert.match(await fs.readFile(paths.rulesMd, "utf8"), /Save durable rules directly/);
+  assert.match(notices[0], new RegExp(paths.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
 test("rule replacement preserves severity when severity edit is omitted", async () => {
   const paths = await createTempLearningPaths("khala-rule-replace-");
   await appendRuntimeRule(
