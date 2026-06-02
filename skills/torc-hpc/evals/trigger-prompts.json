@@ -1,0 +1,24 @@
+{
+  "positive": [
+    "Help me run a Torc workflow locally before I submit it to HPC.",
+    "How do I use torc slurm generate and torc submit for this workflow?",
+    "Set up remote Torc workers over SSH for this workflow and show me how to collect logs.",
+    "Debug why torc remote run starts workers but they disappear right away.",
+    "Write an invocation_script for Torc that loads modules and activates conda before running the job command.",
+    "My TORC_API_URL points at a tunneled server on the cluster; help me verify the right submission flow.",
+    "I need to run branch feature-x remotely on the cluster without rsyncing the whole repo. What workflow should we use?",
+    "Create a cleanup flow for temporary remote git worktrees used to run a specific Torc workflow version.",
+    "Show me the smallest Torc local smoke test before I try the Slurm path.",
+    "Explain when to use torc remote workers versus Slurm for this Torc workflow."
+  ],
+  "negative": [
+    "Write a generic Slurm tutorial.",
+    "Optimize this LP formulation.",
+    "Debug my GAMS model infeasibility.",
+    "Review my Python class design.",
+    "Explain Torc internals at the Rust architecture level.",
+    "Create a new HPC allocation request email.",
+    "Teach me rsync basics.",
+    "Compare SSH libraries for Python."
+  ]
+}

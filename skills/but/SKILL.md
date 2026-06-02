@@ -37,6 +37,7 @@ Skill audit line for meaningful GitButler execution:
 10. Never create an unsigned commit. If signing is unavailable, failing, or cannot be confirmed, stop and ask the user for assistance.
 11. Do not ship from an existing branch/stack until you prove it is the correct target for this task and does not carry prior unrelated commits.
 12. Before reporting ship success, verify the remote PR/branch invariants on the actual forge artifact: one intended commit, default-branch base, verified signature, plain text/markdown body (no HTML), green checks, and mergeable/non-conflicting status.
+13. In GitButler workspaces, never push `HEAD` (workspace ref) to a shared remote branch. Push the explicit branch/stack ref (for example `wjc/opt_package_tests`) and verify the remote tip after push. If a `GitButler Workspace Commit` lands on the target branch, immediately repair with `git push --force-with-lease origin <last-good-sha>:refs/heads/<branch>`.
 
 ## Core Flow
 

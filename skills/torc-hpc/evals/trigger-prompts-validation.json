@@ -1,0 +1,18 @@
+{
+  "positive": [
+    "Debug why torc remote run starts workers but they disappear right away.",
+    "Create a cleanup flow for temporary remote git worktrees used to run a specific Torc workflow version.",
+    "Show me the smallest Torc local smoke test before I try the Slurm path.",
+    "Explain when to use torc remote workers versus Slurm for this Torc workflow.",
+    "Help me collect Torc worker logs after a remote run finishes.",
+    "I need the right TORC_API_URL format for a remote server behind a tunnel."
+  ],
+  "negative": [
+    "Review my Python class design.",
+    "Explain Torc internals at the Rust architecture level.",
+    "Teach me how SSH tunnels work in general.",
+    "Show me how to write a generic bash polling loop for any cluster.",
+    "Compare workflow engines conceptually.",
+    "Help me choose a cloud VM family."
+  ]
+}
