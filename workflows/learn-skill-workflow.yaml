@@ -2,10 +2,9 @@ name: learn-skill-workflow
 version: 2
 objective: Create or improve a safe reusable skill with clear triggers and validation
 version_control:
-  local_tool: gitbutler
-  setup_check: but status -fv
-  setup_when_missing: but setup --status-after
-  write_operations: use but instead of git write commands
+  local_tool: git
+  setup_check: git status --short
+  write_operations: use normal git commands with explicit scope and validation
 steps:
   - id: scope
     action: capture_intent_trigger_output_and_boundaries

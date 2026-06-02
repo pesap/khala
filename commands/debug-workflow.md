@@ -1,7 +1,6 @@
 ---
 skills:
   - librarian
-  - but
   - debug-investigation
 ---
 
@@ -11,7 +10,7 @@ You are running the khala `/debug` workflow.
 
 Requirements:
 - Be concise.
-- Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
+- Use normal Git for version-control work; inspect repository state before VCS mutations and keep commits scoped to the requested work.
 - Use hypothesis-driven debugging.
 - Investigate multiple hypotheses when warranted and converge on the highest-confidence root cause.
 - If asked to fix, implement the smallest correct fix and validate it.

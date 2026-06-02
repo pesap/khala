@@ -7,25 +7,11 @@ command_prompt_policy:
   command_file: commands/ship-workflow.md
 
 version_control:
-  primary_tool: gitbutler
-  fallback_tool: git
-  detect:
-    first_command: but status -fv
-    gitbutler_available_when: command succeeds and reports GitButler workspace state
-    normal_git_when: but is unavailable, reports repository is not managed by GitButler, or setup is intentionally declined
-  gitbutler:
-    setup_when_missing: but setup --status-after
-    write_operations: use but instead of git write commands
-  normal_git:
-    allowed_when: GitButler is unavailable or this repo is intentionally not a GitButler workspace
-    before_writes: state normal Git mode explicitly and preserve the same target, signing, validation, push, and PR gates
-    write_operations: use git only in normal Git mode; never mix git writes into a GitButler workspace
+  local_tool: git
+  inspect_before_writes: use bounded git state/diff/history commands to identify the selected branch and pending changes
+  write_operations: use normal git commands with explicit scope and validation
 
 skill_contracts:
-  gitbutler:
-    skill: but
-    load_before: GitButler mutations, GitButler setup/fallback decisions, or claims that a native capability is missing
-    audit_policy: report the skill audit only when the but skill was actually loaded and followed; never claim full-read unless true
   simplify:
     skill: simplify
     scope: selected ship target only
@@ -38,15 +24,12 @@ skill_contracts:
     load_before: PR/MR inspection or creation
 
 guards:
-  - run `but status -fv` before local VCS decisions
-  - if GitButler is available, use GitButler mode for local VCS writes; otherwise state normal Git mode explicitly
-  - never use git write commands after GitButler mode has been detected
-  - select exactly one ship target branch/stack; if ambiguous, show a branch/change table and ask before shipping
-  - treat other applied branches/stacks as parallel work unless explicitly requested
+  - inspect Git state before local VCS decisions
+  - select exactly one ship target branch; if ambiguous, show a branch/change table and ask before shipping
+  - treat other local branches and unrelated working-tree changes as parallel work unless explicitly requested
   - update the latest default/base branch before simplify, commit, push, or PR
   - stop if the target branch was already merged, reused after squash merge, stale against latest base, or lacks unique unmerged work
   - verify requested edits are in the current repo/worktree diff, not external skill/cache paths
-  - ensure a GitButler branch/stack exists before commit/push/PR
   - never create an unsigned commit; verify the exact ship commit signature
   - detect project test/CI command from repo conventions, run targeted validation, and stop on first failure
   - detect GitHub vs GitLab and use matching tooling
@@ -56,7 +39,7 @@ guards:
 
 steps:
   - id: detect
-    action: detect_vcs_mode
+    action: inspect_git_state
   - id: target
     action: select_single_ship_target
   - id: sync
@@ -78,18 +61,3 @@ remote_invariants:
   - head branch is the selected ship target
   - shipped commit signature is verified
   - PR/MR body is plain markdown/text with no unreplaced template placeholders
-  - checks are green, or explicitly report no checks as partial
-  - mergeability/conflict status is clean
-
-final_response_contract:
-  required_sections:
-    - simplify summary
-    - test/CI result
-    - push status
-    - PR/MR status/link
-    - risks
-  required_lines:
-    - "Skill audit: full-read=yes native-path-confirmed=yes fallback-needed=no|yes" # only if the but skill was actually loaded and read
-    - "Result: success|partial|failed"
-    - "Confidence: 0..1"
-  postflight_line_when_mutated: "Postflight: verify=\"<command_or_check>\" result=<pass|fail|not-run>"

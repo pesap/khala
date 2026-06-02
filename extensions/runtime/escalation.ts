@@ -323,14 +323,9 @@ const PROACTIVE_SKILL_ROUTES: Array<{
       /\b(?:github|github actions?|actions? workflow|pull request|\bpr\b|pr comments?|review comments?|issues?|copilot comments?)\b/i,
   },
   {
-    skills: ["commit", "but"],
+    skills: ["commit"],
     pattern:
-      /\b(?:(?:create|make|write|prepare|draft)\s+(?:a\s+|an\s+)?(?:local\s+|signed\s+)?commit|commit\s+(?:(?:these|those|the|my)\s+)?(?:(?:current|selected|staged)\s+)?(?:changes|files|fix|work)|gitbutler\b[\s\S]{0,40}\bcommit)\b/i,
-  },
-  {
-    skills: ["but"],
-    pattern:
-      /\b(?:gitbutler|\bbut\s+(?:status|diff|branch|commit|amend|absorb|squash|rub|push|stash|rebase|merge)|squash\s+(?:the\s+)?(?:last\s+)?(?:\d+|two|three|four|five|several)\s+commits?|amend\s+(?:the\s+)?(?:last\s+)?commit|reword\s+(?:the\s+)?commit|split\s+(?:this\s+)?(?:commit|change)|stage\s+(?:these|the|selected)\s+(?:files|changes|hunks)|unstage\s+(?:these|the|selected)\s+(?:files|changes|hunks))\b/i,
+      /\b(?:(?:create|make|write|prepare|draft)\s+(?:a\s+|an\s+)?(?:local\s+|signed\s+)?commit|commit\s+(?:(?:these|those|the|my)\s+)?(?:(?:current|selected|staged)\s+)?(?:changes|files|fix|work))\b/i,
   },
   {
     skills: ["rust-developer"],
@@ -900,9 +895,9 @@ function commandVerificationTargetsFromText(text: string): string[] {
 }
 
 const COMMAND_LITERAL_START_REGEX =
-  /^(?:npm|pnpm|yarn|bun|node|npx|pytest|cargo|go|make|just|task|uv|python3?|pipx?|tsc|eslint|biome|vitest|jest|deno|docker(?:\s+compose)?|gh|but)\b/i;
+  /^(?:npm|pnpm|yarn|bun|node|npx|pytest|cargo|go|make|just|task|uv|python3?|pipx?|tsc|eslint|biome|vitest|jest|deno|docker(?:\s+compose)?|gh)\b/i;
 const COMMAND_LITERAL_START_PATTERN =
-  "(?:npm|pnpm|yarn|bun|node|npx|pytest|cargo|go|make|just|task|uv|python3?|pipx?|tsc|eslint|biome|vitest|jest|deno|docker(?:\\s+compose)?|gh|but)";
+  "(?:npm|pnpm|yarn|bun|node|npx|pytest|cargo|go|make|just|task|uv|python3?|pipx?|tsc|eslint|biome|vitest|jest|deno|docker(?:\\s+compose)?|gh)";
 
 function normalizeCommandTarget(command: string): string {
   return command
@@ -943,7 +938,7 @@ function commandLiteralTargetsFromText(text: string): string[] {
   }
 
   for (const match of text.matchAll(
-    /\b(?:ran|executed|run|execute|running|executing)\s+(?:the\s+)?(?:command\s+)?((?:npm|pnpm|yarn|bun|node|npx|pytest|cargo|go|make|just|task|uv|python3?|pipx?|tsc|eslint|biome|vitest|jest|deno|docker(?:\s+compose)?|gh|but)\b[^\n.;,]*)/gi,
+    /\b(?:ran|executed|run|execute|running|executing)\s+(?:the\s+)?(?:command\s+)?((?:npm|pnpm|yarn|bun|node|npx|pytest|cargo|go|make|just|task|uv|python3?|pipx?|tsc|eslint|biome|vitest|jest|deno|docker(?:\s+compose)?|gh)\b[^\n.;,]*)/gi,
   )) {
     for (const command of narrativeCommandTargets(match[1] ?? "")) {
       targets.add(`command:${command}`);
@@ -1246,9 +1241,6 @@ function isMutatingShellCommand(command: string): boolean {
     /\bgit\s+(?:add|apply|commit|checkout|switch|restore|reset|merge|rebase|cherry-pick|stash|clean|push|pull|tag|branch\s+(?:-d|-D|--delete))\b/i.test(
       command,
     ) ||
-    /\bbut\s+(?:commit|amend|move|resolve|push|pull|stage|unstage|branch\s+(?:new|delete))\b/i.test(
-      command,
-    ) ||
     /\b(?:dd\b[\s\S]*\bof=|install\s+(?:-[\w=]+\s+)*\S+|rsync\s+|tar\s+[\s\S]*\s-C\s+\S+|unzip\s+[\s\S]*\s-d\s+\S+)/i.test(
       command,
     ) ||
@@ -1444,7 +1436,7 @@ function jqOutputIsUnbounded(command: string): boolean {
 }
 
 function vcsPatchOutputIsUnbounded(command: string): boolean {
-  if (!/\b(?:git\s+(?:diff|show)|but\s+diff)\b/i.test(command)) return false;
+  if (!/\b(?:git\s+(?:diff|show))\b/i.test(command)) return false;
   if (BOUNDED_PIPE_REGEX.test(command)) return false;
   if (/(?:^|\s)(?:-p|--patch)(?:\s|$)/i.test(command)) return true;
   return !/\s--(?:stat|shortstat|numstat|name-only|name-status|summary)\b/i.test(
@@ -1596,9 +1588,6 @@ function gitLsTreeIsUnbounded(command: string): boolean {
   return recursive;
 }
 
-function rawGitStatusCommandBypassesGitButler(command: string): boolean {
-  return /\bgit\s+(?:status|branch)(?:\s|$)/i.test(command);
-}
 
 function watchModeCommandIsUnbounded(command: string): boolean {
   if (/(?:^|\s)(?:--watch(?:=|\s+)?false|--no-watch)\b/i.test(command)) {
@@ -1934,7 +1923,7 @@ function scriptedFileDumpIsUnbounded(command: string): boolean {
 }
 
 function isLocalShellEvidenceCommand(command: string): boolean {
-  return /\b(?:cat|nl|bat|batcat|less|more|sed\s+-n|grep|rg|fd|fdfind|find|ls|tree|du|head|tail|git\s+(?:diff|show|log|reflog)|but\s+diff)\b/i.test(command);
+  return /\b(?:cat|nl|bat|batcat|less|more|sed\s+-n|grep|rg|fd|fdfind|find|ls|tree|du|head|tail|git\s+(?:diff|show|log|reflog))\b/i.test(command);
 }
 
 function localArtifactTargetsFromToolArguments(args: unknown): string[] {
@@ -2727,9 +2716,6 @@ function unboundedShellEvidenceReason(command: string): string | null {
     return "unbounded git ls-tree command";
   }
 
-  if (rawGitStatusCommandBypassesGitButler(normalized)) {
-    return "raw git status command";
-  }
 
   if (watchModeCommandIsUnbounded(normalized)) {
     return "unbounded watch/follow command";

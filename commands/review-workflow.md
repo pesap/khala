@@ -1,7 +1,6 @@
 ---
 skills:
   - librarian
-  - but
   - code-review
   - github
 ---
@@ -25,7 +24,7 @@ Supported targets:
 Hard requirements:
 - Be concise and evidence-based.
 - Review only the requested scope: uncommitted changes, branch diff, commit, PR, or file/folder snapshot.
-- Start repo-state reviews by detecting VCS mode: run `but status -fv`; if GitButler is unavailable, report normal Git mode and follow the workflow's fallback policy.
+- Start repo-state reviews by inspecting Git state with a bounded, scope-appropriate command.
 - For PR review, require `gh`; if it is unavailable or unauthenticated, stop with setup guidance. Before checkout, ensure there are no tracked-file pending changes; untracked files alone do not block PR review.
 - For branch and PR review, compute the merge base first and review the diff from that SHA.
 - For snapshot review, read the requested paths directly and do not invent diff context.

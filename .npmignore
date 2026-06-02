@@ -7,7 +7,6 @@ runtime/memory/
 # Repository and development-only metadata
 .git/
 .github/
-.gitbutler/
 .idea/
 .vscode/
 .tmp/

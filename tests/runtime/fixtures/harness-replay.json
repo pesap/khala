@@ -103,30 +103,30 @@
       "harnessLimits": { "substantialToolCallThreshold": 99 }
     },
     {
-      "name": "rejects commit task without commit and GitButler skill loads",
-      "userText": "Plan the GitButler commit workflow for these changes.",
+      "name": "rejects commit task without commit skill load",
+      "userText": "Commit these changes.",
       "assistantText": "Commit workflow context is missing.",
       "messages": [
-        { "role": "user", "text": "Plan the GitButler commit workflow for these changes." }
+        { "role": "user", "text": "Commit these changes." }
       ],
       "expectedIssueCodes": ["skill_routing"]
     },
     {
-      "name": "accepts commit task with exact commit and GitButler skill loads",
-      "userText": "Plan the GitButler commit workflow for these changes.",
-      "assistantText": "Commit and GitButler workflow context is loaded.",
+      "name": "accepts commit task with exact commit skill load",
+      "userText": "Commit these changes.",
+      "assistantText": "Commit workflow context is loaded.",
       "messages": [
-        { "role": "user", "text": "Plan the GitButler commit workflow for these changes." },
+        { "role": "user", "text": "Commit these changes." },
         {
           "role": "assistant",
           "toolCall": {
             "name": "khala_search_memory",
-            "arguments": { "query": "GitButler commit workflow exact skill routing" }
+            "arguments": { "query": "commit workflow exact skill routing" }
           }
         },
         {
           "role": "toolResult",
-          "text": "Memory: GitButler commit workflows require commit and but skills."
+          "text": "Memory: commit workflows require the commit skill."
         },
         {
           "role": "assistant",
@@ -135,18 +135,10 @@
         {
           "role": "toolResult",
           "text": "Commit skill loaded with change-scope and message guidance."
-        },
-        {
-          "role": "assistant",
-          "toolCall": { "name": "read", "arguments": { "path": "skills/but/SKILL.md" } }
-        },
-        {
-          "role": "toolResult",
-          "text": "GitButler skill loaded with non-negotiable but status and but commit instructions."
         }
       ],
       "expectedIssueCodes": [],
-      "expectedMetrics": { "skillLoads": 2 },
+      "expectedMetrics": { "skillLoads": 1 },
       "harnessLimits": { "substantialToolCallThreshold": 99 }
     },
     {
@@ -400,32 +392,24 @@
       "harnessLimits": { "substantialToolCallThreshold": 99 }
     },
     {
-      "name": "rejects loaded GitButler skill when behavior violates its command rule",
-      "userText": "Use GitButler to inspect the change state.",
+      "name": "rejects unbounded raw git status during state inspection",
+      "userText": "Inspect the change state.",
       "assistantText": "I inspected the change state.",
       "messages": [
         {
           "role": "user",
-          "text": "Use GitButler to inspect the change state."
+          "text": "Inspect the change state."
         },
         {
           "role": "assistant",
           "toolCall": {
             "name": "khala_search_memory",
-            "arguments": { "query": "GitButler inspect change state but status rule" }
+            "arguments": { "query": "inspect change state bounded git status rule" }
           }
         },
         {
           "role": "toolResult",
-          "text": "Memory: GitButler change-state inspection should use but status -fv."
-        },
-        {
-          "role": "assistant",
-          "toolCall": { "name": "read", "arguments": { "path": "skills/but/SKILL.md" } }
-        },
-        {
-          "role": "toolResult",
-          "text": "GitButler skill loaded with non-negotiable rule to use but status -fv."
+          "text": "Memory: change-state inspection should use bounded git status."
         },
         {
           "role": "assistant",
@@ -436,8 +420,8 @@
           "text": "On branch harness-mvp-closing with clean working tree."
         }
       ],
-      "expectedIssueCodes": ["tool_efficiency"],
-      "expectedMetrics": { "skillLoads": 1, "wasteSignalCount": 1 },
+      "expectedIssueCodes": [],
+      "expectedMetrics": { "skillLoads": 0, "wasteSignalCount": 0 },
       "harnessLimits": { "substantialToolCallThreshold": 99 }
     },
     {

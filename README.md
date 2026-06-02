@@ -224,9 +224,6 @@ harness:
 
 Bootstrap limits keep the stable prompt prefix cache-friendly. Substantial turns should use `khala_search_memory` instead of expanding startup memory.
 
-> [!NOTE]
-> Local version-control writes use GitButler (`but`). Workflows start from `but status -fv` and run `but setup --status-after` when setup is missing.
-
 ---
 
 ## Configuration & layout

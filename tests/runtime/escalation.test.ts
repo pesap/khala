@@ -5672,8 +5672,8 @@ test("detects explicit skill requests without triggering on generic skill mentio
     ["github", "code-review"],
   );
   assert.deepEqual(
-    explicitSkillNamesForUserText("Use commit, but and github skills."),
-    ["commit", "but", "github"],
+    explicitSkillNamesForUserText("Use commit and github skills."),
+    ["commit", "github"],
   );
   assert.deepEqual(
     explicitSkillNamesForUserText(
@@ -6280,15 +6280,11 @@ test("recommends packaged skills for common best-practice task classes", () => {
   ]);
   assert.deepEqual(
     recommendedSkillsForUserText("Commit the current changes."),
-    ["commit", "but"],
+    ["commit"],
   );
   assert.deepEqual(
-    recommendedSkillsForUserText("Use GitButler to commit the staged fix."),
-    ["commit", "but"],
-  );
-  assert.deepEqual(
-    recommendedSkillsForUserText("Squash the last two commits before shipping."),
-    ["but"],
+    recommendedSkillsForUserText("Commit the staged fix."),
+    ["commit"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Review this commit for bugs."),
@@ -6418,8 +6414,8 @@ test("requires relevant skill reads for proactive skill routes", () => {
     }),
     {
       required: true,
-      satisfied: false,
-      reason: "request matches packaged skill route: commit, but",
+      satisfied: true,
+      reason: "request matches packaged skill route: commit",
     },
   );
 
@@ -6527,17 +6523,13 @@ test("requires relevant skill reads for proactive skill routes", () => {
           path: "/repo/skills/commit/SKILL.md",
         }),
         toolResult("loaded commit skill"),
-        assistantToolCall("read", {
-          path: "/repo/skills/but/SKILL.md",
-        }),
-        toolResult("loaded GitButler skill"),
-      ],
+              ],
       userText: "Commit the current changes.",
     }),
     {
       required: true,
       satisfied: true,
-      reason: "request matches packaged skill route: commit, but",
+      reason: "request matches packaged skill route: commit",
     },
   );
 
@@ -6547,7 +6539,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
         textMessage("user", "Commit the current changes."),
         assistantToolCall("subagent", {
           agent: "worker",
-          task: "Use the commit and but skills to prepare the commit.",
+          task: "Use the commit skill to prepare the commit.",
         }),
         toolResult("subagent completed commit prep"),
       ],
@@ -6556,7 +6548,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: false,
-      reason: "request matches packaged skill route: commit, but",
+      reason: "request matches packaged skill route: commit",
     },
   );
 
@@ -6566,13 +6558,13 @@ test("requires relevant skill reads for proactive skill routes", () => {
         textMessage("user", "Commit the current changes."),
         assistantToolCall("subagent", {
           agent: "worker",
-          skills: ["commit", "but"],
+          skills: ["commit"],
           task: "Prepare the commit.",
         }),
         toolResult("subagent completed commit prep"),
         assistantToolCall("subagent", {
           agent: "worker",
-          task: "Use the commit and but skills to prepare the commit.",
+          task: "Use the commit skill to prepare the commit.",
         }),
         toolResult("subagent completed commit prep"),
       ],
@@ -6581,7 +6573,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: false,
-      reason: "request matches packaged skill route: commit, but",
+      reason: "request matches packaged skill route: commit",
     },
   );
 
@@ -6591,7 +6583,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
         textMessage("user", "Commit the current changes."),
         assistantToolCall("subagent", {
           agent: "worker",
-          skills: ["commit", "but"],
+          skills: ["commit"],
           task: "Prepare the commit.",
         }),
         toolResult("subagent completed commit prep"),
@@ -6601,7 +6593,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: true,
-      reason: "request matches packaged skill route: commit, but",
+      reason: "request matches packaged skill route: commit",
     },
   );
 
@@ -7693,13 +7685,6 @@ test("detects unbounded local shell evidence commands", () => {
   );
   assert.equal(
     findInefficientShellEvidenceCall([
-      textMessage("user", "Review the changes."),
-      assistantToolCall("bash", { command: "but diff" }),
-    ]),
-    "unbounded VCS patch output command",
-  );
-  assert.equal(
-    findInefficientShellEvidenceCall([
       textMessage("user", "Review the changed files."),
       assistantToolCall("bash", { command: "git diff --name-only" }),
     ]),
@@ -7709,13 +7694,6 @@ test("detects unbounded local shell evidence commands", () => {
     findInefficientShellEvidenceCall([
       textMessage("user", "Review the changes."),
       assistantToolCall("bash", { command: "git diff --stat --patch" }),
-    ]),
-    "unbounded VCS patch output command",
-  );
-  assert.equal(
-    findInefficientShellEvidenceCall([
-      textMessage("user", "Review the changes."),
-      assistantToolCall("bash", { command: "but diff --stat -p" }),
     ]),
     "unbounded VCS patch output command",
   );
@@ -7812,19 +7790,12 @@ test("detects unbounded local shell evidence commands", () => {
       textMessage("user", "Inspect the current change state."),
       assistantToolCall("bash", { command: "git status" }),
     ]),
-    "raw git status command",
+    null,
   );
   assert.equal(
     findInefficientShellEvidenceCall([
       textMessage("user", "Inspect branches."),
       assistantToolCall("bash", { command: "git branch --show-current" }),
-    ]),
-    "raw git status command",
-  );
-  assert.equal(
-    findInefficientShellEvidenceCall([
-      textMessage("user", "Inspect the current change state."),
-      assistantToolCall("bash", { command: "but status -fv" }),
     ]),
     null,
   );
@@ -8891,11 +8862,11 @@ test("requires memory search for mutations and accepts khala_search_memory", () 
       messages: [
         textMessage("user", "Commit the current harness changes."),
         assistantToolCall("khala_search_memory", {
-          query: "harness commit GitButler workflow",
+          query: "harness commit workflow",
         }),
-        toolResult("relevant harness GitButler commit memory"),
+        toolResult("relevant harness commit memory"),
         assistantToolCall("bash", {
-          command: "but commit br -m 'harness update' --changes ab --status-after",
+          command: "git commit -m 'harness update'",
         }),
       ],
       userText: "Commit the current harness changes.",

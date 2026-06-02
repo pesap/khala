@@ -2,10 +2,9 @@ name: address-open-issues-workflow
 version: 1
 objective: Resolve actionable open issues authored by current user through triage, implementation, review, simplify, and remediation loops
 version_control:
-  local_tool: gitbutler
-  setup_check: but status -fv
-  setup_when_missing: but setup --status-after
-  write_operations: use but instead of git write commands
+  local_tool: git
+  setup_check: git status --short
+  write_operations: use normal git commands with explicit scope and validation
 steps:
   - id: list-issues
     action: fetch_open_issues_authored_by_current_user

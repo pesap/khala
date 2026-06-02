@@ -526,14 +526,14 @@ export function createWorkflowCommandHandlers(params: {
         ctx,
         type: "ship",
         source: constants.SHIP_COMMAND_SOURCE,
-        input: extraInstruction || "GitButler workspace",
+        input: extraInstruction || "current Git branch",
         fields: {
           extraInstruction: extraInstruction || null,
         },
         sections: [
           "Scope: publish one focused branch/stack safely",
           "Instruction: Follow the workflow order exactly: detect -> target -> sync -> validate -> publish -> PR/MR -> summarize.",
-          "Instruction: Start with `but status -fv`; identify the current VCS mode and the candidate ship target.",
+          "Instruction: Inspect Git state with bounded commands; identify the current branch and candidate ship target.",
           "Instruction: Select exactly one ship target branch/stack; if ambiguous, show a branch/change table and ask before shipping.",
           "Instruction: Treat other applied branches as parallel work; do not commit, push, or include their changes unless explicitly requested.",
           "Instruction: Sync the target with the latest base/default branch and stop if there is no unique unmerged work.",
