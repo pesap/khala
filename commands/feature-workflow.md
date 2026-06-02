@@ -1,7 +1,6 @@
 ---
 skills:
   - librarian
-  - but
   - feature-delivery
 ---
 
@@ -11,7 +10,7 @@ You are running the khala `/feature` workflow.
 
 Requirements:
 - Be concise.
-- Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
+- Use normal Git for version-control work; inspect repository state before VCS mutations and keep commits scoped to the requested work.
 - Extract acceptance criteria from the request and repo context before coding; ask at most one blocking clarification question only if the criteria cannot be inferred safely.
 - Prefer minimal, maintainable changes.
 - Cover implementation, tests, and docs explicitly in your execution plan.

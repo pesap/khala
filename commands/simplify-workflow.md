@@ -1,7 +1,6 @@
 ---
 skills:
   - librarian
-  - but
   - surgical-dev
   - simplify
   - public-api-guard
@@ -18,7 +17,7 @@ You are running the khala `/simplify` workflow.
 
 Requirements:
 - Be concise.
-- Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
+- Use normal Git for version-control work; inspect repository state before VCS mutations and keep commits scoped to the requested work.
 - Simplify only the requested scope (uncommitted, branch diff, commit, PR, or folder snapshot).
 - Default to behavior-preserving and non-breaking changes.
 - Always use: `surgical-dev`, `simplify`, `public-api-guard`, `nasa-guidelines`.

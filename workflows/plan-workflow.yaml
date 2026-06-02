@@ -2,10 +2,9 @@ name: plan-workflow
 version: 1
 objective: Build a rigorous implementation plan with edge cases, domain alignment, and captured decisions
 version_control:
-  local_tool: gitbutler
-  setup_check: but status -fv
-  setup_when_missing: but setup --status-after
-  write_operations: use but instead of git write commands
+  local_tool: git
+  setup_check: git status --short
+  write_operations: use normal git commands with explicit scope and validation
 steps:
   - id: intake
     action: capture_plan_and_scope

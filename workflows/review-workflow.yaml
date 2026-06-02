@@ -7,26 +7,14 @@ command_prompt_policy:
   command_file: commands/review-workflow.md
 
 version_control:
-  primary_tool: gitbutler
-  fallback_tool: git
-  detect:
-    first_command_when_reviewing_repo_state: but status -fv
-    gitbutler_available_when: command succeeds and reports GitButler workspace state
-    normal_git_when: but is unavailable, reports repository is not managed by GitButler, or setup is intentionally declined
-  gitbutler:
-    setup_when_missing: but setup --status-after
-    write_operations: use but instead of git write commands
-  normal_git:
-    allowed_when: GitButler is unavailable or this repo is intentionally not a GitButler workspace
-    write_operations: use git only in normal Git mode; never mix git writes into a GitButler workspace
+  local_tool: git
+  inspect_before_repo_state_review: use bounded git state/diff/history commands appropriate to the review target
+  write_operations: mutate files only when explicitly requested; keep VCS writes out of read-only review
 
 skill_contracts:
   review:
     skill: code-review
     load_before: evaluating code findings
-  gitbutler:
-    skill: but
-    load_before: GitButler mode detection, branch, diff, or uncommitted workspace review
   remote_reference:
     skill: librarian
     load_when: user provides a GitHub URL, repo shorthand, or remote git reference
@@ -35,15 +23,13 @@ skill_contracts:
     load_before: GitHub PR metadata lookup, checkout, or PR diff review
 
 gates:
-  vcs_mode:
-    - run the detect command before reviewing repo state
-    - if GitButler is available, review GitButler branches/stacks/unassigned changes by GitButler IDs
-    - if normal Git mode is required, say so explicitly and review current branch, working tree, upstream, and local commits with equivalent scope discipline
-    - never use git write commands after GitButler mode has been detected
+  repo_state:
+    - inspect repository state before reviewing uncommitted, branch, commit, or PR targets
+    - keep the review scoped to the selected branch, commit range, PR, file, or folder
   scope:
     - confirm exact review target: uncommitted changes, branch diff, commit, PR, or file/folder snapshot
     - ask before reviewing if scope is ambiguous
-    - do not include unrelated parallel GitButler branches/stacks or unrelated normal-Git local branches
+    - do not include unrelated local branches or unrelated working-tree changes
     - for direct GitHub PR URLs, treat the URL as PR mode, not path snapshot mode
   github_pr:
     - require GitHub CLI for PR mode; if missing or unauthenticated, stop with setup guidance
@@ -65,8 +51,8 @@ gates:
     - avoid speculative style-only findings unless listed as non-blocking callouts
 
 steps:
-  - id: vcs-mode-detect
-    action: detect_gitbutler_or_normal_git_mode_when_reviewing_repo_state
+  - id: repo-state
+    action: inspect_git_state_when_reviewing_repo_state
   - id: scope
     action: confirm_review_target_and_constraints
   - id: collect
@@ -88,24 +74,3 @@ finding_contract:
     - "[P1] must fix: likely correctness break or significant regression"
     - "[P2] should fix before merge when it is a moderate bug, edge case, maintainability risk, or low-quality construction that threatens future correctness; do not use P2 for personal preference or repo-style-only changes when the code is mergeable"
     - "[P3] nitpick or optional: personal preference, repo-style cleanup, naming/readability polish, or minor improvement with clear evidence"
-  required_fields:
-    - severity
-    - concise title
-    - file reference
-    - evidence
-    - suggested fix or next check
-
-final_response_contract:
-  required_sections:
-    - review summary
-    - key findings
-    - verdict
-    - Human Reviewer Callouts (Non-Blocking)
-  verdict_values:
-    - correct
-    - needs attention
-  no_findings_text: change looks good
-  required_lines:
-    - "Result: success|partial|failed"
-    - "Confidence: 0..1"
-  postflight_line_when_mutated: "Postflight: verify=\"<command_or_check>\" result=<pass|fail|not-run>"

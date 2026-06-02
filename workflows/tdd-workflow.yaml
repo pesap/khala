@@ -2,10 +2,9 @@ name: tdd-workflow
 version: 2
 objective: Deliver features via behavior-first red-green-refactor with implementation, tests, docs, and validation
 version_control:
-  local_tool: gitbutler
-  setup_check: but status -fv
-  setup_when_missing: but setup --status-after
-  write_operations: use but instead of git write commands
+  local_tool: git
+  setup_check: git status --short
+  write_operations: use normal git commands with explicit scope and validation
 steps:
   - id: clarify
     action: extract_acceptance_criteria

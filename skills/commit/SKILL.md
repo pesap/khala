@@ -1,9 +1,9 @@
 ---
 name: commit
-description: "Create one intentional GitButler commit with a concise Conventional Commits-style message and verified scope. Use when users ask to commit current changes, commit selected files, write a commit message, or prepare a local commit without pushing."
+description: "Create one intentional Git commit with a concise Conventional Commits-style message and verified scope. Use when users ask to commit current changes, commit selected files, write a commit message, or prepare a local commit without pushing."
 ---
 
-Create a GitButler commit for the current changes using a concise Conventional Commits-style subject.
+Create a Git commit for the current changes using a concise Conventional Commits-style subject.
 
 ## Avoid when
 
@@ -28,7 +28,6 @@ Create a GitButler commit for the current changes using a concise Conventional C
 - Body is OPTIONAL. If needed, add a blank line after the subject and write short paragraphs.
 - Do NOT include breaking-change markers or footers.
 - Do NOT add sign-offs (no `Signed-off-by`).
-- Use GitButler (`but`) for commit mutations; do NOT use `git add` or `git commit`.
 - Never create an unsigned commit. If commit signing is unavailable, failing, or unclear, stop and request user assistance before committing.
 - Treat commit signature verification separately from CI/test verification. `unverified` on a commit means a signing problem until proven otherwise.
 - Only commit; do NOT push.
@@ -44,14 +43,13 @@ Create a GitButler commit for the current changes using a concise Conventional C
 
 1. Infer from the prompt if the user provided specific file paths/globs and/or additional instructions.
 2. Confirm the files to commit are inside the current repository/worktree and match the user's intended scope.
-3. Run `but status -fv` and `but diff` to understand the current changes (limit to argument-specified files if provided).
-4. If GitButler setup is required, run `but setup --status-after`, then rerun `but status -fv`.
-5. Confirm the target branch is fresh for this task: based on the latest default branch and not already used by a merged PR.
+3. Run bounded Git state and diff commands to understand the current changes (limit to argument-specified files if provided).
+4. Confirm the target branch is fresh for this task: based on the latest default branch and not already used by a merged PR.
 6. (Optional) Run `git log -n 50 --pretty=format:%s` to see commonly used scopes.
 7. If there are ambiguous extra files, or the requested edits are not present in the repo-local diff, ask for clarification before committing.
 8. Verify commit signing is configured and working for this repo/worktree. If signing cannot be confirmed, stop and ask for assistance.
 9. Confirm the target commit set is exactly the intended scope for this PR: one logical change, no inherited historical commits, and no reused merged-branch history.
-10. Commit only the intended change IDs with `but commit <branch> -m "<subject>" --changes <ids> --status-after` (add body flags if needed).
+9. Stage only the intended files/hunks and create the commit with `git commit -m "<subject>"` (add body paragraphs if needed).
 
 ## Validation
 

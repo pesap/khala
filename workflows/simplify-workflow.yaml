@@ -2,10 +2,9 @@ name: simplify-workflow
 version: 3
 objective: Improve maintainability and code quality with behavior-preserving cleanup
 version_control:
-  local_tool: gitbutler
-  setup_check: but status -fv
-  setup_when_missing: but setup --status-after
-  write_operations: use but instead of git write commands
+  local_tool: git
+  setup_check: git status --short
+  write_operations: use normal git commands with explicit scope and validation
 policy:
   auto_apply_min_confidence: 0.9
   auto_apply_allowed_risk:

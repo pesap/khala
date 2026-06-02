@@ -1,7 +1,6 @@
 ---
 skills:
   - librarian
-  - but
   - plan
   - vertical-slice-planning
 ---
@@ -12,7 +11,7 @@ You are running the khala `/plan` workflow.
 
 Requirements:
 - Be concise.
-- Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
+- Use normal Git for version-control work; inspect repository state before VCS mutations and keep commits scoped to the requested work.
 - Always use `plan` skill behavior.
 - Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.
 - If a question can be answered from code/docs, inspect first and do not ask it.

@@ -187,7 +187,7 @@ function inferWorkflowLesson(input: AssessInput): { kind: LearningKind; trigger:
   if (/unsigned commit|signing/.test(combined)) {
     return {
       kind: "tool_rule",
-      trigger: "commit or ship work with GitButler",
+      trigger: "commit or ship work with Git",
       lesson:
         "Verify commit signing before push; if signing is unavailable or unclear, stop and request assistance instead of creating an unsigned commit.",
     };

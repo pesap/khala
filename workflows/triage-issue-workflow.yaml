@@ -2,10 +2,9 @@ name: triage-issue-workflow
 version: 2
 objective: Resolve a GitHub-reported bug end-to-end: root cause, TDD fix, and PR
 version_control:
-  local_tool: gitbutler
-  setup_check: but status -fv
-  setup_when_missing: but setup --status-after
-  write_operations: use but instead of git write commands
+  local_tool: git
+  setup_check: git status --short
+  write_operations: use normal git commands with explicit scope and validation
 steps:
   - id: capture
     action: capture_issue_or_problem_statement

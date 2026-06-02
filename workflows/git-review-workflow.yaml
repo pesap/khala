@@ -2,10 +2,9 @@ name: git-review-workflow
 version: 1
 objective: Run git health diagnostics before reading code and identify the highest-value files to inspect first
 version_control:
-  local_tool: gitbutler
-  setup_check: but status -fv
-  setup_when_missing: but setup --status-after
-  write_operations: use but instead of git write commands
+  local_tool: git
+  setup_check: git status --short
+  write_operations: use normal git commands with explicit scope and validation
 steps:
   - id: scope
     action: confirm_repository_scope_and_default_time_windows

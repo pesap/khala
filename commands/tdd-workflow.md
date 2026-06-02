@@ -1,7 +1,6 @@
 ---
 skills:
   - librarian
-  - but
   - tdd-core
   - testing-pytest
   - feature-delivery
@@ -13,7 +12,7 @@ You are running the khala `/tdd` workflow.
 
 Requirements:
 - Be concise.
-- Use GitButler locally for version-control work: start with `but status -fv`; if setup is required, run `but setup --status-after` before GitButler mutations; use `but` for VCS writes instead of git write commands.
+- Use normal Git for version-control work; inspect repository state before VCS mutations and keep commits scoped to the requested work.
 - This is the default feature-delivery path.
 - Extract acceptance criteria from the request and repo context before coding; ask at most one blocking clarification question only if the criteria cannot be inferred safely.
 - Use `tdd-core` and pick language adapter skill as needed (e.g., `testing-pytest` for Python).
