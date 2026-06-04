@@ -40,7 +40,7 @@
     "typebox": "*"
   },
   "dependencies": {
-    "@ff-labs/pi-fff": "^0.7.2",
+    "@ff-labs/pi-fff": "^0.9.1",
     "js-yaml": "^4.1.1",
     "pi-subagents": "^0.24.2"
   },
@@ -53,5 +53,9 @@
     "@types/js-yaml": "^4.0.9",
     "prettier": "3.8.3",
     "typescript": "^6.0.3"
-  }
+  },
+  "bundleDependencies": [
+    "@ff-labs/pi-fff",
+    "pi-subagents"
+  ]
 }
