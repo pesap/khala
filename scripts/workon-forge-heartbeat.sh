@@ -71,7 +71,7 @@ interval_seconds() {
     return 1
   fi
 
-  awk -v hours="${value}" 'BEGIN { seconds = int(hours * 3600); print seconds > 0 ? seconds : 1 }'
+  awk -v hours="${value}" 'BEGIN { seconds = int(hours * 3600); print (seconds > 0 ? seconds : 1) }'
 }
 
 json_string() {
