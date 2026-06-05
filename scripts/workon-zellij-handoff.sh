@@ -18,7 +18,7 @@ capsule=""
 prompt=""
 heartbeat="1.0"
 pi_command="${PI_COMMAND:-pi}"
-wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-50}"
+wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-150}"
 wait_seconds="${ZELLIJ_TAB_WAIT_SECONDS:-0.2}"
 
 while (($#)); do
@@ -81,9 +81,7 @@ slugify() {
   local value="${1:?value required}"
   printf '%s' "${value}" \
     | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g' \
-    | cut -c 1-72 \
-    | sed -E 's/-+$//'
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g'
 }
 
 json_string() {
