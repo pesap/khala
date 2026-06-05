@@ -24,6 +24,9 @@ Requirements:
     after the target repo is clear and issue creation is appropriate.
 - Prefer GitHub v1. Gracefully degrade for GitLab and other forges with precise
   next steps rather than guessing.
+- Use deterministic bootstrap evidence attached by the command handler when it
+  resolves a GitHub issue, derives a branch name, and writes a local session
+  capsule.
 - Use Worktrunk when available to prepare a worktree branch name. If Worktrunk is
   unavailable or hooks need trust approval, stop with exact operator guidance;
   do not bypass approvals.

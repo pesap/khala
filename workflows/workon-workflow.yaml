@@ -23,6 +23,8 @@ inputs:
 steps:
   - id: scope
     action: resolve_target_repo_forge_and_mode
+  - id: deterministic-bootstrap
+    action: use_command_handler_issue_metadata_branch_name_and_capsule_when_available
   - id: source-of-truth
     action: find_or_prepare_source_issue
   - id: branch

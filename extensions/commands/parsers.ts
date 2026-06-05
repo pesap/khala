@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import type { WorkonMode } from "./workon.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -60,7 +61,6 @@ const INBOX_FOCUS_VALUES: readonly InboxFocus[] = [
   "sessions",
 ];
 
-type WorkonMode = "prepare" | "start";
 const WORKON_MODES: readonly WorkonMode[] = ["prepare", "start"];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {

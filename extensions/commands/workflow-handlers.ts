@@ -4,6 +4,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import {
+  prepareWorkonBootstrap,
+  type WorkonForge,
+  type WorkonMode,
+} from "./workon.ts";
 import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
 import type { PendingWorkflow } from "../workflows/engine.ts";
 
@@ -108,8 +113,8 @@ export function createWorkflowCommandHandlers(params: {
   parseWorkonArgs: (args: string) => {
     target: string;
     repo: string;
-    forge: string;
-    mode: string;
+    forge: WorkonForge;
+    mode: WorkonMode;
     extraInstruction: string;
   };
   parseLearnSkillArgs: (args: string) => {
@@ -118,7 +123,7 @@ export function createWorkflowCommandHandlers(params: {
     fromUrl?: string;
     dryRun: boolean;
   };
-  ensureLearningStore: (cwd: string) => Promise<{ skillsDir: string }>;
+  ensureLearningStore: (cwd: string) => Promise<{ root: string; skillsDir: string }>;
   ensureLearnedSkillLayout: (
     cwd: string,
     skillName: string,
@@ -617,6 +622,17 @@ export function createWorkflowCommandHandlers(params: {
         return;
       }
 
+      const paths = await ensureLearningStore(ctx.cwd);
+      const workonBootstrapSections = await prepareWorkonBootstrap({
+        cwd: ctx.cwd,
+        target: parsed.target,
+        repo: parsed.repo,
+        forge: parsed.forge,
+        mode: parsed.mode,
+        capsuleRoot: path.join(paths.root, "workon"),
+        nowIso: nowIso(),
+      });
+
       await runMirroredSourceWorkflow({
         ctx,
         type: "workon",
@@ -638,7 +654,9 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: For freeform topics, search existing issues first; create a new issue only when the target repo is clear and creation is appropriate.",
           "Instruction: Derive an issue-numbered branch/worktree name and use Worktrunk when available; never bypass Worktrunk hook approval prompts.",
           "Instruction: Do not implement the feature or bugfix; stop after source-of-truth, branch/worktree preparation, and session capsule handoff.",
+          "Instruction: Use the deterministic bootstrap evidence below as the source-of-truth handoff when available.",
           "Instruction: Session capsule must include repo, issue/PR, branch/worktree, problem, acceptance criteria, non-goals, validation, open questions, and next prompt.",
+          ...workonBootstrapSections,
           parsed.extraInstruction
             ? `Additional focus: ${parsed.extraInstruction}`
             : "",
