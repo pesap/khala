@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -38,6 +41,8 @@ export interface InboxEvidenceRequest {
   user: string;
   forge: InboxForge;
   focus: InboxFocus;
+  capsuleRoot?: string;
+  nowIso?: string;
 }
 
 interface CommandResult {
@@ -99,6 +104,8 @@ const SOURCE_PRIORITY = new Map<string, number>([
   ["review-requested-pr", 0],
   ["authored-pr-ci-failure", 0],
   ["authored-pr-ci-pending", 1],
+  ["local-worktree", 2],
+  ["stale-session-capsule", 3],
   ["assigned-issue", 0],
   ["authored-issue", 1],
 ]);
@@ -107,6 +114,18 @@ interface GithubEvidence {
   commands: string[];
   gaps: string[];
   repositories: GithubRepository[];
+  items: InboxItem[];
+}
+
+interface GitWorktree {
+  path: string;
+  branch?: string;
+  detached?: boolean;
+}
+
+interface LocalEvidence {
+  commands: string[];
+  gaps: string[];
   items: InboxItem[];
 }
 
@@ -144,12 +163,15 @@ function parseJsonObject<T>(
 
 function resultGap(label: string, result: CommandResult): string | null {
   if (result.ok) return null;
-  const detail = result.error || result.stderr || result.stdout || "command failed";
+  const detail =
+    result.error || result.stderr || result.stdout || "command failed";
   return `${label}: ${detail.trim().split("\n")[0]}`;
 }
 
 function repoName(item: GithubSearchItem): string {
-  return item.repository?.nameWithOwner || item.repository?.name || "unknown/repo";
+  return (
+    item.repository?.nameWithOwner || item.repository?.name || "unknown/repo"
+  );
 }
 
 function itemLine(item: InboxItem): string {
@@ -261,15 +283,20 @@ function shouldCollectGithub(forge: InboxForge): boolean {
   return forge === "auto" || forge === "github" || forge === "all";
 }
 
+function shouldCollectWorktrees(focus: InboxFocus): boolean {
+  return focus === "all" || focus === "local";
+}
+
+function shouldCollectSessions(focus: InboxFocus): boolean {
+  return focus === "all" || focus === "local" || focus === "sessions";
+}
+
 function repoSearchArgs(repo: string): string[] {
   return repo ? ["--repo", repo] : [];
 }
 
 function searchJsonFields(): string[] {
-  return [
-    "--json",
-    "number,title,url,repository,updatedAt,isDraft,labels",
-  ];
+  return ["--json", "number,title,url,repository,updatedAt,isDraft,labels"];
 }
 
 function repositoryJsonFields(): string[] {
@@ -287,6 +314,210 @@ async function runGh(
 ): Promise<CommandResult> {
   commands.push(`gh ${args.join(" ")}`);
   return runner("gh", args, { cwd });
+}
+
+async function runGit(
+  runner: InboxCommandRunner,
+  cwd: string,
+  commands: string[],
+  args: string[],
+): Promise<CommandResult> {
+  commands.push(`(cd ${cwd} && git ${args.join(" ")})`);
+  return runner("git", args, { cwd });
+}
+
+function normalizeBranch(ref: string): string {
+  return ref.replace(/^refs\/heads\//, "");
+}
+
+function parseWorktreeList(raw: string): GitWorktree[] {
+  const worktrees: GitWorktree[] = [];
+  let current: GitWorktree | null = null;
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) {
+      if (current) worktrees.push(current);
+      current = null;
+      continue;
+    }
+    const [key, ...valueParts] = line.split(" ");
+    const value = valueParts.join(" ");
+    if (key === "worktree") {
+      if (current) worktrees.push(current);
+      current = { path: value };
+    } else if (key === "branch" && current) {
+      current.branch = normalizeBranch(value);
+    } else if (key === "detached" && current) {
+      current.detached = true;
+    }
+  }
+  if (current) worktrees.push(current);
+  return worktrees;
+}
+
+function statusHasUncommitted(raw: string): boolean {
+  return raw.split("\n").some((line) => line.trim() && !line.startsWith("##"));
+}
+
+function statusHeader(raw: string): string {
+  return raw.split("\n").find((line) => line.startsWith("##")) ?? "";
+}
+
+function statusHasUnpushed(raw: string): boolean {
+  return /\[([^\]]*, )?ahead \d+/.test(statusHeader(raw));
+}
+
+function statusHasUpstream(raw: string): boolean {
+  return statusHeader(raw).includes("...");
+}
+
+function statusHasGoneUpstream(raw: string): boolean {
+  return /\bgone\b/.test(statusHeader(raw));
+}
+
+function currentRepoFromRemote(raw: string): string | null {
+  const trimmed = raw.trim();
+  const match = trimmed.match(
+    /github\.com[:/](?<owner>[^/]+)\/(?<repo>.+?)(?:\.git)?$/,
+  );
+  if (!match?.groups) return null;
+  return `${match.groups.owner}/${match.groups.repo}`;
+}
+
+async function capsuleCreatedIso(capsulePath: string): Promise<string | null> {
+  try {
+    const content = await readFile(capsulePath, "utf8");
+    const created = content.match(/^Created:\s*(?<created>\S+)/m)?.groups
+      ?.created;
+    if (!created) return null;
+    const parsed = new Date(created);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+async function collectLocalEvidence(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner,
+): Promise<LocalEvidence> {
+  const evidence: LocalEvidence = { commands: [], gaps: [], items: [] };
+  const collectWorktrees = shouldCollectWorktrees(request.focus);
+  const collectSessions = shouldCollectSessions(request.focus);
+  if (!collectWorktrees && !collectSessions) {
+    evidence.gaps.push(`Local collector skipped for focus=${request.focus}`);
+    return evidence;
+  }
+
+  const remote = await runGit(runner, request.cwd, evidence.commands, [
+    "remote",
+    "get-url",
+    "origin",
+  ]);
+  const repo =
+    request.repo || (remote.ok ? currentRepoFromRemote(remote.stdout) : null);
+
+  if (collectWorktrees) {
+    const worktreeResult = await runGit(
+      runner,
+      request.cwd,
+      evidence.commands,
+      ["worktree", "list", "--porcelain"],
+    );
+    const worktreeGap = resultGap("local git worktrees", worktreeResult);
+    if (worktreeGap) {
+      evidence.gaps.push(worktreeGap);
+    } else {
+      const worktrees = parseWorktreeList(worktreeResult.stdout).slice(
+        0,
+        request.limit,
+      );
+      for (const worktree of worktrees) {
+        const status = await runGit(runner, worktree.path, evidence.commands, [
+          "status",
+          "--porcelain=v1",
+          "-b",
+        ]);
+        const statusGap = resultGap(
+          `local git status ${worktree.path}`,
+          status,
+        );
+        if (statusGap) {
+          evidence.gaps.push(statusGap);
+          continue;
+        }
+
+        const dirty = statusHasUncommitted(status.stdout);
+        const unpushed = statusHasUnpushed(status.stdout);
+        const unpublished =
+          Boolean(worktree.branch) && !statusHasUpstream(status.stdout);
+        const gone = statusHasGoneUpstream(status.stdout);
+        if (!dirty && !unpushed && !unpublished && !gone) continue;
+
+        const signals = [
+          dirty ? "uncommitted" : "",
+          unpushed ? "unpushed" : "",
+          unpublished ? "unpublished" : "",
+          gone ? "missing-upstream" : "",
+        ].filter(Boolean);
+        const branch =
+          worktree.branch ?? (worktree.detached ? "detached" : "unknown");
+        evidence.items.push({
+          bucket: gone ? "My work is broken" : "Agent/session needs attention",
+          repo: repo ?? "current-repo",
+          source: "local-worktree",
+          title: `${branch}: ${signals.join("+")} work at ${worktree.path}`,
+          url: worktree.path,
+          suggestedCommand: `/inbox --focus local`,
+          evidence:
+            "git worktree list --porcelain; git status --porcelain=v1 -b",
+        });
+      }
+    }
+  }
+
+  if (!collectSessions) return evidence;
+
+  if (!repo) {
+    evidence.gaps.push(
+      "session capsule lookup skipped: GitHub repo could not be inferred",
+    );
+    return evidence;
+  }
+
+  const [owner, name] = repo.split("/");
+  const capsulePath = path.join(
+    request.capsuleRoot ?? path.join(homedir(), ".pi", "khala"),
+    "github.com",
+    owner,
+    name,
+    "capsule.md",
+  );
+  const created = await capsuleCreatedIso(capsulePath);
+  if (!created) {
+    evidence.gaps.push(
+      `session capsule Created metadata not found for ${repo}`,
+    );
+    return evidence;
+  }
+
+  const now = new Date(request.nowIso ?? new Date().toISOString());
+  const ageHours = Math.floor(
+    (now.getTime() - new Date(created).getTime()) / 3_600_000,
+  );
+  if (ageHours >= 24) {
+    evidence.items.push({
+      bucket: "Agent/session needs attention",
+      repo,
+      source: "stale-session-capsule",
+      title: `session capsule is ${ageHours}h old at ${capsulePath}`,
+      url: capsulePath,
+      updatedAt: created,
+      suggestedCommand: `/workon --mode start --repo ${repo}`,
+      evidence: "session capsule Created metadata",
+    });
+  }
+  return evidence;
 }
 
 async function resolveGithubUser(
@@ -593,7 +824,29 @@ async function collectGithubEvidence(
   return evidence;
 }
 
-export function formatGithubInboxEvidence(evidence: GithubEvidence): string[] {
+export function formatLocalInboxEvidence(evidence: LocalEvidence): string[] {
+  const itemLines = evidence.items.map(itemLine);
+  const gapLines = evidence.gaps.map((gap) => `- ${gap}`);
+  const commandLines = evidence.commands.map((command) => `- ${command}`);
+
+  return [
+    "Deterministic local inbox evidence (read-only):",
+    itemLines.length > 0
+      ? ["Local queue candidates:", ...itemLines].join("\n")
+      : "Local queue candidates: none reported by git/session metadata.",
+    gapLines.length > 0
+      ? ["Local evidence gaps and graceful degradation:", ...gapLines].join(
+          "\n",
+        )
+      : "Local evidence gaps and graceful degradation: none.",
+    ["Read-only local commands executed:", ...commandLines].join("\n"),
+  ];
+}
+
+export function formatGithubInboxEvidence(
+  evidence: GithubEvidence,
+  queueItems: InboxItem[] = evidence.items,
+): string[] {
   const repoLines = evidence.repositories.slice(0, 20).map((repo) => {
     const privacy = repo.isPrivate ? "private" : "public";
     const permission = repo.viewerPermission
@@ -611,7 +864,7 @@ export function formatGithubInboxEvidence(evidence: GithubEvidence): string[] {
     repoLines.length > 0
       ? ["Repository discovery:", ...repoLines].join("\n")
       : "Repository discovery: no repositories reported.",
-    renderMaintainerQueue(evidence.items),
+    renderMaintainerQueue(queueItems),
     gapLines.length > 0
       ? ["Evidence gaps and graceful degradation:", ...gapLines].join("\n")
       : "Evidence gaps and graceful degradation: none.",
@@ -623,8 +876,17 @@ export async function collectInboxEvidence(
   request: InboxEvidenceRequest,
   runner: InboxCommandRunner = createExecFileRunner(),
 ): Promise<string[]> {
-  const evidence = await collectGithubEvidence(request, runner);
-  return formatGithubInboxEvidence(evidence);
+  const [githubEvidence, localEvidence] = await Promise.all([
+    collectGithubEvidence(request, runner),
+    collectLocalEvidence(request, runner),
+  ]);
+  return [
+    ...formatGithubInboxEvidence(githubEvidence, [
+      ...githubEvidence.items,
+      ...localEvidence.items,
+    ]),
+    ...formatLocalInboxEvidence(localEvidence),
+  ];
 }
 
 export function createExecFileRunner(): InboxCommandRunner {
