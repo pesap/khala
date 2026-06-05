@@ -34,6 +34,32 @@ export interface ParseRecordResult<T> {
 
 export type CompliancePreset = "status" | "reset" | PolicyMode;
 
+type InboxForge = "auto" | "github" | "gitlab" | "all";
+type InboxFocus =
+  | "all"
+  | "reviews"
+  | "issues"
+  | "prs"
+  | "ci"
+  | "local"
+  | "sessions";
+
+const INBOX_FORGES: readonly InboxForge[] = [
+  "auto",
+  "github",
+  "gitlab",
+  "all",
+];
+const INBOX_FOCUS_VALUES: readonly InboxFocus[] = [
+  "all",
+  "reviews",
+  "issues",
+  "prs",
+  "ci",
+  "local",
+  "sessions",
+];
+
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
   strict: "enforce",
@@ -160,8 +186,8 @@ export function parseInboxArgs(args: string): {
   limit: number;
   repo: string;
   user: string;
-  forge: string;
-  focus: string;
+  forge: InboxForge;
+  focus: InboxFocus;
   extraInstruction: string;
 } {
   let rest = normalizeWhitespace(args);
@@ -188,29 +214,19 @@ export function parseInboxArgs(args: string): {
 
   const forgeResult = removeFlag(rest, /(^|\s)--forge\s+(\S+)(\s|$)/);
   rest = forgeResult.value;
-  const requestedForge = normalizeWhitespace(
-    forgeResult.match?.[2] ?? "auto",
-  ).toLowerCase();
-  const forge = ["auto", "github", "gitlab", "all"].includes(requestedForge)
-    ? requestedForge
-    : "auto";
+  const forge = parseAllowedInboxValue(
+    forgeResult.match?.[2],
+    "auto",
+    INBOX_FORGES,
+  );
 
   const focusResult = removeFlag(rest, /(^|\s)--focus\s+(\S+)(\s|$)/);
   rest = focusResult.value;
-  const requestedFocus = normalizeWhitespace(
-    focusResult.match?.[2] ?? "all",
-  ).toLowerCase();
-  const focus = [
+  const focus = parseAllowedInboxValue(
+    focusResult.match?.[2],
     "all",
-    "reviews",
-    "issues",
-    "prs",
-    "ci",
-    "local",
-    "sessions",
-  ].includes(requestedFocus)
-    ? requestedFocus
-    : "all";
+    INBOX_FOCUS_VALUES,
+  );
 
   return {
     limit: Number.isFinite(limit) && limit > 0 ? limit : 20,
@@ -271,6 +287,17 @@ export const parseKhalaMemoryRestartArgs = makeMemoryScopeParser(
 export const parseKhalaMemoryRemoveArgs = makeMemoryScopeParser(
   "Usage: /khala-memory-remove [project|global]",
 );
+
+function parseAllowedInboxValue<T extends string>(
+  rawValue: string | undefined,
+  fallback: T,
+  allowedValues: readonly T[],
+): T {
+  const normalizedValue = normalizeWhitespace(rawValue ?? fallback).toLowerCase();
+  return allowedValues.includes(normalizedValue as T)
+    ? (normalizedValue as T)
+    : fallback;
+}
 
 function parseRecordLine<T>(
   args: string,
