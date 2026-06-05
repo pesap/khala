@@ -17,17 +17,19 @@ Requirements:
 - Be concise.
 - Do not mutate local files, git branches, forge state, labels, issues, PRs, MRs,
   comments, CI runs, or sessions.
-- Prefer deterministic evidence first: `git` state, `gh`/`glab` metadata, and
-  bounded local file checks.
+- Prefer deterministic evidence first: use the pre-collected GitHub evidence
+  attached by the command handler, then bounded `git`/`gh`/`glab` checks only
+  when a material gap remains.
 - Detect GitHub vs GitLab from remotes when possible; use explicit command flags
   when provided.
 - Gracefully degrade when `gh`, `glab`, auth, remotes, or session metadata are
   unavailable. Report missing evidence as a limitation, not a failure.
 - Inspect the current repo by default; respect repo, user, forge, focus, and
   limit hints from command input.
-- If a user hint is present, discover that user's repositories with read-only
-  forge commands before collecting per-repo signals. Treat `@me` as the
-  authenticated user. Do not clone, fetch, pull, or otherwise mutate repos.
+- If a user hint is present, use the command handler's read-only repository
+  discovery evidence before collecting or requesting per-repo signals. Treat
+  `@me` as the authenticated user. Do not clone, fetch, pull, or otherwise
+  mutate repos.
 - If both repo and user hints are present, prioritize the explicit repo and
   report that user repository discovery was ignored.
 - Bucket findings into:

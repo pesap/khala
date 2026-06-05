@@ -1,5 +1,11 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import {
+  INBOX_FOCUS_VALUES,
+  INBOX_FORGES,
+  type InboxFocus,
+  type InboxForge,
+} from "./inbox.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -33,32 +39,6 @@ export interface ParseRecordResult<T> {
 }
 
 export type CompliancePreset = "status" | "reset" | PolicyMode;
-
-type InboxForge = "auto" | "github" | "gitlab" | "all";
-type InboxFocus =
-  | "all"
-  | "reviews"
-  | "issues"
-  | "prs"
-  | "ci"
-  | "local"
-  | "sessions";
-
-const INBOX_FORGES: readonly InboxForge[] = [
-  "auto",
-  "github",
-  "gitlab",
-  "all",
-];
-const INBOX_FOCUS_VALUES: readonly InboxFocus[] = [
-  "all",
-  "reviews",
-  "issues",
-  "prs",
-  "ci",
-  "local",
-  "sessions",
-];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
