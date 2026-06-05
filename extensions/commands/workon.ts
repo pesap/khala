@@ -7,6 +7,8 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 const MAX_BRANCH_SLUG_LENGTH = 72;
+const ZELLIJ_TAB_WAIT_ATTEMPTS = 10;
+const ZELLIJ_TAB_WAIT_MS = 200;
 
 export type WorkonForge = "auto" | "github" | "gitlab" | "all";
 export type WorkonMode = "prepare" | "start";
@@ -349,7 +351,68 @@ async function writeCapsule(params: {
 }
 
 function extractWorktreePath(output: string): string | undefined {
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as { path?: unknown };
+      if (typeof parsed.path === "string" && parsed.path) return parsed.path;
+    } catch {
+      // Ignore non-JSON hook output around Worktrunk's JSON line.
+    }
+  }
   return output.match(/(?:^|\s)(\/[^\s]+)/)?.[1];
+}
+
+function worktrunkTabName(repo: string, branchName: string): string {
+  const [, repoName = repo] = repo.split("/", 2);
+  return `${slugify(repoName) || "repo"}/${slugify(branchName) || "work"}`;
+}
+
+function zellijTabIdFromList(output: string, tabName: string): number | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as { name?: unknown; tab_id?: unknown };
+    if (record.name !== tabName || typeof record.tab_id !== "number") continue;
+    return record.tab_id;
+  }
+  return undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForZellijTab(
+  request: WorkonBootstrapRequest,
+  runner: WorkonCommandRunner,
+  evidence: WorkonBootstrapEvidence,
+  tabName: string,
+): Promise<{ tabId?: number; gap?: string }> {
+  for (let attempt = 1; attempt <= ZELLIJ_TAB_WAIT_ATTEMPTS; attempt += 1) {
+    const result = await runCommand(runner, request.cwd, evidence.commands, "zellij", [
+      "action",
+      "list-tabs",
+      "--json",
+    ]);
+    const gap = resultGap("Zellij tab list", result);
+    if (gap) return { gap };
+
+    const tabId = zellijTabIdFromList(result.stdout, tabName);
+    if (tabId !== undefined) return { tabId };
+
+    if (attempt < ZELLIJ_TAB_WAIT_ATTEMPTS) await sleep(ZELLIJ_TAB_WAIT_MS);
+  }
+  return {
+    gap: `Zellij Worktrunk tab ${tabName}: not found after ${ZELLIJ_TAB_WAIT_ATTEMPTS} checks`,
+  };
 }
 
 async function startWorktreeIfRequested(
@@ -357,6 +420,7 @@ async function startWorktreeIfRequested(
   runner: WorkonCommandRunner,
   evidence: WorkonBootstrapEvidence,
   params: {
+    repo: string;
     branchName: string;
     capsulePath: string;
     handoffPrompt: string;
@@ -378,28 +442,75 @@ async function startWorktreeIfRequested(
   }
 
   if (request.launchInZellij) {
-    const handoffArgs = [
-      "switch",
-      "--create",
-      params.branchName,
-      "-x",
+    const zellijVersion = await runCommand(runner, request.cwd, evidence.commands, "zellij", [
+      "--version",
+    ]);
+    const zellijGap = resultGap("Zellij availability", zellijVersion);
+    if (zellijGap) {
+      evidence.gaps.push(zellijGap);
+      return { status: "blocked" };
+    }
+
+    const switchArgs = ["switch", "--create", params.branchName, "--format", "json"];
+    const switchResult = await runCommand(runner, request.cwd, evidence.commands, "wt", switchArgs);
+    const switchGap = resultGap(`Worktrunk start ${params.branchName}`, switchResult);
+    if (switchGap) {
+      evidence.gaps.push(switchGap);
+      return { status: "blocked" };
+    }
+
+    const worktreePath = extractWorktreePath(`${switchResult.stdout}\n${switchResult.stderr}`);
+    if (!worktreePath) {
+      evidence.gaps.push(`Worktrunk start ${params.branchName}: worktree path not reported`);
+      return { status: "blocked" };
+    }
+
+    const tabName = worktrunkTabName(params.repo, params.branchName);
+    const tab = await waitForZellijTab(request, runner, evidence, tabName);
+    if (tab.gap) {
+      evidence.gaps.push(tab.gap);
+      return { status: "blocked", path: worktreePath };
+    }
+
+    const focusArgs = ["action", "go-to-tab-name", tabName];
+    const focusResult = await runCommand(runner, request.cwd, evidence.commands, "zellij", focusArgs);
+    const focusGap = resultGap(`Zellij Worktrunk tab focus ${tabName}`, focusResult);
+    if (focusGap) {
+      evidence.gaps.push(focusGap);
+      return { status: "blocked", path: worktreePath };
+    }
+
+    const paneArgs = [
+      "action",
+      "new-pane",
+      "--tab-id",
+      String(tab.tabId),
+      "--name",
       "pi",
+      "--cwd",
+      worktreePath,
       "--",
+      "pi",
       "--name",
       params.branchName,
       `@${params.capsulePath}`,
       params.handoffPrompt,
     ];
-    const result = await runCommand(runner, request.cwd, evidence.commands, "wt", handoffArgs);
-    const launchGap = resultGap(`Worktrunk Pi handoff ${params.branchName}`, result);
-    if (launchGap) {
-      evidence.gaps.push(launchGap);
-      return { status: "blocked", piHandoffCommand: formatCommand("wt", handoffArgs) };
+    const paneResult = await runCommand(runner, request.cwd, evidence.commands, "zellij", paneArgs);
+    const paneGap = resultGap(`Zellij Pi handoff ${params.branchName}`, paneResult);
+    if (paneGap) {
+      evidence.gaps.push(paneGap);
+      return {
+        status: "blocked",
+        path: worktreePath,
+        piHandoffCommand: formatCommand("zellij", paneArgs),
+      };
     }
 
     return {
       status: "launched",
-      piHandoffCommand: formatCommand("wt", handoffArgs),
+      path: worktreePath,
+      piHandoffCommand: formatCommand("zellij", paneArgs),
     };
   }
 
@@ -447,8 +558,8 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
   );
   lines.push(
     evidence.commands.length > 0
-      ? ["Read-only commands executed:", ...evidence.commands.map((command) => `- ${command}`)].join("\n")
-      : "Read-only commands executed: none.",
+      ? ["Commands executed:", ...evidence.commands.map((command) => `- ${command}`)].join("\n")
+      : "Commands executed: none.",
   );
   return lines;
 }
@@ -497,6 +608,7 @@ export async function prepareWorkonBootstrap(
     handoffPrompt,
   });
   const worktree = await startWorktreeIfRequested(request, runner, evidence, {
+    repo,
     branchName,
     capsulePath: initialCapsule,
     handoffPrompt,

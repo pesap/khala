@@ -278,10 +278,16 @@ tmux new-session -d -s <branch-name> "wt switch --create <branch-name> -x <agent
 wt switch --create <branch-name> -x <agent-cli> -- '<task description>'
 ```
 
-Use Worktrunk execute directly when the agent must start in the Worktrunk-created
-worktree tab. `zellij run -- wt switch ...` creates a new pane in the current
-Zellij tab first; only use that shape when a current-tab pane is explicitly
-wanted.
+Use Worktrunk execute directly when running from an interactive shell where the
+`wt` shell wrapper/directive integration owns the terminal. `zellij run -- wt
+switch ...` creates a new pane in the current Zellij tab first; only use that
+shape when a current-tab pane is explicitly wanted.
+
+When launching from a tool/extension subprocess rather than the user's
+interactive shell, do not rely on `wt switch -x <agent>` to own the Zellij tab.
+Instead, run `wt switch --create <branch> --format json`, wait for the
+Worktrunk-created tab to appear, focus that tab, then use `zellij action
+new-pane --tab-id <id> --cwd <worktree_path> -- <agent-cli> ...`.
 
 **Requirements** (all must be true):
 - User explicitly requests spawning/handoff
