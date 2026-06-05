@@ -5,6 +5,11 @@ import type {
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
+  collectInboxEvidence,
+  type InboxFocus,
+  type InboxForge,
+} from "./inbox.ts";
+import {
   prepareWorkonBootstrap,
   type WorkonForge,
   type WorkonMode,
@@ -106,8 +111,8 @@ export function createWorkflowCommandHandlers(params: {
     limit: number;
     repo: string;
     user: string;
-    forge: string;
-    focus: string;
+    forge: InboxForge;
+    focus: InboxFocus;
     extraInstruction: string;
   };
   parseWorkonArgs: (args: string) => {
@@ -573,6 +578,14 @@ export function createWorkflowCommandHandlers(params: {
 
     inbox: async (args, ctx) => {
       const parsed = parseInboxArgs(args ?? "");
+      const inboxEvidenceSections = await collectInboxEvidence({
+        cwd: ctx.cwd,
+        limit: parsed.limit,
+        repo: parsed.repo,
+        user: parsed.user,
+        forge: parsed.forge,
+        focus: parsed.focus,
+      });
 
       await runMirroredSourceWorkflow({
         ctx,
@@ -602,7 +615,9 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Gather bounded evidence from git state plus gh/glab when available; gracefully degrade when a forge CLI is missing or unauthenticated.",
           "Instruction: Group findings into Needs you now, My work is broken, Agent/session needs attention, New work needs shaping, Ready for agents, and Low-risk background.",
           "Instruction: Rank by age, blocker status, review-request state, CI failure, stale local work, and explicit mentions.",
+          "Instruction: Treat the deterministic evidence below as already collected read-only input; run more read-only commands only when required to fill a material evidence gap.",
           "Instruction: End with the top 3 next commands a maintainer should run.",
+          ...inboxEvidenceSections,
           parsed.extraInstruction
             ? `Additional focus: ${parsed.extraInstruction}`
             : "",
