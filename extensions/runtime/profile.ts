@@ -14,6 +14,7 @@ export const WORKFLOW_TYPES = [
   "simplify",
   "ship",
   "inbox",
+  "workon",
   "learn-skill",
   "plan",
   "audit",
@@ -99,6 +100,12 @@ const DEFAULT_WORKFLOWS: Record<WorkflowType, WorkflowCommandConfig> = {
     promptFile: "inbox-workflow.md",
     workflowFile: "inbox-workflow.yaml",
     entryType: "khala-inbox-command",
+  },
+  workon: {
+    enabled: true,
+    promptFile: "workon-workflow.md",
+    workflowFile: "workon-workflow.yaml",
+    entryType: "khala-workon-command",
   },
   plan: {
     enabled: true,

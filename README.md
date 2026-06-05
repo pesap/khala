@@ -38,7 +38,7 @@ pi -e https://github.com/pesap/agents -p "/khala"
 
 | Capability | Description |
 |---|---|
-| **Workflow commands** | Debug, review, inbox, simplify, plan, TDD, triage, ship, and skill creation workflows. |
+| **Workflow commands** | Debug, review, inbox, workon, simplify, plan, TDD, triage, ship, and skill creation workflows. |
 | **Safety gates** | Risk approval, preflight/postflight evidence, blocked destructive commands, response compliance, anti-stall turn obligations. |
 | **Local-first learning** | File-backed workflow observations and corrective lessons with quality gates; no model fine-tuning or transcript storage. |
 | **Bundled tooling** | Pi extensions for fast search (`@ff-labs/pi-fff`) and subagent workflows (`pi-subagents`). |
@@ -75,6 +75,7 @@ flowchart LR
 | `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |
 | `/ship [extra instruction]` | Simplify, validate, commit, push, and open/confirm PR/MR. |
 | `/inbox [--focus all\|reviews\|issues\|prs\|ci\|local\|sessions] [--repo owner/repo] [--user [login\|@me]] [--forge auto\|github\|gitlab\|all] [--limit N]` | Show a read-only maintainer inbox from local, forge, and session signals. |
+| `/workon <issue-url\|pr-url\|issue-number\|topic> [--repo owner/repo] [--forge auto\|github\|gitlab\|all] [--mode prepare\|start]` | Bootstrap an issue-first work session and session capsule. |
 | `/plan <topic>` | Stress-test a plan and capture terms/ADRs. |
 | `/audit <claim>` | Anti-confirmation-bias claim audit with evidence-ranked revision. |
 | `/triage-issue <problem>` | Investigate a bug and prepare a TDD fix plan. |

@@ -9,6 +9,11 @@ import {
   type InboxFocus,
   type InboxForge,
 } from "./inbox.ts";
+import {
+  prepareWorkonBootstrap,
+  type WorkonForge,
+  type WorkonMode,
+} from "./workon.ts";
 import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
 import type { PendingWorkflow } from "../workflows/engine.ts";
 
@@ -110,13 +115,20 @@ export function createWorkflowCommandHandlers(params: {
     focus: InboxFocus;
     extraInstruction: string;
   };
+  parseWorkonArgs: (args: string) => {
+    target: string;
+    repo: string;
+    forge: WorkonForge;
+    mode: WorkonMode;
+    extraInstruction: string;
+  };
   parseLearnSkillArgs: (args: string) => {
     topic: string;
     fromFile?: string;
     fromUrl?: string;
     dryRun: boolean;
   };
-  ensureLearningStore: (cwd: string) => Promise<{ skillsDir: string }>;
+  ensureLearningStore: (cwd: string) => Promise<{ root: string; skillsDir: string }>;
   ensureLearnedSkillLayout: (
     cwd: string,
     skillName: string,
@@ -146,6 +158,7 @@ export function createWorkflowCommandHandlers(params: {
     AUDIT_COMMAND_SOURCE: string;
     SHIP_COMMAND_SOURCE: string;
     INBOX_COMMAND_SOURCE: string;
+    WORKON_COMMAND_SOURCE: string;
     TRIAGE_ISSUE_COMMAND_SOURCE: string;
     TDD_COMMAND_SOURCE: string;
     ADDRESS_OPEN_ISSUES_COMMAND_SOURCE: string;
@@ -158,6 +171,7 @@ export function createWorkflowCommandHandlers(params: {
   simplify: CommandHandler;
   ship: CommandHandler;
   inbox: CommandHandler;
+  workon: CommandHandler;
   plan: CommandHandler;
   audit: CommandHandler;
   triageIssue: CommandHandler;
@@ -188,6 +202,7 @@ export function createWorkflowCommandHandlers(params: {
     parseTddArgs,
     parseAddressOpenIssuesArgs,
     parseInboxArgs,
+    parseWorkonArgs,
     parseLearnSkillArgs,
     ensureLearningStore,
     exists,
@@ -608,6 +623,60 @@ export function createWorkflowCommandHandlers(params: {
             : "",
         ],
         startedMessage: `Started inbox workflow (focus=${parsed.focus}, limit=${parsed.limit}).`,
+      });
+    },
+
+    workon: async (args, ctx) => {
+      const parsed = parseWorkonArgs(args ?? "");
+      if (!parsed.target) {
+        notify(
+          ctx,
+          "Usage: /workon <issue-url|pr-url|issue-number|topic> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start]",
+          "error",
+        );
+        return;
+      }
+
+      const paths = await ensureLearningStore(ctx.cwd);
+      const workonBootstrapSections = await prepareWorkonBootstrap({
+        cwd: ctx.cwd,
+        target: parsed.target,
+        repo: parsed.repo,
+        forge: parsed.forge,
+        mode: parsed.mode,
+        capsuleRoot: path.join(paths.root, "workon"),
+        nowIso: nowIso(),
+      });
+
+      await runMirroredSourceWorkflow({
+        ctx,
+        type: "workon",
+        source: constants.WORKON_COMMAND_SOURCE,
+        input: parsed.target,
+        fields: {
+          target: parsed.target,
+          repo: parsed.repo || null,
+          forge: parsed.forge,
+          mode: parsed.mode,
+          extraInstruction: parsed.extraInstruction || null,
+        },
+        sections: [
+          `Workon target: ${parsed.target}`,
+          `Repo override: ${parsed.repo || "(current repo / infer from target)"}`,
+          `Forge preference: ${parsed.forge}`,
+          `Mode: ${parsed.mode}`,
+          "Instruction: Resolve or prepare the durable source issue before branch/worktree work.",
+          "Instruction: For freeform topics, search existing issues first; create a new issue only when the target repo is clear and creation is appropriate.",
+          "Instruction: Derive an issue-numbered branch/worktree name and use Worktrunk when available; never bypass Worktrunk hook approval prompts.",
+          "Instruction: Do not implement the feature or bugfix; stop after source-of-truth, branch/worktree preparation, and session capsule handoff.",
+          "Instruction: Use the deterministic bootstrap evidence below as the source-of-truth handoff when available.",
+          "Instruction: Session capsule must include repo, issue/PR, branch/worktree, problem, acceptance criteria, non-goals, validation, open questions, and next prompt.",
+          ...workonBootstrapSections,
+          parsed.extraInstruction
+            ? `Additional focus: ${parsed.extraInstruction}`
+            : "",
+        ],
+        startedMessage: `Started workon workflow (${parsed.target}).`,
       });
     },
 

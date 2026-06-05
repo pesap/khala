@@ -6,6 +6,7 @@ import {
   type InboxFocus,
   type InboxForge,
 } from "./inbox.ts";
+import type { WorkonMode } from "./workon.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -39,6 +40,8 @@ export interface ParseRecordResult<T> {
 }
 
 export type CompliancePreset = "status" | "reset" | PolicyMode;
+
+const WORKON_MODES: readonly WorkonMode[] = ["prepare", "start"];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
@@ -214,6 +217,44 @@ export function parseInboxArgs(args: string): {
     user,
     forge,
     focus,
+    extraInstruction: rest,
+  };
+}
+
+export function parseWorkonArgs(args: string): {
+  target: string;
+  repo: string;
+  forge: InboxForge;
+  mode: WorkonMode;
+  extraInstruction: string;
+} {
+  let rest = normalizeWhitespace(args);
+
+  const repoResult = removeFlag(rest, /(^|\s)--repo\s+(\S+)(\s|$)/);
+  rest = repoResult.value;
+  const repo = normalizeWhitespace(repoResult.match?.[2] ?? "");
+
+  const forgeResult = removeFlag(rest, /(^|\s)--forge\s+(\S+)(\s|$)/);
+  rest = forgeResult.value;
+  const forge = parseAllowedInboxValue(
+    forgeResult.match?.[2],
+    "auto",
+    INBOX_FORGES,
+  );
+
+  const modeResult = removeFlag(rest, /(^|\s)--mode\s+(\S+)(\s|$)/);
+  rest = modeResult.value;
+  const mode = parseAllowedInboxValue(
+    modeResult.match?.[2],
+    "prepare",
+    WORKON_MODES,
+  );
+
+  return {
+    target: rest,
+    repo,
+    forge,
+    mode,
     extraInstruction: rest,
   };
 }

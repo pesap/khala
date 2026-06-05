@@ -25,6 +25,7 @@ export interface CommandRegistrarDeps {
     simplify: CommandHandler;
     ship: CommandHandler;
     inbox: CommandHandler;
+    workon: CommandHandler;
     plan: CommandHandler;
     audit: CommandHandler;
     triageIssue: CommandHandler;
@@ -74,6 +75,7 @@ export function registerCommands({
     { name: "simplify", description: "Run the khala code simplification workflow", handler: handlers.simplify },
     { name: "ship", description: "Simplify, verify, push current branch, and open PR/MR", handler: handlers.ship },
     { name: "inbox", description: "Show a read-only maintainer inbox from local, forge, and session signals", handler: handlers.inbox },
+    { name: "workon", description: "Bootstrap an issue-first work session from an issue, PR, or topic", handler: handlers.workon },
     { name: "plan", description: "Run rigorous planning workflow with edge-case capture and context/ADR updates", handler: handlers.plan },
     { name: "audit", description: "Run a full anti-confirmation-bias claim audit", handler: handlers.audit },
     { name: "triage-issue", description: "Investigate a bug and create a TDD fix-plan issue", handler: handlers.triageIssue },
