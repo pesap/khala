@@ -136,6 +136,45 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
   }
 });
 
+test("uses packaged handoff template when target cwd has no commands directory", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-external-cwd-test-"));
+  try {
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 90 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        90,
+        "fix: Extension command:workon ENOENT opening workon-handoff-template.md",
+        "## Acceptance criteria\n\n- Add or update focused tests for the changed behavior.",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: tempDir,
+        target: "90",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+
+    const rendered = sections.join("\n");
+    assert.match(rendered, /Source issue: pesap\/agents#90/);
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Before doing any implementation:/);
+    assert.match(capsule, /Draft PR and feedback heartbeat:/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("infers repo and issue from GitHub issue URL", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-url-test-"));
   try {

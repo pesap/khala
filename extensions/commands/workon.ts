@@ -1,12 +1,15 @@
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 const MAX_BRANCH_SLUG_LENGTH = 72;
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
 export type WorkonForge = "auto" | "github" | "gitlab" | "all";
 export type WorkonMode = "prepare" | "start";
@@ -430,7 +433,14 @@ function renderTemplate(template: string, values: Record<string, string | number
 }
 
 async function readHandoffTemplate(cwd: string): Promise<string> {
-  return fs.readFile(path.join(cwd, "commands", "workon-handoff-template.md"), "utf8");
+  const cwdTemplatePath = path.join(cwd, "commands", "workon-handoff-template.md");
+  try {
+    return await fs.readFile(cwdTemplatePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  return fs.readFile(path.join(PACKAGE_ROOT, "commands", "workon-handoff-template.md"), "utf8");
 }
 
 function heartbeatLabel(value: string): string {
