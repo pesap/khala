@@ -93,14 +93,99 @@ test("collects read-only GitHub inbox evidence for authenticated user", async ()
 
   assert.match(rendered, /Repository discovery:/);
   assert.match(rendered, /pesap\/agents/);
-  assert.match(rendered, /\[Needs you now\] org\/repo review-requested-pr #12: review me/);
-  assert.match(rendered, /\[My work is broken\] pesap\/agents authored-pr-ci-failure #9: fix failing ci/);
-  assert.match(rendered, /\[New work needs shaping\] pesap\/agents assigned-issue #61: collect inbox/);
+  assert.match(rendered, /Needs you now \(1\):/);
+  assert.match(rendered, /source=review-requested-pr repo=org\/repo title="#12: review me" updated=2026-06-01T00:00:00Z/);
+  assert.match(rendered, /My work is broken \(1\):/);
+  assert.match(rendered, /source=authored-pr-ci-failure repo=pesap\/agents title="#9: fix failing ci" updated=2026-06-02T00:00:00Z/);
+  assert.match(rendered, /New work needs shaping \(1\):/);
+  assert.match(rendered, /source=assigned-issue repo=pesap\/agents title="#61: collect inbox" updated=2026-06-05T00:00:00Z/);
+  assert.match(rendered, /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/org\/repo\/pull\/12\n2\. \/inbox --repo pesap\/agents --focus ci\n3\. \/triage-issue https:\/\/github.com\/pesap\/agents\/issues\/61/);
   assert.match(rendered, /NatLabRockies\/arco/);
   assert.ok(
     calls.includes(
       "api graphql -F first=5 -f query=query($first: Int!) { viewer { repositories(first: $first, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { nameWithOwner url updatedAt isPrivate isArchived viewerPermission } } } } --jq .data.viewer.repositories.nodes",
     ),
+  );
+});
+
+test("renders canonical buckets in stable priority order", async () => {
+  const { runner } = fakeGhRunner({
+    "auth status": "",
+    "repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission": JSON.stringify({
+      nameWithOwner: "pesap/agents",
+      url: "https://github.com/pesap/agents",
+      isPrivate: false,
+    }),
+    "search prs --review-requested=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
+      {
+        number: 3,
+        title: "newer review",
+        url: "https://github.com/pesap/agents/pull/3",
+        repository: { nameWithOwner: "pesap/agents" },
+        updatedAt: "2026-06-03T00:00:00Z",
+      },
+      {
+        number: 2,
+        title: "older review",
+        url: "https://github.com/pesap/agents/pull/2",
+        repository: { nameWithOwner: "pesap/agents" },
+        updatedAt: "2026-06-02T00:00:00Z",
+      },
+    ]),
+    "search prs --author=@me --state=open --checks=failure --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
+      {
+        number: 1,
+        title: "ci failed",
+        url: "https://github.com/pesap/agents/pull/1",
+        repository: { nameWithOwner: "pesap/agents" },
+        updatedAt: "2026-06-01T00:00:00Z",
+      },
+    ]),
+    "search prs --author=@me --state=open --checks=pending --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
+    "search issues --assignee=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
+    "search issues --author=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
+      {
+        number: 4,
+        title: "shape this",
+        url: "https://github.com/pesap/agents/issues/4",
+        repository: { nameWithOwner: "pesap/agents" },
+        updatedAt: "2026-06-04T00:00:00Z",
+      },
+    ]),
+  });
+
+  const sections = await collectInboxEvidence(
+    {
+      cwd: process.cwd(),
+      limit: 10,
+      repo: "pesap/agents",
+      user: "",
+      forge: "github",
+      focus: "all",
+    },
+    runner,
+  );
+  const rendered = sections.join("\n");
+
+  assert.ok(
+    rendered.indexOf("Needs you now (2):") <
+      rendered.indexOf("My work is broken (1):"),
+  );
+  assert.ok(
+    rendered.indexOf("My work is broken (1):") <
+      rendered.indexOf("Agent/session needs attention (0):"),
+  );
+  assert.ok(
+    rendered.indexOf("Agent/session needs attention (0):") <
+      rendered.indexOf("New work needs shaping (1):"),
+  );
+  assert.ok(
+    rendered.indexOf('title="#2: older review"') <
+      rendered.indexOf('title="#3: newer review"'),
+  );
+  assert.match(
+    rendered,
+    /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/pesap\/agents\/pull\/2\n2\. \/review pr https:\/\/github.com\/pesap\/agents\/pull\/3\n3\. \/inbox --repo pesap\/agents --focus ci/,
   );
 });
 
