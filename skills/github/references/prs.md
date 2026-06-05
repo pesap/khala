@@ -30,6 +30,7 @@ Ship invariants to verify from forge data:
 - commit signatures are verified on the shipped commit(s)
 - PR body is plain markdown/text; do not submit or report raw HTML
 - PR body has no unreplaced placeholders such as `Closes {LINK TO GH ISSUE}`
+- PR body close text uses the resolved durable source issue number when available and never says `Closes: none` or `Closes: non`
 - checks are green before reporting ship success
 
 ## Reply to reviewer comments in-thread (preferred)
@@ -62,4 +63,5 @@ Use `gh pr comment` only when there is no thread to reply to.
 - Prefer in-thread replies over loose PR comments.
 - Check for an existing open PR for the same head branch before creating a new one.
 - Use repo-local PR templates when present; otherwise use `skills/github/pr-template.md`.
+- Resolve the source issue from explicit instruction, issue-numbered branch name, session capsule, or forge context before writing close text; omit close text if no source issue is resolved.
 - Prefer explicit `--body-file` injection over implicit defaults.

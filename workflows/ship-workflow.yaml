@@ -35,6 +35,8 @@ guards:
   - detect GitHub vs GitLab and use matching tooling
   - do not create duplicate PR/MR for an existing head branch
   - use repo PR/MR template when present, otherwise skill template
+  - resolve the durable source issue from explicit instruction, branch name, session capsule, or forge issue context before writing PR close text
+  - include a close marker only when a durable source issue is known; otherwise omit close text rather than writing `Closes: none` or `Closes: non`
   - inspect the real remote artifact before claiming success
 
 steps:
@@ -61,3 +63,4 @@ remote_invariants:
   - head branch is the selected ship target
   - shipped commit signature is verified
   - PR/MR body is plain markdown/text with no unreplaced template placeholders
+  - PR/MR close marker references the resolved source issue number when available and never contains `Closes: none` or `Closes: non`
