@@ -317,24 +317,79 @@ test("blocks start mode when Worktrunk is unavailable", async () => {
   }
 });
 
-test("reports freeform topics as graceful gaps", async () => {
-  const { calls, runner } = fakeGhRunner({ "auth status": "" });
+test("resolves freeform topics to existing GitHub issues", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-freeform-existing-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue list --repo pesap/agents --state open --search implement the dashboard --limit 5 --json number,title,url,state": JSON.stringify([
+        {
+          number: 80,
+          title: "work: implement the dashboard",
+          url: "https://github.com/pesap/agents/issues/80",
+          state: "OPEN",
+        },
+      ]),
+      "issue view 80 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        80,
+        "work: implement the dashboard",
+      ),
+    });
 
-  const sections = await prepareWorkonBootstrap(
-    {
-      cwd: process.cwd(),
-      target: "implement the dashboard",
-      repo: "pesap/agents",
-      forge: "github",
-      mode: "prepare",
-      capsuleRoot: process.cwd(),
-      nowIso: "2026-06-05T00:00:00.000Z",
-      launchInZellij: false,
-      heartbeat: "1.0",
-    },
-    runner,
-  );
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "implement the dashboard",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
 
-  assert.deepEqual(calls, ["auth status"]);
-  assert.match(sections.join("\n"), /freeform topic detected/);
+    assert.equal(calls.some((call) => call.startsWith("issue create")), false);
+    assert.match(sections.join("\n"), /Source issue: pesap\/agents#80/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("creates GitHub issues for unmatched freeform topics", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-freeform-create-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue list --repo pesap/agents --state open --search Make sure Closes: non uses the source issue --limit 5 --json number,title,url,state": "[]",
+      "issue create --repo pesap/agents --title fix: Make sure Closes: non uses the source issue --body ## Problem\n\nMake sure Closes: non uses the source issue\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from /workon freeform topic.\n": "https://github.com/pesap/agents/issues/81\n",
+      "issue view 81 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        81,
+        "fix: Make sure Closes: non uses the source issue",
+        "## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "'Make sure Closes: non uses the source issue'",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+
+    assert.ok(calls.some((call) => call.startsWith("issue create")));
+    assert.match(sections.join("\n"), /Source issue: pesap\/agents#81/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
 });

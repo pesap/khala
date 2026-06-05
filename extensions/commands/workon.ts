@@ -138,6 +138,19 @@ function parseJsonObject<T>(raw: string, gapLabel: string, gaps: string[]): T | 
   }
 }
 
+function parseJsonArray<T>(raw: string, gapLabel: string, gaps: string[]): T[] {
+  if (!raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch (error) {
+    gaps.push(
+      `${gapLabel}: failed to parse JSON (${error instanceof Error ? error.message : String(error)})`,
+    );
+    return [];
+  }
+}
+
 function resultGap(label: string, result: CommandResult): string | null {
   if (result.ok) return null;
   const detail = result.error || result.stderr || result.stdout || "command failed";
@@ -206,15 +219,93 @@ async function resolveIssueTarget(
   }
 
   const issueNumber = numericTarget(request.target);
-  if (!issueNumber) {
-    evidence.gaps.push(
-      "freeform topic detected; deterministic issue search/creation is not implemented yet",
-    );
+  const repo = await resolveCurrentGithubRepo(request, runner, evidence);
+  if (!repo) return null;
+  if (issueNumber) return { repo, number: issueNumber };
+
+  return resolveFreeformIssueTarget(request, runner, evidence, repo);
+}
+
+function cleanFreeformTopic(target: string): string {
+  const trimmed = target.trim();
+  const quoted = trimmed.match(/^(["'])(.*)\1$/s);
+  return (quoted?.[2] ?? trimmed).trim();
+}
+
+function inferIssueTitle(topic: string): string {
+  const normalized = cleanFreeformTopic(topic)
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/g, "")
+    .trim();
+  const prefix = /\b(bug|broken|fail|fix|incorrect|invalid|wrong|error|regression|closes?)\b/i.test(normalized)
+    ? "fix"
+    : "work";
+  const title = normalized.length > 88 ? `${normalized.slice(0, 85).trim()}...` : normalized;
+  return `${prefix}: ${title || "follow up on workon topic"}`;
+}
+
+function freeformIssueBody(topic: string): string {
+  const cleanTopic = cleanFreeformTopic(topic);
+  return `## Problem\n\n${cleanTopic}\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from /workon freeform topic.\n`;
+}
+
+async function resolveFreeformIssueTarget(
+  request: WorkonBootstrapRequest,
+  runner: WorkonCommandRunner,
+  evidence: WorkonBootstrapEvidence,
+  repo: string,
+): Promise<GithubIssueTarget | null> {
+  const topic = cleanFreeformTopic(request.target);
+  const search = await runGh(runner, request.cwd, evidence.commands, [
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--search",
+    topic,
+    "--limit",
+    "5",
+    "--json",
+    "number,title,url,state",
+  ]);
+  const searchGap = resultGap(`GitHub issue search ${repo}`, search);
+  if (searchGap) {
+    evidence.gaps.push(searchGap);
     return null;
   }
 
-  const repo = await resolveCurrentGithubRepo(request, runner, evidence);
-  return repo ? { repo, number: issueNumber } : null;
+  const matches = parseJsonArray<GithubIssueMetadata>(
+    search.stdout,
+    `GitHub issue search ${repo}`,
+    evidence.gaps,
+  ).filter((issue) => typeof issue.number === "number");
+  const match = matches[0];
+  if (match) return { repo, number: match.number };
+
+  const created = await runGh(runner, request.cwd, evidence.commands, [
+    "issue",
+    "create",
+    "--repo",
+    repo,
+    "--title",
+    inferIssueTitle(topic),
+    "--body",
+    freeformIssueBody(topic),
+  ]);
+  const createGap = resultGap(`GitHub issue creation ${repo}`, created);
+  if (createGap) {
+    evidence.gaps.push(createGap);
+    return null;
+  }
+
+  const createdTarget = githubIssueTargetFromUrl(created.stdout.trim());
+  if (!createdTarget) {
+    evidence.gaps.push(`GitHub issue creation ${repo}: output did not include an issue URL`);
+    return null;
+  }
+  return createdTarget;
 }
 
 async function readGithubIssue(

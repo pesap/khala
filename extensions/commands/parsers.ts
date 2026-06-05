@@ -251,7 +251,7 @@ export function parseWorkonArgs(args: string): {
     WORKON_MODES,
   );
 
-  const heartbeatResult = removeFlag(rest, /(^|\s)--heartbeat\s+(\S+)(\s|$)/);
+  const heartbeatResult = removeFlag(rest, /(^|\s)--(?:heartbeat|interval)\s+(\S+)(\s|$)/);
   rest = heartbeatResult.value;
   const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
 
