@@ -78,6 +78,7 @@ interface WorkonBootstrapEvidence {
 interface ZellijHandoffResult {
   status?: string;
   path?: string;
+  tabName?: string;
   piHandoffCommand?: string;
   heartbeatCommand?: string;
 }
@@ -160,6 +161,17 @@ function resultGap(label: string, result: CommandResult): string | null {
   return `${label}: ${detail.trim().split("\n")[0]}`;
 }
 
+function formatLoggedCommand(command: string, args: string[]): string {
+  const redactedArgs = [...args];
+  for (const flag of ["--prompt"]) {
+    const index = redactedArgs.indexOf(flag);
+    if (index >= 0 && index + 1 < redactedArgs.length) {
+      redactedArgs[index + 1] = "<redacted>";
+    }
+  }
+  return `${command} ${redactedArgs.join(" ")}`;
+}
+
 async function runCommand(
   runner: WorkonCommandRunner,
   cwd: string,
@@ -167,7 +179,7 @@ async function runCommand(
   command: string,
   args: string[],
 ): Promise<CommandResult> {
-  commands.push(`${command} ${args.join(" ")}`);
+  commands.push(formatLoggedCommand(command, args));
   return runner(command, args, { cwd });
 }
 
@@ -553,13 +565,18 @@ async function startWorktreeIfRequested(
       "--heartbeat",
       request.heartbeat,
     ]);
+    const parsed = parseZellijHandoffResult(`${handoffResult.stdout}\n${handoffResult.stderr}`);
     const handoffGap = resultGap(`Zellij Pi handoff ${params.branchName}`, handoffResult);
     if (handoffGap) {
       evidence.gaps.push(handoffGap);
-      return { status: "blocked" };
+      if (parsed?.path) {
+        evidence.gaps.push(
+          `Zellij Pi handoff ${params.branchName}: Worktree/tab was created but Pi was not launched; continue in ${parsed.tabName ?? "the Worktrunk tab"}, not this session.`,
+        );
+      }
+      return { status: "blocked", path: parsed?.path };
     }
 
-    const parsed = parseZellijHandoffResult(`${handoffResult.stdout}\n${handoffResult.stderr}`);
     if (parsed?.status !== "launched" || !parsed.path) {
       evidence.gaps.push(`Zellij Pi handoff ${params.branchName}: result JSON missing launched path`);
       return { status: "blocked" };
