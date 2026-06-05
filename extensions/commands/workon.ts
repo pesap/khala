@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
-const MAX_BRANCH_SLUG_LENGTH = 72;
+const MAX_BRANCH_SLUG_LENGTH = 56;
+const MAX_FREEFORM_SUMMARY_LENGTH = 64;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
@@ -93,14 +94,14 @@ function slugify(value: string): string {
 }
 
 function inferBranchPrefix(title: string): string {
-  const match = title.match(/^(feat|fix|docs|refactor|test|chore|perf)(?:\(.+?\))?:/i);
+  const match = title.match(/^(feat|fix|docs|refactor|test|chore|perf|work)(?:\(.+?\))?:/i);
   return match?.[1]?.toLowerCase() ?? "work";
 }
 
 export function buildWorkonBranchName(issue: Pick<GithubIssueMetadata, "number" | "title">): string {
   const prefix = inferBranchPrefix(issue.title);
   const titleWithoutConventionalPrefix = issue.title.replace(
-    /^(?:feat|fix|docs|refactor|test|chore|perf)(?:\(.+?\))?:\s*/i,
+    /^(?:feat|fix|docs|refactor|test|chore|perf|work)(?:\(.+?\))?:\s*/i,
     "",
   );
   const slug = slugify(titleWithoutConventionalPrefix || issue.title || "work");
@@ -247,21 +248,33 @@ function cleanFreeformTopic(target: string): string {
   return (quoted?.[2] ?? trimmed).trim();
 }
 
-function inferIssueTitle(topic: string): string {
+function summarizeFreeformTopic(topic: string): string {
   const normalized = cleanFreeformTopic(topic)
     .replace(/\s+/g, " ")
-    .replace(/[.!?]+$/g, "")
+    .replace(/^[#>*\-\s]+/, "")
     .trim();
-  const prefix = /\b(bug|broken|fail|fix|incorrect|invalid|wrong|error|regression|closes?)\b/i.test(normalized)
+  const firstSentence = normalized.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? normalized;
+  const withoutTrailingPunctuation = firstSentence.replace(/[.!?]+$/g, "").trim();
+  if (withoutTrailingPunctuation.length <= MAX_FREEFORM_SUMMARY_LENGTH) {
+    return withoutTrailingPunctuation || "follow up on workon topic";
+  }
+  const truncated = withoutTrailingPunctuation.slice(0, MAX_FREEFORM_SUMMARY_LENGTH + 1);
+  const wordBoundary = truncated.search(/\s+\S*$/);
+  const summary = (wordBoundary > 0 ? truncated.slice(0, wordBoundary) : truncated).trim();
+  return summary || "follow up on workon topic";
+}
+
+function inferIssueTitle(topic: string): string {
+  const summary = summarizeFreeformTopic(topic);
+  const prefix = /\b(bug|broken|fail|fix|incorrect|invalid|wrong|error|regression|closes?)\b/i.test(summary)
     ? "fix"
     : "work";
-  const title = normalized.length > 88 ? `${normalized.slice(0, 85).trim()}...` : normalized;
-  return `${prefix}: ${title || "follow up on workon topic"}`;
+  return `${prefix}: ${summary}`;
 }
 
 function freeformIssueBody(topic: string): string {
-  const cleanTopic = cleanFreeformTopic(topic);
-  return `## Problem\n\n${cleanTopic}\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from /workon freeform topic.\n`;
+  const summary = summarizeFreeformTopic(topic);
+  return `## Problem\n\n${summary}\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from summarized /workon freeform topic.\n`;
 }
 
 async function resolveFreeformIssueTarget(
