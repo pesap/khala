@@ -86,6 +86,23 @@ interface InboxItem {
   evidence: string;
 }
 
+const INBOX_BUCKETS = [
+  "Needs you now",
+  "My work is broken",
+  "Agent/session needs attention",
+  "New work needs shaping",
+  "Ready for agents",
+  "Low-risk background",
+] as const;
+
+const SOURCE_PRIORITY = new Map<string, number>([
+  ["review-requested-pr", 0],
+  ["authored-pr-ci-failure", 0],
+  ["authored-pr-ci-pending", 1],
+  ["assigned-issue", 0],
+  ["authored-issue", 1],
+]);
+
 interface GithubEvidence {
   commands: string[];
   gaps: string[];
@@ -136,8 +153,73 @@ function repoName(item: GithubSearchItem): string {
 }
 
 function itemLine(item: InboxItem): string {
-  const updated = item.updatedAt ? ` updated=${item.updatedAt}` : "";
-  return `- [${item.bucket}] ${item.repo} ${item.source} #${item.title}${updated} url=${item.url} next=${item.suggestedCommand} evidence=${item.evidence}`;
+  const updated = item.updatedAt ?? "unknown";
+  return `- source=${item.source} repo=${item.repo} title="#${item.title}" updated=${updated} url=${item.url} next=${item.suggestedCommand} evidence=${item.evidence}`;
+}
+
+function bucketPriority(bucket: string): number {
+  const index = INBOX_BUCKETS.indexOf(bucket as (typeof INBOX_BUCKETS)[number]);
+  return index === -1 ? INBOX_BUCKETS.length : index;
+}
+
+function compareOptionalIso(a?: string, b?: string): number {
+  if (a && b && a !== b) return a.localeCompare(b);
+  if (a && !b) return -1;
+  if (!a && b) return 1;
+  return 0;
+}
+
+function compareText(a: string, b: string): number {
+  return a.localeCompare(b, "en");
+}
+
+function compareInboxItems(a: InboxItem, b: InboxItem): number {
+  return (
+    bucketPriority(a.bucket) - bucketPriority(b.bucket) ||
+    (SOURCE_PRIORITY.get(a.source) ?? Number.MAX_SAFE_INTEGER) -
+      (SOURCE_PRIORITY.get(b.source) ?? Number.MAX_SAFE_INTEGER) ||
+    compareOptionalIso(a.updatedAt, b.updatedAt) ||
+    compareText(a.repo, b.repo) ||
+    compareText(a.title, b.title) ||
+    compareText(a.url, b.url)
+  );
+}
+
+function sortedInboxItems(items: InboxItem[]): InboxItem[] {
+  return [...items].sort(compareInboxItems);
+}
+
+function topNextCommands(items: InboxItem[]): string[] {
+  const commands: string[] = [];
+  for (const item of sortedInboxItems(items)) {
+    if (!commands.includes(item.suggestedCommand)) {
+      commands.push(item.suggestedCommand);
+    }
+    if (commands.length === 3) break;
+  }
+  return commands;
+}
+
+function renderMaintainerQueue(items: InboxItem[]): string {
+  const sortedItems = sortedInboxItems(items);
+  const lines = ["Deterministic maintainer queue:"];
+  for (const bucket of INBOX_BUCKETS) {
+    const bucketItems = sortedItems.filter((item) => item.bucket === bucket);
+    lines.push(`${bucket} (${bucketItems.length}):`);
+    lines.push(
+      ...(bucketItems.length > 0
+        ? bucketItems.map(itemLine)
+        : ["- no collected items"]),
+    );
+  }
+  const commands = topNextCommands(items);
+  lines.push("Top 3 next commands:");
+  lines.push(
+    ...(commands.length > 0
+      ? commands.map((command, index) => `${index + 1}. ${command}`)
+      : ["- none from collected evidence"]),
+  );
+  return lines.join("\n");
 }
 
 function searchItemToInboxItem(
@@ -521,7 +603,6 @@ export function formatGithubInboxEvidence(evidence: GithubEvidence): string[] {
     return `- ${repo.nameWithOwner} (${privacy}${permission}${updated}) ${repo.url ?? ""}`.trim();
   });
 
-  const itemLines = evidence.items.map(itemLine);
   const gapLines = evidence.gaps.map((gap) => `- ${gap}`);
   const commandLines = evidence.commands.map((command) => `- ${command}`);
 
@@ -530,9 +611,7 @@ export function formatGithubInboxEvidence(evidence: GithubEvidence): string[] {
     repoLines.length > 0
       ? ["Repository discovery:", ...repoLines].join("\n")
       : "Repository discovery: no repositories reported.",
-    itemLines.length > 0
-      ? ["Pre-bucketed queue candidates:", ...itemLines].join("\n")
-      : "Pre-bucketed queue candidates: none reported by GitHub search.",
+    renderMaintainerQueue(evidence.items),
     gapLines.length > 0
       ? ["Evidence gaps and graceful degradation:", ...gapLines].join("\n")
       : "Evidence gaps and graceful degradation: none.",
