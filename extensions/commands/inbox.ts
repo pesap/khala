@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -121,6 +121,18 @@ interface GitWorktree {
   path: string;
   branch?: string;
   detached?: boolean;
+}
+
+interface SessionCapsule {
+  path: string;
+  repo: string;
+  issue?: string;
+  issueNumber?: string;
+  branch?: string;
+  worktreePath?: string;
+  worktreeStatus?: string;
+  state?: string;
+  createdIso?: string;
 }
 
 interface LocalEvidence {
@@ -384,17 +396,132 @@ function currentRepoFromRemote(raw: string): string | null {
   return `${match.groups.owner}/${match.groups.repo}`;
 }
 
-async function capsuleCreatedIso(capsulePath: string): Promise<string | null> {
+function parseCapsuleFields(content: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(/^(?<key>[A-Za-z][A-Za-z ]+):\s*(?<value>.*)$/);
+    if (match?.groups) fields[match.groups.key] = match.groups.value.trim();
+  }
+  return fields;
+}
+
+function normalizedCapsuleValue(value?: string): string | undefined {
+  if (
+    !value ||
+    /^\((?:not available|not launched|none|unknown)\)$/i.test(value)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+function parseCapsuleCreated(value?: string): string | undefined {
+  const created = normalizedCapsuleValue(value);
+  if (!created) return undefined;
+  const parsed = new Date(created);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+function capsuleRepoFromPath(root: string, capsulePath: string): string {
+  const relative = path.relative(path.join(root, "github.com"), capsulePath);
+  const [owner, name] = relative.split(path.sep);
+  return owner && name ? `${owner}/${name}` : "unknown/repo";
+}
+
+async function readSessionCapsule(
+  root: string,
+  capsulePath: string,
+): Promise<SessionCapsule | null> {
   try {
     const content = await readFile(capsulePath, "utf8");
-    const created = content.match(/^Created:\s*(?<created>\S+)/m)?.groups
-      ?.created;
-    if (!created) return null;
-    const parsed = new Date(created);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    const fields = parseCapsuleFields(content);
+    return {
+      path: capsulePath,
+      repo:
+        normalizedCapsuleValue(fields.Repo) ??
+        capsuleRepoFromPath(root, capsulePath),
+      issue: normalizedCapsuleValue(fields.Issue),
+      issueNumber: normalizedCapsuleValue(fields["Issue number"]),
+      branch: normalizedCapsuleValue(fields.Branch),
+      worktreePath: normalizedCapsuleValue(fields["Worktree path"]),
+      worktreeStatus: normalizedCapsuleValue(fields["Worktree status"]),
+      state: normalizedCapsuleValue(fields.State),
+      createdIso: parseCapsuleCreated(fields.Created),
+    };
   } catch {
     return null;
   }
+}
+
+async function discoverSessionCapsules(
+  root: string,
+  gaps: string[],
+): Promise<SessionCapsule[]> {
+  const githubRoot = path.join(root, "github.com");
+  let owners: string[];
+  try {
+    owners = await readdir(githubRoot);
+  } catch {
+    gaps.push(
+      `session capsule discovery: no capsules found under ${githubRoot}`,
+    );
+    return [];
+  }
+
+  const capsulePaths: string[] = [];
+  for (const owner of owners.sort()) {
+    const ownerRoot = path.join(githubRoot, owner);
+    let repos: string[];
+    try {
+      repos = await readdir(ownerRoot);
+    } catch {
+      continue;
+    }
+    for (const repo of repos.sort()) {
+      capsulePaths.push(path.join(ownerRoot, repo, "capsule.md"));
+    }
+  }
+
+  const capsules: SessionCapsule[] = [];
+  for (const capsulePath of capsulePaths) {
+    const capsule = await readSessionCapsule(root, capsulePath);
+    if (capsule) capsules.push(capsule);
+  }
+  return capsules;
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  try {
+    await stat(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function capsuleWorktreeEvidence(
+  capsule: SessionCapsule,
+  worktrees: GitWorktree[],
+): { path?: string; missing: boolean; matchedBy: string } {
+  if (capsule.worktreePath) {
+    return {
+      path: capsule.worktreePath,
+      missing: false,
+      matchedBy: "capsule worktree path",
+    };
+  }
+  if (capsule.branch) {
+    const match = worktrees.find(
+      (worktree) => worktree.branch === capsule.branch,
+    );
+    if (match)
+      return {
+        path: match.path,
+        missing: false,
+        matchedBy: "git worktree branch",
+      };
+  }
+  return { missing: false, matchedBy: "no local worktree match" };
 }
 
 async function collectLocalEvidence(
@@ -417,7 +544,8 @@ async function collectLocalEvidence(
   const repo =
     request.repo || (remote.ok ? currentRepoFromRemote(remote.stdout) : null);
 
-  if (collectWorktrees) {
+  let worktrees: GitWorktree[] = [];
+  if (collectWorktrees || collectSessions) {
     const worktreeResult = await runGit(
       runner,
       request.cwd,
@@ -428,93 +556,96 @@ async function collectLocalEvidence(
     if (worktreeGap) {
       evidence.gaps.push(worktreeGap);
     } else {
-      const worktrees = parseWorktreeList(worktreeResult.stdout).slice(
+      worktrees = parseWorktreeList(worktreeResult.stdout).slice(
         0,
         request.limit,
       );
-      for (const worktree of worktrees) {
-        const status = await runGit(runner, worktree.path, evidence.commands, [
-          "status",
-          "--porcelain=v1",
-          "-b",
-        ]);
-        const statusGap = resultGap(
-          `local git status ${worktree.path}`,
-          status,
-        );
-        if (statusGap) {
-          evidence.gaps.push(statusGap);
-          continue;
-        }
+    }
+  }
 
-        const dirty = statusHasUncommitted(status.stdout);
-        const unpushed = statusHasUnpushed(status.stdout);
-        const unpublished =
-          Boolean(worktree.branch) && !statusHasUpstream(status.stdout);
-        const gone = statusHasGoneUpstream(status.stdout);
-        if (!dirty && !unpushed && !unpublished && !gone) continue;
-
-        const signals = [
-          dirty ? "uncommitted" : "",
-          unpushed ? "unpushed" : "",
-          unpublished ? "unpublished" : "",
-          gone ? "missing-upstream" : "",
-        ].filter(Boolean);
-        const branch =
-          worktree.branch ?? (worktree.detached ? "detached" : "unknown");
-        evidence.items.push({
-          bucket: gone ? "My work is broken" : "Agent/session needs attention",
-          repo: repo ?? "current-repo",
-          source: "local-worktree",
-          title: `${branch}: ${signals.join("+")} work at ${worktree.path}`,
-          url: worktree.path,
-          suggestedCommand: `/inbox --focus local`,
-          evidence:
-            "git worktree list --porcelain; git status --porcelain=v1 -b",
-        });
+  if (collectWorktrees) {
+    for (const worktree of worktrees) {
+      const status = await runGit(runner, worktree.path, evidence.commands, [
+        "status",
+        "--porcelain=v1",
+        "-b",
+      ]);
+      const statusGap = resultGap(`local git status ${worktree.path}`, status);
+      if (statusGap) {
+        evidence.gaps.push(statusGap);
+        continue;
       }
+
+      const dirty = statusHasUncommitted(status.stdout);
+      const unpushed = statusHasUnpushed(status.stdout);
+      const unpublished =
+        Boolean(worktree.branch) && !statusHasUpstream(status.stdout);
+      const gone = statusHasGoneUpstream(status.stdout);
+      if (!dirty && !unpushed && !unpublished && !gone) continue;
+
+      const signals = [
+        dirty ? "uncommitted" : "",
+        unpushed ? "unpushed" : "",
+        unpublished ? "unpublished" : "",
+        gone ? "missing-upstream" : "",
+      ].filter(Boolean);
+      const branch =
+        worktree.branch ?? (worktree.detached ? "detached" : "unknown");
+      evidence.items.push({
+        bucket: gone ? "My work is broken" : "Agent/session needs attention",
+        repo: repo ?? "current-repo",
+        source: "local-worktree",
+        title: `${branch}: ${signals.join("+")} work at ${worktree.path}`,
+        url: worktree.path,
+        suggestedCommand: `/inbox --focus local`,
+        evidence: "git worktree list --porcelain; git status --porcelain=v1 -b",
+      });
     }
   }
 
   if (!collectSessions) return evidence;
 
-  if (!repo) {
-    evidence.gaps.push(
-      "session capsule lookup skipped: GitHub repo could not be inferred",
-    );
-    return evidence;
-  }
-
-  const [owner, name] = repo.split("/");
-  const capsulePath = path.join(
-    request.capsuleRoot ?? path.join(homedir(), ".pi", "khala"),
-    "github.com",
-    owner,
-    name,
-    "capsule.md",
-  );
-  const created = await capsuleCreatedIso(capsulePath);
-  if (!created) {
-    evidence.gaps.push(
-      `session capsule Created metadata not found for ${repo}`,
-    );
-    return evidence;
-  }
+  const capsuleRoot =
+    request.capsuleRoot ?? path.join(homedir(), ".pi", "khala");
+  const capsules = (await discoverSessionCapsules(capsuleRoot, evidence.gaps))
+    .filter((capsule) => !request.repo || capsule.repo === request.repo)
+    .slice(0, request.limit);
+  if (capsules.length === 0) return evidence;
 
   const now = new Date(request.nowIso ?? new Date().toISOString());
-  const ageHours = Math.floor(
-    (now.getTime() - new Date(created).getTime()) / 3_600_000,
-  );
-  if (ageHours >= 24) {
+  for (const capsule of capsules) {
+    const created = capsule.createdIso;
+    const ageHours = created
+      ? Math.floor((now.getTime() - new Date(created).getTime()) / 3_600_000)
+      : null;
+    const worktree = capsuleWorktreeEvidence(capsule, worktrees);
+    const missingWorktree = capsule.worktreePath
+      ? !(await pathExists(capsule.worktreePath))
+      : false;
+    const blocked = capsule.worktreeStatus === "blocked";
+    const stale = ageHours !== null && ageHours >= 24;
+    if (!blocked && !stale && !missingWorktree) continue;
+
+    const signals = [
+      blocked ? "blocked" : "",
+      stale && ageHours !== null ? `stale-${ageHours}h` : "",
+      missingWorktree ? "missing-worktree" : "",
+    ].filter(Boolean);
+    const branch = capsule.branch ?? "unknown-branch";
+    const issue = capsule.issueNumber ? ` ${capsule.issueNumber}` : "";
+    const worktreePath = worktree.path ? ` worktree=${worktree.path}` : "";
     evidence.items.push({
-      bucket: "Agent/session needs attention",
-      repo,
+      bucket:
+        blocked || missingWorktree
+          ? "My work is broken"
+          : "Agent/session needs attention",
+      repo: capsule.repo,
       source: "stale-session-capsule",
-      title: `session capsule is ${ageHours}h old at ${capsulePath}`,
-      url: capsulePath,
+      title: `${branch}${issue}: ${signals.join("+")} capsule at ${capsule.path}${worktreePath}`,
+      url: capsule.issue ?? capsule.path,
       updatedAt: created,
-      suggestedCommand: `/workon --mode start --repo ${repo}`,
-      evidence: "session capsule Created metadata",
+      suggestedCommand: `/workon ${capsule.issue ?? "--mode start"} --repo ${capsule.repo}`,
+      evidence: `session capsule metadata; ${worktree.matchedBy}`,
     });
   }
   return evidence;

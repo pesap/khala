@@ -1,8 +1,8 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import {
   collectInboxEvidence,
@@ -412,7 +412,7 @@ test("local focus shapes dirty, unpublished, unpushed, and gone worktree signals
   );
 });
 
-test("local focus reports stale session capsule Created metadata", async () => {
+test("session focus discovers stale capsules and correlates branch worktrees", async () => {
   const capsuleRoot = await mkdtemp(path.join(tmpdir(), "khala-inbox-test-"));
   try {
     const capsulePath = path.join(
@@ -425,22 +425,38 @@ test("local focus reports stale session capsule Created metadata", async () => {
     await mkdir(path.dirname(capsulePath), { recursive: true });
     await writeFile(
       capsulePath,
-      "# capsule\n\nCreated: 2026-06-04T00:00:00.000Z\n",
+      [
+        "# Workon session capsule",
+        "",
+        "Repo: pesap/agents",
+        "Issue: https://github.com/pesap/agents/issues/85",
+        "Issue number: #85",
+        "Branch: feat/85-surface-stale-sessions-and-capsules",
+        "Worktree status: launched",
+        "Worktree path: (not available)",
+        "Created: 2026-06-04T00:00:00.000Z",
+        "",
+      ].join("\n"),
       "utf8",
     );
-    const freshMtime = new Date("2026-06-05T12:30:00.000Z");
-    await utimes(capsulePath, freshMtime, freshMtime);
 
     const { runner } = fakeCommandRunner({
-      "git worktree list --porcelain":
-        "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n",
-      "git status --porcelain=v1 -b": "## main...origin/main\n",
+      "git worktree list --porcelain": [
+        "worktree /repo/main",
+        "HEAD abc",
+        "branch refs/heads/main",
+        "",
+        "worktree /repo/feature-85",
+        "HEAD def",
+        "branch refs/heads/feat/85-surface-stale-sessions-and-capsules",
+        "",
+      ].join("\n"),
       "git remote get-url origin": "git@github.com:pesap/agents.git\n",
     });
 
     const sections = await collectInboxEvidence(
       {
-        cwd: "/repo",
+        cwd: "/repo/main",
         limit: 5,
         repo: "",
         user: "",
@@ -451,11 +467,81 @@ test("local focus reports stale session capsule Created metadata", async () => {
       },
       runner,
     );
+    const rendered = sections.join("\n");
 
-    assert.match(sections.join("\n"), /Agent\/session needs attention \(1\):/);
+    assert.match(rendered, /Agent\/session needs attention \(1\):/);
     assert.match(
-      sections.join("\n"),
-      /source=stale-session-capsule repo=pesap\/agents title="#session capsule is 37h old/,
+      rendered,
+      /source=stale-session-capsule repo=pesap\/agents title="#feat\/85-surface-stale-sessions-and-capsules #85: stale-37h capsule at .* worktree=\/repo\/feature-85"/,
+    );
+    assert.match(
+      rendered,
+      /url=https:\/\/github.com\/pesap\/agents\/issues\/85/,
+    );
+    assert.match(
+      rendered,
+      /evidence=session capsule metadata; git worktree branch/,
+    );
+  } finally {
+    await rm(capsuleRoot, { recursive: true, force: true });
+  }
+});
+
+test("session focus reports blocked capsules with deleted worktrees", async () => {
+  const capsuleRoot = await mkdtemp(path.join(tmpdir(), "khala-inbox-test-"));
+  try {
+    const missingWorktree = path.join(capsuleRoot, "deleted-worktree");
+    const capsulePath = path.join(
+      capsuleRoot,
+      "github.com",
+      "pesap",
+      "agents",
+      "capsule.md",
+    );
+    await mkdir(path.dirname(capsulePath), { recursive: true });
+    await writeFile(
+      capsulePath,
+      [
+        "# Workon session capsule",
+        "",
+        "Repo: pesap/agents",
+        "Issue: https://github.com/pesap/agents/issues/85",
+        "Issue number: #85",
+        "Branch: feat/85-surface-stale-sessions-and-capsules",
+        "Worktree status: blocked",
+        `Worktree path: ${missingWorktree}`,
+        "Created: 2026-06-05T12:30:00.000Z",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const { runner } = fakeCommandRunner({
+      "git worktree list --porcelain":
+        "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n",
+      "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+    });
+
+    const sections = await collectInboxEvidence(
+      {
+        cwd: "/repo/main",
+        limit: 5,
+        repo: "pesap/agents",
+        user: "",
+        forge: "gitlab",
+        focus: "sessions",
+        capsuleRoot,
+        nowIso: "2026-06-05T13:00:00.000Z",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /My work is broken \(1\):/);
+    assert.match(rendered, /blocked\+missing-worktree/);
+    assert.match(
+      rendered,
+      /evidence=session capsule metadata; capsule worktree path/,
     );
   } finally {
     await rm(capsuleRoot, { recursive: true, force: true });
