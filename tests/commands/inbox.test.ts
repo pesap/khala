@@ -9,6 +9,12 @@ import {
   type InboxCommandRunner,
 } from "../../extensions/commands/inbox.ts";
 
+async function emptyCapsuleRoot(): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), "khala-inbox-empty-test-"));
+  await mkdir(path.join(root, "github.com"), { recursive: true });
+  return root;
+}
+
 function fakeCommandRunner(outputs: Record<string, string>): {
   calls: string[];
   runner: InboxCommandRunner;
@@ -27,7 +33,9 @@ function fakeCommandRunner(outputs: Record<string, string>): {
   };
 }
 
-test("collects read-only GitHub inbox evidence for authenticated user", async () => {
+test("collects read-only GitHub inbox evidence for authenticated user", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
   const { calls, runner } = fakeCommandRunner({
     "gh auth status": "",
     "gh api user --jq .login": "pesap\n",
@@ -98,6 +106,7 @@ test("collects read-only GitHub inbox evidence for authenticated user", async ()
       user: "@me",
       forge: "github",
       focus: "all",
+      capsuleRoot,
     },
     runner,
   );
@@ -132,7 +141,9 @@ test("collects read-only GitHub inbox evidence for authenticated user", async ()
   );
 });
 
-test("renders canonical buckets in stable priority order", async () => {
+test("renders canonical buckets in stable priority order", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
   const { runner } = fakeCommandRunner({
     "gh auth status": "",
     "gh repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission":
@@ -196,6 +207,7 @@ test("renders canonical buckets in stable priority order", async () => {
       user: "",
       forge: "github",
       focus: "all",
+      capsuleRoot,
     },
     runner,
   );
@@ -317,7 +329,9 @@ test("review focus collects review requests without CI or issue searches", async
   );
 });
 
-test("local focus shapes dirty, unpublished, unpushed, and gone worktree signals", async () => {
+test("local focus shapes dirty, unpublished, unpushed, and gone worktree signals", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
   const calls: string[] = [];
   const runner: InboxCommandRunner = async (command, args, options) => {
     const key = `${command} ${args.join(" ")}`;
@@ -386,6 +400,7 @@ test("local focus shapes dirty, unpublished, unpushed, and gone worktree signals
       user: "",
       forge: "gitlab",
       focus: "local",
+      capsuleRoot,
     },
     runner,
   );

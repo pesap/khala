@@ -464,7 +464,7 @@ test("creates GitHub issues for unmatched freeform topics", async () => {
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
       "issue list --repo pesap/agents --state open --search Make sure Closes: non uses the source issue --limit 5 --json number,title,url,state": "[]",
-      "issue create --repo pesap/agents --title fix: Make sure Closes: non uses the source issue --body ## Problem\n\nMake sure Closes: non uses the source issue\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from /workon freeform topic.\n": "https://github.com/pesap/agents/issues/81\n",
+      "issue create --repo pesap/agents --title fix: Make sure Closes: non uses the source issue --body ## Problem\n\nMake sure Closes: non uses the source issue\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from summarized /workon freeform topic.\n": "https://github.com/pesap/agents/issues/81\n",
       "issue view 81 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
         81,
         "fix: Make sure Closes: non uses the source issue",
@@ -489,6 +489,49 @@ test("creates GitHub issues for unmatched freeform topics", async () => {
 
     assert.ok(calls.some((call) => call.startsWith("issue create")));
     assert.match(sections.join("\n"), /Source issue: pesap\/agents#81/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("summarizes long freeform topics before creating issues", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-freeform-summary-test-"));
+  const topic =
+    "When our handoff pi session finish, it does not receive the feedback from our heartbeat and does not react to it. This has many extra reproduction details that should not become the issue title or branch name.";
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      [`issue list --repo pesap/agents --state open --search ${topic} --limit 5 --json number,title,url,state`]: "[]",
+      "issue create --repo pesap/agents --title work: When our handoff pi session finish, it does not receive the --body ## Problem\n\nWhen our handoff pi session finish, it does not receive the\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from summarized /workon freeform topic.\n": "https://github.com/pesap/agents/issues/93\n",
+      "issue view 93 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        93,
+        "work: When our handoff pi session finish, it does not receive the",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: topic,
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const createCall = calls.find((call) => call.startsWith("issue create"));
+
+    assert.ok(createCall);
+    assert.doesNotMatch(createCall, /many extra reproduction details/);
+    assert.doesNotMatch(createCall, /does not react to it/);
+    assert.match(
+      sections.join("\n"),
+      /Suggested branch: work\/93-when-our-handoff-pi-session-finish-it-does-not-receive/,
+    );
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
