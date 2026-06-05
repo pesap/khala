@@ -1,6 +1,4 @@
-Closes: none
-
-<!-- Replace `none` with an issue link or reference when applicable. -->
+<!-- Add `Closes #<issue>` only when a durable source issue is known. Omit this line when no source issue exists. -->
 
 ## Description
 

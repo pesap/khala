@@ -88,6 +88,31 @@ test("command prompts do not contain unconditional clarification stalls", async 
   assert.deepEqual(offenders, []);
 });
 
+test("PR templates omit invalid default close markers", async () => {
+  const repoRoot = process.cwd();
+  const templatePaths = [
+    ".github/pull_request_template.md",
+    "skills/github/pr-template.md",
+  ];
+
+  for (const templatePath of templatePaths) {
+    const templateText = await fs.readFile(path.join(repoRoot, templatePath), "utf8");
+    assert.doesNotMatch(templateText, /^Closes:\s*non(?:e)?\b/im);
+    assert.match(templateText, /durable source issue/i);
+  }
+});
+
+test("ship workflow requires source issue close-marker resolution", async () => {
+  const repoRoot = process.cwd();
+  const workflowText = await fs.readFile(
+    path.join(repoRoot, "workflows", "ship-workflow.yaml"),
+    "utf8",
+  );
+
+  assert.match(workflowText, /resolve the durable source issue/i);
+  assert.match(workflowText, /never contains `Closes: none` or `Closes: non`/);
+});
+
 test("workflow handler instructions do not contain unconditional clarification stalls", async () => {
   const repoRoot = process.cwd();
   const handlerText = await fs.readFile(
