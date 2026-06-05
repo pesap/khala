@@ -23,6 +23,25 @@ function fakeGhRunner(outputs: Record<string, string>): {
       if (command === "zellij" && args[0] === "action" && args[1] === "new-pane") {
         return { ok: true, stdout: "terminal_99\n", stderr: "" };
       }
+      if (command === "bash" && args[0]?.endsWith("scripts/workon-zellij-handoff.sh")) {
+        const branch = args[args.indexOf("--branch") + 1];
+        const repo = args[args.indexOf("--repo") + 1];
+        const heartbeat = args[args.indexOf("--heartbeat") + 1];
+        const worktreePath = "/tmp/worktrunk.feat-65";
+        return {
+          ok: true,
+          stdout: `${JSON.stringify({
+            status: "launched",
+            path: worktreePath,
+            tabName: "agents/feat-65-detect-local-worktrees-and-stale-sessions",
+            tabId: 12,
+            heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me`,
+            piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi --name ${branch} <clean-prompt>`,
+            repo,
+          })}\n`,
+          stderr: "",
+        };
+      }
       const stdout = outputs[key];
       return stdout === undefined
         ? { ok: false, stdout: "", stderr: `missing fake output for ${key}` }
@@ -80,6 +99,7 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: false,
+        heartbeat: "1.0",
       },
       runner,
     );
@@ -107,7 +127,10 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     assert.match(capsule, /Worktree status: prepared/);
     assert.match(capsule, /Pi handoff command: \(not launched\)/);
     assert.match(capsule, /Render collected inbox items into canonical buckets/);
-    assert.match(capsule, /^\/feature Continue pesap\/agents#63/m);
+    assert.match(capsule, /I want to discuss and possibly work on: feat\(inbox\): render deterministic maintainer queue locally/);
+    assert.match(capsule, /Before doing any implementation:/);
+    assert.match(capsule, /Draft PR and feedback heartbeat:/);
+    assert.match(capsule, /check the PR\/issue forge for human feedback every 1\.0/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -134,6 +157,7 @@ test("infers repo and issue from GitHub issue URL", async () => {
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: false,
+        heartbeat: "1.0",
       },
       runner,
     );
@@ -168,6 +192,7 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: false,
+        heartbeat: "1.0",
       },
       runner,
     );
@@ -223,30 +248,27 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: true,
+        heartbeat: "0.25",
       },
       runner,
     );
     const rendered = sections.join("\n");
-    const switchCall = calls.find((call) => call.startsWith("wt switch --create"));
-    const listTabsCall = calls.find((call) => call === "zellij action list-tabs --json");
-    const focusCall = calls.find((call) => call.startsWith("zellij action go-to-tab-name"));
-    const paneCall = calls.find((call) => call.startsWith("zellij action new-pane"));
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
 
     assert.equal(calls.some((call) => call.includes(" -x pi ")), false);
     assert.equal(calls.some((call) => call.startsWith("zellij run")), false);
-    assert.ok(switchCall);
-    assert.ok(listTabsCall);
-    assert.ok(focusCall);
-    assert.ok(paneCall);
-    assert.ok(calls.indexOf(switchCall) < calls.indexOf(listTabsCall));
-    assert.ok(calls.indexOf(listTabsCall) < calls.indexOf(focusCall));
-    assert.ok(calls.indexOf(focusCall) < calls.indexOf(paneCall));
-    assert.match(paneCall, /^zellij action new-pane --tab-id 12 --name pi --cwd \/tmp\/worktrunk\.feat-65 -- pi --name feat\/65/);
-    assert.match(paneCall, /@.+github\.com\/pesap\/agents\/capsule\.md/);
-    assert.match(paneCall, /\/feature Continue pesap\/agents#65/);
+    assert.equal(calls.some((call) => call.includes(" @") && call.includes("capsule.md")), false);
+    assert.ok(scriptCall);
+    assert.match(scriptCall, /--repo pesap\/agents/);
+    assert.match(scriptCall, /--branch feat\/65-detect-local-worktrees-and-stale-sessions/);
+    assert.match(scriptCall, /--capsule .+github\.com\/pesap\/agents\/capsule\.md/);
+    assert.match(scriptCall, /--prompt I want to discuss and possibly work on:/);
+    assert.match(scriptCall, /Draft PR and feedback heartbeat:/);
+    assert.match(scriptCall, /--heartbeat 0\.25/);
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
+    assert.match(rendered, /Forge heartbeat command: zellij action new-pane/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
@@ -280,6 +302,7 @@ test("blocks start mode when Worktrunk is unavailable", async () => {
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: false,
+        heartbeat: "1.0",
       },
       runner,
     );
@@ -307,6 +330,7 @@ test("reports freeform topics as graceful gaps", async () => {
       capsuleRoot: process.cwd(),
       nowIso: "2026-06-05T00:00:00.000Z",
       launchInZellij: false,
+      heartbeat: "1.0",
     },
     runner,
   );

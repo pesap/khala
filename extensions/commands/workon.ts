@@ -7,8 +7,6 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 const MAX_BRANCH_SLUG_LENGTH = 72;
-const ZELLIJ_TAB_WAIT_ATTEMPTS = 10;
-const ZELLIJ_TAB_WAIT_MS = 200;
 
 export type WorkonForge = "auto" | "github" | "gitlab" | "all";
 export type WorkonMode = "prepare" | "start";
@@ -35,6 +33,7 @@ export interface WorkonBootstrapRequest {
   capsuleRoot: string;
   nowIso: string;
   launchInZellij: boolean;
+  heartbeat: string;
 }
 
 interface GithubIssueTarget {
@@ -69,7 +68,15 @@ interface WorkonBootstrapEvidence {
   worktreeStatus?: "prepared" | "started" | "launched" | "blocked";
   worktreePath?: string;
   piHandoffCommand?: string;
+  heartbeatCommand?: string;
   handoffPrompt?: string;
+}
+
+interface ZellijHandoffResult {
+  status?: string;
+  path?: string;
+  piHandoffCommand?: string;
+  heartbeatCommand?: string;
 }
 
 function slugify(value: string): string {
@@ -257,6 +264,7 @@ function capsuleMarkdown(params: {
   worktreeStatus: "prepared" | "started" | "launched" | "blocked";
   worktreePath?: string;
   piHandoffCommand?: string;
+  heartbeatCommand?: string;
   handoffPrompt: string;
 }): string {
   const labels = params.issue.labels
@@ -285,6 +293,8 @@ Worktree command: ${params.worktreeCommand}
 Worktree status: ${params.worktreeStatus}
 Worktree path: ${params.worktreePath ?? "(not available)"}
 Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
+Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
+Heartbeat interval: ${params.request.heartbeat}
 Mode: ${params.request.mode}
 Created: ${params.request.nowIso}
 
@@ -321,16 +331,37 @@ function capsulePath(root: string, repo: string): string {
   return path.join(root, "github.com", owner, name, "capsule.md");
 }
 
-function buildHandoffPrompt(params: {
+function renderTemplate(template: string, values: Record<string, string | number>): string {
+  return template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (match, key: string) => {
+    const value = values[key];
+    return value === undefined ? match : String(value);
+  }).trim();
+}
+
+async function readHandoffTemplate(cwd: string): Promise<string> {
+  return fs.readFile(path.join(cwd, "commands", "workon-handoff-template.md"), "utf8");
+}
+
+function heartbeatLabel(value: string): string {
+  return `${value} hours`;
+}
+
+async function buildHandoffPrompt(params: {
+  cwd: string;
   issue: GithubIssueMetadata;
   repo: string;
   branchName: string;
-}): string {
-  return `/feature Continue ${params.repo}#${params.issue.number}: ${params.issue.title}\n\nRead the attached /workon session capsule first. Stay on branch ${params.branchName}. Implement the smallest vertical slice, run validation, then use /review and /ship when ready.`;
-}
-
-function formatCommand(command: string, args: string[]): string {
-  return `${command} ${args.join(" ")}`;
+  heartbeat: string;
+}): Promise<string> {
+  const template = await readHandoffTemplate(params.cwd);
+  return renderTemplate(template, {
+    branch_name: params.branchName,
+    heartbeat_interval: heartbeatLabel(params.heartbeat),
+    issue_number: params.issue.number,
+    issue_title: params.issue.title,
+    issue_url: params.issue.url,
+    repo: params.repo,
+  });
 }
 
 async function writeCapsule(params: {
@@ -342,6 +373,7 @@ async function writeCapsule(params: {
   worktreeStatus: "prepared" | "started" | "launched" | "blocked";
   worktreePath?: string;
   piHandoffCommand?: string;
+  heartbeatCommand?: string;
   handoffPrompt: string;
 }): Promise<string> {
   const filePath = capsulePath(params.request.capsuleRoot, params.repo);
@@ -364,55 +396,18 @@ function extractWorktreePath(output: string): string | undefined {
   return output.match(/(?:^|\s)(\/[^\s]+)/)?.[1];
 }
 
-function worktrunkTabName(repo: string, branchName: string): string {
-  const [, repoName = repo] = repo.split("/", 2);
-  return `${slugify(repoName) || "repo"}/${slugify(branchName) || "work"}`;
-}
-
-function zellijTabIdFromList(output: string, tabName: string): number | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output);
-  } catch {
-    return undefined;
+function parseZellijHandoffResult(output: string): ZellijHandoffResult | null {
+  for (const line of output.split(/\r?\n/).reverse()) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as ZellijHandoffResult;
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
   }
-  if (!Array.isArray(parsed)) return undefined;
-  for (const entry of parsed) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as { name?: unknown; tab_id?: unknown };
-    if (record.name !== tabName || typeof record.tab_id !== "number") continue;
-    return record.tab_id;
-  }
-  return undefined;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForZellijTab(
-  request: WorkonBootstrapRequest,
-  runner: WorkonCommandRunner,
-  evidence: WorkonBootstrapEvidence,
-  tabName: string,
-): Promise<{ tabId?: number; gap?: string }> {
-  for (let attempt = 1; attempt <= ZELLIJ_TAB_WAIT_ATTEMPTS; attempt += 1) {
-    const result = await runCommand(runner, request.cwd, evidence.commands, "zellij", [
-      "action",
-      "list-tabs",
-      "--json",
-    ]);
-    const gap = resultGap("Zellij tab list", result);
-    if (gap) return { gap };
-
-    const tabId = zellijTabIdFromList(result.stdout, tabName);
-    if (tabId !== undefined) return { tabId };
-
-    if (attempt < ZELLIJ_TAB_WAIT_ATTEMPTS) await sleep(ZELLIJ_TAB_WAIT_MS);
-  }
-  return {
-    gap: `Zellij Worktrunk tab ${tabName}: not found after ${ZELLIJ_TAB_WAIT_ATTEMPTS} checks`,
-  };
+  return null;
 }
 
 async function startWorktreeIfRequested(
@@ -429,6 +424,7 @@ async function startWorktreeIfRequested(
   status: "prepared" | "started" | "launched" | "blocked";
   path?: string;
   piHandoffCommand?: string;
+  heartbeatCommand?: string;
 }> {
   if (request.mode !== "start") return { status: "prepared" };
 
@@ -442,75 +438,37 @@ async function startWorktreeIfRequested(
   }
 
   if (request.launchInZellij) {
-    const zellijVersion = await runCommand(runner, request.cwd, evidence.commands, "zellij", [
-      "--version",
-    ]);
-    const zellijGap = resultGap("Zellij availability", zellijVersion);
-    if (zellijGap) {
-      evidence.gaps.push(zellijGap);
-      return { status: "blocked" };
-    }
-
-    const switchArgs = ["switch", "--create", params.branchName, "--format", "json"];
-    const switchResult = await runCommand(runner, request.cwd, evidence.commands, "wt", switchArgs);
-    const switchGap = resultGap(`Worktrunk start ${params.branchName}`, switchResult);
-    if (switchGap) {
-      evidence.gaps.push(switchGap);
-      return { status: "blocked" };
-    }
-
-    const worktreePath = extractWorktreePath(`${switchResult.stdout}\n${switchResult.stderr}`);
-    if (!worktreePath) {
-      evidence.gaps.push(`Worktrunk start ${params.branchName}: worktree path not reported`);
-      return { status: "blocked" };
-    }
-
-    const tabName = worktrunkTabName(params.repo, params.branchName);
-    const tab = await waitForZellijTab(request, runner, evidence, tabName);
-    if (tab.gap) {
-      evidence.gaps.push(tab.gap);
-      return { status: "blocked", path: worktreePath };
-    }
-
-    const focusArgs = ["action", "go-to-tab-name", tabName];
-    const focusResult = await runCommand(runner, request.cwd, evidence.commands, "zellij", focusArgs);
-    const focusGap = resultGap(`Zellij Worktrunk tab focus ${tabName}`, focusResult);
-    if (focusGap) {
-      evidence.gaps.push(focusGap);
-      return { status: "blocked", path: worktreePath };
-    }
-
-    const paneArgs = [
-      "action",
-      "new-pane",
-      "--tab-id",
-      String(tab.tabId),
-      "--name",
-      "pi",
-      "--cwd",
-      worktreePath,
-      "--",
-      "pi",
-      "--name",
+    const scriptPath = path.join(request.cwd, "scripts", "workon-zellij-handoff.sh");
+    const handoffResult = await runCommand(runner, request.cwd, evidence.commands, "bash", [
+      scriptPath,
+      "--repo",
+      params.repo,
+      "--branch",
       params.branchName,
-      `@${params.capsulePath}`,
+      "--capsule",
+      params.capsulePath,
+      "--prompt",
       params.handoffPrompt,
-    ];
-    const paneResult = await runCommand(runner, request.cwd, evidence.commands, "zellij", paneArgs);
-    const paneGap = resultGap(`Zellij Pi handoff ${params.branchName}`, paneResult);
-    if (paneGap) {
-      evidence.gaps.push(paneGap);
-      return {
-        status: "blocked",
-        path: worktreePath,
-        piHandoffCommand: formatCommand("zellij", paneArgs),
-      };
+      "--heartbeat",
+      request.heartbeat,
+    ]);
+    const handoffGap = resultGap(`Zellij Pi handoff ${params.branchName}`, handoffResult);
+    if (handoffGap) {
+      evidence.gaps.push(handoffGap);
+      return { status: "blocked" };
+    }
+
+    const parsed = parseZellijHandoffResult(`${handoffResult.stdout}\n${handoffResult.stderr}`);
+    if (parsed?.status !== "launched" || !parsed.path) {
+      evidence.gaps.push(`Zellij Pi handoff ${params.branchName}: result JSON missing launched path`);
+      return { status: "blocked" };
     }
 
     return {
       status: "launched",
-      path: worktreePath,
-      piHandoffCommand: formatCommand("zellij", paneArgs),
+      path: parsed.path,
+      piHandoffCommand: parsed.piHandoffCommand ?? "scripts/workon-zellij-handoff.sh",
+      heartbeatCommand: parsed.heartbeatCommand,
     };
   }
 
@@ -544,6 +502,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
+        `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
       ].join("\n"),
     );
@@ -597,7 +556,13 @@ export async function prepareWorkonBootstrap(
   const repo = target.repo;
   const branchName = buildWorkonBranchName(issue);
   const worktreeCommand = `wt switch --create ${branchName}`;
-  const handoffPrompt = buildHandoffPrompt({ issue, repo, branchName });
+  const handoffPrompt = await buildHandoffPrompt({
+    cwd: request.cwd,
+    issue,
+    repo,
+    branchName,
+    heartbeat: request.heartbeat,
+  });
   const initialCapsule = await writeCapsule({
     request,
     issue,
@@ -622,6 +587,7 @@ export async function prepareWorkonBootstrap(
     worktreeStatus: worktree.status,
     worktreePath: worktree.path,
     piHandoffCommand: worktree.piHandoffCommand,
+    heartbeatCommand: worktree.heartbeatCommand,
     handoffPrompt,
   });
 
@@ -632,6 +598,7 @@ export async function prepareWorkonBootstrap(
   evidence.worktreeStatus = worktree.status;
   evidence.worktreePath = worktree.path;
   evidence.piHandoffCommand = worktree.piHandoffCommand;
+  evidence.heartbeatCommand = worktree.heartbeatCommand;
   evidence.handoffPrompt = handoffPrompt;
   evidence.capsulePath = capsule;
   return formatWorkonBootstrapEvidence(evidence);

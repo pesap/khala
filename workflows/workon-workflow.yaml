@@ -7,6 +7,7 @@ mutation_policy:
     - create_issue_when_needed_and_repo_is_clear
     - create_branch_or_worktree_when_safe
     - write_session_capsule
+    - start_read_only_forge_feedback_heartbeat
   forbidden:
     - implementation_changes
     - merge_or_push
@@ -18,13 +19,14 @@ inputs:
   repo: optional owner/repo override
   forge: auto, github, gitlab, or all
   mode: prepare or start
+  heartbeat: forge feedback polling interval in decimal hours
   extraInstruction: optional one-off maintainer focus
 
 steps:
   - id: scope
     action: resolve_target_repo_forge_and_mode
   - id: deterministic-bootstrap
-    action: use_command_handler_issue_metadata_global_capsule_worktrunk_tab_wait_and_zellij_pi_handoff_when_available
+    action: use_command_handler_issue_metadata_global_capsule_worktrunk_tab_wait_zellij_pi_handoff_and_forge_heartbeat_when_available
   - id: source-of-truth
     action: find_or_prepare_source_issue
   - id: branch
