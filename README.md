@@ -38,7 +38,7 @@ pi -e https://github.com/pesap/agents -p "/khala"
 
 | Capability | Description |
 |---|---|
-| **Workflow commands** | Debug, review, simplify, plan, TDD, triage, ship, and skill creation workflows. |
+| **Workflow commands** | Debug, review, inbox, simplify, plan, TDD, triage, ship, and skill creation workflows. |
 | **Safety gates** | Risk approval, preflight/postflight evidence, blocked destructive commands, response compliance, anti-stall turn obligations. |
 | **Local-first learning** | File-backed workflow observations and corrective lessons with quality gates; no model fine-tuning or transcript storage. |
 | **Bundled tooling** | Pi extensions for fast search (`@ff-labs/pi-fff`) and subagent workflows (`pi-subagents`). |
@@ -74,6 +74,7 @@ flowchart LR
 | `/git-review` | Run git-history diagnostics before reading code. |
 | `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |
 | `/ship [extra instruction]` | Simplify, validate, commit, push, and open/confirm PR/MR. |
+| `/inbox [--focus all\|reviews\|issues\|prs\|ci\|local\|sessions] [--repo owner/repo] [--user [login\|@me]] [--forge auto\|github\|gitlab\|all] [--limit N]` | Show a read-only maintainer inbox from local, forge, and session signals. |
 | `/plan <topic>` | Stress-test a plan and capture terms/ADRs. |
 | `/audit <claim>` | Anti-confirmation-bias claim audit with evidence-ranked revision. |
 | `/triage-issue <problem>` | Investigate a bug and prepare a TDD fix plan. |
@@ -225,6 +226,11 @@ harness:
 Bootstrap limits keep the stable prompt prefix cache-friendly. Substantial turns should use `khala_search_memory` instead of expanding startup memory.
 
 ---
+
+## Maintainer OS direction
+
+The long-term maintainer-control-plane direction is captured in
+[`docs/maintainer-os-north-star.md`](docs/maintainer-os-north-star.md).
 
 ## Configuration & layout
 

@@ -13,6 +13,7 @@ export const WORKFLOW_TYPES = [
   "git-review",
   "simplify",
   "ship",
+  "inbox",
   "learn-skill",
   "plan",
   "audit",
@@ -92,6 +93,12 @@ const DEFAULT_WORKFLOWS: Record<WorkflowType, WorkflowCommandConfig> = {
     promptFile: "ship-workflow.md",
     workflowFile: "ship-workflow.yaml",
     entryType: "khala-ship-command",
+  },
+  inbox: {
+    enabled: true,
+    promptFile: "inbox-workflow.md",
+    workflowFile: "inbox-workflow.yaml",
+    entryType: "khala-inbox-command",
   },
   plan: {
     enabled: true,

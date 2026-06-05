@@ -43,6 +43,10 @@ commands:
     enabled: true
     prompt: ship-workflow.md
     workflow: ship-workflow.yaml
+  inbox:
+    enabled: true
+    prompt: inbox-workflow.md
+    workflow: inbox-workflow.yaml
   plan:
     enabled: true
     prompt: plan-workflow.md

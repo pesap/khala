@@ -1,0 +1,38 @@
+name: inbox-workflow
+version: 1
+objective: Build a read-only, ranked maintainer inbox from local git, forge, and session evidence.
+
+mutation_policy:
+  mode: read_only
+  forbidden:
+    - file_edits
+    - git_writes
+    - issue_or_pr_mutation
+    - ci_reruns
+    - session_interrupts
+
+inputs:
+  limit: maximum items to inspect or show per bucket and repository discovery run
+  repo: optional single forge repo override
+  user: optional forge user whose repositories should be discovered read-only; @me means the authenticated user
+  forge: auto, github, gitlab, or all
+  focus: all, reviews, issues, prs, ci, local, or sessions
+  extraInstruction: optional one-off maintainer focus
+
+steps:
+  - id: scope
+    action: resolve_repo_user_forge_focus_and_limits
+  - id: local-git
+    action: inspect_current_branch_worktree_remote_and_local_changes
+  - id: forge
+    action: collect_read_only_pr_mr_issue_review_ci_and_mention_signals
+  - id: sessions
+    action: collect_available_local_session_or_worktrunk_staleness_signals
+  - id: bucket
+    action: group_items_into_maintainer_attention_buckets
+  - id: rank
+    action: rank_by_waiting_humans_blockers_ci_age_and_staleness
+  - id: recommend
+    action: produce_top_three_next_commands
+  - id: summarize
+    action: report_counts_evidence_gaps_risks_and_confidence

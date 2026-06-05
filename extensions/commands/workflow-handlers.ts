@@ -97,6 +97,14 @@ export function createWorkflowCommandHandlers(params: {
   parseTriageIssueArgs: (args: string) => { problem: string };
   parseTddArgs: (args: string) => { goal: string; language: string };
   parseAddressOpenIssuesArgs: (args: string) => { limit: number; repo: string };
+  parseInboxArgs: (args: string) => {
+    limit: number;
+    repo: string;
+    user: string;
+    forge: string;
+    focus: string;
+    extraInstruction: string;
+  };
   parseLearnSkillArgs: (args: string) => {
     topic: string;
     fromFile?: string;
@@ -132,6 +140,7 @@ export function createWorkflowCommandHandlers(params: {
     PLAN_COMMAND_SOURCE: string;
     AUDIT_COMMAND_SOURCE: string;
     SHIP_COMMAND_SOURCE: string;
+    INBOX_COMMAND_SOURCE: string;
     TRIAGE_ISSUE_COMMAND_SOURCE: string;
     TDD_COMMAND_SOURCE: string;
     ADDRESS_OPEN_ISSUES_COMMAND_SOURCE: string;
@@ -143,6 +152,7 @@ export function createWorkflowCommandHandlers(params: {
   gitReview: CommandHandler;
   simplify: CommandHandler;
   ship: CommandHandler;
+  inbox: CommandHandler;
   plan: CommandHandler;
   audit: CommandHandler;
   triageIssue: CommandHandler;
@@ -172,6 +182,7 @@ export function createWorkflowCommandHandlers(params: {
     parseTriageIssueArgs,
     parseTddArgs,
     parseAddressOpenIssuesArgs,
+    parseInboxArgs,
     parseLearnSkillArgs,
     ensureLearningStore,
     exists,
@@ -542,6 +553,46 @@ export function createWorkflowCommandHandlers(params: {
           extraInstruction ? `Additional instruction: ${extraInstruction}` : "",
         ],
         startedMessage: "Started ship workflow (detect -> target -> sync -> validate -> publish -> PR).",
+      });
+    },
+
+    inbox: async (args, ctx) => {
+      const parsed = parseInboxArgs(args ?? "");
+
+      await runMirroredSourceWorkflow({
+        ctx,
+        type: "inbox",
+        source: constants.INBOX_COMMAND_SOURCE,
+        input:
+          parsed.extraInstruction ||
+          `maintainer inbox (focus=${parsed.focus}, limit=${parsed.limit})`,
+        fields: {
+          limit: parsed.limit,
+          repo: parsed.repo || null,
+          user: parsed.user || null,
+          forge: parsed.forge,
+          focus: parsed.focus,
+          extraInstruction: parsed.extraInstruction || null,
+        },
+        sections: [
+          "Inbox scope: read-only maintainer visibility across forge, local git, and agent/session signals.",
+          `Limit: ${parsed.limit}`,
+          `Repo override: ${parsed.repo || "(current repo / configured repos)"}`,
+          `User repo discovery: ${parsed.user || "(disabled)"}`,
+          `Forge preference: ${parsed.forge}`,
+          `Focus: ${parsed.focus}`,
+          "Instruction: Do not mutate files, branches, issues, PRs, MRs, labels, comments, CI runs, or sessions.",
+          "Instruction: If user repo discovery is enabled, list repositories for that user with read-only forge commands before collecting per-repo signals; use @me for the authenticated user and keep repository discovery bounded by the limit.",
+          "Instruction: If both repo override and user repo discovery are set, prioritize the explicit repo override and report that user discovery was ignored.",
+          "Instruction: Gather bounded evidence from git state plus gh/glab when available; gracefully degrade when a forge CLI is missing or unauthenticated.",
+          "Instruction: Group findings into Needs you now, My work is broken, Agent/session needs attention, New work needs shaping, Ready for agents, and Low-risk background.",
+          "Instruction: Rank by age, blocker status, review-request state, CI failure, stale local work, and explicit mentions.",
+          "Instruction: End with the top 3 next commands a maintainer should run.",
+          parsed.extraInstruction
+            ? `Additional focus: ${parsed.extraInstruction}`
+            : "",
+        ],
+        startedMessage: `Started inbox workflow (focus=${parsed.focus}, limit=${parsed.limit}).`,
       });
     },
 

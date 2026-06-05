@@ -5,6 +5,7 @@ import {
   buildReviewTarget,
   buildSkillTemplate,
   chooseAvailableSkillName,
+  parseInboxArgs,
   parseReviewArgs,
 } from "../../extensions/commands/parsers.ts";
 
@@ -47,6 +48,49 @@ test("builds PR review instructions with pi-review checkout safeguards", () => {
   assert.match(target.instruction, /Require GitHub CLI/);
   assert.match(target.instruction, /no staged or unstaged tracked-file changes/);
   assert.match(target.instruction, /compute the merge base/);
+});
+
+test("parses inbox flags with safe defaults", () => {
+  assert.deepEqual(parseInboxArgs(""), {
+    limit: 20,
+    repo: "",
+    user: "",
+    forge: "auto",
+    focus: "all",
+    extraInstruction: "",
+  });
+
+  assert.deepEqual(
+    parseInboxArgs(
+      "--limit 5 --repo owner/repo --user psanchez --forge gitlab --focus reviews stale blockers",
+    ),
+    {
+      limit: 5,
+      repo: "owner/repo",
+      user: "psanchez",
+      forge: "gitlab",
+      focus: "reviews",
+      extraInstruction: "stale blockers",
+    },
+  );
+
+  assert.deepEqual(parseInboxArgs("--user --limit 3"), {
+    limit: 3,
+    repo: "",
+    user: "@me",
+    forge: "auto",
+    focus: "all",
+    extraInstruction: "",
+  });
+
+  assert.deepEqual(parseInboxArgs("--limit 0 --forge unknown --focus invalid"), {
+    limit: 20,
+    repo: "",
+    user: "",
+    forge: "auto",
+    focus: "all",
+    extraInstruction: "",
+  });
 });
 
 test("buildSkillTemplate quotes YAML frontmatter values with colons", () => {

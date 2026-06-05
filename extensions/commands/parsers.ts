@@ -34,6 +34,32 @@ export interface ParseRecordResult<T> {
 
 export type CompliancePreset = "status" | "reset" | PolicyMode;
 
+type InboxForge = "auto" | "github" | "gitlab" | "all";
+type InboxFocus =
+  | "all"
+  | "reviews"
+  | "issues"
+  | "prs"
+  | "ci"
+  | "local"
+  | "sessions";
+
+const INBOX_FORGES: readonly InboxForge[] = [
+  "auto",
+  "github",
+  "gitlab",
+  "all",
+];
+const INBOX_FOCUS_VALUES: readonly InboxFocus[] = [
+  "all",
+  "reviews",
+  "issues",
+  "prs",
+  "ci",
+  "local",
+  "sessions",
+];
+
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
   strict: "enforce",
@@ -156,6 +182,62 @@ export function parseAddressOpenIssuesArgs(args: string): {
   return { limit: Number.isFinite(limit) && limit > 0 ? limit : 20, repo };
 }
 
+export function parseInboxArgs(args: string): {
+  limit: number;
+  repo: string;
+  user: string;
+  forge: InboxForge;
+  focus: InboxFocus;
+  extraInstruction: string;
+} {
+  let rest = normalizeWhitespace(args);
+
+  const limitResult = removeFlag(rest, /(^|\s)--limit\s+(\d+)(\s|$)/);
+  rest = limitResult.value;
+  const limit = Number(limitResult.match?.[2] ?? 20);
+
+  const repoResult = removeFlag(rest, /(^|\s)--repo\s+(\S+)(\s|$)/);
+  rest = repoResult.value;
+  const repo = normalizeWhitespace(repoResult.match?.[2] ?? "");
+
+  const userValueResult = removeFlag(
+    rest,
+    /(^|\s)--user\s+((?!--)\S+)(\s|$)/,
+  );
+  rest = userValueResult.value;
+  let user = normalizeWhitespace(userValueResult.match?.[2] ?? "");
+  if (!user) {
+    const userFlagResult = removeFlag(rest, /(^|\s)--user(\s|$)/);
+    rest = userFlagResult.value;
+    user = userFlagResult.match ? "@me" : "";
+  }
+
+  const forgeResult = removeFlag(rest, /(^|\s)--forge\s+(\S+)(\s|$)/);
+  rest = forgeResult.value;
+  const forge = parseAllowedInboxValue(
+    forgeResult.match?.[2],
+    "auto",
+    INBOX_FORGES,
+  );
+
+  const focusResult = removeFlag(rest, /(^|\s)--focus\s+(\S+)(\s|$)/);
+  rest = focusResult.value;
+  const focus = parseAllowedInboxValue(
+    focusResult.match?.[2],
+    "all",
+    INBOX_FOCUS_VALUES,
+  );
+
+  return {
+    limit: Number.isFinite(limit) && limit > 0 ? limit : 20,
+    repo,
+    user,
+    forge,
+    focus,
+    extraInstruction: rest,
+  };
+}
+
 export function parseLearnSkillArgs(args: string): {
   topic: string;
   fromFile?: string;
@@ -205,6 +287,17 @@ export const parseKhalaMemoryRestartArgs = makeMemoryScopeParser(
 export const parseKhalaMemoryRemoveArgs = makeMemoryScopeParser(
   "Usage: /khala-memory-remove [project|global]",
 );
+
+function parseAllowedInboxValue<T extends string>(
+  rawValue: string | undefined,
+  fallback: T,
+  allowedValues: readonly T[],
+): T {
+  const normalizedValue = normalizeWhitespace(rawValue ?? fallback).toLowerCase();
+  return allowedValues.includes(normalizedValue as T)
+    ? (normalizedValue as T)
+    : fallback;
+}
 
 function parseRecordLine<T>(
   args: string,
