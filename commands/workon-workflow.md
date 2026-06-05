@@ -25,15 +25,16 @@ Requirements:
 - Prefer GitHub v1. Gracefully degrade for GitLab and other forges with precise
   next steps rather than guessing.
 - Use deterministic bootstrap evidence attached by the command handler when it
-  resolves a GitHub issue, derives a branch name, and writes a local session
-  capsule.
+  resolves a GitHub issue, derives a branch name, optionally starts a Worktrunk
+  worktree in `--mode start`, and writes a local session capsule.
 - Use Worktrunk when available to prepare a worktree branch name. If Worktrunk is
   unavailable or hooks need trust approval, stop with exact operator guidance;
   do not bypass approvals.
 - Do not implement the feature or bugfix in this workflow.
 - Do not merge, push, or open implementation PRs.
 - Keep mutation scoped to session bootstrap actions only: issue creation when
-  needed, branch/worktree creation when safe, and session capsule creation.
+  needed, branch/worktree creation in `--mode start` when safe, and session
+  capsule creation.
 - If both an explicit issue/PR and freeform topic exist, treat the explicit
   issue/PR as source of truth and keep the topic as focus/context.
 - Write or propose a session capsule containing:
