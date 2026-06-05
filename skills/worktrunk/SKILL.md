@@ -273,10 +273,15 @@ When the user requests spawning a worktree with an agent in a background session
 tmux new-session -d -s <branch-name> "wt switch --create <branch-name> -x <agent-cli> -- '<task description>'"
 ```
 
-**Zellij** (check `$ZELLIJ` env var):
+**Zellij / Worktrunk tab handoff** (check `$ZELLIJ` env var):
 ```bash
-zellij run -- wt switch --create <branch-name> -x <agent-cli> -- '<task description>'
+wt switch --create <branch-name> -x <agent-cli> -- '<task description>'
 ```
+
+Use Worktrunk execute directly when the agent must start in the Worktrunk-created
+worktree tab. `zellij run -- wt switch ...` creates a new pane in the current
+Zellij tab first; only use that shape when a current-tab pane is explicitly
+wanted.
 
 **Requirements** (all must be true):
 - User explicitly requests spawning/handoff
@@ -291,9 +296,9 @@ tmux new-session -d -s fix-auth-bug "wt switch --create fix-auth-bug -x claude -
   'The login session expires after 5 minutes. Find the session timeout config and extend it to 24 hours.'"
 ```
 
-Example (Zellij, OpenCode):
+Example (Zellij, OpenCode in the Worktrunk tab):
 ```bash
-zellij run -- wt switch --create fix-auth-bug -x 'opencode run' -- \
+wt switch --create fix-auth-bug -x 'opencode run' -- \
   'The login session expires after 5 minutes. Find the session timeout config and extend it to 24 hours.'
 ```
 
