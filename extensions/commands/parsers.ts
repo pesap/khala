@@ -156,6 +156,72 @@ export function parseAddressOpenIssuesArgs(args: string): {
   return { limit: Number.isFinite(limit) && limit > 0 ? limit : 20, repo };
 }
 
+export function parseInboxArgs(args: string): {
+  limit: number;
+  repo: string;
+  user: string;
+  forge: string;
+  focus: string;
+  extraInstruction: string;
+} {
+  let rest = normalizeWhitespace(args);
+
+  const limitResult = removeFlag(rest, /(^|\s)--limit\s+(\d+)(\s|$)/);
+  rest = limitResult.value;
+  const limit = Number(limitResult.match?.[2] ?? 20);
+
+  const repoResult = removeFlag(rest, /(^|\s)--repo\s+(\S+)(\s|$)/);
+  rest = repoResult.value;
+  const repo = normalizeWhitespace(repoResult.match?.[2] ?? "");
+
+  const userValueResult = removeFlag(
+    rest,
+    /(^|\s)--user\s+((?!--)\S+)(\s|$)/,
+  );
+  rest = userValueResult.value;
+  let user = normalizeWhitespace(userValueResult.match?.[2] ?? "");
+  if (!user) {
+    const userFlagResult = removeFlag(rest, /(^|\s)--user(\s|$)/);
+    rest = userFlagResult.value;
+    user = userFlagResult.match ? "@me" : "";
+  }
+
+  const forgeResult = removeFlag(rest, /(^|\s)--forge\s+(\S+)(\s|$)/);
+  rest = forgeResult.value;
+  const requestedForge = normalizeWhitespace(
+    forgeResult.match?.[2] ?? "auto",
+  ).toLowerCase();
+  const forge = ["auto", "github", "gitlab", "all"].includes(requestedForge)
+    ? requestedForge
+    : "auto";
+
+  const focusResult = removeFlag(rest, /(^|\s)--focus\s+(\S+)(\s|$)/);
+  rest = focusResult.value;
+  const requestedFocus = normalizeWhitespace(
+    focusResult.match?.[2] ?? "all",
+  ).toLowerCase();
+  const focus = [
+    "all",
+    "reviews",
+    "issues",
+    "prs",
+    "ci",
+    "local",
+    "sessions",
+  ].includes(requestedFocus)
+    ? requestedFocus
+    : "all";
+
+  return {
+    limit: Number.isFinite(limit) && limit > 0 ? limit : 20,
+    repo,
+    user,
+    forge,
+    focus,
+    extraInstruction: rest,
+  };
+}
+
 export function parseLearnSkillArgs(args: string): {
   topic: string;
   fromFile?: string;
