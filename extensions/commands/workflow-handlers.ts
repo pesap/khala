@@ -633,7 +633,7 @@ export function createWorkflowCommandHandlers(params: {
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|pr-url|issue-number|topic> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS.MINUTES]",
+          "Usage: /workon <issue-url|pr-url|issue-number|topic> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS]",
           "error",
         );
         return;

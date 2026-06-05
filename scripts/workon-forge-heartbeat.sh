@@ -3,11 +3,11 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-forge-heartbeat.sh --repo OWNER/REPO --branch BRANCH --interval HOURS.MINUTES [--author LOGIN|@me] [--once]
+Usage: workon-forge-heartbeat.sh --repo OWNER/REPO --branch BRANCH --interval HOURS [--author LOGIN|@me] [--once]
 
 Poll the forge CLI for feedback from the selected author on the open PR for a
-branch. Numeric intervals use HOURS.MINUTES notation: 0.15 means 15 minutes,
-1.30 means 1 hour 30 minutes, and 2.0 means 2 hours.
+branch. Numeric intervals are decimal hours: 0.25 means 15 minutes, and 2.0
+means 2 hours.
 USAGE
 }
 
@@ -28,7 +28,7 @@ while (($#)); do
       shift 2
       ;;
     --interval|--interval-hours)
-      interval="${2:?--interval requires HOURS.MINUTES}"
+      interval="${2:?--interval requires HOURS}"
       shift 2
       ;;
     --author)
@@ -67,22 +67,11 @@ require_command() {
 interval_seconds() {
   local value="${1:?interval required}"
   if [[ ! "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-    printf 'invalid interval: %s (expected HOURS.MINUTES, e.g. 0.15 or 2.0)\n' "${value}" >&2
+    printf 'invalid interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${value}" >&2
     return 1
   fi
 
-  local hours="${value%%.*}"
-  local minutes="0"
-  if [[ "${value}" == *.* ]]; then
-    minutes="${value#*.}"
-  fi
-  minutes="${minutes:-0}"
-  if ((10#${minutes} >= 60)); then
-    printf 'invalid interval minutes: %s (must be 0..59)\n' "${minutes}" >&2
-    return 1
-  fi
-
-  printf '%d\n' $((10#${hours} * 3600 + 10#${minutes} * 60))
+  awk -v hours="${value}" 'BEGIN { seconds = int(hours * 3600); print seconds > 0 ? seconds : 1 }'
 }
 
 json_string() {

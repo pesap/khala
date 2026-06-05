@@ -328,9 +328,7 @@ function parseAllowedInboxValue<T extends string>(
 
 function normalizeHeartbeatInterval(rawValue: string): string {
   const value = normalizeWhitespace(rawValue);
-  if (!/^\d+(?:\.\d+)?$/.test(value)) return "1.0";
-  const [, minutes = "0"] = value.split(".", 2);
-  return Number(minutes) < 60 ? value : "1.0";
+  return /^\d+(?:\.\d+)?$/.test(value) ? value : "1.0";
 }
 
 function parseRecordLine<T>(

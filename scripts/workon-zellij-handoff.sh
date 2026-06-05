@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS.MINUTES]
+Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS]
 
 Create/switch the Worktrunk worktree, wait for its Zellij tab, and launch Pi in
 that tab with a clean prompt. The capsule path is passed as text in the prompt;
@@ -40,7 +40,7 @@ while (($#)); do
       shift 2
       ;;
     --heartbeat|--heartbeat-hours)
-      heartbeat="${2:?--heartbeat requires HOURS.MINUTES}"
+      heartbeat="${2:?--heartbeat requires HOURS}"
       shift 2
       ;;
     --pi-command)
@@ -92,12 +92,7 @@ json_string() {
 
 validate_heartbeat() {
   local value="${1:?heartbeat interval required}"
-  [[ "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
-  local minutes="0"
-  if [[ "${value}" == *.* ]]; then
-    minutes="${value#*.}"
-  fi
-  ((10#${minutes:-0} < 60))
+  [[ "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
 require_command wt
@@ -105,7 +100,7 @@ require_command zellij
 require_command jq
 require_command "${pi_command}"
 if ! validate_heartbeat "${heartbeat}"; then
-  printf 'invalid heartbeat interval: %s (expected HOURS.MINUTES, e.g. 0.15 or 2.0)\n' "${heartbeat}" >&2
+  printf 'invalid heartbeat interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${heartbeat}" >&2
   exit 2
 fi
 

@@ -248,7 +248,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: true,
-        heartbeat: "0.15",
+        heartbeat: "0.25",
       },
       runner,
     );
@@ -264,7 +264,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(scriptCall, /--capsule .+github\.com\/pesap\/agents\/capsule\.md/);
     assert.match(scriptCall, /--prompt I want to discuss and possibly work on:/);
     assert.match(scriptCall, /Draft PR and feedback heartbeat:/);
-    assert.match(scriptCall, /--heartbeat 0\.15/);
+    assert.match(scriptCall, /--heartbeat 0\.25/);
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);

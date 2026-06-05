@@ -127,16 +127,16 @@ test("parses workon target and flags", () => {
     extraInstruction: "topic",
   });
 
-  assert.deepEqual(parseWorkonArgs("73 --mode start --heartbeat 0.15"), {
+  assert.deepEqual(parseWorkonArgs("73 --mode start --heartbeat 0.25"), {
     target: "73",
     repo: "",
     forge: "auto",
     mode: "start",
-    heartbeat: "0.15",
+    heartbeat: "0.25",
     extraInstruction: "73",
   });
 
-  assert.deepEqual(parseWorkonArgs("73 --heartbeat 0.75"), {
+  assert.deepEqual(parseWorkonArgs("73 --heartbeat nope"), {
     target: "73",
     repo: "",
     forge: "auto",
