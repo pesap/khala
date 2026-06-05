@@ -47,6 +47,10 @@ commands:
     enabled: true
     prompt: inbox-workflow.md
     workflow: inbox-workflow.yaml
+  workon:
+    enabled: true
+    prompt: workon-workflow.md
+    workflow: workon-workflow.yaml
   plan:
     enabled: true
     prompt: plan-workflow.md

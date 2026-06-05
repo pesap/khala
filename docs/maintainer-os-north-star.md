@@ -110,8 +110,10 @@ The command should end with a short recommended action list, not a giant report.
 
 ### `/workon`
 
-Issue-first session bootstrap. It finds or creates an issue, creates a named
-Worktrunk worktree, opens or names a zellij tab, and writes a session capsule.
+Issue-first session bootstrap. It resolves an issue, PR, or topic into a durable
+source of truth, derives an issue-numbered branch/worktree name, prepares the
+work session when safe, and writes or proposes a session capsule. It does not
+implement the feature or bugfix itself.
 
 ### `/recheck-pr`
 
@@ -181,8 +183,8 @@ Non-goals for the first prototype:
 ## Near-term roadmap
 
 1. Prototype `/inbox` as a read-only workflow command.
-2. Add a repo registry once current-repo inbox is useful.
-3. Add session capsule discovery and stale-session detection.
-4. Add `/workon` for issue-first Worktrunk session creation.
+2. Add `/workon` for issue-first Worktrunk session creation.
+3. Add a repo registry once current-repo inbox is useful.
+4. Add session capsule discovery and stale-session detection.
 5. Add `/recheck-pr` for Copilot/reviewer/CI feedback loops.
 6. Promote repeated inbox findings into Khala lessons, repo docs, or automation.

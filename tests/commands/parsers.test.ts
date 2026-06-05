@@ -7,6 +7,7 @@ import {
   chooseAvailableSkillName,
   parseInboxArgs,
   parseReviewArgs,
+  parseWorkonArgs,
 } from "../../extensions/commands/parsers.ts";
 
 test("parses direct GitHub PR URLs as review PR targets", () => {
@@ -90,6 +91,37 @@ test("parses inbox flags with safe defaults", () => {
     forge: "auto",
     focus: "all",
     extraInstruction: "",
+  });
+});
+
+test("parses workon target and flags", () => {
+  assert.deepEqual(parseWorkonArgs("61 --repo pesap/agents --forge github"), {
+    target: "61",
+    repo: "pesap/agents",
+    forge: "github",
+    mode: "prepare",
+    extraInstruction: "61",
+  });
+
+  assert.deepEqual(
+    parseWorkonArgs(
+      "collect GitHub maintainer queue --mode start --forge gitlab",
+    ),
+    {
+      target: "collect GitHub maintainer queue",
+      repo: "",
+      forge: "gitlab",
+      mode: "start",
+      extraInstruction: "collect GitHub maintainer queue",
+    },
+  );
+
+  assert.deepEqual(parseWorkonArgs("topic --mode invalid --forge unknown"), {
+    target: "topic",
+    repo: "",
+    forge: "auto",
+    mode: "prepare",
+    extraInstruction: "topic",
   });
 });
 
