@@ -63,6 +63,8 @@ interface WorkonBootstrapEvidence {
   repo?: string;
   branchName?: string;
   worktreeCommand?: string;
+  worktreeStatus?: "prepared" | "started" | "blocked";
+  worktreePath?: string;
 }
 
 function slugify(value: string): string {
@@ -130,14 +132,24 @@ function resultGap(label: string, result: CommandResult): string | null {
   return `${label}: ${detail.trim().split("\n")[0]}`;
 }
 
+async function runCommand(
+  runner: WorkonCommandRunner,
+  cwd: string,
+  commands: string[],
+  command: string,
+  args: string[],
+): Promise<CommandResult> {
+  commands.push(`${command} ${args.join(" ")}`);
+  return runner(command, args, { cwd });
+}
+
 async function runGh(
   runner: WorkonCommandRunner,
   cwd: string,
   commands: string[],
   args: string[],
 ): Promise<CommandResult> {
-  commands.push(`gh ${args.join(" ")}`);
-  return runner("gh", args, { cwd });
+  return runCommand(runner, cwd, commands, "gh", args);
 }
 
 async function resolveCurrentGithubRepo(
@@ -237,6 +249,8 @@ function capsuleMarkdown(params: {
   repo: string;
   branchName: string;
   worktreeCommand: string;
+  worktreeStatus: "prepared" | "started" | "blocked";
+  worktreePath?: string;
 }): string {
   const labels = params.issue.labels
     ?.map((label) => label.name)
@@ -261,6 +275,8 @@ Labels: ${labels}
 Assignees: ${assignees}
 Branch: ${params.branchName}
 Worktree command: ${params.worktreeCommand}
+Worktree status: ${params.worktreeStatus}
+Worktree path: ${params.worktreePath ?? "(not available)"}
 Mode: ${params.request.mode}
 Created: ${params.request.nowIso}
 
@@ -304,6 +320,8 @@ async function writeCapsule(params: {
   repo: string;
   branchName: string;
   worktreeCommand: string;
+  worktreeStatus: "prepared" | "started" | "blocked";
+  worktreePath?: string;
 }): Promise<string> {
   const filePath = capsulePath(
     params.request.capsuleRoot,
@@ -316,6 +334,44 @@ async function writeCapsule(params: {
   return filePath;
 }
 
+function extractWorktreePath(output: string): string | undefined {
+  return output.match(/(?:^|\s)(\/[^\s]+)/)?.[1];
+}
+
+async function startWorktreeIfRequested(
+  request: WorkonBootstrapRequest,
+  runner: WorkonCommandRunner,
+  evidence: WorkonBootstrapEvidence,
+  branchName: string,
+): Promise<{ status: "prepared" | "started" | "blocked"; path?: string }> {
+  if (request.mode !== "start") return { status: "prepared" };
+
+  const version = await runCommand(runner, request.cwd, evidence.commands, "wt", [
+    "--version",
+  ]);
+  const versionGap = resultGap("Worktrunk availability", version);
+  if (versionGap) {
+    evidence.gaps.push(versionGap);
+    return { status: "blocked" };
+  }
+
+  const result = await runCommand(runner, request.cwd, evidence.commands, "wt", [
+    "switch",
+    "--create",
+    branchName,
+  ]);
+  const startGap = resultGap(`Worktrunk start ${branchName}`, result);
+  if (startGap) {
+    evidence.gaps.push(startGap);
+    return { status: "blocked" };
+  }
+
+  return {
+    status: "started",
+    path: extractWorktreePath(`${result.stdout}\n${result.stderr}`),
+  };
+}
+
 export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence): string[] {
   const issue = evidence.issue;
   const lines = ["Deterministic workon bootstrap evidence:"];
@@ -326,6 +382,8 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Issue URL: ${issue.url}`,
         `Suggested branch: ${evidence.branchName}`,
         `Suggested Worktrunk command: ${evidence.worktreeCommand}`,
+        `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
+        `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
       ].join("\n"),
     );
@@ -379,18 +437,28 @@ export async function prepareWorkonBootstrap(
   const repo = target.repo;
   const branchName = buildWorkonBranchName(issue);
   const worktreeCommand = `wt switch --create ${branchName}`;
+  const worktree = await startWorktreeIfRequested(
+    request,
+    runner,
+    evidence,
+    branchName,
+  );
   const capsule = await writeCapsule({
     request,
     issue,
     repo,
     branchName,
     worktreeCommand,
+    worktreeStatus: worktree.status,
+    worktreePath: worktree.path,
   });
 
   evidence.issue = issue;
   evidence.repo = repo;
   evidence.branchName = branchName;
   evidence.worktreeCommand = worktreeCommand;
+  evidence.worktreeStatus = worktree.status;
+  evidence.worktreePath = worktree.path;
   evidence.capsulePath = capsule;
   return formatWorkonBootstrapEvidence(evidence);
 }

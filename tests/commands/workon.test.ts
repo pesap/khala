@@ -18,8 +18,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
   return {
     calls,
     runner: async (command, args) => {
-      assert.equal(command, "gh");
-      const key = args.join(" ");
+      const key = command === "gh" ? args.join(" ") : `${command} ${args.join(" ")}`;
       calls.push(key);
       const stdout = outputs[key];
       return stdout === undefined
@@ -91,6 +90,7 @@ test("prepares GitHub issue workon capsule from repo and issue number", async ()
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Issue number: #63/);
     assert.match(capsule, /Branch: feat\/63-render-deterministic-maintainer-queue-locally/);
+    assert.match(capsule, /Worktree status: prepared/);
     assert.match(capsule, /Render collected inbox items into canonical buckets/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -126,6 +126,92 @@ test("infers repo and issue from GitHub issue URL", async () => {
 
     assert.equal(calls.some((call) => call.startsWith("repo view")), false);
     assert.match(sections.join("\n"), /Source issue: pesap\/agents#64/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("starts Worktrunk worktree in start mode", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-start-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": JSON.stringify({
+        number: 65,
+        title: "feat(inbox): detect local worktrees and stale sessions",
+        url: "https://github.com/pesap/agents/issues/65",
+        state: "OPEN",
+        body: "",
+      }),
+      "wt --version": "worktrunk 1.0.0\n",
+      "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions": "Created /tmp/worktrunk.feat-65\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "65",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.ok(calls.includes("wt --version"));
+    assert.ok(
+      calls.includes(
+        "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions",
+      ),
+    );
+    assert.match(rendered, /Worktree status: started/);
+    assert.match(rendered, /Worktree path: \/tmp\/worktrunk.feat-65/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Worktree status: started/);
+    assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocks start mode when Worktrunk is unavailable", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-missing-wt-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 66 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": JSON.stringify({
+        number: 66,
+        title: "feat(inbox): add multi-forge repo registry",
+        url: "https://github.com/pesap/agents/issues/66",
+        state: "OPEN",
+        body: "",
+      }),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "66",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.ok(calls.includes("wt --version"));
+    assert.equal(calls.some((call) => call.startsWith("wt switch")), false);
+    assert.match(rendered, /Worktree status: blocked/);
+    assert.match(rendered, /Worktrunk availability:/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
