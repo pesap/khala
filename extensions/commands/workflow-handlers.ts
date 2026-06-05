@@ -3,6 +3,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import {
   collectInboxEvidence,
@@ -637,15 +638,15 @@ export function createWorkflowCommandHandlers(params: {
         return;
       }
 
-      const paths = await ensureLearningStore(ctx.cwd);
       const workonBootstrapSections = await prepareWorkonBootstrap({
         cwd: ctx.cwd,
         target: parsed.target,
         repo: parsed.repo,
         forge: parsed.forge,
         mode: parsed.mode,
-        capsuleRoot: path.join(paths.root, "workon"),
+        capsuleRoot: path.join(homedir(), ".pi", "khala"),
         nowIso: nowIso(),
+        launchInZellij: Boolean(process.env.ZELLIJ),
       });
 
       await runMirroredSourceWorkflow({
