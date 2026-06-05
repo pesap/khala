@@ -19,7 +19,7 @@ inputs:
   repo: optional owner/repo override
   forge: auto, github, gitlab, or all
   mode: prepare or start
-  heartbeat: forge feedback polling interval in decimal hours
+  heartbeat: forge feedback polling interval in decimal hours (--heartbeat or --interval)
   extraInstruction: optional one-off maintainer focus
 
 steps:

@@ -136,6 +136,15 @@ test("parses workon target and flags", () => {
     extraInstruction: "73",
   });
 
+  assert.deepEqual(parseWorkonArgs("73 --mode start --interval 0.01"), {
+    target: "73",
+    repo: "",
+    forge: "auto",
+    mode: "start",
+    heartbeat: "0.01",
+    extraInstruction: "73",
+  });
+
   assert.deepEqual(parseWorkonArgs("73 --heartbeat nope"), {
     target: "73",
     repo: "",

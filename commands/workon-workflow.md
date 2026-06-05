@@ -24,6 +24,8 @@ Requirements:
     after the target repo is clear and issue creation is appropriate.
 - Prefer GitHub v1. Gracefully degrade for GitLab and other forges with precise
   next steps rather than guessing.
+- Treat `--heartbeat` and `--interval` as equivalent decimal-hour aliases for
+  the forge feedback heartbeat.
 - Use deterministic bootstrap evidence attached by the command handler when it
   resolves a GitHub issue, derives a branch name, writes a global Pi capsule,
   and in `--mode start` runs Worktrunk first, waits for the Worktrunk-created
