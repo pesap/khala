@@ -25,9 +25,10 @@ Requirements:
 - Prefer GitHub v1. Gracefully degrade for GitLab and other forges with precise
   next steps rather than guessing.
 - Use deterministic bootstrap evidence attached by the command handler when it
-  resolves a GitHub issue, derives a branch name, optionally starts a Worktrunk
-  worktree in `--mode start`, and writes a local session capsule.
-- Use Worktrunk when available to prepare a worktree branch name. If Worktrunk is
+  resolves a GitHub issue, derives a branch name, writes a global Pi capsule,
+  and in `--mode start` launches a Zellij pane with Worktrunk + Pi when Zellij
+  is available.
+- Use Worktrunk when available to prepare or start the worktree. If Worktrunk is
   unavailable or hooks need trust approval, stop with exact operator guidance;
   do not bypass approvals.
 - Do not implement the feature or bugfix in this workflow.
@@ -37,6 +38,8 @@ Requirements:
   capsule creation.
 - If both an explicit issue/PR and freeform topic exist, treat the explicit
   issue/PR as source of truth and keep the topic as focus/context.
+- Store the active session capsule globally under
+  `~/.pi/khala/github.com/<owner>/<repo>/capsule.md`.
 - Write or propose a session capsule containing:
   - repo
   - issue or PR

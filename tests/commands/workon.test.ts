@@ -20,12 +20,28 @@ function fakeGhRunner(outputs: Record<string, string>): {
     runner: async (command, args) => {
       const key = command === "gh" ? args.join(" ") : `${command} ${args.join(" ")}`;
       calls.push(key);
+      if (command === "zellij" && args[0] === "run") {
+        return { ok: true, stdout: "terminal_1\n", stderr: "" };
+      }
       const stdout = outputs[key];
       return stdout === undefined
         ? { ok: false, stdout: "", stderr: `missing fake output for ${key}` }
         : { ok: true, stdout, stderr: "" };
     },
   };
+}
+
+function issueViewOutput(number: number, title: string, body = ""): string {
+  return JSON.stringify({
+    number,
+    title,
+    url: `https://github.com/pesap/agents/issues/${number}`,
+    state: "OPEN",
+    body,
+    labels: [{ name: "enhancement" }],
+    assignees: [{ login: "pesap" }],
+    author: { login: "pesap" },
+  });
 }
 
 test("builds issue-numbered branch names from conventional titles", () => {
@@ -42,21 +58,16 @@ test("builds issue-numbered branch names from conventional titles", () => {
   );
 });
 
-test("prepares GitHub issue workon capsule from repo and issue number", async () => {
+test("prepares GitHub issue workon capsule in global repo path", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-test-"));
   try {
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
-      "issue view 63 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": JSON.stringify({
-        number: 63,
-        title: "feat(inbox): render deterministic maintainer queue locally",
-        url: "https://github.com/pesap/agents/issues/63",
-        state: "OPEN",
-        body: "## Acceptance criteria\n\n- Render collected inbox items into canonical buckets.\n- Emit top 3 next commands deterministically.",
-        labels: [{ name: "enhancement" }],
-        assignees: [{ login: "pesap" }],
-        author: { login: "pesap" },
-      }),
+      "issue view 63 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        63,
+        "feat(inbox): render deterministic maintainer queue locally",
+        "## Acceptance criteria\n\n- Render collected inbox items into canonical buckets.\n- Emit top 3 next commands deterministically.",
+      ),
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -68,6 +79,7 @@ test("prepares GitHub issue workon capsule from repo and issue number", async ()
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
       },
       runner,
     );
@@ -83,15 +95,19 @@ test("prepares GitHub issue workon capsule from repo and issue number", async ()
       rendered,
       /Suggested branch: feat\/63-render-deterministic-maintainer-queue-locally/,
     );
-    assert.match(rendered, /Session capsule: /);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
-    assert.ok(capsulePath);
+    assert.equal(
+      capsulePath,
+      path.join(tempDir, "github.com", "pesap", "agents", "capsule.md"),
+    );
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Issue number: #63/);
     assert.match(capsule, /Branch: feat\/63-render-deterministic-maintainer-queue-locally/);
     assert.match(capsule, /Worktree status: prepared/);
+    assert.match(capsule, /Pi handoff command: \(not launched\)/);
     assert.match(capsule, /Render collected inbox items into canonical buckets/);
+    assert.match(capsule, /^\/feature Continue pesap\/agents#63/m);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -102,13 +118,10 @@ test("infers repo and issue from GitHub issue URL", async () => {
   try {
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
-      "issue view 64 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": JSON.stringify({
-        number: 64,
-        title: "feat(inbox): add GitLab maintainer queue collector",
-        url: "https://github.com/pesap/agents/issues/64",
-        state: "OPEN",
-        body: "",
-      }),
+      "issue view 64 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        64,
+        "feat(inbox): add GitLab maintainer queue collector",
+      ),
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -120,6 +133,7 @@ test("infers repo and issue from GitHub issue URL", async () => {
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
       },
       runner,
     );
@@ -131,18 +145,15 @@ test("infers repo and issue from GitHub issue URL", async () => {
   }
 });
 
-test("starts Worktrunk worktree in start mode", async () => {
+test("starts Worktrunk worktree directly outside Zellij", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-start-test-"));
   try {
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
-      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": JSON.stringify({
-        number: 65,
-        title: "feat(inbox): detect local worktrees and stale sessions",
-        url: "https://github.com/pesap/agents/issues/65",
-        state: "OPEN",
-        body: "",
-      }),
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        65,
+        "feat(inbox): detect local worktrees and stale sessions",
+      ),
       "wt --version": "worktrunk 1.0.0\n",
       "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions": "Created /tmp/worktrunk.feat-65\n",
     });
@@ -156,6 +167,7 @@ test("starts Worktrunk worktree in start mode", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
       },
       runner,
     );
@@ -180,18 +192,61 @@ test("starts Worktrunk worktree in start mode", async () => {
   }
 });
 
+test("launches Zellij pane with Worktrunk and Pi handoff in start mode", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        65,
+        "feat(inbox): detect local worktrees and stale sessions",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+      "zellij --version": "zellij 0.43.0\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "65",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+    const zellijCall = calls.find((call) => call.startsWith("zellij run --name"));
+
+    assert.ok(zellijCall);
+    assert.match(zellijCall, /wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions -x pi -- --name/);
+    assert.match(zellijCall, /@.+github\.com\/pesap\/agents\/capsule\.md/);
+    assert.match(zellijCall, /\/feature Continue pesap\/agents#65/);
+    assert.match(rendered, /Worktree status: launched/);
+    assert.match(rendered, /Pi handoff command: zellij run/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Worktree status: launched/);
+    assert.match(capsule, /Pi handoff command: zellij run/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("blocks start mode when Worktrunk is unavailable", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-missing-wt-test-"));
   try {
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
-      "issue view 66 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": JSON.stringify({
-        number: 66,
-        title: "feat(inbox): add multi-forge repo registry",
-        url: "https://github.com/pesap/agents/issues/66",
-        state: "OPEN",
-        body: "",
-      }),
+      "issue view 66 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        66,
+        "feat(inbox): add multi-forge repo registry",
+      ),
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -203,6 +258,7 @@ test("blocks start mode when Worktrunk is unavailable", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
       },
       runner,
     );
@@ -229,6 +285,7 @@ test("reports freeform topics as graceful gaps", async () => {
       mode: "prepare",
       capsuleRoot: process.cwd(),
       nowIso: "2026-06-05T00:00:00.000Z",
+      launchInZellij: false,
     },
     runner,
   );

@@ -32,6 +32,7 @@ export interface WorkonBootstrapRequest {
   mode: WorkonMode;
   capsuleRoot: string;
   nowIso: string;
+  launchInZellij: boolean;
 }
 
 interface GithubIssueTarget {
@@ -63,8 +64,10 @@ interface WorkonBootstrapEvidence {
   repo?: string;
   branchName?: string;
   worktreeCommand?: string;
-  worktreeStatus?: "prepared" | "started" | "blocked";
+  worktreeStatus?: "prepared" | "started" | "launched" | "blocked";
   worktreePath?: string;
+  piHandoffCommand?: string;
+  handoffPrompt?: string;
 }
 
 function slugify(value: string): string {
@@ -249,8 +252,10 @@ function capsuleMarkdown(params: {
   repo: string;
   branchName: string;
   worktreeCommand: string;
-  worktreeStatus: "prepared" | "started" | "blocked";
+  worktreeStatus: "prepared" | "started" | "launched" | "blocked";
   worktreePath?: string;
+  piHandoffCommand?: string;
+  handoffPrompt: string;
 }): string {
   const labels = params.issue.labels
     ?.map((label) => label.name)
@@ -277,6 +282,7 @@ Branch: ${params.branchName}
 Worktree command: ${params.worktreeCommand}
 Worktree status: ${params.worktreeStatus}
 Worktree path: ${params.worktreePath ?? "(not available)"}
+Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Mode: ${params.request.mode}
 Created: ${params.request.nowIso}
 
@@ -304,14 +310,29 @@ ${acceptance}
 
 ## Next prompt
 
-Continue issue #${params.issue.number} on branch \`${params.branchName}\`. Read this capsule, inspect the issue body, implement the smallest vertical slice, run validation, then use /review and /ship.
+${params.handoffPrompt}
 `;
 }
 
-function capsulePath(root: string, repo: string, issue: GithubIssueMetadata, branchName: string): string {
-  const repoSlug = slugify(repo.replace("/", "-")) || "repo";
-  const branchSlug = slugify(branchName.replace("/", "-")) || `issue-${issue.number}`;
-  return path.join(root, repoSlug, `${branchSlug}.md`);
+function capsulePath(root: string, repo: string): string {
+  const [owner = "unknown", name = "repo"] = repo.split("/", 2);
+  return path.join(root, "github.com", owner, name, "capsule.md");
+}
+
+function zellijPaneName(branchName: string): string {
+  return slugify(branchName.replace("/", "-")) || "workon";
+}
+
+function buildHandoffPrompt(params: {
+  issue: GithubIssueMetadata;
+  repo: string;
+  branchName: string;
+}): string {
+  return `/feature Continue ${params.repo}#${params.issue.number}: ${params.issue.title}\n\nRead the attached /workon session capsule first. Stay on branch ${params.branchName}. Implement the smallest vertical slice, run validation, then use /review and /ship when ready.`;
+}
+
+function formatCommand(command: string, args: string[]): string {
+  return `${command} ${args.join(" ")}`;
 }
 
 async function writeCapsule(params: {
@@ -320,15 +341,12 @@ async function writeCapsule(params: {
   repo: string;
   branchName: string;
   worktreeCommand: string;
-  worktreeStatus: "prepared" | "started" | "blocked";
+  worktreeStatus: "prepared" | "started" | "launched" | "blocked";
   worktreePath?: string;
+  piHandoffCommand?: string;
+  handoffPrompt: string;
 }): Promise<string> {
-  const filePath = capsulePath(
-    params.request.capsuleRoot,
-    params.repo,
-    params.issue,
-    params.branchName,
-  );
+  const filePath = capsulePath(params.request.capsuleRoot, params.repo);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, capsuleMarkdown(params), "utf8");
   return filePath;
@@ -342,8 +360,16 @@ async function startWorktreeIfRequested(
   request: WorkonBootstrapRequest,
   runner: WorkonCommandRunner,
   evidence: WorkonBootstrapEvidence,
-  branchName: string,
-): Promise<{ status: "prepared" | "started" | "blocked"; path?: string }> {
+  params: {
+    branchName: string;
+    capsulePath: string;
+    handoffPrompt: string;
+  },
+): Promise<{
+  status: "prepared" | "started" | "launched" | "blocked";
+  path?: string;
+  piHandoffCommand?: string;
+}> {
   if (request.mode !== "start") return { status: "prepared" };
 
   const version = await runCommand(runner, request.cwd, evidence.commands, "wt", [
@@ -355,12 +381,52 @@ async function startWorktreeIfRequested(
     return { status: "blocked" };
   }
 
+  if (request.launchInZellij) {
+    const zellijVersion = await runCommand(runner, request.cwd, evidence.commands, "zellij", [
+      "--version",
+    ]);
+    const zellijGap = resultGap("Zellij availability", zellijVersion);
+    if (zellijGap) {
+      evidence.gaps.push(zellijGap);
+      return { status: "blocked" };
+    }
+
+    const zellijArgs = [
+      "run",
+      "--name",
+      zellijPaneName(params.branchName),
+      "--",
+      "wt",
+      "switch",
+      "--create",
+      params.branchName,
+      "-x",
+      "pi",
+      "--",
+      "--name",
+      params.branchName,
+      `@${params.capsulePath}`,
+      params.handoffPrompt,
+    ];
+    const result = await runCommand(runner, request.cwd, evidence.commands, "zellij", zellijArgs);
+    const launchGap = resultGap(`Zellij Pi handoff ${params.branchName}`, result);
+    if (launchGap) {
+      evidence.gaps.push(launchGap);
+      return { status: "blocked", piHandoffCommand: formatCommand("zellij", zellijArgs) };
+    }
+
+    return {
+      status: "launched",
+      piHandoffCommand: formatCommand("zellij", zellijArgs),
+    };
+  }
+
   const result = await runCommand(runner, request.cwd, evidence.commands, "wt", [
     "switch",
     "--create",
-    branchName,
+    params.branchName,
   ]);
-  const startGap = resultGap(`Worktrunk start ${branchName}`, result);
+  const startGap = resultGap(`Worktrunk start ${params.branchName}`, result);
   if (startGap) {
     evidence.gaps.push(startGap);
     return { status: "blocked" };
@@ -384,6 +450,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Suggested Worktrunk command: ${evidence.worktreeCommand}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
+        `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
       ].join("\n"),
     );
@@ -437,12 +504,21 @@ export async function prepareWorkonBootstrap(
   const repo = target.repo;
   const branchName = buildWorkonBranchName(issue);
   const worktreeCommand = `wt switch --create ${branchName}`;
-  const worktree = await startWorktreeIfRequested(
+  const handoffPrompt = buildHandoffPrompt({ issue, repo, branchName });
+  const initialCapsule = await writeCapsule({
     request,
-    runner,
-    evidence,
+    issue,
+    repo,
     branchName,
-  );
+    worktreeCommand,
+    worktreeStatus: "prepared",
+    handoffPrompt,
+  });
+  const worktree = await startWorktreeIfRequested(request, runner, evidence, {
+    branchName,
+    capsulePath: initialCapsule,
+    handoffPrompt,
+  });
   const capsule = await writeCapsule({
     request,
     issue,
@@ -451,6 +527,8 @@ export async function prepareWorkonBootstrap(
     worktreeCommand,
     worktreeStatus: worktree.status,
     worktreePath: worktree.path,
+    piHandoffCommand: worktree.piHandoffCommand,
+    handoffPrompt,
   });
 
   evidence.issue = issue;
@@ -459,6 +537,8 @@ export async function prepareWorkonBootstrap(
   evidence.worktreeCommand = worktreeCommand;
   evidence.worktreeStatus = worktree.status;
   evidence.worktreePath = worktree.path;
+  evidence.piHandoffCommand = worktree.piHandoffCommand;
+  evidence.handoffPrompt = handoffPrompt;
   evidence.capsulePath = capsule;
   return formatWorkonBootstrapEvidence(evidence);
 }
