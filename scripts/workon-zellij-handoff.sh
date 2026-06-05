@@ -18,7 +18,7 @@ capsule=""
 prompt=""
 heartbeat="1.0"
 pi_command="${PI_COMMAND:-pi}"
-wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-10}"
+wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-50}"
 wait_seconds="${ZELLIJ_TAB_WAIT_SECONDS:-0.2}"
 
 while (($#)); do
@@ -127,7 +127,10 @@ for ((attempt = 1; attempt <= wait_attempts; attempt += 1)); do
 done
 
 if [[ -z "${tab_id}" || "${tab_id}" == "null" ]]; then
-  printf 'Zellij Worktrunk tab not found: %s\n' "${tab_name}" >&2
+  printf '{"status":"blocked","reason":"tab-not-found","path":%s,"tabName":%s}\n' \
+    "$(json_string "${worktree_path}")" \
+    "$(json_string "${tab_name}")" >&2
+  printf 'Zellij Worktrunk tab not found after %s attempts: %s\n' "${wait_attempts}" "${tab_name}" >&2
   exit 1
 fi
 

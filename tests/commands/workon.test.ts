@@ -28,6 +28,18 @@ function fakeGhRunner(outputs: Record<string, string>): {
         const repo = args[args.indexOf("--repo") + 1];
         const heartbeat = args[args.indexOf("--heartbeat") + 1];
         const worktreePath = "/tmp/worktrunk.feat-65";
+        if (branch.includes("tab-created-pi-pane-missing")) {
+          return {
+            ok: false,
+            stdout: `${JSON.stringify({
+              status: "blocked",
+              reason: "tab-not-found",
+              path: worktreePath,
+              tabName: "agents/fix-67-tab-created-pi-pane-missing",
+            })}\n`,
+            stderr: "Zellij Worktrunk tab not found after 50 attempts: agents/fix-67-tab-created-pi-pane-missing\n",
+          };
+        }
         return {
           ok: true,
           stdout: `${JSON.stringify({
@@ -308,6 +320,8 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
     assert.match(rendered, /Forge heartbeat command: zellij action new-pane/);
+    assert.doesNotMatch(rendered, /--prompt I want to discuss and possibly work on:/);
+    assert.match(rendered, /--prompt <redacted>/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
@@ -315,6 +329,53 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Worktree status: launched/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Pi handoff command: zellij action new-pane/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocks in current session when Zellij tab exists but Pi handoff is not launched", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-partial-test-"));
+  try {
+    const branch = "fix/67-tab-created-pi-pane-missing";
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 67 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        67,
+        "fix: tab created Pi pane missing",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "67",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "0.25",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Worktree status: blocked/);
+    assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
+    assert.match(rendered, /Pi handoff command: \(not launched\)/);
+    assert.match(rendered, /Worktree\/tab was created but Pi was not launched/);
+    assert.match(rendered, new RegExp(`--branch ${branch}`));
+    assert.match(rendered, /--prompt <redacted>/);
+    assert.doesNotMatch(rendered, /Before doing any implementation:/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Worktree status: blocked/);
+    assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
