@@ -121,6 +121,7 @@ export function createWorkflowCommandHandlers(params: {
     repo: string;
     forge: WorkonForge;
     mode: WorkonMode;
+    heartbeat: string;
     extraInstruction: string;
   };
   parseLearnSkillArgs: (args: string) => {
@@ -632,7 +633,7 @@ export function createWorkflowCommandHandlers(params: {
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|pr-url|issue-number|topic> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start]",
+          "Usage: /workon <issue-url|pr-url|issue-number|topic> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS.MINUTES]",
           "error",
         );
         return;
@@ -647,6 +648,7 @@ export function createWorkflowCommandHandlers(params: {
         capsuleRoot: path.join(homedir(), ".pi", "khala"),
         nowIso: nowIso(),
         launchInZellij: Boolean(process.env.ZELLIJ),
+        heartbeat: parsed.heartbeat,
       });
 
       await runMirroredSourceWorkflow({
@@ -659,6 +661,7 @@ export function createWorkflowCommandHandlers(params: {
           repo: parsed.repo || null,
           forge: parsed.forge,
           mode: parsed.mode,
+          heartbeat: parsed.heartbeat,
           extraInstruction: parsed.extraInstruction || null,
         },
         sections: [
@@ -666,6 +669,7 @@ export function createWorkflowCommandHandlers(params: {
           `Repo override: ${parsed.repo || "(current repo / infer from target)"}`,
           `Forge preference: ${parsed.forge}`,
           `Mode: ${parsed.mode}`,
+          `Forge feedback heartbeat: ${parsed.heartbeat}`,
           "Instruction: Resolve or prepare the durable source issue before branch/worktree work.",
           "Instruction: For freeform topics, search existing issues first; create a new issue only when the target repo is clear and creation is appropriate.",
           "Instruction: Derive an issue-numbered branch/worktree name and use Worktrunk when available; never bypass Worktrunk hook approval prompts.",

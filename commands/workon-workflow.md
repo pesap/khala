@@ -27,7 +27,8 @@ Requirements:
 - Use deterministic bootstrap evidence attached by the command handler when it
   resolves a GitHub issue, derives a branch name, writes a global Pi capsule,
   and in `--mode start` runs Worktrunk first, waits for the Worktrunk-created
-  Zellij tab, then launches Pi in that tab when Zellij is available.
+  Zellij tab, launches Pi in that tab, and starts the forge feedback heartbeat
+  when Zellij is available.
 - Use Worktrunk when available to prepare or start the worktree. If Worktrunk is
   unavailable or hooks need trust approval, stop with exact operator guidance;
   do not bypass approvals.
@@ -49,6 +50,7 @@ Requirements:
   - non-goals
   - validation
   - open questions
+  - draft PR and forge heartbeat instructions
   - next prompt
 - End with: resolved source of truth, branch/worktree status, session capsule
   status/path or proposed capsule, next command, risks, `Result:

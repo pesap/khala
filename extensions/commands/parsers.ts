@@ -226,6 +226,7 @@ export function parseWorkonArgs(args: string): {
   repo: string;
   forge: InboxForge;
   mode: WorkonMode;
+  heartbeat: string;
   extraInstruction: string;
 } {
   let rest = normalizeWhitespace(args);
@@ -250,11 +251,16 @@ export function parseWorkonArgs(args: string): {
     WORKON_MODES,
   );
 
+  const heartbeatResult = removeFlag(rest, /(^|\s)--heartbeat\s+(\S+)(\s|$)/);
+  rest = heartbeatResult.value;
+  const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
+
   return {
     target: rest,
     repo,
     forge,
     mode,
+    heartbeat,
     extraInstruction: rest,
   };
 }
@@ -318,6 +324,13 @@ function parseAllowedInboxValue<T extends string>(
   return allowedValues.includes(normalizedValue as T)
     ? (normalizedValue as T)
     : fallback;
+}
+
+function normalizeHeartbeatInterval(rawValue: string): string {
+  const value = normalizeWhitespace(rawValue);
+  if (!/^\d+(?:\.\d+)?$/.test(value)) return "1.0";
+  const [, minutes = "0"] = value.split(".", 2);
+  return Number(minutes) < 60 ? value : "1.0";
 }
 
 function parseRecordLine<T>(

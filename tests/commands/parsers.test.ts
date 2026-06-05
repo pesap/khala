@@ -100,6 +100,7 @@ test("parses workon target and flags", () => {
     repo: "pesap/agents",
     forge: "github",
     mode: "prepare",
+    heartbeat: "1.0",
     extraInstruction: "61",
   });
 
@@ -112,6 +113,7 @@ test("parses workon target and flags", () => {
       repo: "",
       forge: "gitlab",
       mode: "start",
+      heartbeat: "1.0",
       extraInstruction: "collect GitHub maintainer queue",
     },
   );
@@ -121,7 +123,26 @@ test("parses workon target and flags", () => {
     repo: "",
     forge: "auto",
     mode: "prepare",
+    heartbeat: "1.0",
     extraInstruction: "topic",
+  });
+
+  assert.deepEqual(parseWorkonArgs("73 --mode start --heartbeat 0.15"), {
+    target: "73",
+    repo: "",
+    forge: "auto",
+    mode: "start",
+    heartbeat: "0.15",
+    extraInstruction: "73",
+  });
+
+  assert.deepEqual(parseWorkonArgs("73 --heartbeat 0.75"), {
+    target: "73",
+    repo: "",
+    forge: "auto",
+    mode: "prepare",
+    heartbeat: "1.0",
+    extraInstruction: "73",
   });
 });
 
