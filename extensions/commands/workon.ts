@@ -319,10 +319,6 @@ function capsulePath(root: string, repo: string): string {
   return path.join(root, "github.com", owner, name, "capsule.md");
 }
 
-function zellijPaneName(branchName: string): string {
-  return slugify(branchName.replace("/", "-")) || "workon";
-}
-
 function buildHandoffPrompt(params: {
   issue: GithubIssueMetadata;
   repo: string;
@@ -382,21 +378,7 @@ async function startWorktreeIfRequested(
   }
 
   if (request.launchInZellij) {
-    const zellijVersion = await runCommand(runner, request.cwd, evidence.commands, "zellij", [
-      "--version",
-    ]);
-    const zellijGap = resultGap("Zellij availability", zellijVersion);
-    if (zellijGap) {
-      evidence.gaps.push(zellijGap);
-      return { status: "blocked" };
-    }
-
-    const zellijArgs = [
-      "run",
-      "--name",
-      zellijPaneName(params.branchName),
-      "--",
-      "wt",
+    const handoffArgs = [
       "switch",
       "--create",
       params.branchName,
@@ -408,16 +390,16 @@ async function startWorktreeIfRequested(
       `@${params.capsulePath}`,
       params.handoffPrompt,
     ];
-    const result = await runCommand(runner, request.cwd, evidence.commands, "zellij", zellijArgs);
-    const launchGap = resultGap(`Zellij Pi handoff ${params.branchName}`, result);
+    const result = await runCommand(runner, request.cwd, evidence.commands, "wt", handoffArgs);
+    const launchGap = resultGap(`Worktrunk Pi handoff ${params.branchName}`, result);
     if (launchGap) {
       evidence.gaps.push(launchGap);
-      return { status: "blocked", piHandoffCommand: formatCommand("zellij", zellijArgs) };
+      return { status: "blocked", piHandoffCommand: formatCommand("wt", handoffArgs) };
     }
 
     return {
       status: "launched",
-      piHandoffCommand: formatCommand("zellij", zellijArgs),
+      piHandoffCommand: formatCommand("wt", handoffArgs),
     };
   }
 

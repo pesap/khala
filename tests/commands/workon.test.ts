@@ -20,8 +20,8 @@ function fakeGhRunner(outputs: Record<string, string>): {
     runner: async (command, args) => {
       const key = command === "gh" ? args.join(" ") : `${command} ${args.join(" ")}`;
       calls.push(key);
-      if (command === "zellij" && args[0] === "run") {
-        return { ok: true, stdout: "terminal_1\n", stderr: "" };
+      if (command === "wt" && args.includes("-x")) {
+        return { ok: true, stdout: "", stderr: "" };
       }
       const stdout = outputs[key];
       return stdout === undefined
@@ -192,7 +192,7 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
   }
 });
 
-test("launches Zellij pane with Worktrunk and Pi handoff in start mode", async () => {
+test("launches Pi handoff through Worktrunk execute in Zellij start mode", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-test-"));
   try {
     const { calls, runner } = fakeGhRunner({
@@ -202,7 +202,6 @@ test("launches Zellij pane with Worktrunk and Pi handoff in start mode", async (
         "feat(inbox): detect local worktrees and stale sessions",
       ),
       "wt --version": "worktrunk 1.0.0\n",
-      "zellij --version": "zellij 0.43.0\n",
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -219,20 +218,21 @@ test("launches Zellij pane with Worktrunk and Pi handoff in start mode", async (
       runner,
     );
     const rendered = sections.join("\n");
-    const zellijCall = calls.find((call) => call.startsWith("zellij run --name"));
+    const handoffCall = calls.find((call) => call.includes(" -x pi -- --name "));
 
-    assert.ok(zellijCall);
-    assert.match(zellijCall, /wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions -x pi -- --name/);
-    assert.match(zellijCall, /@.+github\.com\/pesap\/agents\/capsule\.md/);
-    assert.match(zellijCall, /\/feature Continue pesap\/agents#65/);
+    assert.ok(handoffCall);
+    assert.equal(calls.some((call) => call.startsWith("zellij ")), false);
+    assert.match(handoffCall, /^wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions -x pi -- --name/);
+    assert.match(handoffCall, /@.+github\.com\/pesap\/agents\/capsule\.md/);
+    assert.match(handoffCall, /\/feature Continue pesap\/agents#65/);
     assert.match(rendered, /Worktree status: launched/);
-    assert.match(rendered, /Pi handoff command: zellij run/);
+    assert.match(rendered, /Pi handoff command: wt switch --create/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Worktree status: launched/);
-    assert.match(capsule, /Pi handoff command: zellij run/);
+    assert.match(capsule, /Pi handoff command: wt switch --create/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

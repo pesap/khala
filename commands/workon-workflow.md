@@ -26,8 +26,8 @@ Requirements:
   next steps rather than guessing.
 - Use deterministic bootstrap evidence attached by the command handler when it
   resolves a GitHub issue, derives a branch name, writes a global Pi capsule,
-  and in `--mode start` launches a Zellij pane with Worktrunk + Pi when Zellij
-  is available.
+  and in `--mode start` uses Worktrunk execute to switch into the worktree tab
+  and launch Pi when Zellij is available.
 - Use Worktrunk when available to prepare or start the worktree. If Worktrunk is
   unavailable or hooks need trust approval, stop with exact operator guidance;
   do not bypass approvals.

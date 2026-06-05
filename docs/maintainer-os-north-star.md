@@ -113,8 +113,8 @@ The command should end with a short recommended action list, not a giant report.
 Issue-first session bootstrap. It resolves an issue, PR, or topic into a durable
 source of truth, derives an issue-numbered branch/worktree name, writes a global
 Pi capsule under `~/.pi/khala/github.com/<owner>/<repo>/capsule.md`, and in
-Zellij can launch a new pane that runs Worktrunk and starts Pi with the handoff
-prompt. It does not implement the feature or bugfix itself.
+Zellij lets Worktrunk switch/create the worktree tab before starting Pi with the
+handoff prompt. It does not implement the feature or bugfix itself.
 
 ### `/recheck-pr`
 
