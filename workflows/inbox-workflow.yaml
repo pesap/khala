@@ -22,6 +22,8 @@ inputs:
 steps:
   - id: scope
     action: resolve_repo_user_forge_focus_and_limits
+  - id: precollect
+    action: use_command_handler_github_evidence_when_available
   - id: local-git
     action: inspect_current_branch_worktree_remote_and_local_changes
   - id: forge
