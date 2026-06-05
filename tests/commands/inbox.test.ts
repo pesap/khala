@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   collectInboxEvidence,
   type InboxCommandRunner,
 } from "../../extensions/commands/inbox.ts";
 
-function fakeGhRunner(outputs: Record<string, string>): {
+function fakeCommandRunner(outputs: Record<string, string>): {
   calls: string[];
   runner: InboxCommandRunner;
 } {
@@ -14,8 +17,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
   return {
     calls,
     runner: async (command, args) => {
-      assert.equal(command, "gh");
-      const key = args.join(" ");
+      const key = `${command} ${args.join(" ")}`;
       calls.push(key);
       const stdout = outputs[key];
       return stdout === undefined
@@ -26,56 +28,66 @@ function fakeGhRunner(outputs: Record<string, string>): {
 }
 
 test("collects read-only GitHub inbox evidence for authenticated user", async () => {
-  const { calls, runner } = fakeGhRunner({
-    "auth status": "",
-    "api user --jq .login": "pesap\n",
-    "api graphql -F first=5 -f query=query($first: Int!) { viewer { repositories(first: $first, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { nameWithOwner url updatedAt isPrivate isArchived viewerPermission } } } } --jq .data.viewer.repositories.nodes": JSON.stringify([
-      {
-        nameWithOwner: "pesap/agents",
-        url: "https://github.com/pesap/agents",
-        updatedAt: "2026-06-05T19:33:55Z",
-        isPrivate: false,
-        viewerPermission: "ADMIN",
-      },
-      {
-        nameWithOwner: "NatLabRockies/arco",
-        url: "https://github.com/NatLabRockies/arco",
-        updatedAt: "2026-06-05T17:40:37Z",
-        isPrivate: false,
-        viewerPermission: "ADMIN",
-      },
-    ]),
-    "search prs --review-requested=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
-      {
-        number: 12,
-        title: "review me",
-        url: "https://github.com/org/repo/pull/12",
-        repository: { nameWithOwner: "org/repo" },
-        updatedAt: "2026-06-01T00:00:00Z",
-        isDraft: false,
-      },
-    ]),
-    "search prs --author=@me --state=open --checks=failure --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
-      {
-        number: 9,
-        title: "fix failing ci",
-        url: "https://github.com/pesap/agents/pull/9",
-        repository: { nameWithOwner: "pesap/agents" },
-        updatedAt: "2026-06-02T00:00:00Z",
-        isDraft: false,
-      },
-    ]),
-    "search prs --author=@me --state=open --checks=pending --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
-    "search issues --assignee=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
-      {
-        number: 61,
-        title: "collect inbox",
-        url: "https://github.com/pesap/agents/issues/61",
-        repository: { nameWithOwner: "pesap/agents" },
-        updatedAt: "2026-06-05T00:00:00Z",
-      },
-    ]),
-    "search issues --author=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
+  const { calls, runner } = fakeCommandRunner({
+    "gh auth status": "",
+    "gh api user --jq .login": "pesap\n",
+    "gh api graphql -F first=5 -f query=query($first: Int!) { viewer { repositories(first: $first, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { nameWithOwner url updatedAt isPrivate isArchived viewerPermission } } } } --jq .data.viewer.repositories.nodes":
+      JSON.stringify([
+        {
+          nameWithOwner: "pesap/agents",
+          url: "https://github.com/pesap/agents",
+          updatedAt: "2026-06-05T19:33:55Z",
+          isPrivate: false,
+          viewerPermission: "ADMIN",
+        },
+        {
+          nameWithOwner: "NatLabRockies/arco",
+          url: "https://github.com/NatLabRockies/arco",
+          updatedAt: "2026-06-05T17:40:37Z",
+          isPrivate: false,
+          viewerPermission: "ADMIN",
+        },
+      ]),
+    "gh search prs --review-requested=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 12,
+          title: "review me",
+          url: "https://github.com/org/repo/pull/12",
+          repository: { nameWithOwner: "org/repo" },
+          updatedAt: "2026-06-01T00:00:00Z",
+          isDraft: false,
+        },
+      ]),
+    "gh search prs --author=@me --state=open --checks=failure --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 9,
+          title: "fix failing ci",
+          url: "https://github.com/pesap/agents/pull/9",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-02T00:00:00Z",
+          isDraft: false,
+        },
+      ]),
+    "gh search prs --author=@me --state=open --checks=pending --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --assignee=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 61,
+          title: "collect inbox",
+          url: "https://github.com/pesap/agents/issues/61",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-05T00:00:00Z",
+        },
+      ]),
+    "gh search issues --author=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "git worktree list --porcelain":
+      "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n",
+    "git status --porcelain=v1 -b": "## main...origin/main\n",
+    "git remote get-url origin": "git@github.com:pesap/agents.git\n",
   });
 
   const sections = await collectInboxEvidence(
@@ -94,64 +106,86 @@ test("collects read-only GitHub inbox evidence for authenticated user", async ()
   assert.match(rendered, /Repository discovery:/);
   assert.match(rendered, /pesap\/agents/);
   assert.match(rendered, /Needs you now \(1\):/);
-  assert.match(rendered, /source=review-requested-pr repo=org\/repo title="#12: review me" updated=2026-06-01T00:00:00Z/);
+  assert.match(
+    rendered,
+    /source=review-requested-pr repo=org\/repo title="#12: review me" updated=2026-06-01T00:00:00Z/,
+  );
   assert.match(rendered, /My work is broken \(1\):/);
-  assert.match(rendered, /source=authored-pr-ci-failure repo=pesap\/agents title="#9: fix failing ci" updated=2026-06-02T00:00:00Z/);
+  assert.match(
+    rendered,
+    /source=authored-pr-ci-failure repo=pesap\/agents title="#9: fix failing ci" updated=2026-06-02T00:00:00Z/,
+  );
   assert.match(rendered, /New work needs shaping \(1\):/);
-  assert.match(rendered, /source=assigned-issue repo=pesap\/agents title="#61: collect inbox" updated=2026-06-05T00:00:00Z/);
-  assert.match(rendered, /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/org\/repo\/pull\/12\n2\. \/inbox --repo pesap\/agents --focus ci\n3\. \/triage-issue https:\/\/github.com\/pesap\/agents\/issues\/61/);
+  assert.match(
+    rendered,
+    /source=assigned-issue repo=pesap\/agents title="#61: collect inbox" updated=2026-06-05T00:00:00Z/,
+  );
+  assert.match(
+    rendered,
+    /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/org\/repo\/pull\/12\n2\. \/inbox --repo pesap\/agents --focus ci\n3\. \/triage-issue https:\/\/github.com\/pesap\/agents\/issues\/61/,
+  );
   assert.match(rendered, /NatLabRockies\/arco/);
   assert.ok(
     calls.includes(
-      "api graphql -F first=5 -f query=query($first: Int!) { viewer { repositories(first: $first, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { nameWithOwner url updatedAt isPrivate isArchived viewerPermission } } } } --jq .data.viewer.repositories.nodes",
+      "gh api graphql -F first=5 -f query=query($first: Int!) { viewer { repositories(first: $first, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { nameWithOwner url updatedAt isPrivate isArchived viewerPermission } } } } --jq .data.viewer.repositories.nodes",
     ),
   );
 });
 
 test("renders canonical buckets in stable priority order", async () => {
-  const { runner } = fakeGhRunner({
-    "auth status": "",
-    "repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission": JSON.stringify({
-      nameWithOwner: "pesap/agents",
-      url: "https://github.com/pesap/agents",
-      isPrivate: false,
-    }),
-    "search prs --review-requested=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
-      {
-        number: 3,
-        title: "newer review",
-        url: "https://github.com/pesap/agents/pull/3",
-        repository: { nameWithOwner: "pesap/agents" },
-        updatedAt: "2026-06-03T00:00:00Z",
-      },
-      {
-        number: 2,
-        title: "older review",
-        url: "https://github.com/pesap/agents/pull/2",
-        repository: { nameWithOwner: "pesap/agents" },
-        updatedAt: "2026-06-02T00:00:00Z",
-      },
-    ]),
-    "search prs --author=@me --state=open --checks=failure --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
-      {
-        number: 1,
-        title: "ci failed",
-        url: "https://github.com/pesap/agents/pull/1",
-        repository: { nameWithOwner: "pesap/agents" },
-        updatedAt: "2026-06-01T00:00:00Z",
-      },
-    ]),
-    "search prs --author=@me --state=open --checks=pending --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
-    "search issues --assignee=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
-    "search issues --author=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": JSON.stringify([
-      {
-        number: 4,
-        title: "shape this",
-        url: "https://github.com/pesap/agents/issues/4",
-        repository: { nameWithOwner: "pesap/agents" },
-        updatedAt: "2026-06-04T00:00:00Z",
-      },
-    ]),
+  const { runner } = fakeCommandRunner({
+    "gh auth status": "",
+    "gh repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission":
+      JSON.stringify({
+        nameWithOwner: "pesap/agents",
+        url: "https://github.com/pesap/agents",
+        isPrivate: false,
+      }),
+    "gh search prs --review-requested=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 3,
+          title: "newer review",
+          url: "https://github.com/pesap/agents/pull/3",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-03T00:00:00Z",
+        },
+        {
+          number: 2,
+          title: "older review",
+          url: "https://github.com/pesap/agents/pull/2",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-02T00:00:00Z",
+        },
+      ]),
+    "gh search prs --author=@me --state=open --checks=failure --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 1,
+          title: "ci failed",
+          url: "https://github.com/pesap/agents/pull/1",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-01T00:00:00Z",
+        },
+      ]),
+    "gh search prs --author=@me --state=open --checks=pending --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --assignee=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --author=@me --state=open --limit 10 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 4,
+          title: "shape this",
+          url: "https://github.com/pesap/agents/issues/4",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-04T00:00:00Z",
+        },
+      ]),
+    "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+    "git worktree list --porcelain":
+      "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n",
+    "git status --porcelain=v1 -b": "## main...origin/main\n",
   });
 
   const sections = await collectInboxEvidence(
@@ -190,19 +224,29 @@ test("renders canonical buckets in stable priority order", async () => {
 });
 
 test("repo override skips user-wide repository discovery", async () => {
-  const { calls, runner } = fakeGhRunner({
-    "auth status": "",
-    "repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission": JSON.stringify({
-      nameWithOwner: "pesap/agents",
-      url: "https://github.com/pesap/agents",
-      isPrivate: false,
-      viewerPermission: "ADMIN",
-    }),
-    "search prs --review-requested=@me --state=open --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
-    "search prs --author=@me --state=open --checks=failure --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
-    "search prs --author=@me --state=open --checks=pending --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
-    "search issues --assignee=@me --state=open --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
-    "search issues --author=@me --state=open --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
+  const { calls, runner } = fakeCommandRunner({
+    "gh auth status": "",
+    "gh repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission":
+      JSON.stringify({
+        nameWithOwner: "pesap/agents",
+        url: "https://github.com/pesap/agents",
+        isPrivate: false,
+        viewerPermission: "ADMIN",
+      }),
+    "gh search prs --review-requested=@me --state=open --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search prs --author=@me --state=open --checks=failure --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search prs --author=@me --state=open --checks=pending --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --assignee=@me --state=open --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --author=@me --state=open --limit 3 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "git worktree list --porcelain":
+      "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n",
+    "git status --porcelain=v1 -b": "## main...origin/main\n",
+    "git remote get-url origin": "git@github.com:pesap/agents.git\n",
   });
 
   const sections = await collectInboxEvidence(
@@ -218,20 +262,32 @@ test("repo override skips user-wide repository discovery", async () => {
   );
   const rendered = sections.join("\n");
 
-  assert.ok(calls.includes("repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission"));
-  assert.equal(calls.some((call) => call.startsWith("repo list ")), false);
-  assert.match(rendered, /repo override provided; user repository discovery intentionally skipped/);
+  assert.ok(
+    calls.includes(
+      "gh repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission",
+    ),
+  );
+  assert.equal(
+    calls.some((call) => call.startsWith("gh repo list ")),
+    false,
+  );
+  assert.match(
+    rendered,
+    /repo override provided; user repository discovery intentionally skipped/,
+  );
 });
 
 test("review focus collects review requests without CI or issue searches", async () => {
-  const { calls, runner } = fakeGhRunner({
-    "auth status": "",
-    "repo view --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission": JSON.stringify({
-      nameWithOwner: "pesap/agents",
-      url: "https://github.com/pesap/agents",
-      isPrivate: false,
-    }),
-    "search prs --review-requested=@me --state=open --limit 2 --json number,title,url,repository,updatedAt,isDraft,labels": "[]",
+  const { calls, runner } = fakeCommandRunner({
+    "gh auth status": "",
+    "gh repo view --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission":
+      JSON.stringify({
+        nameWithOwner: "pesap/agents",
+        url: "https://github.com/pesap/agents",
+        isPrivate: false,
+      }),
+    "gh search prs --review-requested=@me --state=open --limit 2 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
   });
 
   await collectInboxEvidence(
@@ -248,15 +304,171 @@ test("review focus collects review requests without CI or issue searches", async
 
   assert.ok(
     calls.includes(
-      "search prs --review-requested=@me --state=open --limit 2 --json number,title,url,repository,updatedAt,isDraft,labels",
+      "gh search prs --review-requested=@me --state=open --limit 2 --json number,title,url,repository,updatedAt,isDraft,labels",
     ),
   );
-  assert.equal(calls.some((call) => call.includes("--checks=")), false);
-  assert.equal(calls.some((call) => call.startsWith("search issues")), false);
+  assert.equal(
+    calls.some((call) => call.includes("--checks=")),
+    false,
+  );
+  assert.equal(
+    calls.some((call) => call.startsWith("gh search issues")),
+    false,
+  );
+});
+
+test("local focus shapes dirty, unpublished, unpushed, and gone worktree signals", async () => {
+  const calls: string[] = [];
+  const runner: InboxCommandRunner = async (command, args, options) => {
+    const key = `${command} ${args.join(" ")}`;
+    calls.push(`${options.cwd} ${key}`);
+    if (key === "git worktree list --porcelain") {
+      return {
+        ok: true,
+        stdout: [
+          "worktree /repo/main",
+          "HEAD abc",
+          "branch refs/heads/main",
+          "",
+          "worktree /repo/unpublished",
+          "HEAD def",
+          "branch refs/heads/feature/unpublished",
+          "",
+          "worktree /repo/feature",
+          "HEAD ghi",
+          "branch refs/heads/feature/local",
+          "",
+        ].join("\n"),
+        stderr: "",
+      };
+    }
+    if (
+      key === "git status --porcelain=v1 -b" &&
+      options.cwd === "/repo/main"
+    ) {
+      return {
+        ok: true,
+        stdout: "## main...origin/main\n M README.md\n",
+        stderr: "",
+      };
+    }
+    if (
+      key === "git status --porcelain=v1 -b" &&
+      options.cwd === "/repo/unpublished"
+    ) {
+      return { ok: true, stdout: "## feature/unpublished\n", stderr: "" };
+    }
+    if (
+      key === "git status --porcelain=v1 -b" &&
+      options.cwd === "/repo/feature"
+    ) {
+      return {
+        ok: true,
+        stdout: "## feature/local...origin/feature/local [ahead 2, gone]\n",
+        stderr: "",
+      };
+    }
+    if (key === "git remote get-url origin") {
+      return {
+        ok: true,
+        stdout: "git@github.com:pesap/agents.git\n",
+        stderr: "",
+      };
+    }
+    return { ok: false, stdout: "", stderr: `missing fake output for ${key}` };
+  };
+
+  const sections = await collectInboxEvidence(
+    {
+      cwd: "/repo/main",
+      limit: 5,
+      repo: "pesap/agents",
+      user: "",
+      forge: "gitlab",
+      focus: "local",
+    },
+    runner,
+  );
+  const rendered = sections.join("\n");
+
+  assert.match(rendered, /Agent\/session needs attention \(2\):/);
+  assert.match(
+    rendered,
+    /source=local-worktree repo=pesap\/agents title="#main: uncommitted work at \/repo\/main"/,
+  );
+  assert.match(
+    rendered,
+    /source=local-worktree repo=pesap\/agents title="#feature\/unpublished: unpublished work at \/repo\/unpublished"/,
+  );
+  assert.match(rendered, /My work is broken \(1\):/);
+  assert.match(
+    rendered,
+    /source=local-worktree repo=pesap\/agents title="#feature\/local: unpushed\+missing-upstream work at \/repo\/feature"/,
+  );
+  assert.equal(
+    calls.filter((call) => call.includes("git status --porcelain=v1 -b"))
+      .length,
+    3,
+  );
+});
+
+test("local focus reports stale session capsule Created metadata", async () => {
+  const capsuleRoot = await mkdtemp(path.join(tmpdir(), "khala-inbox-test-"));
+  try {
+    const capsulePath = path.join(
+      capsuleRoot,
+      "github.com",
+      "pesap",
+      "agents",
+      "capsule.md",
+    );
+    await mkdir(path.dirname(capsulePath), { recursive: true });
+    await writeFile(
+      capsulePath,
+      "# capsule\n\nCreated: 2026-06-04T00:00:00.000Z\n",
+      "utf8",
+    );
+    const freshMtime = new Date("2026-06-05T12:30:00.000Z");
+    await utimes(capsulePath, freshMtime, freshMtime);
+
+    const { runner } = fakeCommandRunner({
+      "git worktree list --porcelain":
+        "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n",
+      "git status --porcelain=v1 -b": "## main...origin/main\n",
+      "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+    });
+
+    const sections = await collectInboxEvidence(
+      {
+        cwd: "/repo",
+        limit: 5,
+        repo: "",
+        user: "",
+        forge: "gitlab",
+        focus: "sessions",
+        capsuleRoot,
+        nowIso: "2026-06-05T13:00:00.000Z",
+      },
+      runner,
+    );
+
+    assert.match(sections.join("\n"), /Agent\/session needs attention \(1\):/);
+    assert.match(
+      sections.join("\n"),
+      /source=stale-session-capsule repo=pesap\/agents title="#session capsule is 37h old/,
+    );
+  } finally {
+    await rm(capsuleRoot, { recursive: true, force: true });
+  }
 });
 
 test("skips GitHub collection for GitLab-only inbox scope", async () => {
-  const { calls, runner } = fakeGhRunner({});
+  const { calls, runner } = fakeCommandRunner({
+    "git worktree list --porcelain":
+      "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n",
+    "git status --porcelain=v1 -b": "## main...origin/main\n",
+    "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+  });
 
   const sections = await collectInboxEvidence(
     {
@@ -270,6 +482,13 @@ test("skips GitHub collection for GitLab-only inbox scope", async () => {
     runner,
   );
 
-  assert.deepEqual(calls, []);
-  assert.match(sections.join("\n"), /GitHub collector skipped for forge=gitlab/);
+  assert.equal(
+    calls.some((call) => call.startsWith("gh ")),
+    false,
+  );
+  assert.ok(calls.includes("git worktree list --porcelain"));
+  assert.match(
+    sections.join("\n"),
+    /GitHub collector skipped for forge=gitlab/,
+  );
 });
