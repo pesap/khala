@@ -220,6 +220,58 @@ test("infers repo and issue from GitHub issue URL", async () => {
   }
 });
 
+test("groups multiple GitHub issues into one capsule and Worktrunk session", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-multi-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 104 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        104,
+        "fix(workon): first issue",
+        "## Acceptance criteria\n\n- Resolve first issue.",
+      ),
+      "issue view 105 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        105,
+        "fix(workon): second issue",
+        "## Acceptance criteria\n\n- Resolve second issue.",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+      "wt switch --create fix/104-first-issue --format json":
+        '{"action":"created","branch":"fix/104-first-issue","path":"/tmp/worktrunk.fix-104"}\n',
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "104 105",
+        targets: ["104", "105"],
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.filter((call) => call.startsWith("wt switch --create")).length, 1);
+    assert.match(rendered, /Source issues: #104, #105/);
+    assert.match(rendered, /Suggested branch: fix\/104-first-issue/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /https:\/\/github\.com\/pesap\/agents\/issues\/104 \(#104\) fix\(workon\): first issue/);
+    assert.match(capsule, /https:\/\/github\.com\/pesap\/agents\/issues\/105 \(#105\) fix\(workon\): second issue/);
+    assert.match(capsule, /Make multiple commits, each tied to the relevant source issue where practical/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("starts Worktrunk worktree directly outside Zellij", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-start-test-"));
   try {
