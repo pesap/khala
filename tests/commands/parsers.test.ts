@@ -102,12 +102,21 @@ test("parses inbox flags with safe defaults", () => {
 });
 
 test("parses workon target and flags", () => {
+  const defaultModelSelection = {
+    tier: "standard",
+    exactModel: "",
+    routingMode: "default",
+    routingReason: "backward-compatible default model tier",
+  };
+
   assert.deepEqual(parseWorkonArgs("61 --repo pesap/agents --forge github"), {
     target: "61",
     repo: "pesap/agents",
     forge: "github",
     mode: "prepare",
     heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
+    error: undefined,
     extraInstruction: "61",
   });
 
@@ -121,6 +130,8 @@ test("parses workon target and flags", () => {
       forge: "gitlab",
       mode: "start",
       heartbeat: "1.0",
+      modelSelection: defaultModelSelection,
+      error: undefined,
       extraInstruction: "collect GitHub maintainer queue",
     },
   );
@@ -131,6 +142,8 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "prepare",
     heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
+    error: undefined,
     extraInstruction: "topic",
   });
 
@@ -140,6 +153,8 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     heartbeat: "0.25",
+    modelSelection: defaultModelSelection,
+    error: undefined,
     extraInstruction: "73",
   });
 
@@ -149,6 +164,8 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     heartbeat: "0.01",
+    modelSelection: defaultModelSelection,
+    error: undefined,
     extraInstruction: "73",
   });
 
@@ -158,8 +175,47 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "prepare",
     heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
+    error: undefined,
     extraInstruction: "73",
   });
+
+  assert.deepEqual(parseWorkonArgs("73 --model-tier deep"), {
+    target: "73",
+    repo: "",
+    forge: "auto",
+    mode: "prepare",
+    heartbeat: "1.0",
+    modelSelection: {
+      tier: "deep",
+      exactModel: "",
+      routingMode: "explicit-tier",
+      routingReason: "explicit --model-tier deep",
+    },
+    error: undefined,
+    extraInstruction: "73",
+  });
+
+  assert.deepEqual(parseWorkonArgs("73 --model-tier quick --model anthropic/claude-sonnet-4"), {
+    target: "73",
+    repo: "",
+    forge: "auto",
+    mode: "prepare",
+    heartbeat: "1.0",
+    modelSelection: {
+      tier: "quick",
+      exactModel: "anthropic/claude-sonnet-4",
+      routingMode: "exact-model",
+      routingReason: "exact --model override takes precedence over --model-tier",
+    },
+    error: undefined,
+    extraInstruction: "73",
+  });
+
+  assert.match(
+    parseWorkonArgs("73 --model-tier turbo").error ?? "",
+    /Invalid --model-tier turbo. Allowed values: quick\|standard\|deep\|max/,
+  );
 });
 
 test("buildSkillTemplate quotes YAML frontmatter values with colons", () => {

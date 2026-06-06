@@ -6,7 +6,7 @@ import {
   type InboxFocus,
   type InboxForge,
 } from "./inbox.ts";
-import type { WorkonMode } from "./workon.ts";
+import type { WorkonMode, WorkonModelSelection, WorkonModelTier } from "./workon.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -42,6 +42,7 @@ export interface ParseRecordResult<T> {
 export type CompliancePreset = "status" | "reset" | PolicyMode;
 
 const WORKON_MODES: readonly WorkonMode[] = ["prepare", "start"];
+const WORKON_MODEL_TIERS: readonly WorkonModelTier[] = ["quick", "standard", "deep", "max"];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
@@ -227,6 +228,8 @@ export function parseWorkonArgs(args: string): {
   forge: InboxForge;
   mode: WorkonMode;
   heartbeat: string;
+  modelSelection: WorkonModelSelection;
+  error?: string;
   extraInstruction: string;
 } {
   let rest = normalizeWhitespace(args);
@@ -255,12 +258,50 @@ export function parseWorkonArgs(args: string): {
   rest = heartbeatResult.value;
   const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
 
+  const modelTierResult = removeFlag(rest, /(^|\s)--model-tier\s+(\S+)(\s|$)/);
+  rest = modelTierResult.value;
+  const rawModelTier = normalizeWhitespace(modelTierResult.match?.[2] ?? "").toLowerCase();
+  const tier = WORKON_MODEL_TIERS.includes(rawModelTier as WorkonModelTier)
+    ? (rawModelTier as WorkonModelTier)
+    : "standard";
+
+  const modelResult = removeFlag(rest, /(^|\s)--model\s+(\S+)(\s|$)/);
+  rest = modelResult.value;
+  const exactModel = normalizeWhitespace(modelResult.match?.[2] ?? "");
+  const modelSelection: WorkonModelSelection = exactModel
+    ? {
+        tier,
+        exactModel,
+        routingMode: "exact-model",
+        routingReason: modelTierResult.match
+          ? "exact --model override takes precedence over --model-tier"
+          : "explicit exact --model override",
+      }
+    : modelTierResult.match
+      ? {
+          tier,
+          exactModel: "",
+          routingMode: "explicit-tier",
+          routingReason: `explicit --model-tier ${tier}`,
+        }
+      : {
+          tier: "standard",
+          exactModel: "",
+          routingMode: "default",
+          routingReason: "backward-compatible default model tier",
+        };
+  const error = rawModelTier && !WORKON_MODEL_TIERS.includes(rawModelTier as WorkonModelTier)
+    ? `Invalid --model-tier ${rawModelTier}. Allowed values: ${WORKON_MODEL_TIERS.join("|")}`
+    : undefined;
+
   return {
     target: rest,
     repo,
     forge,
     mode,
     heartbeat,
+    modelSelection,
+    error,
     extraInstruction: rest,
   };
 }

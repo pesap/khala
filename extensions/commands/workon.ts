@@ -14,6 +14,14 @@ const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
 export type WorkonForge = "auto" | "github" | "gitlab" | "all";
 export type WorkonMode = "prepare" | "start";
+export type WorkonModelTier = "quick" | "standard" | "deep" | "max";
+
+export interface WorkonModelSelection {
+  tier: WorkonModelTier;
+  exactModel: string;
+  routingMode: "default" | "explicit-tier" | "exact-model";
+  routingReason: string;
+}
 
 interface CommandResult {
   ok: boolean;
@@ -38,6 +46,18 @@ export interface WorkonBootstrapRequest {
   nowIso: string;
   launchInZellij: boolean;
   heartbeat: string;
+  modelSelection?: WorkonModelSelection;
+}
+
+const DEFAULT_WORKON_MODEL_SELECTION: WorkonModelSelection = {
+  tier: "standard",
+  exactModel: "",
+  routingMode: "default",
+  routingReason: "backward-compatible default model tier",
+};
+
+function workonModelSelection(request: WorkonBootstrapRequest): WorkonModelSelection {
+  return request.modelSelection ?? DEFAULT_WORKON_MODEL_SELECTION;
 }
 
 interface GithubIssueTarget {
@@ -74,6 +94,7 @@ interface WorkonBootstrapEvidence {
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffPrompt?: string;
+  modelSelection?: WorkonModelSelection;
 }
 
 interface ZellijHandoffResult {
@@ -415,6 +436,10 @@ Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
 Heartbeat interval: ${params.request.heartbeat}
 Mode: ${params.request.mode}
+Model tier: ${workonModelSelection(params.request).tier}
+Exact model: ${workonModelSelection(params.request).exactModel || "(not resolved)"}
+Model routing mode: ${workonModelSelection(params.request).routingMode}
+Model routing reason: ${workonModelSelection(params.request).routingReason}
 Created: ${params.request.nowIso}
 
 ## Problem
@@ -478,11 +503,16 @@ async function buildHandoffPrompt(params: {
   repo: string;
   branchName: string;
   heartbeat: string;
+  modelSelection: WorkonModelSelection;
 }): Promise<string> {
   const template = await readHandoffTemplate(params.cwd);
   return renderTemplate(template, {
     branch_name: params.branchName,
     heartbeat_interval: heartbeatLabel(params.heartbeat),
+    model_routing_mode: params.modelSelection.routingMode,
+    model_routing_reason: params.modelSelection.routingReason,
+    model_tier: params.modelSelection.tier,
+    resolved_model: params.modelSelection.exactModel || "(not resolved)",
     issue_number: params.issue.number,
     issue_title: params.issue.title,
     issue_url: params.issue.url,
@@ -565,7 +595,7 @@ async function startWorktreeIfRequested(
 
   if (request.launchInZellij) {
     const scriptPath = path.join(request.cwd, "scripts", "workon-zellij-handoff.sh");
-    const handoffResult = await runCommand(runner, request.cwd, evidence.commands, "bash", [
+    const handoffArgs = [
       scriptPath,
       "--repo",
       params.repo,
@@ -577,7 +607,12 @@ async function startWorktreeIfRequested(
       params.handoffPrompt,
       "--heartbeat",
       request.heartbeat,
-    ]);
+    ];
+    const modelSelection = workonModelSelection(request);
+    if (modelSelection.exactModel) {
+      handoffArgs.push("--model", modelSelection.exactModel);
+    }
+    const handoffResult = await runCommand(runner, request.cwd, evidence.commands, "bash", handoffArgs);
     const parsed = parseZellijHandoffResult(`${handoffResult.stdout}\n${handoffResult.stderr}`);
     const handoffGap = resultGap(`Zellij Pi handoff ${params.branchName}`, handoffResult);
     if (handoffGap) {
@@ -634,6 +669,10 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
+        `Model tier: ${evidence.modelSelection?.tier ?? "standard"}`,
+        `Exact model: ${evidence.modelSelection?.exactModel || "(not resolved)"}`,
+        `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
+        `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
       ].join("\n"),
     );
@@ -693,6 +732,7 @@ export async function prepareWorkonBootstrap(
     repo,
     branchName,
     heartbeat: request.heartbeat,
+    modelSelection: workonModelSelection(request),
   });
   const initialCapsule = await writeCapsule({
     request,
@@ -730,6 +770,7 @@ export async function prepareWorkonBootstrap(
   evidence.worktreePath = worktree.path;
   evidence.piHandoffCommand = worktree.piHandoffCommand;
   evidence.heartbeatCommand = worktree.heartbeatCommand;
+  evidence.modelSelection = workonModelSelection(request);
   evidence.handoffPrompt = handoffPrompt;
   evidence.capsulePath = capsule;
   return formatWorkonBootstrapEvidence(evidence);

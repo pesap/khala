@@ -300,6 +300,12 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: true,
         heartbeat: "0.25",
+        modelSelection: {
+          tier: "deep",
+          exactModel: "anthropic/claude-sonnet-4",
+          routingMode: "exact-model",
+          routingReason: "exact --model override takes precedence over --model-tier",
+        },
       },
       runner,
     );
@@ -316,6 +322,11 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(scriptCall, /--prompt I want to discuss and possibly work on:/);
     assert.match(scriptCall, /Draft PR and feedback heartbeat:/);
     assert.match(scriptCall, /--heartbeat 0\.25/);
+    assert.match(scriptCall, /--model anthropic\/claude-sonnet-4/);
+    assert.match(rendered, /Model tier: deep/);
+    assert.match(rendered, /Exact model: anthropic\/claude-sonnet-4/);
+    assert.match(rendered, /Model routing mode: exact-model/);
+    assert.match(rendered, /exact --model override takes precedence over --model-tier/);
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
@@ -330,6 +341,10 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Worktree status: launched/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Pi handoff command: zellij action new-pane/);
+    assert.match(capsule, /Model tier: deep/);
+    assert.match(capsule, /Exact model: anthropic\/claude-sonnet-4/);
+    assert.match(capsule, /Model routing mode: exact-model/);
+    assert.match(capsule, /Model routing reason: exact --model override takes precedence over --model-tier/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
