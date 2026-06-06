@@ -23,8 +23,12 @@ documents:
     purpose: search capability mapping
   - path: ../workflows/debug-workflow.yaml
     purpose: debug orchestration
-  - path: ../workflows/feature-workflow.yaml
-    purpose: feature orchestration
+  - path: ../workflows/triage-workflow.yaml
+    purpose: user issue/request triage orchestration
+  - path: ../workflows/plan-workflow.yaml
+    purpose: maintainer planned-change orchestration
+  - path: ../workflows/workon-workflow.yaml
+    purpose: autonomous work session bootstrap orchestration
   - path: ../workflows/git-review-workflow.yaml
     purpose: git history diagnostics orchestration
   - path: ../workflows/learn-skill-workflow.yaml

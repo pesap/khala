@@ -30,15 +30,13 @@ import {
   parseComplianceArgs,
   parseDebugArgs,
   parsePlanArgs,
-  parseFeatureArgs,
   parseInboxArgs,
   parseWorkonArgs,
   parseLearnSkillArgs,
   parsePostflightArgs,
   parsePreflightArgs,
   parseReviewArgs,
-  parseTddArgs,
-  parseTriageIssueArgs,
+  parseTriageArgs,
   type WorkflowFlags,
 } from "./commands/parsers.ts";
 import { registerCommands } from "./commands/register.ts";
@@ -61,8 +59,7 @@ import {
   REVIEW_COMMAND_SOURCE,
   SHIP_COMMAND_SOURCE,
   SIMPLIFY_COMMAND_SOURCE,
-  TDD_COMMAND_SOURCE,
-  TRIAGE_ISSUE_COMMAND_SOURCE,
+  TRIAGE_COMMAND_SOURCE,
 } from "./lib/constants.ts";
 import { appendLine, exists, readText } from "./lib/io.ts";
 import { normalizeWhitespace, slugify, summarizeEvidence } from "./lib/text.ts";
@@ -897,10 +894,9 @@ function shouldRunActiveLearningReview(workflow: PendingWorkflow): boolean {
     (workflow.mutationCount > 0 ||
       workflow.loadedSkills.length > 0 ||
       workflow.type === "debug" ||
-      workflow.type === "feature" ||
+      workflow.type === "triage" ||
       workflow.type === "review" ||
       workflow.type === "simplify" ||
-      workflow.type === "tdd" ||
       workflow.type === "plan")
   );
 }
@@ -2402,14 +2398,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     enqueueWorkflow,
     notifyWorkflowStarted,
     parseDebugArgs,
-    parseFeatureArgs,
     parseReviewArgs,
     buildReviewTarget,
     loadProjectReviewGuidelines,
     parsePlanArgs,
     parseAuditArgs,
-    parseTriageIssueArgs,
-    parseTddArgs,
+    parseTriageArgs,
     parseAddressOpenIssuesArgs,
     parseInboxArgs,
     parseWorkonArgs,
@@ -2442,8 +2436,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       SHIP_COMMAND_SOURCE,
       INBOX_COMMAND_SOURCE,
       WORKON_COMMAND_SOURCE,
-      TRIAGE_ISSUE_COMMAND_SOURCE,
-      TDD_COMMAND_SOURCE,
+      TRIAGE_COMMAND_SOURCE,
       ADDRESS_OPEN_ISSUES_COMMAND_SOURCE,
     },
   });

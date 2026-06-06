@@ -1,38 +1,54 @@
 name: workon-workflow
-version: 1
-objective: Bootstrap an issue-first, focused work session from an issue, PR, or topic.
+version: 2
+objective: Bootstrap autonomous work from a clear, approved issue/work packet.
 
 mutation_policy:
   allowed:
-    - create_issue_when_needed_and_repo_is_clear
-    - create_branch_or_worktree_when_safe
-    - write_session_capsule
-    - start_read_only_forge_feedback_heartbeat
+    - create_branch_or_worktree_when_ready_and_safe
+    - write_session_capsule_when_ready
+    - start_read_only_forge_feedback_heartbeat_when_ready
   forbidden:
+    - freeform_issue_creation
     - implementation_changes
     - merge_or_push
     - pr_creation_for_implementation_work
     - bypassing_worktrunk_hook_approvals
+    - github_comments_when_readiness_fails
 
 inputs:
-  target: issue URL, PR URL, issue number, or freeform topic
+  target: issue URL or issue number
   repo: optional owner/repo override
   forge: auto, github, gitlab, or all
   mode: prepare or start
   heartbeat: forge feedback polling interval in decimal hours (--heartbeat or --interval)
   extraInstruction: optional one-off maintainer focus
 
+readiness_rubric:
+  required_checks:
+    - reproduction_or_observable_behavior
+    - validation_or_test_plan
+    - narrow_acceptance_criteria
+    - repo_guideline_alignment
+    - breaking_change_risk_resolved
+    - review_size_likely_under_500_changed_loc
+    - worth_doing_now
+  failure_behavior: refuse_to_start_and_return_action_items_only
+
 steps:
   - id: scope
-    action: resolve_target_repo_forge_and_mode
-  - id: deterministic-bootstrap
-    action: use_command_handler_issue_metadata_global_capsule_worktrunk_tab_wait_zellij_pi_handoff_and_forge_heartbeat_before_model_exploration_when_available
+    action: resolve_issue_repo_forge_and_mode
   - id: source-of-truth
-    action: find_or_prepare_source_issue
+    action: read_source_issue_work_packet
+  - id: readiness
+    action: evaluate_workon_readiness_before_bootstrap
+  - id: blocked
+    action: stop_with_action_items_when_readiness_fails
+  - id: deterministic-bootstrap
+    action: use_command_handler_issue_metadata_global_capsule_worktrunk_tab_wait_zellij_pi_handoff_and_forge_heartbeat_when_ready
   - id: branch
     action: derive_issue_numbered_branch_or_worktree_name
   - id: bootstrap
-    action: create_branch_or_worktree_only_when_safe_and_authorized
+    action: create_branch_or_worktree_only_when_ready_safe_and_authorized
   - id: capsule
     action: write_or_propose_session_capsule
   - id: handoff

@@ -989,7 +989,7 @@ async function collectGithubEvidence(
       {
         bucket: "New work needs shaping",
         source: "assigned-issue",
-        suggestedCommand: (_repo, item) => `/triage-issue ${item.url}`,
+        suggestedCommand: (_repo, item) => `/triage ${item.url}`,
         evidence: "gh search issues --assignee=@me --state=open",
       },
     );
@@ -1011,7 +1011,7 @@ async function collectGithubEvidence(
       {
         bucket: "New work needs shaping",
         source: "authored-issue",
-        suggestedCommand: (_repo, item) => `/triage-issue ${item.url}`,
+        suggestedCommand: (_repo, item) => `/triage ${item.url}`,
         evidence: "gh search issues --author=@me --state=open",
       },
     );

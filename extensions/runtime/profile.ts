@@ -8,7 +8,6 @@ import {
 
 export const WORKFLOW_TYPES = [
   "debug",
-  "feature",
   "review",
   "git-review",
   "simplify",
@@ -18,8 +17,7 @@ export const WORKFLOW_TYPES = [
   "learn-skill",
   "plan",
   "audit",
-  "triage-issue",
-  "tdd",
+  "triage",
   "address-open-issues",
 ] as const;
 
@@ -64,12 +62,6 @@ const DEFAULT_WORKFLOWS: Record<WorkflowType, WorkflowCommandConfig> = {
     promptFile: "debug-workflow.md",
     workflowFile: "debug-workflow.yaml",
     entryType: "khala-debug-command",
-  },
-  feature: {
-    enabled: true,
-    promptFile: "feature-workflow.md",
-    workflowFile: "feature-workflow.yaml",
-    entryType: "khala-feature-command",
   },
   review: {
     enabled: true,
@@ -119,17 +111,11 @@ const DEFAULT_WORKFLOWS: Record<WorkflowType, WorkflowCommandConfig> = {
     workflowFile: "audit-workflow.yaml",
     entryType: "khala-audit-command",
   },
-  "triage-issue": {
+  triage: {
     enabled: true,
-    promptFile: "triage-issue-workflow.md",
-    workflowFile: "triage-issue-workflow.yaml",
-    entryType: "khala-triage-issue-command",
-  },
-  tdd: {
-    enabled: true,
-    promptFile: "tdd-workflow.md",
-    workflowFile: "tdd-workflow.yaml",
-    entryType: "khala-tdd-command",
+    promptFile: "triage-workflow.md",
+    workflowFile: "triage-workflow.yaml",
+    entryType: "khala-triage-command",
   },
   "address-open-issues": {
     enabled: true,

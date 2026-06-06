@@ -134,7 +134,7 @@ test("collects read-only GitHub inbox evidence for authenticated user", async (t
   );
   assert.match(
     rendered,
-    /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/org\/repo\/pull\/12\n2\. \/inbox --repo pesap\/agents --focus ci\n3\. \/triage-issue https:\/\/github.com\/pesap\/agents\/issues\/61/,
+    /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/org\/repo\/pull\/12\n2\. \/inbox --repo pesap\/agents --focus ci\n3\. \/triage https:\/\/github.com\/pesap\/agents\/issues\/61/,
   );
   assert.match(rendered, /NatLabRockies\/arco/);
   assert.ok(

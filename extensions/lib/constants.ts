@@ -21,8 +21,7 @@ export const SHIP_COMMAND_SOURCE = "khala://workflow/ship";
 export const INBOX_COMMAND_SOURCE = "khala://workflow/inbox";
 export const WORKON_COMMAND_SOURCE = "khala://workflow/workon";
 export const AUDIT_COMMAND_SOURCE = "khala://workflow/audit";
-export const TRIAGE_ISSUE_COMMAND_SOURCE = "https://github.com/mattpocock/skills/tree/main/skills/engineering/triage";
-export const TDD_COMMAND_SOURCE = "https://github.com/mattpocock/skills/tree/main/skills/engineering/tdd";
+export const TRIAGE_COMMAND_SOURCE = "https://github.com/mattpocock/skills/tree/main/skills/engineering/triage";
 export const ADDRESS_OPEN_ISSUES_COMMAND_SOURCE = "khala://workflow/address-open-issues";
 
 export const PREFLIGHT_LINE_REGEX = /^Preflight:\s+skill=([a-zA-Z0-9_.-]+|none)\s+reason="([^"]{1,200})"\s+clarify=(yes|no)\s*$/;

@@ -62,14 +62,41 @@ function fakeGhRunner(outputs: Record<string, string>): {
   };
 }
 
+function readyIssueBody(title: string, body = ""): string {
+  const sections = [body || "## Acceptance criteria\n\n- Add or update focused tests for the changed behavior."];
+  if (/\b(fix|bug|broken|fail|failure|error|regression)\b/i.test(title) && !/Reproduction|Current behavior|repro/i.test(body)) {
+    sections.push("## Reproduction\n\n- Reproduce the reported behavior with a failing regression test.");
+  }
+  if (!/Validation|Testing|Test plan/i.test(body)) {
+    sections.push("## Validation\n\n- Run the focused regression test for the changed behavior.");
+  }
+  if (!/Non-goals|Out of scope/i.test(body)) {
+    sections.push("## Non-goals\n\n- Do not widen scope beyond this issue.");
+  }
+  return sections.filter(Boolean).join("\n\n");
+}
+
 function issueViewOutput(number: number, title: string, body = ""): string {
   return JSON.stringify({
     number,
     title,
     url: `https://github.com/pesap/agents/issues/${number}`,
     state: "OPEN",
-    body,
+    body: readyIssueBody(title, body),
     labels: [{ name: "enhancement" }],
+    assignees: [{ login: "pesap" }],
+    author: { login: "pesap" },
+  });
+}
+
+function incompleteIssueViewOutput(number: number, title: string, body = ""): string {
+  return JSON.stringify({
+    number,
+    title,
+    url: `https://github.com/pesap/agents/issues/${number}`,
+    state: "OPEN",
+    body,
+    labels: [{ name: "bug" }],
     assignees: [{ login: "pesap" }],
     author: { login: "pesap" },
   });
@@ -491,23 +518,11 @@ test("blocks start mode when Worktrunk is unavailable", async () => {
   }
 });
 
-test("resolves freeform topics to existing GitHub issues", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-freeform-existing-test-"));
+test("refuses freeform topics before workon bootstrap", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-freeform-refuse-test-"));
   try {
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
-      "issue list --repo pesap/agents --state open --search implement the dashboard --limit 5 --json number,title,url,state": JSON.stringify([
-        {
-          number: 80,
-          title: "work: implement the dashboard",
-          url: "https://github.com/pesap/agents/issues/80",
-          state: "OPEN",
-        },
-      ]),
-      "issue view 80 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
-        80,
-        "work: implement the dashboard",
-      ),
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -524,35 +539,35 @@ test("resolves freeform topics to existing GitHub issues", async () => {
       },
       runner,
     );
+    const rendered = sections.join("\n");
 
+    assert.equal(calls.some((call) => call.startsWith("issue list")), false);
     assert.equal(calls.some((call) => call.startsWith("issue create")), false);
-    assert.match(sections.join("\n"), /Source issue: pesap\/agents#80/);
+    assert.match(rendered, /Workon target is not an issue URL or issue number/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
 });
 
-test("creates GitHub issues for unmatched freeform topics", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-freeform-create-test-"));
+test("refuses issue targets that are not autonomous-ready", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-readiness-test-"));
   try {
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
-      "issue list --repo pesap/agents --state open --search Make sure Closes: non uses the source issue --limit 5 --json number,title,url,state": "[]",
-      "issue create --repo pesap/agents --title fix: Make sure Closes: non uses the source issue --body ## Problem\n\nMake sure Closes: non uses the source issue\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from summarized /workon freeform topic.\n": "https://github.com/pesap/agents/issues/81\n",
-      "issue view 81 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+      "issue view 81 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": incompleteIssueViewOutput(
         81,
-        "fix: Make sure Closes: non uses the source issue",
-        "## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.",
+        "fix: Missing readiness fields",
+        "The bug is vague.",
       ),
     });
 
     const sections = await prepareWorkonBootstrap(
       {
         cwd: process.cwd(),
-        target: "'Make sure Closes: non uses the source issue'",
+        target: "81",
         repo: "pesap/agents",
         forge: "github",
-        mode: "prepare",
+        mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
         launchInZellij: false,
@@ -560,52 +575,12 @@ test("creates GitHub issues for unmatched freeform topics", async () => {
       },
       runner,
     );
+    const rendered = sections.join("\n");
 
-    assert.ok(calls.some((call) => call.startsWith("issue create")));
-    assert.match(sections.join("\n"), /Source issue: pesap\/agents#81/);
-  } finally {
-    await rm(tempDir, { force: true, recursive: true });
-  }
-});
-
-test("summarizes long freeform topics before creating issues", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-freeform-summary-test-"));
-  const topic =
-    "When our handoff pi session finish, it does not receive the feedback from our heartbeat and does not react to it. This has many extra reproduction details that should not become the issue title or branch name.";
-  try {
-    const { calls, runner } = fakeGhRunner({
-      "auth status": "",
-      [`issue list --repo pesap/agents --state open --search ${topic} --limit 5 --json number,title,url,state`]: "[]",
-      "issue create --repo pesap/agents --title work: When our handoff pi session finish, it does not receive the --body ## Problem\n\nWhen our handoff pi session finish, it does not receive the\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from summarized /workon freeform topic.\n": "https://github.com/pesap/agents/issues/93\n",
-      "issue view 93 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
-        93,
-        "work: When our handoff pi session finish, it does not receive the",
-      ),
-    });
-
-    const sections = await prepareWorkonBootstrap(
-      {
-        cwd: process.cwd(),
-        target: topic,
-        repo: "pesap/agents",
-        forge: "github",
-        mode: "prepare",
-        capsuleRoot: tempDir,
-        nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
-        heartbeat: "1.0",
-      },
-      runner,
-    );
-    const createCall = calls.find((call) => call.startsWith("issue create"));
-
-    assert.ok(createCall);
-    assert.doesNotMatch(createCall, /many extra reproduction details/);
-    assert.doesNotMatch(createCall, /does not react to it/);
-    assert.match(
-      sections.join("\n"),
-      /Suggested branch: work\/93-when-our-handoff-pi-session-finish-it-does-not-receive/,
-    );
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /Autonomous readiness: not-ready/);
+    assert.match(rendered, /Action items to make this issue \/workon-ready/);
+    assert.match(rendered, /Suggested next command: \/triage https:\/\/github.com\/pesap\/agents\/issues\/81/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

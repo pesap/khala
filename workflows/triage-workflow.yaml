@@ -1,0 +1,24 @@
+name: triage-workflow
+version: 1
+objective: Convert user-posted issue/request intake into an approved /workon-ready packet
+version_control:
+  local_tool: git
+  setup_check: git status --short
+  write_operations: ask approval before issue, label, comment, or file mutations
+steps:
+  - id: intake
+    action: capture_issue_or_user_posted_request
+  - id: context
+    action: gather_issue_comments_labels_reporter_activity_repo_guidelines_code_context_and_out_of_scope_decisions
+  - id: classify
+    action: recommend_category_and_state
+  - id: readiness
+    action: evaluate_workon_readiness_rubric
+  - id: packet
+    action: draft_single_clean_work_packet_by_default
+  - id: split-check
+    action: propose_split_table_only_when_too_broad_or_over_review_size
+  - id: approval
+    action: ask_explicit_approval_before_creating_or_updating_forge_artifacts
+  - id: learn
+    action: persist_reusable_non_sensitive_learnings

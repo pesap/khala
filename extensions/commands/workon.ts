@@ -8,7 +8,6 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 const MAX_BRANCH_SLUG_LENGTH = 56;
-const MAX_FREEFORM_SUMMARY_LENGTH = 64;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
@@ -93,6 +92,7 @@ interface WorkonBootstrapEvidence {
   heartbeatCommand?: string;
   handoffPrompt?: string;
   modelSelection?: WorkonModelSelection;
+  readinessActionItems?: string[];
 }
 
 interface ZellijHandoffResult {
@@ -138,11 +138,6 @@ function githubIssueTargetFromUrl(target: string): GithubIssueTarget | null {
   };
 }
 
-function githubPullRequestUrl(target: string): string | null {
-  const match = target.match(/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/[1-9]\d*/i);
-  return match?.[0] ?? null;
-}
-
 function numericTarget(target: string): number | null {
   return /^[1-9]\d*$/.test(target.trim()) ? Number(target.trim()) : null;
 }
@@ -159,19 +154,6 @@ function parseJsonObject<T>(raw: string, gapLabel: string, gaps: string[]): T | 
       `${gapLabel}: failed to parse JSON (${error instanceof Error ? error.message : String(error)})`,
     );
     return null;
-  }
-}
-
-function parseJsonArray<T>(raw: string, gapLabel: string, gaps: string[]): T[] {
-  if (!raw.trim()) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch (error) {
-    gaps.push(
-      `${gapLabel}: failed to parse JSON (${error instanceof Error ? error.message : String(error)})`,
-    );
-    return [];
   }
 }
 
@@ -245,114 +227,15 @@ async function resolveIssueTarget(
   const issueUrlTarget = githubIssueTargetFromUrl(request.target);
   if (issueUrlTarget) return issueUrlTarget;
 
-  const prUrl = githubPullRequestUrl(request.target);
-  if (prUrl) {
-    evidence.gaps.push(
-      `PR target detected (${prUrl}); deterministic PR-to-issue mapping is not implemented yet`,
-    );
-    return null;
-  }
-
   const issueNumber = numericTarget(request.target);
   const repo = await resolveCurrentGithubRepo(request, runner, evidence);
   if (!repo) return null;
   if (issueNumber) return { repo, number: issueNumber };
 
-  return resolveFreeformIssueTarget(request, runner, evidence, repo);
-}
-
-function cleanFreeformTopic(target: string): string {
-  const trimmed = target.trim();
-  const quoted = trimmed.match(/^(["'])(.*)\1$/s);
-  return (quoted?.[2] ?? trimmed).trim();
-}
-
-function summarizeFreeformTopic(topic: string): string {
-  const normalized = cleanFreeformTopic(topic)
-    .replace(/\s+/g, " ")
-    .replace(/^[#>*\-\s]+/, "")
-    .trim();
-  const firstSentence = normalized.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? normalized;
-  const withoutTrailingPunctuation = firstSentence.replace(/[.!?]+$/g, "").trim();
-  if (withoutTrailingPunctuation.length <= MAX_FREEFORM_SUMMARY_LENGTH) {
-    return withoutTrailingPunctuation || "follow up on workon topic";
-  }
-  const truncated = withoutTrailingPunctuation.slice(0, MAX_FREEFORM_SUMMARY_LENGTH + 1);
-  const wordBoundary = truncated.search(/\s+\S*$/);
-  const summary = (wordBoundary > 0 ? truncated.slice(0, wordBoundary) : truncated).trim();
-  return summary || "follow up on workon topic";
-}
-
-function inferIssueTitle(topic: string): string {
-  const summary = summarizeFreeformTopic(topic);
-  const prefix = /\b(bug|broken|fail|fix|incorrect|invalid|wrong|error|regression|closes?)\b/i.test(summary)
-    ? "fix"
-    : "work";
-  return `${prefix}: ${summary}`;
-}
-
-function freeformIssueBody(topic: string): string {
-  const summary = summarizeFreeformTopic(topic);
-  return `## Problem\n\n${summary}\n\n## Acceptance criteria\n\n- Confirm the intended behavior from this topic before implementation.\n- Add or update focused tests for the changed behavior.\n- Keep the implementation scoped to this issue.\n\n## Non-goals\n\n- Do not broaden scope beyond this topic without updating the issue or creating a follow-up.\n\n## Validation\n\n- Run focused tests for the touched path.\n- Run the relevant repo quality gate if public workflow behavior changes.\n\nCreated from summarized /workon freeform topic.\n`;
-}
-
-async function resolveFreeformIssueTarget(
-  request: WorkonBootstrapRequest,
-  runner: WorkonCommandRunner,
-  evidence: WorkonBootstrapEvidence,
-  repo: string,
-): Promise<GithubIssueTarget | null> {
-  const topic = cleanFreeformTopic(request.target);
-  const search = await runGh(runner, request.cwd, evidence.commands, [
-    "issue",
-    "list",
-    "--repo",
-    repo,
-    "--state",
-    "open",
-    "--search",
-    topic,
-    "--limit",
-    "5",
-    "--json",
-    "number,title,url,state",
-  ]);
-  const searchGap = resultGap(`GitHub issue search ${repo}`, search);
-  if (searchGap) {
-    evidence.gaps.push(searchGap);
-    return null;
-  }
-
-  const matches = parseJsonArray<GithubIssueMetadata>(
-    search.stdout,
-    `GitHub issue search ${repo}`,
-    evidence.gaps,
-  ).filter((issue) => typeof issue.number === "number");
-  const match = matches[0];
-  if (match) return { repo, number: match.number };
-
-  const created = await runGh(runner, request.cwd, evidence.commands, [
-    "issue",
-    "create",
-    "--repo",
-    repo,
-    "--title",
-    inferIssueTitle(topic),
-    "--body",
-    freeformIssueBody(topic),
-  ]);
-  const createGap = resultGap(`GitHub issue creation ${repo}`, created);
-  if (createGap) {
-    evidence.gaps.push(createGap);
-    return null;
-  }
-
-  const createdTarget = githubIssueTargetFromUrl(created.stdout.trim());
-  if (!createdTarget) {
-    evidence.gaps.push(`GitHub issue creation ${repo}: output did not include an issue URL`);
-    return null;
-  }
-  return createdTarget;
+  evidence.gaps.push(
+    "Workon target is not an issue URL or issue number; use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.",
+  );
+  return null;
 }
 
 async function readGithubIssue(
@@ -383,14 +266,85 @@ async function readGithubIssue(
 }
 
 function acceptanceCriteriaFromBody(body: string | undefined): string[] {
-  if (!body) return ["Confirm acceptance criteria from the issue body before implementation."];
+  if (!body) return [];
   const lines = body
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => /^[-*]\s+/.test(line) && /\b(should|must|add|detect|collect|return|render|preserve|support|emit|write|create|resolve)\b/i.test(line));
-  return lines.length > 0
-    ? lines.slice(0, 8).map((line) => line.replace(/^[-*]\s+/, ""))
-    : ["Confirm acceptance criteria from the issue body before implementation."];
+    .filter((line) => /^(?:[-*]|\d+\.|- \[[ xX]\])\s+/.test(line) && /\b(should|must|add|detect|collect|return|render|preserve|support|emit|write|create|resolve|validate|test|pass|fail)\b/i.test(line));
+  return lines.slice(0, 8).map((line) => line.replace(/^(?:[-*]|\d+\.|- \[[ xX]\])\s+/, ""));
+}
+
+function bodyHasHeading(body: string | undefined, headings: string[]): boolean {
+  if (!body) return false;
+  return headings.some((heading) => new RegExp(`^#{1,3}\\s+${heading}\\b`, "im").test(body));
+}
+
+function bodyMentions(body: string | undefined, pattern: RegExp): boolean {
+  return Boolean(body && pattern.test(body));
+}
+
+function issueLooksLikeBug(issue: GithubIssueMetadata): boolean {
+  const labels = issue.labels?.map((label) => label.name ?? "").join(" ") ?? "";
+  return /\b(bug|fix|broken|fail|failure|error|regression|incorrect|wrong|invalid)\b/i.test(`${issue.title} ${labels}`);
+}
+
+function validationItemsFromBody(body: string | undefined): string[] {
+  if (!body) return [];
+  const lines = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^(?:[-*]|\d+\.|- \[[ xX]\])\s+/.test(line) && /\b(test|validation|validate|check|lint|typecheck|regression|repro|reproduce)\b/i.test(line));
+  return lines.slice(0, 8).map((line) => line.replace(/^(?:[-*]|\d+\.|- \[[ xX]\])\s+/, ""));
+}
+
+function unresolvedBreakingChange(body: string | undefined): boolean {
+  if (!body || !/breaking change|public api|schema|migration|cli contract/i.test(body)) return false;
+  return !/breaking change(?: risk)?:?\s*(?:none|no|n\/a|not expected)|no breaking change/i.test(body);
+}
+
+function reviewSizeRisk(body: string | undefined): boolean {
+  return bodyMentions(body, /\b(large|broad|sweeping|multi[- ]?phase|many files|refactor everything|over 500|>\s*500)\b/i);
+}
+
+function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {
+  const body = issue.body ?? "";
+  const acceptance = acceptanceCriteriaFromBody(body);
+  const validation = validationItemsFromBody(body);
+  const actionItems: string[] = [];
+
+  if (acceptance.length === 0) {
+    actionItems.push("Add narrow, testable acceptance criteria to the issue/work packet.");
+  }
+  if (validation.length === 0 && !bodyHasHeading(body, ["Validation", "Testing", "Test plan"])) {
+    actionItems.push("Add validation or test expectations, preferably a behavior/regression test for changed behavior.");
+  }
+  if (
+    issueLooksLikeBug(issue) &&
+    !bodyHasHeading(body, ["Reproduction", "Steps to reproduce", "Current behavior"]) &&
+    !bodyMentions(body, /\b(repro|reproduce|observed behavior|current behavior|failing test|regression test)\b/i)
+  ) {
+    actionItems.push("Add reproduction steps, observed behavior, or a concrete failing feedback loop for the bug.");
+  }
+  if (!bodyHasHeading(body, ["Non-goals", "Out of scope"])) {
+    actionItems.push("Add non-goals or out-of-scope boundaries so autonomous work does not expand scope.");
+  }
+  if (unresolvedBreakingChange(body)) {
+    actionItems.push("Resolve the breaking-change/public-contract risk before autonomous work starts.");
+  }
+  if (reviewSizeRisk(body)) {
+    actionItems.push("Narrow or split the issue so the resulting PR is likely under about 500 LOC changed.");
+  }
+
+  return actionItems;
+}
+
+function formatReadinessActionItems(issue: GithubIssueMetadata, actionItems: string[]): string {
+  return [
+    `Autonomous readiness: not ready for ${issue.url}`,
+    "Action items to make this issue /workon-ready:",
+    ...actionItems.map((item, index) => `${index + 1}. ${item}`),
+    `Suggested next command: /triage ${issue.url}`,
+  ].join("\n");
 }
 
 function capsuleMarkdown(params: {
@@ -424,6 +378,9 @@ function capsuleMarkdown(params: {
     )
     .slice(0, 12)
     .join("\n");
+  const validation = validationItemsFromBody(params.issue.body)
+    .map((item) => `- ${item}`)
+    .join("\n") || "- Run the validation described by the issue before shipping.";
 
   return `# Workon session capsule
 
@@ -465,8 +422,7 @@ ${acceptance}
 
 ## Validation
 
-- npm run test
-- npm run lint
+${validation}
 
 ## Open questions
 
@@ -674,7 +630,7 @@ async function startWorktreeIfRequested(
 export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence): string[] {
   const issue = evidence.issue;
   const lines = ["Deterministic workon bootstrap evidence:"];
-  if (issue && evidence.repo && evidence.branchName && evidence.worktreeCommand) {
+  if (issue && evidence.repo && evidence.readinessActionItems?.length) {
     lines.push(
       [
         `Source issue: ${evidence.repo}#${issue.number} ${issue.title}`,
@@ -682,6 +638,20 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         ...(evidence.issues && evidence.issues.length > 1
           ? [`Source issues: ${evidence.issues.map((sourceIssue) => `#${sourceIssue.number}`).join(", ")}`]
           : []),
+        "Autonomous readiness: not-ready",
+        "Worktree status: not-started",
+        "Session capsule: not written",
+      ].join("\n"),
+    );
+  } else if (issue && evidence.repo && evidence.branchName && evidence.worktreeCommand) {
+    lines.push(
+      [
+        `Source issue: ${evidence.repo}#${issue.number} ${issue.title}`,
+        `Issue URL: ${issue.url}`,
+        ...(evidence.issues && evidence.issues.length > 1
+          ? [`Source issues: ${evidence.issues.map((sourceIssue) => `#${sourceIssue.number}`).join(", ")}`]
+          : []),
+        "Autonomous readiness: ready",
         `Suggested branch: ${evidence.branchName}`,
         `Suggested Worktrunk command: ${evidence.worktreeCommand}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
@@ -758,6 +728,16 @@ export async function prepareWorkonBootstrap(
   if (!issue) return formatWorkonBootstrapEvidence(evidence);
 
   const repo = issueTargets[0]?.repo ?? "";
+  const readinessActionItems = issues.flatMap((sourceIssue) => evaluateWorkonReadiness(sourceIssue));
+  if (readinessActionItems.length > 0) {
+    evidence.issue = issue;
+    evidence.issues = issues;
+    evidence.repo = repo;
+    evidence.readinessActionItems = readinessActionItems;
+    evidence.gaps.push(formatReadinessActionItems(issue, readinessActionItems));
+    return formatWorkonBootstrapEvidence(evidence);
+  }
+
   const branchName = buildWorkonBranchName(issue);
   const worktreeCommand = `wt switch --create ${branchName} --format json`;
   const handoffPrompt = await buildHandoffPrompt({
