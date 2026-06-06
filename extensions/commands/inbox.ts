@@ -80,7 +80,7 @@ interface GithubSearchItem {
   labels?: Array<{ name?: string }>;
 }
 
-interface InboxItem {
+export interface InboxItem {
   bucket: string;
   repo: string;
   source: string;
@@ -89,6 +89,31 @@ interface InboxItem {
   updatedAt?: string;
   suggestedCommand: string;
   evidence: string;
+}
+
+export type InboxCollectorName = "github" | "gitlab" | "local" | "sessions";
+export type InboxCollectorStatus = "ok" | "partial" | "skipped" | "failed";
+export type InboxSnapshotStatus = "success" | "partial" | "failed";
+
+export interface InboxCollectorSnapshot {
+  name: InboxCollectorName;
+  status: InboxCollectorStatus;
+  gaps: string[];
+  commands: string[];
+}
+
+export interface InboxSnapshot {
+  generatedAt: string;
+  scope: {
+    cwd: string;
+    repo?: string;
+    user?: string;
+    forge: InboxForge;
+    focus: InboxFocus;
+  };
+  status: InboxSnapshotStatus;
+  collectors: InboxCollectorSnapshot[];
+  items: InboxItem[];
 }
 
 const INBOX_BUCKETS = [
@@ -1001,6 +1026,73 @@ export function formatGithubInboxEvidence(
       : "Evidence gaps and graceful degradation: none.",
     ["Read-only commands executed:", ...commandLines].join("\n"),
   ];
+}
+
+function collectorStatus(
+  gaps: string[],
+  commands: string[],
+): InboxCollectorStatus {
+  if (gaps.some((gap) => gap.includes(" skipped "))) return "skipped";
+  if (commands.length === 0 && gaps.length > 0) return "failed";
+  if (gaps.length > 0) return "partial";
+  return "ok";
+}
+
+function snapshotStatus(
+  collectors: InboxCollectorSnapshot[],
+): InboxSnapshotStatus {
+  if (collectors.every((collector) => collector.status === "failed")) {
+    return "failed";
+  }
+  if (collectors.some((collector) => collector.status !== "ok")) {
+    return "partial";
+  }
+  return "success";
+}
+
+export async function collectInboxSnapshot(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner = createExecFileRunner(),
+): Promise<InboxSnapshot> {
+  const [githubEvidence, localEvidence] = await Promise.all([
+    collectGithubEvidence(request, runner),
+    collectLocalEvidence(request, runner),
+  ]);
+  const collectors: InboxCollectorSnapshot[] = [
+    {
+      name: "github",
+      status: collectorStatus(githubEvidence.gaps, githubEvidence.commands),
+      gaps: [...githubEvidence.gaps].sort(compareText),
+      commands: [...githubEvidence.commands],
+    },
+    {
+      name: "local",
+      status: collectorStatus(localEvidence.gaps, localEvidence.commands),
+      gaps: [...localEvidence.gaps].sort(compareText),
+      commands: [...localEvidence.commands],
+    },
+  ];
+  const items = [...githubEvidence.items, ...localEvidence.items].sort(
+    compareInboxItems,
+  );
+
+  return {
+    generatedAt: request.nowIso ?? new Date().toISOString(),
+    scope: {
+      cwd: request.cwd,
+      repo: request.repo || undefined,
+      user: request.user || undefined,
+      forge: request.forge,
+      focus: request.focus,
+    },
+    status: snapshotStatus(collectors),
+    collectors,
+    items,
+  };
+}
+
+export function renderInboxSnapshotJson(snapshot: InboxSnapshot): string {
+  return `${JSON.stringify(snapshot, null, 2)}\n`;
 }
 
 export async function collectInboxEvidence(
