@@ -74,7 +74,7 @@ flowchart LR
 | `/git-review` | Run git-history diagnostics before reading code. |
 | `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |
 | `/ship [extra instruction]` | Simplify, validate, commit, push, and open/confirm PR/MR. |
-| `/inbox [--focus all\|reviews\|issues\|prs\|ci\|local\|sessions] [--repo owner/repo] [--user [login\|@me]] [--forge auto\|github\|gitlab\|all] [--limit N]` | Show a read-only maintainer inbox from local, forge, and session signals. |
+| `/inbox [--scope auto\|current\|global] [--global] [--focus all\|reviews\|issues\|prs\|ci\|local\|sessions] [--repo owner/repo] [--user [login\|@me]] [--forge auto\|github\|gitlab\|all] [--limit N]` | Show a read-only maintainer inbox from local, forge, and session signals. Defaults to global mode outside git repos for side-terminal dashboards. |
 | `/workon <issue-url\|pr-url\|issue-number\|topic> [--repo owner/repo] [--forge auto\|github\|gitlab\|all] [--mode prepare\|start]` | Bootstrap an issue-first work session and session capsule. |
 | `/plan <topic>` | Stress-test a plan and capture terms/ADRs. |
 | `/audit <claim>` | Anti-confirmation-bias claim audit with evidence-ranked revision. |
@@ -82,6 +82,10 @@ flowchart LR
 | `/tdd <goal> [--lang auto\|python\|rust\|c]` | Strict red-green-refactor delivery. |
 | `/address-open-issues [--limit N] [--repo owner/repo]` | Sweep open GitHub issues authored by the current user. |
 | `/learn-skill <topic> [--from <path\|url>] [--dry-run]` | Create or refine a reusable skill in the learning store. |
+
+For a parked maintainer side terminal, run `/inbox` from a non-git directory such
+as `$HOME`; that defaults to the global queue. From inside a repository, `/inbox`
+stays repo-scoped unless you pass `--global` or `--scope global`.
 
 <details>
 <summary><strong>Run workflows outside the REPL</strong></summary>

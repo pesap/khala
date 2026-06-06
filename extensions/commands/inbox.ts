@@ -9,6 +9,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 
 export type InboxForge = "auto" | "github" | "gitlab" | "all";
+export type InboxScope = "auto" | "current" | "global";
 export type InboxFocus =
   | "all"
   | "reviews"
@@ -33,6 +34,11 @@ export const INBOX_FOCUS_VALUES: readonly InboxFocus[] = [
   "local",
   "sessions",
 ];
+export const INBOX_SCOPE_VALUES: readonly InboxScope[] = [
+  "auto",
+  "current",
+  "global",
+];
 
 export interface InboxEvidenceRequest {
   cwd: string;
@@ -41,6 +47,7 @@ export interface InboxEvidenceRequest {
   user: string;
   forge: InboxForge;
   focus: InboxFocus;
+  scope?: InboxScope;
   capsuleRoot?: string;
   nowIso?: string;
 }
@@ -568,36 +575,42 @@ function capsuleWorktreeEvidence(
 async function collectLocalEvidence(
   request: InboxEvidenceRequest,
   runner: InboxCommandRunner,
+  effectiveScope: Exclude<InboxScope, "auto">,
 ): Promise<LocalEvidence> {
   const evidence: LocalEvidence = { commands: [], gaps: [], items: [] };
-  const collectWorktrees = shouldCollectWorktrees(request.focus);
+  const collectWorktrees =
+    effectiveScope === "current" && shouldCollectWorktrees(request.focus);
   const collectSessions = shouldCollectSessions(request.focus);
+  const discoverWorktrees =
+    effectiveScope === "current" && (collectWorktrees || collectSessions);
   if (!collectWorktrees && !collectSessions) {
     evidence.gaps.push(`Local collector skipped for focus=${request.focus}`);
     return evidence;
   }
 
-  const gitRoot = await runGit(runner, request.cwd, evidence.commands, [
-    "rev-parse",
-    "--is-inside-work-tree",
-  ]);
-  if (!gitRoot.ok || gitRoot.stdout.trim() !== "true") {
-    evidence.gaps.push(
-      `Local git collector skipped: ${request.cwd} is not inside a git repository`,
-    );
-    return evidence;
+  let repo: string | null = request.repo || null;
+  if (effectiveScope === "current") {
+    const gitRoot = await runGit(runner, request.cwd, evidence.commands, [
+      "rev-parse",
+      "--is-inside-work-tree",
+    ]);
+    if (!gitRoot.ok || gitRoot.stdout.trim() !== "true") {
+      evidence.gaps.push(
+        `Local git collector skipped: ${request.cwd} is not inside a git repository`,
+      );
+      return evidence;
+    }
+
+    const remote = await runGit(runner, request.cwd, evidence.commands, [
+      "remote",
+      "get-url",
+      "origin",
+    ]);
+    repo = repo || (remote.ok ? currentRepoFromRemote(remote.stdout) : null);
   }
 
-  const remote = await runGit(runner, request.cwd, evidence.commands, [
-    "remote",
-    "get-url",
-    "origin",
-  ]);
-  const repo =
-    request.repo || (remote.ok ? currentRepoFromRemote(remote.stdout) : null);
-
   let worktrees: GitWorktree[] = [];
-  if (collectWorktrees || collectSessions) {
+  if (discoverWorktrees) {
     const worktreeResult = await runGit(
       runner,
       request.cwd,
@@ -1055,6 +1068,37 @@ export function formatGithubInboxEvidence(
   ];
 }
 
+async function isInsideGitRepository(
+  cwd: string,
+  runner: InboxCommandRunner,
+): Promise<boolean> {
+  const result = await runner("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd,
+  });
+  return result.ok && result.stdout.trim() === "true";
+}
+
+async function resolveInboxScope(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner,
+): Promise<Exclude<InboxScope, "auto">> {
+  if (request.scope === "global") return "global";
+  if (request.scope === "current") return "current";
+  return (await isInsideGitRepository(request.cwd, runner))
+    ? "current"
+    : "global";
+}
+
+function requestForScope(
+  request: InboxEvidenceRequest,
+  effectiveScope: Exclude<InboxScope, "auto">,
+): InboxEvidenceRequest {
+  if (effectiveScope === "global" && !request.repo && !request.user) {
+    return { ...request, user: "@me" };
+  }
+  return request;
+}
+
 function collectorStatus(
   gaps: string[],
   commands: string[],
@@ -1081,9 +1125,11 @@ export async function collectInboxSnapshot(
   request: InboxEvidenceRequest,
   runner: InboxCommandRunner = createExecFileRunner(),
 ): Promise<InboxSnapshot> {
+  const effectiveScope = await resolveInboxScope(request, runner);
+  const scopedRequest = requestForScope(request, effectiveScope);
   const [githubEvidence, localEvidence] = await Promise.all([
-    collectGithubEvidence(request, runner),
-    collectLocalEvidence(request, runner),
+    collectGithubEvidence(scopedRequest, runner),
+    collectLocalEvidence(scopedRequest, runner, effectiveScope),
   ]);
   const collectors: InboxCollectorSnapshot[] = [
     {
@@ -1107,10 +1153,10 @@ export async function collectInboxSnapshot(
     generatedAt: request.nowIso ?? new Date().toISOString(),
     scope: {
       cwd: request.cwd,
-      repo: request.repo || undefined,
-      user: request.user || undefined,
-      forge: request.forge,
-      focus: request.focus,
+      repo: scopedRequest.repo || undefined,
+      user: scopedRequest.user || undefined,
+      forge: scopedRequest.forge,
+      focus: scopedRequest.focus,
     },
     status: snapshotStatus(collectors),
     collectors,
@@ -1126,9 +1172,11 @@ export async function collectInboxEvidence(
   request: InboxEvidenceRequest,
   runner: InboxCommandRunner = createExecFileRunner(),
 ): Promise<string[]> {
+  const effectiveScope = await resolveInboxScope(request, runner);
+  const scopedRequest = requestForScope(request, effectiveScope);
   const [githubEvidence, localEvidence] = await Promise.all([
-    collectGithubEvidence(request, runner),
-    collectLocalEvidence(request, runner),
+    collectGithubEvidence(scopedRequest, runner),
+    collectLocalEvidence(scopedRequest, runner, effectiveScope),
   ]);
   return [
     ...formatGithubInboxEvidence(githubEvidence, [

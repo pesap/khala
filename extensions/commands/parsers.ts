@@ -3,8 +3,10 @@ import path from "node:path";
 import {
   INBOX_FOCUS_VALUES,
   INBOX_FORGES,
+  INBOX_SCOPE_VALUES,
   type InboxFocus,
   type InboxForge,
+  type InboxScope,
 } from "./inbox.ts";
 import type { WorkonMode, WorkonModelSelection } from "./workon.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
@@ -171,6 +173,7 @@ export function parseInboxArgs(args: string): {
   user: string;
   forge: InboxForge;
   focus: InboxFocus;
+  scope: InboxScope;
   extraInstruction: string;
 } {
   let rest = normalizeWhitespace(args);
@@ -211,12 +214,21 @@ export function parseInboxArgs(args: string): {
     INBOX_FOCUS_VALUES,
   );
 
+  const globalResult = removeFlag(rest, /(^|\s)--global(\s|$)/);
+  rest = globalResult.value;
+  const scopeResult = removeFlag(rest, /(^|\s)--scope\s+(\S+)(\s|$)/);
+  rest = scopeResult.value;
+  const scope = globalResult.match
+    ? "global"
+    : parseAllowedInboxValue(scopeResult.match?.[2], "auto", INBOX_SCOPE_VALUES);
+
   return {
     limit: Number.isFinite(limit) && limit > 0 ? limit : 20,
     repo,
     user,
     forge,
     focus,
+    scope,
     extraInstruction: rest,
   };
 }
