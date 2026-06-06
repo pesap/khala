@@ -19,7 +19,6 @@ export interface CommandRegistrarDeps {
     preflight: CommandHandler;
     postflight: CommandHandler;
     debug: CommandHandler;
-    feature: CommandHandler;
     review: CommandHandler;
     gitReview: CommandHandler;
     simplify: CommandHandler;
@@ -28,8 +27,7 @@ export interface CommandRegistrarDeps {
     workon: CommandHandler;
     plan: CommandHandler;
     audit: CommandHandler;
-    triageIssue: CommandHandler;
-    tdd: CommandHandler;
+    triage: CommandHandler;
     addressOpenIssues: CommandHandler;
     learnSkill: CommandHandler;
     skillStatus: CommandHandler;
@@ -68,19 +66,17 @@ export function registerCommands({
     { name: "approve-risk", description: "Record checker approval for one high-risk command", handler: handlers.approveRisk },
     { name: "preflight", description: "Set mutation intent line for first-principles gate", handler: handlers.preflight },
     { name: "postflight", description: "Record verification evidence line for first-principles gate", handler: handlers.postflight },
-    { name: "debug", description: "Run the khala debug workflow", handler: handlers.debug },
-    { name: "feature", description: "Run the khala feature workflow", handler: handlers.feature },
+    { name: "debug", description: "Investigate a maintainer-observed unreported symptom and draft a new issue proposal", handler: handlers.debug },
     { name: "review", description: "Run the khala code review workflow (adapted from pi-review)", handler: handlers.review },
     { name: "git-review", description: "Run git history diagnostics before reading code", handler: handlers.gitReview },
     { name: "simplify", description: "Run the khala code simplification workflow", handler: handlers.simplify },
     { name: "ship", description: "Simplify, verify, push current branch, and open PR/MR", handler: handlers.ship },
     { name: "inbox", description: "Show a read-only maintainer inbox from local, forge, and session signals", handler: handlers.inbox },
-    { name: "workon", description: "Bootstrap an issue-first work session from an issue, PR, or topic", handler: handlers.workon },
+    { name: "workon", description: "Bootstrap autonomous work from a ready issue/work packet", handler: handlers.workon },
     { name: "plan", description: "Run rigorous planning workflow with edge-case capture and context/ADR updates", handler: handlers.plan },
     { name: "audit", description: "Run a full anti-confirmation-bias claim audit", handler: handlers.audit },
-    { name: "triage-issue", description: "Investigate a bug and create a TDD fix-plan issue", handler: handlers.triageIssue },
-    { name: "tdd", description: "Run a strict red-green-refactor workflow", handler: handlers.tdd },
-    { name: "address-open-issues", description: "Sweep open issues authored by you through triage, TDD, review, and remediation", handler: handlers.addressOpenIssues },
+    { name: "triage", description: "Clean a user-posted issue or request into an approved /workon-ready packet", handler: handlers.triage },
+    { name: "address-open-issues", description: "Sweep open issues authored by you through triage, workon, review, and remediation", handler: handlers.addressOpenIssues },
     { name: "learn-skill", description: "Create and refine a reusable skill", handler: handlers.learnSkill },
     { name: "skill-status", description: "Show learned skill provenance and lifecycle status", handler: handlers.skillStatus },
     { name: "skill-report", description: "Regenerate the learned skill curator report", handler: handlers.skillReport },

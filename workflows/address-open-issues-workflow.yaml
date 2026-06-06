@@ -1,6 +1,6 @@
 name: address-open-issues-workflow
-version: 1
-objective: Resolve actionable open issues authored by current user through triage, implementation, review, simplify, and remediation loops
+version: 2
+objective: Resolve actionable open issues authored by current user through triage, readiness checks, review, simplify, and remediation loops
 version_control:
   local_tool: git
   setup_check: git status --short
@@ -16,12 +16,12 @@ steps:
     action: execute_issue_pipeline
     parameters:
       stages:
-        - triage-issue
-        - tdd
+        - triage
+        - workon_readiness_check
         - review
         - simplify
         - review
-        - address-review-findings
+        - address_review_findings
       max_remediation_loops: 2
   - id: summarize
     action: produce_issue_status_table_and_counts

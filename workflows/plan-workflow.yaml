@@ -1,24 +1,39 @@
 name: plan-workflow
-version: 1
-objective: Build a rigorous implementation plan with edge cases, domain alignment, and captured decisions
+version: 2
+objective: Shape maintainer planned changes or codebase improvement ideas into approved issue/work packets
 version_control:
   local_tool: git
   setup_check: git status --short
-  write_operations: use normal git commands with explicit scope and validation
+  write_operations: ask approval before issue creation or file/doc mutations
 steps:
   - id: intake
-    action: capture_plan_and_scope
+    action: capture_maintainer_idea_scope_and_success_signal
   - id: discover
-    action: locate_context_docs_and_relevant_code
+    action: locate_context_docs_relevant_code_repo_guidelines_and_existing_issues
   - id: question-loop
     action: ask_only_blocking_questions_after_inspecting_available_context
   - id: reconcile
-    action: resolve_terminology_conflicts_and_code_contradictions
+    action: resolve_terminology_conflicts_code_contradictions_and_scope_boundaries
   - id: update-context
-    action: update_context_docs_inline_as_terms_resolve
+    action: update_context_docs_inline_as_terms_resolve_when_needed
   - id: adr
     action: propose_or_write_adrs_only_when_criteria_met
-  - id: summarize
-    action: list_resolved_terms_open_questions_and_risks
+  - id: packet
+    action: draft_single_work_packet_by_default
+  - id: slice-table
+    action: produce_exact_vertical_slice_table_before_issue_creation_when_multiple_slices_are_justified
+    parameters:
+      soft_cap: 3
+      review_size_target_changed_loc: 500
+      include:
+        - title
+        - outcome
+        - acceptance_criteria
+        - dependencies
+        - validation
+        - afk_or_hitl
+        - review_size_risk
+  - id: approval
+    action: ask_approval_on_exact_issue_or_slice_table_before_creating_or_updating_issues
   - id: learn
     action: persist_learnings

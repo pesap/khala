@@ -113,6 +113,26 @@ test("ship workflow requires source issue close-marker resolution", async () => 
   assert.match(workflowText, /never contains `Closes: none` or `Closes: non`/);
 });
 
+test("public workflow taxonomy does not expose dropped feature or tdd commands", async () => {
+  const repoRoot = process.cwd();
+  const files = [
+    "README.md",
+    "runtime/profile.yaml",
+    "extensions/commands/register.ts",
+    "extensions/runtime/profile.ts",
+  ];
+
+  for (const filePath of files) {
+    const text = await fs.readFile(path.join(repoRoot, filePath), "utf8");
+    assert.doesNotMatch(text, /\/feature\b|\/tdd\b|triage-issue-workflow|tdd-workflow|feature-workflow/);
+  }
+
+  await assert.rejects(fs.access(path.join(repoRoot, "commands", "feature-workflow.md")));
+  await assert.rejects(fs.access(path.join(repoRoot, "commands", "tdd-workflow.md")));
+  await assert.rejects(fs.access(path.join(repoRoot, "commands", "triage-issue-workflow.md")));
+  await fs.access(path.join(repoRoot, "commands", "triage-workflow.md"));
+});
+
 test("workflow handler instructions do not contain unconditional clarification stalls", async () => {
   const repoRoot = process.cwd();
   const handlerText = await fs.readFile(

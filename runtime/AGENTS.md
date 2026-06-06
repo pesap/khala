@@ -9,7 +9,7 @@ Use this file only for repo-specific deltas.
 - Do not create additional top-level agents unless explicitly requested.
 - Keep prompts and workflows concise, auditable, and reusable.
 - Prefer additive learning updates over broad rewrites.
-- Keep command ergonomics stable (`/debug`, `/feature`, `/learn-skill`, `/review`, `/git-review`, `/simplify`).
+- Keep command ergonomics stable for the public workflow set (`/debug`, `/triage`, `/plan`, `/workon`, `/learn-skill`, `/review`, `/git-review`, `/simplify`).
 
 ## When editing this repo
 

@@ -20,22 +20,50 @@ Command workflow contracts:
 
 ## /debug
 
-- Restate problem.
-- Build hypotheses.
-- Run hypothesis investigations systematically and rank them by evidence strength.
+- Use when the maintainer observed an unreported symptom or bug and wants evidence before filing work.
+- Reject existing GitHub issue URLs and redirect to `/triage <issue-url>`.
+- Restate the observed symptom.
+- Build a reproduction or observable feedback loop when possible.
+- Build and test hypotheses systematically, ranked by evidence strength.
 - Rank findings by confidence.
-- Gather enough evidence to create a durable issue.
-- Draft an issue title/body, acceptance criteria, and validation plan.
-- Do not fix during `/debug`; use `/workon <issue>` after the issue exists.
+- Draft a new issue title/body, acceptance criteria, non-goals, validation plan, and `/workon` readiness notes when evidence justifies it.
+- Ask for explicit authorization before creating the GitHub issue.
+- If authorized, create the issue with `gh issue create --body-file <file>` or equivalent safe tooling, then report the issue URL.
+- Do not fix during `/debug`; use `/workon <issue>` after the issue exists and is ready.
 - Store learnings.
 
-## /feature
+## /triage
 
-- Extract acceptance criteria from the request and repo context; ask only one blocking clarification question if the criteria cannot be inferred safely.
-- Plan minimal implementation.
-- Sequence implementation/tests/docs tracks clearly and keep integration coherent.
-- Integrate and verify.
-- Summarize shipped behavior, risks, and follow-ups.
+- Use when a user posted an issue/request that needs cleanup before autonomous work.
+- Gather issue/request context, comments, labels, reporter activity, relevant code/docs, repo guidelines, and prior out-of-scope decisions when available.
+- Default to one cleaned-up work packet.
+- Propose a split table only when the issue is clearly too broad or likely to exceed reviewable PR size.
+- Draft current behavior or goal, desired behavior, acceptance criteria, validation/tests, non-goals, breaking-change risk, review-size risk, and `/workon` readiness status.
+- Ask for explicit authorization before creating/updating GitHub issues, labels, or comments.
+- Store learnings.
+
+## /plan
+
+- Use for maintainer-originated planned changes, codebase improvements, and feature ideas.
+- Inspect code/docs before asking questions when practical.
+- Ask only blocking questions, one at a time.
+- Challenge ambiguous/conflicting terms against existing `CONTEXT.md` language.
+- Capture edge cases, constraints, trade-offs, and out-of-scope ideas before implementation.
+- Default to one issue/work packet unless splitting clearly improves reviewability.
+- When multiple slices are justified, produce an exact slice table before any issue creation.
+- Soft cap the slice table at 3 issues; more requires explicit approval and a reason.
+- Each slice should be independently reviewable and target less than about 500 lines of code change per PR.
+- Ask for explicit authorization on the exact issue/slice list before creating or updating issues.
+- Store learnings.
+
+## /workon
+
+- Use only for a clear, approved issue/work packet.
+- Accept only an issue URL or issue number; use `/plan` for maintainer ideas and `/triage` for user-posted intake.
+- Before starting, run the autonomous-readiness rubric: reproduction/observable behavior, validation/tests, narrow acceptance criteria, repo-guideline alignment, breaking-change risk, review-size risk, and whether the work is worth doing now.
+- If readiness fails, do not create a worktree, Pi session, heartbeat, capsule, or GitHub comment; return concrete action items only.
+- If readiness passes, prepare or start the Worktrunk session capsule and handoff.
+- Do not redefine issue scope or implement within the bootstrap workflow.
 - Store learnings.
 
 ## /learn-skill

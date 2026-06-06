@@ -9,52 +9,28 @@ skills:
 
 You are running the khala `/workon` workflow.
 
-This workflow turns an issue, PR, or freeform topic into a focused work session.
-It is a session bootstrap workflow, not an implementation workflow.
+This workflow starts or prepares autonomous work from a clear, approved issue/work packet. It is a session bootstrap workflow, not a planning or implementation workflow.
 
 Requirements:
 - Be concise.
-- Preserve issue-first discipline: every non-trivial work session needs a durable
-  source issue or an explicit reason why one cannot be created yet.
-- Resolve the target from command input:
-  - GitHub issue URL or `--repo owner/repo <number>`: use that issue.
-  - GitHub PR URL: use the PR as context and identify or recommend the source
-    issue when possible.
-  - Freeform topic: search for an existing issue first; create an issue only
-    after the target repo is clear and issue creation is appropriate.
-- Prefer GitHub v1. Gracefully degrade for GitLab and other forges with precise
-  next steps rather than guessing.
-- Treat `--heartbeat` and `--interval` as equivalent decimal-hour aliases for
-  the forge feedback heartbeat.
-- Use deterministic bootstrap evidence attached by the command handler when it
-  resolves a GitHub issue, derives a branch name, writes a global Pi capsule,
-  and in `--mode start` runs Worktrunk first, waits for the Worktrunk-created
-  Zellij tab, launches Pi in that tab, and starts the forge feedback heartbeat
-  when Zellij is available. Do not spend model/tool tokens recreating issue,
-  branch, capsule, Zellij, or heartbeat evidence the handler already supplied.
-- Use Worktrunk when available to prepare or start the worktree. If Worktrunk is
-  unavailable or hooks need trust approval, stop with exact operator guidance;
-  do not bypass approvals.
-- Do not implement the feature or bugfix in this workflow.
-- Do not merge, push, or open implementation PRs.
-- Keep mutation scoped to session bootstrap actions only: issue creation when
-  needed, branch/worktree creation in `--mode start` when safe, and session
-  capsule creation.
-- If both an explicit issue/PR and freeform topic exist, treat the explicit
-  issue/PR as source of truth and keep the topic as focus/context.
-- Store the active session capsule globally under
-  `~/.pi/khala/github.com/<owner>/<repo>/capsule.md`.
-- Write or propose a session capsule containing:
-  - repo
-  - issue or PR
-  - branch/worktree
-  - problem
-  - acceptance criteria
-  - non-goals
-  - validation
-  - open questions
-  - draft PR and forge heartbeat instructions
-  - next prompt
-- End with: resolved source of truth, branch/worktree status, session capsule
-  status/path or proposed capsule, next command, risks, `Result:
-  success|partial|failed`, and `Confidence: 0..1`.
+- Accept only an issue URL or issue number. Use `/plan` for maintainer ideas and `/triage` for user-posted issue intake before `/workon`.
+- Preserve issue-first discipline: every autonomous work session needs a durable source issue.
+- Prefer GitHub v1. Gracefully degrade for GitLab and other forges with precise next steps rather than guessing.
+- Treat `--heartbeat` and `--interval` as equivalent decimal-hour aliases for the forge feedback heartbeat.
+- Run the autonomous readiness rubric before starting:
+  - reproduction or observable behavior is clear
+  - validation/tests are specified, with behavior/regression validation for bugs
+  - acceptance criteria are narrow and useful
+  - repo guidelines and relevant constraints are acknowledged
+  - breaking-change risk is absent or explicitly resolved
+  - scope is likely reviewable, targeting <500 LOC changed per PR
+  - the work is worth doing now rather than deferring
+- If the readiness rubric fails, do not create a worktree, Pi session, heartbeat, or GitHub comment. Return only concrete action items needed to make the issue `/workon`-ready.
+- Use deterministic bootstrap evidence attached by the command handler when it resolves a GitHub issue, derives a branch name, writes a global Pi capsule, and in `--mode start` runs Worktrunk first, waits for the Worktrunk-created Zellij tab, launches Pi in that tab, and starts the forge feedback heartbeat when Zellij is available. Do not spend model/tool tokens recreating issue, branch, capsule, Zellij, or heartbeat evidence the handler already supplied.
+- Use Worktrunk when available to prepare or start the worktree. If Worktrunk is unavailable or hooks need trust approval, stop with exact operator guidance; do not bypass approvals.
+- Do not redefine issue scope.
+- Do not merge, push, or open implementation PRs from this bootstrap workflow.
+- Keep mutation scoped to session bootstrap actions only: branch/worktree creation in `--mode start` when safe and session capsule creation.
+- Store the active session capsule globally under `~/.pi/khala/github.com/<owner>/<repo>/capsule.md`.
+- Write or propose a session capsule containing repo, issue, branch/worktree, problem, acceptance criteria, non-goals, validation, open questions, current readiness status, draft PR and forge heartbeat instructions, and next prompt.
+- End with: readiness status, resolved source of truth, branch/worktree status, session capsule status/path or action items, next command, risks, `Result: success|partial|failed`, and `Confidence: 0..1`.

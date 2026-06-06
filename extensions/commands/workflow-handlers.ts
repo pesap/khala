@@ -50,6 +50,16 @@ function githubIssueRepoFromUrl(target: string): string | null {
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
+function isWorkonIssueTarget(target: string): boolean {
+  return /^[1-9]\d*$/.test(target.trim()) || githubIssueRepoFromUrl(target) !== null;
+}
+
+function validateWorkonIssueTargets(targets: string[]): string | null {
+  return targets.every(isWorkonIssueTarget)
+    ? null
+    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS|--interval HOURS]. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
+}
+
 function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
   const urlRepos = [...new Set(targets.map(githubIssueRepoFromUrl).filter((value): value is string => Boolean(value)))];
   if (urlRepos.length > 1) {
@@ -111,7 +121,6 @@ export function createWorkflowCommandHandlers(params: {
     ) => void,
   ) => void;
   parseDebugArgs: (args: string) => { problem: string };
-  parseFeatureArgs: (args: string) => { request: string; ship: boolean };
   parseReviewArgs: (
     args: string,
     cwd: string,
@@ -123,8 +132,7 @@ export function createWorkflowCommandHandlers(params: {
   loadProjectReviewGuidelines: (cwd: string) => Promise<string | null>;
   parsePlanArgs: (args: string) => { plan: string };
   parseAuditArgs: (args: string) => { claim: string };
-  parseTriageIssueArgs: (args: string) => { problem: string };
-  parseTddArgs: (args: string) => { goal: string; language: string };
+  parseTriageArgs: (args: string) => { target: string };
   parseAddressOpenIssuesArgs: (args: string) => { limit: number; repo: string };
   parseInboxArgs: (args: string) => {
     limit: number;
@@ -183,13 +191,11 @@ export function createWorkflowCommandHandlers(params: {
     SHIP_COMMAND_SOURCE: string;
     INBOX_COMMAND_SOURCE: string;
     WORKON_COMMAND_SOURCE: string;
-    TRIAGE_ISSUE_COMMAND_SOURCE: string;
-    TDD_COMMAND_SOURCE: string;
+    TRIAGE_COMMAND_SOURCE: string;
     ADDRESS_OPEN_ISSUES_COMMAND_SOURCE: string;
   };
 }): {
   debug: CommandHandler;
-  feature: CommandHandler;
   review: CommandHandler;
   gitReview: CommandHandler;
   simplify: CommandHandler;
@@ -198,8 +204,7 @@ export function createWorkflowCommandHandlers(params: {
   workon: CommandHandler;
   plan: CommandHandler;
   audit: CommandHandler;
-  triageIssue: CommandHandler;
-  tdd: CommandHandler;
+  triage: CommandHandler;
   addressOpenIssues: CommandHandler;
   learnSkill: CommandHandler;
 } {
@@ -216,14 +221,12 @@ export function createWorkflowCommandHandlers(params: {
     enqueueWorkflow,
     notifyWorkflowStarted,
     parseDebugArgs,
-    parseFeatureArgs,
     parseReviewArgs,
     buildReviewTarget,
     loadProjectReviewGuidelines,
     parsePlanArgs,
     parseAuditArgs,
-    parseTriageIssueArgs,
-    parseTddArgs,
+    parseTriageArgs,
     parseAddressOpenIssuesArgs,
     parseInboxArgs,
     parseWorkonArgs,
@@ -412,53 +415,31 @@ export function createWorkflowCommandHandlers(params: {
       startedMessage: params.startedMessage(value),
     });
   };
-  const runToggleWorkflow = async (params: {
-    ctx: ExtensionCommandContext;
-    type: "debug" | "feature";
-    value: string;
-    enabled: boolean;
-    usage: string;
-    valueLabel: string;
-    enabledLabel: string;
-    instruction: string;
-    entryKey: "problem" | "request";
-    flagKey: "fix" | "ship";
-  }): Promise<void> => {
-    if (!ensureWorkflowSlotAvailable(params.ctx)) return;
-    const value = requireInput(params.ctx, params.value, params.usage);
-    if (!value) return;
-    await runWorkflowCommand({
-      ctx: params.ctx,
-      type: params.type,
-      input: value,
-      flags: { [params.flagKey]: params.enabled },
-      sections: withFooter([
-        `${params.valueLabel}: ${value}`,
-        `${params.enabledLabel}: ${params.enabled ? "yes" : "no"}`,
-        "",
-        params.instruction,
-      ]),
-      entry: { [params.entryKey]: value, [params.flagKey]: params.enabled },
-      startedMessage: `Started ${params.type} workflow (${params.flagKey}=${params.enabled ? "on" : "off"}).`,
-    });
-  };
   return {
     debug: async (args, ctx) => {
       const parsed = parseDebugArgs(args ?? "");
+      if (githubIssueRepoFromUrl(parsed.problem)) {
+        notify(
+          ctx,
+          "Existing GitHub issues should be shaped with /triage <issue-url>. /debug is for maintainer-observed, unreported symptoms.",
+          "error",
+        );
+        return;
+      }
       await runRequiredSourceWorkflow({
         ctx,
         type: "debug",
         source: "khala-debug-command",
         value: parsed.problem,
-        usage: "Usage: /debug <problem>",
-        sections: (problem) =>
-          withFooter([
-            `User problem: ${problem}`,
-            "Debug outcome: issue-ready evidence brief",
-            "Apply fix: no",
-            "",
-            "Instruction: Investigate hypotheses rigorously, converge on the highest-confidence root cause or candidate, and prepare evidence suitable for a GitHub issue. Do not apply code changes.",
-          ]),
+        usage: "Usage: /debug <unreported_problem_or_symptom>",
+        sections: (problem) => [
+          `Observed symptom: ${problem}`,
+          "Debug source: maintainer-observed unreported problem",
+          "Debug outcome: evidence-backed new issue proposal",
+          "Apply fix: no",
+          "",
+          "Instruction: Build a reproduction or observable feedback loop first, investigate hypotheses rigorously, and converge on the highest-confidence root cause or candidate. Draft a new GitHub issue only when evidence justifies it, ask explicit approval before creating it, and do not apply code changes.",
+        ],
         flags: () => ({ fix: false, createIssueBrief: true }),
         entry: (problem) => ({
           problem,
@@ -466,24 +447,7 @@ export function createWorkflowCommandHandlers(params: {
           createIssueBrief: true,
         }),
         startedMessage: () =>
-          "Started debug workflow (issue-ready evidence brief; fix=off).",
-      });
-    },
-
-    feature: async (args, ctx) => {
-      const parsed = parseFeatureArgs(args ?? "");
-      await runToggleWorkflow({
-        ctx,
-        type: "feature",
-        value: parsed.request,
-        enabled: parsed.ship,
-        usage: "Usage: /feature <request> [--ship]",
-        valueLabel: "Feature request",
-        enabledLabel: "Ship mode",
-        instruction:
-          "Instruction: Execute implementation, tests, and docs tracks in a disciplined sequence unless another extension orchestrates parallelism.",
-        entryKey: "request",
-        flagKey: "ship",
+          "Started debug workflow (new issue evidence brief; fix=off).",
       });
     },
 
@@ -559,8 +523,9 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.",
           "Instruction: If a question can be answered from code/docs, inspect first and do not ask it.",
           "Instruction: Capture edge cases and trade-offs, then update CONTEXT.md/ADR docs lazily when terms/decisions are resolved.",
-          "Instruction: When plan is complete, ask the user exactly once whether to create vertical-slice issues now.",
-          "Instruction: If user says yes, produce a vertical-slice issue breakdown (AFK/HITL + dependencies) and then create issues.",
+          "Instruction: Produce a slice table before any issue creation, using one issue by default and at most three slices unless the user explicitly approves more.",
+          "Instruction: Each proposed slice must be independently reviewable, list dependencies and AFK/HITL status, and target less than about 500 lines of code change per PR.",
+          "Instruction: Ask approval on the exact slice table before creating or updating issues.",
           "Instruction: Detect issue tracker platform first and use matching skill: github for GitHub, gitlab for GitLab.",
         ],
         entry: (plan) => ({ plan }),
@@ -674,13 +639,18 @@ export function createWorkflowCommandHandlers(params: {
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|pr-url|issue-number|topic> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS|--interval HOURS]",
+          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS|--interval HOURS]",
           "error",
         );
         return;
       }
 
       const targets = parsed.targets?.length ? parsed.targets : [parsed.target];
+      const targetShapeError = validateWorkonIssueTargets(targets);
+      if (targetShapeError) {
+        notify(ctx, targetShapeError, "error");
+        return;
+      }
       const targetRepoError = validateWorkonTargetRepos(targets, parsed.repo);
       if (targetRepoError) {
         notify(ctx, targetRepoError, "error");
@@ -727,10 +697,10 @@ export function createWorkflowCommandHandlers(params: {
           `Exact model: ${parsed.modelSelection.exactModel || "(runtime default)"}`,
           `Model routing mode: ${parsed.modelSelection.routingMode}`,
           `Model routing reason: ${parsed.modelSelection.routingReason}`,
-          "Instruction: Resolve or prepare the durable source issue before branch/worktree work.",
-          "Instruction: For freeform topics, search existing issues first; create a new issue only when the target repo is clear and creation is appropriate.",
+          "Instruction: Resolve the durable source issue before branch/worktree work.",
+          "Instruction: Run the autonomous-readiness rubric before starting; if readiness fails, do not create a worktree, session, heartbeat, or GitHub comment. Return only concrete action items needed to make the issue /workon-ready.",
           "Instruction: Derive an issue-numbered branch/worktree name and use Worktrunk when available; never bypass Worktrunk hook approval prompts.",
-          "Instruction: Do not implement the feature or bugfix; stop after source-of-truth, branch/worktree preparation, and session capsule handoff.",
+          "Instruction: Do not redefine the issue scope; consume the approved work packet and stop after source-of-truth, branch/worktree preparation, and session capsule handoff.",
           "Instruction: Use the deterministic bootstrap evidence below as the source-of-truth handoff when available; do not spend model/tool tokens recreating issue, branch, capsule, Zellij, or heartbeat evidence the handler already supplied.",
           "Instruction: Session capsule must include repo, issue/PR, branch/worktree, problem, acceptance criteria, non-goals, validation, open questions, and next prompt.",
           ...workonBootstrapSections,
@@ -742,46 +712,22 @@ export function createWorkflowCommandHandlers(params: {
       });
     },
 
-    triageIssue: async (args, ctx) => {
+    triage: async (args, ctx) => {
       await runRequiredSourceWorkflow({
         ctx,
-        type: "triage-issue",
-        source: constants.TRIAGE_ISSUE_COMMAND_SOURCE,
-        value: parseTriageIssueArgs(args ?? "").problem,
-        usage: "Usage: /triage-issue <problem_statement>",
-        sections: (problem) => [
-          `Problem statement: ${problem}`,
-          "Instruction: Ask at most one initial clarification question if needed, then investigate immediately.",
-          "Instruction: Create a GitHub issue with durable root-cause analysis and RED/GREEN TDD fix plan.",
+        type: "triage",
+        source: constants.TRIAGE_COMMAND_SOURCE,
+        value: parseTriageArgs(args ?? "").target,
+        usage: "Usage: /triage <issue-url|user_posted_request>",
+        sections: (target) => [
+          `Triage target: ${target}`,
+          "Instruction: Treat this as user-posted issue/request intake. Gather issue context, comments, labels, reporter activity, relevant code/docs, repo guidelines, and prior out-of-scope decisions when available.",
+          "Instruction: Default to one cleaned-up issue/work packet. Propose a split table only when the issue is clearly too broad or likely to exceed reviewable PR size.",
+          "Instruction: Produce a work packet with current behavior or goal, desired behavior, acceptance criteria, validation/tests, non-goals, breaking-change risk, review-size risk, and /workon readiness status.",
+          "Instruction: Ask explicit approval before creating or updating any GitHub issue, labels, or comments.",
         ],
-        entry: (problem) => ({ problem }),
-        startedMessage: (problem) => `Started triage-issue workflow (${problem}).`,
-      });
-    },
-
-    tdd: async (args, ctx) => {
-      const parsed = parseTddArgs(args ?? "");
-      await runRequiredSourceWorkflow({
-        ctx,
-        type: "tdd",
-        source: constants.TDD_COMMAND_SOURCE,
-        value: parsed.goal,
-        usage: "Usage: /tdd <goal> [--lang auto|python|rust|c]",
-        flags: () => ({
-          language: parsed.language,
-        }),
-        sections: (goal) => [
-          `TDD goal: ${goal}`,
-          `Language hint: ${parsed.language}`,
-          "Instruction: Use tdd-core doctrine and select language-specific adapter skill as needed.",
-          "Instruction: Execute strict red-green-refactor in vertical slices only.",
-        ],
-        entry: (goal) => ({
-          goal,
-          language: parsed.language,
-        }),
-        startedMessage: (goal) =>
-          `Started tdd workflow (goal=${goal}, lang=${parsed.language}).`,
+        entry: (target) => ({ target }),
+        startedMessage: (target) => `Started triage workflow (${target}).`,
       });
     },
 
@@ -803,7 +749,7 @@ export function createWorkflowCommandHandlers(params: {
           `Repo override: ${parsed.repo || "(current repo)"}`,
           "Instruction: Skip issues labeled blocked (or equivalent blocked label) and mark them skipped-blocked.",
           "Instruction: If an issue description is unclear/incomplete, post a clarification comment tagging the issue creator and abort remaining stages for that issue.",
-          "Instruction: For well-described issues, run stages in order: triage-issue -> tdd -> review -> simplify -> review -> address review findings.",
+          "Instruction: For well-described issues, run stages in order: triage -> workon -> review -> simplify -> review -> address review findings.",
           "Instruction: Re-review after remediation up to 2 loops per issue, then mark blocked if unresolved.",
         ],
         startedMessage: `Started address-open-issues workflow (limit=${parsed.limit}, repo=${parsed.repo || "current"}).`,

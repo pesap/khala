@@ -126,30 +126,13 @@ export const parseDebugArgs = (args: string): { problem: string } => {
   return { problem: rest };
 };
 
-export const parseFeatureArgs = (args: string): { request: string; ship: boolean } => {
-  const { rest, enabled } = parseToggleArg(args, "--ship");
-  return { request: rest, ship: enabled };
-};
-
 export const parsePlanArgs = (args: string): { plan: string } => ({
   plan: normalizeWhitespace(args),
 });
 export const parseAuditArgs = (args: string): { claim: string } => ({
   claim: normalizeWhitespace(args),
 });
-export const parseTriageIssueArgs = (args: string): { problem: string } => ({ problem: normalizeWhitespace(args) });
-
-export function parseTddArgs(args: string): { goal: string; language: string } {
-  let rest = normalizeWhitespace(args);
-
-  const languageResult = removeFlag(rest, /(^|\s)--lang\s+(\S+)(\s|$)/);
-  rest = languageResult.value;
-
-  return {
-    goal: rest,
-    language: normalizeWhitespace(languageResult.match?.[2] ?? "auto").toLowerCase(),
-  };
-}
+export const parseTriageArgs = (args: string): { target: string } => ({ target: normalizeWhitespace(args) });
 
 export function parseAddressOpenIssuesArgs(args: string): {
   limit: number;

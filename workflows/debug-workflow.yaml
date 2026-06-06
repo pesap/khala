@@ -1,13 +1,15 @@
 name: debug-workflow
-version: 1
-objective: Gather evidence and prepare an issue-ready debugging brief
+version: 2
+objective: Investigate a maintainer-observed unreported symptom and prepare a new issue proposal
 version_control:
   local_tool: git
   setup_check: git status --short
-  write_operations: do not mutate code during debug; create an issue draft instead
+  write_operations: do not mutate code during debug; ask approval before creating a new issue
 steps:
   - id: intake
-    action: restate_problem
+    action: reject_existing_issue_urls_and_restate_observed_symptom
+  - id: feedback-loop
+    action: build_reproduction_or_observable_signal_when_possible
   - id: evidence
     action: collect_reproduction_or_signals
   - id: hypotheses
@@ -17,6 +19,8 @@ steps:
   - id: synthesis
     action: rank_findings_and_select_root_cause_or_candidate
   - id: issue-brief
-    action: draft_issue_title_body_acceptance_criteria_and_validation_plan
+    action: draft_new_issue_title_body_acceptance_criteria_non_goals_validation_and_workon_readiness_notes
+  - id: approval
+    action: ask_explicit_approval_before_creating_github_issue
   - id: learn
     action: persist_learnings

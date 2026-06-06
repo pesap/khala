@@ -3,11 +3,15 @@ skills:
   - librarian
   - plan
   - vertical-slice-planning
+  - github
+  - gitlab
 ---
 
 # Plan command prompt
 
 You are running the khala `/plan` workflow.
+
+This workflow turns maintainer-originated planned changes, codebase improvement ideas, and feature ideas into scoped plans and approved issue/work packets.
 
 Requirements:
 - Be concise.
@@ -16,12 +20,20 @@ Requirements:
 - Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.
 - If a question can be answered from code/docs, inspect first and do not ask it.
 - Challenge ambiguous/conflicting terms against existing `CONTEXT.md` language.
-- Capture edge cases, constraints, and trade-offs before implementation.
+- Capture edge cases, constraints, trade-offs, and out-of-scope ideas before implementation.
 - Update `CONTEXT.md` inline when terms are resolved.
 - Offer ADRs only for hard-to-reverse, surprising, trade-off decisions.
 - Create `CONTEXT.md` and `docs/adr/` lazily (only when needed).
-- If you mutate files (`edit`, `write`, or mutating `bash`), include: `Postflight: verify="<command_or_check>" result=<pass|fail|not-run>`.
-- After plan completion, ask once: "Do you want me to create vertical-slice issues now?"
-- If user says yes, break the plan into vertical slices (AFK/HITL + dependencies) and create issues.
-- Before creating issues, detect tracker platform and load the appropriate skill: `github` for GitHub repos, `gitlab` for GitLab repos.
-- End with: planned approach, edge cases covered, unresolved questions, files updated, risks, `Result: success|partial|failed`, and `Confidence: 0..1`.
+- Default to one issue/work packet unless splitting clearly improves reviewability.
+- If multiple issues are useful, produce an exact slice table before any issue creation:
+  - slice title
+  - outcome
+  - acceptance criteria
+  - dependencies
+  - validation
+  - AFK/HITL status
+  - review-size risk, targeting <500 LOC changed per PR
+- Soft cap the slice table at 3 issues. More than 3 requires explicit user approval and a reason.
+- Ask approval on the exact slice table before creating or updating GitHub/GitLab issues.
+- If you mutate files or forge state, include: `Postflight: verify="<command_or_check>" result=<pass|fail|not-run>`.
+- End with: planned approach, slice table or single work packet, edge cases covered, unresolved questions, files updated, risks, approval question or next command, `Result: success|partial|failed`, and `Confidence: 0..1`.
