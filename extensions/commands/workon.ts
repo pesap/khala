@@ -36,6 +36,7 @@ export type WorkonCommandRunner = (
 export interface WorkonBootstrapRequest {
   cwd: string;
   target: string;
+  targets?: string[];
   repo: string;
   forge: WorkonForge;
   mode: WorkonMode;
@@ -82,6 +83,7 @@ interface WorkonBootstrapEvidence {
   gaps: string[];
   capsulePath?: string;
   issue?: GithubIssueMetadata;
+  issues?: GithubIssueMetadata[];
   repo?: string;
   branchName?: string;
   worktreeCommand?: string;
@@ -394,6 +396,7 @@ function acceptanceCriteriaFromBody(body: string | undefined): string[] {
 function capsuleMarkdown(params: {
   request: WorkonBootstrapRequest;
   issue: GithubIssueMetadata;
+  issues?: GithubIssueMetadata[];
   repo: string;
   branchName: string;
   worktreeCommand: string;
@@ -411,8 +414,15 @@ function capsuleMarkdown(params: {
     ?.map((assignee) => assignee.login)
     .filter((login): login is string => Boolean(login))
     .join(", ") || "(none)";
-  const acceptance = acceptanceCriteriaFromBody(params.issue.body)
-    .map((item) => `- ${item}`)
+  const sourceIssues = params.issues?.length ? params.issues : [params.issue];
+  const sourceIssueLines = sourceIssues
+    .map((issue) => `- ${issue.url} (#${issue.number}) ${issue.title}`)
+    .join("\n");
+  const acceptance = sourceIssues
+    .flatMap((issue) =>
+      acceptanceCriteriaFromBody(issue.body).map((item) => `- #${issue.number}: ${item}`),
+    )
+    .slice(0, 12)
     .join("\n");
 
   return `# Workon session capsule
@@ -421,6 +431,8 @@ Repo: ${params.repo}
 Issue: ${params.issue.url}
 Issue number: #${params.issue.number}
 Issue title: ${params.issue.title}
+Source issues:
+${sourceIssueLines}
 State: ${params.issue.state ?? "unknown"}
 Labels: ${labels}
 Assignees: ${assignees}
@@ -447,8 +459,9 @@ ${acceptance}
 
 ## Non-goals
 
-- Do not widen scope beyond issue #${params.issue.number} without updating the issue or creating a follow-up.
+- Do not widen scope beyond the source issue(s) without updating the issue or creating a follow-up.
 - Do not merge or ship from this capsule; use /ship after implementation and review.
+- For multiple source issues, prefer multiple commits, each tied to the relevant issue where practical.
 
 ## Validation
 
@@ -495,13 +508,15 @@ function heartbeatLabel(value: string): string {
 async function buildHandoffPrompt(params: {
   cwd: string;
   issue: GithubIssueMetadata;
+  issues?: GithubIssueMetadata[];
   repo: string;
   branchName: string;
   heartbeat: string;
   modelSelection: WorkonModelSelection;
 }): Promise<string> {
   const template = await readHandoffTemplate(params.cwd);
-  return renderTemplate(template, {
+  const sourceIssues = params.issues?.length ? params.issues : [params.issue];
+  const rendered = renderTemplate(template, {
     branch_name: params.branchName,
     heartbeat_interval: heartbeatLabel(params.heartbeat),
     model_routing_mode: params.modelSelection.routingMode,
@@ -512,11 +527,16 @@ async function buildHandoffPrompt(params: {
     issue_url: params.issue.url,
     repo: params.repo,
   });
+  if (sourceIssues.length === 1) return rendered;
+  return `${rendered}\n\nMultiple source issues for this work session:\n${sourceIssues
+    .map((issue) => `- ${issue.url} (#${issue.number}) ${issue.title}`)
+    .join("\n")}\n\nInstruction: Make multiple commits, each tied to the relevant source issue where practical.`;
 }
 
 async function writeCapsule(params: {
   request: WorkonBootstrapRequest;
   issue: GithubIssueMetadata;
+  issues?: GithubIssueMetadata[];
   repo: string;
   branchName: string;
   worktreeCommand: string;
@@ -659,6 +679,9 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
       [
         `Source issue: ${evidence.repo}#${issue.number} ${issue.title}`,
         `Issue URL: ${issue.url}`,
+        ...(evidence.issues && evidence.issues.length > 1
+          ? [`Source issues: ${evidence.issues.map((sourceIssue) => `#${sourceIssue.number}`).join(", ")}`]
+          : []),
         `Suggested branch: ${evidence.branchName}`,
         `Suggested Worktrunk command: ${evidence.worktreeCommand}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
@@ -712,18 +735,35 @@ export async function prepareWorkonBootstrap(
     return formatWorkonBootstrapEvidence(evidence);
   }
 
-  const target = await resolveIssueTarget(request, runner, evidence);
-  if (!target) return formatWorkonBootstrapEvidence(evidence);
+  const rawTargets = request.targets?.length ? request.targets : [request.target];
+  const issueTargets: GithubIssueTarget[] = [];
+  for (const rawTarget of rawTargets) {
+    const target = await resolveIssueTarget({ ...request, target: rawTarget }, runner, evidence);
+    if (!target) return formatWorkonBootstrapEvidence(evidence);
+    issueTargets.push(target);
+  }
+  const uniqueRepos = [...new Set(issueTargets.map((target) => target.repo.toLowerCase()))];
+  if (uniqueRepos.length > 1) {
+    evidence.gaps.push(`Grouped GitHub workon requires one repo; found ${issueTargets.map((target) => target.repo).join(", ")}`);
+    return formatWorkonBootstrapEvidence(evidence);
+  }
 
-  const issue = await readGithubIssue(request, runner, evidence, target);
+  const issues: GithubIssueMetadata[] = [];
+  for (const target of issueTargets) {
+    const issue = await readGithubIssue(request, runner, evidence, target);
+    if (!issue) return formatWorkonBootstrapEvidence(evidence);
+    issues.push(issue);
+  }
+  const issue = issues[0];
   if (!issue) return formatWorkonBootstrapEvidence(evidence);
 
-  const repo = target.repo;
+  const repo = issueTargets[0]?.repo ?? "";
   const branchName = buildWorkonBranchName(issue);
   const worktreeCommand = `wt switch --create ${branchName} --format json`;
   const handoffPrompt = await buildHandoffPrompt({
     cwd: request.cwd,
     issue,
+    issues,
     repo,
     branchName,
     heartbeat: request.heartbeat,
@@ -732,6 +772,7 @@ export async function prepareWorkonBootstrap(
   const initialCapsule = await writeCapsule({
     request,
     issue,
+    issues,
     repo,
     branchName,
     worktreeCommand,
@@ -747,6 +788,7 @@ export async function prepareWorkonBootstrap(
   const capsule = await writeCapsule({
     request,
     issue,
+    issues,
     repo,
     branchName,
     worktreeCommand,
@@ -758,6 +800,7 @@ export async function prepareWorkonBootstrap(
   });
 
   evidence.issue = issue;
+  evidence.issues = issues;
   evidence.repo = repo;
   evidence.branchName = branchName;
   evidence.worktreeCommand = worktreeCommand;

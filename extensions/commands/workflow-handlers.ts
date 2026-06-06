@@ -681,23 +681,19 @@ export function createWorkflowCommandHandlers(params: {
         notify(ctx, targetRepoError, "error");
         return;
       }
-      const workonBootstrapSections: string[] = [];
-      for (const target of targets) {
-        workonBootstrapSections.push(
-          ...(await prepareWorkonBootstrap({
-            cwd: ctx.cwd,
-            target,
-            repo: parsed.repo,
-            forge: parsed.forge,
-            mode: parsed.mode,
-            capsuleRoot: path.join(homedir(), ".pi", "khala"),
-            nowIso: nowIso(),
-            launchInZellij: Boolean(process.env.ZELLIJ),
-            heartbeat: parsed.heartbeat,
-            modelSelection: parsed.modelSelection,
-          })),
-        );
-      }
+      const workonBootstrapSections = await prepareWorkonBootstrap({
+        cwd: ctx.cwd,
+        target: parsed.target,
+        targets,
+        repo: parsed.repo,
+        forge: parsed.forge,
+        mode: parsed.mode,
+        capsuleRoot: path.join(homedir(), ".pi", "khala"),
+        nowIso: nowIso(),
+        launchInZellij: Boolean(process.env.ZELLIJ),
+        heartbeat: parsed.heartbeat,
+        modelSelection: parsed.modelSelection,
+      });
 
       await runMirroredSourceWorkflow({
         ctx,

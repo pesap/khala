@@ -67,7 +67,7 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
   });
 }
 
-test("workon handler bootstraps comma-separated issue targets separately", async () => {
+test("workon handler groups comma-separated issue targets into one bootstrap", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
   const handlers = createHandlers(captured);
 
@@ -78,11 +78,11 @@ test("workon handler bootstraps comma-separated issue targets separately", async
   assert.ok(captured.sections?.includes("Workon targets: 73, 74"));
   assert.equal(
     captured.sections?.filter((section) => section.includes("GitHub workon bootstrap skipped for forge=gitlab")).length,
-    2,
+    1,
   );
 });
 
-test("workon handler bootstraps space-separated issue targets separately", async () => {
+test("workon handler groups space-separated issue targets into one bootstrap", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
   const handlers = createHandlers(captured);
 
@@ -93,7 +93,7 @@ test("workon handler bootstraps space-separated issue targets separately", async
   assert.ok(captured.sections?.includes("Workon targets: 73, 74"));
   assert.equal(
     captured.sections?.filter((section) => section.includes("GitHub workon bootstrap skipped for forge=gitlab")).length,
-    2,
+    1,
   );
 });
 
