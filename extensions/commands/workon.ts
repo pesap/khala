@@ -636,6 +636,8 @@ async function startWorktreeIfRequested(
     "switch",
     "--create",
     params.branchName,
+    "--format",
+    "json",
   ]);
   const startGap = resultGap(`Worktrunk start ${params.branchName}`, result);
   if (startGap) {
@@ -718,7 +720,7 @@ export async function prepareWorkonBootstrap(
 
   const repo = target.repo;
   const branchName = buildWorkonBranchName(issue);
-  const worktreeCommand = `wt switch --create ${branchName}`;
+  const worktreeCommand = `wt switch --create ${branchName} --format json`;
   const handoffPrompt = await buildHandoffPrompt({
     cwd: request.cwd,
     issue,
