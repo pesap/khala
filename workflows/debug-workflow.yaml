@@ -1,10 +1,10 @@
 name: debug-workflow
 version: 1
-objective: Diagnose root cause and validate a reliable fix
+objective: Gather evidence and prepare an issue-ready debugging brief
 version_control:
   local_tool: git
   setup_check: git status --short
-  write_operations: use normal git commands with explicit scope and validation
+  write_operations: do not mutate code during debug; create an issue draft instead
 steps:
   - id: intake
     action: restate_problem
@@ -15,10 +15,8 @@ steps:
   - id: hypothesis-analysis
     action: test_hypotheses_with_evidence
   - id: synthesis
-    action: rank_findings_and_select_fix
-  - id: apply
-    action: implement_fix_when_requested
-  - id: validate
-    action: run_targeted_checks
+    action: rank_findings_and_select_root_cause_or_candidate
+  - id: issue-brief
+    action: draft_issue_title_body_acceptance_criteria_and_validation_plan
   - id: learn
     action: persist_learnings

@@ -68,7 +68,7 @@ flowchart LR
 
 | Command | Purpose |
 |---|---|
-| `/debug <problem> [--fix]` | Investigate a failure and optionally apply the smallest safe fix. |
+| `/debug <problem>` | Investigate a failure, gather evidence, and draft an issue-ready bug report. |
 | `/feature <request> [--ship]` | Deliver a scoped feature with tests and docs planning. |
 | `/review [scope] [--extra "focus"]` | Review changes by scope: uncommitted, branch, commit, PR, folder, file, or paths. |
 | `/git-review` | Run git-history diagnostics before reading code. |

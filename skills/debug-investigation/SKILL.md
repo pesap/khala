@@ -34,8 +34,9 @@ description: Diagnose bugs from first principles by reproducing signals, ranking
 6. Propose durable fix direction.
    - Prefer smallest root-cause fix over symptom masking.
    - Identify regression test(s) that prove the fix.
+   - When invoked by `/debug`, stop at an issue-ready brief instead of applying code changes.
 7. Validate and communicate confidence.
-   - Run targeted validation for touched scope.
+   - Run targeted validation for the investigated scope.
    - Report residual risk and what would increase confidence.
 
 ## Common debugging traps
@@ -49,5 +50,6 @@ description: Diagnose bugs from first principles by reproducing signals, ranking
 - Problem statement and reproduction status
 - Ranked hypotheses and evidence trail
 - Confirmed root cause (or best current candidate if unresolved)
+- Issue-ready title/body draft with acceptance criteria
 - Proposed fix direction + regression test plan
 - Validation commands/results and confidence level

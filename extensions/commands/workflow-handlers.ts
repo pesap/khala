@@ -92,7 +92,7 @@ export function createWorkflowCommandHandlers(params: {
       type: NotifyType,
     ) => void,
   ) => void;
-  parseDebugArgs: (args: string) => { problem: string; fix: boolean };
+  parseDebugArgs: (args: string) => { problem: string };
   parseFeatureArgs: (args: string) => { request: string; ship: boolean };
   parseReviewArgs: (
     args: string,
@@ -423,18 +423,28 @@ export function createWorkflowCommandHandlers(params: {
   return {
     debug: async (args, ctx) => {
       const parsed = parseDebugArgs(args ?? "");
-      await runToggleWorkflow({
+      await runRequiredSourceWorkflow({
         ctx,
         type: "debug",
+        source: "khala-debug-command",
         value: parsed.problem,
-        enabled: parsed.fix,
-        usage: "Usage: /debug <problem> [--fix]",
-        valueLabel: "User problem",
-        enabledLabel: "Apply fix",
-        instruction:
-          "Instruction: Investigate hypotheses rigorously and converge on the highest-confidence root cause before applying changes.",
-        entryKey: "problem",
-        flagKey: "fix",
+        usage: "Usage: /debug <problem>",
+        sections: (problem) =>
+          withFooter([
+            `User problem: ${problem}`,
+            "Debug outcome: issue-ready evidence brief",
+            "Apply fix: no",
+            "",
+            "Instruction: Investigate hypotheses rigorously, converge on the highest-confidence root cause or candidate, and prepare evidence suitable for a GitHub issue. Do not apply code changes.",
+          ]),
+        flags: () => ({ fix: false, createIssueBrief: true }),
+        entry: (problem) => ({
+          problem,
+          fix: false,
+          createIssueBrief: true,
+        }),
+        startedMessage: () =>
+          "Started debug workflow (issue-ready evidence brief; fix=off).",
       });
     },
 

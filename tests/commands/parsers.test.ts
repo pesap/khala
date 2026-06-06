@@ -5,6 +5,7 @@ import {
   buildReviewTarget,
   buildSkillTemplate,
   chooseAvailableSkillName,
+  parseDebugArgs,
   parseInboxArgs,
   parseReviewArgs,
   parseWorkonArgs,
@@ -49,6 +50,12 @@ test("builds PR review instructions with pi-review checkout safeguards", () => {
   assert.match(target.instruction, /Require GitHub CLI/);
   assert.match(target.instruction, /no staged or unstaged tracked-file changes/);
   assert.match(target.instruction, /compute the merge base/);
+});
+
+test("parses debug input as an issue-evidence brief and strips legacy fix flag", () => {
+  assert.deepEqual(parseDebugArgs("handoff heartbeat is ignored --fix"), {
+    problem: "handoff heartbeat is ignored",
+  });
 });
 
 test("parses inbox flags with safe defaults", () => {
