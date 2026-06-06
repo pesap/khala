@@ -44,6 +44,22 @@ interface ScopedTarget {
 }
 type ParsedScopedTarget = Exclude<ReviewArgsResult, { error: string }>;
 
+function githubIssueRepoFromUrl(target: string): string | null {
+  const match = target.match(/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/[1-9]\d*/i);
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
+function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
+  const urlRepos = [...new Set(targets.map(githubIssueRepoFromUrl).filter((value): value is string => Boolean(value)))];
+  if (urlRepos.length > 1) {
+    return `All /workon issue URLs must be from the same repo; found ${urlRepos.join(", ")}.`;
+  }
+  if (repo && urlRepos.length === 1 && urlRepos[0].toLowerCase() !== repo.toLowerCase()) {
+    return `All /workon targets must match --repo ${repo}; found issue URL for ${urlRepos[0]}.`;
+  }
+  return null;
+}
+
 interface RunWorkflowCommandParams {
   ctx: ExtensionCommandContext;
   type: WorkflowType;
@@ -119,6 +135,7 @@ export function createWorkflowCommandHandlers(params: {
   };
   parseWorkonArgs: (args: string) => {
     target: string;
+    targets?: string[];
     repo: string;
     forge: WorkonForge;
     mode: WorkonMode;
@@ -658,18 +675,29 @@ export function createWorkflowCommandHandlers(params: {
         return;
       }
 
-      const workonBootstrapSections = await prepareWorkonBootstrap({
-        cwd: ctx.cwd,
-        target: parsed.target,
-        repo: parsed.repo,
-        forge: parsed.forge,
-        mode: parsed.mode,
-        capsuleRoot: path.join(homedir(), ".pi", "khala"),
-        nowIso: nowIso(),
-        launchInZellij: Boolean(process.env.ZELLIJ),
-        heartbeat: parsed.heartbeat,
-        modelSelection: parsed.modelSelection,
-      });
+      const targets = parsed.targets?.length ? parsed.targets : [parsed.target];
+      const targetRepoError = validateWorkonTargetRepos(targets, parsed.repo);
+      if (targetRepoError) {
+        notify(ctx, targetRepoError, "error");
+        return;
+      }
+      const workonBootstrapSections: string[] = [];
+      for (const target of targets) {
+        workonBootstrapSections.push(
+          ...(await prepareWorkonBootstrap({
+            cwd: ctx.cwd,
+            target,
+            repo: parsed.repo,
+            forge: parsed.forge,
+            mode: parsed.mode,
+            capsuleRoot: path.join(homedir(), ".pi", "khala"),
+            nowIso: nowIso(),
+            launchInZellij: Boolean(process.env.ZELLIJ),
+            heartbeat: parsed.heartbeat,
+            modelSelection: parsed.modelSelection,
+          })),
+        );
+      }
 
       await runMirroredSourceWorkflow({
         ctx,
@@ -685,10 +713,12 @@ export function createWorkflowCommandHandlers(params: {
           model: parsed.modelSelection.exactModel || null,
           modelRoutingMode: parsed.modelSelection.routingMode,
           modelRoutingReason: parsed.modelSelection.routingReason,
+          targets,
           extraInstruction: parsed.extraInstruction || null,
         },
         sections: [
           `Workon target: ${parsed.target}`,
+          targets.length > 1 ? `Workon targets: ${targets.join(", ")}` : "",
           `Repo override: ${parsed.repo || "(current repo / infer from target)"}`,
           `Forge preference: ${parsed.forge}`,
           `Mode: ${parsed.mode}`,
