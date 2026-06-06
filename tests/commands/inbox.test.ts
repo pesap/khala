@@ -6,6 +6,8 @@ import test from "node:test";
 
 import {
   collectInboxEvidence,
+  collectInboxSnapshot,
+  renderInboxSnapshotJson,
   type InboxCommandRunner,
 } from "../../extensions/commands/inbox.ts";
 
@@ -569,6 +571,78 @@ test("session focus reports blocked capsules with deleted worktrees", async () =
   } finally {
     await rm(capsuleRoot, { recursive: true, force: true });
   }
+});
+
+test("collects typed deterministic inbox snapshot before rendering", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
+  const { runner } = fakeCommandRunner({
+    "gh auth status": "",
+    "gh repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission":
+      JSON.stringify({
+        nameWithOwner: "pesap/agents",
+        url: "https://github.com/pesap/agents",
+        updatedAt: "2026-06-05T00:00:00Z",
+        isPrivate: false,
+        viewerPermission: "ADMIN",
+      }),
+    "gh search prs --review-requested=@me --state=open --limit 5 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 2,
+          title: "older review",
+          url: "https://github.com/pesap/agents/pull/2",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-01T00:00:00Z",
+        },
+        {
+          number: 1,
+          title: "newer review",
+          url: "https://github.com/pesap/agents/pull/1",
+          repository: { nameWithOwner: "pesap/agents" },
+          updatedAt: "2026-06-02T00:00:00Z",
+        },
+      ]),
+  });
+
+  const snapshot = await collectInboxSnapshot(
+    {
+      cwd: "/repo/main",
+      limit: 5,
+      repo: "pesap/agents",
+      user: "",
+      forge: "github",
+      focus: "reviews",
+      capsuleRoot,
+      nowIso: "2026-06-05T00:00:00.000Z",
+    },
+    runner,
+  );
+
+  assert.deepEqual(snapshot.scope, {
+    cwd: "/repo/main",
+    repo: "pesap/agents",
+    user: undefined,
+    forge: "github",
+    focus: "reviews",
+  });
+  assert.equal(snapshot.generatedAt, "2026-06-05T00:00:00.000Z");
+  assert.equal(snapshot.status, "partial");
+  assert.deepEqual(
+    snapshot.collectors.map((collector) => ({
+      name: collector.name,
+      status: collector.status,
+    })),
+    [
+      { name: "github", status: "ok" },
+      { name: "local", status: "skipped" },
+    ],
+  );
+  assert.deepEqual(
+    snapshot.items.map((item) => item.title),
+    ["2: older review", "1: newer review"],
+  );
+  assert.equal(JSON.parse(renderInboxSnapshotJson(snapshot)).items.length, 2);
 });
 
 test("non-git cwd skips local collection while global GitHub searches still run", async (t) => {
