@@ -110,6 +110,7 @@ test("parses workon target and flags", () => {
 
   assert.deepEqual(parseWorkonArgs("61 --repo pesap/agents --forge github"), {
     target: "61",
+    targets: ["61"],
     repo: "pesap/agents",
     forge: "github",
     mode: "prepare",
@@ -124,6 +125,7 @@ test("parses workon target and flags", () => {
     ),
     {
       target: "collect GitHub maintainer queue",
+      targets: ["collect GitHub maintainer queue"],
       repo: "",
       forge: "gitlab",
       mode: "start",
@@ -135,6 +137,7 @@ test("parses workon target and flags", () => {
 
   assert.deepEqual(parseWorkonArgs("topic --mode invalid --forge unknown"), {
     target: "topic",
+    targets: ["topic"],
     repo: "",
     forge: "auto",
     mode: "prepare",
@@ -145,6 +148,7 @@ test("parses workon target and flags", () => {
 
   assert.deepEqual(parseWorkonArgs("73 --mode start --heartbeat 0.25"), {
     target: "73",
+    targets: ["73"],
     repo: "",
     forge: "auto",
     mode: "start",
@@ -155,6 +159,7 @@ test("parses workon target and flags", () => {
 
   assert.deepEqual(parseWorkonArgs("73 --mode start --interval 0.01"), {
     target: "73",
+    targets: ["73"],
     repo: "",
     forge: "auto",
     mode: "start",
@@ -165,6 +170,7 @@ test("parses workon target and flags", () => {
 
   assert.deepEqual(parseWorkonArgs("73 --heartbeat nope"), {
     target: "73",
+    targets: ["73"],
     repo: "",
     forge: "auto",
     mode: "prepare",
@@ -175,6 +181,7 @@ test("parses workon target and flags", () => {
 
   assert.deepEqual(parseWorkonArgs("73 --model anthropic/claude-sonnet-4"), {
     target: "73",
+    targets: ["73"],
     repo: "",
     forge: "auto",
     mode: "prepare",
@@ -185,6 +192,28 @@ test("parses workon target and flags", () => {
       routingReason: "explicit --model override",
     },
     extraInstruction: "73",
+  });
+
+  assert.deepEqual(parseWorkonArgs("73, 74 --repo pesap/agents"), {
+    target: "73, 74",
+    targets: ["73", "74"],
+    repo: "pesap/agents",
+    forge: "auto",
+    mode: "prepare",
+    heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
+    extraInstruction: "73, 74",
+  });
+
+  assert.deepEqual(parseWorkonArgs("73 74 --repo pesap/agents"), {
+    target: "73 74",
+    targets: ["73", "74"],
+    repo: "pesap/agents",
+    forge: "auto",
+    mode: "prepare",
+    heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
+    extraInstruction: "73 74",
   });
 });
 

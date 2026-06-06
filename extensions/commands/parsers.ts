@@ -221,8 +221,18 @@ export function parseInboxArgs(args: string): {
   };
 }
 
+function parseWorkonIssueTargets(target: string): string[] {
+  const normalized = normalizeWhitespace(target.replace(/,/g, " "));
+  if (!normalized) return [];
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  return parts.length > 1 && parts.every((part) => /^(?:[1-9]\d*|https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/[1-9]\d*)$/i.test(part))
+    ? parts
+    : [];
+}
+
 export function parseWorkonArgs(args: string): {
   target: string;
+  targets: string[];
   repo: string;
   forge: InboxForge;
   mode: WorkonMode;
@@ -271,8 +281,11 @@ export function parseWorkonArgs(args: string): {
         routingReason: "backward-compatible default Pi model selection",
       };
 
+  const targets = parseWorkonIssueTargets(rest);
+
   return {
     target: rest,
+    targets: targets.length > 0 ? targets : rest ? [rest] : [],
     repo,
     forge,
     mode,

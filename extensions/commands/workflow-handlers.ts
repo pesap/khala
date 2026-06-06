@@ -119,6 +119,7 @@ export function createWorkflowCommandHandlers(params: {
   };
   parseWorkonArgs: (args: string) => {
     target: string;
+    targets?: string[];
     repo: string;
     forge: WorkonForge;
     mode: WorkonMode;
@@ -658,18 +659,24 @@ export function createWorkflowCommandHandlers(params: {
         return;
       }
 
-      const workonBootstrapSections = await prepareWorkonBootstrap({
-        cwd: ctx.cwd,
-        target: parsed.target,
-        repo: parsed.repo,
-        forge: parsed.forge,
-        mode: parsed.mode,
-        capsuleRoot: path.join(homedir(), ".pi", "khala"),
-        nowIso: nowIso(),
-        launchInZellij: Boolean(process.env.ZELLIJ),
-        heartbeat: parsed.heartbeat,
-        modelSelection: parsed.modelSelection,
-      });
+      const targets = parsed.targets?.length ? parsed.targets : [parsed.target];
+      const workonBootstrapSections: string[] = [];
+      for (const target of targets) {
+        workonBootstrapSections.push(
+          ...(await prepareWorkonBootstrap({
+            cwd: ctx.cwd,
+            target,
+            repo: parsed.repo,
+            forge: parsed.forge,
+            mode: parsed.mode,
+            capsuleRoot: path.join(homedir(), ".pi", "khala"),
+            nowIso: nowIso(),
+            launchInZellij: Boolean(process.env.ZELLIJ),
+            heartbeat: parsed.heartbeat,
+            modelSelection: parsed.modelSelection,
+          })),
+        );
+      }
 
       await runMirroredSourceWorkflow({
         ctx,
@@ -685,10 +692,12 @@ export function createWorkflowCommandHandlers(params: {
           model: parsed.modelSelection.exactModel || null,
           modelRoutingMode: parsed.modelSelection.routingMode,
           modelRoutingReason: parsed.modelSelection.routingReason,
+          targets,
           extraInstruction: parsed.extraInstruction || null,
         },
         sections: [
           `Workon target: ${parsed.target}`,
+          targets.length > 1 ? `Workon targets: ${targets.join(", ")}` : "",
           `Repo override: ${parsed.repo || "(current repo / infer from target)"}`,
           `Forge preference: ${parsed.forge}`,
           `Mode: ${parsed.mode}`,
