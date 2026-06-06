@@ -1,0 +1,42 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_answered",
+              "isResolved": false,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 3001,
+                    "author": {"login": "pesap"},
+                    "body": "Please make this configurable.",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r3001",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:10:00Z",
+                    "updatedAt": "2026-06-06T01:10:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": null
+                  },
+                  {
+                    "databaseId": 3002,
+                    "author": {"login": "pesap"},
+                    "body": "Thanks — addressed in the current commit.",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r3002",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:11:00Z",
+                    "updatedAt": "2026-06-06T01:11:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": {"databaseId": 3001}
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
