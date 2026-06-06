@@ -579,8 +579,98 @@ test("refuses issue targets that are not autonomous-ready", async () => {
 
     assert.equal(calls.some((call) => call.startsWith("wt ")), false);
     assert.match(rendered, /Autonomous readiness: not-ready/);
-    assert.match(rendered, /Action items to make this issue \/workon-ready/);
-    assert.match(rendered, /Suggested next command: \/triage https:\/\/github.com\/pesap\/agents\/issues\/81/);
+    assert.match(rendered, /Action items to make the source issue\(s\) \/workon-ready/);
+    assert.match(rendered, /Suggested next command\(s\):/);
+    assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/81/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("attributes grouped readiness failures to the blocking source issue", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-grouped-readiness-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 107 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        107,
+        "fix: Ready first issue",
+      ),
+      "issue view 109 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": incompleteIssueViewOutput(
+        109,
+        "fix: Missing non-goals",
+        "## Acceptance criteria\n\n- Add coverage for the behavior.\n\n## Reproduction\n\n- Reproduce the bug.\n\n## Validation\n\n- Run focused tests.",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "107",
+        targets: ["107", "109"],
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /Source issues: #107, #109/);
+    assert.match(rendered, /Autonomous readiness: not ready for https:\/\/github.com\/pesap\/agents\/issues\/109/);
+    assert.doesNotMatch(rendered, /Autonomous readiness: not ready for https:\/\/github.com\/pesap\/agents\/issues\/107/);
+    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/109\n  1\. Add non-goals or out-of-scope boundaries/);
+    assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/109/);
+    assert.doesNotMatch(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/107/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("groups grouped readiness failures by each blocking source issue", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-multi-readiness-test-"));
+  try {
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 107 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": incompleteIssueViewOutput(
+        107,
+        "fix: Missing acceptance criteria",
+        "## Reproduction\n\n- Reproduce the bug.\n\n## Validation\n\n- Run focused tests.\n\n## Non-goals\n\n- Keep scope narrow.",
+      ),
+      "issue view 110 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": incompleteIssueViewOutput(
+        110,
+        "fix: Missing non-goals",
+        "## Acceptance criteria\n\n- Add coverage for the behavior.\n\n## Reproduction\n\n- Reproduce the bug.\n\n## Validation\n\n- Run focused tests.",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "107",
+        targets: ["107", "110"],
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Autonomous readiness: not ready for 2 source issues/);
+    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/107\n  1\. Add narrow, testable acceptance criteria/);
+    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/110\n  1\. Add non-goals or out-of-scope boundaries/);
+    assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/107/);
+    assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/110/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

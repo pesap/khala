@@ -93,6 +93,10 @@ interface WorkonBootstrapEvidence {
   handoffPrompt?: string;
   modelSelection?: WorkonModelSelection;
   readinessActionItems?: string[];
+  readinessActionItemsByIssue?: Array<{
+    issue: GithubIssueMetadata;
+    actionItems: string[];
+  }>;
 }
 
 interface ZellijHandoffResult {
@@ -338,12 +342,23 @@ function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {
   return actionItems;
 }
 
-function formatReadinessActionItems(issue: GithubIssueMetadata, actionItems: string[]): string {
+function formatReadinessActionItems(
+  readinessActionItemsByIssue: Array<{ issue: GithubIssueMetadata; actionItems: string[] }>,
+): string {
+  const blockedIssues = readinessActionItemsByIssue.filter(({ actionItems }) => actionItems.length > 0);
+  const singleBlockedIssue = blockedIssues.length === 1 ? blockedIssues[0]?.issue : undefined;
+
   return [
-    `Autonomous readiness: not ready for ${issue.url}`,
-    "Action items to make this issue /workon-ready:",
-    ...actionItems.map((item, index) => `${index + 1}. ${item}`),
-    `Suggested next command: /triage ${issue.url}`,
+    singleBlockedIssue
+      ? `Autonomous readiness: not ready for ${singleBlockedIssue.url}`
+      : `Autonomous readiness: not ready for ${blockedIssues.length} source issues`,
+    "Action items to make the source issue(s) /workon-ready:",
+    ...blockedIssues.flatMap(({ issue, actionItems }) => [
+      `- ${issue.url}`,
+      ...actionItems.map((item, index) => `  ${index + 1}. ${item}`),
+    ]),
+    "Suggested next command(s):",
+    ...blockedIssues.map(({ issue }) => `- /triage ${issue.url}`),
   ].join("\n");
 }
 
@@ -728,13 +743,18 @@ export async function prepareWorkonBootstrap(
   if (!issue) return formatWorkonBootstrapEvidence(evidence);
 
   const repo = issueTargets[0]?.repo ?? "";
-  const readinessActionItems = issues.flatMap((sourceIssue) => evaluateWorkonReadiness(sourceIssue));
+  const readinessActionItemsByIssue = issues.map((sourceIssue) => ({
+    issue: sourceIssue,
+    actionItems: evaluateWorkonReadiness(sourceIssue),
+  }));
+  const readinessActionItems = readinessActionItemsByIssue.flatMap(({ actionItems }) => actionItems);
   if (readinessActionItems.length > 0) {
     evidence.issue = issue;
     evidence.issues = issues;
     evidence.repo = repo;
     evidence.readinessActionItems = readinessActionItems;
-    evidence.gaps.push(formatReadinessActionItems(issue, readinessActionItems));
+    evidence.readinessActionItemsByIssue = readinessActionItemsByIssue;
+    evidence.gaps.push(formatReadinessActionItems(readinessActionItemsByIssue));
     return formatWorkonBootstrapEvidence(evidence);
   }
 
