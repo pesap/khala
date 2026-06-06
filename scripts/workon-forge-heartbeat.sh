@@ -3,11 +3,12 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-forge-heartbeat.sh --repo OWNER/REPO --branch BRANCH --interval HOURS [--author LOGIN|@me] [--once]
+Usage: workon-forge-heartbeat.sh --repo OWNER/REPO --branch BRANCH --interval HOURS [--author LOGIN|@me] [--notify-pane PANE_ID] [--once]
 
 Poll the forge CLI for feedback from the selected author on the open PR for a
 branch. Numeric intervals are decimal hours: 0.25 means 15 minutes, and 2.0
-means 2 hours.
+means 2 hours. When --notify-pane is set, new feedback is pasted into that
+Zellij pane so the launched Pi session can react while it is still running.
 USAGE
 }
 
@@ -15,6 +16,8 @@ repo=""
 branch=""
 interval="1.0"
 author="@me"
+notify_pane=""
+last_notified_comments=""
 once=false
 
 while (($#)); do
@@ -33,6 +36,10 @@ while (($#)); do
       ;;
     --author)
       author="${2:?--author requires LOGIN or @me}"
+      shift 2
+      ;;
+    --notify-pane)
+      notify_pane="${2:?--notify-pane requires PANE_ID}"
       shift 2
       ;;
     --once)
@@ -78,6 +85,28 @@ json_string() {
   jq -Rn --arg value "$1" '$value'
 }
 
+notify_pi_pane() {
+  local pr_url="${1:?PR URL required}"
+  local comments="${2:?comments required}"
+  local message=""
+
+  if [[ -z "${notify_pane}" || "${comments}" == "${last_notified_comments}" ]]; then
+    return 0
+  fi
+
+  message="Forge feedback heartbeat found feedback from ${author} on ${pr_url}.
+
+Review it before continuing. Prefer in-thread replies for review comments. Do not merge, mark ready, close issues/PRs, label, or post broad public comments unless explicitly told.
+
+${comments}"
+  zellij action paste --pane-id "${notify_pane}" "${message}"
+  zellij action send-keys --pane-id "${notify_pane}" Enter
+  last_notified_comments="${comments}"
+  printf '{"status":"notified-pi","paneId":%s,"prUrl":%s}\n' \
+    "$(json_string "${notify_pane}")" \
+    "$(json_string "${pr_url}")"
+}
+
 print_author_comments() {
   local pr_number="${1:?pr number required}"
   local feedback_author="${2:?author required}"
@@ -103,6 +132,9 @@ print_author_comments() {
 
 require_command gh
 require_command jq
+if [[ -n "${notify_pane}" ]]; then
+  require_command zellij
+fi
 
 sleep_seconds="$(interval_seconds "${interval}")"
 if [[ "${author}" == "@me" ]]; then
@@ -127,6 +159,7 @@ while true; do
       printf 'No matching feedback comments found.\n'
     else
       printf '%s\n' "${comments}"
+      notify_pi_pane "${pr_url}" "${comments}"
     fi
   fi
 

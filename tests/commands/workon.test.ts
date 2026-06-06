@@ -47,7 +47,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
             path: worktreePath,
             tabName: "agents/feat-65-detect-local-worktrees-and-stale-sessions",
             tabId: 12,
-            heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me`,
+            heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
             piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi --name ${branch} <clean-prompt>`,
             repo,
           })}\n`,
@@ -320,6 +320,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
     assert.match(rendered, /Forge heartbeat command: zellij action new-pane/);
+    assert.match(rendered, /--notify-pane terminal_99/);
     assert.doesNotMatch(rendered, /--prompt I want to discuss and possibly work on:/);
     assert.match(rendered, /--prompt <redacted>/);
 
