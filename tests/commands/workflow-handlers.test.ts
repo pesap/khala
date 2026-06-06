@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import { createWorkflowCommandHandlers } from "../../extensions/commands/workflow-handlers.ts";
 import { parseWorkonArgs } from "../../extensions/commands/parsers.ts";
 
-function createHandlers(captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string }) {
+function createHandlers(captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; notifications?: string[] }) {
   return createWorkflowCommandHandlers({
     pi: { appendEntry: () => undefined } as never,
-    notify: () => undefined,
+    notify: (_ctx, message) => captured.notifications?.push(message),
     nowIso: () => "2026-06-05T00:00:00.000Z",
     slugify: (value) => value,
     normalizeWhitespace: (value) => value.trim().replace(/\s+/g, " "),
@@ -95,4 +95,33 @@ test("workon handler bootstraps space-separated issue targets separately", async
     captured.sections?.filter((section) => section.includes("GitHub workon bootstrap skipped for forge=gitlab")).length,
     2,
   );
+});
+
+test("workon handler fails fast when issue URLs span multiple repos", async () => {
+  const captured: { sections?: string[]; notifications?: string[] } = { notifications: [] };
+  const handlers = createHandlers(captured);
+
+  await handlers.workon(
+    "https://github.com/pesap/agents/issues/73 https://github.com/pesap/other/issues/74",
+    { cwd: process.cwd() } as never,
+  );
+
+  assert.equal(captured.sections, undefined);
+  assert.deepEqual(captured.notifications, [
+    "All /workon issue URLs must be from the same repo; found pesap/agents, pesap/other.",
+  ]);
+});
+
+test("workon handler fails fast when issue URL does not match repo override", async () => {
+  const captured: { sections?: string[]; notifications?: string[] } = { notifications: [] };
+  const handlers = createHandlers(captured);
+
+  await handlers.workon("73 https://github.com/pesap/other/issues/74 --repo pesap/agents", {
+    cwd: process.cwd(),
+  } as never);
+
+  assert.equal(captured.sections, undefined);
+  assert.deepEqual(captured.notifications, [
+    "All /workon targets must match --repo pesap/agents; found issue URL for pesap/other.",
+  ]);
 });

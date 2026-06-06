@@ -44,6 +44,22 @@ interface ScopedTarget {
 }
 type ParsedScopedTarget = Exclude<ReviewArgsResult, { error: string }>;
 
+function githubIssueRepoFromUrl(target: string): string | null {
+  const match = target.match(/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/[1-9]\d*/i);
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
+function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
+  const urlRepos = [...new Set(targets.map(githubIssueRepoFromUrl).filter((value): value is string => Boolean(value)))];
+  if (urlRepos.length > 1) {
+    return `All /workon issue URLs must be from the same repo; found ${urlRepos.join(", ")}.`;
+  }
+  if (repo && urlRepos.length === 1 && urlRepos[0].toLowerCase() !== repo.toLowerCase()) {
+    return `All /workon targets must match --repo ${repo}; found issue URL for ${urlRepos[0]}.`;
+  }
+  return null;
+}
+
 interface RunWorkflowCommandParams {
   ctx: ExtensionCommandContext;
   type: WorkflowType;
@@ -660,6 +676,11 @@ export function createWorkflowCommandHandlers(params: {
       }
 
       const targets = parsed.targets?.length ? parsed.targets : [parsed.target];
+      const targetRepoError = validateWorkonTargetRepos(targets, parsed.repo);
+      if (targetRepoError) {
+        notify(ctx, targetRepoError, "error");
+        return;
+      }
       const workonBootstrapSections: string[] = [];
       for (const target of targets) {
         workonBootstrapSections.push(
