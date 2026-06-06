@@ -15,6 +15,9 @@ PRs, MRs, labels, or comments.
 
 Requirements:
 - Be concise.
+- Default to a compact, action-first dashboard for human terminal use. Full
+  deterministic evidence is available only when the user passes `--details` or
+  `--evidence`.
 - Do not mutate local files, git branches, forge state, labels, issues, PRs, MRs,
   comments, CI runs, or sessions.
 - Prefer deterministic evidence first: use the pre-collected GitHub evidence

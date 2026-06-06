@@ -5,11 +5,14 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  collectInboxDashboard,
   collectInboxEvidence,
   collectInboxSnapshot,
+  renderInboxSnapshotCompact,
   renderInboxSnapshotJson,
   type InboxCommandRunner,
 } from "../../extensions/commands/inbox.ts";
+import { parseInboxArgs } from "../../extensions/commands/parsers.ts";
 
 async function emptyCapsuleRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "khala-inbox-empty-test-"));
@@ -721,6 +724,111 @@ test("collects typed deterministic inbox snapshot before rendering", async (t) =
     ["2: older review", "1: newer review"],
   );
   assert.equal(JSON.parse(renderInboxSnapshotJson(snapshot)).items.length, 2);
+});
+
+test("renders compact actionable dashboard from typed snapshot", async () => {
+  const rendered = renderInboxSnapshotCompact({
+    generatedAt: "2026-06-06T00:12:00.000Z",
+    scope: {
+      cwd: "/repo/main",
+      repo: "pesap/agents",
+      forge: "github",
+      focus: "all",
+    },
+    status: "partial",
+    collectors: [
+      { name: "github", status: "ok", gaps: [], commands: ["gh search prs"] },
+      {
+        name: "local",
+        status: "skipped",
+        gaps: ["Local collector skipped for focus=reviews"],
+        commands: [],
+      },
+    ],
+    items: [
+      {
+        bucket: "Needs you now",
+        repo: "NatLabRockies/R2X",
+        source: "review-requested-pr",
+        title: "256: Review request",
+        url: "https://github.com/NatLabRockies/R2X/pull/256",
+        updatedAt: "2026-06-05T00:00:00Z",
+        suggestedCommand: "/review pr https://github.com/NatLabRockies/R2X/pull/256",
+        evidence: "gh search prs --review-requested=@me --state=open",
+      },
+      {
+        bucket: "My work is broken",
+        repo: "NatLabRockies/arco",
+        source: "authored-pr-ci-pending",
+        title: "313: Check CI",
+        url: "https://github.com/NatLabRockies/arco/pull/313",
+        suggestedCommand: "/inbox --repo NatLabRockies/arco --focus ci",
+        evidence: "gh search prs --author=@me --state=open --checks=pending",
+      },
+    ],
+  });
+
+  assert.match(rendered, /^Inbox · 2026-06-06 00:12 · partial/);
+  assert.match(rendered, /github ok · local skipped/);
+  assert.match(rendered, /Do next\n1\. NatLabRockies\/R2X #256: Review request/);
+  assert.match(rendered, /2\. NatLabRockies\/arco #313: Check CI/);
+  assert.match(rendered, /Counts: reviews 1, broken CI 1, blocked sessions 0, issues 0, local 0/);
+  assert.match(rendered, /Gaps: Local collector skipped for focus=reviews/);
+  assert.doesNotMatch(rendered, /Read-only commands executed/);
+});
+
+test("compact dashboard handles empty partial states", async () => {
+  const rendered = renderInboxSnapshotCompact({
+    generatedAt: "2026-06-06T00:12:00.000Z",
+    scope: { cwd: "/tmp", forge: "github", focus: "all" },
+    status: "partial",
+    collectors: [
+      { name: "github", status: "failed", gaps: ["gh auth status: failed"], commands: [] },
+      { name: "local", status: "skipped", gaps: ["Local collector skipped"], commands: [] },
+    ],
+    items: [],
+  });
+
+  assert.match(rendered, /Do next\n- No ranked actions from collected evidence\./);
+  assert.match(rendered, /Gaps: gh auth status: failed; Local collector skipped/);
+});
+
+test("inbox details flags preserve explicit evidence mode", () => {
+  assert.equal(parseInboxArgs("--details").details, true);
+  assert.equal(parseInboxArgs("--evidence").details, true);
+  assert.equal(parseInboxArgs("--focus reviews").details, false);
+});
+
+test("collects compact dashboard by default without command dumps", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
+  const { runner } = fakeCommandRunner({
+    "gh auth status": "",
+    "gh repo view pesap/agents --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission":
+      JSON.stringify({ nameWithOwner: "pesap/agents", isPrivate: false }),
+    "gh search prs --review-requested=@me --state=open --limit 1 --repo pesap/agents --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "git rev-parse --is-inside-work-tree": "true\n",
+    "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+  });
+
+  const sections = await collectInboxDashboard(
+    {
+      cwd: "/repo/main",
+      limit: 1,
+      repo: "pesap/agents",
+      user: "",
+      forge: "github",
+      focus: "reviews",
+      capsuleRoot,
+      nowIso: "2026-06-06T00:12:00.000Z",
+    },
+    runner,
+  );
+  const rendered = sections.join("\n");
+
+  assert.match(rendered, /^Inbox · 2026-06-06 00:12 · partial/);
+  assert.doesNotMatch(rendered, /Read-only commands executed/);
 });
 
 test("non-git cwd skips local collection while global GitHub searches still run", async (t) => {

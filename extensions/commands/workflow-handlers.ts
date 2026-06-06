@@ -6,6 +6,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
+  collectInboxDashboard,
   collectInboxEvidence,
   type InboxFocus,
   type InboxForge,
@@ -141,6 +142,7 @@ export function createWorkflowCommandHandlers(params: {
     forge: InboxForge;
     focus: InboxFocus;
     scope: InboxScope;
+    details: boolean;
     extraInstruction: string;
   };
   parseWorkonArgs: (args: string) => {
@@ -578,7 +580,7 @@ export function createWorkflowCommandHandlers(params: {
 
     inbox: async (args, ctx) => {
       const parsed = parseInboxArgs(args ?? "");
-      const inboxEvidenceSections = await collectInboxEvidence({
+      const inboxRequest = {
         cwd: ctx.cwd,
         limit: parsed.limit,
         repo: parsed.repo,
@@ -586,7 +588,10 @@ export function createWorkflowCommandHandlers(params: {
         forge: parsed.forge,
         focus: parsed.focus,
         scope: parsed.scope,
-      });
+      };
+      const inboxEvidenceSections = parsed.details
+        ? await collectInboxEvidence(inboxRequest)
+        : await collectInboxDashboard(inboxRequest);
 
       await runMirroredSourceWorkflow({
         ctx,
@@ -602,6 +607,7 @@ export function createWorkflowCommandHandlers(params: {
           forge: parsed.forge,
           focus: parsed.focus,
           scope: parsed.scope,
+          details: parsed.details,
           extraInstruction: parsed.extraInstruction || null,
         },
         sections: [
@@ -618,7 +624,9 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Gather bounded evidence from git state plus gh/glab when available; gracefully degrade when a forge CLI is missing or unauthenticated.",
           "Instruction: Group findings into Needs you now, My work is broken, Agent/session needs attention, New work needs shaping, Ready for agents, and Low-risk background.",
           "Instruction: Rank by age, blocker status, review-request state, CI failure, stale local work, and explicit mentions.",
-          "Instruction: Treat the deterministic evidence below as already collected read-only input; run more read-only commands only when required to fill a material evidence gap.",
+          parsed.details
+            ? "Instruction: Treat the detailed deterministic evidence below as already collected read-only input; run more read-only commands only when required to fill a material evidence gap."
+            : "Instruction: Treat the compact dashboard below as the default human-facing output; keep the final answer compact and action-first unless the user asks for details.",
           "Instruction: Avoid model-led re-bootstrap, repeated evidence collection, shell-quoting repair loops, and full session artifact reads when summaries or bounded excerpts suffice.",
           "Instruction: End with the top 3 next commands a maintainer should run.",
           ...inboxEvidenceSections,
