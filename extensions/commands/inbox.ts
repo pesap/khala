@@ -87,7 +87,7 @@ interface GithubSearchItem {
   labels?: Array<{ name?: string }>;
 }
 
-interface InboxItem {
+export interface InboxItem {
   bucket: string;
   repo: string;
   source: string;
@@ -96,6 +96,31 @@ interface InboxItem {
   updatedAt?: string;
   suggestedCommand: string;
   evidence: string;
+}
+
+export type InboxCollectorName = "github" | "gitlab" | "local" | "sessions";
+export type InboxCollectorStatus = "ok" | "partial" | "skipped" | "failed";
+export type InboxSnapshotStatus = "success" | "partial" | "failed";
+
+export interface InboxCollectorSnapshot {
+  name: InboxCollectorName;
+  status: InboxCollectorStatus;
+  gaps: string[];
+  commands: string[];
+}
+
+export interface InboxSnapshot {
+  generatedAt: string;
+  scope: {
+    cwd: string;
+    repo?: string;
+    user?: string;
+    forge: InboxForge;
+    focus: InboxFocus;
+  };
+  status: InboxSnapshotStatus;
+  collectors: InboxCollectorSnapshot[];
+  items: InboxItem[];
 }
 
 const INBOX_BUCKETS = [
@@ -314,8 +339,24 @@ function repoSearchArgs(repo: string): string[] {
   return repo ? ["--repo", repo] : [];
 }
 
-function searchJsonFields(): string[] {
-  return ["--json", "number,title,url,repository,updatedAt,isDraft,labels"];
+const SEARCH_JSON_FIELDS = [
+  "number",
+  "title",
+  "url",
+  "repository",
+  "updatedAt",
+] as const;
+
+function searchJsonFields(extraFields: readonly string[] = []): string[] {
+  return ["--json", [...SEARCH_JSON_FIELDS, ...extraFields, "labels"].join(",")];
+}
+
+function prSearchJsonFields(): string[] {
+  return searchJsonFields(["isDraft"]);
+}
+
+function issueSearchJsonFields(): string[] {
+  return searchJsonFields();
 }
 
 function repositoryJsonFields(): string[] {
@@ -549,6 +590,17 @@ async function collectLocalEvidence(
 
   let repo: string | null = request.repo || null;
   if (effectiveScope === "current") {
+    const gitRoot = await runGit(runner, request.cwd, evidence.commands, [
+      "rev-parse",
+      "--is-inside-work-tree",
+    ]);
+    if (!gitRoot.ok || gitRoot.stdout.trim() !== "true") {
+      evidence.gaps.push(
+        `Local git collector skipped: ${request.cwd} is not inside a git repository`,
+      );
+      return evidence;
+    }
+
     const remote = await runGit(runner, request.cwd, evidence.commands, [
       "remote",
       "get-url",
@@ -860,7 +912,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...prSearchJsonFields(),
       ],
       {
         bucket: "Needs you now",
@@ -885,7 +937,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...prSearchJsonFields(),
       ],
       {
         bucket: "My work is broken",
@@ -908,7 +960,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...prSearchJsonFields(),
       ],
       {
         bucket: "My work is broken",
@@ -932,7 +984,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...issueSearchJsonFields(),
       ],
       {
         bucket: "New work needs shaping",
@@ -954,7 +1006,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...issueSearchJsonFields(),
       ],
       {
         bucket: "New work needs shaping",
@@ -1045,6 +1097,75 @@ function requestForScope(
     return { ...request, user: "@me" };
   }
   return request;
+}
+
+function collectorStatus(
+  gaps: string[],
+  commands: string[],
+): InboxCollectorStatus {
+  if (gaps.some((gap) => gap.includes(" skipped "))) return "skipped";
+  if (commands.length === 0 && gaps.length > 0) return "failed";
+  if (gaps.length > 0) return "partial";
+  return "ok";
+}
+
+function snapshotStatus(
+  collectors: InboxCollectorSnapshot[],
+): InboxSnapshotStatus {
+  if (collectors.every((collector) => collector.status === "failed")) {
+    return "failed";
+  }
+  if (collectors.some((collector) => collector.status !== "ok")) {
+    return "partial";
+  }
+  return "success";
+}
+
+export async function collectInboxSnapshot(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner = createExecFileRunner(),
+): Promise<InboxSnapshot> {
+  const effectiveScope = await resolveInboxScope(request, runner);
+  const scopedRequest = requestForScope(request, effectiveScope);
+  const [githubEvidence, localEvidence] = await Promise.all([
+    collectGithubEvidence(scopedRequest, runner),
+    collectLocalEvidence(scopedRequest, runner, effectiveScope),
+  ]);
+  const collectors: InboxCollectorSnapshot[] = [
+    {
+      name: "github",
+      status: collectorStatus(githubEvidence.gaps, githubEvidence.commands),
+      gaps: [...githubEvidence.gaps].sort(compareText),
+      commands: [...githubEvidence.commands],
+    },
+    {
+      name: "local",
+      status: collectorStatus(localEvidence.gaps, localEvidence.commands),
+      gaps: [...localEvidence.gaps].sort(compareText),
+      commands: [...localEvidence.commands],
+    },
+  ];
+  const items = [...githubEvidence.items, ...localEvidence.items].sort(
+    compareInboxItems,
+  );
+
+  return {
+    generatedAt: request.nowIso ?? new Date().toISOString(),
+    scope: {
+      cwd: request.cwd,
+      repo: scopedRequest.repo || undefined,
+      user: scopedRequest.user || undefined,
+      forge: scopedRequest.forge,
+      focus: scopedRequest.focus,
+    },
+    status: snapshotStatus(collectors),
+    collectors,
+    items,
+  };
+}
+
+export function renderInboxSnapshotJson(snapshot: InboxSnapshot): string {
+  return `${JSON.stringify(snapshot, null, 2)}\n`;
 }
 
 export async function collectInboxEvidence(
