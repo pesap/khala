@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS]
+Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL]
 
 Create/switch the Worktrunk worktree, wait for its Zellij tab, and launch Pi in
 that tab with a clean prompt. The capsule path is passed as text in the prompt;
@@ -17,6 +17,7 @@ branch=""
 capsule=""
 prompt=""
 heartbeat="1.0"
+model=""
 pi_command="${PI_COMMAND:-pi}"
 wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-150}"
 wait_seconds="${ZELLIJ_TAB_WAIT_SECONDS:-0.2}"
@@ -45,6 +46,10 @@ while (($#)); do
       ;;
     --pi-command)
       pi_command="${2:?--pi-command requires COMMAND}"
+      shift 2
+      ;;
+    --model)
+      model="${2:?--model requires MODEL}"
       shift 2
       ;;
     -h|--help)
@@ -93,6 +98,21 @@ validate_heartbeat() {
   [[ "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
+validate_model() {
+  local selected_model="${1:?model required}"
+  local search_model="${selected_model##*/}"
+  local output=""
+  if ! output="$(${pi_command} --list-models "${search_model}" 2>&1)"; then
+    printf 'failed to verify model with %s --list-models %s:\n%s\n' "${pi_command}" "${search_model}" "${output}" >&2
+    exit 1
+  fi
+  if [[ "${output}" == No\ models\ matching* ]]; then
+    printf 'model not found: %s\n' "${selected_model}" >&2
+    printf '%s\n' "${output}" >&2
+    exit 2
+  fi
+}
+
 require_command wt
 require_command zellij
 require_command jq
@@ -100,6 +120,9 @@ require_command "${pi_command}"
 if ! validate_heartbeat "${heartbeat}"; then
   printf 'invalid heartbeat interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${heartbeat}" >&2
   exit 2
+fi
+if [[ -n "${model}" ]]; then
+  validate_model "${model}"
 fi
 
 repo_name="${repo##*/}"
@@ -137,8 +160,12 @@ clean_prompt="${prompt}
 
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."
-pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- \
-  "${pi_command}" --name "${branch}" "${clean_prompt}" | tail -n 1)"
+pi_args=("${pi_command}" --name "${branch}")
+if [[ -n "${model}" ]]; then
+  pi_args+=(--model "${model}")
+fi
+pi_args+=("${clean_prompt}")
+pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}" | tail -n 1)"
 
 heartbeat_command="(disabled)"
 if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then

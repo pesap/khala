@@ -4,6 +4,8 @@ Context:
 - Repository: {{repo}}
 - Source issue: {{issue_url}}
 - Branch: {{branch_name}}
+- Exact model: {{resolved_model}}
+- Model routing: {{model_routing_mode}} ({{model_routing_reason}})
 - This handoff comes from `/workon --mode start`; a session capsule path is provided separately by the launcher.
 - Treat this prompt as starting context, not a final technical decision.
 

@@ -102,12 +102,19 @@ test("parses inbox flags with safe defaults", () => {
 });
 
 test("parses workon target and flags", () => {
+  const defaultModelSelection = {
+    exactModel: "",
+    routingMode: "default",
+    routingReason: "backward-compatible default Pi model selection",
+  };
+
   assert.deepEqual(parseWorkonArgs("61 --repo pesap/agents --forge github"), {
     target: "61",
     repo: "pesap/agents",
     forge: "github",
     mode: "prepare",
     heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
     extraInstruction: "61",
   });
 
@@ -121,6 +128,7 @@ test("parses workon target and flags", () => {
       forge: "gitlab",
       mode: "start",
       heartbeat: "1.0",
+      modelSelection: defaultModelSelection,
       extraInstruction: "collect GitHub maintainer queue",
     },
   );
@@ -131,6 +139,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "prepare",
     heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
     extraInstruction: "topic",
   });
 
@@ -140,6 +149,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     heartbeat: "0.25",
+    modelSelection: defaultModelSelection,
     extraInstruction: "73",
   });
 
@@ -149,6 +159,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     heartbeat: "0.01",
+    modelSelection: defaultModelSelection,
     extraInstruction: "73",
   });
 
@@ -158,6 +169,21 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "prepare",
     heartbeat: "1.0",
+    modelSelection: defaultModelSelection,
+    extraInstruction: "73",
+  });
+
+  assert.deepEqual(parseWorkonArgs("73 --model anthropic/claude-sonnet-4"), {
+    target: "73",
+    repo: "",
+    forge: "auto",
+    mode: "prepare",
+    heartbeat: "1.0",
+    modelSelection: {
+      exactModel: "anthropic/claude-sonnet-4",
+      routingMode: "exact-model",
+      routingReason: "explicit --model override",
+    },
     extraInstruction: "73",
   });
 });

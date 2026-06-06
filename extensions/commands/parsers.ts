@@ -6,7 +6,7 @@ import {
   type InboxFocus,
   type InboxForge,
 } from "./inbox.ts";
-import type { WorkonMode } from "./workon.ts";
+import type { WorkonMode, WorkonModelSelection } from "./workon.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -227,6 +227,7 @@ export function parseWorkonArgs(args: string): {
   forge: InboxForge;
   mode: WorkonMode;
   heartbeat: string;
+  modelSelection: WorkonModelSelection;
   extraInstruction: string;
 } {
   let rest = normalizeWhitespace(args);
@@ -255,12 +256,28 @@ export function parseWorkonArgs(args: string): {
   rest = heartbeatResult.value;
   const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
 
+  const modelResult = removeFlag(rest, /(^|\s)--model\s+(\S+)(\s|$)/);
+  rest = modelResult.value;
+  const exactModel = normalizeWhitespace(modelResult.match?.[2] ?? "");
+  const modelSelection: WorkonModelSelection = exactModel
+    ? {
+        exactModel,
+        routingMode: "exact-model",
+        routingReason: "explicit --model override",
+      }
+    : {
+        exactModel: "",
+        routingMode: "default",
+        routingReason: "backward-compatible default Pi model selection",
+      };
+
   return {
     target: rest,
     repo,
     forge,
     mode,
     heartbeat,
+    modelSelection,
     extraInstruction: rest,
   };
 }

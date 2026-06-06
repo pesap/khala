@@ -14,6 +14,7 @@ import {
   prepareWorkonBootstrap,
   type WorkonForge,
   type WorkonMode,
+  type WorkonModelSelection,
 } from "./workon.ts";
 import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
 import type { PendingWorkflow } from "../workflows/engine.ts";
@@ -122,6 +123,8 @@ export function createWorkflowCommandHandlers(params: {
     forge: WorkonForge;
     mode: WorkonMode;
     heartbeat: string;
+    modelSelection: WorkonModelSelection;
+    error?: string;
     extraInstruction: string;
   };
   parseLearnSkillArgs: (args: string) => {
@@ -642,6 +645,10 @@ export function createWorkflowCommandHandlers(params: {
 
     workon: async (args, ctx) => {
       const parsed = parseWorkonArgs(args ?? "");
+      if (parsed.error) {
+        notify(ctx, parsed.error, "error");
+        return;
+      }
       if (!parsed.target) {
         notify(
           ctx,
@@ -661,6 +668,7 @@ export function createWorkflowCommandHandlers(params: {
         nowIso: nowIso(),
         launchInZellij: Boolean(process.env.ZELLIJ),
         heartbeat: parsed.heartbeat,
+        modelSelection: parsed.modelSelection,
       });
 
       await runMirroredSourceWorkflow({
@@ -674,6 +682,9 @@ export function createWorkflowCommandHandlers(params: {
           forge: parsed.forge,
           mode: parsed.mode,
           heartbeat: parsed.heartbeat,
+          model: parsed.modelSelection.exactModel || null,
+          modelRoutingMode: parsed.modelSelection.routingMode,
+          modelRoutingReason: parsed.modelSelection.routingReason,
           extraInstruction: parsed.extraInstruction || null,
         },
         sections: [
@@ -682,6 +693,9 @@ export function createWorkflowCommandHandlers(params: {
           `Forge preference: ${parsed.forge}`,
           `Mode: ${parsed.mode}`,
           `Forge feedback heartbeat: ${parsed.heartbeat}`,
+          `Exact model: ${parsed.modelSelection.exactModel || "(runtime default)"}`,
+          `Model routing mode: ${parsed.modelSelection.routingMode}`,
+          `Model routing reason: ${parsed.modelSelection.routingReason}`,
           "Instruction: Resolve or prepare the durable source issue before branch/worktree work.",
           "Instruction: For freeform topics, search existing issues first; create a new issue only when the target repo is clear and creation is appropriate.",
           "Instruction: Derive an issue-numbered branch/worktree name and use Worktrunk when available; never bypass Worktrunk hook approval prompts.",
