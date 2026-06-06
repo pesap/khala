@@ -130,6 +130,9 @@ tab_name="$(slugify "${repo_name}")/$(slugify "${branch}")"
 
 switch_output="$(wt switch --create "${branch}" --format json 2>&1)"
 worktree_path=""
+# Worktrunk hooks can print human-readable status lines such as
+# "◎ Running pre-start: ..." around the machine-readable JSON. Inspect only
+# trimmed JSON-looking lines so hook chatter is ignored instead of parsed as a path.
 while IFS= read -r line; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
   trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"

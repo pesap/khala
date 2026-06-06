@@ -35,7 +35,7 @@ test("workon zellij handoff waits long enough for delayed Worktrunk tab", async 
       `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == "switch" ]]; then
-  printf '◎ Running pre-start: noisy hook\\n'
+  printf '◎ Running pre-start: noisy hook at /tmp/not-the-worktree\\n'
   printf 'not-json hook chatter\\n'
   printf '  {"action":"created","path":"${worktreePath}"}  \\n'
 else
