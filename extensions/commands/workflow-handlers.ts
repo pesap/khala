@@ -566,6 +566,7 @@ export function createWorkflowCommandHandlers(params: {
         sections: [
           "Scope: publish one focused branch/stack safely",
           "Instruction: Follow the workflow order exactly: detect -> target -> sync -> validate -> publish -> PR/MR -> summarize.",
+          "Instruction: Prefer deterministic command-handler and VCS evidence before model exploration; avoid repeated evidence collection, shell-quoting repair loops, and full session artifact reads when summaries or bounded excerpts suffice.",
           "Instruction: Inspect Git state with bounded commands; identify the current branch and candidate ship target.",
           "Instruction: Select exactly one ship target branch/stack; if ambiguous, show a branch/change table and ask before shipping.",
           "Instruction: Treat other applied branches as parallel work; do not commit, push, or include their changes unless explicitly requested.",
@@ -618,6 +619,7 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Group findings into Needs you now, My work is broken, Agent/session needs attention, New work needs shaping, Ready for agents, and Low-risk background.",
           "Instruction: Rank by age, blocker status, review-request state, CI failure, stale local work, and explicit mentions.",
           "Instruction: Treat the deterministic evidence below as already collected read-only input; run more read-only commands only when required to fill a material evidence gap.",
+          "Instruction: Avoid model-led re-bootstrap, repeated evidence collection, shell-quoting repair loops, and full session artifact reads when summaries or bounded excerpts suffice.",
           "Instruction: End with the top 3 next commands a maintainer should run.",
           ...inboxEvidenceSections,
           parsed.extraInstruction
@@ -674,7 +676,7 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: For freeform topics, search existing issues first; create a new issue only when the target repo is clear and creation is appropriate.",
           "Instruction: Derive an issue-numbered branch/worktree name and use Worktrunk when available; never bypass Worktrunk hook approval prompts.",
           "Instruction: Do not implement the feature or bugfix; stop after source-of-truth, branch/worktree preparation, and session capsule handoff.",
-          "Instruction: Use the deterministic bootstrap evidence below as the source-of-truth handoff when available.",
+          "Instruction: Use the deterministic bootstrap evidence below as the source-of-truth handoff when available; do not spend model/tool tokens recreating issue, branch, capsule, Zellij, or heartbeat evidence the handler already supplied.",
           "Instruction: Session capsule must include repo, issue/PR, branch/worktree, problem, acceptance criteria, non-goals, validation, open questions, and next prompt.",
           ...workonBootstrapSections,
           parsed.extraInstruction

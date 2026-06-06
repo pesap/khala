@@ -24,6 +24,7 @@ skill_contracts:
     load_before: PR/MR inspection or creation
 
 guards:
+  - prefer deterministic command-handler and VCS evidence before model exploration
   - inspect Git state before local VCS decisions
   - select exactly one ship target branch; if ambiguous, show a branch/change table and ask before shipping
   - treat other local branches and unrelated working-tree changes as parallel work unless explicitly requested
