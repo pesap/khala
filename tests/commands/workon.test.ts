@@ -230,7 +230,8 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
         "feat(inbox): detect local worktrees and stale sessions",
       ),
       "wt --version": "worktrunk 1.0.0\n",
-      "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions": "Created /tmp/worktrunk.feat-65\n",
+      "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions --format json":
+        '◎ Running pre-start: direct-hook\n{"action":"created","branch":"feat/65-detect-local-worktrees-and-stale-sessions","path":"/tmp/worktrunk.feat-65"}\npost-start hook complete\n',
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -252,8 +253,12 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.ok(calls.includes("wt --version"));
     assert.ok(
       calls.includes(
-        "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions",
+        "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions --format json",
       ),
+    );
+    assert.match(
+      rendered,
+      /Suggested Worktrunk command: wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
     );
     assert.match(rendered, /Worktree status: started/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk.feat-65/);
@@ -261,6 +266,10 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
+    assert.match(
+      capsule,
+      /Worktree command: wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
+    );
     assert.match(capsule, /Worktree status: started/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
   } finally {
