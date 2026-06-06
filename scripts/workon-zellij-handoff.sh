@@ -137,21 +137,30 @@ clean_prompt="${prompt}
 
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."
-zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- \
-  "${pi_command}" --name "${branch}" "${clean_prompt}"
+pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- \
+  "${pi_command}" --name "${branch}" "${clean_prompt}" | tail -n 1)"
 
 heartbeat_command="(disabled)"
 if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
   heartbeat_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workon-forge-heartbeat.sh"
-  zellij action new-pane --tab-id "${tab_id}" --name forge-heartbeat --cwd "${worktree_path}" -- \
-    bash "${heartbeat_script}" --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me
+  heartbeat_args=(bash "${heartbeat_script}" --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me)
+  if [[ -n "${pi_pane_id}" ]]; then
+    heartbeat_args+=(--notify-pane "${pi_pane_id}")
+  else
+    printf 'Zellij did not report a Pi pane id; forge heartbeat will not actively notify Pi.\n' >&2
+  fi
+  zellij action new-pane --tab-id "${tab_id}" --name forge-heartbeat --cwd "${worktree_path}" -- "${heartbeat_args[@]}"
   heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
+  if [[ -n "${pi_pane_id}" ]]; then
+    heartbeat_command="${heartbeat_command} --notify-pane ${pi_pane_id}"
+  fi
 fi
 
-printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"heartbeatInterval":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
+printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatInterval":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
   "$(json_string "${worktree_path}")" \
   "$(json_string "${tab_name}")" \
   "${tab_id}" \
+  "$(json_string "${pi_pane_id}")" \
   "$(json_string "${heartbeat}")" \
   "$(json_string "zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} --name ${branch} <clean-prompt>")" \
   "$(json_string "${heartbeat_command}")"
