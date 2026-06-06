@@ -233,10 +233,30 @@ print_feedback_records() {
   local reviews_json=""
   local feedback_filter_path="${script_dir}/workon-forge-heartbeat-feedback.jq"
 
-  issue_comments_json="$(gh api "repos/${repo}/issues/${pr_number}/comments" --paginate)"
-  review_comments_json="$(gh api "repos/${repo}/pulls/${pr_number}/comments" --paginate)"
-  review_threads_json="$(fetch_review_threads "${pr_number}")"
-  reviews_json="$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --paginate)"
+  if ! issue_comments_json="$(gh api "repos/${repo}/issues/${pr_number}/comments" --paginate 2>&1)"; then
+    printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
+      "$(json_string "repos/${repo}/issues/${pr_number}/comments")" \
+      "$(json_string "${issue_comments_json}")"
+    return 1
+  fi
+  if ! review_comments_json="$(gh api "repos/${repo}/pulls/${pr_number}/comments" --paginate 2>&1)"; then
+    printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
+      "$(json_string "repos/${repo}/pulls/${pr_number}/comments")" \
+      "$(json_string "${review_comments_json}")"
+    return 1
+  fi
+  if ! review_threads_json="$(fetch_review_threads "${pr_number}" 2>&1)"; then
+    printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
+      "$(json_string "graphql:reviewThreads")" \
+      "$(json_string "${review_threads_json}")"
+    return 1
+  fi
+  if ! reviews_json="$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --paginate 2>&1)"; then
+    printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
+      "$(json_string "repos/${repo}/pulls/${pr_number}/reviews")" \
+      "$(json_string "${reviews_json}")"
+    return 1
+  fi
 
   jq -nc \
     --arg author "${feedback_author}" \
@@ -245,7 +265,6 @@ print_feedback_records() {
     --slurpfile reviewThreads <(printf '%s' "${review_threads_json}") \
     --slurpfile reviews <(printf '%s' "${reviews_json}") \
     -f "${feedback_filter_path}"
-
 }
 
 filter_new_actionable_feedback() {
@@ -301,8 +320,15 @@ init_state_file "${state_file}"
 
 while true; do
   checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  pr_json="$(gh pr list --repo "${repo}" --state open --head "${branch}" --json number,title,url --jq '.[0] // empty')"
-  if [[ -z "${pr_json}" ]]; then
+  poll_failed=false
+  if ! pr_json="$(gh pr list --repo "${repo}" --state open --head "${branch}" --json number,title,url --jq '.[0] // empty' 2>&1)"; then
+    printf '{"status":"poll-error","phase":"pr-list","checkedAt":%s,"repo":%s,"branch":%s,"message":%s}\n' \
+      "$(json_string "${checked_at}")" \
+      "$(json_string "${repo}")" \
+      "$(json_string "${branch}")" \
+      "$(json_string "${pr_json}")"
+    poll_failed=true
+  elif [[ -z "${pr_json}" ]]; then
     printf '{"status":"no-open-pr","checkedAt":%s,"repo":%s,"branch":%s,"author":%s}\n' \
       "$(json_string "${checked_at}")" \
       "$(json_string "${repo}")" \
@@ -312,8 +338,10 @@ while true; do
     pr_number="$(printf '%s' "${pr_json}" | jq -r '.number')"
     pr_url="$(printf '%s' "${pr_json}" | jq -r '.url')"
     printf '== %s feedback from %s on %s ==\n' "${checked_at}" "${author}" "${pr_url}"
-    feedback_records="$(print_feedback_records "${pr_number}" "${author}")"
-    if [[ -z "${feedback_records}" ]]; then
+    if ! feedback_records="$(print_feedback_records "${pr_number}" "${author}")"; then
+      printf '%s\n' "${feedback_records}"
+      poll_failed=true
+    elif [[ -z "${feedback_records}" ]]; then
       printf 'No matching feedback comments found.\n'
     else
       printf '%s\n' "${feedback_records}"
@@ -335,7 +363,7 @@ while true; do
     fi
   fi
 
-  if [[ "${once}" == true ]]; then
+  if [[ "${once}" == true && "${poll_failed}" != true ]]; then
     break
   fi
   sleep "${sleep_seconds}"
