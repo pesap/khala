@@ -1,0 +1,31 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_unresolved",
+              "isResolved": false,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 1001,
+                    "author": {"login": "pesap"},
+                    "body": "Please make the state update explicit.\n```suggestion\nremember_notified_feedback \"${new_actionable_feedback}\"\n```",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r1001",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:00:00Z",
+                    "updatedAt": "2026-06-06T01:00:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": null
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
