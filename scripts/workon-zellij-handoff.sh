@@ -98,6 +98,21 @@ validate_heartbeat() {
   [[ "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
+validate_model() {
+  local selected_model="${1:?model required}"
+  local search_model="${selected_model##*/}"
+  local output=""
+  if ! output="$(${pi_command} --list-models "${search_model}" 2>&1)"; then
+    printf 'failed to verify model with %s --list-models %s:\n%s\n' "${pi_command}" "${search_model}" "${output}" >&2
+    exit 1
+  fi
+  if [[ "${output}" == No\ models\ matching* ]]; then
+    printf 'model not found: %s\n' "${selected_model}" >&2
+    printf '%s\n' "${output}" >&2
+    exit 2
+  fi
+}
+
 require_command wt
 require_command zellij
 require_command jq
@@ -105,6 +120,9 @@ require_command "${pi_command}"
 if ! validate_heartbeat "${heartbeat}"; then
   printf 'invalid heartbeat interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${heartbeat}" >&2
   exit 2
+fi
+if [[ -n "${model}" ]]; then
+  validate_model "${model}"
 fi
 
 repo_name="${repo##*/}"

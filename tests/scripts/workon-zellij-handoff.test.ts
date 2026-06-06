@@ -162,7 +162,17 @@ exit 2
 `,
     );
 
-    await writeExecutable(path.join(binDir, "pi-custom"), "#!/usr/bin/env bash\nexit 0\n");
+    await writeExecutable(
+      path.join(binDir, "pi-custom"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models claude-sonnet-4" ]]; then
+  printf 'provider model\\nmock claude-sonnet-4\\n'
+  exit 0
+fi
+exit 0
+`,
+    );
 
     const repoRoot = path.resolve(import.meta.dirname, "..", "..");
     const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
@@ -197,6 +207,74 @@ exit 2
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /-- pi-custom --name work\/108-model-routing --model anthropic\/claude-sonnet-4/);
     assert.doesNotMatch(panes, /forge-heartbeat/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("workon zellij handoff fails before Worktrunk when selected model is unavailable", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-model-invalid-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const wtLog = path.join(tempDir, "wt.log");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${wtLog}"
+exit 0
+`,
+    );
+    await writeExecutable(path.join(binDir, "zellij"), "#!/usr/bin/env bash\nexit 0\n");
+    await writeExecutable(
+      path.join(binDir, "pi"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models missing-model" ]]; then
+  printf 'No models matching "missing-model"\\n'
+  exit 0
+fi
+exit 0
+`,
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    await assert.rejects(
+      execFileAsync(
+        "bash",
+        [
+          scriptPath,
+          "--repo",
+          "pesap/agents",
+          "--branch",
+          "work/108-model-routing",
+          "--capsule",
+          capsulePath,
+          "--prompt",
+          "handoff prompt",
+          "--heartbeat",
+          "0",
+          "--model",
+          "missing-model",
+        ],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          },
+        },
+      ),
+      /model not found: missing-model/,
+    );
+
+    await assert.rejects(readFile(wtLog, "utf8"), /ENOENT/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
