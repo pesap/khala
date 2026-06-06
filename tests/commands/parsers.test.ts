@@ -65,6 +65,7 @@ test("parses inbox flags with safe defaults", () => {
     user: "",
     forge: "auto",
     focus: "all",
+    scope: "auto",
     extraInstruction: "",
   });
 
@@ -78,6 +79,7 @@ test("parses inbox flags with safe defaults", () => {
       user: "psanchez",
       forge: "gitlab",
       focus: "reviews",
+      scope: "auto",
       extraInstruction: "stale blockers",
     },
   );
@@ -88,6 +90,7 @@ test("parses inbox flags with safe defaults", () => {
     user: "@me",
     forge: "auto",
     focus: "all",
+    scope: "auto",
     extraInstruction: "",
   });
 
@@ -97,6 +100,27 @@ test("parses inbox flags with safe defaults", () => {
     user: "",
     forge: "auto",
     focus: "all",
+    scope: "auto",
+    extraInstruction: "",
+  });
+
+  assert.deepEqual(parseInboxArgs("--global --scope current parked pane"), {
+    limit: 20,
+    repo: "",
+    user: "",
+    forge: "auto",
+    focus: "all",
+    scope: "global",
+    extraInstruction: "parked pane",
+  });
+
+  assert.deepEqual(parseInboxArgs("--scope current"), {
+    limit: 20,
+    repo: "",
+    user: "",
+    forge: "auto",
+    focus: "all",
+    scope: "current",
     extraInstruction: "",
   });
 });

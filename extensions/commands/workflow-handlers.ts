@@ -9,6 +9,7 @@ import {
   collectInboxEvidence,
   type InboxFocus,
   type InboxForge,
+  type InboxScope,
 } from "./inbox.ts";
 import {
   prepareWorkonBootstrap,
@@ -131,6 +132,7 @@ export function createWorkflowCommandHandlers(params: {
     user: string;
     forge: InboxForge;
     focus: InboxFocus;
+    scope: InboxScope;
     extraInstruction: string;
   };
   parseWorkonArgs: (args: string) => {
@@ -618,6 +620,7 @@ export function createWorkflowCommandHandlers(params: {
         user: parsed.user,
         forge: parsed.forge,
         focus: parsed.focus,
+        scope: parsed.scope,
       });
 
       await runMirroredSourceWorkflow({
@@ -633,6 +636,7 @@ export function createWorkflowCommandHandlers(params: {
           user: parsed.user || null,
           forge: parsed.forge,
           focus: parsed.focus,
+          scope: parsed.scope,
           extraInstruction: parsed.extraInstruction || null,
         },
         sections: [
@@ -642,6 +646,7 @@ export function createWorkflowCommandHandlers(params: {
           `User repo discovery: ${parsed.user || "(disabled)"}`,
           `Forge preference: ${parsed.forge}`,
           `Focus: ${parsed.focus}`,
+          `Scope: ${parsed.scope}`,
           "Instruction: Do not mutate files, branches, issues, PRs, MRs, labels, comments, CI runs, or sessions.",
           "Instruction: If user repo discovery is enabled, list repositories for that user with read-only forge commands before collecting per-repo signals; use @me for the authenticated user and keep repository discovery bounded by the limit.",
           "Instruction: If both repo override and user repo discovery are set, prioritize the explicit repo override and report that user discovery was ignored.",

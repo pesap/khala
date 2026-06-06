@@ -26,7 +26,9 @@ Requirements:
   when provided.
 - Gracefully degrade when `gh`, `glab`, auth, remotes, or session metadata are
   unavailable. Report missing evidence as a limitation, not a failure.
-- Inspect the current repo by default; respect repo, user, forge, focus, and
+- Inspect the current repo by default when running inside a git repository; use
+  global maintainer semantics outside git repos or when `--global`/`--scope global`
+  is provided. Respect explicit `--scope current`, repo, user, forge, focus, and
   limit hints from command input.
 - If a user hint is present, use the command handler's read-only repository
   discovery evidence before collecting or requesting per-repo signals. Treat

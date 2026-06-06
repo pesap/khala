@@ -26,9 +26,11 @@ function fakeCommandRunner(outputs: Record<string, string>): {
       const key = `${command} ${args.join(" ")}`;
       calls.push(key);
       const stdout = outputs[key];
-      return stdout === undefined
-        ? { ok: false, stdout: "", stderr: `missing fake output for ${key}` }
-        : { ok: true, stdout, stderr: "" };
+      if (stdout !== undefined) return { ok: true, stdout, stderr: "" };
+      if (key === "git rev-parse --is-inside-work-tree") {
+        return { ok: true, stdout: "true\n", stderr: "" };
+      }
+      return { ok: false, stdout: "", stderr: `missing fake output for ${key}` };
     },
   };
 }
@@ -336,6 +338,9 @@ test("local focus shapes dirty, unpublished, unpushed, and gone worktree signals
   const runner: InboxCommandRunner = async (command, args, options) => {
     const key = `${command} ${args.join(" ")}`;
     calls.push(`${options.cwd} ${key}`);
+    if (key === "git rev-parse --is-inside-work-tree") {
+      return { ok: true, stdout: "true\n", stderr: "" };
+    }
     if (key === "git worktree list --porcelain") {
       return {
         ok: true,
@@ -561,6 +566,84 @@ test("session focus reports blocked capsules with deleted worktrees", async () =
   } finally {
     await rm(capsuleRoot, { recursive: true, force: true });
   }
+});
+
+test("uses global inbox scope from non-git directories without current-repo git noise", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
+  const { calls, runner } = fakeCommandRunner({
+    "git rev-parse --is-inside-work-tree": "false\n",
+    "gh auth status": "",
+    "gh api user --jq .login": "pesap\n",
+    "gh api graphql -F first=5 -f query=query($first: Int!) { viewer { repositories(first: $first, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { nameWithOwner url updatedAt isPrivate isArchived viewerPermission } } } } --jq .data.viewer.repositories.nodes":
+      "[]",
+    "gh search prs --review-requested=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search prs --author=@me --state=open --checks=failure --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search prs --author=@me --state=open --checks=pending --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --assignee=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --author=@me --state=open --limit 5 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+  });
+
+  const sections = await collectInboxEvidence(
+    {
+      cwd: "/tmp/not-a-repo",
+      limit: 5,
+      repo: "",
+      user: "",
+      forge: "github",
+      focus: "all",
+      capsuleRoot,
+    },
+    runner,
+  );
+
+  assert.ok(calls.includes("gh api user --jq .login"));
+  assert.equal(calls.includes("git remote get-url origin"), false);
+  assert.equal(calls.includes("git worktree list --porcelain"), false);
+  assert.doesNotMatch(sections.join("\n"), /local git|current repository/);
+});
+
+test("explicit global inbox scope skips current-repo worktree collection", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
+  const { calls, runner } = fakeCommandRunner({
+    "gh auth status": "",
+    "gh api user --jq .login": "pesap\n",
+    "gh api graphql -F first=3 -f query=query($first: Int!) { viewer { repositories(first: $first, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { nameWithOwner url updatedAt isPrivate isArchived viewerPermission } } } } --jq .data.viewer.repositories.nodes":
+      "[]",
+    "gh search prs --review-requested=@me --state=open --limit 3 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search prs --author=@me --state=open --checks=failure --limit 3 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search prs --author=@me --state=open --checks=pending --limit 3 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --assignee=@me --state=open --limit 3 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+    "gh search issues --author=@me --state=open --limit 3 --json number,title,url,repository,updatedAt,isDraft,labels":
+      "[]",
+  });
+
+  await collectInboxEvidence(
+    {
+      cwd: process.cwd(),
+      limit: 3,
+      repo: "",
+      user: "",
+      forge: "github",
+      focus: "all",
+      scope: "global",
+      capsuleRoot,
+    },
+    runner,
+  );
+
+  assert.equal(calls.includes("git rev-parse --is-inside-work-tree"), false);
+  assert.equal(calls.includes("git worktree list --porcelain"), false);
 });
 
 test("skips GitHub collection for GitLab-only inbox scope", async () => {
