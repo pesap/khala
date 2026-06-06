@@ -119,9 +119,9 @@ export function parsePostflightArgs(
   );
 }
 
-export const parseDebugArgs = (args: string): { problem: string; fix: boolean } => {
-  const { rest, enabled } = parseToggleArg(args, "--fix");
-  return { problem: rest, fix: enabled };
+export const parseDebugArgs = (args: string): { problem: string } => {
+  const { rest } = parseToggleArg(args, "--fix");
+  return { problem: rest };
 };
 
 export const parseFeatureArgs = (args: string): { request: string; ship: boolean } => {

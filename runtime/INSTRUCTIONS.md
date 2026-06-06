@@ -24,8 +24,9 @@ Command workflow contracts:
 - Build hypotheses.
 - Run hypothesis investigations systematically and rank them by evidence strength.
 - Rank findings by confidence.
-- Propose fix; apply when requested.
-- Validate with targeted checks.
+- Gather enough evidence to create a durable issue.
+- Draft an issue title/body, acceptance criteria, and validation plan.
+- Do not fix during `/debug`; use `/workon <issue>` after the issue exists.
 - Store learnings.
 
 ## /feature
