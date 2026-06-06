@@ -18,7 +18,7 @@
     "in_reply_to_id": 3001,
     "user": {"login": "pesap"},
     "path": "scripts/workon-forge-heartbeat.sh",
-    "line": 60,
+    "line": null,
     "start_line": null,
     "original_line": 60,
     "diff_hunk": "@@ -60,1 +60,1 @@",
