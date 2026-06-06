@@ -129,7 +129,18 @@ repo_name="${repo##*/}"
 tab_name="$(slugify "${repo_name}")/$(slugify "${branch}")"
 
 switch_output="$(wt switch --create "${branch}" --format json 2>&1)"
-worktree_path="$(printf '%s\n' "${switch_output}" | awk '/^\{.*\}$/ { line=$0 } END { print line }' | jq -r '.path // empty')"
+worktree_path=""
+while IFS= read -r line; do
+  trimmed="${line#"${line%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+  if [[ "${trimmed}" != \{*\} ]]; then
+    continue
+  fi
+  candidate_path="$(jq -r '.path // empty' <<<"${trimmed}" 2>/dev/null || true)"
+  if [[ -n "${candidate_path}" ]]; then
+    worktree_path="${candidate_path}"
+  fi
+done <<<"${switch_output}"
 if [[ -z "${worktree_path}" ]]; then
   printf 'Worktrunk did not report a worktree path. Output:\n%s\n' "${switch_output}" >&2
   exit 1
