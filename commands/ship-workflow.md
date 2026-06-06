@@ -17,6 +17,9 @@ Hard requirements:
 - Be concise.
 - Follow the workflow order exactly: detect -> target -> sync -> validate -> publish -> PR/MR -> summarize.
 - Inspect Git state first with a bounded, scope-appropriate command before any VCS mutation.
+- Prefer deterministic command-handler and VCS evidence before model exploration;
+  avoid repeated evidence collection, shell-quoting repair loops, and reading
+  full session artifacts when summaries or bounded excerpts suffice.
 - Use normal Git for local VCS writes and keep all mutations scoped to the selected branch.
 - Select exactly one ship target branch. If ambiguous, show a branch/change table and ask before shipping.
 - Treat other local branches or unrelated working-tree changes as parallel work; do not include them unless explicitly requested.

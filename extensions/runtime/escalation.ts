@@ -83,6 +83,8 @@ export interface HarnessTurnMetrics {
   wasteSignals: {
     duplicateEvidence: boolean;
     inefficientShell: boolean;
+    shellQuotingRepairLoop: boolean;
+    fullSessionArtifactRead: boolean;
     broadQuery: boolean;
     duplicateLearning: boolean;
     count: number;
@@ -134,7 +136,7 @@ const URL_TEXT_REGEX = /https?:\/\/|github\.com\//i;
 const ARTIFACT_REFERENCE_REGEX =
   /(?:https?:\/\/|github\.com\/|(?:^|\s)[\w.-]+\/[\w.-]+(?:\s|$)|(?:^|\s)(?:\.{0,2}\/|~\/)[^\s]+|[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml|lock|txt)\b)/i;
 const LOCAL_ARTIFACT_TARGET_REGEX =
-  /(?:^|\s)((?:\.{0,2}\/|~\/)?[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml|lock|txt)\b)/gi;
+  /(?:^|\s)((?:\.{0,2}\/|~\/)?[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|jsonl|ya?ml|toml|lock|log|txt)\b)/gi;
 const EXPLICIT_SKILL_REQUEST_REGEX =
   /(?:\b(?:load|use|read|apply|follow|invoke)\s+(?:(?:the|your)\s+)?(?:[a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,8}\s+)?skills?\b|\/skill:[a-z0-9_.:-]+|\$[A-Z][A-Za-z0-9_.:-]+|skills\/[a-z0-9_.:-]+\/SKILL\.md)/i;
 const EXPLICIT_NAMED_SKILL_REGEX =
@@ -226,6 +228,10 @@ const DEDUPE_TOOL_NAMES = new Set([
   "khala_search_memory",
   "bash",
 ]);
+const SESSION_ARTIFACT_SUMMARY_HINT_REGEX =
+  /(?:^|[/\\])(?:sessions?|session-runs?|chain-runs?|agent-runs?|intercom)[/\\].+\.(?:jsonl?|log|txt|md)$|(?:^|[/\\])(?:transcript|messages|conversation|session|debug|progress)\.(?:jsonl?|log|txt|md)$/i;
+const SHELL_QUOTING_ERROR_REGEX =
+  /\b(?:unexpected eof|unexpected end of file|unterminated (?:quoted )?string|quote>|dquote>|squote>|syntax error near unexpected token|no closing quotation|unmatched [`'"]|bad substitution)\b/i;
 const TOOL_DEDUPE_RESET_NAMES = new Set([
   "edit",
   "write",
@@ -4468,6 +4474,66 @@ export function findInefficientShellEvidenceCall(
   return null;
 }
 
+export function findShellQuotingRepairLoop(
+  messages: AgentEndEventMessage[],
+): string | null {
+  const scopedMessages = scopedMessagesAfterLatestUser(messages);
+  let quotingFailureAttempts = 0;
+
+  for (const [index, message] of scopedMessages.entries()) {
+    for (const item of message.content) {
+      if (item.type !== "toolCall") continue;
+      if (typeof item.name !== "string") continue;
+      if (!COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)) continue;
+
+      const result = scopedMessages[index + 1];
+      const resultText =
+        result?.role === "toolResult" ? extractMessageText(result.content) : "";
+      if (SHELL_QUOTING_ERROR_REGEX.test(resultText)) {
+        quotingFailureAttempts += 1;
+        if (quotingFailureAttempts >= 2) {
+          return "repeated shell quoting failures; switch to read/edit APIs, a heredoc, or a checked script instead of repairing ad hoc quoting";
+        }
+        continue;
+      }
+
+      if (toolResultSucceeded(result)) {
+        quotingFailureAttempts = 0;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function findFullSessionArtifactRead(
+  messages: AgentEndEventMessage[],
+): string | null {
+  const scopedMessages = scopedMessagesAfterLatestUser(messages);
+
+  for (const message of scopedMessages) {
+    for (const item of message.content) {
+      if (item.type !== "toolCall") continue;
+      if (typeof item.name !== "string") continue;
+
+      const targets =
+        item.name === "read"
+          ? localArtifactTargetsFromToolArguments(item.arguments)
+          : COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)
+            ? localArtifactTargetsFromText(extractCommandArgument(item.arguments))
+            : [];
+      const sessionArtifact = targets.find((target) =>
+        SESSION_ARTIFACT_SUMMARY_HINT_REGEX.test(target),
+      );
+      if (sessionArtifact) {
+        return `full session artifact read for ${sessionArtifact}; prefer capsule/progress summaries or bounded excerpts first`;
+      }
+    }
+  }
+
+  return null;
+}
+
 export function findBroadEvidenceQueryCall(
   messages: AgentEndEventMessage[],
 ): string | null {
@@ -4836,39 +4902,57 @@ export function evaluateToolEfficiency(params: {
 }): ToolEfficiencyDecision {
   const duplicateToolName = findRedundantEvidenceToolCall(params.messages);
   if (!duplicateToolName) {
+    const shellQuotingRepairReason = findShellQuotingRepairLoop(params.messages);
+    if (shellQuotingRepairReason) {
+      return {
+        efficient: false,
+        reason: shellQuotingRepairReason,
+      };
+    }
+
     const inefficientShellReason = findInefficientShellEvidenceCall(
       params.messages,
     );
-    if (!inefficientShellReason) {
-      const broadQueryReason = findBroadEvidenceQueryCall(params.messages);
-      if (broadQueryReason) {
-        return {
-          efficient: false,
-          reason: `${broadQueryReason}; use a focused task-specific query`,
-        };
-      }
-
-      const duplicateLearningToolName = findRedundantLearningCaptureCall(
-        params.messages,
-      );
-      if (duplicateLearningToolName) {
-        return {
-          efficient: false,
-          reason:
-            "repeated khala_learn storage for the same trigger and lesson after a successful write; reuse the stored lesson instead of writing it again",
-        };
-      }
-
+    if (inefficientShellReason) {
       return {
-        efficient: true,
+        efficient: false,
+        reason: `${inefficientShellReason}; use bounded read/search tools or add explicit limits`,
+      };
+    }
+
+    const fullSessionArtifactReason = findFullSessionArtifactRead(
+      params.messages,
+    );
+    if (fullSessionArtifactReason) {
+      return {
+        efficient: false,
+        reason: fullSessionArtifactReason,
+      };
+    }
+
+    const broadQueryReason = findBroadEvidenceQueryCall(params.messages);
+    if (broadQueryReason) {
+      return {
+        efficient: false,
+        reason: `${broadQueryReason}; use a focused task-specific query`,
+      };
+    }
+
+    const duplicateLearningToolName = findRedundantLearningCaptureCall(
+      params.messages,
+    );
+    if (duplicateLearningToolName) {
+      return {
+        efficient: false,
         reason:
-          "no redundant evidence, unbounded shell, broad query, or duplicate learning-storage calls detected",
+          "repeated khala_learn storage for the same trigger and lesson after a successful write; reuse the stored lesson instead of writing it again",
       };
     }
 
     return {
-      efficient: false,
-      reason: `${inefficientShellReason}; use bounded read/search tools or add explicit limits`,
+      efficient: true,
+      reason:
+        "no redundant evidence, unbounded shell, shell-quoting repair loop, full session artifact read, broad query, or duplicate learning-storage calls detected",
     };
   }
 
@@ -4907,6 +4991,8 @@ export function evaluateHarnessTurnMetrics(params: {
     wasteSignals: {
       duplicateEvidence: findRedundantEvidenceToolCall(params.messages) !== null,
       inefficientShell: findInefficientShellEvidenceCall(params.messages) !== null,
+      shellQuotingRepairLoop: findShellQuotingRepairLoop(params.messages) !== null,
+      fullSessionArtifactRead: findFullSessionArtifactRead(params.messages) !== null,
       broadQuery: findBroadEvidenceQueryCall(params.messages) !== null,
       duplicateLearning: findRedundantLearningCaptureCall(params.messages) !== null,
       count: 0,
@@ -4915,6 +5001,8 @@ export function evaluateHarnessTurnMetrics(params: {
   metrics.wasteSignals.count = [
     metrics.wasteSignals.duplicateEvidence,
     metrics.wasteSignals.inefficientShell,
+    metrics.wasteSignals.shellQuotingRepairLoop,
+    metrics.wasteSignals.fullSessionArtifactRead,
     metrics.wasteSignals.broadQuery,
     metrics.wasteSignals.duplicateLearning,
   ].filter(Boolean).length;
@@ -5025,6 +5113,8 @@ export function evaluateHarnessTurn(params: {
           "duplicate evidence calls",
           "broad searches",
           "unbounded shell output",
+          "shell-quoting repair loops",
+          "full session artifact reads when summaries suffice",
           "placeholder tool results",
         ],
       },

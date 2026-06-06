@@ -19,7 +19,9 @@ Requirements:
   comments, CI runs, or sessions.
 - Prefer deterministic evidence first: use the pre-collected GitHub evidence
   attached by the command handler, then bounded `git`/`gh`/`glab` checks only
-  when a material gap remains.
+  when a material gap remains. Avoid model-led re-bootstrap, repeated evidence
+  collection, shell-quoting repair loops, and full session artifact reads when
+  capsule/session summaries or bounded excerpts suffice.
 - Detect GitHub vs GitLab from remotes when possible; use explicit command flags
   when provided.
 - Gracefully degrade when `gh`, `glab`, auth, remotes, or session metadata are

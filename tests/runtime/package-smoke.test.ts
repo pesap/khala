@@ -170,6 +170,8 @@ test("package smoke exposes harness through packed package surface", async () =>
       wasteSignals: {
         duplicateEvidence: false,
         inefficientShell: false,
+        shellQuotingRepairLoop: false,
+        fullSessionArtifactRead: false,
         broadQuery: false,
         duplicateLearning: false,
         count: 0,

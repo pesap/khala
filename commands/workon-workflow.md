@@ -30,7 +30,8 @@ Requirements:
   resolves a GitHub issue, derives a branch name, writes a global Pi capsule,
   and in `--mode start` runs Worktrunk first, waits for the Worktrunk-created
   Zellij tab, launches Pi in that tab, and starts the forge feedback heartbeat
-  when Zellij is available.
+  when Zellij is available. Do not spend model/tool tokens recreating issue,
+  branch, capsule, Zellij, or heartbeat evidence the handler already supplied.
 - Use Worktrunk when available to prepare or start the worktree. If Worktrunk is
   unavailable or hooks need trust approval, stop with exact operator guidance;
   do not bypass approvals.

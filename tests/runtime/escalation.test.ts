@@ -31,7 +31,9 @@ import {
   externalEvidenceQueryQuality,
   explicitSkillNamesForUserText,
   extractResponseConfidence,
+  findFullSessionArtifactRead,
   findInefficientShellEvidenceCall,
+  findShellQuotingRepairLoop,
   findBroadEvidenceQueryCall,
   findRedundantEvidenceToolCall,
   hasKnowledgeGapSignal,
@@ -7281,7 +7283,7 @@ test("evaluates tool efficiency for duplicate evidence collection", () => {
     {
       efficient: true,
       reason:
-        "no redundant evidence, unbounded shell, broad query, or duplicate learning-storage calls detected",
+        "no redundant evidence, unbounded shell, shell-quoting repair loop, full session artifact read, broad query, or duplicate learning-storage calls detected",
     },
   );
 
@@ -7301,9 +7303,48 @@ test("evaluates tool efficiency for duplicate evidence collection", () => {
     {
       efficient: true,
       reason:
-        "no redundant evidence, unbounded shell, broad query, or duplicate learning-storage calls detected",
+        "no redundant evidence, unbounded shell, shell-quoting repair loop, full session artifact read, broad query, or duplicate learning-storage calls detected",
     },
   );
+});
+
+test("detects shell quoting repair loops", () => {
+  const messages: Message[] = [
+    textMessage("user", "Inspect the branch with a shell command."),
+    assistantToolCall("bash", { command: "git log --format='%h %s" }),
+    toolResult("bash: unexpected EOF while looking for matching `'"),
+    assistantToolCall("bash", { command: "git log --format=\"%h %s" }),
+    toolResult("bash: unexpected EOF while looking for matching `\"'"),
+  ];
+
+  assert.equal(
+    findShellQuotingRepairLoop(messages),
+    "repeated shell quoting failures; switch to read/edit APIs, a heredoc, or a checked script instead of repairing ad hoc quoting",
+  );
+  assert.deepEqual(evaluateToolEfficiency({ messages }), {
+    efficient: false,
+    reason:
+      "repeated shell quoting failures; switch to read/edit APIs, a heredoc, or a checked script instead of repairing ad hoc quoting",
+  });
+});
+
+test("detects full session artifact reads when summaries should be preferred", () => {
+  const messages: Message[] = [
+    textMessage("user", "Check whether the old agent session needs attention."),
+    assistantToolCall("read", {
+      path: "/tmp/pi-subagents/chain-runs/run-123/messages.jsonl",
+    }),
+  ];
+
+  assert.equal(
+    findFullSessionArtifactRead(messages),
+    "full session artifact read for /tmp/pi-subagents/chain-runs/run-123/messages.jsonl; prefer capsule/progress summaries or bounded excerpts first",
+  );
+  assert.deepEqual(evaluateToolEfficiency({ messages }), {
+    efficient: false,
+    reason:
+      "full session artifact read for /tmp/pi-subagents/chain-runs/run-123/messages.jsonl; prefer capsule/progress summaries or bounded excerpts first",
+  });
 });
 
 test("detects unbounded local shell evidence commands", () => {
