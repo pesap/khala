@@ -332,8 +332,24 @@ function repoSearchArgs(repo: string): string[] {
   return repo ? ["--repo", repo] : [];
 }
 
-function searchJsonFields(): string[] {
-  return ["--json", "number,title,url,repository,updatedAt,isDraft,labels"];
+const SEARCH_JSON_FIELDS = [
+  "number",
+  "title",
+  "url",
+  "repository",
+  "updatedAt",
+] as const;
+
+function searchJsonFields(extraFields: readonly string[] = []): string[] {
+  return ["--json", [...SEARCH_JSON_FIELDS, ...extraFields, "labels"].join(",")];
+}
+
+function prSearchJsonFields(): string[] {
+  return searchJsonFields(["isDraft"]);
+}
+
+function issueSearchJsonFields(): string[] {
+  return searchJsonFields();
 }
 
 function repositoryJsonFields(): string[] {
@@ -558,6 +574,17 @@ async function collectLocalEvidence(
   const collectSessions = shouldCollectSessions(request.focus);
   if (!collectWorktrees && !collectSessions) {
     evidence.gaps.push(`Local collector skipped for focus=${request.focus}`);
+    return evidence;
+  }
+
+  const gitRoot = await runGit(runner, request.cwd, evidence.commands, [
+    "rev-parse",
+    "--is-inside-work-tree",
+  ]);
+  if (!gitRoot.ok || gitRoot.stdout.trim() !== "true") {
+    evidence.gaps.push(
+      `Local git collector skipped: ${request.cwd} is not inside a git repository`,
+    );
     return evidence;
   }
 
@@ -872,7 +899,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...prSearchJsonFields(),
       ],
       {
         bucket: "Needs you now",
@@ -897,7 +924,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...prSearchJsonFields(),
       ],
       {
         bucket: "My work is broken",
@@ -920,7 +947,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...prSearchJsonFields(),
       ],
       {
         bucket: "My work is broken",
@@ -944,7 +971,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...issueSearchJsonFields(),
       ],
       {
         bucket: "New work needs shaping",
@@ -966,7 +993,7 @@ async function collectGithubEvidence(
         "--limit",
         String(request.limit),
         ...scopedRepoArgs,
-        ...searchJsonFields(),
+        ...issueSearchJsonFields(),
       ],
       {
         bucket: "New work needs shaping",
