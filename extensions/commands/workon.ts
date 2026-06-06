@@ -14,12 +14,9 @@ const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
 export type WorkonForge = "auto" | "github" | "gitlab" | "all";
 export type WorkonMode = "prepare" | "start";
-export type WorkonModelTier = "quick" | "standard" | "deep" | "max";
-
 export interface WorkonModelSelection {
-  tier: WorkonModelTier;
   exactModel: string;
-  routingMode: "default" | "explicit-tier" | "exact-model";
+  routingMode: "default" | "exact-model";
   routingReason: string;
 }
 
@@ -50,10 +47,9 @@ export interface WorkonBootstrapRequest {
 }
 
 const DEFAULT_WORKON_MODEL_SELECTION: WorkonModelSelection = {
-  tier: "standard",
   exactModel: "",
   routingMode: "default",
-  routingReason: "backward-compatible default model tier",
+  routingReason: "backward-compatible default Pi model selection",
 };
 
 function workonModelSelection(request: WorkonBootstrapRequest): WorkonModelSelection {
@@ -436,8 +432,7 @@ Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
 Heartbeat interval: ${params.request.heartbeat}
 Mode: ${params.request.mode}
-Model tier: ${workonModelSelection(params.request).tier}
-Exact model: ${workonModelSelection(params.request).exactModel || "(not resolved)"}
+Exact model: ${workonModelSelection(params.request).exactModel || "(runtime default)"}
 Model routing mode: ${workonModelSelection(params.request).routingMode}
 Model routing reason: ${workonModelSelection(params.request).routingReason}
 Created: ${params.request.nowIso}
@@ -511,8 +506,7 @@ async function buildHandoffPrompt(params: {
     heartbeat_interval: heartbeatLabel(params.heartbeat),
     model_routing_mode: params.modelSelection.routingMode,
     model_routing_reason: params.modelSelection.routingReason,
-    model_tier: params.modelSelection.tier,
-    resolved_model: params.modelSelection.exactModel || "(not resolved)",
+    resolved_model: params.modelSelection.exactModel || "(runtime default)",
     issue_number: params.issue.number,
     issue_title: params.issue.title,
     issue_url: params.issue.url,
@@ -669,8 +663,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
-        `Model tier: ${evidence.modelSelection?.tier ?? "standard"}`,
-        `Exact model: ${evidence.modelSelection?.exactModel || "(not resolved)"}`,
+        `Exact model: ${evidence.modelSelection?.exactModel || "(runtime default)"}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
         `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
