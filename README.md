@@ -83,6 +83,10 @@ flowchart LR
 | `/address-open-issues [--limit N] [--repo owner/repo]` | Sweep open GitHub issues authored by the current user. |
 | `/learn-skill <topic> [--from <path\|url>] [--dry-run]` | Create or refine a reusable skill in the learning store. |
 
+For a parked maintainer side terminal, run `/inbox` from a non-git directory such
+as `$HOME`; that defaults to the global queue. From inside a repository, `/inbox`
+stays repo-scoped unless you pass `--global` or `--scope global`.
+
 <details>
 <summary><strong>Run workflows outside the REPL</strong></summary>
 

@@ -26,10 +26,11 @@ Requirements:
   when provided.
 - Gracefully degrade when `gh`, `glab`, auth, remotes, or session metadata are
   unavailable. Report missing evidence as a limitation, not a failure.
-- Inspect the current repo by default when running inside a git repository; use
-  global maintainer semantics outside git repos or when `--global`/`--scope global`
-  is provided. Respect explicit `--scope current`, repo, user, forge, focus, and
-  limit hints from command input.
+- For the side-terminal/root workspace use case, `/inbox` defaults to global
+  maintainer semantics whenever the command is run outside a git repository.
+  Inside a git repository, inspect the current repo by default unless `--global`
+  or `--scope global` is provided. Respect explicit `--scope current`, repo,
+  user, forge, focus, and limit hints from command input.
 - If a user hint is present, use the command handler's read-only repository
   discovery evidence before collecting or requesting per-repo signals. Treat
   `@me` as the authenticated user. Do not clone, fetch, pull, or otherwise
