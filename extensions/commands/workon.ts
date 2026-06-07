@@ -302,43 +302,186 @@ function validationItemsFromBody(body: string | undefined): string[] {
   return lines.slice(0, 8).map((line) => line.replace(/^(?:[-*]|\d+\.|- \[[ xX]\])\s+/, ""));
 }
 
-function unresolvedBreakingChange(body: string | undefined): boolean {
-  if (!body || !/breaking change|public api|schema|migration|cli contract/i.test(body)) return false;
-  return !/breaking change(?: risk)?:?\s*(?:none|no|n\/a|not expected)|no breaking change/i.test(body);
+type MarkdownSection = {
+  heading: string;
+  normalizedHeading: string;
+  text: string;
+};
+
+const BREAKING_CHANGE_SECTION_HEADINGS = new Set([
+  "breaking change",
+  "breaking change risk",
+  "public contract",
+  "public contract risk",
+  "public api",
+  "public api risk",
+  "schema",
+  "schema risk",
+  "migration",
+  "migration risk",
+  "cli contract",
+  "cli contract risk",
+]);
+
+const REVIEW_SIZE_SECTION_HEADINGS = new Set([
+  "review size",
+  "review size risk",
+  "scope",
+  "scope risk",
+  "implementation",
+  "implementation risk",
+]);
+
+const REVIEW_SIZE_EXCLUDED_SECTION_HEADINGS = new Set([
+  "reproduction",
+  "reproduction status",
+  "steps to reproduce",
+  "current behavior",
+  "evidence",
+  "evidence trail",
+  "likely root cause",
+  "diagnostics",
+  "diagnostic notes",
+  "debug notes",
+  "debugging notes",
+  "non goals",
+  "non-goals",
+  "out of scope",
+  "workon readiness notes",
+  "/workon readiness notes",
+]);
+
+const ABSENT_OR_RESOLVED_RISK_TERMS = new Set([
+  "none",
+  "no",
+  "n/a",
+  "not expected",
+  "absent",
+  "low",
+  "resolved",
+  "bounded",
+]);
+
+const REVIEW_SIZE_RISK_TERMS = [
+  "large",
+  "broad",
+  "sweeping",
+  "multi phase",
+  "multi-phase",
+  "many files",
+  "refactor everything",
+  "over 500",
+];
+
+function normalizeHeading(heading: string): string {
+  return heading
+    .toLowerCase()
+    .replace(/[`*_]/g, "")
+    .replace(/[–—]/g, "-")
+    .replace(/\s*\/\s*/g, "/")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-// Review-size risk should come from the proposed scope, not from diagnostic text that
-// quotes the trigger words while explaining a readiness false positive.
-function reviewSizeRiskBody(body: string | undefined): string {
-  if (!body) return "";
+function normalizeText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  const excludedHeadings = /^(?:reproduction(?: status)?|steps to reproduce|current behavior|evidence(?: trail)?|likely root cause|diagnostics?|debug(?:ging)? notes?)$/i;
-  const keptLines: string[] = [];
+function normalizedTextIncludesAny(text: string, terms: Iterable<string>): boolean {
+  const normalized = normalizeText(text);
+  return Array.from(terms).some((term) => normalized.includes(term));
+}
+
+function normalizedTextHasTerm(text: string, term: string): boolean {
+  const normalized = normalizeText(text);
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\*/g, ".*");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, "i").test(normalized);
+}
+
+function parseMarkdownSections(body: string | undefined): MarkdownSection[] {
+  if (!body) return [];
+
+  const sections: MarkdownSection[] = [];
+  let current: { heading: string; normalizedHeading: string; lines: string[] } | null = null;
   let inFence = false;
-  let excludeSection = false;
 
   for (const line of body.split(/\r?\n/)) {
     if (/^\s*```/.test(line)) {
       inFence = !inFence;
+      current?.lines.push(line);
       continue;
     }
-    if (inFence || /^\s*>/.test(line)) continue;
 
-    const heading = line.match(/^#{1,3}\s+(.+?)\s*#*\s*$/)?.[1]?.trim();
+    const heading = !inFence ? line.match(/^#{1,3}\s+(.+?)\s*#*\s*$/)?.[1]?.trim() : undefined;
     if (heading) {
-      excludeSection = excludedHeadings.test(heading);
-      if (!excludeSection) keptLines.push(line);
+      if (current) {
+        sections.push({
+          heading: current.heading,
+          normalizedHeading: current.normalizedHeading,
+          text: [current.heading, ...current.lines].join("\n"),
+        });
+      }
+      current = { heading, normalizedHeading: normalizeHeading(heading), lines: [] };
       continue;
     }
 
-    if (!excludeSection) keptLines.push(line);
+    current?.lines.push(line);
   }
 
-  return keptLines.join("\n");
+  if (current) {
+    sections.push({
+      heading: current.heading,
+      normalizedHeading: current.normalizedHeading,
+      text: [current.heading, ...current.lines].join("\n"),
+    });
+  }
+
+  return sections;
+}
+
+function matchingSectionText(body: string | undefined, headings: Set<string>): string {
+  return parseMarkdownSections(body)
+    .filter((section) => headings.has(section.normalizedHeading))
+    .map((section) => section.text)
+    .join("\n");
+}
+
+function hasAbsentOrResolvedRisk(text: string): boolean {
+  return Array.from(ABSENT_OR_RESOLVED_RISK_TERMS).some((term) => normalizedTextHasTerm(text, term));
+}
+
+function unresolvedBreakingChange(body: string | undefined): boolean {
+  const riskText = matchingSectionText(body, BREAKING_CHANGE_SECTION_HEADINGS);
+  const text = riskText || body || "";
+  if (!normalizedTextIncludesAny(text, ["breaking change", "public contract", "public api", "schema", "migration", "cli contract"])) return false;
+  return !hasAbsentOrResolvedRisk(text);
+}
+
+// Review-size risk should come from the proposed scope/risk section, not from
+// diagnostics, evidence, non-goals, or text that only quotes trigger words.
+function reviewSizeRiskBody(body: string | undefined): string {
+  if (!body) return "";
+
+  const scopedRiskText = matchingSectionText(body, REVIEW_SIZE_SECTION_HEADINGS);
+  if (scopedRiskText) return scopedRiskText;
+
+  const sections = parseMarkdownSections(body);
+  if (sections.length === 0) return body;
+
+  return sections
+    .filter((section) => !REVIEW_SIZE_EXCLUDED_SECTION_HEADINGS.has(section.normalizedHeading))
+    .map((section) => section.text)
+    .join("\n");
 }
 
 function reviewSizeRisk(body: string | undefined): boolean {
-  return bodyMentions(reviewSizeRiskBody(body), /\b(large|broad|sweeping|multi[- ]?phase|many files|refactor everything|over 500|>\s*500)\b/i);
+  const riskText = reviewSizeRiskBody(body);
+  if (hasAbsentOrResolvedRisk(riskText)) return false;
+  return REVIEW_SIZE_RISK_TERMS.some((term) => normalizedTextHasTerm(riskText, term)) || />\s*500/.test(riskText);
 }
 
 function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {

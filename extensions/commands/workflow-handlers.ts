@@ -442,6 +442,7 @@ export function createWorkflowCommandHandlers(params: {
           "Apply fix: no",
           "",
           "Instruction: Build a reproduction or observable feedback loop first, investigate hypotheses rigorously, and converge on the highest-confidence root cause or candidate. Draft a new GitHub issue only when evidence justifies it, ask explicit approval before creating it, and do not apply code changes.",
+          "Instruction: Any proposed issue must be a /workon-ready work packet with headings for Current behavior, Desired behavior, Acceptance criteria (plain markdown bullets, not task-list checkboxes), Validation plan, Non-goals, Breaking-change risk, Review-size risk, and /workon readiness notes. State low/absent/resolved risks explicitly instead of omitting them.",
         ],
         flags: () => ({ fix: false, createIssueBrief: true }),
         entry: (problem) => ({
@@ -734,7 +735,7 @@ export function createWorkflowCommandHandlers(params: {
           `Triage target: ${target}`,
           "Instruction: Treat this as user-posted issue/request intake. Gather issue context, comments, labels, reporter activity, relevant code/docs, repo guidelines, and prior out-of-scope decisions when available.",
           "Instruction: Default to one cleaned-up issue/work packet. Propose a split table only when the issue is clearly too broad or likely to exceed reviewable PR size.",
-          "Instruction: Produce a work packet with current behavior or goal, desired behavior, acceptance criteria (plain markdown bullets, not task-list checkboxes), validation/tests, non-goals, breaking-change risk, review-size risk, and /workon readiness status.",
+          "Instruction: Produce a /workon-ready work packet with headings for Current behavior or goal, Desired behavior, Acceptance criteria (plain markdown bullets, not task-list checkboxes), Validation plan, Non-goals, Breaking-change risk, Review-size risk, and /workon readiness notes. State low/absent/resolved risks explicitly instead of omitting them.",
           "Instruction: Ask explicit approval before creating or updating any GitHub issue, labels, or comments.",
         ],
         entry: (target) => ({ target }),

@@ -670,6 +670,79 @@ test("does not self-block readiness on quoted review-size keywords in diagnostic
   }
 });
 
+test("accepts resolved public-contract and bounded review-size risk sections", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-resolved-risk-test-"));
+  try {
+    const body = [
+      "## Current behavior",
+      "",
+      "The workflow rejects a ready issue packet.",
+      "",
+      "## Acceptance criteria",
+      "",
+      "- Add focused regression tests for the changed behavior.",
+      "",
+      "## Validation plan",
+      "",
+      "- Run npm run test:node -- tests/commands/workon.test.ts",
+      "",
+      "## Non-goals",
+      "",
+      "- Do not perform a broad rewrite or touch many files.",
+      "",
+      "## Breaking-change risk",
+      "",
+      "Public-contract risk is resolved: no CLI contract change is expected.",
+      "",
+      "## Review-size risk",
+      "",
+      "Risk is low and bounded to a focused readiness parser/test patch.",
+      "",
+      "## /workon readiness notes",
+      "",
+      "Ready because scope, validation, non-goals, and risks are explicit.",
+    ].join("\n");
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 135 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        135,
+        "fix(workon): align readiness and PR handoff with work-package contract",
+        body,
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "135",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.doesNotMatch(rendered, /Autonomous readiness: not-ready/);
+    assert.match(rendered, /Source issue: pesap\/agents#135/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("handoff template requires draft PR acceptance-criteria response list", async () => {
+  const template = await readFile(path.join(process.cwd(), "commands/workon-handoff-template.md"), "utf8");
+
+  assert.match(template, /acceptance-criteria response list/i);
+  assert.match(template, /`Addressed` with evidence/);
+  assert.match(template, /`Not addressed` with the reason and follow-up/);
+});
+
 test("still blocks genuinely oversized review-size risk", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-review-size-risk-test-"));
   try {
