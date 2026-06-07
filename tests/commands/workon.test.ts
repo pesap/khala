@@ -299,6 +299,52 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
   }
 });
 
+test("dry-run prepares capsule and branch suggestion without starting Worktrunk", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-dry-run-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        65,
+        "feat(inbox): detect local worktrees and stale sessions",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "65",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        dryRun: true,
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.equal(calls.some((call) => call.startsWith("bash ")), false);
+    assert.match(rendered, /Suggested branch: feat\/65-detect-local-worktrees-and-stale-sessions/);
+    assert.match(rendered, /Worktree status: prepared/);
+    assert.match(rendered, /Dry run requested: prepared capsule and branch suggestion only/);
+    assert.match(rendered, /Bootstrap phase guidance: resolve issue -> prepare capsule -> suggest branch only/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.doesNotMatch(capsule, /Mode: prepare/);
+    assert.match(capsule, /Dry run: yes/);
+    assert.match(capsule, /Worktree status: prepared/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("starts Worktrunk worktree directly outside Zellij", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-start-test-"));
   try {
@@ -624,7 +670,7 @@ test("attributes grouped readiness failures to the blocking source issue", async
     assert.match(rendered, /Source issues: #107, #109/);
     assert.match(rendered, /Autonomous readiness: not ready for https:\/\/github.com\/pesap\/agents\/issues\/109/);
     assert.doesNotMatch(rendered, /Autonomous readiness: not ready for https:\/\/github.com\/pesap\/agents\/issues\/107/);
-    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/109\n  1\. Add non-goals or out-of-scope boundaries/);
+    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/109\n {2}1\. Add non-goals or out-of-scope boundaries/);
     assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/109/);
     assert.doesNotMatch(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/107/);
   } finally {
@@ -667,8 +713,8 @@ test("groups grouped readiness failures by each blocking source issue", async ()
     const rendered = sections.join("\n");
 
     assert.match(rendered, /Autonomous readiness: not ready for 2 source issues/);
-    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/107\n  1\. Add narrow, testable acceptance criteria/);
-    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/110\n  1\. Add non-goals or out-of-scope boundaries/);
+    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/107\n {2}1\. Add narrow, testable acceptance criteria/);
+    assert.match(rendered, /- https:\/\/github.com\/pesap\/agents\/issues\/110\n {2}1\. Add non-goals or out-of-scope boundaries/);
     assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/107/);
     assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/110/);
   } finally {

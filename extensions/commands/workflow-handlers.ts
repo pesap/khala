@@ -58,7 +58,7 @@ function isWorkonIssueTarget(target: string): boolean {
 function validateWorkonIssueTargets(targets: string[]): string | null {
   return targets.every(isWorkonIssueTarget)
     ? null
-    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS|--interval HOURS]. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
+    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
 }
 
 function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
@@ -152,6 +152,7 @@ export function createWorkflowCommandHandlers(params: {
     forge: WorkonForge;
     mode: WorkonMode;
     heartbeat: string;
+    dryRun: boolean;
     modelSelection: WorkonModelSelection;
     error?: string;
     extraInstruction: string;
@@ -647,7 +648,7 @@ export function createWorkflowCommandHandlers(params: {
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--mode prepare|start] [--heartbeat HOURS|--interval HOURS]",
+          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]",
           "error",
         );
         return;
@@ -671,6 +672,7 @@ export function createWorkflowCommandHandlers(params: {
         repo: parsed.repo,
         forge: parsed.forge,
         mode: parsed.mode,
+        dryRun: parsed.dryRun,
         capsuleRoot: path.join(homedir(), ".pi", "khala"),
         nowIso: nowIso(),
         launchInZellij: Boolean(process.env.ZELLIJ),
@@ -688,6 +690,7 @@ export function createWorkflowCommandHandlers(params: {
           repo: parsed.repo || null,
           forge: parsed.forge,
           mode: parsed.mode,
+          dryRun: parsed.dryRun,
           heartbeat: parsed.heartbeat,
           model: parsed.modelSelection.exactModel || null,
           modelRoutingMode: parsed.modelSelection.routingMode,
@@ -700,7 +703,7 @@ export function createWorkflowCommandHandlers(params: {
           targets.length > 1 ? `Workon targets: ${targets.join(", ")}` : "",
           `Repo override: ${parsed.repo || "(current repo / infer from target)"}`,
           `Forge preference: ${parsed.forge}`,
-          `Mode: ${parsed.mode}`,
+          `Dry run: ${parsed.dryRun ? "yes" : "no"}`,
           `Forge feedback heartbeat: ${parsed.heartbeat}`,
           `Exact model: ${parsed.modelSelection.exactModel || "(runtime default)"}`,
           `Model routing mode: ${parsed.modelSelection.routingMode}`,

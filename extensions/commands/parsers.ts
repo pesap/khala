@@ -237,6 +237,7 @@ export function parseWorkonArgs(args: string): {
   forge: InboxForge;
   mode: WorkonMode;
   heartbeat: string;
+  dryRun: boolean;
   modelSelection: WorkonModelSelection;
   extraInstruction: string;
 } {
@@ -254,13 +255,18 @@ export function parseWorkonArgs(args: string): {
     INBOX_FORGES,
   );
 
+  const dryRunResult = removeFlag(rest, /(^|\s)--dry-run(\s|$)/);
+  rest = dryRunResult.value;
+  const dryRun = Boolean(dryRunResult.match);
+
   const modeResult = removeFlag(rest, /(^|\s)--mode\s+(\S+)(\s|$)/);
   rest = modeResult.value;
-  const mode = parseAllowedInboxValue(
+  const parsedMode = parseAllowedInboxValue(
     modeResult.match?.[2],
-    "prepare",
+    "start",
     WORKON_MODES,
   );
+  const mode = dryRun ? "prepare" : parsedMode;
 
   const heartbeatResult = removeFlag(rest, /(^|\s)--(?:heartbeat|interval)\s+(\S+)(\s|$)/);
   rest = heartbeatResult.value;
@@ -290,6 +296,7 @@ export function parseWorkonArgs(args: string): {
     forge,
     mode,
     heartbeat,
+    dryRun,
     modelSelection,
     extraInstruction: rest,
   };
