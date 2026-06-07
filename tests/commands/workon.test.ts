@@ -752,6 +752,17 @@ test("handoff template requires draft PR acceptance-criteria response list", asy
   assert.match(template, /`Not addressed` with the reason and follow-up/);
 });
 
+test("handoff template requires bounded dirty-tree simplify before implementation commit", async () => {
+  const template = await readFile(path.join(process.cwd(), "commands/workon-handoff-template.md"), "utf8");
+
+  assert.match(template, /After implementation edits, run focused validation/i);
+  assert.match(template, /Run `\/simplify` only on the dirty tree before creating the implementation commit/);
+  assert.match(template, /`\/workon` bootstrap must not invoke `\/simplify`/);
+  assert.match(template, /behavior-preserving, source-issue-scoped, and free of drive-by refactors/);
+  assert.match(template, /Rerun the focused validation after simplification and before committing/);
+  assert.match(template, /do not require a separate simplify commit/);
+});
+
 test("still blocks genuinely oversized review-size risk", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-review-size-risk-test-"));
   try {
