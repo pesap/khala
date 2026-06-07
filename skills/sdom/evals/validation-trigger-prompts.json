@@ -1,0 +1,14 @@
+{
+  "skill_name": "sdom",
+  "split": "validation",
+  "evals": [
+    {"id": "pos-5", "query": "SDOM solver configuration for highs is not converging; what should I inspect?", "should_trigger": true},
+    {"id": "pos-6", "query": "Refactor src/sdom/results.py to keep outputs backward compatible.", "should_trigger": true},
+    {"id": "pos-7", "query": "Validate SDOM input CSV schema before model initialization.", "should_trigger": true},
+    {"id": "pos-8", "query": "Implement a small SDOM feature with tests using uv and pytest.", "should_trigger": true},
+    {"id": "neg-5", "query": "Triage this GitLab MR and rerun failed pipeline jobs.", "should_trigger": false},
+    {"id": "neg-6", "query": "Create a reusable infrasys component graph migration helper.", "should_trigger": false},
+    {"id": "neg-7", "query": "Do a NASA Power of Ten audit for this C firmware module.", "should_trigger": false},
+    {"id": "neg-8", "query": "Set up pre-commit hooks with prek for this repository.", "should_trigger": false}
+  ]
+}
