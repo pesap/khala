@@ -133,6 +133,27 @@ test("public workflow taxonomy does not expose dropped feature or tdd commands",
   await fs.access(path.join(repoRoot, "commands", "triage-workflow.md"));
 });
 
+test("triage guidance enforces plain bullet acceptance criteria", async () => {
+  const repoRoot = process.cwd();
+  const triagePrompt = await fs.readFile(path.join(repoRoot, "commands", "triage-workflow.md"), "utf8");
+  const triageWorkflowHandler = await fs.readFile(path.join(repoRoot, "extensions", "commands", "workflow-handlers.ts"), "utf8");
+  const triageAgentBrief = await fs.readFile(path.join(repoRoot, "skills", "triage", "AGENT-BRIEF.md"), "utf8");
+
+  assert.match(
+    triagePrompt,
+    /narrow acceptance criteria \(plain markdown bullet list items, not task-list `- \[ \]` items\)/,
+  );
+
+  assert.match(
+    triageWorkflowHandler,
+    /acceptance criteria \(plain markdown bullets, not task-list checkboxes\)/,
+  );
+
+  for (const section of triageAgentBrief.match(/\*\*Acceptance criteria:\*\*[\s\S]*?(?:\n\n|```)/g) ?? []) {
+    assert.equal(/- \[ \]/.test(section), false);
+  }
+});
+
 test("workflow handler instructions do not contain unconditional clarification stalls", async () => {
   const repoRoot = process.cwd();
   const handlerText = await fs.readFile(

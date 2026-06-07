@@ -23,7 +23,7 @@ Requirements:
   - category: bug, enhancement, chore, or unclear
   - current behavior or current state
   - desired behavior or goal
-  - narrow acceptance criteria
+  - narrow acceptance criteria (plain markdown bullet list items, not task-list `- [ ]` items)
   - validation/tests, with behavior/regression validation for bugs
   - non-goals
   - breaking-change risk
