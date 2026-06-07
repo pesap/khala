@@ -87,6 +87,8 @@ interface GithubSearchItem {
   labels?: Array<{ name?: string }>;
 }
 
+export type InboxFreshness = "fresh" | "stale" | "ancient" | "unknown";
+
 export interface InboxItem {
   bucket: string;
   repo: string;
@@ -94,6 +96,7 @@ export interface InboxItem {
   title: string;
   url: string;
   updatedAt?: string;
+  freshness?: InboxFreshness;
   suggestedCommand: string;
   evidence: string;
 }
@@ -228,27 +231,77 @@ function bucketPriority(bucket: string): number {
   return index === -1 ? INBOX_BUCKETS.length : index;
 }
 
-function compareOptionalIso(a?: string, b?: string): number {
-  if (a && b && a !== b) return a.localeCompare(b);
+function compareText(a: string, b: string): number {
+  return a.localeCompare(b, "en");
+}
+
+function freshnessPriority(item: InboxItem): number {
+  if (isBlockingInboxItem(item)) return 0;
+  switch (item.freshness) {
+    case "fresh":
+      return 0;
+    case "stale":
+      return 1;
+    case "ancient":
+      return 3;
+    case "unknown":
+    case undefined:
+      return 2;
+  }
+}
+
+function compareOptionalIsoNewestFirst(a?: string, b?: string): number {
+  if (a && b && a !== b) return b.localeCompare(a);
   if (a && !b) return -1;
   if (!a && b) return 1;
   return 0;
 }
 
-function compareText(a: string, b: string): number {
-  return a.localeCompare(b, "en");
+function isBlockingInboxItem(item: InboxItem): boolean {
+  return (
+    item.source === "authored-pr-ci-failure" ||
+    item.bucket === "My work is broken" ||
+    item.source === "stale-session-capsule" ||
+    item.source === "local-worktree"
+  );
+}
+
+function isActiveInboxItem(item: InboxItem): boolean {
+  return item.freshness !== "ancient" || isBlockingInboxItem(item);
 }
 
 function compareInboxItems(a: InboxItem, b: InboxItem): number {
   return (
+    freshnessPriority(a) - freshnessPriority(b) ||
     bucketPriority(a.bucket) - bucketPriority(b.bucket) ||
     (SOURCE_PRIORITY.get(a.source) ?? Number.MAX_SAFE_INTEGER) -
       (SOURCE_PRIORITY.get(b.source) ?? Number.MAX_SAFE_INTEGER) ||
-    compareOptionalIso(a.updatedAt, b.updatedAt) ||
+    compareOptionalIsoNewestFirst(a.updatedAt, b.updatedAt) ||
     compareText(a.repo, b.repo) ||
     compareText(a.title, b.title) ||
     compareText(a.url, b.url)
   );
+}
+
+function classifyInboxFreshness(
+  updatedAt: string | undefined,
+  nowIso: string,
+): InboxFreshness {
+  if (!updatedAt) return "unknown";
+  const updatedMs = Date.parse(updatedAt);
+  const nowMs = Date.parse(nowIso);
+  if (Number.isNaN(updatedMs) || Number.isNaN(nowMs)) return "unknown";
+  const ageDays = Math.max(0, (nowMs - updatedMs) / 86_400_000);
+  if (ageDays <= 7) return "fresh";
+  if (ageDays <= 90) return "stale";
+  return "ancient";
+}
+
+function classifyInboxItems(items: InboxItem[], nowIso: string): InboxItem[] {
+  return items.map((item) => ({
+    ...item,
+    freshness: item.freshness ?? classifyInboxFreshness(item.updatedAt, nowIso),
+  }));
 }
 
 function sortedInboxItems(items: InboxItem[]): InboxItem[] {
@@ -1145,12 +1198,14 @@ export async function collectInboxSnapshot(
       commands: [...localEvidence.commands],
     },
   ];
-  const items = [...githubEvidence.items, ...localEvidence.items].sort(
-    compareInboxItems,
-  );
+  const generatedAt = request.nowIso ?? new Date().toISOString();
+  const items = classifyInboxItems(
+    [...githubEvidence.items, ...localEvidence.items],
+    generatedAt,
+  ).sort(compareInboxItems);
 
   return {
-    generatedAt: request.nowIso ?? new Date().toISOString(),
+    generatedAt,
     scope: {
       cwd: request.cwd,
       repo: scopedRequest.repo || undefined,
@@ -1178,8 +1233,9 @@ function formatCollectorHealth(snapshot: InboxSnapshot): string {
 
 function conciseItemReason(item: InboxItem): string {
   const source = item.source.replaceAll("-", " ");
+  const freshness = item.freshness ? `${item.freshness} ` : "";
   const updated = item.updatedAt ? `, updated ${item.updatedAt}` : "";
-  return `${source}${updated}`;
+  return `${freshness}${source}${updated}`;
 }
 
 function renderDoNextItem(item: InboxItem, index: number): string {
@@ -1215,7 +1271,15 @@ function renderCompactGaps(snapshot: InboxSnapshot): string {
 }
 
 export function renderInboxSnapshotCompact(snapshot: InboxSnapshot): string {
-  const topItems = sortedInboxItems(snapshot.items).slice(0, 5);
+  const sortedItems = sortedInboxItems(
+    classifyInboxItems(snapshot.items, snapshot.generatedAt),
+  );
+  const activeItems = sortedItems.filter(isActiveInboxItem);
+  const topItems = (activeItems.length > 0 ? activeItems : sortedItems).slice(
+    0,
+    5,
+  );
+  const staleItems = sortedItems.filter((item) => item.freshness === "ancient");
   const lines = [
     `Inbox · ${formatInboxTimestamp(snapshot.generatedAt)} · ${snapshot.status}`,
     formatCollectorHealth(snapshot),
@@ -1227,6 +1291,13 @@ export function renderInboxSnapshotCompact(snapshot: InboxSnapshot): string {
       ? topItems.map(renderDoNextItem)
       : ["- No ranked actions from collected evidence."]),
   );
+  if (staleItems.length > 0) {
+    lines.push(
+      "",
+      "Stale/noisy",
+      ...staleItems.slice(0, 5).map(renderDoNextItem),
+    );
+  }
   lines.push("", renderCompactCounts(snapshot.items), renderCompactGaps(snapshot));
   return `${lines.join("\n")}\n`;
 }
