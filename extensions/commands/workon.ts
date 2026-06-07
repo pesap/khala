@@ -536,6 +536,28 @@ function formatReadinessActionItems(
   ].join("\n");
 }
 
+function multiIssueWorkScope(sourceIssues: GithubIssueMetadata[]): string {
+  if (sourceIssues.length <= 1) return "";
+  const issueLines = sourceIssues
+    .map((issue) => `- ${issue.url} (#${issue.number}) ${issue.title}`)
+    .join("\n");
+  const orderLines = sourceIssues
+    .map((issue, index) => `${index + 1}. #${issue.number}: ${issue.title}`)
+    .join("\n");
+
+  return `## Combined work scope
+
+This is one combined /workon session for these source issues; do not create separate branches, worktrees, capsules, or sessions per issue.
+${issueLines}
+
+## Implementation order
+
+Use this deterministic starting order, based on the provided target order unless explicit issue-body evidence supports changing it:
+${orderLines}
+
+Make issue-scoped commits tied to the relevant source issue where practical.`;
+}
+
 function capsuleMarkdown(params: {
   request: WorkonBootstrapRequest;
   issue: GithubIssueMetadata;
@@ -570,6 +592,8 @@ function capsuleMarkdown(params: {
   const validation = validationItemsFromBody(params.issue.body)
     .map((item) => `- ${item}`)
     .join("\n") || "- Run the validation described by the issue before shipping.";
+  const combinedWorkScope = multiIssueWorkScope(sourceIssues);
+  const combinedWorkScopeSection = combinedWorkScope ? `\n${combinedWorkScope}\n` : "";
 
   return `# Workon session capsule
 
@@ -598,7 +622,7 @@ Created: ${params.request.nowIso}
 ## Problem
 
 ${params.issue.title}
-
+${combinedWorkScopeSection}
 ## Acceptance criteria
 
 ${acceptance}
@@ -673,9 +697,7 @@ async function buildHandoffPrompt(params: {
     repo: params.repo,
   });
   if (sourceIssues.length === 1) return rendered;
-  return `${rendered}\n\nMultiple source issues for this work session:\n${sourceIssues
-    .map((issue) => `- ${issue.url} (#${issue.number}) ${issue.title}`)
-    .join("\n")}\n\nInstruction: Make multiple commits, each tied to the relevant source issue where practical.`;
+  return `${rendered}\n\n${multiIssueWorkScope(sourceIssues)}`;
 }
 
 async function writeCapsule(params: {
