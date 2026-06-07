@@ -744,10 +744,15 @@ test("accepts resolved public-contract and bounded review-size risk sections", a
   }
 });
 
-test("handoff template requires draft PR acceptance-criteria response list", async () => {
+test("handoff template requires source-closing checklist PR body", async () => {
   const template = await readFile(path.join(process.cwd(), "commands/workon-handoff-template.md"), "utf8");
 
-  assert.match(template, /acceptance-criteria response list/i);
+  assert.match(template, /resolved source-closing marker when applicable/i);
+  assert.match(template, /Summary/);
+  assert.match(template, /checklist-style Acceptance criteria/i);
+  assert.match(template, /Deviations from the original plan/);
+  assert.match(template, /command-only Test Plan/);
+  assert.match(template, /References/);
   assert.match(template, /`Addressed` with evidence/);
   assert.match(template, /`Not addressed` with the reason and follow-up/);
 });
