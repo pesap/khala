@@ -28,13 +28,13 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
       return { loadedSkills: [] };
     },
     notifyWorkflowStarted: () => undefined,
-    parseDebugArgs: () => ({ problem: "" }),
+    parseDebugArgs: (args) => ({ problem: args ?? "" }),
     parseReviewArgs: () => ({ mode: "uncommitted" }),
     buildReviewTarget: () => ({ summary: "", instruction: "", flags: {} }),
     loadProjectReviewGuidelines: async () => null,
     parsePlanArgs: () => ({ plan: "" }),
     parseAuditArgs: () => ({ claim: "" }),
-    parseTriageArgs: () => ({ target: "" }),
+    parseTriageArgs: (args) => ({ target: args ?? "" }),
     parseAddressOpenIssuesArgs: () => ({ limit: 20, repo: "" }),
     parseInboxArgs: () => ({ limit: 20, repo: "", user: "", forge: "auto", focus: "all", scope: "auto", details: false, extraInstruction: "" }),
     parseWorkonArgs,
@@ -63,6 +63,39 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
     },
   });
 }
+
+test("triage handler asks for /workon-ready packet contract headings", async () => {
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+  const handlers = createHandlers(captured);
+
+  await handlers.triage("broken command", { cwd: process.cwd() } as never);
+
+  const rendered = captured.sections?.join("\n") ?? "";
+  assert.match(rendered, /\/workon-ready work packet/);
+  assert.match(rendered, /Acceptance criteria/);
+  assert.match(rendered, /Validation plan/);
+  assert.match(rendered, /Non-goals/);
+  assert.match(rendered, /Breaking-change risk/);
+  assert.match(rendered, /Review-size risk/);
+  assert.match(rendered, /\/workon readiness notes/);
+});
+
+test("debug handler asks proposed issues to satisfy /workon packet contract", async () => {
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+  const handlers = createHandlers(captured);
+
+  await handlers.debug("unreported failure", { cwd: process.cwd() } as never);
+
+  const rendered = captured.sections?.join("\n") ?? "";
+  assert.match(rendered, /Any proposed issue must be a \/workon-ready work packet/);
+  assert.match(rendered, /Current behavior/);
+  assert.match(rendered, /Desired behavior/);
+  assert.match(rendered, /Acceptance criteria/);
+  assert.match(rendered, /Validation plan/);
+  assert.match(rendered, /Non-goals/);
+  assert.match(rendered, /Breaking-change risk/);
+  assert.match(rendered, /Review-size risk/);
+});
 
 test("workon handler groups comma-separated issue targets into one bootstrap", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
