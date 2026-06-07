@@ -255,13 +255,13 @@ function sortedInboxItems(items: InboxItem[]): InboxItem[] {
   return [...items].sort(compareInboxItems);
 }
 
-function topNextCommands(items: InboxItem[]): string[] {
+function topNextCommands(items: InboxItem[], limit = 3): string[] {
   const commands: string[] = [];
   for (const item of sortedInboxItems(items)) {
     if (!commands.includes(item.suggestedCommand)) {
       commands.push(item.suggestedCommand);
     }
-    if (commands.length === 3) break;
+    if (commands.length === limit) break;
   }
   return commands;
 }
@@ -1164,8 +1164,83 @@ export async function collectInboxSnapshot(
   };
 }
 
+function formatInboxTimestamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return iso.replace("T", " ").slice(0, 16);
+}
+
+function formatCollectorHealth(snapshot: InboxSnapshot): string {
+  return snapshot.collectors
+    .map((collector) => `${collector.name} ${collector.status}`)
+    .join(" · ");
+}
+
+function conciseItemReason(item: InboxItem): string {
+  const source = item.source.replaceAll("-", " ");
+  const updated = item.updatedAt ? `, updated ${item.updatedAt}` : "";
+  return `${source}${updated}`;
+}
+
+function renderDoNextItem(item: InboxItem, index: number): string {
+  return [
+    `${index + 1}. ${item.repo} #${item.title} — ${conciseItemReason(item)}`,
+    `   ${item.suggestedCommand}`,
+  ].join("\n");
+}
+
+function countBySource(items: InboxItem[], source: string): number {
+  return items.filter((item) => item.source === source).length;
+}
+
+function renderCompactCounts(items: InboxItem[]): string {
+  const reviewCount = countBySource(items, "review-requested-pr");
+  const brokenCiCount =
+    countBySource(items, "authored-pr-ci-failure") +
+    countBySource(items, "authored-pr-ci-pending");
+  const blockedSessionCount = items.filter(
+    (item) =>
+      item.source === "stale-session-capsule" && item.bucket === "My work is broken",
+  ).length;
+  const issueCount =
+    countBySource(items, "assigned-issue") + countBySource(items, "authored-issue");
+  const localCount = countBySource(items, "local-worktree");
+  return `Counts: reviews ${reviewCount}, broken CI ${brokenCiCount}, blocked sessions ${blockedSessionCount}, issues ${issueCount}, local ${localCount}`;
+}
+
+function renderCompactGaps(snapshot: InboxSnapshot): string {
+  const gaps = snapshot.collectors.flatMap((collector) => collector.gaps);
+  if (gaps.length === 0) return "Gaps: none";
+  return `Gaps: ${gaps.slice(0, 3).join("; ")}${gaps.length > 3 ? `; +${gaps.length - 3} more` : ""}`;
+}
+
+export function renderInboxSnapshotCompact(snapshot: InboxSnapshot): string {
+  const topItems = sortedInboxItems(snapshot.items).slice(0, 5);
+  const lines = [
+    `Inbox · ${formatInboxTimestamp(snapshot.generatedAt)} · ${snapshot.status}`,
+    formatCollectorHealth(snapshot),
+    "",
+    "Do next",
+  ];
+  lines.push(
+    ...(topItems.length > 0
+      ? topItems.map(renderDoNextItem)
+      : ["- No ranked actions from collected evidence."]),
+  );
+  lines.push("", renderCompactCounts(snapshot.items), renderCompactGaps(snapshot));
+  return `${lines.join("\n")}\n`;
+}
+
 export function renderInboxSnapshotJson(snapshot: InboxSnapshot): string {
   return `${JSON.stringify(snapshot, null, 2)}\n`;
+}
+
+export async function collectInboxDashboard(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner = createExecFileRunner(),
+): Promise<string[]> {
+  const snapshot = await collectInboxSnapshot(request, runner);
+  return [renderInboxSnapshotCompact(snapshot).trimEnd()];
 }
 
 export async function collectInboxEvidence(

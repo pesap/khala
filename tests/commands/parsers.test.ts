@@ -66,6 +66,7 @@ test("parses inbox flags with safe defaults", () => {
     forge: "auto",
     focus: "all",
     scope: "auto",
+    details: false,
     extraInstruction: "",
   });
 
@@ -80,6 +81,7 @@ test("parses inbox flags with safe defaults", () => {
       forge: "gitlab",
       focus: "reviews",
       scope: "auto",
+      details: false,
       extraInstruction: "stale blockers",
     },
   );
@@ -91,6 +93,7 @@ test("parses inbox flags with safe defaults", () => {
     forge: "auto",
     focus: "all",
     scope: "auto",
+    details: false,
     extraInstruction: "",
   });
 
@@ -101,6 +104,7 @@ test("parses inbox flags with safe defaults", () => {
     forge: "auto",
     focus: "all",
     scope: "auto",
+    details: false,
     extraInstruction: "",
   });
 
@@ -111,6 +115,7 @@ test("parses inbox flags with safe defaults", () => {
     forge: "auto",
     focus: "all",
     scope: "global",
+    details: false,
     extraInstruction: "parked pane",
   });
 
@@ -121,6 +126,7 @@ test("parses inbox flags with safe defaults", () => {
     forge: "auto",
     focus: "all",
     scope: "current",
+    details: false,
     extraInstruction: "",
   });
 });

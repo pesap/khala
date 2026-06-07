@@ -76,14 +76,30 @@ flowchart LR
 | `/git-review` | Run git-history diagnostics before reading code. |
 | `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |
 | `/ship [extra instruction]` | Simplify, validate, commit, push, and open/confirm PR/MR. |
-| `/inbox [--scope auto\|current\|global] [--global] [--focus all\|reviews\|issues\|prs\|ci\|local\|sessions] [--repo owner/repo] [--user [login\|@me]] [--forge auto\|github\|gitlab\|all] [--limit N]` | Show a read-only maintainer inbox from local, forge, and session signals. Defaults to global mode outside git repos for side-terminal dashboards. |
+| `/inbox [--scope auto\|current\|global] [--global] [--focus all\|reviews\|issues\|prs\|ci\|local\|sessions] [--repo owner/repo] [--user [login\|@me]] [--forge auto\|github\|gitlab\|all] [--limit N] [--details\|--evidence]` | Show a compact read-only maintainer dashboard from local, forge, and session signals. Defaults to global mode outside git repos for side-terminal dashboards; pass `--details` for full deterministic evidence. |
 | `/audit <claim>` | Anti-confirmation-bias claim audit with evidence-ranked revision. |
 | `/address-open-issues [--limit N] [--repo owner/repo]` | Sweep open GitHub issues authored by the current user through triage, workon, review, and remediation. |
 | `/learn-skill <topic> [--from <path\|url>] [--dry-run]` | Create or refine a reusable skill in the learning store. |
 
 For a parked maintainer side terminal, run `/inbox` from a non-git directory such
 as `$HOME`; that defaults to the global queue. From inside a repository, `/inbox`
-stays repo-scoped unless you pass `--global` or `--scope global`.
+stays repo-scoped unless you pass `--global` or `--scope global`. The default
+human output is a compact dashboard:
+
+```text
+Inbox · 2026-06-06 00:12 · partial
+GitHub ok · local skipped
+
+Do next
+1. NatLabRockies/R2X #256: Review request — review requested pr, updated 2026-06-05T00:00:00Z
+   /review pr https://github.com/NatLabRockies/R2X/pull/256
+
+Counts: reviews 1, broken CI 0, blocked sessions 0, issues 0, local 0
+Gaps: local collector skipped for focus=reviews
+```
+
+Pass `--details` or `--evidence` to include repository discovery, full bucketed
+item lists, evidence gaps, and read-only command dumps.
 
 <details>
 <summary><strong>Run workflows outside the REPL</strong></summary>

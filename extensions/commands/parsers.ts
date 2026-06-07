@@ -157,6 +157,7 @@ export function parseInboxArgs(args: string): {
   forge: InboxForge;
   focus: InboxFocus;
   scope: InboxScope;
+  details: boolean;
   extraInstruction: string;
 } {
   let rest = normalizeWhitespace(args);
@@ -205,6 +206,9 @@ export function parseInboxArgs(args: string): {
     ? "global"
     : parseAllowedInboxValue(scopeResult.match?.[2], "auto", INBOX_SCOPE_VALUES);
 
+  const detailsResult = removeFlag(rest, /(^|\s)--(?:details|evidence)(\s|$)/);
+  rest = detailsResult.value;
+
   return {
     limit: Number.isFinite(limit) && limit > 0 ? limit : 20,
     repo,
@@ -212,6 +216,7 @@ export function parseInboxArgs(args: string): {
     forge,
     focus,
     scope,
+    details: Boolean(detailsResult.match),
     extraInstruction: rest,
   };
 }
