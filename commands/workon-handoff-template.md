@@ -21,6 +21,13 @@ Task:
 - Keep changes scoped to the issue and branch.
 - Do not widen scope beyond the issue without creating or recommending a follow-up.
 
+Pre-commit simplify pass:
+- After implementation edits, run focused validation for the touched behavior before simplifying.
+- Run `/simplify` only on the dirty tree before creating the implementation commit; `/workon` bootstrap must not invoke `/simplify` because no implementation dirty tree exists yet.
+- Keep the simplify pass behavior-preserving, source-issue-scoped, and free of drive-by refactors.
+- Rerun the focused validation after simplification and before committing.
+- Commit only the final implementation plus simplify result; do not require a separate simplify commit.
+
 Draft PR and feedback heartbeat:
 - Once there is a coherent implementation commit, create or update a draft PR for this branch on the forge.
 - Link the draft PR back to {{issue_url}} and make clear it is not ready to merge until validation and review are complete.
