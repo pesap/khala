@@ -137,7 +137,7 @@ test("collects read-only GitHub inbox evidence for authenticated user", async (t
   );
   assert.match(
     rendered,
-    /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/org\/repo\/pull\/12\n2\. \/inbox --repo pesap\/agents --focus ci\n3\. \/triage https:\/\/github.com\/pesap\/agents\/issues\/61/,
+    /Top 3 next commands:\n1\. \/inbox --repo pesap\/agents --focus ci\n2\. \/review pr https:\/\/github.com\/org\/repo\/pull\/12\n3\. \/triage https:\/\/github.com\/pesap\/agents\/issues\/61/,
   );
   assert.match(rendered, /NatLabRockies\/arco/);
   assert.ok(
@@ -233,12 +233,12 @@ test("renders canonical buckets in stable priority order", async (t) => {
       rendered.indexOf("New work needs shaping (1):"),
   );
   assert.ok(
-    rendered.indexOf('title="#2: older review"') <
-      rendered.indexOf('title="#3: newer review"'),
+    rendered.indexOf('title="#3: newer review"') <
+      rendered.indexOf('title="#2: older review"'),
   );
   assert.match(
     rendered,
-    /Top 3 next commands:\n1\. \/review pr https:\/\/github.com\/pesap\/agents\/pull\/2\n2\. \/review pr https:\/\/github.com\/pesap\/agents\/pull\/3\n3\. \/inbox --repo pesap\/agents --focus ci/,
+    /Top 3 next commands:\n1\. \/inbox --repo pesap\/agents --focus ci\n2\. \/review pr https:\/\/github.com\/pesap\/agents\/pull\/3\n3\. \/review pr https:\/\/github.com\/pesap\/agents\/pull\/2/,
   );
 });
 
@@ -721,7 +721,11 @@ test("collects typed deterministic inbox snapshot before rendering", async (t) =
   );
   assert.deepEqual(
     snapshot.items.map((item) => item.title),
-    ["2: older review", "1: newer review"],
+    ["1: newer review", "2: older review"],
+  );
+  assert.deepEqual(
+    snapshot.items.map((item) => item.freshness),
+    ["fresh", "fresh"],
   );
   assert.equal(JSON.parse(renderInboxSnapshotJson(snapshot)).items.length, 2);
 });
@@ -775,6 +779,70 @@ test("renders compact actionable dashboard from typed snapshot", async () => {
   assert.match(rendered, /Counts: reviews 1, broken CI 1, blocked sessions 0, issues 0, local 0/);
   assert.match(rendered, /Gaps: Local collector skipped for focus=reviews/);
   assert.doesNotMatch(rendered, /Read-only commands executed/);
+});
+
+test("compact dashboard separates ancient review requests from active work", async () => {
+  const rendered = renderInboxSnapshotCompact({
+    generatedAt: "2026-06-06T00:12:00.000Z",
+    scope: { cwd: "/repo/main", forge: "github", focus: "all" },
+    status: "success",
+    collectors: [
+      { name: "github", status: "ok", gaps: [], commands: ["gh search prs"] },
+      { name: "local", status: "ok", gaps: [], commands: ["git worktree list"] },
+    ],
+    items: [
+      {
+        bucket: "Needs you now",
+        repo: "ancient/repo",
+        source: "review-requested-pr",
+        title: "1: Ancient review",
+        url: "https://github.com/ancient/repo/pull/1",
+        updatedAt: "2021-01-01T00:00:00Z",
+        suggestedCommand: "/review pr https://github.com/ancient/repo/pull/1",
+        evidence: "gh search prs --review-requested=@me --state=open",
+      },
+      {
+        bucket: "Needs you now",
+        repo: "fresh/repo",
+        source: "review-requested-pr",
+        title: "2: Fresh review",
+        url: "https://github.com/fresh/repo/pull/2",
+        updatedAt: "2026-06-05T00:00:00Z",
+        suggestedCommand: "/review pr https://github.com/fresh/repo/pull/2",
+        evidence: "gh search prs --review-requested=@me --state=open",
+      },
+      {
+        bucket: "My work is broken",
+        repo: "mine/repo",
+        source: "authored-pr-ci-failure",
+        title: "3: Failing CI",
+        url: "https://github.com/mine/repo/pull/3",
+        updatedAt: "2021-01-01T00:00:00Z",
+        suggestedCommand: "/inbox --repo mine/repo --focus ci",
+        evidence: "gh search prs --author=@me --state=open --checks=failure",
+      },
+      {
+        bucket: "My work is broken",
+        repo: "pesap/agents",
+        source: "stale-session-capsule",
+        title: "feat/4 #4: blocked+missing-worktree capsule",
+        url: "https://github.com/pesap/agents/issues/4",
+        updatedAt: "2021-01-01T00:00:00Z",
+        suggestedCommand: "/workon https://github.com/pesap/agents/issues/4",
+        evidence: "session capsule metadata; capsule worktree path",
+      },
+    ],
+  });
+
+  const doNext = rendered.slice(
+    rendered.indexOf("Do next"),
+    rendered.indexOf("Stale/noisy"),
+  );
+  assert.match(doNext, /fresh\/repo #2: Fresh review/);
+  assert.match(doNext, /mine\/repo #3: Failing CI/);
+  assert.match(doNext, /pesap\/agents #feat\/4 #4: blocked\+missing-worktree capsule/);
+  assert.doesNotMatch(doNext, /ancient\/repo #1: Ancient review/);
+  assert.match(rendered, /Stale\/noisy\n(?:.|\n)*ancient\/repo #1: Ancient review/);
 });
 
 test("compact dashboard handles empty partial states", async () => {
