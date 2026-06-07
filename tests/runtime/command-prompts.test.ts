@@ -113,7 +113,7 @@ test("PR templates require source-closing checklist body shape", async () => {
     assert.match(templateText, /Check only criteria that are met/i);
     assert.match(templateText, /^## Deviations from the original plan$/m);
     assert.match(templateText, /unmet criteria/i);
-    assert.match(templateText, /^## Test Plan$/m);
+    assert.match(templateText, /^## Testing Strategy$/m);
     assert.match(templateText, /List validation commands only/i);
     assert.match(templateText, /^## References$/m);
     assert.match(templateText, /Original issues:/i);

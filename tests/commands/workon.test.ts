@@ -751,7 +751,7 @@ test("handoff template requires source-closing checklist PR body", async () => {
   assert.match(template, /Summary/);
   assert.match(template, /checklist-style Acceptance criteria/i);
   assert.match(template, /Deviations from the original plan/);
-  assert.match(template, /command-only Test Plan/);
+  assert.match(template, /command-only Testing Strategy/);
   assert.match(template, /References/);
   assert.match(template, /`Addressed` with evidence/);
   assert.match(template, /`Not addressed` with the reason and follow-up/);

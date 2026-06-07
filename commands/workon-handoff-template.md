@@ -24,7 +24,7 @@ Task:
 Draft PR and feedback heartbeat:
 - Once there is a coherent implementation commit, create or update a draft PR for this branch on the forge.
 - Link the draft PR back to {{issue_url}} and make clear it is not ready to merge until validation and review are complete.
-- In the draft PR body, use the repo PR template shape: resolved source-closing marker when applicable, Summary, checklist-style Acceptance criteria copied from every source issue criterion, Deviations from the original plan, command-only Test Plan, and References.
+- In the draft PR body, use the repo PR template shape: resolved source-closing marker when applicable, Summary, checklist-style Acceptance criteria copied from every source issue criterion, Deviations from the original plan, command-only Testing Strategy, and References.
 - For each source issue criterion, mark checklist items `Addressed` with evidence when met, or `Not addressed` with the reason and follow-up when unmet.
 - After opening the draft PR, check the PR/issue forge for human feedback every {{heartbeat_interval}} while you are still working.
 - Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.

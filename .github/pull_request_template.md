@@ -14,7 +14,7 @@ List every acceptance criterion from the source issue as a checkbox. Check only 
 
 - Explain any unmet criteria, intentional deviations, or follow-up work. Use `None.` when there are no deviations.
 
-## Test Plan
+## Testing Strategy
 
 List validation commands only.
 
