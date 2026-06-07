@@ -306,6 +306,8 @@ function unresolvedBreakingChange(body: string | undefined): boolean {
   return !/breaking change(?: risk)?:?\s*(?:none|no|n\/a|not expected)|no breaking change/i.test(body);
 }
 
+// Review-size risk should come from the proposed scope, not from diagnostic text that
+// quotes the trigger words while explaining a readiness false positive.
 function reviewSizeRiskBody(body: string | undefined): string {
   if (!body) return "";
 
