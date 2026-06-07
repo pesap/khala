@@ -268,6 +268,35 @@ test("learning persistence rejects malformed records even when callers bypass as
   assert.equal((await fs.readFile(paths.khalaLearningJsonl, "utf8")).trim(), "");
 });
 
+test("learning persistence renders promotable records as classified safe queue entries", async () => {
+  const paths = await createTempLearningPaths("khala-persist-promote-visible-");
+  await fs.writeFile(paths.khalaLearningJsonl, "", "utf8");
+  await fs.writeFile(paths.memoryMd, "# MEMORY\n", "utf8");
+  await fs.writeFile(paths.promotionQueue, "# Promotion Queue\n", "utf8");
+
+  assert.equal(
+    await persistKhalaLearningRecord(
+      paths,
+      concreteLearningRecord({
+        kind: "tool_rule",
+        lesson: "Run focused tests before reporting a TypeScript learning change as complete.",
+        evidenceSnippet: "tests/learning/store.test.ts passed",
+        score: 0.95,
+        confidence: 0.94,
+        promotable: true,
+      }),
+    ),
+    true,
+  );
+
+  const queue = await fs.readFile(paths.promotionQueue, "utf8");
+  assert.match(queue, /\[khala-learn\/promote\]/);
+  assert.match(queue, /Target: lint\/harness rule\./);
+  assert.match(queue, /Evidence: tests\/learning\/store\.test\.ts passed/);
+  assert.match(queue, /Confidence: 0\.94\./);
+  assert.match(queue, /Safe workflow: review evidence, apply one promotion only, run targeted validation/);
+});
+
 test("learning persistence does not promote below promotion threshold", async () => {
   const paths = await createTempLearningPaths("khala-persist-promote-");
   await fs.writeFile(paths.khalaLearningJsonl, "", "utf8");

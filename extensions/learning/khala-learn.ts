@@ -1,5 +1,10 @@
 import { Type } from "typebox";
-import type { LearningLesson, LearningPaths } from "./store.ts";
+import {
+  classifyPromotionTarget,
+  formatPromotionQueueLine,
+  type LearningLesson,
+  type LearningPaths,
+} from "./store.ts";
 import { appendLine, readTextTailIfExists } from "../lib/io.ts";
 import { normalizeWhitespace, summarizeEvidence } from "../lib/text.ts";
 
@@ -682,7 +687,15 @@ export async function persistKhalaLearningRecord(paths: LearningPaths, record: K
   if (!stored || !normalized.promotable) return stored;
   await appendLine(
     paths.promotionQueue,
-    `- ${normalized.timestamp.slice(0, 10)} [khala-learn/promote] ${normalized.lesson} (score=${normalized.score.toFixed(2)}, confidence=${normalized.confidence.toFixed(2)})`,
+    formatPromotionQueueLine({
+      date: normalized.timestamp.slice(0, 10),
+      taskType: "khala-learn",
+      kind: "promote",
+      target: classifyPromotionTarget(normalized.kind, "promote"),
+      summary: `${normalized.lesson} (score=${normalized.score.toFixed(2)})`,
+      evidenceSnippet: normalized.evidenceSnippet,
+      confidence: normalized.confidence,
+    }),
   );
   return stored;
 }
