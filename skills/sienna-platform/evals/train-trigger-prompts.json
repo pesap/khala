@@ -1,0 +1,14 @@
+{
+  "skill_name": "sienna-platform",
+  "split": "train",
+  "evals": [
+    {"id": "pos-1", "query": "Debug this PowerSystems.jl time series parsing failure in a Sienna model.", "should_trigger": true},
+    {"id": "pos-2", "query": "Add a formulation to PowerOperationsModels.jl and update the matching Sienna docs.", "should_trigger": true},
+    {"id": "pos-3", "query": "Which Sienna package owns OptimizationContainer behavior?", "should_trigger": true},
+    {"id": "pos-4", "query": "PowerSimulations.jl results are not showing correctly in PowerGraphics.jl; help route the bug.", "should_trigger": true},
+    {"id": "neg-1", "query": "Write a generic Julia script to solve a JuMP knapsack model.", "should_trigger": false},
+    {"id": "neg-2", "query": "Open a GitHub PR and rerun failed checks for my branch.", "should_trigger": false},
+    {"id": "neg-3", "query": "Explain AC power flow equations from first principles.", "should_trigger": false},
+    {"id": "neg-4", "query": "Create a Python API client for an energy data service.", "should_trigger": false}
+  ]
+}

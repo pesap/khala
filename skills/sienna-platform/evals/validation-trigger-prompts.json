@@ -1,0 +1,14 @@
+{
+  "skill_name": "sienna-platform",
+  "split": "validation",
+  "evals": [
+    {"id": "pos-5", "query": "I need a Sienna Platform skill that knows PowerSystems, PowerSimulations, and InfrastructureSystems package boundaries.", "should_trigger": true},
+    {"id": "pos-6", "query": "A StorageSystemsSimulations.jl change may require a PowerSimulations.jl API update; plan the slice.", "should_trigger": true},
+    {"id": "pos-7", "query": "Update Sienna website docs that link to PowerSystems.jl stable documentation.", "should_trigger": true},
+    {"id": "pos-8", "query": "Find which Sienna repo handles power network matrices and inspect its tests.", "should_trigger": true},
+    {"id": "neg-5", "query": "Run pytest for SDOM and update its benchmark workflow.", "should_trigger": false},
+    {"id": "neg-6", "query": "Triage a GitLab issue and add the right labels.", "should_trigger": false},
+    {"id": "neg-7", "query": "Review this Rust optimization code for panics and unsafe blocks.", "should_trigger": false},
+    {"id": "neg-8", "query": "Design a database schema for generic infrastructure assets.", "should_trigger": false}
+  ]
+}
