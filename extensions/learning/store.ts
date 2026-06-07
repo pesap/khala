@@ -20,7 +20,16 @@ import { normalizeLearnedWorkflowName } from "./workflows.ts";
 export type WorkflowFlagValue = string | number | boolean | null | string[];
 export type WorkflowFlags = Record<string, WorkflowFlagValue>;
 
-type LearningHintKind = "promote" | "improve";
+export type LearningHintKind = "promote" | "improve";
+export type PromotionTarget =
+  | "docs"
+  | "command prompt"
+  | "workflow spec"
+  | "skill"
+  | "test"
+  | "lint/harness rule"
+  | "hook"
+  | "CI gate";
 
 interface LearningHint {
   kind: LearningHintKind;
@@ -87,6 +96,33 @@ interface LearningState {
 
 const MEMORY_TAIL_READ_BYTES = 64_000;
 const LESSONS_TAIL_READ_BYTES = 256_000;
+
+export function classifyPromotionTarget(taskType: string, kind: LearningHintKind): PromotionTarget {
+  const normalized = taskType.toLowerCase();
+  if (kind === "improve") return "workflow spec";
+  if (normalized.includes("test")) return "test";
+  if (normalized.includes("lint") || normalized.includes("harness") || normalized.includes("rule")) {
+    return "lint/harness rule";
+  }
+  if (normalized.includes("hook")) return "hook";
+  if (normalized.includes("ci") || normalized.includes("workflow")) return "CI gate";
+  if (normalized.includes("command") || normalized.includes("prompt")) return "command prompt";
+  if (normalized.includes("skill")) return "skill";
+  if (normalized.includes("doc") || normalized.includes("readme")) return "docs";
+  return "workflow spec";
+}
+
+export function formatPromotionQueueLine(params: {
+  date: string;
+  taskType: string;
+  kind: LearningHintKind;
+  target: PromotionTarget;
+  summary: string;
+  evidenceSnippet: string;
+  confidence: number;
+}): string {
+  return `- ${params.date} [${params.taskType}/${params.kind}] Target: ${params.target}. ${params.summary} Evidence: ${params.evidenceSnippet} Confidence: ${params.confidence.toFixed(2)}. Safe workflow: review evidence, apply one promotion only, run targeted validation, then seek maintainer review before any durable gate or broad self-edit.`;
+}
 
 function isStringArray(value: unknown): value is string[] {
   return (
@@ -517,12 +553,24 @@ export async function maybeEmitPromotionHint<
   const now = params.nowIso();
   const summary =
     kind === "promote"
-      ? `Observed ${relevant.length} ${params.observation.taskType} runs with a strong score (${scoreRate.toFixed(2)}). Suggest promoting repeated behavior into INSTRUCTIONS.md or a dedicated skillflow.`
+      ? `Observed ${relevant.length} ${params.observation.taskType} runs with a strong score (${scoreRate.toFixed(2)}). Suggest promoting repeated behavior into a durable reviewed gate.`
       : `Observed ${relevant.length} ${params.observation.taskType} runs with low score (${scoreRate.toFixed(2)}). Suggest prompt/workflow refinement before further automation.`;
+  const evidenceSnippet = params.summarizeEvidence(
+    params.observation.evidenceSnippet,
+    240,
+  );
 
   await appendLine(
     params.paths.promotionQueue,
-    `- ${now.slice(0, 10)} [${params.observation.taskType}/${kind}] ${summary}`,
+    formatPromotionQueueLine({
+      date: now.slice(0, 10),
+      taskType: params.observation.taskType,
+      kind,
+      target: classifyPromotionTarget(params.observation.taskType, kind),
+      summary,
+      evidenceSnippet,
+      confidence: params.observation.confidence,
+    }),
   );
 
   if (kind === "promote" && "workflowsDir" in params.paths) {
@@ -532,7 +580,7 @@ export async function maybeEmitPromotionHint<
     const workflowPath = path.join(params.paths.workflowsDir, `${workflowName}.yaml`);
     await appendLine(
       params.paths.promotionQueue,
-      `- ${now.slice(0, 10)} [${params.observation.taskType}/workflow-candidate] Candidate learned workflow: ${workflowName}. Review the evidence before creating ${workflowPath}.`,
+      `- ${now.slice(0, 10)} [${params.observation.taskType}/workflow-candidate] Target: workflow spec. Candidate learned workflow: ${workflowName}. Review evidence and maintainer approval before creating ${workflowPath}.`,
     );
   }
 

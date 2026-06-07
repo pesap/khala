@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  classifyPromotionTarget,
   ensureLearningStore,
   getActiveLearningLessonsTail,
   getLearningMemoryTail,
@@ -27,6 +28,18 @@ function observation(id: string): LearningObservation<"review", "success"> {
     workflowId: id,
   };
 }
+
+test("promotion target classification covers durable gate types", () => {
+  assert.equal(classifyPromotionTarget("docs", "promote"), "docs");
+  assert.equal(classifyPromotionTarget("command prompt", "promote"), "command prompt");
+  assert.equal(classifyPromotionTarget("workflow", "promote"), "CI gate");
+  assert.equal(classifyPromotionTarget("skill", "promote"), "skill");
+  assert.equal(classifyPromotionTarget("test", "promote"), "test");
+  assert.equal(classifyPromotionTarget("lint rule", "promote"), "lint/harness rule");
+  assert.equal(classifyPromotionTarget("hook", "promote"), "hook");
+  assert.equal(classifyPromotionTarget("ci", "promote"), "CI gate");
+  assert.equal(classifyPromotionTarget("review", "improve"), "workflow spec");
+});
 
 test("promotion hint queues workflow candidates instead of auto-creating runnable workflows", async () => {
   const paths = await createTempLearningPaths();
@@ -57,6 +70,10 @@ test("promotion hint queues workflow candidates instead of auto-creating runnabl
 
   const queue = await fs.readFile(paths.promotionQueue, "utf8");
   assert.match(queue, /\[review\/promote\]/);
+  assert.match(queue, /Target: workflow spec\./);
+  assert.match(queue, /Evidence: Result: success/);
+  assert.match(queue, /Confidence: 0\.90\./);
+  assert.match(queue, /Safe workflow: review evidence, apply one promotion only, run targeted validation, then seek maintainer review before any durable gate or broad self-edit\./);
   assert.match(queue, /\[review\/workflow-candidate\]/);
 
   const workflowPath = path.join(
