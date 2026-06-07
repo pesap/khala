@@ -709,7 +709,7 @@ async function collectLocalEvidence(
       title: `${branch}${issue}: ${signals.join("+")} capsule at ${capsule.path}${worktreePath}`,
       url: capsule.issue ?? capsule.path,
       updatedAt: created,
-      suggestedCommand: `/workon ${capsule.issue ?? "--mode start"} --repo ${capsule.repo}`,
+      suggestedCommand: `/workon ${capsule.issue ?? "<issue-number>"} --repo ${capsule.repo}`,
       evidence: `session capsule metadata; ${worktree.matchedBy}`,
     });
   }

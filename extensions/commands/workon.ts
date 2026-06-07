@@ -39,6 +39,7 @@ export interface WorkonBootstrapRequest {
   repo: string;
   forge: WorkonForge;
   mode: WorkonMode;
+  dryRun?: boolean;
   capsuleRoot: string;
   nowIso: string;
   launchInZellij: boolean;
@@ -415,7 +416,7 @@ Worktree path: ${params.worktreePath ?? "(not available)"}
 Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
 Heartbeat interval: ${params.request.heartbeat}
-Mode: ${params.request.mode}
+Dry run: ${params.request.dryRun ? "yes" : "no"}
 Exact model: ${workonModelSelection(params.request).exactModel || "(runtime default)"}
 Model routing mode: ${workonModelSelection(params.request).routingMode}
 Model routing reason: ${workonModelSelection(params.request).routingReason}
@@ -567,7 +568,7 @@ async function startWorktreeIfRequested(
   piHandoffCommand?: string;
   heartbeatCommand?: string;
 }> {
-  if (request.mode !== "start") return { status: "prepared" };
+  if (request.mode !== "start" || request.dryRun) return { status: "prepared" };
 
   const version = await runCommand(runner, request.cwd, evidence.commands, "wt", [
     "--version",
@@ -669,6 +670,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         "Autonomous readiness: ready",
         `Suggested branch: ${evidence.branchName}`,
         `Suggested Worktrunk command: ${evidence.worktreeCommand}`,
+        `Bootstrap phase guidance: resolve issue -> prepare capsule -> ${evidence.worktreeStatus === "prepared" ? "suggest branch only" : "create worktree"} -> ${evidence.worktreeStatus === "launched" ? "launch Pi -> launch heartbeat" : "handoff not launched"}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
@@ -760,6 +762,9 @@ export async function prepareWorkonBootstrap(
 
   const branchName = buildWorkonBranchName(issue);
   const worktreeCommand = `wt switch --create ${branchName} --format json`;
+  if (request.dryRun) {
+    evidence.gaps.push("Dry run requested: prepared capsule and branch suggestion only; no Worktrunk, Zellij, Pi, or heartbeat launch was attempted.");
+  }
   const handoffPrompt = await buildHandoffPrompt({
     cwd: request.cwd,
     issue,

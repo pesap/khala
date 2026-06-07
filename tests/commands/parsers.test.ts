@@ -143,8 +143,9 @@ test("parses workon target and flags", () => {
     targets: ["61"],
     repo: "pesap/agents",
     forge: "github",
-    mode: "prepare",
+    mode: "start",
     heartbeat: "1.0",
+    dryRun: false,
     modelSelection: defaultModelSelection,
     extraInstruction: "61",
   });
@@ -160,18 +161,32 @@ test("parses workon target and flags", () => {
       forge: "gitlab",
       mode: "start",
       heartbeat: "1.0",
+      dryRun: false,
       modelSelection: defaultModelSelection,
       extraInstruction: "collect GitHub maintainer queue",
     },
   );
+
+  assert.deepEqual(parseWorkonArgs("73 --mode prepare"), {
+    target: "73",
+    targets: ["73"],
+    repo: "",
+    forge: "auto",
+    mode: "prepare",
+    heartbeat: "1.0",
+    dryRun: false,
+    modelSelection: defaultModelSelection,
+    extraInstruction: "73",
+  });
 
   assert.deepEqual(parseWorkonArgs("topic --mode invalid --forge unknown"), {
     target: "topic",
     targets: ["topic"],
     repo: "",
     forge: "auto",
-    mode: "prepare",
+    mode: "start",
     heartbeat: "1.0",
+    dryRun: false,
     modelSelection: defaultModelSelection,
     extraInstruction: "topic",
   });
@@ -183,6 +198,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     heartbeat: "0.25",
+    dryRun: false,
     modelSelection: defaultModelSelection,
     extraInstruction: "73",
   });
@@ -194,6 +210,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     heartbeat: "0.01",
+    dryRun: false,
     modelSelection: defaultModelSelection,
     extraInstruction: "73",
   });
@@ -203,8 +220,21 @@ test("parses workon target and flags", () => {
     targets: ["73"],
     repo: "",
     forge: "auto",
+    mode: "start",
+    heartbeat: "1.0",
+    dryRun: false,
+    modelSelection: defaultModelSelection,
+    extraInstruction: "73",
+  });
+
+  assert.deepEqual(parseWorkonArgs("73 --dry-run --mode start"), {
+    target: "73",
+    targets: ["73"],
+    repo: "",
+    forge: "auto",
     mode: "prepare",
     heartbeat: "1.0",
+    dryRun: true,
     modelSelection: defaultModelSelection,
     extraInstruction: "73",
   });
@@ -214,8 +244,9 @@ test("parses workon target and flags", () => {
     targets: ["73"],
     repo: "",
     forge: "auto",
-    mode: "prepare",
+    mode: "start",
     heartbeat: "1.0",
+    dryRun: false,
     modelSelection: {
       exactModel: "anthropic/claude-sonnet-4",
       routingMode: "exact-model",
@@ -229,8 +260,9 @@ test("parses workon target and flags", () => {
     targets: ["73", "74"],
     repo: "pesap/agents",
     forge: "auto",
-    mode: "prepare",
+    mode: "start",
     heartbeat: "1.0",
+    dryRun: false,
     modelSelection: defaultModelSelection,
     extraInstruction: "73, 74",
   });
@@ -240,8 +272,9 @@ test("parses workon target and flags", () => {
     targets: ["73", "74"],
     repo: "pesap/agents",
     forge: "auto",
-    mode: "prepare",
+    mode: "start",
     heartbeat: "1.0",
+    dryRun: false,
     modelSelection: defaultModelSelection,
     extraInstruction: "73 74",
   });

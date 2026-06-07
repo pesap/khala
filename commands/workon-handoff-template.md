@@ -6,7 +6,7 @@ Context:
 - Branch: {{branch_name}}
 - Exact model: {{resolved_model}}
 - Model routing: {{model_routing_mode}} ({{model_routing_reason}})
-- This handoff comes from `/workon --mode start`; a session capsule path is provided separately by the launcher.
+- This handoff comes from `/workon`; a session capsule path is provided separately by the launcher.
 - Treat this prompt as starting context, not a final technical decision.
 
 Before doing any implementation:
