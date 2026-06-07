@@ -731,7 +731,7 @@ export function createWorkflowCommandHandlers(params: {
           `Triage target: ${target}`,
           "Instruction: Treat this as user-posted issue/request intake. Gather issue context, comments, labels, reporter activity, relevant code/docs, repo guidelines, and prior out-of-scope decisions when available.",
           "Instruction: Default to one cleaned-up issue/work packet. Propose a split table only when the issue is clearly too broad or likely to exceed reviewable PR size.",
-          "Instruction: Produce a work packet with current behavior or goal, desired behavior, acceptance criteria, validation/tests, non-goals, breaking-change risk, review-size risk, and /workon readiness status.",
+          "Instruction: Produce a work packet with current behavior or goal, desired behavior, acceptance criteria (plain markdown bullets, not task-list checkboxes), validation/tests, non-goals, breaking-change risk, review-size risk, and /workon readiness status.",
           "Instruction: Ask explicit approval before creating or updating any GitHub issue, labels, or comments.",
         ],
         entry: (target) => ({ target }),
