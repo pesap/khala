@@ -88,17 +88,36 @@ test("command prompts do not contain unconditional clarification stalls", async 
   assert.deepEqual(offenders, []);
 });
 
-test("PR templates omit invalid default close markers", async () => {
+test("PR templates require source-closing checklist body shape", async () => {
   const repoRoot = process.cwd();
   const templatePaths = [
     ".github/pull_request_template.md",
     "skills/github/pr-template.md",
   ];
+  const templateTexts = await Promise.all(
+    templatePaths.map((templatePath) => fs.readFile(path.join(repoRoot, templatePath), "utf8")),
+  );
 
-  for (const templatePath of templatePaths) {
-    const templateText = await fs.readFile(path.join(repoRoot, templatePath), "utf8");
+  assert.equal(templateTexts[0], templateTexts[1]);
+
+  for (const templateText of templateTexts) {
     assert.doesNotMatch(templateText, /^Closes:\s*non(?:e)?\b/im);
-    assert.match(templateText, /durable source issue/i);
+    assert.doesNotMatch(templateText, /Closes #<issue>\s*$/m);
+    assert.match(templateText, /Resolve the durable source issue before writing close text/i);
+    assert.match(templateText, /Omit close markers entirely when no durable source issue is resolved/i);
+    assert.match(templateText, /multiple close markers/i);
+    assert.match(templateText, /^## Summary$/m);
+    assert.match(templateText, /3–4 line summary/i);
+    assert.match(templateText, /^## Acceptance criteria$/m);
+    assert.match(templateText, /- \[ \] Source issue criterion/i);
+    assert.match(templateText, /Check only criteria that are met/i);
+    assert.match(templateText, /^## Deviations from the original plan$/m);
+    assert.match(templateText, /unmet criteria/i);
+    assert.match(templateText, /^## Testing Strategy$/m);
+    assert.match(templateText, /List validation commands only/i);
+    assert.match(templateText, /^## References$/m);
+    assert.match(templateText, /Original issues:/i);
+    assert.match(templateText, /Files:/i);
   }
 });
 
@@ -146,7 +165,7 @@ test("triage guidance enforces plain bullet acceptance criteria", async () => {
 
   assert.match(
     triageWorkflowHandler,
-    /acceptance criteria \(plain markdown bullets, not task-list checkboxes\)/,
+    /acceptance criteria \(plain markdown bullets, not task-list checkboxes\)/i,
   );
 
   for (const section of triageAgentBrief.match(/\*\*Acceptance criteria:\*\*[\s\S]*?(?:\n\n|```)/g) ?? []) {

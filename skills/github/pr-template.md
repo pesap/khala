@@ -1,23 +1,26 @@
-<!-- Add `Closes #<issue>` only when a durable source issue is known. Omit this line when no source issue exists. -->
+<!-- Resolve the durable source issue before writing close text. Add `Closes #<issue>` only when this PR fully resolves that issue. Use multiple close markers when multiple durable source issues are fully resolved. Omit close markers entirely when no durable source issue is resolved; never emit placeholder close text. -->
 
-## Description
+## Summary
 
-A clear and concise description of the PR.
+Write a short 3–4 line summary of the change, why it is needed, and any review context.
 
-Use this section for review hints, explanations or discussion points/todos.
+## Acceptance criteria
 
-- Summary of changes
-- Reasoning
-- Additional context
+List every acceptance criterion from the source issue as a checkbox. Check only criteria that are met.
 
-## Testing strategy
+- [ ] Source issue criterion, copied or summarized clearly.
 
-Use this section for listing what test where performed and which one were not if
-any.
+## Deviations from the original plan
 
-## Related
+- Explain any unmet criteria, intentional deviations, or follow-up work. Use `None.` when there are no deviations.
 
-Use this section to list all the related issues or PRs that may or may not be
-linked to this. Example:
+## Testing Strategy
 
-- https://github.com/NatLabRockies/arco/pull/225
+List validation commands only.
+
+- npm run test:node -- tests/path.test.ts
+
+## References
+
+- Original issues: #<issue>
+- Files: path/to/file.ts
