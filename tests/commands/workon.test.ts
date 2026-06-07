@@ -291,9 +291,18 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /## Combined work scope/);
+    assert.match(capsule, /one combined \/workon session/);
+    assert.match(capsule, /do not create separate branches, worktrees, capsules, or sessions per issue/);
     assert.match(capsule, /https:\/\/github\.com\/pesap\/agents\/issues\/104 \(#104\) fix\(workon\): first issue/);
     assert.match(capsule, /https:\/\/github\.com\/pesap\/agents\/issues\/105 \(#105\) fix\(workon\): second issue/);
-    assert.match(capsule, /Make multiple commits, each tied to the relevant source issue where practical/);
+    assert.match(capsule, /## Implementation order/);
+    assert.match(capsule, /provided target order unless explicit issue-body evidence supports changing it/);
+    assert.match(capsule, /1\. #104: fix\(workon\): first issue/);
+    assert.match(capsule, /2\. #105: fix\(workon\): second issue/);
+    assert.match(capsule, /Make issue-scoped commits tied to the relevant source issue where practical/);
+    assert.equal(capsule.match(/## Combined work scope/g)?.length, 2);
+    assert.equal(capsule.match(/## Implementation order/g)?.length, 2);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
