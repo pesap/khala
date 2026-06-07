@@ -306,8 +306,36 @@ function unresolvedBreakingChange(body: string | undefined): boolean {
   return !/breaking change(?: risk)?:?\s*(?:none|no|n\/a|not expected)|no breaking change/i.test(body);
 }
 
+function reviewSizeRiskBody(body: string | undefined): string {
+  if (!body) return "";
+
+  const excludedHeadings = /^(?:reproduction(?: status)?|steps to reproduce|current behavior|evidence(?: trail)?|likely root cause|diagnostics?|debug(?:ging)? notes?)$/i;
+  const keptLines: string[] = [];
+  let inFence = false;
+  let excludeSection = false;
+
+  for (const line of body.split(/\r?\n/)) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || /^\s*>/.test(line)) continue;
+
+    const heading = line.match(/^#{1,3}\s+(.+?)\s*#*\s*$/)?.[1]?.trim();
+    if (heading) {
+      excludeSection = excludedHeadings.test(heading);
+      if (!excludeSection) keptLines.push(line);
+      continue;
+    }
+
+    if (!excludeSection) keptLines.push(line);
+  }
+
+  return keptLines.join("\n");
+}
+
 function reviewSizeRisk(body: string | undefined): boolean {
-  return bodyMentions(body, /\b(large|broad|sweeping|multi[- ]?phase|many files|refactor everything|over 500|>\s*500)\b/i);
+  return bodyMentions(reviewSizeRiskBody(body), /\b(large|broad|sweeping|multi[- ]?phase|many files|refactor everything|over 500|>\s*500)\b/i);
 }
 
 function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {

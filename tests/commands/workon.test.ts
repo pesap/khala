@@ -549,6 +549,133 @@ test("refuses freeform topics before workon bootstrap", async () => {
   }
 });
 
+test("does not self-block readiness on quoted review-size keywords in diagnostic sections", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-review-size-quoted-test-"));
+  try {
+    const issue129RegressionBody = [
+      "## Problem statement",
+      "",
+      "`/workon 129` reports this ready packet as not ready.",
+      "",
+      "## Reproduction status",
+      "",
+      "The diagnostic predicate summary shows `review: true` because quoted text mentions `large`, `broad`, `many files`, and `over 500` while explaining the false positive.",
+      "",
+      "```json",
+      '{ "review": true, "matched": "large broad many files over 500" }',
+      "```",
+      "",
+      "## Evidence trail",
+      "",
+      "- The issue quotes review-size trigger terms while documenting diagnostic behavior.",
+      "",
+      "## Likely root cause",
+      "",
+      "The readiness scan treats explanatory text as scope risk.",
+      "",
+      "## Acceptance criteria",
+      "",
+      "- Add or update focused tests for the changed behavior.",
+      "- Preserve strict readiness blocking for genuine oversized work.",
+      "",
+      "## Non-goals",
+      "",
+      "- Do not bypass readiness checks.",
+      "",
+      "## Validation plan",
+      "",
+      "- Run npm run test:node -- tests/commands/workon.test.ts",
+      "",
+      "## /workon readiness notes",
+      "",
+      "Public-contract risk is low and implementation is localized.",
+    ].join("\n");
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 129 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        129,
+        "fix(workon): prevent readiness false positive",
+        issue129RegressionBody,
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "129",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.doesNotMatch(rendered, /Autonomous readiness: not-ready/);
+    assert.match(rendered, /Source issue: pesap\/agents#129/);
+    assert.match(rendered, /Session capsule:/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("still blocks genuinely oversized review-size risk", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-review-size-risk-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 130 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": incompleteIssueViewOutput(
+        130,
+        "fix: Broad multi-phase readiness refactor",
+        [
+          "## Acceptance criteria",
+          "",
+          "- Refactor everything in the readiness flow across many files.",
+          "",
+          "## Reproduction",
+          "",
+          "- Reproduce the bug with a focused regression test.",
+          "",
+          "## Validation",
+          "",
+          "- Run focused tests.",
+          "",
+          "## Non-goals",
+          "",
+          "- Keep unrelated workflows unchanged.",
+        ].join("\n"),
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "130",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /Autonomous readiness: not-ready/);
+    assert.match(rendered, /Narrow or split the issue so the resulting PR is likely under about 500 LOC changed/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("refuses issue targets that are not autonomous-ready", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-readiness-test-"));
   try {
