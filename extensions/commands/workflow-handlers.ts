@@ -47,13 +47,34 @@ interface ScopedTarget {
 }
 type ParsedScopedTarget = Exclude<ReviewArgsResult, { error: string }>;
 
+interface GithubIssueUrlParts {
+  host: string;
+  repo: string;
+  repoKey: string;
+}
+
+function normalizeIssueHost(value: string): string {
+  return value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+}
+
+function githubIssueUrlParts(target: string): GithubIssueUrlParts | null {
+  const match = target.trim().match(/^(?:https?:\/\/)?([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/issues\/[1-9]\d*$/i);
+  if (!match) return null;
+  const host = normalizeIssueHost(match[1] ?? "");
+  const repo = `${match[2]}/${match[3]}`;
+  return { host, repo, repoKey: `${host}/${repo}` };
+}
+
 function githubIssueRepoFromUrl(target: string): string | null {
-  const match = target.match(/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/[1-9]\d*/i);
-  return match ? `${match[1]}/${match[2]}` : null;
+  return githubIssueUrlParts(target)?.repo ?? null;
+}
+
+function githubIssueRepoKeyFromUrl(target: string): string | null {
+  return githubIssueUrlParts(target)?.repoKey ?? null;
 }
 
 function isWorkonIssueTarget(target: string): boolean {
-  return /^[1-9]\d*$/.test(target.trim()) || githubIssueRepoFromUrl(target) !== null;
+  return /^[1-9]\d*$/.test(target.trim()) || githubIssueUrlParts(target) !== null;
 }
 
 function validateWorkonIssueTargets(targets: string[]): string | null {
@@ -63,10 +84,11 @@ function validateWorkonIssueTargets(targets: string[]): string | null {
 }
 
 function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
-  const urlRepos = [...new Set(targets.map(githubIssueRepoFromUrl).filter((value): value is string => Boolean(value)))];
-  if (urlRepos.length > 1) {
-    return `All /workon issue URLs must be from the same repo; found ${urlRepos.join(", ")}.`;
+  const urlRepoKeys = [...new Set(targets.map(githubIssueRepoKeyFromUrl).filter((value): value is string => Boolean(value)))];
+  if (urlRepoKeys.length > 1) {
+    return `All /workon issue URLs must be from the same repo and host; found ${urlRepoKeys.join(", ")}.`;
   }
+  const urlRepos = [...new Set(targets.map(githubIssueRepoFromUrl).filter((value): value is string => Boolean(value)))];
   if (repo && urlRepos.length === 1 && urlRepos[0].toLowerCase() !== repo.toLowerCase()) {
     return `All /workon targets must match --repo ${repo}; found issue URL for ${urlRepos[0]}.`;
   }

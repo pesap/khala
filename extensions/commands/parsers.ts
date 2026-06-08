@@ -226,11 +226,13 @@ export function parseInboxArgs(args: string): {
   };
 }
 
+const GITHUB_ISSUE_TARGET_PATTERN = /^(?:[1-9]\d*|https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/issues\/[1-9]\d*)$/i;
+
 function parseWorkonIssueTargets(target: string): string[] {
   const normalized = normalizeWhitespace(target.replace(/,/g, " "));
   if (!normalized) return [];
   const parts = normalized.split(/\s+/).filter(Boolean);
-  return parts.length > 1 && parts.every((part) => /^(?:[1-9]\d*|https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/[1-9]\d*)$/i.test(part))
+  return parts.length > 1 && parts.every((part) => GITHUB_ISSUE_TARGET_PATTERN.test(part))
     ? parts
     : [];
 }

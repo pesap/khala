@@ -279,6 +279,26 @@ test("parses workon target and flags", () => {
     modelSelection: defaultModelSelection,
     extraInstruction: "73 74",
   });
+
+  assert.deepEqual(
+    parseWorkonArgs(
+      "https://github.nrel.gov/org/repo/issues/123 https://github.nrel.gov/org/repo/issues/124 --forge github",
+    ),
+    {
+      target: "https://github.nrel.gov/org/repo/issues/123 https://github.nrel.gov/org/repo/issues/124",
+      targets: [
+        "https://github.nrel.gov/org/repo/issues/123",
+        "https://github.nrel.gov/org/repo/issues/124",
+      ],
+      repo: "",
+      forge: "github",
+      mode: "start",
+      heartbeat: "1.0",
+      dryRun: false,
+      modelSelection: defaultModelSelection,
+      extraInstruction: "https://github.nrel.gov/org/repo/issues/123 https://github.nrel.gov/org/repo/issues/124",
+    },
+  );
 });
 
 test("buildSkillTemplate quotes YAML frontmatter values with colons", () => {
