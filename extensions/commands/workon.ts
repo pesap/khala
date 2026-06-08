@@ -7,7 +7,9 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
-const MAX_BRANCH_SLUG_LENGTH = 56;
+const MAX_BRANCH_NAME_LENGTH = 64;
+const MAX_BRANCH_SCOPE_WORDS = 4;
+const MIN_SHARED_BRANCH_SCOPE_WORDS = 2;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
@@ -25,7 +27,7 @@ export interface WorkonModelSelection {
 type WorkonBootstrapStatus = "prepared" | "started" | "launched" | "blocked";
 type WorkonLedgerWorktreeStatus = "not-started" | WorkonBootstrapStatus;
 
-type WorkonLedgerIssue = Pick<GithubIssueMetadata, "number" | "title" | "url" | "state">;
+type WorkonLedgerIssue = Pick<GithubIssueMetadata, "number" | "title" | "url" | "state" | "body">;
 
 interface WorkonLedgerAttempt {
   at: string;
@@ -191,23 +193,86 @@ function slugify(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, MAX_BRANCH_SLUG_LENGTH)
     .replace(/-+$/g, "");
 }
 
-function inferBranchPrefix(title: string): string {
-  const match = title.match(/^(feat|fix|docs|refactor|test|chore|perf|work)(?:\(.+?\))?:/i);
-  return match?.[1]?.toLowerCase() ?? "work";
+type ConventionalBranchType = "feat" | "fix" | "docs" | "refactor" | "test" | "chore" | "perf";
+
+type BranchIssue = Pick<GithubIssueMetadata, "number" | "title">;
+
+const CONVENTIONAL_TITLE_PATTERN = /^(feat|fix|docs|refactor|test|chore|perf)(?:\(.+?\))?:\s*/i;
+const BRANCH_SCOPE_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "for",
+  "from",
+  "in",
+  "into",
+  "of",
+  "on",
+  "or",
+  "the",
+  "to",
+  "use",
+  "with",
+]);
+
+function inferConventionalBranchType(title: string): ConventionalBranchType | null {
+  const match = title.match(CONVENTIONAL_TITLE_PATTERN);
+  return (match?.[1]?.toLowerCase() as ConventionalBranchType | undefined) ?? null;
 }
 
-export function buildWorkonBranchName(issue: Pick<GithubIssueMetadata, "number" | "title">): string {
-  const prefix = inferBranchPrefix(issue.title);
-  const titleWithoutConventionalPrefix = issue.title.replace(
-    /^(?:feat|fix|docs|refactor|test|chore|perf|work)(?:\(.+?\))?:\s*/i,
-    "",
-  );
-  const slug = slugify(titleWithoutConventionalPrefix || issue.title || "work");
-  return `${prefix}/${issue.number}-${slug || "work"}`;
+function inferBranchPrefix(issues: BranchIssue[]): ConventionalBranchType | "work" {
+  const inferredTypes = issues.map((issue) => inferConventionalBranchType(issue.title));
+  if (inferredTypes.some((type) => type === null)) return "work";
+  const uniqueTypes = new Set(inferredTypes);
+  return uniqueTypes.size === 1 ? inferredTypes[0] ?? "work" : "work";
+}
+
+function titleWords(title: string): string[] {
+  const titleWithoutConventionalPrefix = title.replace(CONVENTIONAL_TITLE_PATTERN, "");
+  return slugify(titleWithoutConventionalPrefix || title || "work")
+    .split("-")
+    .filter((word) => word.length > 0 && !BRANCH_SCOPE_STOP_WORDS.has(word));
+}
+
+function branchIssueRange(issues: BranchIssue[]): string {
+  if (issues.length === 1) return String(issues[0]?.number ?? "work");
+
+  const numbers = issues.map((issue) => issue.number).sort((left, right) => left - right);
+  const contiguous = numbers.every((number, index) => index === 0 || number === (numbers[index - 1] ?? number) + 1);
+  if (contiguous) return `${numbers[0]}-${numbers[numbers.length - 1]}`;
+  return `${issues[0]?.number ?? numbers[0]}-multi`;
+}
+
+function branchScopeWords(issues: BranchIssue[]): string[] {
+  const primaryWords = titleWords(issues[0]?.title ?? "work");
+  if (issues.length === 1) return primaryWords.slice(0, MAX_BRANCH_SCOPE_WORDS);
+
+  const wordCounts = new Map<string, number>();
+  for (const issue of issues) {
+    for (const word of new Set(titleWords(issue.title))) {
+      wordCounts.set(word, (wordCounts.get(word) ?? 0) + 1);
+    }
+  }
+  const sharedWords = primaryWords.filter((word) => (wordCounts.get(word) ?? 0) > 1);
+  if (sharedWords.length >= MIN_SHARED_BRANCH_SCOPE_WORDS) {
+    return sharedWords.slice(0, MAX_BRANCH_SCOPE_WORDS);
+  }
+  return primaryWords.slice(0, MAX_BRANCH_SCOPE_WORDS);
+}
+
+export function buildWorkonBranchName(issueOrIssues: BranchIssue | BranchIssue[]): string {
+  const issues = Array.isArray(issueOrIssues) ? issueOrIssues : [issueOrIssues];
+  const prefix = inferBranchPrefix(issues);
+  const issueRange = branchIssueRange(issues);
+  const branchPrefix = `${prefix}/${issueRange}-`;
+  const availableScopeLength = Math.max(1, MAX_BRANCH_NAME_LENGTH - branchPrefix.length);
+  const scope = slugify(branchScopeWords(issues).join("-") || "work")
+    .slice(0, availableScopeLength)
+    .replace(/-+$/g, "") || "work";
+  return `${branchPrefix}${scope}`;
 }
 
 function githubIssueTargetFromUrl(target: string): GithubIssueTarget | null {
@@ -328,6 +393,7 @@ function ledgerIssue(issue: GithubIssueMetadata): WorkonLedgerIssue {
     title: issue.title,
     url: issue.url,
     state: issue.state,
+    body: issue.body,
   };
 }
 
@@ -878,6 +944,12 @@ function issueOrderLines(sourceIssues: GithubIssueMetadata[]): string {
     .join("\n");
 }
 
+function sourceIssueDetails(sourceIssues: GithubIssueMetadata[]): string {
+  return sourceIssues
+    .map((issue) => `### #${issue.number}: ${issue.title}\n\nURL: ${issue.url}\n\n${issue.body?.trim() || "(no issue body)"}`)
+    .join("\n\n");
+}
+
 function validationItemsForIssues(sourceIssues: GithubIssueMetadata[]): string[] {
   return sourceIssues.flatMap((issue) => {
     const items = validationItemsFromBody(issue.body);
@@ -931,6 +1003,7 @@ function capsuleMarkdown(params: {
   const sourceIssueLines = sourceIssues
     .map((issue) => `- ${issue.url} (#${issue.number}) ${issue.title}`)
     .join("\n");
+  const sourceIssueDetailsSection = sourceIssueDetails(sourceIssues);
   const acceptance = sourceIssues
     .flatMap((issue) =>
       acceptanceCriteriaFromBody(issue.body).map((item) => `- #${issue.number}: ${item}`),
@@ -982,6 +1055,10 @@ Created: ${params.request.nowIso}
 
 ${params.issue.title}
 ${combinedWorkScopeSection}
+## Source issue details
+
+${sourceIssueDetailsSection}
+
 ## Acceptance criteria
 
 ${acceptance}
@@ -1461,7 +1538,7 @@ export async function prepareWorkonBootstrap(
     return formatWorkonBootstrapEvidence(evidence);
   }
 
-  const branchName = buildWorkonBranchName(issue);
+  const branchName = buildWorkonBranchName(issues);
   const worktreeCommand = `cd ${shellQuote(request.cwd)} && wt switch --create ${branchName} --format json`;
   if (request.dryRun) {
     evidence.gaps.push("Dry run requested: prepared capsule and branch suggestion only; no Worktrunk, Zellij, Pi, or heartbeat launch was attempted.");

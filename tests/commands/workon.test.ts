@@ -36,7 +36,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
         const thinking = thinkingIndex >= 0 ? args[thinkingIndex + 1] : "";
         const thinkingArgs = thinking ? ` --thinking ${thinking}` : "";
         const worktreePath = "/tmp/worktrunk.feat-65";
-        if (branch.includes("tab-created-pi-pane-missing")) {
+        if (branch.includes("tab-created-pi-pane")) {
           return {
             ok: false,
             stdout: `${JSON.stringify({
@@ -48,7 +48,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
             stderr: "Zellij Worktrunk tab not found after 50 attempts: agents/fix-67-tab-created-pi-pane-missing\n",
           };
         }
-        if (branch.includes("preflight-github-copilot-auth-before-launching-child-pi")) {
+        if (branch.includes("preflight-github-copilot-auth")) {
           return {
             ok: false,
             stdout: "",
@@ -60,7 +60,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
           stdout: `${JSON.stringify({
             status: "launched",
             path: worktreePath,
-            tabName: "agents/feat-65-detect-local-worktrees-and-stale-sessions",
+            tabName: "agents/feat-65-detect-local-worktrees-stale",
             tabId: 12,
             heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
             piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi -a --name ${branch}${modelArgs}${thinkingArgs} <clean-prompt>`,
@@ -139,17 +139,38 @@ test("detects active Zellij from non-empty environment values", () => {
   assert.equal(isActiveZellijEnv("/tmp/zellij-session"), true);
 });
 
-test("builds issue-numbered branch names from conventional titles", () => {
+test("builds bounded Conventional Commit-style branch names", () => {
   assert.equal(
     buildWorkonBranchName({
       number: 63,
       title: "feat(inbox): render deterministic maintainer queue locally",
     }),
-    "feat/63-render-deterministic-maintainer-queue-locally",
+    "feat/63-render-deterministic-maintainer-queue",
   );
   assert.equal(
     buildWorkonBranchName({ number: 5, title: "Investigate flaky parser" }),
     "work/5-investigate-flaky-parser",
+  );
+  assert.equal(
+    buildWorkonBranchName([
+      { number: 104, title: "fix(workon): improve handoff recovery" },
+      { number: 105, title: "fix(workon): validate handoff recovery" },
+    ]),
+    "fix/104-105-handoff-recovery",
+  );
+  assert.equal(
+    buildWorkonBranchName([
+      { number: 93, title: "fix(workon): restore feedback heartbeat" },
+      { number: 95, title: "fix(workon): validate feedback heartbeat" },
+    ]),
+    "fix/93-multi-feedback-heartbeat",
+  );
+  assert.equal(
+    buildWorkonBranchName([
+      { number: 170, title: "refactor(workon): simplify workon bootstrap" },
+      { number: 171, title: "docs(workon): document workon bootstrap" },
+    ]),
+    "work/170-171-workon-bootstrap",
   );
 });
 
@@ -189,7 +210,7 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     assert.match(rendered, /Source issue: pesap\/agents#63/);
     assert.match(
       rendered,
-      /Suggested branch: feat\/63-render-deterministic-maintainer-queue-locally/,
+      /Suggested branch: feat\/63-render-deterministic-maintainer-queue/,
     );
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
@@ -199,7 +220,7 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     );
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Issue number: #63/);
-    assert.match(capsule, /Branch: feat\/63-render-deterministic-maintainer-queue-locally/);
+    assert.match(capsule, /Branch: feat\/63-render-deterministic-maintainer-queue/);
     assert.match(capsule, /Worktree status: prepared/);
     assert.match(capsule, /Pi handoff command: \(not launched\)/);
     assert.match(capsule, /Render collected inbox items into canonical buckets/);
@@ -301,7 +322,7 @@ test("uses packaged handoff template when target cwd has no commands directory",
 test("uses package-local Zellij handoff script when target cwd has no scripts directory", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-external-zellij-test-"));
   try {
-    const branch = "fix/148-use-package-handoff-script-and-robust-zellij-detection";
+    const branch = "fix/148-package-handoff-script-robust";
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
       "issue view 148 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
@@ -341,7 +362,7 @@ test("uses package-local Zellij handoff script when target cwd has no scripts di
 test("ZELLIJ=0 selects Zellij handoff path", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-zero-test-"));
   try {
-    const branch = "fix/148-use-package-handoff-script-and-robust-zellij-detection";
+    const branch = "fix/148-package-handoff-script-robust";
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
       "issue view 148 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
@@ -369,7 +390,7 @@ test("ZELLIJ=0 selects Zellij handoff path", async () => {
 
     assert.ok(calls.some((call) => call.startsWith("bash ") && call.includes("workon-zellij-handoff.sh")));
     assert.equal(calls.includes(`wt switch --create ${branch} --format json`), false);
-    assert.match(rendered, /Suggested Worktrunk command: cd .+ && wt switch --create fix\/148-use-package-handoff-script-and-robust-zellij-detection --format json/);
+    assert.match(rendered, /Suggested Worktrunk command: cd .+ && wt switch --create fix\/148-package-handoff-script-robust --format json/);
     assert.match(rendered, /Launch eligibility: active Zellij yes/);
     assert.match(rendered, /Worktree status: launched/);
     assert.doesNotMatch(rendered, /Pi handoff skipped: active Zellij was not detected/);
@@ -427,8 +448,8 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
         "## Current behavior\n\n- Second issue needs work.\n\n## Acceptance criteria\n\n- Resolve second issue.\n\n## Validation\n\n- Run second focused test.\n\n## Non-goals\n\n- Do not widen second issue scope.",
       ),
       "wt --version": "worktrunk 1.0.0\n",
-      "wt switch --create fix/104-first-issue --format json":
-        '{"action":"created","branch":"fix/104-first-issue","path":"/tmp/worktrunk.fix-104"}\n',
+      "wt switch --create fix/104-105-first-issue --format json":
+        '{"action":"created","branch":"fix/104-105-first-issue","path":"/tmp/worktrunk.fix-104"}\n',
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -450,12 +471,26 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
 
     assert.equal(calls.filter((call) => call.startsWith("wt switch --create")).length, 1);
     assert.match(rendered, /Source issues: #104, #105/);
-    assert.match(rendered, /Suggested branch: fix\/104-first-issue/);
+    assert.match(rendered, /Suggested branch: fix\/104-105-first-issue/);
+
+    const ledger = await readHandoffLedger(rendered);
+    const sourceIssues = ledger.sourceIssues as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      sourceIssues.map((sourceIssue) => sourceIssue.number),
+      [104, 105],
+    );
+    assert.equal(sourceIssues[0]?.title, "fix(workon): first issue");
+    assert.equal(sourceIssues[1]?.url, "https://github.com/pesap/agents/issues/105");
+    assert.match(String(sourceIssues[0]?.body), /Resolve first issue/);
+    assert.match(String(sourceIssues[1]?.body), /Run second focused test/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /## Combined work scope/);
+    assert.match(capsule, /## Source issue details/);
+    assert.match(capsule, /### #104: fix\(workon\): first issue[\s\S]*Resolve first issue/);
+    assert.match(capsule, /### #105: fix\(workon\): second issue[\s\S]*Run second focused test/);
     assert.match(capsule, /one combined \/workon session/);
     assert.match(capsule, /do not create separate branches, worktrees, capsules, or sessions per issue/);
     assert.match(capsule, /https:\/\/github\.com\/pesap\/agents\/issues\/104 \(#104\) fix\(workon\): first issue/);
@@ -511,7 +546,7 @@ test("dry-run prepares capsule and branch suggestion without starting Worktrunk"
 
     assert.equal(calls.some((call) => call.startsWith("wt ")), false);
     assert.equal(calls.some((call) => call.startsWith("bash ")), false);
-    assert.match(rendered, /Suggested branch: feat\/65-detect-local-worktrees-and-stale-sessions/);
+    assert.match(rendered, /Suggested branch: feat\/65-detect-local-worktrees-stale/);
     assert.match(rendered, /Worktree status: prepared/);
     assert.match(rendered, /Dry run requested: prepared capsule and branch suggestion only/);
     assert.match(rendered, /Bootstrap phase guidance: resolve issue -> prepare capsule -> suggest branch only/);
@@ -525,7 +560,7 @@ test("dry-run prepares capsule and branch suggestion without starting Worktrunk"
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal(ledger.repo, "pesap/agents");
-    assert.equal(ledger.branchName, "feat/65-detect-local-worktrees-and-stale-sessions");
+    assert.equal(ledger.branchName, "feat/65-detect-local-worktrees-stale");
     assert.deepEqual((ledger.worktree as { status: string; path: string | null }).status, "prepared");
     assert.equal((ledger.worktree as { status: string; path: string | null }).path, null);
     assert.equal((ledger.zellij as { status: string }).status, "not-attempted");
@@ -547,8 +582,8 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
         "feat(inbox): detect local worktrees and stale sessions",
       ),
       "wt --version": "worktrunk 1.0.0\n",
-      "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions --format json":
-        '◎ Running pre-start: direct-hook\n{"action":"created","branch":"feat/65-detect-local-worktrees-and-stale-sessions","path":"/tmp/worktrunk.feat-65"}\npost-start hook complete\n',
+      "wt switch --create feat/65-detect-local-worktrees-stale --format json":
+        '◎ Running pre-start: direct-hook\n{"action":"created","branch":"feat/65-detect-local-worktrees-stale","path":"/tmp/worktrunk.feat-65"}\npost-start hook complete\n',
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -570,12 +605,12 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.ok(calls.includes("wt --version"));
     assert.ok(
       calls.includes(
-        "wt switch --create feat/65-detect-local-worktrees-and-stale-sessions --format json",
+        "wt switch --create feat/65-detect-local-worktrees-stale --format json",
       ),
     );
     assert.match(
       rendered,
-      /Suggested Worktrunk command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
+      /Suggested Worktrunk command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-stale --format json/,
     );
     assert.match(rendered, /Launch eligibility: active Zellij no/);
     assert.match(rendered, /Worktree status: started/);
@@ -589,7 +624,7 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(
       capsule,
-      /Worktree command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
+      /Worktree command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-stale --format json/,
     );
     assert.match(capsule, /Worktree status: started/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
@@ -613,7 +648,7 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
 test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-test-"));
   try {
-    const branch = "feat/65-detect-local-worktrees-and-stale-sessions";
+    const branch = "feat/65-detect-local-worktrees-stale";
     const worktreePath = "/tmp/worktrunk.feat-65";
     const { calls, runner } = fakeGhRunner({
       "auth status": "",
@@ -626,9 +661,9 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
       [`wt switch --create ${branch} --format json`]: `◎ Running pre-start: zellij-tab\n{"action":"created","branch":"${branch}","path":"${worktreePath}"}\n`,
       "zellij action list-tabs --json": JSON.stringify([
         { name: "agents/main", tab_id: 1 },
-        { name: "agents/feat-65-detect-local-worktrees-and-stale-sessions", tab_id: 12 },
+        { name: "agents/feat-65-detect-local-worktrees-stale", tab_id: 12 },
       ]),
-      "zellij action go-to-tab-name agents/feat-65-detect-local-worktrees-and-stale-sessions": "",
+      "zellij action go-to-tab-name agents/feat-65-detect-local-worktrees-stale": "",
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -659,7 +694,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.equal(calls.some((call) => call.includes(" @") && call.includes("capsule.md")), false);
     assert.ok(scriptCall);
     assert.match(scriptCall, /--repo pesap\/agents/);
-    assert.match(scriptCall, /--branch feat\/65-detect-local-worktrees-and-stale-sessions/);
+    assert.match(scriptCall, /--branch feat\/65-detect-local-worktrees-stale/);
     assert.match(scriptCall, /--capsule .+github\.com\/pesap\/agents\/capsule\.md/);
     assert.match(scriptCall, /--prompt I want to discuss and possibly work on:/);
     assert.match(scriptCall, /Draft PR and feedback heartbeat:/);
@@ -674,7 +709,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
-    assert.match(rendered, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-and-stale-sessions --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
+    assert.match(rendered, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-stale --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Forge heartbeat command: zellij action new-pane/);
     assert.match(rendered, /--notify-pane terminal_99/);
     assert.doesNotMatch(rendered, /--prompt I want to discuss and possibly work on:/);
@@ -686,7 +721,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Worktree status: launched/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Pi handoff command: zellij action new-pane/);
-    assert.match(capsule, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-and-stale-sessions --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
+    assert.match(capsule, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-stale --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(capsule, /Exact model: anthropic\/claude-sonnet-4/);
     assert.match(capsule, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(capsule, /Model routing mode: exact-model/);
@@ -804,7 +839,7 @@ test("blocks before recording Pi started when the handoff auth preflight fails",
 test("blocks in current session when Zellij tab exists but Pi handoff is not launched", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-partial-test-"));
   try {
-    const branch = "fix/67-tab-created-pi-pane-missing";
+    const branch = "fix/67-tab-created-pi-pane";
     const { runner } = fakeGhRunner({
       "auth status": "",
       "issue view 67 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
@@ -835,7 +870,7 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
     assert.match(rendered, /Worktree\/tab was created but Pi was not launched/);
     assert.match(rendered, /Retry Zellij handoff from an active Zellij pane/);
-    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane-missing'/);
+    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane'/);
     assert.match(rendered, /Manual heartbeat restore: cd '\/tmp\/worktrunk\.feat-65'/);
     assert.match(rendered, new RegExp(`--branch ${branch}`));
     assert.match(rendered, /--prompt <redacted>/);
@@ -847,7 +882,7 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(capsule, /Worktree status: blocked/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Retry Zellij handoff from an active Zellij pane/);
-    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane-missing'/);
+    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane'/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
