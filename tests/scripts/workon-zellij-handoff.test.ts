@@ -13,6 +13,44 @@ async function writeExecutable(filePath: string, content: string): Promise<void>
   await chmod(filePath, 0o755);
 }
 
+test("workon handoff ack records capsule acknowledgement in the ledger", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-handoff-ack-test-"));
+  try {
+    const ledgerPath = path.join(tempDir, "handoff-ledger.json");
+    await writeFile(
+      ledgerPath,
+      JSON.stringify({
+        version: 1,
+        pi: { status: "pi-process-started" },
+        phases: { pi: "pi-process-started" },
+        attempts: [],
+      }),
+      "utf8",
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-handoff-ack.sh");
+    const { stdout } = await execFileAsync("bash", [
+      scriptPath,
+      "--ledger",
+      ledgerPath,
+      "--status",
+      "capsule-acknowledged",
+      "--message",
+      "capsule read",
+    ], { cwd: repoRoot });
+
+    assert.match(stdout, /"childStatus":"capsule-acknowledged"/);
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    assert.equal(ledger.pi.status, "capsule-acknowledged");
+    assert.equal(ledger.phases.pi, "capsule-acknowledged");
+    assert.equal(ledger.attempts.at(-1).status, "capsule-acknowledged");
+    assert.equal(ledger.attempts.at(-1).detail, "capsule read");
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff waits long enough for delayed Worktrunk tab", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-handoff-test-"));
   try {
@@ -23,11 +61,17 @@ test("workon zellij handoff waits long enough for delayed Worktrunk tab", async 
     const paneLog = path.join(tempDir, "panes.log");
     const worktreePath = path.join(tempDir, "worktree");
     const capsulePath = path.join(tempDir, "capsule.md");
+    const ledgerPath = path.join(tempDir, "handoff-ledger.json");
     const branch = "work/93-work-when-our-handoff-pi-session-finish-it-does-not-receive-the-feedback";
     const tabName = "agents/work-93-work-when-our-handoff-pi-session-finish-it-does-not-receive-the-feedback";
 
     await mkdir(worktreePath);
     await writeFile(capsulePath, "# capsule\n", "utf8");
+    await writeFile(
+      ledgerPath,
+      JSON.stringify({ version: 1, pi: { status: "not-launched" }, phases: { pi: "not-launched" }, attempts: [] }),
+      "utf8",
+    );
     await writeFile(stateFile, "0\n", "utf8");
 
     await writeExecutable(
@@ -91,6 +135,8 @@ exit 2
         "handoff prompt",
         "--heartbeat",
         "0",
+        "--ledger",
+        ledgerPath,
       ],
       {
         cwd: repoRoot,
@@ -115,6 +161,11 @@ exit 2
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /--name pi/);
     assert.doesNotMatch(panes, /forge-heartbeat/);
+
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    assert.equal(ledger.pi.status, "pi-process-started");
+    assert.equal(ledger.phases.pi, "pi-process-started");
+    assert.equal(ledger.attempts.at(-1).status, "pi-process-started");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

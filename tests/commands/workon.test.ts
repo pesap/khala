@@ -190,6 +190,8 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     assert.match(capsule, /Render collected inbox items into canonical buckets/);
     assert.match(capsule, /I want to discuss and possibly work on: feat\(inbox\): render deterministic maintainer queue locally/);
     assert.match(capsule, /Before doing any implementation:/);
+    assert.match(capsule, /workon-handoff-ack\.sh/);
+    assert.match(capsule, /--status capsule-acknowledged/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
     assert.match(capsule, /check the PR\/issue forge for human feedback every 1\.0/);
   } finally {
@@ -230,6 +232,8 @@ test("uses packaged handoff template when target cwd has no commands directory",
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Before doing any implementation:/);
+    assert.match(capsule, /workon-handoff-ack\.sh/);
+    assert.match(capsule, /--status capsule-acknowledged/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -621,7 +625,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "launched");
     assert.equal((ledger.zellij as { status: string; tabId: number }).status, "launched");
     assert.equal((ledger.zellij as { status: string; tabId: number }).tabId, 12);
-    assert.equal((ledger.pi as { status: string }).status, "pane-created");
+    assert.equal((ledger.pi as { status: string }).status, "pi-process-started");
     assert.equal((ledger.heartbeat as { status: string }).status, "started");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -902,6 +906,8 @@ test("handoff template requires source-closing checklist PR body", async () => {
   assert.match(template, /Deviations from the original plan/);
   assert.match(template, /command-only Testing Strategy/);
   assert.match(template, /References/);
+  assert.match(template, /Acknowledge that the capsule was read by running/);
+  assert.match(template, /{{ack_command}}/);
   assert.match(template, /`Addressed` with evidence/);
   assert.match(template, /`Not addressed` with the reason and follow-up/);
 });

@@ -56,10 +56,11 @@ interface WorkonHandoffLedger {
     worktreeAction: string | null;
   };
   pi: {
-    status: "not-launched" | "pane-created";
+    status: "not-launched" | "pi-process-started" | "capsule-acknowledged";
     paneId: string | null;
     paneAction: string | null;
     handoffCommand: string | null;
+    acknowledgementCommand: string | null;
   };
   heartbeat: {
     status: "disabled" | "not-launched" | "started";
@@ -261,7 +262,7 @@ function buildHandoffRecoveryInstructions(params: {
   const zellijHandoffScript = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
   const heartbeatScript = path.join(PACKAGE_ROOT, "scripts", "workon-forge-heartbeat.sh");
   instructions.push(
-    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}`,
+    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)} --ledger ${shellQuote(handoffLedgerPath(params.request.capsuleRoot, params.repo))}`,
   );
   instructions.push(
     `Manual Pi restore: cd ${shellQuote(params.worktreePath)} && pi --name ${shellQuote(params.branchName)} ${shellQuote(buildManualHandoffPrompt(params))}`,
@@ -302,15 +303,24 @@ function firstMeaningfulGap(gaps: string[]): string | null {
   return gaps.find((gap) => !gap.startsWith("Retry ") && !gap.startsWith("Manual ")) ?? null;
 }
 
+function buildHandoffAcknowledgementCommand(ledgerPath: string): string {
+  const ackScript = path.join(PACKAGE_ROOT, "scripts", "workon-handoff-ack.sh");
+  return `bash ${shellQuote(ackScript)} --ledger ${shellQuote(ledgerPath)} --status capsule-acknowledged`;
+}
+
 function buildLedgerSafeNextAction(params: {
   issue: GithubIssueMetadata;
   readinessActionItems: string[];
   worktreeCommand: string | null;
   worktreeStatus: WorkonLedgerWorktreeStatus;
+  piStatus: WorkonHandoffLedger["pi"]["status"];
   recoveryInstructions: string[];
 }): string {
   if (params.readinessActionItems.length > 0) {
     return `Resolve readiness action items before starting /workon for ${params.issue.url}.`;
+  }
+  if (params.piStatus === "pi-process-started") {
+    return "Wait for capsule acknowledgement, or resume from the ledger and capsule if the child session is gone.";
   }
   if (params.worktreeStatus === "launched") {
     return "Continue in the launched Pi pane; read the session capsule if context is missing.";
@@ -343,7 +353,7 @@ function buildHandoffLedger(params: {
   const recoveryInstructions = params.handoffRecoveryInstructions ?? [];
   const ledgerPath = handoffLedgerPath(params.request.capsuleRoot, params.repo);
   const heartbeatDisabled = params.request.heartbeat === "0" || params.request.heartbeat === "0.0";
-  const piStatus = params.piHandoffCommand ? "pane-created" : "not-launched";
+  const piStatus = params.piHandoffCommand ? "pi-process-started" : "not-launched";
   const heartbeatStatus = heartbeatDisabled
     ? "disabled"
     : params.heartbeatCommand
@@ -389,6 +399,7 @@ function buildHandoffLedger(params: {
       paneId: params.zellijResult?.piPaneId ?? null,
       paneAction: params.zellijResult?.piPaneAction ?? null,
       handoffCommand: params.piHandoffCommand ?? null,
+      acknowledgementCommand: buildHandoffAcknowledgementCommand(ledgerPath),
     },
     heartbeat: {
       status: heartbeatStatus,
@@ -413,6 +424,7 @@ function buildHandoffLedger(params: {
       readinessActionItems,
       worktreeCommand: params.worktreeCommand ?? null,
       worktreeStatus: params.worktreeStatus,
+      piStatus,
       recoveryInstructions,
     }),
     recoveryInstructions,
@@ -882,6 +894,7 @@ Worktree path: ${params.worktreePath ?? "(not available)"}
 Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
 Handoff ledger: ${handoffLedgerPath(params.request.capsuleRoot, params.repo)}
+Capsule acknowledgement command: ${buildHandoffAcknowledgementCommand(handoffLedgerPath(params.request.capsuleRoot, params.repo))}
 Launch eligibility: active Zellij ${params.zellijActive ? "yes" : "no"}
 Heartbeat interval: ${params.request.heartbeat}
 Dry run: ${params.request.dryRun ? "yes" : "no"}
@@ -952,6 +965,7 @@ async function buildHandoffPrompt(params: {
   branchName: string;
   heartbeat: string;
   modelSelection: WorkonModelSelection;
+  ledgerPath: string;
 }): Promise<string> {
   const template = await readHandoffTemplate(params.cwd);
   const sourceIssues = params.issues?.length ? params.issues : [params.issue];
@@ -960,6 +974,8 @@ async function buildHandoffPrompt(params: {
     heartbeat_interval: heartbeatLabel(params.heartbeat),
     model_routing_mode: params.modelSelection.routingMode,
     model_routing_reason: params.modelSelection.routingReason,
+    handoff_ledger: params.ledgerPath,
+    ack_command: buildHandoffAcknowledgementCommand(params.ledgerPath),
     resolved_model: params.modelSelection.exactModel || "(runtime default)",
     issue_number: params.issue.number,
     issue_title: params.issue.title,
@@ -1028,6 +1044,7 @@ async function startWorktreeIfRequested(
     branchName: string;
     capsulePath: string;
     handoffPrompt: string;
+    ledgerPath: string;
   },
 ): Promise<{
   status: "prepared" | "started" | "launched" | "blocked";
@@ -1062,6 +1079,8 @@ async function startWorktreeIfRequested(
       params.handoffPrompt,
       "--heartbeat",
       request.heartbeat,
+      "--ledger",
+      params.ledgerPath,
     ];
     const modelSelection = workonModelSelection(request);
     if (modelSelection.exactModel) {
@@ -1288,6 +1307,7 @@ export async function prepareWorkonBootstrap(
     branchName,
     heartbeat: request.heartbeat,
     modelSelection: workonModelSelection(request),
+    ledgerPath: handoffLedgerPath(request.capsuleRoot, repo),
   });
   const initialCapsule = await writeCapsule({
     request,
@@ -1305,6 +1325,7 @@ export async function prepareWorkonBootstrap(
     branchName,
     capsulePath: initialCapsule,
     handoffPrompt,
+    ledgerPath: handoffLedgerPath(request.capsuleRoot, repo),
   });
   const capsule = await writeCapsule({
     request,

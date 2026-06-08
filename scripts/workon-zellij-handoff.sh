@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL]
+Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL] [--ledger PATH]
 
 Create/switch the Worktrunk worktree, wait for its Zellij tab, and launch Pi in
 that tab with a clean prompt. The capsule path is passed as text in the prompt;
@@ -18,6 +18,7 @@ capsule=""
 prompt=""
 heartbeat="1.0"
 model=""
+ledger=""
 pi_command="${PI_COMMAND:-pi}"
 wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-150}"
 wait_seconds="${ZELLIJ_TAB_WAIT_SECONDS:-0.2}"
@@ -50,6 +51,10 @@ while (($#)); do
       ;;
     --model)
       model="${2:?--model requires MODEL}"
+      shift 2
+      ;;
+    --ledger)
+      ledger="${2:?--ledger requires PATH}"
       shift 2
       ;;
     -h|--help)
@@ -125,6 +130,21 @@ find_named_pane() {
       | (.pane_id? // .id? // .terminal_id? // empty)
     ][0] // empty
   ' 2>/dev/null || true
+}
+
+record_ledger_status() {
+  local status="${1:?status required}"
+  local detail="${2:-}"
+  local ack_script=""
+
+  if [[ -z "${ledger}" || ! -s "${ledger}" ]]; then
+    return 0
+  fi
+  ack_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workon-handoff-ack.sh"
+  if [[ ! -x "${ack_script}" ]]; then
+    return 0
+  fi
+  bash "${ack_script}" --ledger "${ledger}" --status "${status}" --message "${detail}" >/dev/null || true
 }
 
 require_command wt
@@ -216,6 +236,9 @@ if [[ -z "${pi_pane_id}" ]]; then
   pi_args+=("${clean_prompt}")
   pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}" | tail -n 1)"
   pi_pane_action="started"
+fi
+if [[ -n "${pi_pane_id}" ]]; then
+  record_ledger_status "pi-process-started" "Pi pane ${pi_pane_action}: ${pi_pane_id}"
 fi
 
 heartbeat_pane_id=""
