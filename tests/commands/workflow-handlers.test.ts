@@ -127,6 +127,31 @@ test("workon handler groups space-separated issue targets into one bootstrap", a
   );
 });
 
+test("workon handler accepts multiple GitHub Enterprise issue URLs from one host and repo", async () => {
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; notifications?: string[] } = { notifications: [] };
+  const handlers = createHandlers(captured);
+
+  await handlers.workon(
+    "https://github.nrel.gov/org/repo/issues/73 https://github.nrel.gov/org/repo/issues/74 --forge gitlab",
+    { cwd: process.cwd() } as never,
+  );
+
+  assert.equal(
+    captured.input,
+    "https://github.nrel.gov/org/repo/issues/73 https://github.nrel.gov/org/repo/issues/74",
+  );
+  assert.deepEqual(captured.flags?.targets, [
+    "https://github.nrel.gov/org/repo/issues/73",
+    "https://github.nrel.gov/org/repo/issues/74",
+  ]);
+  assert.deepEqual(captured.notifications, []);
+  assert.ok(
+    captured.sections?.includes(
+      "Workon targets: https://github.nrel.gov/org/repo/issues/73, https://github.nrel.gov/org/repo/issues/74",
+    ),
+  );
+});
+
 test("workon handler fails fast when issue URLs span multiple repos", async () => {
   const captured: { sections?: string[]; notifications?: string[] } = { notifications: [] };
   const handlers = createHandlers(captured);
@@ -138,7 +163,22 @@ test("workon handler fails fast when issue URLs span multiple repos", async () =
 
   assert.equal(captured.sections, undefined);
   assert.deepEqual(captured.notifications, [
-    "All /workon issue URLs must be from the same repo; found pesap/agents, pesap/other.",
+    "All /workon issue URLs must be from the same repo and host; found github.com/pesap/agents, github.com/pesap/other.",
+  ]);
+});
+
+test("workon handler rejects mixed github.com and GitHub Enterprise issue URLs", async () => {
+  const captured: { sections?: string[]; notifications?: string[] } = { notifications: [] };
+  const handlers = createHandlers(captured);
+
+  await handlers.workon(
+    "https://github.com/pesap/agents/issues/73 https://github.nrel.gov/pesap/agents/issues/74",
+    { cwd: process.cwd() } as never,
+  );
+
+  assert.equal(captured.sections, undefined);
+  assert.deepEqual(captured.notifications, [
+    "All /workon issue URLs must be from the same repo and host; found github.com/pesap/agents, github.nrel.gov/pesap/agents.",
   ]);
 });
 

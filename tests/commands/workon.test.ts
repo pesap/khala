@@ -104,6 +104,19 @@ function issueViewOutput(number: number, title: string, body = ""): string {
   });
 }
 
+function enterpriseIssueViewOutput(number: number, title: string, body = ""): string {
+  return JSON.stringify({
+    number,
+    title,
+    url: `https://github.nrel.gov/org/repo/issues/${number}`,
+    state: "OPEN",
+    body: readyIssueBody(title, body),
+    labels: [{ name: "enhancement" }],
+    assignees: [{ login: "pesap" }],
+    author: { login: "pesap" },
+  });
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -273,6 +286,134 @@ test("stores workon state under the resolved forge host", async () => {
       rendered,
       new RegExp(`${escapeRegExp(path.join(tempDir, "github.enterprise.example", "pesap", "agents", "handoff-ledger.json"))}`),
     );
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("prepares GitHub Enterprise issue URL with host-aware gh repo and state paths", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-enterprise-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status --hostname github.nrel.gov": "",
+      "issue view 123 --repo github.nrel.gov/org/repo --json number,title,url,body,state,author,labels,assignees": enterpriseIssueViewOutput(
+        123,
+        "feat(workon): support enterprise URLs",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "https://github.nrel.gov/org/repo/issues/123",
+        repo: "",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.deepEqual(calls.slice(0, 2), [
+      "auth status --hostname github.nrel.gov",
+      "issue view 123 --repo github.nrel.gov/org/repo --json number,title,url,body,state,author,labels,assignees",
+    ]);
+    assert.match(rendered, /Source issue: org\/repo#123/);
+    assert.match(
+      rendered,
+      new RegExp(`${escapeRegExp(path.join(tempDir, "github.nrel.gov", "org", "repo", "capsule.md"))}`),
+    );
+    assert.match(
+      rendered,
+      new RegExp(`${escapeRegExp(path.join(tempDir, "github.nrel.gov", "org", "repo", "handoff-ledger.json"))}`),
+    );
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Issue: https:\/\/github\.nrel\.gov\/org\/repo\/issues\/123/);
+    assert.match(capsule, /Handoff ledger: .*github\.nrel\.gov.*handoff-ledger\.json/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("groups multiple GitHub Enterprise issues from one host and repo", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-enterprise-multi-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status --hostname github.nrel.gov": "",
+      "issue view 123 --repo github.nrel.gov/org/repo --json number,title,url,body,state,author,labels,assignees": enterpriseIssueViewOutput(
+        123,
+        "fix(workon): first enterprise issue",
+      ),
+      "issue view 124 --repo github.nrel.gov/org/repo --json number,title,url,body,state,author,labels,assignees": enterpriseIssueViewOutput(
+        124,
+        "fix(workon): second enterprise issue",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "https://github.nrel.gov/org/repo/issues/123 https://github.nrel.gov/org/repo/issues/124",
+        targets: [
+          "https://github.nrel.gov/org/repo/issues/123",
+          "https://github.nrel.gov/org/repo/issues/124",
+        ],
+        repo: "",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.filter((call) => call === "auth status --hostname github.nrel.gov").length, 1);
+    assert.ok(
+      calls.includes(
+        "issue view 124 --repo github.nrel.gov/org/repo --json number,title,url,body,state,author,labels,assignees",
+      ),
+    );
+    assert.match(rendered, /Source issues: #123, #124/);
+    assert.match(rendered, /github\.nrel\.gov/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("reports a host-specific GitHub Enterprise auth error", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-enterprise-auth-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({});
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "https://github.nrel.gov/org/repo/issues/123",
+        repo: "",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.deepEqual(calls, ["auth status --hostname github.nrel.gov"]);
+    assert.match(rendered, /GitHub authentication for github\.nrel\.gov: missing fake output/);
+    assert.doesNotMatch(rendered, /Usage: \/workon/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

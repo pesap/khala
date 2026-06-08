@@ -128,8 +128,10 @@ function workonModelSelection(request: WorkonBootstrapRequest): WorkonModelSelec
 }
 
 interface GithubIssueTarget {
+  host: string;
   repo: string;
   number: number;
+  fromUrl: boolean;
 }
 
 interface GithubIssueMetadata {
@@ -276,14 +278,24 @@ export function buildWorkonBranchName(issueOrIssues: BranchIssue | BranchIssue[]
 }
 
 function githubIssueTargetFromUrl(target: string): GithubIssueTarget | null {
-  const match = target.match(
-    /github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/([1-9]\d*)/i,
+  const match = target.trim().match(
+    /^(?:https?:\/\/)?([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/issues\/([1-9]\d*)$/i,
   );
   if (!match) return null;
   return {
-    repo: `${match[1]}/${match[2]}`,
-    number: Number(match[3]),
+    host: normalizeForgeHost(match[1]) ?? "github.com",
+    repo: `${match[2]}/${match[3]}`,
+    number: Number(match[4]),
+    fromUrl: true,
   };
+}
+
+function githubRepoSelector(target: GithubIssueTarget): string {
+  return target.fromUrl && target.host !== "github.com" ? `${target.host}/${target.repo}` : target.repo;
+}
+
+function githubIssueTargetKey(target: GithubIssueTarget): string {
+  return `${target.host}/${target.repo}`.toLowerCase();
 }
 
 function numericTarget(target: string): number | null {
@@ -576,6 +588,26 @@ async function runGh(
   return runCommand(runner, cwd, commands, "gh", args);
 }
 
+async function ensureGithubAuth(
+  request: WorkonBootstrapRequest,
+  runner: WorkonCommandRunner,
+  evidence: WorkonBootstrapEvidence,
+  host?: string,
+): Promise<boolean> {
+  const normalizedHost = normalizeForgeHost(host);
+  const hostArgs = normalizedHost && normalizedHost !== "github.com" ? ["--hostname", normalizedHost] : [];
+  const auth = await runGh(runner, request.cwd, evidence.commands, ["auth", "status", ...hostArgs]);
+  const label = normalizedHost && normalizedHost !== "github.com"
+    ? `GitHub authentication for ${normalizedHost}`
+    : "GitHub authentication";
+  const authGap = resultGap(label, auth);
+  if (authGap) {
+    evidence.gaps.push(authGap);
+    return false;
+  }
+  return true;
+}
+
 async function resolveCurrentGithubRepo(
   request: WorkonBootstrapRequest,
   runner: WorkonCommandRunner,
@@ -612,7 +644,7 @@ async function resolveIssueTarget(
   const issueNumber = numericTarget(request.target);
   const repo = await resolveCurrentGithubRepo(request, runner, evidence);
   if (!repo) return null;
-  if (issueNumber) return { repo, number: issueNumber };
+  if (issueNumber) return { host: stateForgeHost(request), repo, number: issueNumber, fromUrl: false };
 
   evidence.gaps.push(
     "Workon target is not an issue URL or issue number; use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.",
@@ -631,7 +663,7 @@ async function readGithubIssue(
     "view",
     String(target.number),
     "--repo",
-    target.repo,
+    githubRepoSelector(target),
     "--json",
     "number,title,url,body,state,author,labels,assignees",
   ]);
@@ -1482,29 +1514,39 @@ export async function prepareWorkonBootstrap(
     evidence.gaps.push("GitLab workon bootstrap is not implemented in this slice");
   }
 
-  const auth = await runGh(runner, request.cwd, evidence.commands, ["auth", "status"]);
-  const authGap = resultGap("GitHub authentication", auth);
-  if (authGap) {
-    evidence.gaps.push(authGap);
+  const rawTargets = request.targets?.length ? request.targets : [request.target];
+  const urlTargets = rawTargets.map(githubIssueTargetFromUrl);
+  const allTargetsAreUrls = urlTargets.every((target): target is GithubIssueTarget => target !== null);
+  const issueTargets: GithubIssueTarget[] = [];
+
+  if (allTargetsAreUrls) {
+    issueTargets.push(...urlTargets);
+  } else {
+    if (!await ensureGithubAuth(request, runner, evidence)) {
+      return formatWorkonBootstrapEvidence(evidence);
+    }
+    for (const rawTarget of rawTargets) {
+      const target = await resolveIssueTarget({ ...request, target: rawTarget }, runner, evidence);
+      if (!target) return formatWorkonBootstrapEvidence(evidence);
+      issueTargets.push(target);
+    }
+  }
+
+  const uniqueRepoKeys = [...new Set(issueTargets.map(githubIssueTargetKey))];
+  if (uniqueRepoKeys.length > 1) {
+    evidence.gaps.push(`Grouped GitHub workon requires one repo and host; found ${issueTargets.map(githubRepoSelector).join(", ")}`);
     return formatWorkonBootstrapEvidence(evidence);
   }
 
-  const rawTargets = request.targets?.length ? request.targets : [request.target];
-  const issueTargets: GithubIssueTarget[] = [];
-  for (const rawTarget of rawTargets) {
-    const target = await resolveIssueTarget({ ...request, target: rawTarget }, runner, evidence);
-    if (!target) return formatWorkonBootstrapEvidence(evidence);
-    issueTargets.push(target);
-  }
-  const uniqueRepos = [...new Set(issueTargets.map((target) => target.repo.toLowerCase()))];
-  if (uniqueRepos.length > 1) {
-    evidence.gaps.push(`Grouped GitHub workon requires one repo; found ${issueTargets.map((target) => target.repo).join(", ")}`);
+  const resolvedForgeHost = issueTargets[0]?.host ?? stateForgeHost(request);
+  const resolvedRequest = { ...request, forgeHost: resolvedForgeHost };
+  if (allTargetsAreUrls && !await ensureGithubAuth(resolvedRequest, runner, evidence, resolvedForgeHost)) {
     return formatWorkonBootstrapEvidence(evidence);
   }
 
   const issues: GithubIssueMetadata[] = [];
   for (const target of issueTargets) {
-    const issue = await readGithubIssue(request, runner, evidence, target);
+    const issue = await readGithubIssue(resolvedRequest, runner, evidence, target);
     if (!issue) return formatWorkonBootstrapEvidence(evidence);
     issues.push(issue);
   }
@@ -1525,7 +1567,7 @@ export async function prepareWorkonBootstrap(
     evidence.readinessActionItemsByIssue = readinessActionItemsByIssue;
     evidence.gaps.push(formatReadinessActionItems(readinessActionItemsByIssue));
     const ledger = buildHandoffLedger({
-      request,
+      request: resolvedRequest,
       repo,
       issue,
       issues,
@@ -1539,22 +1581,22 @@ export async function prepareWorkonBootstrap(
   }
 
   const branchName = buildWorkonBranchName(issues);
-  const worktreeCommand = `cd ${shellQuote(request.cwd)} && wt switch --create ${branchName} --format json`;
-  if (request.dryRun) {
+  const worktreeCommand = `cd ${shellQuote(resolvedRequest.cwd)} && wt switch --create ${branchName} --format json`;
+  if (resolvedRequest.dryRun) {
     evidence.gaps.push("Dry run requested: prepared capsule and branch suggestion only; no Worktrunk, Zellij, Pi, or heartbeat launch was attempted.");
   }
   const handoffPrompt = await buildHandoffPrompt({
-    cwd: request.cwd,
+    cwd: resolvedRequest.cwd,
     issue,
     issues,
     repo,
     branchName,
-    heartbeat: request.heartbeat,
-    modelSelection: workonModelSelection(request),
-    ledgerPath: handoffLedgerPath(request, repo),
+    heartbeat: resolvedRequest.heartbeat,
+    modelSelection: workonModelSelection(resolvedRequest),
+    ledgerPath: handoffLedgerPath(resolvedRequest, repo),
   });
   const initialCapsule = await writeCapsule({
-    request,
+    request: resolvedRequest,
     issue,
     issues,
     repo,
@@ -1562,17 +1604,17 @@ export async function prepareWorkonBootstrap(
     worktreeCommand,
     worktreeStatus: "prepared",
     handoffPrompt,
-    zellijActive: request.launchInZellij,
+    zellijActive: resolvedRequest.launchInZellij,
   });
-  const worktree = await startWorktreeIfRequested(request, runner, evidence, {
+  const worktree = await startWorktreeIfRequested(resolvedRequest, runner, evidence, {
     repo,
     branchName,
     capsulePath: initialCapsule,
     handoffPrompt,
-    ledgerPath: handoffLedgerPath(request, repo),
+    ledgerPath: handoffLedgerPath(resolvedRequest, repo),
   });
   const capsule = await writeCapsule({
-    request,
+    request: resolvedRequest,
     issue,
     issues,
     repo,
@@ -1583,7 +1625,7 @@ export async function prepareWorkonBootstrap(
     piHandoffCommand: worktree.piHandoffCommand,
     heartbeatCommand: worktree.heartbeatCommand,
     handoffPrompt,
-    zellijActive: request.launchInZellij,
+    zellijActive: resolvedRequest.launchInZellij,
     handoffRecoveryInstructions: worktree.handoffRecoveryInstructions,
   });
 
@@ -1596,13 +1638,13 @@ export async function prepareWorkonBootstrap(
   evidence.worktreePath = worktree.path;
   evidence.piHandoffCommand = worktree.piHandoffCommand;
   evidence.heartbeatCommand = worktree.heartbeatCommand;
-  evidence.modelSelection = workonModelSelection(request);
+  evidence.modelSelection = workonModelSelection(resolvedRequest);
   evidence.handoffPrompt = handoffPrompt;
-  evidence.zellijActive = request.launchInZellij;
+  evidence.zellijActive = resolvedRequest.launchInZellij;
   evidence.handoffRecoveryInstructions = worktree.handoffRecoveryInstructions;
   evidence.capsulePath = capsule;
   const ledger = buildHandoffLedger({
-    request,
+    request: resolvedRequest,
     repo,
     issue,
     issues,
