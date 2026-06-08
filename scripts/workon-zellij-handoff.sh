@@ -244,7 +244,7 @@ clean_prompt="${prompt}
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."
 
-pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} --name ${branch}"
+pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} -a --name ${branch}"
 if [[ -n "${model}" ]]; then
   pi_handoff_command="${pi_handoff_command} --model ${model}"
 fi
@@ -253,7 +253,7 @@ pi_handoff_command="${pi_handoff_command} <clean-prompt>"
 pi_pane_id="$(find_named_pane pi "${tab_id}")"
 pi_pane_action="reused"
 if [[ -z "${pi_pane_id}" ]]; then
-  pi_args=("${pi_command}" --name "${branch}")
+  pi_args=("${pi_command}" -a --name "${branch}")
   if [[ -n "${model}" ]]; then
     pi_args+=(--model "${model}")
   fi
