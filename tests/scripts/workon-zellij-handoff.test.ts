@@ -120,6 +120,112 @@ exit 2
   }
 });
 
+test("workon zellij handoff reuses an existing Worktrunk branch", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-existing-branch-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const wtLog = path.join(tempDir, "wt.log");
+    const paneLog = path.join(tempDir, "panes.log");
+    const worktreePath = path.join(tempDir, "worktree");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    const branch = "fix/150-explain-skipped-handoff-and-provide-restore-retry-path";
+    const tabName = "agents/fix-150-explain-skipped-handoff-and-provide-restore-retry-path";
+
+    await mkdir(worktreePath);
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${wtLog}"
+if [[ "$*" == "switch --create ${branch} --format json" ]]; then
+  printf 'Branch ${branch} already exists\n' >&2
+  printf '↳ To switch to the existing branch, run without --create: wt switch ${branch}\n' >&2
+  exit 1
+fi
+if [[ "$*" == "switch ${branch} --format json" ]]; then
+  printf '{"action":"switched","path":"${worktreePath}"}\n'
+  exit 0
+fi
+printf 'unexpected wt args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "zellij"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "action list-tabs --json" ]]; then
+  printf '[{"name":"${tabName}","tab_id":12}]\n'
+  exit 0
+fi
+if [[ "$*" == "action go-to-tab-name ${tabName}" ]]; then
+  exit 0
+fi
+if [[ "$1 $2" == "action new-pane" ]]; then
+  printf '%s\n' "$*" >> "${paneLog}"
+  printf 'terminal_99\n'
+  exit 0
+fi
+printf 'unexpected zellij args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    await writeExecutable(path.join(binDir, "pi"), "#!/usr/bin/env bash\nexit 0\n");
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    const { stdout } = await execFileAsync(
+      "bash",
+      [
+        scriptPath,
+        "--repo",
+        "pesap/agents",
+        "--branch",
+        branch,
+        "--capsule",
+        capsulePath,
+        "--prompt",
+        "handoff prompt",
+        "--heartbeat",
+        "0",
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          ZELLIJ_TAB_WAIT_SECONDS: "0.01",
+        },
+      },
+    );
+
+    const wtCalls = await readFile(wtLog, "utf8");
+    assert.match(wtCalls, new RegExp(`switch --create ${branch} --format json`));
+    assert.match(wtCalls, new RegExp(`switch ${branch} --format json`));
+
+    const resultLine = stdout
+      .trim()
+      .split(/\r?\n/)
+      .findLast((line) => line.startsWith("{"));
+    assert.ok(resultLine);
+    const result = JSON.parse(resultLine);
+    assert.equal(result.status, "launched");
+    assert.equal(result.path, worktreePath);
+    assert.equal(result.worktreeAction, "reused");
+
+    const panes = await readFile(paneLog, "utf8");
+    assert.match(panes, /--name pi/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff passes selected model while preserving PI_COMMAND", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-model-test-"));
   try {

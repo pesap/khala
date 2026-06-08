@@ -303,8 +303,12 @@ test("ZELLIJ=0 selects direct Worktrunk start path", async () => {
     assert.equal(calls.some((call) => call.startsWith("bash ") && call.includes("workon-zellij-handoff.sh")), false);
     assert.ok(calls.includes(`wt switch --create ${branch} --format json`));
     assert.match(rendered, /Suggested Worktrunk command: cd .+ && wt switch --create fix\/148-use-package-handoff-script-and-robust-zellij-detection --format json/);
+    assert.match(rendered, /Launch eligibility: active Zellij no/);
     assert.match(rendered, /Worktree status: started/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.fix-148/);
+    assert.match(rendered, /Pi handoff skipped: active Zellij was not detected/);
+    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.fix-148' && pi --name 'fix\/148-use-package-handoff-script-and-robust-zellij-detection'/);
+    assert.match(rendered, /Manual heartbeat restore: cd '\/tmp\/worktrunk\.fix-148'/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -490,8 +494,11 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
       rendered,
       /Suggested Worktrunk command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
     );
+    assert.match(rendered, /Launch eligibility: active Zellij no/);
     assert.match(rendered, /Worktree status: started/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk.feat-65/);
+    assert.match(rendered, /Handoff recovery:/);
+    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk.feat-65'/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
@@ -502,6 +509,9 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     );
     assert.match(capsule, /Worktree status: started/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
+    assert.match(capsule, /Launch eligibility: active Zellij no/);
+    assert.match(capsule, /## Handoff recovery/);
+    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk.feat-65'/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -564,6 +574,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(rendered, /Exact model: anthropic\/claude-sonnet-4/);
     assert.match(rendered, /Model routing mode: exact-model/);
     assert.match(rendered, /explicit --model override/);
+    assert.match(rendered, /Launch eligibility: active Zellij yes/);
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
@@ -619,6 +630,9 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
     assert.match(rendered, /Worktree\/tab was created but Pi was not launched/);
+    assert.match(rendered, /Retry Zellij handoff from an active Zellij pane/);
+    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65'/);
+    assert.match(rendered, /Manual heartbeat restore: cd '\/tmp\/worktrunk\.feat-65'/);
     assert.match(rendered, new RegExp(`--branch ${branch}`));
     assert.match(rendered, /--prompt <redacted>/);
     assert.doesNotMatch(rendered, /Before doing any implementation:/);
@@ -628,6 +642,8 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Worktree status: blocked/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
+    assert.match(capsule, /Retry Zellij handoff from an active Zellij pane/);
+    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65'/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

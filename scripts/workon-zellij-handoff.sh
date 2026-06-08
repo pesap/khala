@@ -128,7 +128,24 @@ fi
 repo_name="${repo##*/}"
 tab_name="$(slugify "${repo_name}")/$(slugify "${branch}")"
 
-switch_output="$(wt switch --create "${branch}" --format json 2>&1)"
+switch_status=0
+switch_output="$(wt switch --create "${branch}" --format json 2>&1)" || switch_status=$?
+worktree_action="created"
+if ((switch_status != 0)); then
+  create_output="${switch_output}"
+  if grep -qiE "branch .+ already exists|already exists" <<<"${create_output}"; then
+    switch_status=0
+    switch_output="$(wt switch "${branch}" --format json 2>&1)" || switch_status=$?
+    worktree_action="reused"
+  fi
+  if ((switch_status != 0)); then
+    printf 'Worktrunk failed to create or switch to branch %s. Output:\n%s\n' "${branch}" "${create_output}" >&2
+    if [[ "${worktree_action}" == "reused" ]]; then
+      printf 'Fallback wt switch output:\n%s\n' "${switch_output}" >&2
+    fi
+    exit "${switch_status}"
+  fi
+fi
 worktree_path=""
 # Worktrunk hooks can print human-readable status lines such as
 # "◎ Running pre-start: ..." around the machine-readable JSON. Inspect only
@@ -197,11 +214,12 @@ if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
   fi
 fi
 
-printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatInterval":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
+printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatInterval":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
   "$(json_string "${worktree_path}")" \
   "$(json_string "${tab_name}")" \
   "${tab_id}" \
   "$(json_string "${pi_pane_id}")" \
   "$(json_string "${heartbeat}")" \
+  "$(json_string "${worktree_action}")" \
   "$(json_string "zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} --name ${branch} <clean-prompt>")" \
   "$(json_string "${heartbeat_command}")"

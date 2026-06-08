@@ -92,6 +92,8 @@ interface WorkonBootstrapEvidence {
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffPrompt?: string;
+  zellijActive?: boolean;
+  handoffRecoveryInstructions?: string[];
   modelSelection?: WorkonModelSelection;
   readinessActionItems?: string[];
   readinessActionItemsByIssue?: Array<{
@@ -175,6 +177,36 @@ export function isActiveZellijEnv(value: string | undefined): boolean {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildManualHandoffPrompt(params: { repo: string; branchName: string; capsulePath: string }): string {
+  return `Continue /workon handoff for ${params.repo} on branch ${params.branchName}. Session capsule path: ${params.capsulePath}. Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use the handoff prompt inside the capsule as the task.`;
+}
+
+function buildHandoffRecoveryInstructions(params: {
+  request: WorkonBootstrapRequest;
+  repo: string;
+  branchName: string;
+  capsulePath: string;
+  worktreePath: string;
+}): string[] {
+  const instructions: string[] = [];
+  const zellijHandoffScript = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
+  const heartbeatScript = path.join(PACKAGE_ROOT, "scripts", "workon-forge-heartbeat.sh");
+  instructions.push(
+    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}`,
+  );
+  instructions.push(
+    `Manual Pi restore: cd ${shellQuote(params.worktreePath)} && pi --name ${shellQuote(params.branchName)} ${shellQuote(buildManualHandoffPrompt(params))}`,
+  );
+  if (params.request.heartbeat === "0" || params.request.heartbeat === "0.0") {
+    instructions.push("Forge heartbeat restore: disabled by heartbeat=0.");
+  } else {
+    instructions.push(
+      `Manual heartbeat restore: cd ${shellQuote(params.worktreePath)} && bash ${shellQuote(heartbeatScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --interval ${shellQuote(params.request.heartbeat)} --author @me`,
+    );
+  }
+  return instructions;
 }
 
 function formatLoggedCommand(command: string, args: string[]): string {
@@ -579,6 +611,8 @@ function capsuleMarkdown(params: {
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffPrompt: string;
+  zellijActive?: boolean;
+  handoffRecoveryInstructions?: string[];
 }): string {
   const labels = params.issue.labels
     ?.map((label) => label.name)
@@ -621,6 +655,7 @@ Worktree status: ${params.worktreeStatus}
 Worktree path: ${params.worktreePath ?? "(not available)"}
 Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
+Launch eligibility: active Zellij ${params.zellijActive ? "yes" : "no"}
 Heartbeat interval: ${params.request.heartbeat}
 Dry run: ${params.request.dryRun ? "yes" : "no"}
 Exact model: ${workonModelSelection(params.request).exactModel || "(runtime default)"}
@@ -645,6 +680,10 @@ ${acceptance}
 ## Validation
 
 ${validation}
+
+## Handoff recovery
+
+${params.handoffRecoveryInstructions?.length ? params.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`).join("\n") : "- No restore command needed for the recorded bootstrap state."}
 
 ## Open questions
 
@@ -721,6 +760,8 @@ async function writeCapsule(params: {
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffPrompt: string;
+  zellijActive?: boolean;
+  handoffRecoveryInstructions?: string[];
 }): Promise<string> {
   const filePath = capsulePath(params.request.capsuleRoot, params.repo);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -771,6 +812,7 @@ async function startWorktreeIfRequested(
   path?: string;
   piHandoffCommand?: string;
   heartbeatCommand?: string;
+  handoffRecoveryInstructions?: string[];
 }> {
   if (request.mode !== "start" || request.dryRun) return { status: "prepared" };
 
@@ -811,8 +853,17 @@ async function startWorktreeIfRequested(
         evidence.gaps.push(
           `Zellij Pi handoff ${params.branchName}: Worktree/tab was created but Pi was not launched; continue in ${parsed.tabName ?? "the Worktrunk tab"}, not this session.`,
         );
+        const handoffRecoveryInstructions = buildHandoffRecoveryInstructions({
+          request,
+          repo: params.repo,
+          branchName: params.branchName,
+          capsulePath: params.capsulePath,
+          worktreePath: parsed.path,
+        });
+        evidence.gaps.push(...handoffRecoveryInstructions);
+        return { status: "blocked", path: parsed.path, handoffRecoveryInstructions };
       }
-      return { status: "blocked", path: parsed?.path };
+      return { status: "blocked" };
     }
 
     if (parsed?.status !== "launched" || !parsed.path) {
@@ -841,9 +892,25 @@ async function startWorktreeIfRequested(
     return { status: "blocked" };
   }
 
+  const worktreePath = extractWorktreePath(`${result.stdout}\n${result.stderr}`);
+  const handoffRecoveryInstructions = worktreePath
+    ? buildHandoffRecoveryInstructions({
+        request,
+        repo: params.repo,
+        branchName: params.branchName,
+        capsulePath: params.capsulePath,
+        worktreePath,
+      })
+    : [];
+  evidence.gaps.push(
+    "Pi handoff skipped: active Zellij was not detected, so /workon used direct Worktrunk start; Pi and forge heartbeat cannot be launched from the direct path.",
+    ...handoffRecoveryInstructions,
+  );
+
   return {
     status: "started",
-    path: extractWorktreePath(`${result.stdout}\n${result.stderr}`),
+    path: worktreePath,
+    handoffRecoveryInstructions,
   };
 }
 
@@ -875,6 +942,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Suggested branch: ${evidence.branchName}`,
         `Suggested Worktrunk command: ${evidence.worktreeCommand}`,
         `Bootstrap phase guidance: resolve issue -> prepare capsule -> ${evidence.worktreeStatus === "prepared" ? "suggest branch only" : "create worktree"} -> ${evidence.worktreeStatus === "launched" ? "launch Pi -> launch heartbeat" : "handoff not launched"}`,
+        `Launch eligibility: active Zellij ${evidence.zellijActive ? "yes" : "no"}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
@@ -883,6 +951,9 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
         `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
+        ...(evidence.handoffRecoveryInstructions?.length
+          ? ["Handoff recovery:", ...evidence.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`)]
+          : []),
       ].join("\n"),
     );
   } else {
@@ -987,6 +1058,7 @@ export async function prepareWorkonBootstrap(
     worktreeCommand,
     worktreeStatus: "prepared",
     handoffPrompt,
+    zellijActive: request.launchInZellij,
   });
   const worktree = await startWorktreeIfRequested(request, runner, evidence, {
     repo,
@@ -1006,6 +1078,8 @@ export async function prepareWorkonBootstrap(
     piHandoffCommand: worktree.piHandoffCommand,
     heartbeatCommand: worktree.heartbeatCommand,
     handoffPrompt,
+    zellijActive: request.launchInZellij,
+    handoffRecoveryInstructions: worktree.handoffRecoveryInstructions,
   });
 
   evidence.issue = issue;
@@ -1019,6 +1093,8 @@ export async function prepareWorkonBootstrap(
   evidence.heartbeatCommand = worktree.heartbeatCommand;
   evidence.modelSelection = workonModelSelection(request);
   evidence.handoffPrompt = handoffPrompt;
+  evidence.zellijActive = request.launchInZellij;
+  evidence.handoffRecoveryInstructions = worktree.handoffRecoveryInstructions;
   evidence.capsulePath = capsule;
   return formatWorkonBootstrapEvidence(evidence);
 }
