@@ -588,7 +588,12 @@ function acceptanceCriteriaFromBody(body: string | undefined): string[] {
 
 function bodyHasHeading(body: string | undefined, headings: string[]): boolean {
   if (!body) return false;
-  return headings.some((heading) => new RegExp(`^#{1,3}\\s+${heading}\\b`, "im").test(body));
+  const normalizedHeadings = headings.map(normalizeHeading);
+  return parseMarkdownSections(body).some((section) =>
+    normalizedHeadings.some(
+      (heading) => section.normalizedHeading === heading || section.normalizedHeading.startsWith(`${heading} `),
+    ),
+  );
 }
 
 function bodyMentions(body: string | undefined, pattern: RegExp): boolean {
@@ -684,10 +689,11 @@ function normalizeHeading(heading: string): string {
   return heading
     .toLowerCase()
     .replace(/[`*_]/g, "")
-    .replace(/[–—]/g, "-")
+    .replace(/[–—-]/g, " ")
     .replace(/\s*\/\s*/g, "/")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .replace(/:$/, "");
 }
 
 function normalizeText(text: string): string {
@@ -709,6 +715,13 @@ function normalizedTextHasTerm(text: string, term: string): boolean {
   return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, "i").test(normalized);
 }
 
+function markdownSectionHeading(line: string): string | undefined {
+  const atxHeading = line.match(/^#{1,3}\s+(.+?)\s*#*\s*$/)?.[1]?.trim();
+  if (atxHeading) return atxHeading;
+
+  return line.match(/^\s*\*\*(.+?:)\*\*\s*$/)?.[1]?.trim();
+}
+
 function parseMarkdownSections(body: string | undefined): MarkdownSection[] {
   if (!body) return [];
 
@@ -723,7 +736,7 @@ function parseMarkdownSections(body: string | undefined): MarkdownSection[] {
       continue;
     }
 
-    const heading = !inFence ? line.match(/^#{1,3}\s+(.+?)\s*#*\s*$/)?.[1]?.trim() : undefined;
+    const heading = !inFence ? markdownSectionHeading(line) : undefined;
     if (heading) {
       if (current) {
         sections.push({
