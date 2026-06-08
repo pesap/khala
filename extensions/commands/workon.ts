@@ -860,24 +860,46 @@ function formatReadinessActionItems(
   ].join("\n");
 }
 
-function multiIssueWorkScope(sourceIssues: GithubIssueMetadata[]): string {
-  if (sourceIssues.length <= 1) return "";
-  const issueLines = sourceIssues
-    .map((issue) => `- ${issue.url} (#${issue.number}) ${issue.title}`)
-    .join("\n");
-  const orderLines = sourceIssues
+function issueLine(issue: GithubIssueMetadata): string {
+  return `- ${issue.url} (#${issue.number}) ${issue.title}`;
+}
+
+function issueNumberList(sourceIssues: GithubIssueMetadata[]): string {
+  return sourceIssues.map((issue) => `#${issue.number}`).join(", ");
+}
+
+function issueLines(sourceIssues: GithubIssueMetadata[]): string {
+  return sourceIssues.map(issueLine).join("\n");
+}
+
+function issueOrderLines(sourceIssues: GithubIssueMetadata[]): string {
+  return sourceIssues
     .map((issue, index) => `${index + 1}. #${issue.number}: ${issue.title}`)
     .join("\n");
+}
+
+function validationItemsForIssues(sourceIssues: GithubIssueMetadata[]): string[] {
+  return sourceIssues.flatMap((issue) => {
+    const items = validationItemsFromBody(issue.body);
+    if (items.length === 0) {
+      return [`#${issue.number}: Run the validation described by the issue before shipping.`];
+    }
+    return items.map((item) => `#${issue.number}: ${item}`);
+  });
+}
+
+function multiIssueWorkScope(sourceIssues: GithubIssueMetadata[]): string {
+  if (sourceIssues.length <= 1) return "";
 
   return `## Combined work scope
 
 This is one combined /workon session for these source issues; do not create separate branches, worktrees, capsules, or sessions per issue.
-${issueLines}
+${issueLines(sourceIssues)}
 
 ## Implementation order
 
 Use this deterministic starting order, based on the provided target order unless explicit issue-body evidence supports changing it:
-${orderLines}
+${issueOrderLines(sourceIssues)}
 
 Make issue-scoped commits tied to the relevant source issue where practical.`;
 }
@@ -915,9 +937,14 @@ function capsuleMarkdown(params: {
     )
     .slice(0, 12)
     .join("\n");
-  const validation = validationItemsFromBody(params.issue.body)
-    .map((item) => `- ${item}`)
-    .join("\n") || "- Run the validation described by the issue before shipping.";
+  const validation = sourceIssues.length === 1
+    ? validationItemsFromBody(params.issue.body)
+      .map((item) => `- ${item}`)
+      .join("\n") || "- Run the validation described by the issue before shipping."
+    : validationItemsForIssues(sourceIssues)
+      .map((item) => `- ${item}`)
+      .slice(0, 12)
+      .join("\n");
   const combinedWorkScope = multiIssueWorkScope(sourceIssues);
   const combinedWorkScopeSection = combinedWorkScope ? `\n${combinedWorkScope}\n` : "";
   const ledgerPath = handoffLedgerPath(params.request, params.repo);
@@ -1005,6 +1032,87 @@ function heartbeatLabel(value: string): string {
   return `${value} hours`;
 }
 
+function buildMultiIssueHandoffPrompt(params: {
+  issue: GithubIssueMetadata;
+  sourceIssues: GithubIssueMetadata[];
+  repo: string;
+  branchName: string;
+  heartbeat: string;
+  modelSelection: WorkonModelSelection;
+  ledgerPath: string;
+}): string {
+  const sourceIssueLines = issueLines(params.sourceIssues);
+  const sourceIssueOrder = issueOrderLines(params.sourceIssues);
+  const validation = validationItemsForIssues(params.sourceIssues)
+    .map((item) => `- ${item}`)
+    .join("\n");
+  const sourceIssueReferences = params.sourceIssues
+    .map((issue) => `  - ${issue.url} (#${issue.number})`)
+    .join("\n");
+
+  return `I want to discuss and possibly work on: combined source issue set for ${params.repo}: ${issueNumberList(params.sourceIssues)}
+
+Context:
+- Repository: ${params.repo}
+- Source issues:
+${sourceIssueLines}
+- Primary coordination issue: ${params.issue.url} (#${params.issue.number})
+- Branch: ${params.branchName}
+- Handoff ledger: ${params.ledgerPath}
+- Exact model: ${params.modelSelection.exactModel}
+- Exact thinking level: ${params.modelSelection.exactThinkingLevel}
+- Model routing: ${params.modelSelection.routingMode} (${params.modelSelection.routingReason})
+- This handoff comes from \`/workon\`; a session capsule path is provided separately by the launcher.
+- Treat this prompt as starting context, not a final technical decision.
+
+Before doing any implementation:
+- Read the session capsule path provided by the launcher.
+- Acknowledge that the capsule was read by running: \`${buildHandoffAcknowledgementCommand(params.ledgerPath)}\`.
+- Read the local agent/repo instructions.
+- Inspect the relevant code, docs, tests, recent commits, and linked issue state for every source issue.
+- Decide whether this combined task is still real, already solved, stale, over-scoped, or better handled differently.
+- Call out stale assumptions, hidden risks, and anything that should stop the work.
+
+Task:
+- If your independent review supports it, implement the smallest vertical slice for this combined source-issue set.
+- Work through the source issues in this deterministic order unless issue-body evidence supports a different order:
+${sourceIssueOrder}
+- Create a separate focused commit for each source issue where practical.
+- Keep changes scoped to the source issue set and branch.
+- Do not widen scope beyond the source issues without creating or recommending a follow-up.
+
+Pre-commit simplify pass:
+- After implementation edits, run focused validation for the touched behavior before simplifying.
+- Run \`/simplify\` only on the dirty tree before creating the implementation commit; \`/workon\` bootstrap must not invoke \`/simplify\` because no implementation dirty tree exists yet.
+- Keep the simplify pass behavior-preserving, source-issue-scoped, and free of drive-by refactors.
+- Rerun the focused validation after simplification and before committing.
+- Commit only the final implementation plus simplify result; do not require a separate simplify commit.
+
+Draft PR and feedback heartbeat:
+- Once there is a coherent implementation commit, create or update a draft PR for this branch on the forge.
+- Link the draft PR back to all source issues:
+${sourceIssueReferences}
+- Make clear the draft PR is not ready to merge until validation and review are complete.
+- In the draft PR body, use the repo PR template shape: resolved source-closing marker when applicable, Summary, checklist-style Acceptance criteria copied from every source issue criterion, Deviations from the original plan, command-only Testing Strategy, and References.
+- For each source issue criterion, mark checklist items \`Addressed\` with evidence when met, or \`Not addressed\` with the reason and follow-up when unmet.
+- After opening the draft PR, check the PR/issue forge for human feedback every ${heartbeatLabel(params.heartbeat)} while you are still working.
+- Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.
+
+Validation:
+- Run focused tests for the touched code.
+- Validate every source issue expectation, not just #${params.issue.number}:
+${validation}
+- Run the relevant repo quality gate when the change affects public workflow behavior.
+- Include exact commands and results in your summary.
+
+Output:
+- Start with review findings and recommendation.
+- Then provide the plan or patch summary.
+- If you edit code, report exact proof run.
+- Include draft PR URL/status when created, plus latest heartbeat check result.
+- Do not merge, close issues/PRs, label, or post broad public comments unless explicitly told.`;
+}
+
 async function buildHandoffPrompt(params: {
   cwd: string;
   issue: GithubIssueMetadata;
@@ -1032,7 +1140,15 @@ async function buildHandoffPrompt(params: {
     repo: params.repo,
   });
   if (sourceIssues.length === 1) return rendered;
-  return `${rendered}\n\n${multiIssueWorkScope(sourceIssues)}`;
+  return buildMultiIssueHandoffPrompt({
+    issue: params.issue,
+    sourceIssues,
+    repo: params.repo,
+    branchName: params.branchName,
+    heartbeat: params.heartbeat,
+    modelSelection: params.modelSelection,
+    ledgerPath: params.ledgerPath,
+  });
 }
 
 async function writeCapsule(params: {
