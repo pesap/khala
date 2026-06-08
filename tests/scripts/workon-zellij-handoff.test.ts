@@ -515,7 +515,7 @@ exit 2
       `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == "--list-models claude-sonnet-4" ]]; then
-  printf 'provider model\\nmock claude-sonnet-4\\n'
+  printf 'provider model\\nanthropic claude-sonnet-4\\n'
   exit 0
 fi
 exit 0
@@ -524,7 +524,7 @@ exit 0
 
     const repoRoot = path.resolve(import.meta.dirname, "..", "..");
     const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
-    await execFileAsync(
+    const { stdout } = await execFileAsync(
       "bash",
       [
         scriptPath,
@@ -555,6 +555,8 @@ exit 0
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /-- pi-custom --name work\/108-model-routing --model anthropic\/claude-sonnet-4/);
     assert.doesNotMatch(panes, /forge-heartbeat/);
+    const result = JSON.parse(stdout) as { piHandoffCommand: string };
+    assert.match(result.piHandoffCommand, /--model anthropic\/claude-sonnet-4 <clean-prompt>/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -620,6 +622,74 @@ exit 0
         },
       ),
       /model not found: missing-model/,
+    );
+
+    await assert.rejects(readFile(wtLog, "utf8"), /ENOENT/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("workon zellij handoff rejects a matching model from the wrong provider before Worktrunk", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-model-provider-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const wtLog = path.join(tempDir, "wt.log");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${wtLog}"
+exit 0
+`,
+    );
+    await writeExecutable(path.join(binDir, "zellij"), "#!/usr/bin/env bash\nexit 0\n");
+    await writeExecutable(
+      path.join(binDir, "pi"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models gpt-5.5" ]]; then
+  printf 'provider model\\nother-provider gpt-5.5\\n'
+  exit 0
+fi
+exit 0
+`,
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    await assert.rejects(
+      execFileAsync(
+        "bash",
+        [
+          scriptPath,
+          "--repo",
+          "pesap/agents",
+          "--branch",
+          "work/108-model-routing",
+          "--capsule",
+          capsulePath,
+          "--prompt",
+          "handoff prompt",
+          "--heartbeat",
+          "0",
+          "--model",
+          "github-copilot/gpt-5.5",
+        ],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          },
+        },
+      ),
+      /model not found: github-copilot\/gpt-5\.5/,
     );
 
     await assert.rejects(readFile(wtLog, "utf8"), /ENOENT/);

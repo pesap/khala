@@ -707,7 +707,7 @@ export function createWorkflowCommandHandlers(params: {
           `Forge preference: ${parsed.forge}`,
           `Dry run: ${parsed.dryRun ? "yes" : "no"}`,
           `Forge feedback heartbeat: ${parsed.heartbeat}`,
-          `Exact model: ${parsed.modelSelection.exactModel || "(runtime default)"}`,
+          `Exact model: ${parsed.modelSelection.exactModel}`,
           `Model routing mode: ${parsed.modelSelection.routingMode}`,
           `Model routing reason: ${parsed.modelSelection.routingReason}`,
           "Instruction: Resolve the durable source issue before branch/worktree work.",

@@ -116,6 +116,15 @@ validate_model() {
     printf '%s\n' "${output}" >&2
     exit 2
   fi
+  if [[ "${selected_model}" == */* ]]; then
+    local selected_provider="${selected_model%%/*}"
+    local selected_model_name="${selected_model#*/}"
+    if ! awk -v provider="${selected_provider}" -v model="${selected_model_name}" 'NR > 1 && $1 == provider && $2 == model { found = 1 } END { exit found ? 0 : 1 }' <<<"${output}"; then
+      printf 'model not found: %s\n' "${selected_model}" >&2
+      printf '%s\n' "${output}" >&2
+      exit 2
+    fi
+  fi
 }
 
 find_named_pane() {
@@ -226,6 +235,12 @@ clean_prompt="${prompt}
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."
 
+pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} --name ${branch}"
+if [[ -n "${model}" ]]; then
+  pi_handoff_command="${pi_handoff_command} --model ${model}"
+fi
+pi_handoff_command="${pi_handoff_command} <clean-prompt>"
+
 pi_pane_id="$(find_named_pane pi)"
 pi_pane_action="reused"
 if [[ -z "${pi_pane_id}" ]]; then
@@ -276,5 +291,5 @@ printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"pi
   "$(json_string "${heartbeat_action}")" \
   "$(json_string "${heartbeat}")" \
   "$(json_string "${worktree_action}")" \
-  "$(json_string "zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} --name ${branch} <clean-prompt>")" \
+  "$(json_string "${pi_handoff_command}")" \
   "$(json_string "${heartbeat_command}")"
