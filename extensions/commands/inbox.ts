@@ -87,6 +87,37 @@ interface GithubSearchItem {
   labels?: Array<{ name?: string }>;
 }
 
+interface GitlabListItem {
+  id?: number;
+  iid?: number;
+  title?: string;
+  web_url?: string;
+  webUrl?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  state?: string;
+  references?: {
+    full?: string;
+    relative?: string;
+    short?: string;
+  };
+  project?: {
+    path_with_namespace?: string;
+    pathWithNamespace?: string;
+  };
+  pipeline?: {
+    status?: string;
+  };
+  head_pipeline?: {
+    status?: string;
+  };
+  headPipeline?: {
+    status?: string;
+  };
+  pipeline_status?: string;
+  pipelineStatus?: string;
+}
+
 export type InboxFreshness = "fresh" | "stale" | "ancient" | "unknown";
 
 export interface InboxItem {
@@ -137,8 +168,12 @@ const INBOX_BUCKETS = [
 
 const SOURCE_PRIORITY = new Map<string, number>([
   ["review-requested-pr", 0],
+  ["review-requested-mr", 0],
+  ["assigned-mr", 0],
   ["authored-pr-ci-failure", 0],
+  ["authored-mr-ci-failure", 0],
   ["authored-pr-ci-pending", 1],
+  ["authored-mr-ci-pending", 1],
   ["local-worktree", 2],
   ["stale-session-capsule", 3],
   ["assigned-issue", 0],
@@ -149,6 +184,12 @@ interface GithubEvidence {
   commands: string[];
   gaps: string[];
   repositories: GithubRepository[];
+  items: InboxItem[];
+}
+
+interface GitlabEvidence {
+  commands: string[];
+  gaps: string[];
   items: InboxItem[];
 }
 
@@ -219,6 +260,68 @@ function repoName(item: GithubSearchItem): string {
   return (
     item.repository?.nameWithOwner || item.repository?.name || "unknown/repo"
   );
+}
+
+function gitlabItemNumber(item: GitlabListItem): number | null {
+  if (typeof item.iid === "number") return item.iid;
+  if (typeof item.id === "number") return item.id;
+  return null;
+}
+
+function gitlabItemUrl(item: GitlabListItem): string {
+  return item.web_url ?? item.webUrl ?? "";
+}
+
+function gitlabItemUpdatedAt(item: GitlabListItem): string | undefined {
+  return item.updated_at ?? item.updatedAt;
+}
+
+function gitlabRepoFromUrl(url: string): string | null {
+  const match = url.match(
+    /^[a-z][a-z+.-]*:\/\/[^/]+\/(?<repo>.+?)\/-\/(?:merge_requests|issues)\/\d+/i,
+  );
+  return match?.groups?.repo ?? null;
+}
+
+function gitlabRepoName(item: GitlabListItem, fallbackRepo: string): string {
+  const referenceRepo = item.references?.full?.split(/[#!]/)[0];
+  return (
+    item.project?.path_with_namespace ??
+    item.project?.pathWithNamespace ??
+    referenceRepo ??
+    gitlabRepoFromUrl(gitlabItemUrl(item)) ??
+    fallbackRepo ??
+    "unknown/repo"
+  );
+}
+
+function gitlabPipelineStatus(item: GitlabListItem): string {
+  return (
+    item.pipeline?.status ??
+    item.head_pipeline?.status ??
+    item.headPipeline?.status ??
+    item.pipeline_status ??
+    item.pipelineStatus ??
+    ""
+  ).toLowerCase();
+}
+
+function gitlabPipelineSignal(status: string): "failure" | "pending" | null {
+  if (status === "failed") return "failure";
+  if (
+    [
+      "created",
+      "manual",
+      "pending",
+      "preparing",
+      "running",
+      "scheduled",
+      "waiting_for_resource",
+    ].includes(status)
+  ) {
+    return "pending";
+  }
+  return null;
 }
 
 function itemLine(item: InboxItem): string {
@@ -380,6 +483,14 @@ function shouldCollectGithub(forge: InboxForge): boolean {
   return forge === "auto" || forge === "github" || forge === "all";
 }
 
+function shouldCollectGitlab(forge: InboxForge): boolean {
+  return forge === "gitlab" || forge === "all";
+}
+
+function shouldCollectGitlabSignals(focus: InboxFocus): boolean {
+  return focus !== "local" && focus !== "sessions";
+}
+
 function shouldCollectWorktrees(focus: InboxFocus): boolean {
   return focus === "all" || focus === "local";
 }
@@ -392,6 +503,10 @@ function repoSearchArgs(repo: string): string[] {
   return repo ? ["--repo", repo] : [];
 }
 
+function gitlabRepoArgs(repo: string): string[] {
+  return repo ? ["--repo", repo] : [];
+}
+
 const SEARCH_JSON_FIELDS = [
   "number",
   "title",
@@ -401,7 +516,10 @@ const SEARCH_JSON_FIELDS = [
 ] as const;
 
 function searchJsonFields(extraFields: readonly string[] = []): string[] {
-  return ["--json", [...SEARCH_JSON_FIELDS, ...extraFields, "labels"].join(",")];
+  return [
+    "--json",
+    [...SEARCH_JSON_FIELDS, ...extraFields, "labels"].join(","),
+  ];
 }
 
 function prSearchJsonFields(): string[] {
@@ -427,6 +545,16 @@ async function runGh(
 ): Promise<CommandResult> {
   commands.push(`gh ${args.join(" ")}`);
   return runner("gh", args, { cwd });
+}
+
+async function runGlab(
+  runner: InboxCommandRunner,
+  cwd: string,
+  commands: string[],
+  args: string[],
+): Promise<CommandResult> {
+  commands.push(`glab ${args.join(" ")}`);
+  return runner("glab", args, { cwd });
 }
 
 async function runGit(
@@ -934,9 +1062,6 @@ async function collectGithubEvidence(
     evidence.gaps.push(`GitHub collector skipped for forge=${request.forge}`);
     return evidence;
   }
-  if (request.forge === "all") {
-    evidence.gaps.push("GitLab collector is not implemented in this slice");
-  }
 
   const auth = await runGh(runner, request.cwd, evidence.commands, [
     "auth",
@@ -1073,6 +1198,240 @@ async function collectGithubEvidence(
   return evidence;
 }
 
+function gitlabListItemToInboxItem(
+  item: GitlabListItem,
+  params: {
+    fallbackRepo: string;
+    bucket: string;
+    source: string;
+    suggestedCommand: (repo: string, item: GitlabListItem) => string;
+    evidence: string;
+  },
+): InboxItem | null {
+  const number = gitlabItemNumber(item);
+  const url = gitlabItemUrl(item);
+  if (!url || !item.title || number === null) return null;
+  const repo = gitlabRepoName(item, params.fallbackRepo);
+  return {
+    bucket: params.bucket,
+    repo,
+    source: params.source,
+    title: `${number}: ${item.title}`,
+    url,
+    updatedAt: gitlabItemUpdatedAt(item),
+    suggestedCommand: params.suggestedCommand(repo, item),
+    evidence: params.evidence,
+  };
+}
+
+function pushUniqueInboxItem(items: InboxItem[], item: InboxItem | null): void {
+  if (!item) return;
+  const key = `${item.source}\0${item.url}`;
+  if (
+    !items.some((existing) => `${existing.source}\0${existing.url}` === key)
+  ) {
+    items.push(item);
+  }
+}
+
+async function resolveGitlabUser(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner,
+  evidence: GitlabEvidence,
+): Promise<string> {
+  if (request.user && request.user !== "@me") return request.user;
+  const result = await runGlab(runner, request.cwd, evidence.commands, [
+    "api",
+    "user",
+    "--jq",
+    ".username",
+  ]);
+  const gap = resultGap("resolve authenticated GitLab user", result);
+  if (gap) evidence.gaps.push(gap);
+  return result.ok ? result.stdout.trim() || "@me" : "@me";
+}
+
+async function collectGitlabListItems(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner,
+  evidence: GitlabEvidence,
+  args: string[],
+): Promise<GitlabListItem[]> {
+  const result = await runGlab(runner, request.cwd, evidence.commands, args);
+  const gap = resultGap(args.slice(0, 3).join(" "), result);
+  if (gap) {
+    evidence.gaps.push(gap);
+    return [];
+  }
+  return parseJsonArray<GitlabListItem>(
+    result.stdout,
+    args.slice(0, 3).join(" "),
+    evidence.gaps,
+  );
+}
+
+async function collectGitlabEvidence(
+  request: InboxEvidenceRequest,
+  runner: InboxCommandRunner,
+): Promise<GitlabEvidence> {
+  const evidence: GitlabEvidence = { commands: [], gaps: [], items: [] };
+
+  if (!shouldCollectGitlab(request.forge)) {
+    evidence.gaps.push(`GitLab collector skipped for forge=${request.forge}`);
+    return evidence;
+  }
+  if (!shouldCollectGitlabSignals(request.focus)) {
+    evidence.gaps.push(`GitLab collector skipped for focus=${request.focus}`);
+    return evidence;
+  }
+
+  const auth = await runGlab(runner, request.cwd, evidence.commands, [
+    "auth",
+    "status",
+  ]);
+  const authGap = resultGap("GitLab authentication", auth);
+  if (authGap) {
+    evidence.gaps.push(authGap);
+    return evidence;
+  }
+
+  const actor = await resolveGitlabUser(request, runner, evidence);
+  const actorArg =
+    request.user && request.user !== "@me" ? request.user : actor;
+  const scopedRepoArgs = gitlabRepoArgs(request.repo);
+
+  if (shouldCollectReviewRequests(request.focus)) {
+    const reviewed = await collectGitlabListItems(request, runner, evidence, [
+      "mr",
+      "list",
+      "--reviewer=@me",
+      "--per-page",
+      String(request.limit),
+      "--output",
+      "json",
+      ...scopedRepoArgs,
+    ]);
+    for (const item of reviewed) {
+      pushUniqueInboxItem(
+        evidence.items,
+        gitlabListItemToInboxItem(item, {
+          fallbackRepo: request.repo,
+          bucket: "Needs you now",
+          source: "review-requested-mr",
+          suggestedCommand: (_repo, mr) => `/review mr ${gitlabItemUrl(mr)}`,
+          evidence: "glab mr list --reviewer=@me --output json",
+        }),
+      );
+    }
+
+    const assigned = await collectGitlabListItems(request, runner, evidence, [
+      "mr",
+      "list",
+      "--assignee=@me",
+      "--per-page",
+      String(request.limit),
+      "--output",
+      "json",
+      ...scopedRepoArgs,
+    ]);
+    for (const item of assigned) {
+      pushUniqueInboxItem(
+        evidence.items,
+        gitlabListItemToInboxItem(item, {
+          fallbackRepo: request.repo,
+          bucket: "Needs you now",
+          source: "assigned-mr",
+          suggestedCommand: (_repo, mr) => `/review mr ${gitlabItemUrl(mr)}`,
+          evidence: "glab mr list --assignee=@me --output json",
+        }),
+      );
+    }
+  }
+
+  if (shouldCollectPrCiSignals(request.focus)) {
+    const authored = await collectGitlabListItems(request, runner, evidence, [
+      "mr",
+      "list",
+      `--author=${actorArg}`,
+      "--per-page",
+      String(request.limit),
+      "--output",
+      "json",
+      ...scopedRepoArgs,
+    ]);
+    for (const item of authored) {
+      const status = gitlabPipelineStatus(item);
+      const signal = gitlabPipelineSignal(status);
+      if (!signal) continue;
+      const source =
+        signal === "failure"
+          ? "authored-mr-ci-failure"
+          : "authored-mr-ci-pending";
+      pushUniqueInboxItem(
+        evidence.items,
+        gitlabListItemToInboxItem(item, {
+          fallbackRepo: request.repo,
+          bucket: "My work is broken",
+          source,
+          suggestedCommand: (repo) =>
+            `/inbox --repo ${repo} --focus ci --forge gitlab`,
+          evidence: `glab mr list --author=${actorArg} --output json; pipeline status=${status}`,
+        }),
+      );
+    }
+  }
+
+  if (shouldCollectIssueSignals(request.focus)) {
+    const assigned = await collectGitlabListItems(request, runner, evidence, [
+      "issue",
+      "list",
+      "--assignee=@me",
+      "--per-page",
+      String(request.limit),
+      "--output",
+      "json",
+      ...scopedRepoArgs,
+    ]);
+    for (const item of assigned) {
+      pushUniqueInboxItem(
+        evidence.items,
+        gitlabListItemToInboxItem(item, {
+          fallbackRepo: request.repo,
+          bucket: "New work needs shaping",
+          source: "assigned-issue",
+          suggestedCommand: (_repo, issue) => `/triage ${gitlabItemUrl(issue)}`,
+          evidence: "glab issue list --assignee=@me --output json",
+        }),
+      );
+    }
+
+    const authored = await collectGitlabListItems(request, runner, evidence, [
+      "issue",
+      "list",
+      `--author=${actorArg}`,
+      "--per-page",
+      String(request.limit),
+      "--output",
+      "json",
+      ...scopedRepoArgs,
+    ]);
+    for (const item of authored) {
+      pushUniqueInboxItem(
+        evidence.items,
+        gitlabListItemToInboxItem(item, {
+          fallbackRepo: request.repo,
+          bucket: "New work needs shaping",
+          source: "authored-issue",
+          suggestedCommand: (_repo, issue) => `/triage ${gitlabItemUrl(issue)}`,
+          evidence: `glab issue list --author=${actorArg} --output json`,
+        }),
+      );
+    }
+  }
+
+  return evidence;
+}
+
 export function formatLocalInboxEvidence(evidence: LocalEvidence): string[] {
   const itemLines = evidence.items.map(itemLine);
   const gapLines = evidence.gaps.map((gap) => `- ${gap}`);
@@ -1118,6 +1477,25 @@ export function formatGithubInboxEvidence(
       ? ["Evidence gaps and graceful degradation:", ...gapLines].join("\n")
       : "Evidence gaps and graceful degradation: none.",
     ["Read-only commands executed:", ...commandLines].join("\n"),
+  ];
+}
+
+export function formatGitlabInboxEvidence(
+  evidence: GitlabEvidence,
+  queueItems: InboxItem[] = evidence.items,
+): string[] {
+  const gapLines = evidence.gaps.map((gap) => `- ${gap}`);
+  const commandLines = evidence.commands.map((command) => `- ${command}`);
+
+  return [
+    "Deterministic GitLab inbox evidence (read-only):",
+    renderMaintainerQueue(queueItems),
+    gapLines.length > 0
+      ? ["GitLab evidence gaps and graceful degradation:", ...gapLines].join(
+          "\n",
+        )
+      : "GitLab evidence gaps and graceful degradation: none.",
+    ["Read-only GitLab commands executed:", ...commandLines].join("\n"),
   ];
 }
 
@@ -1180,8 +1558,11 @@ export async function collectInboxSnapshot(
 ): Promise<InboxSnapshot> {
   const effectiveScope = await resolveInboxScope(request, runner);
   const scopedRequest = requestForScope(request, effectiveScope);
-  const [githubEvidence, localEvidence] = await Promise.all([
+  const [githubEvidence, gitlabEvidence, localEvidence] = await Promise.all([
     collectGithubEvidence(scopedRequest, runner),
+    shouldCollectGitlab(scopedRequest.forge)
+      ? collectGitlabEvidence(scopedRequest, runner)
+      : Promise.resolve<GitlabEvidence>({ commands: [], gaps: [], items: [] }),
     collectLocalEvidence(scopedRequest, runner, effectiveScope),
   ]);
   const collectors: InboxCollectorSnapshot[] = [
@@ -1191,6 +1572,19 @@ export async function collectInboxSnapshot(
       gaps: [...githubEvidence.gaps].sort(compareText),
       commands: [...githubEvidence.commands],
     },
+    ...(shouldCollectGitlab(scopedRequest.forge)
+      ? [
+          {
+            name: "gitlab" as const,
+            status: collectorStatus(
+              gitlabEvidence.gaps,
+              gitlabEvidence.commands,
+            ),
+            gaps: [...gitlabEvidence.gaps].sort(compareText),
+            commands: [...gitlabEvidence.commands],
+          },
+        ]
+      : []),
     {
       name: "local",
       status: collectorStatus(localEvidence.gaps, localEvidence.commands),
@@ -1200,7 +1594,7 @@ export async function collectInboxSnapshot(
   ];
   const generatedAt = request.nowIso ?? new Date().toISOString();
   const items = classifyInboxItems(
-    [...githubEvidence.items, ...localEvidence.items],
+    [...githubEvidence.items, ...gitlabEvidence.items, ...localEvidence.items],
     generatedAt,
   ).sort(compareInboxItems);
 
@@ -1250,16 +1644,23 @@ function countBySource(items: InboxItem[], source: string): number {
 }
 
 function renderCompactCounts(items: InboxItem[]): string {
-  const reviewCount = countBySource(items, "review-requested-pr");
+  const reviewCount =
+    countBySource(items, "review-requested-pr") +
+    countBySource(items, "review-requested-mr") +
+    countBySource(items, "assigned-mr");
   const brokenCiCount =
     countBySource(items, "authored-pr-ci-failure") +
-    countBySource(items, "authored-pr-ci-pending");
+    countBySource(items, "authored-pr-ci-pending") +
+    countBySource(items, "authored-mr-ci-failure") +
+    countBySource(items, "authored-mr-ci-pending");
   const blockedSessionCount = items.filter(
     (item) =>
-      item.source === "stale-session-capsule" && item.bucket === "My work is broken",
+      item.source === "stale-session-capsule" &&
+      item.bucket === "My work is broken",
   ).length;
   const issueCount =
-    countBySource(items, "assigned-issue") + countBySource(items, "authored-issue");
+    countBySource(items, "assigned-issue") +
+    countBySource(items, "authored-issue");
   const localCount = countBySource(items, "local-worktree");
   return `Counts: reviews ${reviewCount}, broken CI ${brokenCiCount}, blocked sessions ${blockedSessionCount}, issues ${issueCount}, local ${localCount}`;
 }
@@ -1298,7 +1699,11 @@ export function renderInboxSnapshotCompact(snapshot: InboxSnapshot): string {
       ...staleItems.slice(0, 5).map(renderDoNextItem),
     );
   }
-  lines.push("", renderCompactCounts(snapshot.items), renderCompactGaps(snapshot));
+  lines.push(
+    "",
+    renderCompactCounts(snapshot.items),
+    renderCompactGaps(snapshot),
+  );
   return `${lines.join("\n")}\n`;
 }
 
@@ -1320,15 +1725,23 @@ export async function collectInboxEvidence(
 ): Promise<string[]> {
   const effectiveScope = await resolveInboxScope(request, runner);
   const scopedRequest = requestForScope(request, effectiveScope);
-  const [githubEvidence, localEvidence] = await Promise.all([
+  const [githubEvidence, gitlabEvidence, localEvidence] = await Promise.all([
     collectGithubEvidence(scopedRequest, runner),
+    shouldCollectGitlab(scopedRequest.forge)
+      ? collectGitlabEvidence(scopedRequest, runner)
+      : Promise.resolve<GitlabEvidence>({ commands: [], gaps: [], items: [] }),
     collectLocalEvidence(scopedRequest, runner, effectiveScope),
   ]);
+  const queueItems = [
+    ...githubEvidence.items,
+    ...gitlabEvidence.items,
+    ...localEvidence.items,
+  ];
   return [
-    ...formatGithubInboxEvidence(githubEvidence, [
-      ...githubEvidence.items,
-      ...localEvidence.items,
-    ]),
+    ...formatGithubInboxEvidence(githubEvidence, queueItems),
+    ...(shouldCollectGitlab(scopedRequest.forge)
+      ? formatGitlabInboxEvidence(gitlabEvidence, queueItems)
+      : []),
     ...formatLocalInboxEvidence(localEvidence),
   ];
 }
