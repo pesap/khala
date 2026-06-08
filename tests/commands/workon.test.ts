@@ -209,6 +209,8 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     assert.match(capsule, /--status capsule-acknowledged/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
     assert.match(capsule, /check the PR\/issue forge for human feedback every 1\.0/);
+    assert.match(capsule, /implement the smallest vertical slice for pesap\/agents#63/);
+    assert.doesNotMatch(capsule, /combined source issue set/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -417,12 +419,12 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
       "issue view 104 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
         104,
         "fix(workon): first issue",
-        "## Acceptance criteria\n\n- Resolve first issue.",
+        "## Current behavior\n\n- First issue needs work.\n\n## Acceptance criteria\n\n- Resolve first issue.\n\n## Validation\n\n- Run first focused test.\n\n## Non-goals\n\n- Do not widen first issue scope.",
       ),
       "issue view 105 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
         105,
         "fix(workon): second issue",
-        "## Acceptance criteria\n\n- Resolve second issue.",
+        "## Current behavior\n\n- Second issue needs work.\n\n## Acceptance criteria\n\n- Resolve second issue.\n\n## Validation\n\n- Run second focused test.\n\n## Non-goals\n\n- Do not widen second issue scope.",
       ),
       "wt --version": "worktrunk 1.0.0\n",
       "wt switch --create fix/104-first-issue --format json":
@@ -463,8 +465,17 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
     assert.match(capsule, /1\. #104: fix\(workon\): first issue/);
     assert.match(capsule, /2\. #105: fix\(workon\): second issue/);
     assert.match(capsule, /Make issue-scoped commits tied to the relevant source issue where practical/);
-    assert.equal(capsule.match(/## Combined work scope/g)?.length, 2);
-    assert.equal(capsule.match(/## Implementation order/g)?.length, 2);
+    assert.match(capsule, /I want to discuss and possibly work on: combined source issue set for pesap\/agents: #104, #105/);
+    assert.match(capsule, /Source issues:\n- https:\/\/github\.com\/pesap\/agents\/issues\/104 \(#104\) fix\(workon\): first issue\n- https:\/\/github\.com\/pesap\/agents\/issues\/105 \(#105\) fix\(workon\): second issue/);
+    assert.match(capsule, /implement the smallest vertical slice for this combined source-issue set/);
+    assert.doesNotMatch(capsule, /implement the smallest vertical slice for pesap\/agents#104\./);
+    assert.match(capsule, /Create a separate focused commit for each source issue where practical/);
+    assert.match(capsule, /Link the draft PR back to all source issues:/);
+    assert.match(capsule, /Validate every source issue expectation, not just #104:/);
+    assert.match(capsule, /#104: Run first focused test/);
+    assert.match(capsule, /#105: Run second focused test/);
+    assert.equal(capsule.match(/## Combined work scope/g)?.length, 1);
+    assert.equal(capsule.match(/## Implementation order/g)?.length, 1);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
