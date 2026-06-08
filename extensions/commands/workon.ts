@@ -240,8 +240,7 @@ function resultGap(label: string, result: CommandResult): string | null {
 }
 
 export function isActiveZellijEnv(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return Boolean(normalized && !["0", "false", "no", "off"].includes(normalized));
+  return Boolean(value?.trim());
 }
 
 function shellQuote(value: string): string {
