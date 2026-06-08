@@ -32,6 +32,9 @@ function fakeGhRunner(outputs: Record<string, string>): {
         const modelIndex = args.indexOf("--model");
         const model = modelIndex >= 0 ? args[modelIndex + 1] : "";
         const modelArgs = model ? ` --model ${model}` : "";
+        const thinkingIndex = args.indexOf("--thinking");
+        const thinking = thinkingIndex >= 0 ? args[thinkingIndex + 1] : "";
+        const thinkingArgs = thinking ? ` --thinking ${thinking}` : "";
         const worktreePath = "/tmp/worktrunk.feat-65";
         if (branch.includes("tab-created-pi-pane-missing")) {
           return {
@@ -60,7 +63,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
             tabName: "agents/feat-65-detect-local-worktrees-and-stale-sessions",
             tabId: 12,
             heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
-            piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi -a --name ${branch}${modelArgs} <clean-prompt>`,
+            piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi -a --name ${branch}${modelArgs}${thinkingArgs} <clean-prompt>`,
             repo,
           })}\n`,
           stderr: "",
@@ -567,7 +570,8 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.match(rendered, /Worktree status: started/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk.feat-65/);
     assert.match(rendered, /Handoff recovery:/);
-    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk.feat-65'/);
+    assert.match(rendered, new RegExp(`Retry Zellij handoff[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
+    assert.match(rendered, new RegExp(`Manual Pi restore: cd '/tmp/worktrunk.feat-65'[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
@@ -580,7 +584,8 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
     assert.match(capsule, /Launch eligibility: active Zellij no/);
     assert.match(capsule, /## Handoff recovery/);
-    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk.feat-65'/);
+    assert.match(capsule, new RegExp(`Retry Zellij handoff[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
+    assert.match(capsule, new RegExp(`Manual Pi restore: cd '/tmp/worktrunk.feat-65'[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "started");
@@ -628,8 +633,9 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
         heartbeat: "0.25",
         modelSelection: {
           exactModel: "anthropic/claude-sonnet-4",
+          exactThinkingLevel: DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel,
           routingMode: "exact-model",
-          routingReason: "explicit --model override",
+          routingReason: "explicit --model override with default workon thinking",
         },
       },
       runner,
@@ -648,14 +654,16 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(scriptCall, /Draft PR and feedback heartbeat:/);
     assert.match(scriptCall, /--heartbeat 0\.25/);
     assert.match(scriptCall, /--model anthropic\/claude-sonnet-4/);
+    assert.match(scriptCall, new RegExp(`--thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Exact model: anthropic\/claude-sonnet-4/);
+    assert.match(rendered, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Model routing mode: exact-model/);
     assert.match(rendered, /explicit --model override/);
     assert.match(rendered, /Launch eligibility: active Zellij yes/);
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
-    assert.match(rendered, /-- pi -a --name feat\/65-detect-local-worktrees-and-stale-sessions --model anthropic\/claude-sonnet-4/);
+    assert.match(rendered, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-and-stale-sessions --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Forge heartbeat command: zellij action new-pane/);
     assert.match(rendered, /--notify-pane terminal_99/);
     assert.doesNotMatch(rendered, /--prompt I want to discuss and possibly work on:/);
@@ -667,10 +675,11 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Worktree status: launched/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Pi handoff command: zellij action new-pane/);
-    assert.match(capsule, /-- pi -a --name feat\/65-detect-local-worktrees-and-stale-sessions --model anthropic\/claude-sonnet-4/);
+    assert.match(capsule, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-and-stale-sessions --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(capsule, /Exact model: anthropic\/claude-sonnet-4/);
+    assert.match(capsule, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(capsule, /Model routing mode: exact-model/);
-    assert.match(capsule, /Model routing reason: explicit --model override/);
+    assert.match(capsule, /Model routing reason: explicit --model override with default workon thinking/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "launched");
@@ -714,15 +723,18 @@ test("pins the default model when launching a Worktrunk Zellij handoff", async (
 
     assert.ok(scriptCall);
     assert.match(scriptCall, new RegExp(`--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(scriptCall, new RegExp(`--thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, new RegExp(`Exact model: ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(rendered, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Model routing mode: default/);
     assert.match(rendered, /default-pinned model routing/);
-    assert.match(rendered, new RegExp(`Pi handoff command: .*--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(rendered, new RegExp(`Pi handoff command: .*--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, new RegExp(`Exact model: ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(capsule, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(capsule, /Model routing reason: Khala\/workon default-pinned model routing/);
 
     const ledger = await readHandoffLedger(rendered);

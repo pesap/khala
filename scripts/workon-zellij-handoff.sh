@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL] [--ledger PATH]
+Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL] [--thinking LEVEL] [--ledger PATH]
 
 Create/switch the Worktrunk worktree, wait for its Zellij tab, and launch Pi in
 that tab with a clean prompt. The capsule path is passed as text in the prompt;
@@ -18,6 +18,7 @@ capsule=""
 prompt=""
 heartbeat="1.0"
 model=""
+thinking=""
 ledger=""
 pi_command="${PI_COMMAND:-pi}"
 wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-150}"
@@ -51,6 +52,10 @@ while (($#)); do
       ;;
     --model)
       model="${2:?--model requires MODEL}"
+      shift 2
+      ;;
+    --thinking)
+      thinking="${2:?--thinking requires LEVEL}"
       shift 2
       ;;
     --ledger)
@@ -142,6 +147,11 @@ validate_heartbeat() {
   [[ "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
+validate_thinking() {
+  local value="${1:?thinking level required}"
+  [[ "${value}" =~ ^(off|minimal|low|medium|high|xhigh)$ ]]
+}
+
 validate_model() {
   local selected_model="${1:?model required}"
   local pi_agent_dir="${2:?Pi agent dir required}"
@@ -169,21 +179,35 @@ validate_model() {
 
 preflight_model_auth() {
   local selected_model="${1:?model required}"
-  local pi_agent_dir="${2:?Pi agent dir required}"
+  local selected_thinking="${2:-}"
+  local pi_agent_dir="${3:?Pi agent dir required}"
   local selected_provider="${selected_model%%/*}"
   local auth_path=""
   local output=""
+  local preflight_args=(--no-session --no-tools --model "${selected_model}")
+  local preflight_command=""
+
+  if [[ -n "${selected_thinking}" ]]; then
+    preflight_args+=(--thinking "${selected_thinking}")
+  fi
+  preflight_args+=(-p 'Return exactly: ok')
 
   auth_path="$(pi_auth_path "${pi_agent_dir}")"
-  if output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" --no-session --no-tools --model "${selected_model}" -p 'Return exactly: ok' 2>&1)"; then
+  if output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" "${preflight_args[@]}" 2>&1)"; then
     return 0
   fi
+
+  preflight_command="PI_CODING_AGENT_DIR=$(shell_word "${pi_agent_dir}") $(shell_word "${pi_command}") --no-session --no-tools --model $(shell_word "${selected_model}")"
+  if [[ -n "${selected_thinking}" ]]; then
+    preflight_command+=" --thinking $(shell_word "${selected_thinking}")"
+  fi
+  preflight_command+=" -p <auth-preflight>"
 
   printf 'Pi model auth preflight failed for %s with PI_CODING_AGENT_DIR=%s (auth path: %s). Run /login %s using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n' "${selected_model}" "${pi_agent_dir}" "${auth_path}" "${selected_provider}" >&2
   printf 'Effective PI_CODING_AGENT_DIR: %s\n' "${pi_agent_dir}" >&2
   printf 'Effective auth path: %s\n' "${auth_path}" >&2
   printf 'Operator action: run /login %s using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n' "${selected_provider}" >&2
-  printf 'Preflight command: PI_CODING_AGENT_DIR=%s %s --no-session --no-tools --model %s -p <auth-preflight>\n' "$(shell_word "${pi_agent_dir}")" "$(shell_word "${pi_command}")" "$(shell_word "${selected_model}")" >&2
+  printf 'Preflight command: %s\n' "${preflight_command}" >&2
   printf 'Pi output:\n%s\n' "${output}" >&2
   exit 1
 }
@@ -235,9 +259,13 @@ if ! validate_heartbeat "${heartbeat}"; then
   printf 'invalid heartbeat interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${heartbeat}" >&2
   exit 2
 fi
+if [[ -n "${thinking}" ]] && ! validate_thinking "${thinking}"; then
+  printf 'invalid thinking level: %s (expected one of: off, minimal, low, medium, high, xhigh)\n' "${thinking}" >&2
+  exit 2
+fi
 if [[ -n "${model}" ]]; then
   validate_model "${model}" "${pi_agent_dir}"
-  preflight_model_auth "${model}" "${pi_agent_dir}"
+  preflight_model_auth "${model}" "${thinking}" "${pi_agent_dir}"
 fi
 
 repo_name="${repo##*/}"
@@ -311,6 +339,9 @@ pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${
 if [[ -n "${model}" ]]; then
   pi_handoff_command="${pi_handoff_command} --model ${model}"
 fi
+if [[ -n "${thinking}" ]]; then
+  pi_handoff_command="${pi_handoff_command} --thinking ${thinking}"
+fi
 pi_handoff_command="${pi_handoff_command} <clean-prompt>"
 
 pi_pane_id="$(find_named_pane pi "${tab_id}")"
@@ -319,6 +350,9 @@ if [[ -z "${pi_pane_id}" ]]; then
   pi_args=(env "PI_CODING_AGENT_DIR=${pi_agent_dir}" "${pi_command}" -a --name "${branch}")
   if [[ -n "${model}" ]]; then
     pi_args+=(--model "${model}")
+  fi
+  if [[ -n "${thinking}" ]]; then
+    pi_args+=(--thinking "${thinking}")
   fi
   pi_args+=("${clean_prompt}")
   pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}" | tail -n 1)"

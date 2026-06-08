@@ -662,6 +662,8 @@ exit 0
         "0",
         "--model",
         "anthropic/claude-sonnet-4",
+        "--thinking",
+        "medium",
       ],
       {
         cwd: repoRoot,
@@ -675,10 +677,121 @@ exit 0
     );
 
     const panes = await readFile(paneLog, "utf8");
-    assert.match(panes, /-- env PI_CODING_AGENT_DIR=\S+ pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4/);
+    assert.match(panes, /-- env PI_CODING_AGENT_DIR=\S+ pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4 --thinking medium/);
     assert.doesNotMatch(panes, /forge-heartbeat/);
     const result = JSON.parse(stdout) as { piHandoffCommand: string };
-    assert.match(result.piHandoffCommand, /-- env PI_CODING_AGENT_DIR=\S+ pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4 <clean-prompt>/);
+    assert.match(result.piHandoffCommand, /-- env PI_CODING_AGENT_DIR=\S+ pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4 --thinking medium <clean-prompt>/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("workon zellij handoff pins selected thinking despite ambient Pi default", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-thinking-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const paneLog = path.join(tempDir, "panes.log");
+    const piLog = path.join(tempDir, "pi.log");
+    const piAgentDir = path.join(tempDir, "pi-agent");
+    const worktreePath = path.join(tempDir, "worktree");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    const branch = "fix/167-thinking-routing";
+    const tabName = "agents/fix-167-thinking-routing";
+
+    await mkdir(piAgentDir);
+    await mkdir(worktreePath);
+    await writeFile(path.join(piAgentDir, "settings.json"), '{"defaultThinkingLevel":"xhigh"}\n', "utf8");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '{"action":"created","path":"${worktreePath}"}\\n'
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "zellij"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "action list-tabs --json" ]]; then
+  printf '[{"name":"${tabName}","tab_id":12}]\\n'
+  exit 0
+fi
+if [[ "$*" == "action go-to-tab-name ${tabName}" ]]; then
+  exit 0
+fi
+if [[ "$1 $2" == "action new-pane" ]]; then
+  printf '%s\\n' "$*" >> "${paneLog}"
+  printf 'terminal_99\\n'
+  exit 0
+fi
+printf 'unexpected zellij args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "pi"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf 'PI_CODING_AGENT_DIR=%s args=%s\\n' "\${PI_CODING_AGENT_DIR:-}" "$*" >> "${piLog}"
+if [[ "$*" == "--list-models gpt-5.5" ]]; then
+  printf 'provider model\\ngithub-copilot gpt-5.5\\n'
+  exit 0
+fi
+if [[ "$*" == "--no-session --no-tools --model github-copilot/gpt-5.5 --thinking medium -p Return exactly: ok" ]]; then
+  exit 0
+fi
+printf 'unexpected pi args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    const { stdout } = await execFileAsync(
+      "bash",
+      [
+        scriptPath,
+        "--repo",
+        "pesap/agents",
+        "--branch",
+        branch,
+        "--capsule",
+        capsulePath,
+        "--prompt",
+        "handoff prompt",
+        "--heartbeat",
+        "0",
+        "--model",
+        "github-copilot/gpt-5.5",
+        "--thinking",
+        "medium",
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          PI_CODING_AGENT_DIR: piAgentDir,
+          ZELLIJ_TAB_WAIT_SECONDS: "0.01",
+        },
+      },
+    );
+
+    const piCalls = await readFile(piLog, "utf8");
+    assert.match(piCalls, /args=--no-session --no-tools --model github-copilot\/gpt-5\.5 --thinking medium -p Return exactly: ok/);
+
+    const panes = await readFile(paneLog, "utf8");
+    assert.match(panes, /-- env PI_CODING_AGENT_DIR=\S+ pi -a --name fix\/167-thinking-routing --model github-copilot\/gpt-5\.5 --thinking medium/);
+    assert.doesNotMatch(panes, /xhigh/);
+
+    const result = JSON.parse(stdout) as { piHandoffCommand: string };
+    assert.match(result.piHandoffCommand, /--model github-copilot\/gpt-5\.5 --thinking medium <clean-prompt>/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -720,7 +833,7 @@ if [[ "\${PI_CODING_AGENT_DIR:-}" != "${piAgentDir}" ]]; then
   printf 'PI_CODING_AGENT_DIR was not passed to preflight\\n' >&2
   exit 3
 fi
-if [[ "$*" == "--no-session --no-tools --model github-copilot/gpt-5.5 -p Return exactly: ok" ]]; then
+if [[ "$*" == "--no-session --no-tools --model github-copilot/gpt-5.5 --thinking medium -p Return exactly: ok" ]]; then
   printf 'No API key found for github-copilot.\\n' >&2
   exit 1
 fi
@@ -748,6 +861,8 @@ exit 2
           "0",
           "--model",
           "github-copilot/gpt-5.5",
+          "--thinking",
+          "medium",
         ],
         {
           cwd: repoRoot,
@@ -763,7 +878,7 @@ exit 2
 
     const piCalls = await readFile(piLog, "utf8");
     assert.ok(piCalls.includes(`PI_CODING_AGENT_DIR=${piAgentDir} args=--list-models gpt-5.5`));
-    assert.match(piCalls, /args=--no-session --no-tools --model github-copilot\/gpt-5\.5 -p Return exactly: ok/);
+    assert.match(piCalls, /args=--no-session --no-tools --model github-copilot\/gpt-5\.5 --thinking medium -p Return exactly: ok/);
     await assert.rejects(readFile(wtLog, "utf8"), /ENOENT/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
