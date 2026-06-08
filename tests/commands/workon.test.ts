@@ -45,6 +45,13 @@ function fakeGhRunner(outputs: Record<string, string>): {
             stderr: "Zellij Worktrunk tab not found after 50 attempts: agents/fix-67-tab-created-pi-pane-missing\n",
           };
         }
+        if (branch.includes("preflight-github-copilot-auth-before-launching-child-pi")) {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: "Pi model auth preflight failed for github-copilot/gpt-5.5 with PI_CODING_AGENT_DIR=/tmp/empty-pi-agent (auth path: /tmp/empty-pi-agent/auth.json). Run /login github-copilot using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n",
+          };
+        }
         return {
           ok: true,
           stdout: `${JSON.stringify({
@@ -720,6 +727,52 @@ test("pins the default model when launching a Worktrunk Zellij handoff", async (
 
     const ledger = await readHandoffLedger(rendered);
     assert.deepEqual(ledger.modelSelection, DEFAULT_WORKON_MODEL_SELECTION);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocks before recording Pi started when the handoff auth preflight fails", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-auth-preflight-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 165 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        165,
+        "fix(workon): preflight github-copilot auth before launching child Pi sessions",
+        "## Acceptance criteria\n\n- Detect missing auth for the selected exact model before reporting a child Pi session as successfully usable.\n- The failure path does not create misleading Pi started handoff evidence when the child Pi cannot authenticate.\n\n## Validation\n\n- Add a regression test for missing github-copilot auth.\n\n## Non-goals\n\n- Do not change provider authentication globally.",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "165",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+
+    assert.ok(scriptCall);
+    assert.match(scriptCall, new RegExp(`--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(rendered, /Worktree status: blocked/);
+    assert.match(rendered, /Pi handoff command: \(not launched\)/);
+    assert.match(rendered, /Pi model auth preflight failed for github-copilot\/gpt-5\.5 with PI_CODING_AGENT_DIR=\/tmp\/empty-pi-agent/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string }).status, "blocked");
+    assert.equal((ledger.zellij as { status: string }).status, "blocked");
+    assert.equal((ledger.pi as { status: string }).status, "not-launched");
+    assert.match(String(ledger.failureReason), /Pi model auth preflight failed/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
