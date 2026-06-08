@@ -53,7 +53,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
             tabName: "agents/feat-65-detect-local-worktrees-and-stale-sessions",
             tabId: 12,
             heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
-            piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi --name ${branch}${modelArgs} <clean-prompt>`,
+            piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi -a --name ${branch}${modelArgs} <clean-prompt>`,
             repo,
           })}\n`,
           stderr: "",
@@ -648,6 +648,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
+    assert.match(rendered, /-- pi -a --name feat\/65-detect-local-worktrees-and-stale-sessions --model anthropic\/claude-sonnet-4/);
     assert.match(rendered, /Forge heartbeat command: zellij action new-pane/);
     assert.match(rendered, /--notify-pane terminal_99/);
     assert.doesNotMatch(rendered, /--prompt I want to discuss and possibly work on:/);
@@ -659,6 +660,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Worktree status: launched/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Pi handoff command: zellij action new-pane/);
+    assert.match(capsule, /-- pi -a --name feat\/65-detect-local-worktrees-and-stale-sessions --model anthropic\/claude-sonnet-4/);
     assert.match(capsule, /Exact model: anthropic\/claude-sonnet-4/);
     assert.match(capsule, /Model routing mode: exact-model/);
     assert.match(capsule, /Model routing reason: explicit --model override/);
@@ -757,7 +759,7 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
     assert.match(rendered, /Worktree\/tab was created but Pi was not launched/);
     assert.match(rendered, /Retry Zellij handoff from an active Zellij pane/);
-    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65'/);
+    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane-missing'/);
     assert.match(rendered, /Manual heartbeat restore: cd '\/tmp\/worktrunk\.feat-65'/);
     assert.match(rendered, new RegExp(`--branch ${branch}`));
     assert.match(rendered, /--prompt <redacted>/);
@@ -769,7 +771,7 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(capsule, /Worktree status: blocked/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Retry Zellij handoff from an active Zellij pane/);
-    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65'/);
+    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane-missing'/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");

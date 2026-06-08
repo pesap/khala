@@ -160,7 +160,9 @@ exit 2
 
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /--name pi/);
+    assert.match(panes, new RegExp(`-- pi -a --name ${branch}`));
     assert.doesNotMatch(panes, /forge-heartbeat/);
+    assert.match(result.piHandoffCommand, new RegExp(`-- pi -a --name ${branch} <clean-prompt>`));
 
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
     assert.equal(ledger.pi.status, "pi-process-started");
@@ -272,6 +274,7 @@ exit 2
 
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /--name pi/);
+    assert.match(panes, new RegExp(`-- pi -a --name ${branch}`));
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -672,10 +675,10 @@ exit 0
     );
 
     const panes = await readFile(paneLog, "utf8");
-    assert.match(panes, /-- pi-custom --name work\/108-model-routing --model anthropic\/claude-sonnet-4/);
+    assert.match(panes, /-- pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4/);
     assert.doesNotMatch(panes, /forge-heartbeat/);
     const result = JSON.parse(stdout) as { piHandoffCommand: string };
-    assert.match(result.piHandoffCommand, /--model anthropic\/claude-sonnet-4 <clean-prompt>/);
+    assert.match(result.piHandoffCommand, /-- pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4 <clean-prompt>/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

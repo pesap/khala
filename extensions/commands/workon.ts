@@ -267,7 +267,7 @@ function buildHandoffRecoveryInstructions(params: {
     `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
   );
   instructions.push(
-    `Manual Pi restore: cd ${shellQuote(params.worktreePath)} && pi --name ${shellQuote(params.branchName)} ${shellQuote(buildManualHandoffPrompt(params))}`,
+    `Manual Pi restore: cd ${shellQuote(params.worktreePath)} && pi -a --name ${shellQuote(params.branchName)} ${shellQuote(buildManualHandoffPrompt(params))}`,
   );
   if (params.request.heartbeat === "0" || params.request.heartbeat === "0.0") {
     instructions.push("Forge heartbeat restore: disabled by heartbeat=0.");
