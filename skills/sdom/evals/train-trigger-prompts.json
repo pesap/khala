@@ -1,0 +1,14 @@
+{
+  "skill_name": "sdom",
+  "split": "train",
+  "evals": [
+    {"id": "pos-1", "query": "My SDOM run fails with a Pyomo infeasible status; help me debug it.", "should_trigger": true},
+    {"id": "pos-2", "query": "Add a new SDOM formulation constraint for storage charging limits.", "should_trigger": true},
+    {"id": "pos-3", "query": "How do I run a GenMix_Target parametric sweep in SDOM?", "should_trigger": true},
+    {"id": "pos-4", "query": "Update SDOM docs for running outputs and add matching tests.", "should_trigger": true},
+    {"id": "neg-1", "query": "Optimize this generic Pyomo MILP unrelated to SDOM.", "should_trigger": false},
+    {"id": "neg-2", "query": "Create a GitHub PR and respond to code review comments.", "should_trigger": false},
+    {"id": "neg-3", "query": "Write a bash script for log rotation on Linux.", "should_trigger": false},
+    {"id": "neg-4", "query": "Design a TypeScript API client for weather data.", "should_trigger": false}
+  ]
+}
