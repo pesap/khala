@@ -6,6 +6,7 @@ Context:
 - Branch: {{branch_name}}
 - Handoff ledger: {{handoff_ledger}}
 - Exact model: {{resolved_model}}
+- Exact thinking level: {{resolved_thinking_level}}
 - Model routing: {{model_routing_mode}} ({{model_routing_reason}})
 - This handoff comes from `/workon`; a session capsule path is provided separately by the launcher.
 - Treat this prompt as starting context, not a final technical decision.

@@ -136,6 +136,7 @@ test("parses workon target and flags", () => {
   const defaultModelSelection = DEFAULT_WORKON_MODEL_SELECTION;
 
   assert.equal(defaultModelSelection.exactModel, "github-copilot/gpt-5.5");
+  assert.equal(defaultModelSelection.exactThinkingLevel, "medium");
 
   assert.deepEqual(parseWorkonArgs("61 --repo pesap/agents --forge github"), {
     target: "61",
@@ -248,8 +249,9 @@ test("parses workon target and flags", () => {
     dryRun: false,
     modelSelection: {
       exactModel: "anthropic/claude-sonnet-4",
+      exactThinkingLevel: defaultModelSelection.exactThinkingLevel,
       routingMode: "exact-model",
-      routingReason: "explicit --model override",
+      routingReason: "explicit --model override with default workon thinking",
     },
     extraInstruction: "73",
   });

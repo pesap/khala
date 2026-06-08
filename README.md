@@ -71,7 +71,7 @@ flowchart LR
 | `/debug <unreported-problem>` | Investigate a maintainer-observed symptom, gather evidence, and draft a new issue proposal after approval. |
 | `/triage <issue-url\|user-posted-request>` | Clean user-posted issue/request intake into a `/workon`-ready work packet, asking approval before forge updates. |
 | `/plan <topic>` | Shape maintainer planned changes or codebase improvement ideas into scoped issue/work packet(s) with a slice table before issue creation. |
-| `/workon <issue-url\|issue-number> [--repo owner/repo] [--forge auto\|github\|gitlab\|all] [--dry-run]` | Start autonomous work by default only when the issue passes the readiness rubric; use `--dry-run` for capsule and branch suggestion only. |
+| `/workon <issue-url\|issue-number> [--repo owner/repo] [--forge auto\|github\|gitlab\|all] [--dry-run] [--model MODEL]` | Start autonomous work by default only when the issue passes the readiness rubric; child Pi launches pin the workon default model and thinking level, and `--dry-run` prepares only the capsule and branch suggestion. |
 | `/review [scope] [--extra "focus"]` | Review changes by scope: uncommitted, branch, commit, PR, folder, file, or paths. |
 | `/git-review` | Run git-history diagnostics before reading code. |
 | `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |

@@ -59,7 +59,7 @@ function isWorkonIssueTarget(target: string): boolean {
 function validateWorkonIssueTargets(targets: string[]): string | null {
   return targets.every(isWorkonIssueTarget)
     ? null
-    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
+    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
 }
 
 function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
@@ -650,7 +650,7 @@ export function createWorkflowCommandHandlers(params: {
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]",
+          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level.",
           "error",
         );
         return;
@@ -695,6 +695,7 @@ export function createWorkflowCommandHandlers(params: {
           dryRun: parsed.dryRun,
           heartbeat: parsed.heartbeat,
           model: parsed.modelSelection.exactModel || null,
+          thinkingLevel: parsed.modelSelection.exactThinkingLevel,
           modelRoutingMode: parsed.modelSelection.routingMode,
           modelRoutingReason: parsed.modelSelection.routingReason,
           targets,
@@ -708,6 +709,7 @@ export function createWorkflowCommandHandlers(params: {
           `Dry run: ${parsed.dryRun ? "yes" : "no"}`,
           `Forge feedback heartbeat: ${parsed.heartbeat}`,
           `Exact model: ${parsed.modelSelection.exactModel}`,
+          `Exact thinking level: ${parsed.modelSelection.exactThinkingLevel}`,
           `Model routing mode: ${parsed.modelSelection.routingMode}`,
           `Model routing reason: ${parsed.modelSelection.routingReason}`,
           "Instruction: Resolve the durable source issue before branch/worktree work.",

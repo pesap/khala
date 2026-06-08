@@ -10,6 +10,7 @@ import {
 } from "./inbox.ts";
 import {
   DEFAULT_WORKON_MODEL_SELECTION,
+  WORKON_DEFAULT_THINKING_LEVEL,
   type WorkonMode,
   type WorkonModelSelection,
 } from "./workon.ts";
@@ -282,8 +283,9 @@ export function parseWorkonArgs(args: string): {
   const modelSelection: WorkonModelSelection = exactModel
     ? {
         exactModel,
+        exactThinkingLevel: WORKON_DEFAULT_THINKING_LEVEL,
         routingMode: "exact-model",
-        routingReason: "explicit --model override",
+        routingReason: "explicit --model override with default workon thinking",
       }
     : DEFAULT_WORKON_MODEL_SELECTION;
 

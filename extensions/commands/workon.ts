@@ -13,8 +13,11 @@ const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
 export type WorkonForge = "auto" | "github" | "gitlab" | "all";
 export type WorkonMode = "prepare" | "start";
+export type WorkonThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export interface WorkonModelSelection {
   exactModel: string;
+  exactThinkingLevel: WorkonThinkingLevel;
   routingMode: "default" | "exact-model";
   routingReason: string;
 }
@@ -109,9 +112,11 @@ export interface WorkonBootstrapRequest {
 }
 
 export const WORKON_DEFAULT_MODEL = "github-copilot/gpt-5.5";
+export const WORKON_DEFAULT_THINKING_LEVEL: WorkonThinkingLevel = "medium";
 
 export const DEFAULT_WORKON_MODEL_SELECTION: WorkonModelSelection = {
   exactModel: WORKON_DEFAULT_MODEL,
+  exactThinkingLevel: WORKON_DEFAULT_THINKING_LEVEL,
   routingMode: "default",
   routingReason: "Khala/workon default-pinned model routing",
 };
@@ -263,11 +268,14 @@ function buildHandoffRecoveryInstructions(params: {
   const instructions: string[] = [];
   const zellijHandoffScript = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
   const heartbeatScript = path.join(PACKAGE_ROOT, "scripts", "workon-forge-heartbeat.sh");
+  const modelSelection = workonModelSelection(params.request);
+  const modelArg = modelSelection.exactModel ? ` --model ${shellQuote(modelSelection.exactModel)}` : "";
+  const thinkingArg = ` --thinking ${shellQuote(modelSelection.exactThinkingLevel)}`;
   instructions.push(
-    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
+    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}${modelArg}${thinkingArg} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
   );
   instructions.push(
-    `Manual Pi restore: cd ${shellQuote(params.worktreePath)} && pi -a --name ${shellQuote(params.branchName)} ${shellQuote(buildManualHandoffPrompt(params))}`,
+    `Manual Pi restore: cd ${shellQuote(params.worktreePath)} && pi -a --name ${shellQuote(params.branchName)}${modelArg}${thinkingArg} ${shellQuote(buildManualHandoffPrompt(params))}`,
   );
   if (params.request.heartbeat === "0" || params.request.heartbeat === "0.0") {
     instructions.push("Forge heartbeat restore: disabled by heartbeat=0.");
@@ -896,6 +904,7 @@ function capsuleMarkdown(params: {
   const combinedWorkScope = multiIssueWorkScope(sourceIssues);
   const combinedWorkScopeSection = combinedWorkScope ? `\n${combinedWorkScope}\n` : "";
   const ledgerPath = handoffLedgerPath(params.request, params.repo);
+  const modelSelection = workonModelSelection(params.request);
 
   return `# Workon session capsule
 
@@ -919,9 +928,10 @@ Capsule acknowledgement command: ${buildHandoffAcknowledgementCommand(ledgerPath
 Launch eligibility: active Zellij ${params.zellijActive ? "yes" : "no"}
 Heartbeat interval: ${params.request.heartbeat}
 Dry run: ${params.request.dryRun ? "yes" : "no"}
-Exact model: ${workonModelSelection(params.request).exactModel}
-Model routing mode: ${workonModelSelection(params.request).routingMode}
-Model routing reason: ${workonModelSelection(params.request).routingReason}
+Exact model: ${modelSelection.exactModel}
+Exact thinking level: ${modelSelection.exactThinkingLevel}
+Model routing mode: ${modelSelection.routingMode}
+Model routing reason: ${modelSelection.routingReason}
 Created: ${params.request.nowIso}
 
 ## Problem
@@ -998,6 +1008,7 @@ async function buildHandoffPrompt(params: {
     handoff_ledger: params.ledgerPath,
     ack_command: buildHandoffAcknowledgementCommand(params.ledgerPath),
     resolved_model: params.modelSelection.exactModel,
+    resolved_thinking_level: params.modelSelection.exactThinkingLevel,
     issue_number: params.issue.number,
     issue_title: params.issue.title,
     issue_url: params.issue.url,
@@ -1107,6 +1118,7 @@ async function startWorktreeIfRequested(
     if (modelSelection.exactModel) {
       handoffArgs.push("--model", modelSelection.exactModel);
     }
+    handoffArgs.push("--thinking", modelSelection.exactThinkingLevel);
     const handoffResult = await runCommand(runner, request.cwd, evidence.commands, "bash", handoffArgs);
     const parsed = parseZellijHandoffResult(`${handoffResult.stdout}\n${handoffResult.stderr}`);
     const handoffGap = resultGap(`Zellij Pi handoff ${params.branchName}`, handoffResult);
@@ -1216,6 +1228,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
         `Exact model: ${evidence.modelSelection?.exactModel ?? DEFAULT_WORKON_MODEL_SELECTION.exactModel}`,
+        `Exact thinking level: ${evidence.modelSelection?.exactThinkingLevel ?? DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
         `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
