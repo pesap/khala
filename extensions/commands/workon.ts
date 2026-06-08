@@ -19,6 +19,66 @@ export interface WorkonModelSelection {
   routingReason: string;
 }
 
+type WorkonBootstrapStatus = "prepared" | "started" | "launched" | "blocked";
+type WorkonLedgerWorktreeStatus = "not-started" | WorkonBootstrapStatus;
+
+type WorkonLedgerIssue = Pick<GithubIssueMetadata, "number" | "title" | "url" | "state">;
+
+interface WorkonLedgerAttempt {
+  at: string;
+  phase: string;
+  status: string;
+  detail: string | null;
+}
+
+interface WorkonHandoffLedger {
+  version: 1;
+  repo: string;
+  sourceIssues: WorkonLedgerIssue[];
+  primaryIssue: WorkonLedgerIssue;
+  branchName: string | null;
+  capsulePath: string | null;
+  ledgerPath: string;
+  dryRun: boolean;
+  modelSelection: WorkonModelSelection;
+  worktree: {
+    command: string | null;
+    status: WorkonLedgerWorktreeStatus;
+    path: string | null;
+  };
+  launchEligibility: {
+    activeZellij: boolean;
+  };
+  zellij: {
+    status: "skipped" | "not-attempted" | "launched" | "blocked";
+    tabName: string | null;
+    tabId: string | number | null;
+    worktreeAction: string | null;
+  };
+  pi: {
+    status: "not-launched" | "pi-process-started" | "capsule-acknowledged";
+    paneId: string | null;
+    paneAction: string | null;
+    handoffCommand: string | null;
+    acknowledgementCommand: string | null;
+  };
+  heartbeat: {
+    status: "disabled" | "not-launched" | "started";
+    interval: string;
+    paneId: string | null;
+    action: string | null;
+    command: string | null;
+  };
+  phases: Record<string, string>;
+  readinessActionItems: string[];
+  failureReason: string | null;
+  safeNextAction: string;
+  recoveryInstructions: string[];
+  attempts: WorkonLedgerAttempt[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface CommandResult {
   ok: boolean;
   stdout: string;
@@ -38,6 +98,7 @@ export interface WorkonBootstrapRequest {
   targets?: string[];
   repo: string;
   forge: WorkonForge;
+  forgeHost?: string;
   mode: WorkonMode;
   dryRun?: boolean;
   capsuleRoot: string;
@@ -87,11 +148,13 @@ interface WorkonBootstrapEvidence {
   repo?: string;
   branchName?: string;
   worktreeCommand?: string;
-  worktreeStatus?: "prepared" | "started" | "launched" | "blocked";
+  worktreeStatus?: WorkonBootstrapStatus;
   worktreePath?: string;
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffPrompt?: string;
+  ledgerPath?: string;
+  ledger?: WorkonHandoffLedger;
   zellijActive?: boolean;
   handoffRecoveryInstructions?: string[];
   modelSelection?: WorkonModelSelection;
@@ -106,6 +169,12 @@ interface ZellijHandoffResult {
   status?: string;
   path?: string;
   tabName?: string;
+  tabId?: string | number;
+  piPaneId?: string;
+  piPaneAction?: string;
+  heartbeatPaneId?: string;
+  heartbeatAction?: string;
+  worktreeAction?: string;
   piHandoffCommand?: string;
   heartbeatCommand?: string;
 }
@@ -194,7 +263,7 @@ function buildHandoffRecoveryInstructions(params: {
   const zellijHandoffScript = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
   const heartbeatScript = path.join(PACKAGE_ROOT, "scripts", "workon-forge-heartbeat.sh");
   instructions.push(
-    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}`,
+    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
   );
   instructions.push(
     `Manual Pi restore: cd ${shellQuote(params.worktreePath)} && pi --name ${shellQuote(params.branchName)} ${shellQuote(buildManualHandoffPrompt(params))}`,
@@ -207,6 +276,194 @@ function buildHandoffRecoveryInstructions(params: {
     );
   }
   return instructions;
+}
+
+function normalizeForgeHost(value: string | undefined): string | null {
+  const normalized = value?.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return normalized || null;
+}
+
+function forgeHostFromTarget(target: string): string | null {
+  const match = target.match(/^(?:https?:\/\/)?([^/\s]+)\/[^/\s]+\/[^/\s]+\/issues\/[1-9]\d*/i);
+  return normalizeForgeHost(match?.[1]);
+}
+
+function defaultForgeHost(forge: WorkonForge): string {
+  return forge === "gitlab" ? "gitlab.com" : "github.com";
+}
+
+function stateForgeHost(request: Pick<WorkonBootstrapRequest, "forge" | "forgeHost" | "target">): string {
+  return normalizeForgeHost(request.forgeHost) ?? forgeHostFromTarget(request.target) ?? defaultForgeHost(request.forge);
+}
+
+function repoStateDir(root: string, forgeHost: string, repo: string): string {
+  const [owner = "unknown", name = "repo"] = repo.split("/", 2);
+  return path.join(root, forgeHost, owner, name);
+}
+
+function capsulePath(request: WorkonBootstrapRequest, repo: string): string {
+  return path.join(repoStateDir(request.capsuleRoot, stateForgeHost(request), repo), "capsule.md");
+}
+
+function handoffLedgerPath(request: WorkonBootstrapRequest, repo: string): string {
+  return path.join(repoStateDir(request.capsuleRoot, stateForgeHost(request), repo), "handoff-ledger.json");
+}
+
+function ledgerIssue(issue: GithubIssueMetadata): WorkonLedgerIssue {
+  return {
+    number: issue.number,
+    title: issue.title,
+    url: issue.url,
+    state: issue.state,
+  };
+}
+
+function firstMeaningfulGap(gaps: string[]): string | null {
+  return gaps.find((gap) => !gap.startsWith("Retry ") && !gap.startsWith("Manual ")) ?? null;
+}
+
+function buildHandoffAcknowledgementCommand(ledgerPath: string): string {
+  const ackScript = path.join(PACKAGE_ROOT, "scripts", "workon-handoff-ack.sh");
+  return `bash ${shellQuote(ackScript)} --ledger ${shellQuote(ledgerPath)} --status capsule-acknowledged`;
+}
+
+function buildLedgerSafeNextAction(params: {
+  issue: GithubIssueMetadata;
+  readinessActionItems: string[];
+  worktreeCommand: string | null;
+  worktreeStatus: WorkonLedgerWorktreeStatus;
+  piStatus: WorkonHandoffLedger["pi"]["status"];
+  recoveryInstructions: string[];
+}): string {
+  if (params.readinessActionItems.length > 0) {
+    return `Resolve readiness action items before starting /workon for ${params.issue.url}.`;
+  }
+  if (params.piStatus === "pi-process-started") {
+    return "Wait for capsule acknowledgement, or resume from the ledger and capsule if the child session is gone.";
+  }
+  if (params.worktreeStatus === "launched") {
+    return "Continue in the launched Pi pane; read the session capsule if context is missing.";
+  }
+  if (params.recoveryInstructions.length > 0) {
+    return params.recoveryInstructions[0] ?? "Inspect the session capsule before continuing.";
+  }
+  return params.worktreeCommand ?? "Inspect deterministic workon evidence before retrying.";
+}
+
+function buildHandoffLedger(params: {
+  request: WorkonBootstrapRequest;
+  repo: string;
+  issue: GithubIssueMetadata;
+  issues?: GithubIssueMetadata[];
+  branchName?: string;
+  capsulePath?: string;
+  worktreeCommand?: string;
+  worktreeStatus: WorkonLedgerWorktreeStatus;
+  worktreePath?: string;
+  piHandoffCommand?: string;
+  heartbeatCommand?: string;
+  readinessActionItems?: string[];
+  handoffRecoveryInstructions?: string[];
+  gaps?: string[];
+  zellijResult?: ZellijHandoffResult | null;
+}): WorkonHandoffLedger {
+  const sourceIssues = params.issues?.length ? params.issues : [params.issue];
+  const readinessActionItems = params.readinessActionItems ?? [];
+  const recoveryInstructions = params.handoffRecoveryInstructions ?? [];
+  const ledgerPath = handoffLedgerPath(params.request, params.repo);
+  const heartbeatDisabled = params.request.heartbeat === "0" || params.request.heartbeat === "0.0";
+  const piStatus = params.piHandoffCommand ? "pi-process-started" : "not-launched";
+  const heartbeatStatus = heartbeatDisabled
+    ? "disabled"
+    : params.heartbeatCommand
+      ? "started"
+      : "not-launched";
+  const zellijStatus = !params.request.launchInZellij
+    ? "skipped"
+    : params.worktreeStatus === "launched"
+      ? "launched"
+      : params.worktreeStatus === "blocked"
+        ? "blocked"
+        : "not-attempted";
+  const failureReason = readinessActionItems.length > 0
+    ? "Autonomous readiness failed."
+    : firstMeaningfulGap(params.gaps ?? []);
+
+  return {
+    version: 1,
+    repo: params.repo,
+    sourceIssues: sourceIssues.map(ledgerIssue),
+    primaryIssue: ledgerIssue(params.issue),
+    branchName: params.branchName ?? null,
+    capsulePath: params.capsulePath ?? null,
+    ledgerPath,
+    dryRun: Boolean(params.request.dryRun),
+    modelSelection: workonModelSelection(params.request),
+    worktree: {
+      command: params.worktreeCommand ?? null,
+      status: params.worktreeStatus,
+      path: params.worktreePath ?? null,
+    },
+    launchEligibility: {
+      activeZellij: params.request.launchInZellij,
+    },
+    zellij: {
+      status: zellijStatus,
+      tabName: params.zellijResult?.tabName ?? null,
+      tabId: params.zellijResult?.tabId ?? null,
+      worktreeAction: params.zellijResult?.worktreeAction ?? null,
+    },
+    pi: {
+      status: piStatus,
+      paneId: params.zellijResult?.piPaneId ?? null,
+      paneAction: params.zellijResult?.piPaneAction ?? null,
+      handoffCommand: params.piHandoffCommand ?? null,
+      acknowledgementCommand: buildHandoffAcknowledgementCommand(ledgerPath),
+    },
+    heartbeat: {
+      status: heartbeatStatus,
+      interval: params.request.heartbeat,
+      paneId: params.zellijResult?.heartbeatPaneId ?? null,
+      action: params.zellijResult?.heartbeatAction ?? null,
+      command: params.heartbeatCommand ?? null,
+    },
+    phases: {
+      sourceIssue: "resolved",
+      readiness: readinessActionItems.length > 0 ? "not-ready" : "ready",
+      capsule: params.capsulePath ? "written" : "not-written",
+      worktree: params.worktreeStatus,
+      zellij: zellijStatus,
+      pi: piStatus,
+      heartbeat: heartbeatStatus,
+    },
+    readinessActionItems,
+    failureReason,
+    safeNextAction: buildLedgerSafeNextAction({
+      issue: params.issue,
+      readinessActionItems,
+      worktreeCommand: params.worktreeCommand ?? null,
+      worktreeStatus: params.worktreeStatus,
+      piStatus,
+      recoveryInstructions,
+    }),
+    recoveryInstructions,
+    attempts: [
+      {
+        at: params.request.nowIso,
+        phase: "bootstrap",
+        status: readinessActionItems.length > 0 ? "not-ready" : params.worktreeStatus,
+        detail: failureReason,
+      },
+    ],
+    createdAt: params.request.nowIso,
+    updatedAt: params.request.nowIso,
+  };
+}
+
+async function writeHandoffLedger(ledger: WorkonHandoffLedger): Promise<string> {
+  await fs.mkdir(path.dirname(ledger.ledgerPath), { recursive: true });
+  await fs.writeFile(ledger.ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+  return ledger.ledgerPath;
 }
 
 function formatLoggedCommand(command: string, args: string[]): string {
@@ -606,7 +863,7 @@ function capsuleMarkdown(params: {
   repo: string;
   branchName: string;
   worktreeCommand: string;
-  worktreeStatus: "prepared" | "started" | "launched" | "blocked";
+  worktreeStatus: WorkonBootstrapStatus;
   worktreePath?: string;
   piHandoffCommand?: string;
   heartbeatCommand?: string;
@@ -637,6 +894,7 @@ function capsuleMarkdown(params: {
     .join("\n") || "- Run the validation described by the issue before shipping.";
   const combinedWorkScope = multiIssueWorkScope(sourceIssues);
   const combinedWorkScopeSection = combinedWorkScope ? `\n${combinedWorkScope}\n` : "";
+  const ledgerPath = handoffLedgerPath(params.request, params.repo);
 
   return `# Workon session capsule
 
@@ -655,6 +913,8 @@ Worktree status: ${params.worktreeStatus}
 Worktree path: ${params.worktreePath ?? "(not available)"}
 Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
+Handoff ledger: ${ledgerPath}
+Capsule acknowledgement command: ${buildHandoffAcknowledgementCommand(ledgerPath)}
 Launch eligibility: active Zellij ${params.zellijActive ? "yes" : "no"}
 Heartbeat interval: ${params.request.heartbeat}
 Dry run: ${params.request.dryRun ? "yes" : "no"}
@@ -695,11 +955,6 @@ ${params.handoffPrompt}
 `;
 }
 
-function capsulePath(root: string, repo: string): string {
-  const [owner = "unknown", name = "repo"] = repo.split("/", 2);
-  return path.join(root, "github.com", owner, name, "capsule.md");
-}
-
 function renderTemplate(template: string, values: Record<string, string | number>): string {
   return template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (match, key: string) => {
     const value = values[key];
@@ -730,6 +985,7 @@ async function buildHandoffPrompt(params: {
   branchName: string;
   heartbeat: string;
   modelSelection: WorkonModelSelection;
+  ledgerPath: string;
 }): Promise<string> {
   const template = await readHandoffTemplate(params.cwd);
   const sourceIssues = params.issues?.length ? params.issues : [params.issue];
@@ -738,6 +994,8 @@ async function buildHandoffPrompt(params: {
     heartbeat_interval: heartbeatLabel(params.heartbeat),
     model_routing_mode: params.modelSelection.routingMode,
     model_routing_reason: params.modelSelection.routingReason,
+    handoff_ledger: params.ledgerPath,
+    ack_command: buildHandoffAcknowledgementCommand(params.ledgerPath),
     resolved_model: params.modelSelection.exactModel || "(runtime default)",
     issue_number: params.issue.number,
     issue_title: params.issue.title,
@@ -755,7 +1013,7 @@ async function writeCapsule(params: {
   repo: string;
   branchName: string;
   worktreeCommand: string;
-  worktreeStatus: "prepared" | "started" | "launched" | "blocked";
+  worktreeStatus: WorkonBootstrapStatus;
   worktreePath?: string;
   piHandoffCommand?: string;
   heartbeatCommand?: string;
@@ -763,7 +1021,7 @@ async function writeCapsule(params: {
   zellijActive?: boolean;
   handoffRecoveryInstructions?: string[];
 }): Promise<string> {
-  const filePath = capsulePath(params.request.capsuleRoot, params.repo);
+  const filePath = capsulePath(params.request, params.repo);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, capsuleMarkdown(params), "utf8");
   return filePath;
@@ -806,6 +1064,7 @@ async function startWorktreeIfRequested(
     branchName: string;
     capsulePath: string;
     handoffPrompt: string;
+    ledgerPath: string;
   },
 ): Promise<{
   status: "prepared" | "started" | "launched" | "blocked";
@@ -813,6 +1072,7 @@ async function startWorktreeIfRequested(
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffRecoveryInstructions?: string[];
+  zellijResult?: ZellijHandoffResult | null;
 }> {
   if (request.mode !== "start" || request.dryRun) return { status: "prepared" };
 
@@ -839,6 +1099,8 @@ async function startWorktreeIfRequested(
       params.handoffPrompt,
       "--heartbeat",
       request.heartbeat,
+      "--ledger",
+      params.ledgerPath,
     ];
     const modelSelection = workonModelSelection(request);
     if (modelSelection.exactModel) {
@@ -861,7 +1123,7 @@ async function startWorktreeIfRequested(
           worktreePath: parsed.path,
         });
         evidence.gaps.push(...handoffRecoveryInstructions);
-        return { status: "blocked", path: parsed.path, handoffRecoveryInstructions };
+        return { status: "blocked", path: parsed.path, handoffRecoveryInstructions, zellijResult: parsed };
       }
       return { status: "blocked" };
     }
@@ -876,6 +1138,7 @@ async function startWorktreeIfRequested(
       path: parsed.path,
       piHandoffCommand: parsed.piHandoffCommand ?? "scripts/workon-zellij-handoff.sh",
       heartbeatCommand: parsed.heartbeatCommand,
+      zellijResult: parsed,
     };
   }
 
@@ -928,6 +1191,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         "Autonomous readiness: not-ready",
         "Worktree status: not-started",
         "Session capsule: not written",
+        `Handoff ledger: ${evidence.ledgerPath ?? "not written"}`,
       ].join("\n"),
     );
   } else if (issue && evidence.repo && evidence.branchName && evidence.worktreeCommand) {
@@ -945,12 +1209,16 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Launch eligibility: active Zellij ${evidence.zellijActive ? "yes" : "no"}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
+        ...(evidence.ledger?.zellij.worktreeAction ? [`Worktree action: ${evidence.ledger.zellij.worktreeAction}`] : []),
+        ...(evidence.ledger?.pi.paneAction ? [`Pi pane action: ${evidence.ledger.pi.paneAction}`] : []),
+        ...(evidence.ledger?.heartbeat.action ? [`Heartbeat action: ${evidence.ledger.heartbeat.action}`] : []),
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
         `Exact model: ${evidence.modelSelection?.exactModel || "(runtime default)"}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
         `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
+        `Handoff ledger: ${evidence.ledgerPath ?? "not written"}`,
         ...(evidence.handoffRecoveryInstructions?.length
           ? ["Handoff recovery:", ...evidence.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`)]
           : []),
@@ -1032,6 +1300,17 @@ export async function prepareWorkonBootstrap(
     evidence.readinessActionItems = readinessActionItems;
     evidence.readinessActionItemsByIssue = readinessActionItemsByIssue;
     evidence.gaps.push(formatReadinessActionItems(readinessActionItemsByIssue));
+    const ledger = buildHandoffLedger({
+      request,
+      repo,
+      issue,
+      issues,
+      worktreeStatus: "not-started",
+      readinessActionItems,
+      gaps: evidence.gaps,
+    });
+    evidence.ledger = ledger;
+    evidence.ledgerPath = await writeHandoffLedger(ledger);
     return formatWorkonBootstrapEvidence(evidence);
   }
 
@@ -1048,6 +1327,7 @@ export async function prepareWorkonBootstrap(
     branchName,
     heartbeat: request.heartbeat,
     modelSelection: workonModelSelection(request),
+    ledgerPath: handoffLedgerPath(request, repo),
   });
   const initialCapsule = await writeCapsule({
     request,
@@ -1065,6 +1345,7 @@ export async function prepareWorkonBootstrap(
     branchName,
     capsulePath: initialCapsule,
     handoffPrompt,
+    ledgerPath: handoffLedgerPath(request, repo),
   });
   const capsule = await writeCapsule({
     request,
@@ -1096,6 +1377,24 @@ export async function prepareWorkonBootstrap(
   evidence.zellijActive = request.launchInZellij;
   evidence.handoffRecoveryInstructions = worktree.handoffRecoveryInstructions;
   evidence.capsulePath = capsule;
+  const ledger = buildHandoffLedger({
+    request,
+    repo,
+    issue,
+    issues,
+    branchName,
+    capsulePath: capsule,
+    worktreeCommand,
+    worktreeStatus: worktree.status,
+    worktreePath: worktree.path,
+    piHandoffCommand: worktree.piHandoffCommand,
+    heartbeatCommand: worktree.heartbeatCommand,
+    handoffRecoveryInstructions: worktree.handoffRecoveryInstructions,
+    gaps: evidence.gaps,
+    zellijResult: worktree.zellijResult,
+  });
+  evidence.ledger = ledger;
+  evidence.ledgerPath = await writeHandoffLedger(ledger);
   return formatWorkonBootstrapEvidence(evidence);
 }
 

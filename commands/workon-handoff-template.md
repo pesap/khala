@@ -4,6 +4,7 @@ Context:
 - Repository: {{repo}}
 - Source issue: {{issue_url}}
 - Branch: {{branch_name}}
+- Handoff ledger: {{handoff_ledger}}
 - Exact model: {{resolved_model}}
 - Model routing: {{model_routing_mode}} ({{model_routing_reason}})
 - This handoff comes from `/workon`; a session capsule path is provided separately by the launcher.
@@ -11,6 +12,7 @@ Context:
 
 Before doing any implementation:
 - Read the session capsule path provided by the launcher.
+- Acknowledge that the capsule was read by running: `{{ack_command}}`.
 - Read the local agent/repo instructions.
 - Inspect the relevant code, docs, tests, recent commits, and linked issue state.
 - Decide whether this task is still real, already solved, stale, over-scoped, or better handled differently.

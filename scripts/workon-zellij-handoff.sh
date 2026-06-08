@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL]
+Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL] [--ledger PATH]
 
 Create/switch the Worktrunk worktree, wait for its Zellij tab, and launch Pi in
 that tab with a clean prompt. The capsule path is passed as text in the prompt;
@@ -18,6 +18,7 @@ capsule=""
 prompt=""
 heartbeat="1.0"
 model=""
+ledger=""
 pi_command="${PI_COMMAND:-pi}"
 wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-150}"
 wait_seconds="${ZELLIJ_TAB_WAIT_SECONDS:-0.2}"
@@ -50,6 +51,10 @@ while (($#)); do
       ;;
     --model)
       model="${2:?--model requires MODEL}"
+      shift 2
+      ;;
+    --ledger)
+      ledger="${2:?--ledger requires PATH}"
       shift 2
       ;;
     -h|--help)
@@ -111,6 +116,35 @@ validate_model() {
     printf '%s\n' "${output}" >&2
     exit 2
   fi
+}
+
+find_named_pane() {
+  local pane_name="${1:?pane name required}"
+  local panes_json=""
+
+  panes_json="$(zellij action list-panes --json 2>/dev/null)" || return 0
+  printf '%s' "${panes_json}" | jq -r --arg name "${pane_name}" '
+    [
+      .. | objects
+      | select((.name? == $name) or (.title? == $name) or (.pane_name? == $name))
+      | (.pane_id? // .id? // .terminal_id? // empty)
+    ][0] // empty
+  ' 2>/dev/null || true
+}
+
+record_ledger_status() {
+  local status="${1:?status required}"
+  local detail="${2:-}"
+  local ack_script=""
+
+  if [[ -z "${ledger}" || ! -s "${ledger}" ]]; then
+    return 0
+  fi
+  ack_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workon-handoff-ack.sh"
+  if [[ ! -x "${ack_script}" ]]; then
+    return 0
+  fi
+  bash "${ack_script}" --ledger "${ledger}" --status "${status}" --message "${detail}" >/dev/null || true
 }
 
 require_command wt
@@ -191,34 +225,55 @@ clean_prompt="${prompt}
 
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."
-pi_args=("${pi_command}" --name "${branch}")
-if [[ -n "${model}" ]]; then
-  pi_args+=(--model "${model}")
-fi
-pi_args+=("${clean_prompt}")
-pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}" | tail -n 1)"
 
+pi_pane_id="$(find_named_pane pi)"
+pi_pane_action="reused"
+if [[ -z "${pi_pane_id}" ]]; then
+  pi_args=("${pi_command}" --name "${branch}")
+  if [[ -n "${model}" ]]; then
+    pi_args+=(--model "${model}")
+  fi
+  pi_args+=("${clean_prompt}")
+  pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}" | tail -n 1)"
+  pi_pane_action="started"
+fi
+if [[ -n "${pi_pane_id}" ]]; then
+  record_ledger_status "pi-process-started" "Pi pane ${pi_pane_action}: ${pi_pane_id}"
+fi
+
+heartbeat_pane_id=""
+heartbeat_action="disabled"
 heartbeat_command="(disabled)"
 if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
   heartbeat_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workon-forge-heartbeat.sh"
-  heartbeat_args=(bash "${heartbeat_script}" --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me)
-  if [[ -n "${pi_pane_id}" ]]; then
-    heartbeat_args+=(--notify-pane "${pi_pane_id}")
+  heartbeat_pane_id="$(find_named_pane forge-heartbeat)"
+  if [[ -n "${heartbeat_pane_id}" ]]; then
+    heartbeat_action="reused"
+    heartbeat_command="reused existing forge-heartbeat pane ${heartbeat_pane_id}"
   else
-    printf 'Zellij did not report a Pi pane id; forge heartbeat will not actively notify Pi.\n' >&2
-  fi
-  zellij action new-pane --tab-id "${tab_id}" --name forge-heartbeat --cwd "${worktree_path}" -- "${heartbeat_args[@]}"
-  heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
-  if [[ -n "${pi_pane_id}" ]]; then
-    heartbeat_command="${heartbeat_command} --notify-pane ${pi_pane_id}"
+    heartbeat_args=(bash "${heartbeat_script}" --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me)
+    if [[ -n "${pi_pane_id}" ]]; then
+      heartbeat_args+=(--notify-pane "${pi_pane_id}")
+    else
+      printf 'Zellij did not report a Pi pane id; forge heartbeat will not actively notify Pi.\n' >&2
+    fi
+    heartbeat_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name forge-heartbeat --cwd "${worktree_path}" -- "${heartbeat_args[@]}" | tail -n 1)"
+    heartbeat_action="started"
+    heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
+    if [[ -n "${pi_pane_id}" ]]; then
+      heartbeat_command="${heartbeat_command} --notify-pane ${pi_pane_id}"
+    fi
   fi
 fi
 
-printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatInterval":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
+printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"piPaneAction":%s,"heartbeatPaneId":%s,"heartbeatAction":%s,"heartbeatInterval":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
   "$(json_string "${worktree_path}")" \
   "$(json_string "${tab_name}")" \
   "${tab_id}" \
   "$(json_string "${pi_pane_id}")" \
+  "$(json_string "${pi_pane_action}")" \
+  "$(json_string "${heartbeat_pane_id}")" \
+  "$(json_string "${heartbeat_action}")" \
   "$(json_string "${heartbeat}")" \
   "$(json_string "${worktree_action}")" \
   "$(json_string "zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} --name ${branch} <clean-prompt>")" \
