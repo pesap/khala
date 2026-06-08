@@ -107,7 +107,7 @@ function incompleteIssueViewOutput(number: number, title: string, body = ""): st
   });
 }
 
-async function readHandoffLedger(rendered: string): Promise<Record<string, any>> {
+async function readHandoffLedger(rendered: string): Promise<Record<string, unknown>> {
   const ledgerPath = rendered.match(/Handoff ledger: (.+)/)?.[1]?.trim();
   assert.ok(ledgerPath);
   return JSON.parse(await readFile(ledgerPath, "utf8"));

@@ -875,6 +875,7 @@ function capsuleMarkdown(params: {
     .join("\n") || "- Run the validation described by the issue before shipping.";
   const combinedWorkScope = multiIssueWorkScope(sourceIssues);
   const combinedWorkScopeSection = combinedWorkScope ? `\n${combinedWorkScope}\n` : "";
+  const ledgerPath = handoffLedgerPath(params.request.capsuleRoot, params.repo);
 
   return `# Workon session capsule
 
@@ -893,8 +894,8 @@ Worktree status: ${params.worktreeStatus}
 Worktree path: ${params.worktreePath ?? "(not available)"}
 Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
-Handoff ledger: ${handoffLedgerPath(params.request.capsuleRoot, params.repo)}
-Capsule acknowledgement command: ${buildHandoffAcknowledgementCommand(handoffLedgerPath(params.request.capsuleRoot, params.repo))}
+Handoff ledger: ${ledgerPath}
+Capsule acknowledgement command: ${buildHandoffAcknowledgementCommand(ledgerPath)}
 Launch eligibility: active Zellij ${params.zellijActive ? "yes" : "no"}
 Heartbeat interval: ${params.request.heartbeat}
 Dry run: ${params.request.dryRun ? "yes" : "no"}
