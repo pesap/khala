@@ -199,6 +199,47 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
   }
 });
 
+test("stores workon state under the resolved forge host", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-forge-host-test-"));
+  try {
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 63 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        63,
+        "feat(inbox): render deterministic maintainer queue locally",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "63",
+        repo: "pesap/agents",
+        forge: "github",
+        forgeHost: "github.enterprise.example",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(
+      rendered,
+      new RegExp(`${escapeRegExp(path.join(tempDir, "github.enterprise.example", "pesap", "agents", "capsule.md"))}`),
+    );
+    assert.match(
+      rendered,
+      new RegExp(`${escapeRegExp(path.join(tempDir, "github.enterprise.example", "pesap", "agents", "handoff-ledger.json"))}`),
+    );
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("uses packaged handoff template when target cwd has no commands directory", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-external-cwd-test-"));
   try {
