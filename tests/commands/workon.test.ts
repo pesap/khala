@@ -113,13 +113,14 @@ async function readHandoffLedger(rendered: string): Promise<Record<string, unkno
   return JSON.parse(await readFile(ledgerPath, "utf8"));
 }
 
-test("detects active Zellij only from true-like environment values", () => {
+test("detects active Zellij from non-empty environment values", () => {
   assert.equal(isActiveZellijEnv(undefined), false);
   assert.equal(isActiveZellijEnv(""), false);
-  assert.equal(isActiveZellijEnv("0"), false);
-  assert.equal(isActiveZellijEnv(" false "), false);
-  assert.equal(isActiveZellijEnv("NO"), false);
-  assert.equal(isActiveZellijEnv("off"), false);
+  assert.equal(isActiveZellijEnv("   "), false);
+  assert.equal(isActiveZellijEnv("0"), true);
+  assert.equal(isActiveZellijEnv(" false "), true);
+  assert.equal(isActiveZellijEnv("NO"), true);
+  assert.equal(isActiveZellijEnv("off"), true);
   assert.equal(isActiveZellijEnv("1"), true);
   assert.equal(isActiveZellijEnv("/tmp/zellij-session"), true);
 });
@@ -321,7 +322,7 @@ test("uses package-local Zellij handoff script when target cwd has no scripts di
   }
 });
 
-test("ZELLIJ=0 selects direct Worktrunk start path", async () => {
+test("ZELLIJ=0 selects Zellij handoff path", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-zero-test-"));
   try {
     const branch = "fix/148-use-package-handoff-script-and-robust-zellij-detection";
@@ -332,7 +333,6 @@ test("ZELLIJ=0 selects direct Worktrunk start path", async () => {
         "fix(workon): use package handoff script and robust Zellij detection",
       ),
       "wt --version": "worktrunk 1.0.0\n",
-      [`wt switch --create ${branch} --format json`]: `{"action":"created","branch":"${branch}","path":"/tmp/worktrunk.fix-148"}\n`,
     });
 
     const sections = await prepareWorkonBootstrap(
@@ -351,15 +351,12 @@ test("ZELLIJ=0 selects direct Worktrunk start path", async () => {
     );
     const rendered = sections.join("\n");
 
-    assert.equal(calls.some((call) => call.startsWith("bash ") && call.includes("workon-zellij-handoff.sh")), false);
-    assert.ok(calls.includes(`wt switch --create ${branch} --format json`));
+    assert.ok(calls.some((call) => call.startsWith("bash ") && call.includes("workon-zellij-handoff.sh")));
+    assert.equal(calls.includes(`wt switch --create ${branch} --format json`), false);
     assert.match(rendered, /Suggested Worktrunk command: cd .+ && wt switch --create fix\/148-use-package-handoff-script-and-robust-zellij-detection --format json/);
-    assert.match(rendered, /Launch eligibility: active Zellij no/);
-    assert.match(rendered, /Worktree status: started/);
-    assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.fix-148/);
-    assert.match(rendered, /Pi handoff skipped: active Zellij was not detected/);
-    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.fix-148' && pi --name 'fix\/148-use-package-handoff-script-and-robust-zellij-detection'/);
-    assert.match(rendered, /Manual heartbeat restore: cd '\/tmp\/worktrunk\.fix-148'/);
+    assert.match(rendered, /Launch eligibility: active Zellij yes/);
+    assert.match(rendered, /Worktree status: launched/);
+    assert.doesNotMatch(rendered, /Pi handoff skipped: active Zellij was not detected/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
