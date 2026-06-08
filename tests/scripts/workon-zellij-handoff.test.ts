@@ -496,6 +496,120 @@ exit 2
   }
 });
 
+test("workon zellij handoff stays launched when forge heartbeat pane fails", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-heartbeat-failure-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const paneLog = path.join(tempDir, "panes.log");
+    const worktreePath = path.join(tempDir, "worktree");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    const ledgerPath = path.join(tempDir, "handoff-ledger.json");
+    const branch = "fix/171-keep-pi-launched-when-heartbeat-pane-fails";
+    const tabName = "agents/fix-171-keep-pi-launched-when-heartbeat-pane-fails";
+
+    await mkdir(worktreePath);
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+    await writeFile(
+      ledgerPath,
+      JSON.stringify({ version: 1, pi: { status: "not-launched" }, phases: { pi: "not-launched" }, attempts: [] }),
+      "utf8",
+    );
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '{"action":"created","path":"${worktreePath}"}\n'
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "zellij"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "action list-tabs --json" ]]; then
+  printf '[{"name":"${tabName}","tab_id":17}]\n'
+  exit 0
+fi
+if [[ "$*" == "action list-panes --json" ]]; then
+  printf '[]\n'
+  exit 0
+fi
+if [[ "$*" == "action go-to-tab-name ${tabName}" ]]; then
+  exit 0
+fi
+if [[ "$1 $2" == "action new-pane" ]]; then
+  printf '%s\n' "$*" >> "${paneLog}"
+  if [[ "$*" == *"--name pi"* ]]; then
+    printf 'terminal_171_pi\n'
+    exit 0
+  fi
+  if [[ "$*" == *"--name forge-heartbeat"* ]]; then
+    printf 'heartbeat pane refused\n' >&2
+    exit 42
+  fi
+fi
+printf 'unexpected zellij args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    await writeExecutable(path.join(binDir, "pi"), "#!/usr/bin/env bash\nexit 0\n");
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    const { stdout, stderr } = await execFileAsync(
+      "bash",
+      [
+        scriptPath,
+        "--repo",
+        "pesap/agents",
+        "--branch",
+        branch,
+        "--capsule",
+        capsulePath,
+        "--prompt",
+        "handoff prompt",
+        "--heartbeat",
+        "1.0",
+        "--ledger",
+        ledgerPath,
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          ZELLIJ_TAB_WAIT_SECONDS: "0.01",
+          ZELLIJ_PANE_LAUNCH_WAIT_SECONDS: "0.01",
+        },
+      },
+    );
+
+    assert.match(stderr, /failed to launch forge heartbeat pane; Pi handoff remains launched/);
+    const result = JSON.parse(stdout);
+    assert.equal(result.status, "launched");
+    assert.equal(result.path, worktreePath);
+    assert.equal(result.piPaneId, "terminal_171_pi");
+    assert.equal(result.piPaneAction, "started");
+    assert.equal(result.heartbeatAction, "failed");
+    assert.equal(result.heartbeatPaneId, null);
+    assert.equal(result.heartbeatCommand, null);
+
+    const panes = await readFile(paneLog, "utf8");
+    assert.match(panes, /--tab-id 17 --name pi/);
+    assert.match(panes, /--tab-id 17 --name forge-heartbeat/);
+
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
+    assert.equal(ledger.pi.status, "pi-process-started");
+    assert.equal(ledger.attempts.at(-1).detail, "Pi pane started: terminal_171_pi");
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff reuses existing Pi and heartbeat panes", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-existing-panes-test-"));
   try {

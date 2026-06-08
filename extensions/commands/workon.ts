@@ -242,8 +242,12 @@ function parseJsonObject<T>(raw: string, gapLabel: string, gaps: string[]): T | 
 
 function resultGap(label: string, result: CommandResult): string | null {
   if (result.ok) return null;
-  const detail = result.error || result.stderr || result.stdout || "command failed";
-  return `${label}: ${detail.trim().split("\n")[0]}`;
+  const detail = result.stderr || result.stdout || result.error || "command failed";
+  const diagnosticLine = detail.trim().split(/\r?\n/).find((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !trimmed.startsWith("{");
+  }) ?? detail.trim().split(/\r?\n/)[0] ?? "command failed";
+  return `${label}: ${diagnosticLine}`;
 }
 
 export function isActiveZellijEnv(value: string | undefined): boolean {

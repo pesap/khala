@@ -23,6 +23,8 @@ ledger=""
 pi_command="${PI_COMMAND:-pi}"
 wait_attempts="${ZELLIJ_TAB_WAIT_ATTEMPTS:-150}"
 wait_seconds="${ZELLIJ_TAB_WAIT_SECONDS:-0.2}"
+pane_attempts="${ZELLIJ_PANE_LAUNCH_ATTEMPTS:-3}"
+pane_wait_seconds="${ZELLIJ_PANE_LAUNCH_WAIT_SECONDS:-0.5}"
 
 while (($#)); do
   case "$1" in
@@ -103,8 +105,20 @@ json_string() {
   jq -Rn --arg value "$1" '$value'
 }
 
+json_string_or_null() {
+  if [[ -z "$1" ]]; then
+    printf 'null'
+  else
+    json_string "$1"
+  fi
+}
+
 shell_word() {
   printf '%q' "$1"
+}
+
+last_nonempty_line() {
+  awk 'NF { line = $0 } END { if (line != "") print line }'
 }
 
 resolve_pi_agent_dir() {
@@ -235,6 +249,58 @@ find_named_pane() {
   ' 2>/dev/null || true
 }
 
+find_tab_id() {
+  local tabs_json="${1:?tabs json required}"
+  local target_name="${2:?target tab name required}"
+
+  printf '%s' "${tabs_json}" | jq -r --arg name "${target_name}" '
+    [
+      .. | objects
+      | select((.name? // .title? // .tab_name? // .tabName? // "") == $name)
+      | (.tab_id? // .tabId? // .id? // empty)
+    ][0] // empty
+  ' 2>/dev/null || true
+}
+
+zellij_new_pane_output=""
+zellij_new_pane_error=""
+run_zellij_new_pane() {
+  local attempt=1
+  local status=0
+  local output=""
+
+  zellij_new_pane_output=""
+  zellij_new_pane_error=""
+  for ((attempt = 1; attempt <= pane_attempts; attempt += 1)); do
+    if output="$(zellij action new-pane "$@" 2>&1)"; then
+      zellij_new_pane_output="${output}"
+      return 0
+    fi
+    status=$?
+    zellij_new_pane_error="${output}"
+    if ((attempt < pane_attempts)); then
+      sleep "${pane_wait_seconds}"
+    fi
+  done
+  return "${status}"
+}
+
+emit_blocked_json() {
+  local reason="${1:?blocked reason required}"
+  local detail="${2:-}"
+  printf '{"status":"blocked","reason":%s,"detail":%s,"path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatPaneId":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
+    "$(json_string "${reason}")" \
+    "$(json_string "${detail}")" \
+    "$(json_string "${worktree_path}")" \
+    "$(json_string "${tab_name}")" \
+    "$(json_string_or_null "${tab_id}")" \
+    "$(json_string_or_null "${pi_pane_id}")" \
+    "$(json_string_or_null "${heartbeat_pane_id}")" \
+    "$(json_string "${worktree_action}")" \
+    "$(json_string_or_null "${pi_handoff_command}")" \
+    "$(json_string_or_null "${heartbeat_command}")"
+}
+
 record_ledger_status() {
   local status="${1:?status required}"
   local detail="${2:-}"
@@ -310,9 +376,18 @@ if [[ -z "${worktree_path}" ]]; then
 fi
 
 tab_id=""
+tabs_error=""
+pi_pane_id=""
+heartbeat_pane_id=""
+pi_handoff_command=""
+heartbeat_command=""
 for ((attempt = 1; attempt <= wait_attempts; attempt += 1)); do
-  tabs_json="$(zellij action list-tabs --json)"
-  tab_id="$(printf '%s' "${tabs_json}" | jq -r --arg name "${tab_name}" '.[] | select(.name == $name) | .tab_id' | head -n 1)"
+  if tabs_json="$(zellij action list-tabs --json 2>&1)"; then
+    tab_id="$(find_tab_id "${tabs_json}" "${tab_name}")"
+  else
+    tabs_error="${tabs_json}"
+    tab_id=""
+  fi
   if [[ -n "${tab_id}" && "${tab_id}" != "null" ]]; then
     break
   fi
@@ -322,14 +397,17 @@ for ((attempt = 1; attempt <= wait_attempts; attempt += 1)); do
 done
 
 if [[ -z "${tab_id}" || "${tab_id}" == "null" ]]; then
-  printf '{"status":"blocked","reason":"tab-not-found","path":%s,"tabName":%s}\n' \
-    "$(json_string "${worktree_path}")" \
-    "$(json_string "${tab_name}")" >&2
+  emit_blocked_json "tab-not-found" "${tabs_error}" >&2
   printf 'Zellij Worktrunk tab not found after %s attempts: %s\n' "${wait_attempts}" "${tab_name}" >&2
+  if [[ -n "${tabs_error}" ]]; then
+    printf 'Last zellij list-tabs error/output:\n%s\n' "${tabs_error}" >&2
+  fi
   exit 1
 fi
 
-zellij action go-to-tab-name "${tab_name}"
+if ! go_to_tab_output="$(zellij action go-to-tab-name "${tab_name}" 2>&1)"; then
+  printf 'Warning: failed to focus Zellij tab %s before handoff; continuing with --tab-id %s. Output:\n%s\n' "${tab_name}" "${tab_id}" "${go_to_tab_output}" >&2
+fi
 clean_prompt="${prompt}
 
 Session capsule path: ${capsule}
@@ -355,7 +433,21 @@ if [[ -z "${pi_pane_id}" ]]; then
     pi_args+=(--thinking "${thinking}")
   fi
   pi_args+=("${clean_prompt}")
-  pi_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}" | tail -n 1)"
+  if ! run_zellij_new_pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}"; then
+    emit_blocked_json "pi-pane-launch-failed" "${zellij_new_pane_error}" >&2
+    printf 'Zellij failed to launch Pi pane in tab %s (%s). Output:\n%s\n' "${tab_name}" "${tab_id}" "${zellij_new_pane_error}" >&2
+    exit 1
+  fi
+  pi_pane_id="$(printf '%s\n' "${zellij_new_pane_output}" | last_nonempty_line)"
+  if [[ -z "${pi_pane_id}" ]]; then
+    sleep "${wait_seconds}"
+    pi_pane_id="$(find_named_pane pi "${tab_id}")"
+  fi
+  if [[ -z "${pi_pane_id}" ]]; then
+    emit_blocked_json "pi-pane-id-missing" "${zellij_new_pane_output}" >&2
+    printf 'Zellij launched the Pi pane command but did not report a pane id in tab %s (%s). Output:\n%s\n' "${tab_name}" "${tab_id}" "${zellij_new_pane_output}" >&2
+    exit 1
+  fi
   pi_pane_action="started"
 fi
 if [[ -n "${pi_pane_id}" ]]; then
@@ -378,11 +470,29 @@ if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
     else
       printf 'Zellij did not report a Pi pane id; forge heartbeat will not actively notify Pi.\n' >&2
     fi
-    heartbeat_pane_id="$(zellij action new-pane --tab-id "${tab_id}" --name forge-heartbeat --cwd "${worktree_path}" -- "${heartbeat_args[@]}" | tail -n 1)"
-    heartbeat_action="started"
     heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
     if [[ -n "${pi_pane_id}" ]]; then
       heartbeat_command="${heartbeat_command} --notify-pane ${pi_pane_id}"
+    fi
+    if run_zellij_new_pane --tab-id "${tab_id}" --name forge-heartbeat --cwd "${worktree_path}" -- "${heartbeat_args[@]}"; then
+      heartbeat_pane_id="$(printf '%s\n' "${zellij_new_pane_output}" | last_nonempty_line)"
+      if [[ -z "${heartbeat_pane_id}" ]]; then
+        sleep "${wait_seconds}"
+        heartbeat_pane_id="$(find_named_pane forge-heartbeat "${tab_id}")"
+      fi
+      if [[ -n "${heartbeat_pane_id}" ]]; then
+        heartbeat_action="started"
+      else
+        heartbeat_action="failed"
+        heartbeat_command=""
+        heartbeat_error="${zellij_new_pane_output}"
+        printf 'Warning: forge heartbeat pane command ran but no pane id was reported; Pi handoff remains launched. Output:\n%s\n' "${heartbeat_error}" >&2
+      fi
+    else
+      heartbeat_action="failed"
+      heartbeat_error="${zellij_new_pane_error}"
+      heartbeat_command=""
+      printf 'Warning: failed to launch forge heartbeat pane; Pi handoff remains launched. Output:\n%s\n' "${heartbeat_error}" >&2
     fi
   fi
 fi
@@ -391,11 +501,11 @@ printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"pi
   "$(json_string "${worktree_path}")" \
   "$(json_string "${tab_name}")" \
   "${tab_id}" \
-  "$(json_string "${pi_pane_id}")" \
+  "$(json_string_or_null "${pi_pane_id}")" \
   "$(json_string "${pi_pane_action}")" \
-  "$(json_string "${heartbeat_pane_id}")" \
+  "$(json_string_or_null "${heartbeat_pane_id}")" \
   "$(json_string "${heartbeat_action}")" \
   "$(json_string "${heartbeat}")" \
   "$(json_string "${worktree_action}")" \
   "$(json_string "${pi_handoff_command}")" \
-  "$(json_string "${heartbeat_command}")"
+  "$(json_string_or_null "${heartbeat_command}")"
