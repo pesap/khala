@@ -478,7 +478,7 @@ test("session focus discovers stale capsules and correlates branch worktrees", a
         "",
       ].join("\n"),
       "git rev-parse --is-inside-work-tree": "true\n",
-    "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+      "git remote get-url origin": "git@github.com:pesap/agents.git\n",
     });
 
     const sections = await collectInboxEvidence(
@@ -547,7 +547,7 @@ test("session focus reports blocked capsules with deleted worktrees", async () =
       "git worktree list --porcelain":
         "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\n",
       "git rev-parse --is-inside-work-tree": "true\n",
-    "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+      "git remote get-url origin": "git@github.com:pesap/agents.git\n",
     });
 
     const sections = await collectInboxEvidence(
@@ -757,7 +757,8 @@ test("renders compact actionable dashboard from typed snapshot", async () => {
         title: "256: Review request",
         url: "https://github.com/NatLabRockies/R2X/pull/256",
         updatedAt: "2026-06-05T00:00:00Z",
-        suggestedCommand: "/review pr https://github.com/NatLabRockies/R2X/pull/256",
+        suggestedCommand:
+          "/review pr https://github.com/NatLabRockies/R2X/pull/256",
         evidence: "gh search prs --review-requested=@me --state=open",
       },
       {
@@ -774,9 +775,15 @@ test("renders compact actionable dashboard from typed snapshot", async () => {
 
   assert.match(rendered, /^Inbox · 2026-06-06 00:12 · partial/);
   assert.match(rendered, /github ok · local skipped/);
-  assert.match(rendered, /Do next\n1\. NatLabRockies\/R2X #256: Review request/);
+  assert.match(
+    rendered,
+    /Do next\n1\. NatLabRockies\/R2X #256: Review request/,
+  );
   assert.match(rendered, /2\. NatLabRockies\/arco #313: Check CI/);
-  assert.match(rendered, /Counts: reviews 1, broken CI 1, blocked sessions 0, issues 0, local 0/);
+  assert.match(
+    rendered,
+    /Counts: reviews 1, broken CI 1, blocked sessions 0, issues 0, local 0/,
+  );
   assert.match(rendered, /Gaps: Local collector skipped for focus=reviews/);
   assert.doesNotMatch(rendered, /Read-only commands executed/);
 });
@@ -788,7 +795,12 @@ test("compact dashboard separates ancient review requests from active work", asy
     status: "success",
     collectors: [
       { name: "github", status: "ok", gaps: [], commands: ["gh search prs"] },
-      { name: "local", status: "ok", gaps: [], commands: ["git worktree list"] },
+      {
+        name: "local",
+        status: "ok",
+        gaps: [],
+        commands: ["git worktree list"],
+      },
     ],
     items: [
       {
@@ -840,9 +852,15 @@ test("compact dashboard separates ancient review requests from active work", asy
   );
   assert.match(doNext, /fresh\/repo #2: Fresh review/);
   assert.match(doNext, /mine\/repo #3: Failing CI/);
-  assert.match(doNext, /pesap\/agents #feat\/4 #4: blocked\+missing-worktree capsule/);
+  assert.match(
+    doNext,
+    /pesap\/agents #feat\/4 #4: blocked\+missing-worktree capsule/,
+  );
   assert.doesNotMatch(doNext, /ancient\/repo #1: Ancient review/);
-  assert.match(rendered, /Stale\/noisy\n(?:.|\n)*ancient\/repo #1: Ancient review/);
+  assert.match(
+    rendered,
+    /Stale\/noisy\n(?:.|\n)*ancient\/repo #1: Ancient review/,
+  );
 });
 
 test("compact dashboard handles empty partial states", async () => {
@@ -851,14 +869,30 @@ test("compact dashboard handles empty partial states", async () => {
     scope: { cwd: "/tmp", forge: "github", focus: "all" },
     status: "partial",
     collectors: [
-      { name: "github", status: "failed", gaps: ["gh auth status: failed"], commands: [] },
-      { name: "local", status: "skipped", gaps: ["Local collector skipped"], commands: [] },
+      {
+        name: "github",
+        status: "failed",
+        gaps: ["gh auth status: failed"],
+        commands: [],
+      },
+      {
+        name: "local",
+        status: "skipped",
+        gaps: ["Local collector skipped"],
+        commands: [],
+      },
     ],
     items: [],
   });
 
-  assert.match(rendered, /Do next\n- No ranked actions from collected evidence\./);
-  assert.match(rendered, /Gaps: gh auth status: failed; Local collector skipped/);
+  assert.match(
+    rendered,
+    /Do next\n- No ranked actions from collected evidence\./,
+  );
+  assert.match(
+    rendered,
+    /Gaps: gh auth status: failed; Local collector skipped/,
+  );
 });
 
 test("inbox details flags preserve explicit evidence mode", () => {
@@ -937,7 +971,8 @@ test("non-git cwd skips local collection while global GitHub searches still run"
       return {
         ok: false,
         stdout: "",
-        stderr: "fatal: not a git repository (or any of the parent directories): .git",
+        stderr:
+          "fatal: not a git repository (or any of the parent directories): .git",
         error: "Command failed: git rev-parse --is-inside-work-tree",
       };
     }
@@ -971,8 +1006,345 @@ test("non-git cwd skips local collection while global GitHub searches still run"
     false,
   );
   assert.equal(
-    calls.some((call) => call.startsWith("gh search issues") && call.includes("isDraft")),
+    calls.some(
+      (call) => call.startsWith("gh search issues") && call.includes("isDraft"),
+    ),
     false,
+  );
+});
+
+test("collects read-only GitLab inbox evidence for repo override", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
+  const { calls, runner } = fakeCommandRunner({
+    "git rev-parse --is-inside-work-tree": "true\n",
+    "git remote get-url origin": "git@gitlab.com:group/project.git\n",
+    "git worktree list --porcelain":
+      "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n",
+    "git status --porcelain=v1 -b": "## main...origin/main\n",
+    "glab auth status": "gitlab.com\n  Logged in as pesap\n",
+    "glab api user --jq .username": "pesap\n",
+    "glab mr list --reviewer=@me --per-page 5 --output json --repo group/project":
+      JSON.stringify([
+        {
+          iid: 7,
+          title: "review me",
+          web_url: "https://gitlab.com/group/project/-/merge_requests/7",
+          updated_at: "2026-06-03T00:00:00Z",
+          references: { full: "group/project!7" },
+        },
+      ]),
+    "glab mr list --assignee=@me --per-page 5 --output json --repo group/project":
+      JSON.stringify([
+        {
+          iid: 8,
+          title: "assigned mr",
+          web_url: "https://gitlab.com/group/project/-/merge_requests/8",
+          updated_at: "2026-06-04T00:00:00Z",
+          references: { full: "group/project!8" },
+        },
+      ]),
+    "glab mr list --author=pesap --per-page 5 --output json --repo group/project":
+      JSON.stringify([
+        {
+          iid: 9,
+          title: "failed pipeline",
+          web_url: "https://gitlab.com/group/project/-/merge_requests/9",
+          updated_at: "2026-06-05T00:00:00Z",
+          references: { full: "group/project!9" },
+          pipeline: { status: "failed" },
+        },
+        {
+          iid: 10,
+          title: "pending pipeline",
+          web_url: "https://gitlab.com/group/project/-/merge_requests/10",
+          updated_at: "2026-06-06T00:00:00Z",
+          references: { full: "group/project!10" },
+          head_pipeline: { status: "running" },
+        },
+      ]),
+    "glab issue list --assignee=@me --per-page 5 --output json --repo group/project":
+      JSON.stringify([
+        {
+          iid: 11,
+          title: "assigned issue",
+          web_url: "https://gitlab.com/group/project/-/issues/11",
+          updated_at: "2026-06-07T00:00:00Z",
+          references: { full: "group/project#11" },
+        },
+      ]),
+    "glab issue list --author=pesap --per-page 5 --output json --repo group/project":
+      JSON.stringify([
+        {
+          iid: 12,
+          title: "authored issue",
+          web_url: "https://gitlab.com/group/project/-/issues/12",
+          updated_at: "2026-06-08T00:00:00Z",
+          references: { full: "group/project#12" },
+        },
+      ]),
+  });
+
+  const snapshot = await collectInboxSnapshot(
+    {
+      cwd: "/repo",
+      limit: 5,
+      repo: "group/project",
+      user: "@me",
+      forge: "gitlab",
+      focus: "all",
+      capsuleRoot,
+      nowIso: "2026-06-08T12:00:00.000Z",
+    },
+    runner,
+  );
+
+  assert.equal(
+    calls.some((call) => call.startsWith("gh ")),
+    false,
+  );
+  assert.ok(calls.includes("glab auth status"));
+  assert.deepEqual(
+    snapshot.collectors.map((collector) => ({
+      name: collector.name,
+      status: collector.status,
+    })),
+    [
+      { name: "github", status: "skipped" },
+      { name: "gitlab", status: "ok" },
+      { name: "local", status: "ok" },
+    ],
+  );
+  assert.deepEqual(
+    new Set(snapshot.items.map((item) => item.source)),
+    new Set([
+      "authored-mr-ci-pending",
+      "authored-mr-ci-failure",
+      "assigned-mr",
+      "review-requested-mr",
+      "authored-issue",
+      "assigned-issue",
+    ]),
+  );
+  assert.match(renderInboxSnapshotCompact(snapshot), /gitlab ok/);
+  assert.match(
+    renderInboxSnapshotCompact(snapshot),
+    /Counts: reviews 2, broken CI 2/,
+  );
+});
+
+test("forge all includes available GitHub and GitLab collectors", async (t) => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  t.after(() => rm(capsuleRoot, { recursive: true, force: true }));
+  const { runner } = fakeCommandRunner({
+    "git rev-parse --is-inside-work-tree": "true\n",
+    "git remote get-url origin": "git@github.com:group/project.git\n",
+    "gh auth status": "",
+    "gh repo view group/project --json nameWithOwner,url,updatedAt,isArchived,isPrivate,viewerPermission":
+      JSON.stringify({ nameWithOwner: "group/project", isPrivate: false }),
+    "gh search prs --review-requested=@me --state=open --limit 2 --repo group/project --json number,title,url,repository,updatedAt,isDraft,labels":
+      JSON.stringify([
+        {
+          number: 21,
+          title: "github review",
+          url: "https://github.com/group/project/pull/21",
+          repository: { nameWithOwner: "group/project" },
+          updatedAt: "2026-06-01T00:00:00Z",
+        },
+      ]),
+    "glab auth status": "gitlab.com logged in\n",
+    "glab api user --jq .username": "pesap\n",
+    "glab mr list --reviewer=@me --per-page 2 --output json --repo group/project":
+      JSON.stringify([
+        {
+          iid: 22,
+          title: "gitlab review",
+          web_url: "https://gitlab.com/group/project/-/merge_requests/22",
+          references: { full: "group/project!22" },
+        },
+      ]),
+    "glab mr list --assignee=@me --per-page 2 --output json --repo group/project":
+      "[]",
+  });
+
+  const snapshot = await collectInboxSnapshot(
+    {
+      cwd: "/repo",
+      limit: 2,
+      repo: "group/project",
+      user: "",
+      forge: "all",
+      focus: "reviews",
+      capsuleRoot,
+    },
+    runner,
+  );
+
+  assert.deepEqual(
+    snapshot.collectors.map((collector) => ({
+      name: collector.name,
+      status: collector.status,
+    })),
+    [
+      { name: "github", status: "ok" },
+      { name: "gitlab", status: "ok" },
+      { name: "local", status: "skipped" },
+    ],
+  );
+  assert.deepEqual(
+    new Set(snapshot.items.map((item) => item.source)),
+    new Set(["review-requested-pr", "review-requested-mr"]),
+  );
+});
+
+test("reports missing glab as a GitLab evidence gap without throwing", async () => {
+  const calls: string[] = [];
+  const runner: InboxCommandRunner = async (command, args) => {
+    const key = `${command} ${args.join(" ")}`;
+    calls.push(key);
+    if (key === "git rev-parse --is-inside-work-tree") {
+      return { ok: true, stdout: "true\n", stderr: "" };
+    }
+    if (key === "git remote get-url origin") {
+      return {
+        ok: true,
+        stdout: "git@gitlab.com:group/project.git\n",
+        stderr: "",
+      };
+    }
+    if (key === "glab auth status") {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: "",
+        error: "spawn glab ENOENT",
+      };
+    }
+    return { ok: true, stdout: "", stderr: "" };
+  };
+
+  const snapshot = await collectInboxSnapshot(
+    {
+      cwd: "/repo",
+      limit: 5,
+      repo: "group/project",
+      user: "@me",
+      forge: "gitlab",
+      focus: "reviews",
+    },
+    runner,
+  );
+
+  assert.ok(calls.includes("glab auth status"));
+  assert.equal(snapshot.status, "partial");
+  assert.match(
+    snapshot.collectors[1]?.gaps.join("\n") ?? "",
+    /spawn glab ENOENT/,
+  );
+});
+
+test("reports unauthenticated glab as a GitLab evidence gap without hard failure", async () => {
+  const { runner } = fakeCommandRunner({
+    "git rev-parse --is-inside-work-tree": "true\n",
+    "git remote get-url origin": "git@gitlab.com:group/project.git\n",
+  });
+  const authFailingRunner: InboxCommandRunner = async (
+    command,
+    args,
+    options,
+  ) => {
+    const key = `${command} ${args.join(" ")}`;
+    if (key === "glab auth status") {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: "not logged in to any GitLab hosts",
+      };
+    }
+    return runner(command, args, options);
+  };
+
+  const sections = await collectInboxEvidence(
+    {
+      cwd: "/repo",
+      limit: 5,
+      repo: "group/project",
+      user: "@me",
+      forge: "gitlab",
+      focus: "reviews",
+    },
+    authFailingRunner,
+  );
+
+  assert.match(sections.join("\n"), /GitLab authentication: not logged in/);
+  assert.match(sections.join("\n"), /Deterministic GitLab inbox evidence/);
+});
+
+test("reports malformed GitLab JSON as a graceful evidence gap", async () => {
+  const { runner } = fakeCommandRunner({
+    "git rev-parse --is-inside-work-tree": "true\n",
+    "git remote get-url origin": "git@gitlab.com:group/project.git\n",
+    "glab auth status": "gitlab.com logged in\n",
+    "glab api user --jq .username": "pesap\n",
+    "glab mr list --reviewer=@me --per-page 2 --output json --repo group/project":
+      "{not json",
+    "glab mr list --assignee=@me --per-page 2 --output json --repo group/project":
+      "[]",
+  });
+
+  const snapshot = await collectInboxSnapshot(
+    {
+      cwd: "/repo",
+      limit: 2,
+      repo: "group/project",
+      user: "@me",
+      forge: "gitlab",
+      focus: "reviews",
+    },
+    runner,
+  );
+
+  assert.equal(snapshot.status, "partial");
+  assert.match(
+    snapshot.collectors
+      .find((collector) => collector.name === "gitlab")
+      ?.gaps.join("\n") ?? "",
+    /failed to parse JSON/,
+  );
+});
+
+test("GitLab issue focus skips MR and CI collection", async () => {
+  const { calls, runner } = fakeCommandRunner({
+    "git rev-parse --is-inside-work-tree": "true\n",
+    "git remote get-url origin": "git@gitlab.com:group/project.git\n",
+    "glab auth status": "gitlab.com logged in\n",
+    "glab api user --jq .username": "pesap\n",
+    "glab issue list --assignee=@me --per-page 3 --output json --repo group/project":
+      "[]",
+    "glab issue list --author=pesap --per-page 3 --output json --repo group/project":
+      "[]",
+  });
+
+  await collectInboxSnapshot(
+    {
+      cwd: "/repo",
+      limit: 3,
+      repo: "group/project",
+      user: "@me",
+      forge: "gitlab",
+      focus: "issues",
+    },
+    runner,
+  );
+
+  assert.equal(
+    calls.some((call) => call.startsWith("glab mr list")),
+    false,
+  );
+  assert.ok(
+    calls.includes(
+      "glab issue list --assignee=@me --per-page 3 --output json --repo group/project",
+    ),
   );
 });
 
