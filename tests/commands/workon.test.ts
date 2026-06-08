@@ -990,6 +990,152 @@ test("does not self-block readiness on quoted review-size keywords in diagnostic
   }
 });
 
+test("recognizes bold-label Agent Brief sections during readiness checks", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-agent-brief-ready-test-"));
+  try {
+    const body = [
+      "**Current behavior or goal:**",
+      "",
+      "`/workon` rejects an Agent Brief even though the work packet is ready.",
+      "",
+      "**Desired behavior:**",
+      "",
+      "Recognize bold-label Agent Brief sections as work-packet sections.",
+      "",
+      "**Acceptance criteria:**",
+      "",
+      "- Add focused regression tests for the changed behavior.",
+      "- Preserve existing ATX heading behavior.",
+      "",
+      "**Validation plan:**",
+      "",
+      "- Run npm run test:node -- tests/commands/workon.test.ts",
+      "",
+      "**Non-goals:**",
+      "",
+      "- Do not rewrite the whole readiness system.",
+      "",
+      "**Breaking-change risk:**",
+      "",
+      "Low. No public contract change is expected.",
+      "",
+      "**Review-size risk:**",
+      "",
+      "Low and bounded to the parser and focused tests.",
+      "",
+      "**/workon readiness notes:**",
+      "",
+      "Ready because scope, validation, non-goals, and risks are explicit.",
+    ].join("\n");
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 160 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": incompleteIssueViewOutput(
+        160,
+        "fix(workon): recognize bold-label Agent Brief sections in readiness checks",
+        body,
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "160",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.doesNotMatch(rendered, /Autonomous readiness: not-ready/);
+    assert.match(rendered, /Source issue: pesap\/agents#160/);
+    assert.match(rendered, /Session capsule:/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocks bold-label Agent Briefs that still lack non-goals", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-agent-brief-missing-nongoals-test-"));
+  try {
+    const body = [
+      "**Current behavior or goal:**",
+      "",
+      "`/workon` should keep blocking genuinely incomplete work packets.",
+      "",
+      "**Desired behavior:**",
+      "",
+      "Recognize present Agent Brief sections without weakening missing-section checks.",
+      "",
+      "**Acceptance criteria:**",
+      "",
+      "- Add focused regression tests for the changed behavior.",
+      "",
+      "**Validation plan:**",
+      "",
+      "- Run npm run test:node -- tests/commands/workon.test.ts",
+      "",
+      "**Breaking-change risk:**",
+      "",
+      "Low. No public contract change is expected.",
+      "",
+      "**Review-size risk:**",
+      "",
+      "Low and bounded to the parser and focused tests.",
+      "",
+      "**/workon readiness notes:**",
+      "",
+      "Not ready until non-goals are explicit.",
+    ].join("\n");
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 161 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": incompleteIssueViewOutput(
+        161,
+        "fix(workon): keep blocking missing non-goals",
+        body,
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "161",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.equal(calls.some((call) => call.startsWith("bash ")), false);
+    assert.equal(calls.some((call) => call.startsWith("zellij ")), false);
+    assert.equal(calls.some((call) => call.startsWith("issue comment")), false);
+    assert.match(rendered, /Autonomous readiness: not-ready/);
+    assert.match(rendered, /Add non-goals or out-of-scope boundaries so autonomous work does not expand scope/);
+    assert.match(rendered, /Worktree status: not-started/);
+    assert.match(rendered, /Session capsule: not written/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string }).status, "not-started");
+    assert.equal((ledger.pi as { status: string }).status, "not-launched");
+    assert.equal((ledger.heartbeat as { status: string }).status, "not-launched");
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("accepts resolved public-contract and bounded review-size risk sections", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-resolved-risk-test-"));
   try {
