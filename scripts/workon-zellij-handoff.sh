@@ -129,14 +129,23 @@ validate_model() {
 
 find_named_pane() {
   local pane_name="${1:?pane name required}"
+  local target_tab_id="${2:?target tab id required}"
   local panes_json=""
 
   panes_json="$(zellij action list-panes --json 2>/dev/null)" || return 0
-  printf '%s' "${panes_json}" | jq -r --arg name "${pane_name}" '
+  printf '%s' "${panes_json}" | jq -r --arg name "${pane_name}" --arg tab_id "${target_tab_id}" '
+    def has_target_tab_id:
+      ((.tab_id? // .tabId? // .tab? // empty) | tostring) == $tab_id;
+    def has_pane_name:
+      (.name? == $name) or (.title? == $name) or (.pane_name? == $name);
+    def pane_identifier:
+      .pane_id? // .id? // .terminal_id? // empty;
     [
       .. | objects
-      | select((.name? == $name) or (.title? == $name) or (.pane_name? == $name))
-      | (.pane_id? // .id? // .terminal_id? // empty)
+      | select(has_target_tab_id)
+      | .. | objects
+      | select(has_pane_name)
+      | pane_identifier
     ][0] // empty
   ' 2>/dev/null || true
 }
@@ -241,7 +250,7 @@ if [[ -n "${model}" ]]; then
 fi
 pi_handoff_command="${pi_handoff_command} <clean-prompt>"
 
-pi_pane_id="$(find_named_pane pi)"
+pi_pane_id="$(find_named_pane pi "${tab_id}")"
 pi_pane_action="reused"
 if [[ -z "${pi_pane_id}" ]]; then
   pi_args=("${pi_command}" --name "${branch}")
@@ -261,7 +270,7 @@ heartbeat_action="disabled"
 heartbeat_command="(disabled)"
 if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
   heartbeat_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workon-forge-heartbeat.sh"
-  heartbeat_pane_id="$(find_named_pane forge-heartbeat)"
+  heartbeat_pane_id="$(find_named_pane forge-heartbeat "${tab_id}")"
   if [[ -n "${heartbeat_pane_id}" ]]; then
     heartbeat_action="reused"
     heartbeat_command="reused existing forge-heartbeat pane ${heartbeat_pane_id}"
