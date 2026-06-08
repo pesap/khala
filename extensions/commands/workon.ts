@@ -53,15 +53,19 @@ interface WorkonHandoffLedger {
     status: "skipped" | "not-attempted" | "launched" | "blocked";
     tabName: string | null;
     tabId: string | number | null;
+    worktreeAction: string | null;
   };
   pi: {
     status: "not-launched" | "pane-created";
     paneId: string | null;
+    paneAction: string | null;
     handoffCommand: string | null;
   };
   heartbeat: {
     status: "disabled" | "not-launched" | "started";
     interval: string;
+    paneId: string | null;
+    action: string | null;
     command: string | null;
   };
   phases: Record<string, string>;
@@ -165,6 +169,10 @@ interface ZellijHandoffResult {
   tabName?: string;
   tabId?: string | number;
   piPaneId?: string;
+  piPaneAction?: string;
+  heartbeatPaneId?: string;
+  heartbeatAction?: string;
+  worktreeAction?: string;
   piHandoffCommand?: string;
   heartbeatCommand?: string;
 }
@@ -374,15 +382,19 @@ function buildHandoffLedger(params: {
       status: zellijStatus,
       tabName: params.zellijResult?.tabName ?? null,
       tabId: params.zellijResult?.tabId ?? null,
+      worktreeAction: params.zellijResult?.worktreeAction ?? null,
     },
     pi: {
       status: piStatus,
       paneId: params.zellijResult?.piPaneId ?? null,
+      paneAction: params.zellijResult?.piPaneAction ?? null,
       handoffCommand: params.piHandoffCommand ?? null,
     },
     heartbeat: {
       status: heartbeatStatus,
       interval: params.request.heartbeat,
+      paneId: params.zellijResult?.heartbeatPaneId ?? null,
+      action: params.zellijResult?.heartbeatAction ?? null,
       command: params.heartbeatCommand ?? null,
     },
     phases: {
@@ -1158,6 +1170,9 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Launch eligibility: active Zellij ${evidence.zellijActive ? "yes" : "no"}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
+        ...(evidence.ledger?.zellij.worktreeAction ? [`Worktree action: ${evidence.ledger.zellij.worktreeAction}`] : []),
+        ...(evidence.ledger?.pi.paneAction ? [`Pi pane action: ${evidence.ledger.pi.paneAction}`] : []),
+        ...(evidence.ledger?.heartbeat.action ? [`Heartbeat action: ${evidence.ledger.heartbeat.action}`] : []),
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
         `Exact model: ${evidence.modelSelection?.exactModel || "(runtime default)"}`,
