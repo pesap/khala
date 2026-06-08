@@ -160,9 +160,9 @@ exit 2
 
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /--name pi/);
-    assert.match(panes, new RegExp(`-- pi -a --name ${branch}`));
+    assert.match(panes, new RegExp(`-- env PI_CODING_AGENT_DIR=\\S+ pi -a --name ${branch}`));
     assert.doesNotMatch(panes, /forge-heartbeat/);
-    assert.match(result.piHandoffCommand, new RegExp(`-- pi -a --name ${branch} <clean-prompt>`));
+    assert.match(result.piHandoffCommand, new RegExp(`-- env PI_CODING_AGENT_DIR=\\S+ pi -a --name ${branch} <clean-prompt>`));
 
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
     assert.equal(ledger.pi.status, "pi-process-started");
@@ -274,7 +274,7 @@ exit 2
 
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /--name pi/);
-    assert.match(panes, new RegExp(`-- pi -a --name ${branch}`));
+    assert.match(panes, new RegExp(`-- env PI_CODING_AGENT_DIR=\\S+ pi -a --name ${branch}`));
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -675,10 +675,96 @@ exit 0
     );
 
     const panes = await readFile(paneLog, "utf8");
-    assert.match(panes, /-- pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4/);
+    assert.match(panes, /-- env PI_CODING_AGENT_DIR=\S+ pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4/);
     assert.doesNotMatch(panes, /forge-heartbeat/);
     const result = JSON.parse(stdout) as { piHandoffCommand: string };
-    assert.match(result.piHandoffCommand, /-- pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4 <clean-prompt>/);
+    assert.match(result.piHandoffCommand, /-- env PI_CODING_AGENT_DIR=\S+ pi-custom -a --name work\/108-model-routing --model anthropic\/claude-sonnet-4 <clean-prompt>/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("workon zellij handoff fails before Worktrunk when selected model auth is missing", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-model-auth-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const wtLog = path.join(tempDir, "wt.log");
+    const piLog = path.join(tempDir, "pi.log");
+    const piAgentDir = path.join(tempDir, "empty-pi-agent");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    await mkdir(piAgentDir);
+    await writeFile(path.join(piAgentDir, "auth.json"), "{}\n", "utf8");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${wtLog}"
+exit 0
+`,
+    );
+    await writeExecutable(path.join(binDir, "zellij"), "#!/usr/bin/env bash\nexit 0\n");
+    await writeExecutable(
+      path.join(binDir, "pi"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf 'PI_CODING_AGENT_DIR=%s args=%s\\n' "\${PI_CODING_AGENT_DIR:-}" "$*" >> "${piLog}"
+if [[ "$*" == "--list-models gpt-5.5" ]]; then
+  printf 'provider model\\ngithub-copilot gpt-5.5\\n'
+  exit 0
+fi
+if [[ "\${PI_CODING_AGENT_DIR:-}" != "${piAgentDir}" ]]; then
+  printf 'PI_CODING_AGENT_DIR was not passed to preflight\\n' >&2
+  exit 3
+fi
+if [[ "$*" == "--no-session --no-tools --model github-copilot/gpt-5.5 -p Return exactly: ok" ]]; then
+  printf 'No API key found for github-copilot.\\n' >&2
+  exit 1
+fi
+printf 'unexpected pi args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    await assert.rejects(
+      execFileAsync(
+        "bash",
+        [
+          scriptPath,
+          "--repo",
+          "pesap/agents",
+          "--branch",
+          "work/108-model-routing",
+          "--capsule",
+          capsulePath,
+          "--prompt",
+          "handoff prompt",
+          "--heartbeat",
+          "0",
+          "--model",
+          "github-copilot/gpt-5.5",
+        ],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+            PI_CODING_AGENT_DIR: piAgentDir,
+          },
+        },
+      ),
+      /Pi model auth preflight failed for github-copilot\/gpt-5\.5[\s\S]*No API key found for github-copilot/,
+    );
+
+    const piCalls = await readFile(piLog, "utf8");
+    assert.ok(piCalls.includes(`PI_CODING_AGENT_DIR=${piAgentDir} args=--list-models gpt-5.5`));
+    assert.match(piCalls, /args=--no-session --no-tools --model github-copilot\/gpt-5\.5 -p Return exactly: ok/);
+    await assert.rejects(readFile(wtLog, "utf8"), /ENOENT/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

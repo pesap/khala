@@ -98,6 +98,45 @@ json_string() {
   jq -Rn --arg value "$1" '$value'
 }
 
+shell_word() {
+  printf '%q' "$1"
+}
+
+resolve_pi_agent_dir() {
+  local value="${PI_CODING_AGENT_DIR:-}"
+  if [[ -z "${value}" ]]; then
+    if [[ -z "${HOME:-}" ]]; then
+      printf 'HOME is not set and PI_CODING_AGENT_DIR was not provided; cannot resolve Pi auth config\n' >&2
+      exit 1
+    fi
+    value="${HOME}/.pi/agent"
+  elif [[ "${value}" == "~" ]]; then
+    if [[ -z "${HOME:-}" ]]; then
+      printf 'HOME is required to expand PI_CODING_AGENT_DIR=~\n' >&2
+      exit 1
+    fi
+    value="${HOME}"
+  elif [[ "${value:0:1}" == "~" && "${value:1:1}" == "/" ]]; then
+    if [[ -z "${HOME:-}" ]]; then
+      printf 'HOME is required to expand PI_CODING_AGENT_DIR=~/...\n' >&2
+      exit 1
+    fi
+    value="${HOME}/${value:2}"
+  elif [[ "${value}" != /* ]]; then
+    value="$(pwd -P)/${value}"
+  fi
+  printf '%s' "${value}"
+}
+
+pi_auth_path() {
+  local pi_agent_dir="${1:?Pi agent dir required}"
+  if [[ "${pi_agent_dir}" == "/" ]]; then
+    printf '/auth.json'
+  else
+    printf '%s/auth.json' "${pi_agent_dir%/}"
+  fi
+}
+
 validate_heartbeat() {
   local value="${1:?heartbeat interval required}"
   [[ "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
@@ -105,10 +144,11 @@ validate_heartbeat() {
 
 validate_model() {
   local selected_model="${1:?model required}"
+  local pi_agent_dir="${2:?Pi agent dir required}"
   local search_model="${selected_model##*/}"
   local output=""
-  if ! output="$(${pi_command} --list-models "${search_model}" 2>&1)"; then
-    printf 'failed to verify model with %s --list-models %s:\n%s\n' "${pi_command}" "${search_model}" "${output}" >&2
+  if ! output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" --list-models "${search_model}" 2>&1)"; then
+    printf 'failed to verify model with PI_CODING_AGENT_DIR=%s %s --list-models %s:\n%s\n' "${pi_agent_dir}" "${pi_command}" "${search_model}" "${output}" >&2
     exit 1
   fi
   if [[ "${output}" == No\ models\ matching* ]]; then
@@ -125,6 +165,27 @@ validate_model() {
       exit 2
     fi
   fi
+}
+
+preflight_model_auth() {
+  local selected_model="${1:?model required}"
+  local pi_agent_dir="${2:?Pi agent dir required}"
+  local selected_provider="${selected_model%%/*}"
+  local auth_path=""
+  local output=""
+
+  auth_path="$(pi_auth_path "${pi_agent_dir}")"
+  if output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" --no-session --no-tools --model "${selected_model}" -p 'Return exactly: ok' 2>&1)"; then
+    return 0
+  fi
+
+  printf 'Pi model auth preflight failed for %s with PI_CODING_AGENT_DIR=%s (auth path: %s). Run /login %s using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n' "${selected_model}" "${pi_agent_dir}" "${auth_path}" "${selected_provider}" >&2
+  printf 'Effective PI_CODING_AGENT_DIR: %s\n' "${pi_agent_dir}" >&2
+  printf 'Effective auth path: %s\n' "${auth_path}" >&2
+  printf 'Operator action: run /login %s using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n' "${selected_provider}" >&2
+  printf 'Preflight command: PI_CODING_AGENT_DIR=%s %s --no-session --no-tools --model %s -p <auth-preflight>\n' "$(shell_word "${pi_agent_dir}")" "$(shell_word "${pi_command}")" "$(shell_word "${selected_model}")" >&2
+  printf 'Pi output:\n%s\n' "${output}" >&2
+  exit 1
 }
 
 find_named_pane() {
@@ -169,12 +230,14 @@ require_command wt
 require_command zellij
 require_command jq
 require_command "${pi_command}"
+pi_agent_dir="$(resolve_pi_agent_dir)"
 if ! validate_heartbeat "${heartbeat}"; then
   printf 'invalid heartbeat interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${heartbeat}" >&2
   exit 2
 fi
 if [[ -n "${model}" ]]; then
-  validate_model "${model}"
+  validate_model "${model}" "${pi_agent_dir}"
+  preflight_model_auth "${model}" "${pi_agent_dir}"
 fi
 
 repo_name="${repo##*/}"
@@ -244,7 +307,7 @@ clean_prompt="${prompt}
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."
 
-pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- ${pi_command} -a --name ${branch}"
+pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- env PI_CODING_AGENT_DIR=$(shell_word "${pi_agent_dir}") ${pi_command} -a --name ${branch}"
 if [[ -n "${model}" ]]; then
   pi_handoff_command="${pi_handoff_command} --model ${model}"
 fi
@@ -253,7 +316,7 @@ pi_handoff_command="${pi_handoff_command} <clean-prompt>"
 pi_pane_id="$(find_named_pane pi "${tab_id}")"
 pi_pane_action="reused"
 if [[ -z "${pi_pane_id}" ]]; then
-  pi_args=("${pi_command}" -a --name "${branch}")
+  pi_args=(env "PI_CODING_AGENT_DIR=${pi_agent_dir}" "${pi_command}" -a --name "${branch}")
   if [[ -n "${model}" ]]; then
     pi_args+=(--model "${model}")
   fi
