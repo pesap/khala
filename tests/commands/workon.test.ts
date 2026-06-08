@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   buildWorkonBranchName,
+  DEFAULT_WORKON_MODEL_SELECTION,
   isActiveZellijEnv,
   prepareWorkonBootstrap,
   type WorkonCommandRunner,
@@ -28,6 +29,9 @@ function fakeGhRunner(outputs: Record<string, string>): {
         const branch = args[args.indexOf("--branch") + 1];
         const repo = args[args.indexOf("--repo") + 1];
         const heartbeat = args[args.indexOf("--heartbeat") + 1];
+        const modelIndex = args.indexOf("--model");
+        const model = modelIndex >= 0 ? args[modelIndex + 1] : "";
+        const modelArgs = model ? ` --model ${model}` : "";
         const worktreePath = "/tmp/worktrunk.feat-65";
         if (branch.includes("tab-created-pi-pane-missing")) {
           return {
@@ -49,7 +53,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
             tabName: "agents/feat-65-detect-local-worktrees-and-stale-sessions",
             tabId: 12,
             heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
-            piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi --name ${branch} <clean-prompt>`,
+            piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi --name ${branch}${modelArgs} <clean-prompt>`,
             repo,
           })}\n`,
           stderr: "",
@@ -665,6 +669,55 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.equal((ledger.zellij as { status: string; tabId: number }).tabId, 12);
     assert.equal((ledger.pi as { status: string }).status, "pi-process-started");
     assert.equal((ledger.heartbeat as { status: string }).status, "started");
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("pins the default model when launching a Worktrunk Zellij handoff", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-default-model-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        65,
+        "feat(inbox): detect local worktrees and stale sessions",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "65",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "0.25",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+
+    assert.ok(scriptCall);
+    assert.match(scriptCall, new RegExp(`--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(rendered, new RegExp(`Exact model: ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(rendered, /Model routing mode: default/);
+    assert.match(rendered, /default-pinned model routing/);
+    assert.match(rendered, new RegExp(`Pi handoff command: .*--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, new RegExp(`Exact model: ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
+    assert.match(capsule, /Model routing reason: Khala\/workon default-pinned model routing/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.deepEqual(ledger.modelSelection, DEFAULT_WORKON_MODEL_SELECTION);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

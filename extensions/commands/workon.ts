@@ -108,10 +108,12 @@ export interface WorkonBootstrapRequest {
   modelSelection?: WorkonModelSelection;
 }
 
-const DEFAULT_WORKON_MODEL_SELECTION: WorkonModelSelection = {
-  exactModel: "",
+export const WORKON_DEFAULT_MODEL = "github-copilot/gpt-5.5";
+
+export const DEFAULT_WORKON_MODEL_SELECTION: WorkonModelSelection = {
+  exactModel: WORKON_DEFAULT_MODEL,
   routingMode: "default",
-  routingReason: "backward-compatible default Pi model selection",
+  routingReason: "Khala/workon default-pinned model routing",
 };
 
 function workonModelSelection(request: WorkonBootstrapRequest): WorkonModelSelection {
@@ -917,7 +919,7 @@ Capsule acknowledgement command: ${buildHandoffAcknowledgementCommand(ledgerPath
 Launch eligibility: active Zellij ${params.zellijActive ? "yes" : "no"}
 Heartbeat interval: ${params.request.heartbeat}
 Dry run: ${params.request.dryRun ? "yes" : "no"}
-Exact model: ${workonModelSelection(params.request).exactModel || "(runtime default)"}
+Exact model: ${workonModelSelection(params.request).exactModel}
 Model routing mode: ${workonModelSelection(params.request).routingMode}
 Model routing reason: ${workonModelSelection(params.request).routingReason}
 Created: ${params.request.nowIso}
@@ -995,7 +997,7 @@ async function buildHandoffPrompt(params: {
     model_routing_reason: params.modelSelection.routingReason,
     handoff_ledger: params.ledgerPath,
     ack_command: buildHandoffAcknowledgementCommand(params.ledgerPath),
-    resolved_model: params.modelSelection.exactModel || "(runtime default)",
+    resolved_model: params.modelSelection.exactModel,
     issue_number: params.issue.number,
     issue_title: params.issue.title,
     issue_url: params.issue.url,
@@ -1213,7 +1215,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         ...(evidence.ledger?.heartbeat.action ? [`Heartbeat action: ${evidence.ledger.heartbeat.action}`] : []),
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
-        `Exact model: ${evidence.modelSelection?.exactModel || "(runtime default)"}`,
+        `Exact model: ${evidence.modelSelection?.exactModel ?? DEFAULT_WORKON_MODEL_SELECTION.exactModel}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
         `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,

@@ -10,6 +10,7 @@ import {
   parseReviewArgs,
   parseWorkonArgs,
 } from "../../extensions/commands/parsers.ts";
+import { DEFAULT_WORKON_MODEL_SELECTION } from "../../extensions/commands/workon.ts";
 
 test("parses direct GitHub PR URLs as review PR targets", () => {
   const parsed = parseReviewArgs(
@@ -132,11 +133,9 @@ test("parses inbox flags with safe defaults", () => {
 });
 
 test("parses workon target and flags", () => {
-  const defaultModelSelection = {
-    exactModel: "",
-    routingMode: "default",
-    routingReason: "backward-compatible default Pi model selection",
-  };
+  const defaultModelSelection = DEFAULT_WORKON_MODEL_SELECTION;
+
+  assert.equal(defaultModelSelection.exactModel, "github-copilot/gpt-5.5");
 
   assert.deepEqual(parseWorkonArgs("61 --repo pesap/agents --forge github"), {
     target: "61",

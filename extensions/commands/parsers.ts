@@ -8,7 +8,11 @@ import {
   type InboxForge,
   type InboxScope,
 } from "./inbox.ts";
-import type { WorkonMode, WorkonModelSelection } from "./workon.ts";
+import {
+  DEFAULT_WORKON_MODEL_SELECTION,
+  type WorkonMode,
+  type WorkonModelSelection,
+} from "./workon.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -281,11 +285,7 @@ export function parseWorkonArgs(args: string): {
         routingMode: "exact-model",
         routingReason: "explicit --model override",
       }
-    : {
-        exactModel: "",
-        routingMode: "default",
-        routingReason: "backward-compatible default Pi model selection",
-      };
+    : DEFAULT_WORKON_MODEL_SELECTION;
 
   const targets = parseWorkonIssueTargets(rest);
 
