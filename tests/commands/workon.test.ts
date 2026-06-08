@@ -107,6 +107,12 @@ function incompleteIssueViewOutput(number: number, title: string, body = ""): st
   });
 }
 
+async function readHandoffLedger(rendered: string): Promise<Record<string, any>> {
+  const ledgerPath = rendered.match(/Handoff ledger: (.+)/)?.[1]?.trim();
+  assert.ok(ledgerPath);
+  return JSON.parse(await readFile(ledgerPath, "utf8"));
+}
+
 test("detects active Zellij only from true-like environment values", () => {
   assert.equal(isActiveZellijEnv(undefined), false);
   assert.equal(isActiveZellijEnv(""), false);
@@ -449,6 +455,16 @@ test("dry-run prepares capsule and branch suggestion without starting Worktrunk"
     assert.doesNotMatch(capsule, /Mode: prepare/);
     assert.match(capsule, /Dry run: yes/);
     assert.match(capsule, /Worktree status: prepared/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal(ledger.repo, "pesap/agents");
+    assert.equal(ledger.branchName, "feat/65-detect-local-worktrees-and-stale-sessions");
+    assert.deepEqual((ledger.worktree as { status: string; path: string | null }).status, "prepared");
+    assert.equal((ledger.worktree as { status: string; path: string | null }).path, null);
+    assert.equal((ledger.zellij as { status: string }).status, "not-attempted");
+    assert.equal((ledger.pi as { status: string }).status, "not-launched");
+    assert.equal((ledger.heartbeat as { status: string }).status, "not-launched");
+    assert.equal((ledger.phases as Record<string, string>).capsule, "written");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -512,6 +528,14 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.match(capsule, /Launch eligibility: active Zellij no/);
     assert.match(capsule, /## Handoff recovery/);
     assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk.feat-65'/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string; path: string | null }).status, "started");
+    assert.equal((ledger.worktree as { status: string; path: string | null }).path, "/tmp/worktrunk.feat-65");
+    assert.equal((ledger.launchEligibility as { activeZellij: boolean }).activeZellij, false);
+    assert.equal((ledger.zellij as { status: string }).status, "skipped");
+    assert.equal((ledger.pi as { status: string }).status, "not-launched");
+    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -592,6 +616,13 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Exact model: anthropic\/claude-sonnet-4/);
     assert.match(capsule, /Model routing mode: exact-model/);
     assert.match(capsule, /Model routing reason: explicit --model override/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string; path: string | null }).status, "launched");
+    assert.equal((ledger.zellij as { status: string; tabId: number }).status, "launched");
+    assert.equal((ledger.zellij as { status: string; tabId: number }).tabId, 12);
+    assert.equal((ledger.pi as { status: string }).status, "pane-created");
+    assert.equal((ledger.heartbeat as { status: string }).status, "started");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -644,6 +675,12 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Retry Zellij handoff from an active Zellij pane/);
     assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65'/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
+    assert.equal((ledger.zellij as { status: string }).status, "blocked");
+    assert.equal((ledger.pi as { status: string }).status, "not-launched");
+    assert.match(String(ledger.failureReason), /Zellij Pi handoff/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -965,6 +1002,14 @@ test("refuses issue targets that are not autonomous-ready", async () => {
     assert.match(rendered, /Action items to make the source issue\(s\) \/workon-ready/);
     assert.match(rendered, /Suggested next command\(s\):/);
     assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/81/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string }).status, "not-started");
+    assert.equal((ledger.phases as Record<string, string>).readiness, "not-ready");
+    assert.deepEqual((ledger.readinessActionItems as string[]).slice(0, 2), [
+      "Add narrow, testable acceptance criteria to the issue/work packet.",
+      "Add validation or test expectations, preferably a behavior/regression test for changed behavior.",
+    ]);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
