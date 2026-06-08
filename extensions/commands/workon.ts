@@ -168,6 +168,15 @@ function resultGap(label: string, result: CommandResult): string | null {
   return `${label}: ${detail.trim().split("\n")[0]}`;
 }
 
+export function isActiveZellijEnv(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return Boolean(normalized && !["0", "false", "no", "off"].includes(normalized));
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function formatLoggedCommand(command: string, args: string[]): string {
   const redactedArgs = [...args];
   for (const flag of ["--prompt"]) {
@@ -775,7 +784,7 @@ async function startWorktreeIfRequested(
   }
 
   if (request.launchInZellij) {
-    const scriptPath = path.join(request.cwd, "scripts", "workon-zellij-handoff.sh");
+    const scriptPath = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
     const handoffArgs = [
       scriptPath,
       "--repo",
@@ -956,7 +965,7 @@ export async function prepareWorkonBootstrap(
   }
 
   const branchName = buildWorkonBranchName(issue);
-  const worktreeCommand = `wt switch --create ${branchName} --format json`;
+  const worktreeCommand = `cd ${shellQuote(request.cwd)} && wt switch --create ${branchName} --format json`;
   if (request.dryRun) {
     evidence.gaps.push("Dry run requested: prepared capsule and branch suggestion only; no Worktrunk, Zellij, Pi, or heartbeat launch was attempted.");
   }

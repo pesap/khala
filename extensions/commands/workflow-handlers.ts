@@ -13,6 +13,7 @@ import {
   type InboxScope,
 } from "./inbox.ts";
 import {
+  isActiveZellijEnv,
   prepareWorkonBootstrap,
   type WorkonForge,
   type WorkonMode,
@@ -676,7 +677,7 @@ export function createWorkflowCommandHandlers(params: {
         dryRun: parsed.dryRun,
         capsuleRoot: path.join(homedir(), ".pi", "khala"),
         nowIso: nowIso(),
-        launchInZellij: Boolean(process.env.ZELLIJ),
+        launchInZellij: isActiveZellijEnv(process.env.ZELLIJ),
         heartbeat: parsed.heartbeat,
         modelSelection: parsed.modelSelection,
       });

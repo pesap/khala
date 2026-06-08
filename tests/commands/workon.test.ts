@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   buildWorkonBranchName,
+  isActiveZellijEnv,
   prepareWorkonBootstrap,
   type WorkonCommandRunner,
 } from "../../extensions/commands/workon.ts";
@@ -89,6 +90,10 @@ function issueViewOutput(number: number, title: string, body = ""): string {
   });
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function incompleteIssueViewOutput(number: number, title: string, body = ""): string {
   return JSON.stringify({
     number,
@@ -101,6 +106,17 @@ function incompleteIssueViewOutput(number: number, title: string, body = ""): st
     author: { login: "pesap" },
   });
 }
+
+test("detects active Zellij only from true-like environment values", () => {
+  assert.equal(isActiveZellijEnv(undefined), false);
+  assert.equal(isActiveZellijEnv(""), false);
+  assert.equal(isActiveZellijEnv("0"), false);
+  assert.equal(isActiveZellijEnv(" false "), false);
+  assert.equal(isActiveZellijEnv("NO"), false);
+  assert.equal(isActiveZellijEnv("off"), false);
+  assert.equal(isActiveZellijEnv("1"), true);
+  assert.equal(isActiveZellijEnv("/tmp/zellij-session"), true);
+});
 
 test("builds issue-numbered branch names from conventional titles", () => {
   assert.equal(
@@ -209,6 +225,86 @@ test("uses packaged handoff template when target cwd has no commands directory",
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Before doing any implementation:/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("uses package-local Zellij handoff script when target cwd has no scripts directory", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-external-zellij-test-"));
+  try {
+    const branch = "fix/148-use-package-handoff-script-and-robust-zellij-detection";
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 148 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        148,
+        "fix(workon): use package handoff script and robust Zellij detection",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: tempDir,
+        target: "148",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+
+    assert.ok(scriptCall);
+    assert.match(scriptCall, new RegExp(`^bash ${escapeRegExp(process.cwd())}/scripts/workon-zellij-handoff\\.sh\\b`));
+    assert.doesNotMatch(scriptCall, new RegExp(`^bash ${escapeRegExp(tempDir)}/scripts/workon-zellij-handoff\\.sh\\b`));
+    assert.match(scriptCall, new RegExp(`--branch ${branch}`));
+    assert.match(rendered, /Worktree status: launched/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("ZELLIJ=0 selects direct Worktrunk start path", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-zero-test-"));
+  try {
+    const branch = "fix/148-use-package-handoff-script-and-robust-zellij-detection";
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 148 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        148,
+        "fix(workon): use package handoff script and robust Zellij detection",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+      [`wt switch --create ${branch} --format json`]: `{"action":"created","branch":"${branch}","path":"/tmp/worktrunk.fix-148"}\n`,
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: tempDir,
+        target: "148",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: isActiveZellijEnv("0"),
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("bash ") && call.includes("workon-zellij-handoff.sh")), false);
+    assert.ok(calls.includes(`wt switch --create ${branch} --format json`));
+    assert.match(rendered, /Suggested Worktrunk command: cd .+ && wt switch --create fix\/148-use-package-handoff-script-and-robust-zellij-detection --format json/);
+    assert.match(rendered, /Worktree status: started/);
+    assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.fix-148/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -392,7 +488,7 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     );
     assert.match(
       rendered,
-      /Suggested Worktrunk command: wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
+      /Suggested Worktrunk command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
     );
     assert.match(rendered, /Worktree status: started/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk.feat-65/);
@@ -402,7 +498,7 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(
       capsule,
-      /Worktree command: wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
+      /Worktree command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-and-stale-sessions --format json/,
     );
     assert.match(capsule, /Worktree status: started/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
