@@ -147,15 +147,6 @@ resolve_pi_agent_dir() {
   printf '%s' "${value}"
 }
 
-pi_auth_path() {
-  local pi_agent_dir="${1:?Pi agent dir required}"
-  if [[ "${pi_agent_dir}" == "/" ]]; then
-    printf '/auth.json'
-  else
-    printf '%s/auth.json' "${pi_agent_dir%/}"
-  fi
-}
-
 validate_heartbeat() {
   local value="${1:?heartbeat interval required}"
   [[ "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
@@ -168,62 +159,10 @@ validate_thinking() {
 
 validate_model() {
   local selected_model="${1:?model required}"
-  local pi_agent_dir="${2:?Pi agent dir required}"
-  local search_model="${selected_model##*/}"
-  local output=""
-  if ! output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" --list-models "${search_model}" 2>&1)"; then
-    printf 'failed to verify model with PI_CODING_AGENT_DIR=%s %s --list-models %s:\n%s\n' "${pi_agent_dir}" "${pi_command}" "${search_model}" "${output}" >&2
-    exit 1
-  fi
-  if [[ "${output}" == No\ models\ matching* ]]; then
-    printf 'model not found: %s\n' "${selected_model}" >&2
-    printf '%s\n' "${output}" >&2
+  if [[ "${selected_model}" =~ [[:space:]] ]]; then
+    printf 'invalid model value contains whitespace: %s\n' "${selected_model}" >&2
     exit 2
   fi
-  if [[ "${selected_model}" == */* ]]; then
-    local selected_provider="${selected_model%%/*}"
-    local selected_model_name="${selected_model#*/}"
-    if ! awk -v provider="${selected_provider}" -v model="${selected_model_name}" 'NR > 1 && $1 == provider && $2 == model { found = 1 } END { exit found ? 0 : 1 }' <<<"${output}"; then
-      printf 'model not found: %s\n' "${selected_model}" >&2
-      printf '%s\n' "${output}" >&2
-      exit 2
-    fi
-  fi
-}
-
-preflight_model_auth() {
-  local selected_model="${1:?model required}"
-  local selected_thinking="${2:-}"
-  local pi_agent_dir="${3:?Pi agent dir required}"
-  local selected_provider="${selected_model%%/*}"
-  local auth_path=""
-  local output=""
-  local preflight_args=(--no-session --no-tools --model "${selected_model}")
-  local preflight_command=""
-
-  if [[ -n "${selected_thinking}" ]]; then
-    preflight_args+=(--thinking "${selected_thinking}")
-  fi
-  preflight_args+=(-p 'Return exactly: ok')
-
-  auth_path="$(pi_auth_path "${pi_agent_dir}")"
-  if output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" "${preflight_args[@]}" 2>&1)"; then
-    return 0
-  fi
-
-  preflight_command="PI_CODING_AGENT_DIR=$(shell_word "${pi_agent_dir}") $(shell_word "${pi_command}") --no-session --no-tools --model $(shell_word "${selected_model}")"
-  if [[ -n "${selected_thinking}" ]]; then
-    preflight_command+=" --thinking $(shell_word "${selected_thinking}")"
-  fi
-  preflight_command+=" -p <auth-preflight>"
-
-  printf 'Pi model auth preflight failed for %s with PI_CODING_AGENT_DIR=%s (auth path: %s). Run /login %s using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n' "${selected_model}" "${pi_agent_dir}" "${auth_path}" "${selected_provider}" >&2
-  printf 'Effective PI_CODING_AGENT_DIR: %s\n' "${pi_agent_dir}" >&2
-  printf 'Effective auth path: %s\n' "${auth_path}" >&2
-  printf 'Operator action: run /login %s using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n' "${selected_provider}" >&2
-  printf 'Preflight command: %s\n' "${preflight_command}" >&2
-  printf 'Pi output:\n%s\n' "${output}" >&2
-  exit 1
 }
 
 find_named_pane() {
@@ -301,6 +240,65 @@ emit_blocked_json() {
     "$(json_string_or_null "${heartbeat_command}")"
 }
 
+handoff_state_dir() {
+  if [[ -n "${ledger}" ]]; then
+    dirname "${ledger}"
+  else
+    dirname "${capsule}"
+  fi
+}
+
+write_pi_bootstrap() {
+  local state_dir="${1:?state dir required}"
+  local prompt_content="${2:?prompt content required}"
+  local slug=""
+  local prompt_path=""
+  local script_path=""
+
+  slug="$(slugify "${branch}")"
+  mkdir -p "${state_dir}/handoff"
+  prompt_path="${state_dir}/handoff/${slug}-prompt.txt"
+  script_path="${state_dir}/handoff/${slug}-pi.sh"
+  printf '%s\n' "${prompt_content}" >"${prompt_path}"
+  cat >"${script_path}" <<SCRIPT
+#!/usr/bin/env bash
+set -uo pipefail
+
+export PI_CODING_AGENT_DIR=$(shell_word "${pi_agent_dir}")
+pi_command=$(shell_word "${pi_command}")
+branch=$(shell_word "${branch}")
+model=$(shell_word "${model}")
+thinking=$(shell_word "${thinking}")
+prompt_path=$(shell_word "${prompt_path}")
+
+if ! command -v "\${pi_command}" >/dev/null 2>&1; then
+  printf 'Pi command not found in child pane: %s\n' "\${pi_command}" >&2
+  printf 'Prompt file: %s\n' "\${prompt_path}" >&2
+  exec "\${SHELL:-/bin/sh}" -l
+fi
+
+if ! prompt="\$(cat "\${prompt_path}")"; then
+  printf 'Failed to read handoff prompt: %s\n' "\${prompt_path}" >&2
+  exec "\${SHELL:-/bin/sh}" -l
+fi
+
+args=(-a --name "\${branch}")
+if [[ -n "\${model}" ]]; then
+  args+=(--model "\${model}")
+fi
+if [[ -n "\${thinking}" ]]; then
+  args+=(--thinking "\${thinking}")
+fi
+
+"\${pi_command}" "\${args[@]}" "\${prompt}"
+status=\$?
+printf '\nPi exited with status %s. Prompt file: %s\n' "\${status}" "\${prompt_path}" >&2
+exec "\${SHELL:-/bin/sh}" -l
+SCRIPT
+  chmod 700 "${script_path}"
+  printf '%s' "${script_path}"
+}
+
 record_ledger_status() {
   local status="${1:?status required}"
   local detail="${2:-}"
@@ -319,7 +317,6 @@ record_ledger_status() {
 require_command wt
 require_command zellij
 require_command jq
-require_command "${pi_command}"
 pi_agent_dir="$(resolve_pi_agent_dir)"
 if ! validate_heartbeat "${heartbeat}"; then
   printf 'invalid heartbeat interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${heartbeat}" >&2
@@ -330,8 +327,7 @@ if [[ -n "${thinking}" ]] && ! validate_thinking "${thinking}"; then
   exit 2
 fi
 if [[ -n "${model}" ]]; then
-  validate_model "${model}" "${pi_agent_dir}"
-  preflight_model_auth "${model}" "${thinking}" "${pi_agent_dir}"
+  validate_model "${model}"
 fi
 
 repo_name="${repo##*/}"
@@ -413,27 +409,21 @@ clean_prompt="${prompt}
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."
 
-pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- env PI_CODING_AGENT_DIR=$(shell_word "${pi_agent_dir}") ${pi_command} -a --name ${branch}"
+pi_bootstrap_script="$(write_pi_bootstrap "$(handoff_state_dir)" "${clean_prompt}")"
+pi_launch_summary="env PI_CODING_AGENT_DIR=$(shell_word "${pi_agent_dir}") ${pi_command} -a --name ${branch}"
 if [[ -n "${model}" ]]; then
-  pi_handoff_command="${pi_handoff_command} --model ${model}"
+  pi_launch_summary="${pi_launch_summary} --model ${model}"
 fi
 if [[ -n "${thinking}" ]]; then
-  pi_handoff_command="${pi_handoff_command} --thinking ${thinking}"
+  pi_launch_summary="${pi_launch_summary} --thinking ${thinking}"
 fi
-pi_handoff_command="${pi_handoff_command} <clean-prompt>"
+pi_launch_summary="${pi_launch_summary} <clean-prompt>"
+pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- bash $(shell_word "${pi_bootstrap_script}") (launches: ${pi_launch_summary})"
 
 pi_pane_id="$(find_named_pane pi "${tab_id}")"
 pi_pane_action="reused"
 if [[ -z "${pi_pane_id}" ]]; then
-  pi_args=(env "PI_CODING_AGENT_DIR=${pi_agent_dir}" "${pi_command}" -a --name "${branch}")
-  if [[ -n "${model}" ]]; then
-    pi_args+=(--model "${model}")
-  fi
-  if [[ -n "${thinking}" ]]; then
-    pi_args+=(--thinking "${thinking}")
-  fi
-  pi_args+=("${clean_prompt}")
-  if ! run_zellij_new_pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- "${pi_args[@]}"; then
+  if ! run_zellij_new_pane --tab-id "${tab_id}" --name pi --cwd "${worktree_path}" -- bash "${pi_bootstrap_script}"; then
     emit_blocked_json "pi-pane-launch-failed" "${zellij_new_pane_error}" >&2
     printf 'Zellij failed to launch Pi pane in tab %s (%s). Output:\n%s\n' "${tab_name}" "${tab_id}" "${zellij_new_pane_error}" >&2
     exit 1
