@@ -1429,6 +1429,203 @@
       }
     },
     {
+      "name": "gemma4 replay rejects skipped ordered workflow steps",
+      "userText": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order and do not skip a step.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift.",
+      "assistantText": "I patched the replay fixtures and completed the workflow.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order and do not skip a step.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "apply_patch",
+            "arguments": { "path": "tests/runtime/fixtures/harness-replay.json" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "patched tests/runtime/fixtures/harness-replay.json"
+        }
+      ],
+      "expectedIssueCodes": ["memory_search", "workflow_drift"],
+      "expectedIssueActions": [
+        "run_focused_memory_search",
+        "resume_ordered_workflow_step"
+      ],
+      "expectedIssueMessageIncludes": [
+        "started implementation before gathering evidence",
+        "WORKFLOW DRIFT WARNING"
+      ],
+      "expectedIssueRemediationIncludes": [
+        "Resume at the earliest unfinished workflow step"
+      ]
+    },
+    {
+      "name": "gemma4 replay rejects repeated evidence loop",
+      "userText": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order and avoid repeating equivalent evidence calls.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift.",
+      "assistantText": "I kept inspecting README.md, then completed the workflow successfully.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order and avoid repeating equivalent evidence calls.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README runtime harness notes" },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README runtime harness notes" }
+      ],
+      "expectedIssueCodes": [
+        "tool_efficiency",
+        "memory_search",
+        "workflow_drift"
+      ],
+      "expectedIssueActions": [
+        "reuse_cached_or_narrow_tool",
+        "run_focused_memory_search",
+        "resume_ordered_workflow_step"
+      ],
+      "expectedIssueMessageIncludes": [
+        "repeated identical read call",
+        "reported success before completing implementation evidence"
+      ],
+      "expectedIssueRemediationIncludes": [
+        "Reuse the first successful result",
+        "Resume at the earliest unfinished workflow step"
+      ],
+      "expectedMetrics": {
+        "toolCallCount": 2,
+        "wasteSignalCount": 1,
+        "duplicateEvidence": true
+      }
+    },
+    {
+      "name": "gemma4 replay rejects required guide not loaded",
+      "userText": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order.\n- When the workflow lists a required guide, load the required guide before that track and convert its constraints into the checklist.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. guide: load required guide\n3. implement: add replay fixture\n4. validate: run targeted validation\n5. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift.",
+      "assistantText": "I added the replay fixture and completed the workflow successfully.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order.\n- When the workflow lists a required guide, load the required guide before that track and convert its constraints into the checklist.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. guide: load required guide\n3. implement: add replay fixture\n4. validate: run targeted validation\n5. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "README.md" } }
+        },
+        { "role": "toolResult", "text": "README runtime harness notes" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "cheap-model replay evals workflow drift fixture" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: workflow drift replay fixtures should cover lower-model guide omissions."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "apply_patch",
+            "arguments": { "path": "tests/runtime/fixtures/harness-replay.json" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "patched tests/runtime/fixtures/harness-replay.json"
+        }
+      ],
+      "expectedIssueCodes": ["memory_search", "workflow_drift"],
+      "expectedIssueActions": [
+        "run_focused_memory_search",
+        "resume_ordered_workflow_step"
+      ],
+      "expectedIssueMessageIncludes": [
+        "required workflow guide or skill was not loaded"
+      ],
+      "expectedIssueRemediationIncludes": [
+        "load any required guide"
+      ],
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "gemma4 replay rejects no validation after mutation",
+      "userText": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift.",
+      "assistantText": "I added the replay fixture and completed the workflow successfully.",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift."
+        },
+        {
+          "role": "assistant",
+          "toolCall": { "name": "read", "arguments": { "path": "tests/runtime/harness-replay.test.ts" } }
+        },
+        { "role": "toolResult", "text": "harness replay test source" },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "khala_search_memory",
+            "arguments": { "query": "cheap-model replay evals workflow drift validation fixture" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "Memory: workflow replay fixtures should assert issue codes and remediation text."
+        },
+        {
+          "role": "assistant",
+          "toolCall": {
+            "name": "apply_patch",
+            "arguments": { "path": "tests/runtime/fixtures/harness-replay.json" }
+          }
+        },
+        {
+          "role": "toolResult",
+          "text": "patched tests/runtime/fixtures/harness-replay.json"
+        }
+      ],
+      "expectedIssueCodes": ["memory_search", "workflow_drift"],
+      "expectedIssueActions": [
+        "run_focused_memory_search",
+        "resume_ordered_workflow_step"
+      ],
+      "expectedIssueMessageIncludes": [
+        "without targeted validation evidence"
+      ],
+      "expectedIssueRemediationIncludes": [
+        "run validation"
+      ],
+      "harnessLimits": { "substantialToolCallThreshold": 99 }
+    },
+    {
+      "name": "gemma4 replay rejects premature success",
+      "userText": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift.",
+      "assistantText": "I did.\nResult: success\nConfidence: 0.94",
+      "messages": [
+        {
+          "role": "user",
+          "text": "Deterministic workflow contract:\n- Workflow: cheap-model-replay-evals\n- Treat the YAML workflow spec as the state machine. Execute steps in order.\n- If creating or improving a reusable workflow, do not call it done until validation or eval prompts are present.\nOrdered workflow steps:\n1. gather: gather repo context and evidence\n2. implement: add replay fixture\n3. validate: run targeted validation\n4. report: report result with evidence\nUser input: Add cheap-model replay evals for workflow drift."
+        }
+      ],
+      "expectedIssueCodes": ["workflow_drift"],
+      "expectedIssueActions": ["resume_ordered_workflow_step"],
+      "expectedIssueMessageIncludes": [
+        "reported workflow success without executing ordered steps"
+      ],
+      "expectedIssueRemediationIncludes": [
+        "premature success reports"
+      ]
+    },
+    {
       "name": "accepts composed cheap-model harness path",
       "userText": "Use the TypeScript skill and confirm the docs at https://www.typescriptlang.org/docs/.",
       "assistantText": "Using the TypeScript skill plus focused memory and docs evidence, the TypeScript docs are at https://www.typescriptlang.org/docs/.\nConfidence: 0.88",

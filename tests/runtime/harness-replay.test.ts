@@ -27,6 +27,8 @@ type ReplayCase = {
   expectedIssueCodes: HarnessTurnIssue["code"][];
   expectedIssueActions?: string[];
   expectedIssueCheapestTools?: string[];
+  expectedIssueMessageIncludes?: string[];
+  expectedIssueRemediationIncludes?: string[];
   expectedMetrics?: {
     toolCallCount?: number;
     focusedMemorySearches?: number;
@@ -109,6 +111,27 @@ test("harness replay fixtures evaluate expected issue codes", async (t) => {
           issues.map((issue) => issue.remediation.cheapestTool),
           replayCase.expectedIssueCheapestTools,
         );
+      }
+      if (replayCase.expectedIssueMessageIncludes) {
+        const issueMessages = issues.map((issue) => issue.message).join("\n\n");
+        for (const expectedText of replayCase.expectedIssueMessageIncludes) {
+          assert.match(issueMessages, new RegExp(expectedText, "i"));
+        }
+      }
+      if (replayCase.expectedIssueRemediationIncludes) {
+        const remediationText = issues
+          .map((issue) =>
+            [
+              issue.remediation.action,
+              issue.remediation.cheapestTool,
+              issue.remediation.retry,
+              ...issue.remediation.avoid,
+            ].join("\n"),
+          )
+          .join("\n\n");
+        for (const expectedText of replayCase.expectedIssueRemediationIncludes) {
+          assert.match(remediationText, new RegExp(expectedText, "i"));
+        }
       }
 
       if (replayCase.expectedMetrics) {

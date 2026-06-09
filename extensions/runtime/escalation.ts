@@ -47,6 +47,12 @@ interface ToolEfficiencyDecision {
   reason: string;
 }
 
+interface WorkflowContractDecision {
+  required: boolean;
+  satisfied: boolean;
+  reason: string;
+}
+
 export interface HarnessTurnIssue {
   code:
     | "tool_efficiency"
@@ -54,6 +60,7 @@ export interface HarnessTurnIssue {
     | "learning_capture"
     | "skill_routing"
     | "evidence_routing"
+    | "workflow_drift"
     | "model_escalation";
   title: string;
   block: boolean;
@@ -132,6 +139,18 @@ const LOCAL_REPO_SEARCH_CLAIM_REGEX =
   /\b(?:i|we)\s+(?:searched|grepped|found|located)\b[\s\S]*\b(?:repo|repository|codebase|project|worktree|source tree|files?)\b/i;
 const LOCAL_REPO_SEARCH_TARGET_REGEX =
   /\b(?:repo|repository|codebase|project|worktree|source tree|files?)\b/i;
+const WORKFLOW_CONTRACT_REGEX =
+  /\b(?:Deterministic workflow contract|Ordered workflow steps|Treat the YAML workflow spec as the state machine)\b/i;
+const WORKFLOW_GATHER_CONTEXT_REGEX =
+  /\b(?:gather|inspect|load|read|review|collect)\b[\s\S]{0,40}\b(?:context|evidence|files?|source|repo|requirements?)\b|\bcontext\b[\s\S]{0,40}\b(?:first|before|evidence)\b/i;
+const WORKFLOW_GUIDE_REQUIRED_REGEX =
+  /\b(?:load|read|follow|apply)\b[\s\S]{0,40}\b(?:required\s+)?(?:guide|guidelines?|skills?|SKILL\.md|project rules?)\b|\b(?:guide|guidelines?|skills?|SKILL\.md|project rules?)\b[\s\S]{0,60}\b(?:before|required|active step checklist|constraints)\b/i;
+const WORKFLOW_VALIDATION_REQUIRED_REGEX =
+  /\b(?:run|targeted|required|passing|include)\b[\s\S]{0,50}\b(?:validation|validate|tests?|checks?|typecheck|lint|build|eval prompts?)\b|\b(?:validation|validate|tests?|checks?|typecheck|lint|build|eval prompts?)\b[\s\S]{0,50}\b(?:required|before|after|artifact|done|success)\b/i;
+const WORKFLOW_MUTATION_EXPECTED_REGEX =
+  /\b(?:add|create|edit|fix|implement|modify|patch|ship|update|write)\b/i;
+const WORKFLOW_SUCCESS_RESPONSE_REGEX =
+  /\b(?:Result|Status):\s*success\b|\b(?:done|completed|finished|implemented|created|updated|shipped|resolved)\b[\s\S]{0,80}\b(?:success|successful|successfully|complete|completed|done)\b|\b(?:workflow|task)\s+(?:is\s+)?(?:complete|completed|done|finished|successful)\b|\bi did\b/i;
 const URL_TEXT_REGEX = /https?:\/\/|github\.com\//i;
 const ARTIFACT_REFERENCE_REGEX =
   /(?:https?:\/\/|github\.com\/|(?:^|\s)[\w.-]+\/[\w.-]+(?:\s|$)|(?:^|\s)(?:\.{0,2}\/|~\/)[^\s]+|[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml|lock|txt)\b)/i;
@@ -4267,6 +4286,195 @@ export function conversationHasLearningCapture(
   return latestLearningAttemptSucceeded === true;
 }
 
+function workflowContractText(params: {
+  messages: AgentEndEventMessage[];
+  userText: string;
+}): string {
+  return [
+    params.userText,
+    ...scopedMessagesAfterLatestUser(params.messages).flatMap((message) =>
+      message.role === "user" || message.role === "system"
+        ? [extractMessageText(message.content)]
+        : [],
+    ),
+  ]
+    .join("\n")
+    .trim();
+}
+
+function conversationHasToolCall(messages: AgentEndEventMessage[]): boolean {
+  return scopedMessagesAfterLatestUser(messages).some((message) =>
+    message.content.some(
+      (item) => item.type === "toolCall" && typeof item.name === "string",
+    ),
+  );
+}
+
+function conversationStartedMutationBeforeWorkflowContext(
+  messages: AgentEndEventMessage[],
+): boolean {
+  let sawContextEvidence = false;
+  const scopedMessages = scopedMessagesAfterLatestUser(messages);
+
+  for (const [messageIndex, message] of scopedMessages.entries()) {
+    for (const item of message.content) {
+      if (item.type !== "toolCall") continue;
+      if (typeof item.name !== "string") continue;
+
+      if (
+        MUTATION_TOOL_NAMES.has(item.name) &&
+        (item.name !== "bash" ||
+          isMutatingShellCommand(extractCommandArgument(item.arguments)))
+      ) {
+        return !sawContextEvidence;
+      }
+
+      if (!EVIDENCE_TOOL_NAMES.has(item.name)) continue;
+      if (toolResultHasSubstantiveEvidence(scopedMessages[messageIndex + 1])) {
+        sawContextEvidence = true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function conversationHasGuideLoad(messages: AgentEndEventMessage[]): boolean {
+  const scopedMessages = scopedMessagesAfterLatestUser(messages);
+
+  for (const [messageIndex, message] of scopedMessages.entries()) {
+    for (const item of message.content) {
+      if (item.type !== "toolCall") continue;
+      if (typeof item.name !== "string") continue;
+
+      const args = stringifyToolArguments(item.arguments).replaceAll("\\", "/");
+      const succeeded = toolResultHasSubstantiveEvidence(
+        scopedMessages[messageIndex + 1],
+      );
+      if (!succeeded) continue;
+
+      if (item.name === "read") {
+        const targets = localArtifactTargetsFromToolArguments(item.arguments);
+        if (
+          targets.some((target) =>
+            /(?:SKILL\.md|(?:guide|guidelines?|rules?)\.(?:md|txt|ya?ml)|AGENTS\.md|CONTRIBUTING\.md)$/i.test(
+              target,
+            ),
+          )
+        ) {
+          return true;
+        }
+      }
+
+      if (
+        /\b(?:readSkill|loadSkill|skill_read|skill_load)\b/i.test(item.name) &&
+        skillLoaderTargetsFromArgs(item.arguments).length > 0
+      ) {
+        return true;
+      }
+
+      if (
+        item.name === "subagent" &&
+        /\b(?:skills?|guides?|guidelines?)\b/i.test(args)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+export function evaluateWorkflowContract(params: {
+  messages: AgentEndEventMessage[];
+  userText: string;
+  assistantText: string;
+}): WorkflowContractDecision {
+  const contractText = workflowContractText({
+    messages: params.messages,
+    userText: params.userText,
+  });
+  if (!WORKFLOW_CONTRACT_REGEX.test(contractText)) {
+    return {
+      required: false,
+      satisfied: true,
+      reason: "turn did not include a deterministic workflow contract",
+    };
+  }
+
+  const finalClaimsSuccess = WORKFLOW_SUCCESS_RESPONSE_REGEX.test(
+    params.assistantText,
+  );
+  const hasToolCall = conversationHasToolCall(params.messages);
+  const expectsMutation =
+    WORKFLOW_MUTATION_EXPECTED_REGEX.test(contractText) ||
+    WORKFLOW_MUTATION_EXPECTED_REGEX.test(params.userText);
+  const hasMutation = conversationHasMutationEvidence(params.messages);
+  const requiresValidation = WORKFLOW_VALIDATION_REQUIRED_REGEX.test(contractText);
+  const hasValidation = conversationHasCommandEvidence(params.messages);
+
+  if (
+    WORKFLOW_GATHER_CONTEXT_REGEX.test(contractText) &&
+    conversationStartedMutationBeforeWorkflowContext(params.messages)
+  ) {
+    return {
+      required: true,
+      satisfied: false,
+      reason:
+        "started implementation before gathering evidence for earlier workflow steps",
+    };
+  }
+
+  if (
+    WORKFLOW_GUIDE_REQUIRED_REGEX.test(contractText) &&
+    !conversationHasGuideLoad(params.messages)
+  ) {
+    return {
+      required: true,
+      satisfied: false,
+      reason: "required workflow guide or skill was not loaded",
+    };
+  }
+
+  if (hasMutation && requiresValidation && !hasValidation) {
+    return {
+      required: true,
+      satisfied: false,
+      reason: "mutated workflow output without targeted validation evidence",
+    };
+  }
+
+  if (finalClaimsSuccess && !hasToolCall) {
+    return {
+      required: true,
+      satisfied: false,
+      reason: "reported workflow success without executing ordered steps",
+    };
+  }
+
+  if (finalClaimsSuccess && expectsMutation && !hasMutation) {
+    return {
+      required: true,
+      satisfied: false,
+      reason: "reported success before completing implementation evidence",
+    };
+  }
+
+  if (finalClaimsSuccess && requiresValidation && !hasValidation) {
+    return {
+      required: true,
+      satisfied: false,
+      reason: "reported success before running required validation",
+    };
+  }
+
+  return {
+    required: true,
+    satisfied: true,
+    reason: "workflow contract evidence is present",
+  };
+}
+
 export function memorySearchNeedReason(params: {
   messages: AgentEndEventMessage[];
   userText: string;
@@ -5249,6 +5457,38 @@ export function evaluateHarnessTurn(params: {
         `The latest turn needs matching evidence (${evidenceRouting.reason}).`,
         "Use the cheapest matching evidence path first: local read/search tools for local artifacts, khala_search_memory for stored lessons, and focused web/search/researcher tools for external, current, URL, or documentation facts.",
         "Do not answer from memory alone, unrelated local reads, or unrun commands when the turn requires source-backed, command-backed, current, or artifact-specific verification.",
+      ].join("\n"),
+    });
+  }
+
+  const workflowContract = evaluateWorkflowContract({
+    assistantText: params.assistantText,
+    messages: params.messages,
+    userText: params.userText,
+  });
+  if (workflowContract.required && !workflowContract.satisfied) {
+    issues.push({
+      code: "workflow_drift",
+      title: "WORKFLOW DRIFT WARNING",
+      block,
+      remediation: {
+        action: "resume_ordered_workflow_step",
+        cheapestTool: "workflow contract and cheapest matching evidence tool",
+        retry:
+          "Resume at the earliest unfinished workflow step, load any required guide, collect matching evidence, run validation, then retry the final response with the result.",
+        avoid: [
+          "skipped workflow steps",
+          "repeated evidence loops",
+          "guide-free workflow claims",
+          "unvalidated workflow success",
+          "premature success reports",
+        ],
+      },
+      message: [
+        "WORKFLOW DRIFT WARNING",
+        "",
+        `The deterministic workflow contract was not satisfied (${workflowContract.reason}).`,
+        "Resume at the earliest unfinished workflow step, take the smallest evidence-backed action for that step, and do not report success until required guides, implementation evidence, and validation are complete.",
       ].join("\n"),
     });
   }

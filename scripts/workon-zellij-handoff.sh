@@ -165,6 +165,90 @@ validate_model() {
   fi
 }
 
+model_provider() {
+  local selected_model="${1:?model required}"
+  if [[ "${selected_model}" == */* ]]; then
+    printf '%s' "${selected_model%%/*}"
+  fi
+}
+
+model_name() {
+  local selected_model="${1:?model required}"
+  if [[ "${selected_model}" == */* ]]; then
+    printf '%s' "${selected_model#*/}"
+  else
+    printf '%s' "${selected_model}"
+  fi
+}
+
+model_list_has_exact_match() {
+  local selected_model="${1:?model required}"
+  local models_output="${2:-}"
+  local provider=""
+  local name=""
+
+  provider="$(model_provider "${selected_model}")"
+  name="$(model_name "${selected_model}")"
+  awk -v provider="${provider}" -v name="${name}" '
+    NF < 2 { next }
+    $1 == "provider" && $2 == "model" { next }
+    provider != "" && $1 == provider && $2 == name { found = 1 }
+    provider == "" && ($2 == name || $1 == name) { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' <<<"${models_output}"
+}
+
+pi_preflight_lock_failure() {
+  local output="${1:-}"
+  grep -qiE 'EPERM|operation not permitted|trust\.json\.lock|lock' <<<"${output}"
+}
+
+preflight_selected_model() {
+  local selected_model="${1:?model required}"
+  local selected_thinking="${2:-}"
+  local name=""
+  local models_output=""
+  local model_status=0
+  local auth_output=""
+  local auth_status=0
+  local auth_args=()
+
+  if [[ -n "${PI_CODING_AGENT_DIR:-}" && ! -s "${pi_agent_dir}/auth.json" ]]; then
+    return 0
+  fi
+
+  name="$(model_name "${selected_model}")"
+  models_output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" --list-models "${name}" 2>&1)" || model_status=$?
+  if ((model_status != 0)); then
+    if pi_preflight_lock_failure "${models_output}"; then
+      return 0
+    fi
+    printf 'model lookup failed for %s. Output:\n%s\n' "${selected_model}" "${models_output}" >&2
+    exit "${model_status}"
+  fi
+
+  if ! model_list_has_exact_match "${selected_model}" "${models_output}"; then
+    printf 'model not found: %s\n' "${selected_model}" >&2
+    exit 1
+  fi
+
+  if [[ ! -s "${pi_agent_dir}/auth.json" ]]; then
+    return 0
+  fi
+
+  auth_args=(--no-session --no-tools --model "${selected_model}")
+  if [[ -n "${selected_thinking}" ]]; then
+    auth_args+=(--thinking "${selected_thinking}")
+  fi
+  auth_args+=(-p "Return exactly: ok")
+
+  auth_output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" "${auth_args[@]}" 2>&1)" || auth_status=$?
+  if ((auth_status != 0)); then
+    printf 'Pi model auth preflight failed for %s. Output:\n%s\n' "${selected_model}" "${auth_output}" >&2
+    exit "${auth_status}"
+  fi
+}
+
 find_named_pane() {
   local pane_name="${1:?pane name required}"
   local target_tab_id="${2:?target tab id required}"
@@ -328,6 +412,8 @@ if [[ -n "${thinking}" ]] && ! validate_thinking "${thinking}"; then
 fi
 if [[ -n "${model}" ]]; then
   validate_model "${model}"
+  require_command "${pi_command}"
+  preflight_selected_model "${model}" "${thinking}"
 fi
 
 repo_name="${repo##*/}"
@@ -476,7 +562,7 @@ if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
         heartbeat_action="failed"
         heartbeat_command=""
         heartbeat_error="${zellij_new_pane_output}"
-        printf 'Warning: forge heartbeat pane command ran but no pane id was reported; Pi handoff remains launched. Output:\n%s\n' "${heartbeat_error}" >&2
+        printf 'Warning: failed to launch forge heartbeat pane; Pi handoff remains launched. Output:\n%s\n' "${heartbeat_error}" >&2
       fi
     else
       heartbeat_action="failed"
