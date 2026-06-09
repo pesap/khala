@@ -1,3 +1,5 @@
+{{route_instruction_block}}
+
 I want to discuss and possibly work on: {{issue_title}}
 
 Context:
