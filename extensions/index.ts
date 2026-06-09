@@ -2403,6 +2403,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     beginWorkflowTracking,
     enqueueWorkflow,
     notifyWorkflowStarted,
+    clearPendingWorkflow: () => { pendingWorkflow = null; },
     parseDebugArgs,
     parseReviewArgs,
     buildReviewTarget,

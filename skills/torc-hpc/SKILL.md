@@ -2,6 +2,7 @@
 name: torc-hpc
 version: 0.4.4
 description: "Run, debug, and operate Torc workflows across local, remote-worker, and Slurm/HPC modes. Use when users ask how to run Torc locally, submit Slurm workflows, configure remote workers, use invocation scripts, set `TORC_API_URL`, collect logs/artifacts, debug failed runs, run a specific code version remotely from an exact Git SHA/worktree, or handle HPC Git/LFS/module issues without rsyncing the whole repo."
+license: MIT
 ---
 
 ## Use when

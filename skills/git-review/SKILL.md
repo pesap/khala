@@ -1,6 +1,7 @@
 ---
 name: git-review
 description: Run repository health diagnostics from git history before reading source code. Use when users ask for a git review, repo hotspot analysis, churn review, contributor/ownership signals, bug cluster discovery, rollback/firefighting history, or which files to inspect first.
+license: MIT
 ---
 
 ## Use when

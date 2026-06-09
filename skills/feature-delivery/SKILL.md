@@ -1,6 +1,7 @@
 ---
 name: feature-delivery
 description: Deliver features from acceptance criteria to validated implementation. Use when users ask for new functionality, scoped enhancements, or end-to-end delivery with tests.
+license: MIT
 ---
 
 ## Use when

@@ -17,6 +17,8 @@ inputs:
   user: optional forge user whose repositories should be discovered read-only; @me means the authenticated user
   forge: auto, github, gitlab, or all
   focus: all, reviews, issues, prs, ci, local, or sessions
+  scope: auto, current, or global — overrides auto-scope detection for inbox data collection
+  details: boolean flag — include detailed evidence items in inbox output
   extraInstruction: optional one-off maintainer focus
 
 steps:

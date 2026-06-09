@@ -12,20 +12,9 @@ export function createAgentCommandHandlers(params: {
   runSessionEndHooks: (ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">) => Promise<void>;
   notify: (ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">, message: string, type: NotifyType) => void;
 }): {
-  startAgent: CommandHandler;
   endAgent: CommandHandler;
 } {
   return {
-    startAgent: async (_args, ctx) => {
-      if (params.runtimeState.agentEnabled) {
-        params.notify(ctx, "khala is already initialized.", "info");
-        return;
-      }
-      params.setAgentEnabledState(ctx, true);
-      params.appendAgentStateEntry(true);
-      params.notify(ctx, "khala initialized.", "success");
-    },
-
     endAgent: async (_args, ctx) => {
       if (!params.runtimeState.agentEnabled) {
         return;

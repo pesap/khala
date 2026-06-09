@@ -1,6 +1,7 @@
 ---
 name: librarian
 description: "Cache and refresh remote git repositories under ~/.cache/checkouts/<host>/<org>/<repo> so future references can reuse a local copy. Always use this skill when the user provides a GitHub repository URL, GitHub repo shorthand like owner/repo, or any remote git repository as reference, even if they only ask to inspect, compare, borrow from, or review it."
+license: MIT
 ---
 
 Source attribution: copied from Armin Ronacher's `agent-stuff` librarian skill (`https://github.com/mitsuhiko/agent-stuff/tree/main/skills/librarian`).

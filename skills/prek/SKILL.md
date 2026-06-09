@@ -1,6 +1,7 @@
 ---
 name: prek
 description: Use this skill when working with Git hooks, pre-commit automation, or CI lint pipelines using `prek` (Rust drop-in replacement for pre-commit). Apply when users ask to speed up hooks, migrate from `pre-commit`, debug hook execution, configure skip/include behavior, or wire hook checks into CI, even if they say "pre-commit", "hooks", or "lint checks" instead of "prek".
+license: MIT
 ---
 
 ## Use when

@@ -61,6 +61,7 @@ function classifyCorpusPath(filePath: string, paths: LearningPaths): KhalaCorpus
   if (normalized.includes("/skills/")) return "skill";
   if (normalized.includes("/workflows/")) return "workflow";
   if (normalized.includes("/prompts/")) return "prompt";
+  if (normalized.includes("promotion-queue")) return "prompt";
   return "memory";
 }
 const fixedCorpusFiles = (paths: LearningPaths): string[] => [

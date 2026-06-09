@@ -1,6 +1,7 @@
 ---
 name: academic-review
 description: Use this skill when the user needs rigorous reasoning from first principles, simple Feynman-style explanations, reviewer2-level critical analysis, or decomplexification of academic papers. Use even when the user says "explain simply", "challenge this approach", "be more skeptical", or "decomplexify this paper" without naming the method.
+license: MIT
 ---
 
 ## Use when

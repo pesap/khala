@@ -2,7 +2,7 @@ import { getBlockedCommandMessage } from "./blocked-commands.ts";
 import { buildPreflightRawLine, modeOutcome, type PolicyMode, type PolicyOutcome, type PreflightRecord } from "./first-principles.ts";
 import { evaluateRiskPolicy, type RiskPolicyEvent, type RiskPolicyHookConfig } from "./risk.ts";
 
-export interface SpawnPolicyResult {
+interface SpawnPolicyResult {
   blockedMessage: string | null;
   riskEvent: RiskPolicyEvent | null;
   consumeRiskApproval: boolean;
@@ -30,7 +30,7 @@ export function evaluateSpawnPolicy(command: string, options: {
   };
 }
 
-export interface MutationPreflightDecision {
+interface MutationPreflightDecision {
   outcome: PolicyOutcome;
   detail: string;
   warningMessage?: string;

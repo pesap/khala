@@ -22,7 +22,7 @@ import {
 import type { HarnessLimits } from "./profile.ts";
 
 export const DEFAULT_BOOTSTRAP_MEMORY_TAIL_LINE_LIMIT = 8;
-export const DEFAULT_BOOTSTRAP_RUNTIME_RULE_LIMIT = 8;
+const DEFAULT_BOOTSTRAP_RUNTIME_RULE_LIMIT = 8;
 
 export async function loadFirstPrinciplesConfig(
   firstPrinciplesConfigPath: string,

@@ -1,6 +1,7 @@
 ---
 name: testing-pytest
 description: Python pytest adapter for TDD workflows. Use this skill when users need pytest test design, red-green-refactor execution, fixture/parametrize strategy, or CI test quality improvements in Python projects.
+license: MIT
 ---
 
 ## Use when

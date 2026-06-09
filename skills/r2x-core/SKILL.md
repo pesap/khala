@@ -1,6 +1,7 @@
 ---
 name: r2x-core
 description: Build and maintain r2x-core translators across plugin lifecycle, rule mapping, datastore ingestion, units, and upgrades. Use when tasks mention r2x-core plugins/rules/datastore/unit-system/versioning, or when translating between model formats on top of infrasys.
+license: MIT
 ---
 
 # r2x-core

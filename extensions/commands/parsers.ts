@@ -302,7 +302,7 @@ export function parseWorkonArgs(args: string): {
     heartbeat,
     dryRun,
     modelSelection,
-    extraInstruction: rest,
+    extraInstruction: "",
   };
 }
 
@@ -343,19 +343,6 @@ export function parseLearnSkillArgs(args: string): {
   };
 }
 
-const makeMemoryScopeParser = (usage: string) =>
-  (args: string): { scope: "project" | "global"; error?: string } => parseScopeArg(args, usage);
-
-export const parseKhalaMemorySetupArgs = makeMemoryScopeParser(
-  "Usage: /khala-memory-setup [project|global]",
-);
-export const parseKhalaMemoryRestartArgs = makeMemoryScopeParser(
-  "Usage: /khala-memory-restart [project|global]",
-);
-export const parseKhalaMemoryRemoveArgs = makeMemoryScopeParser(
-  "Usage: /khala-memory-remove [project|global]",
-);
-
 function parseAllowedInboxValue<T extends string>(
   rawValue: string | undefined,
   fallback: T,
@@ -395,18 +382,6 @@ function parseToggleArg(
   rest = normalizeWhitespace(rest.replace(replaceRegex, " "));
   rest = removeFlag(rest, /(^|\s)--parallel\s+\d+(\s|$)/).value;
   return { rest, enabled };
-}
-
-function parseScopeArg(
-  args: string,
-  usage: string,
-): { scope: "project" | "global"; error?: string } {
-  const scope = normalizeWhitespace(args).toLowerCase();
-  return !scope || scope === "project"
-    ? { scope: "project" }
-    : scope === "global"
-      ? { scope: "global" }
-      : { scope: "project", error: usage };
 }
 
 function tokenizeArgs(value: string): string[] {

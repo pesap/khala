@@ -1,6 +1,7 @@
 ---
 name: rust-developer
 description: Rust implementation workflow for safe, idiomatic, strongly-typed code with fast feedback and disciplined testing. Use when users request Rust feature work/bugfix/refactor/perf, stricter code quality, clippy hardening, panic/unsafe reduction, stronger typing/contracts, or behavior-first test discipline.
+license: MIT
 ---
 
 ## Use when

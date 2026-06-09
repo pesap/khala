@@ -1,6 +1,7 @@
 ---
 name: dead-code-proof
 description: Remove unused code only when non-usage is proven with layered evidence. Use this skill when users ask to delete dead code, run knip/vulture/ruff-unused checks, prune exports, or clean legacy paths, even if they only say "remove unused stuff".
+license: MIT
 ---
 
 ## Use when

@@ -1,6 +1,7 @@
 ---
 name: vertical-slice-planning
 description: Break an approved engineering plan into thin vertical-slice implementation issues with dependencies, acceptance criteria, and AFK/HITL execution tags. Use when users ask to split a plan into issues, create implementation slices, sequence work for agents, or turn a design into trackable delivery tasks.
+license: MIT
 ---
 
 ## Use when

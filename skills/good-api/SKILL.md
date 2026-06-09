@@ -1,6 +1,7 @@
 ---
 name: good-api
 description: "Evaluate or design developer-facing APIs using the learning-ladder model: flexible first, gradual second, convenient third. Use when users ask whether an API, SDK, CLI, library, schema, or interface is good, easy to learn, ergonomic, composable, beginner-friendly, enterprise-ready, or needs API design review."
+license: MIT
 ---
 
 ## Use when

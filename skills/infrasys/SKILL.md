@@ -9,6 +9,7 @@ description: >
   series", "model costs", "migrate schema", "grid model", "power system
   model", "component graph", or "system of components". infrasys is the
   foundational modeling layer; r2x-core is an application built on top of it.
+license: MIT
 ---
 
 # infrasys

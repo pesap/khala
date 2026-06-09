@@ -1,6 +1,7 @@
 ---
 name: simplify
 description: Safely simplify recently touched code for readability and maintainability while preserving exact behavior. Use when users ask to simplify, refactor, clean up, reduce complexity, remove low-payoff indirection, or make a finished change easier to review without changing behavior.
+license: MIT
 ---
 
 ## Trigger conditions

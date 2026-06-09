@@ -1,6 +1,7 @@
 ---
 name: nasa-guidelines
 description: Apply NASA/JPL Power of Ten style constraints to audit and harden code for predictability, simplicity, and explicit error handling. Use this skill when users ask for strict code quality, safety-oriented cleanup, anti-slop refactors, or NASA-style standards, even if they only ask to "clean up" or "make code more robust".
+license: MIT
 ---
 
 ## Use when

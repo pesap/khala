@@ -1,6 +1,7 @@
 ---
 name: data-model
 description: Design robust data contracts with dataclasses, Pydantic v2, pydantic-settings, and infrasys component patterns. Use when users ask about model shape, validation, serialization, typed config, schema evolution, or cleaning up loose dict/schema/model code into explicit typed contracts, even if they do not name Pydantic or dataclasses directly.
+license: MIT
 ---
 
 # Data Model

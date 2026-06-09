@@ -1,6 +1,7 @@
 ---
 name: triage-issue
 description: Triage a bug by investigating root cause in the codebase, then create a GitHub issue with a behavior-focused TDD fix plan. Use when users report a bug or ask to investigate and file a fix plan.
+license: MIT
 ---
 
 ## Source

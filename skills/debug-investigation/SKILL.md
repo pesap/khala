@@ -1,6 +1,7 @@
 ---
 name: debug-investigation
 description: Diagnose bugs from first principles by reproducing signals, ranking hypotheses, validating evidence, and converging on a durable root cause before proposing or applying fixes. Use this skill when users ask to debug failures, investigate flaky behavior, explain why something broke, or understand a regression without guess-and-patch changes.
+license: MIT
 ---
 
 ## Use when

@@ -1,6 +1,7 @@
 ---
 name: code-review
 description: Review scoped code changes for material correctness, security, performance, maintainability, and test risks. Use for PRs, diffs, commits, uncommitted changes, or file/folder snapshot reviews.
+license: MIT
 ---
 
 # Code Review

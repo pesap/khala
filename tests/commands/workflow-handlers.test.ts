@@ -28,6 +28,7 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
       return { loadedSkills: [] };
     },
     notifyWorkflowStarted: () => undefined,
+    clearPendingWorkflow: () => undefined,
     parseDebugArgs: (args) => ({ problem: args ?? "" }),
     parseReviewArgs: () => ({ mode: "uncommitted" }),
     buildReviewTarget: () => ({ summary: "", instruction: "", flags: {} }),

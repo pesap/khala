@@ -10,7 +10,7 @@ type CommandHandler = (
 ) => Promise<void>;
 type ArgumentCompletions = (prefix: string) => AutocompleteItem[] | null;
 
-export interface CommandRegistrarDeps {
+interface CommandRegistrarDeps {
   pi: ExtensionAPI;
   handlers: {
     khala: CommandHandler;

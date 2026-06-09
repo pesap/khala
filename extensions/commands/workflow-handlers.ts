@@ -135,6 +135,7 @@ export function createWorkflowCommandHandlers(params: {
     workflowFileName: string,
     sections: string[],
   ) => Promise<{ loadedSkills: string[] }>;
+  clearPendingWorkflow: () => void;
   notifyWorkflowStarted: (
     ctx: ExtensionCommandContext,
     message: string,
@@ -246,6 +247,7 @@ export function createWorkflowCommandHandlers(params: {
     beginWorkflowTracking,
     enqueueWorkflow,
     notifyWorkflowStarted,
+    clearPendingWorkflow,
     parseDebugArgs,
     parseReviewArgs,
     buildReviewTarget,
@@ -281,27 +283,37 @@ export function createWorkflowCommandHandlers(params: {
     }
 
     ensureAgentEnabledForCommand(pi, config.ctx, config.type);
-    const pending = await beginWorkflowTracking(
-      pi,
-      config.ctx,
-      config.type,
-      config.input,
-      config.flags,
-    );
-    const queued = await enqueueWorkflow(
-      pi,
-      runtime.promptFile,
-      runtime.workflowFile,
-      config.sections,
-    );
-    pending.loadedSkills = queued.loadedSkills;
+    try {
+      const pending = await beginWorkflowTracking(
+        pi,
+        config.ctx,
+        config.type,
+        config.input,
+        config.flags,
+      );
+      const queued = await enqueueWorkflow(
+        pi,
+        runtime.promptFile,
+        runtime.workflowFile,
+        config.sections,
+      );
+      pending.loadedSkills = queued.loadedSkills;
 
-    pi.appendEntry(runtime.entryType, {
-      ...config.entry,
-      at: nowIso(),
-    });
+      pi.appendEntry(runtime.entryType, {
+        ...config.entry,
+        at: nowIso(),
+      });
 
-    notifyWorkflowStarted(config.ctx, config.startedMessage, notify);
+      notifyWorkflowStarted(config.ctx, config.startedMessage, notify);
+    } catch (error) {
+      clearPendingWorkflow();
+      const message = error instanceof Error ? error.message : String(error);
+      notify(
+        config.ctx,
+        `Workflow /${config.type} failed to start: ${message}`,
+        "error",
+      );
+    }
   }
   const requireInput = (
     ctx: ExtensionCommandContext,
@@ -824,7 +836,11 @@ export function createWorkflowCommandHandlers(params: {
 
       const skillHint =
         parsed.topic || parsed.fromFile || parsed.fromUrl || "new-skill";
-      const reservedNames = await readReservedSkillNames(packageSkillsPath);
+      const [packageSkillNames, learnedSkillNames] = await Promise.all([
+        readReservedSkillNames(packageSkillsPath),
+        readReservedSkillNames(paths.skillsDir),
+      ]);
+      const reservedNames = new Set([...packageSkillNames, ...learnedSkillNames]);
       const skillName = chooseAvailableSkillName({
         topic: parsed.topic,
         fromFile: parsed.fromFile,

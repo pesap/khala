@@ -1,6 +1,7 @@
 ---
 name: gitlab
 description: Use this skill when the user needs GitLab terminal workflows (MRs, issues, pipelines, releases, .gitlab-ci.yml debugging, variables/rules/artifacts), even if they do not explicitly mention GitLab or glab CLI.
+license: MIT
 ---
 
 ## Use when

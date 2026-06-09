@@ -1,6 +1,7 @@
 ---
 name: skill-creator
 description: Create or improve reusable agent skills with strong trigger descriptions, safe boundaries, progressive disclosure, and optional bundled resources/scripts. Use when users ask to create, write, refine, or review a skill, even if they only ask to "learn a skill".
+license: MIT
 ---
 
 ## Use when

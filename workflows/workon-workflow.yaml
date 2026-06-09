@@ -21,6 +21,8 @@ inputs:
   forge: auto, github, gitlab, or all
   mode: prepare or start
   heartbeat: forge feedback polling interval in decimal hours (--heartbeat or --interval)
+  dryRun: boolean flag — prepare bootstrap capsule without launching the work session
+  model: optional model override for the workon session
   extraInstruction: optional one-off maintainer focus
 
 readiness_rubric:

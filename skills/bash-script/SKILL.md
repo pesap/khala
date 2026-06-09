@@ -1,6 +1,7 @@
 ---
 name: bash-script
 description: Write, review, or harden Bash scripts for reliable team, CI, and operator-facing CLI use. Use when users ask for shell scripts, Bash best practices, strict mode, argument handling, quoting, cleanup traps, idempotent setup/deploy scripts, ShellCheck-style fixes, clean-code shell structure, Bash pitfalls, safe filename handling, interactive terminal UX, or whether a task has outgrown Bash.
+license: MIT
 ---
 
 ## Use when

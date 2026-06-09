@@ -1,6 +1,7 @@
 ---
 name: typescript
 description: "Write, review, harden, or speed up TypeScript code and pipelines. Use when users ask about TypeScript type-safety, declaration files, tsconfig, tsc --noEmit, CI type gates, project references, incremental builds, faster pre-commit checks, typed callbacks, overload design, any/unknown, or TypeScript build/test performance."
+license: MIT
 ---
 
 ## Use when

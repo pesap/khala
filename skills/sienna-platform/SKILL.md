@@ -1,6 +1,7 @@
 ---
 name: sienna-platform
 description: Build, debug, document, and route work across the Sienna Platform multi-package Julia ecosystem for power-system data models, simulations, optimization models, power flow, investments, analytics, schemas, and case data. Use when users mention Sienna Platform, Sienna packages, PowerSystems.jl, PowerSimulations.jl, InfrastructureSystems.jl, InfrastructureOptimizationModels.jl, PowerOperationsModels.jl, or related Sienna-Platform GitHub org workflows.
+license: MIT
 ---
 
 # Sienna Platform

@@ -1,6 +1,7 @@
 ---
 name: docs-authoring
 description: Draft or revise technical docs (README, setup, API, troubleshooting, release notes) so they are accurate, scannable, and GitHub-friendly. Use when users ask to improve docs clarity/structure/rendering, not marketing copy.
+license: MIT
 ---
 
 ## Use when

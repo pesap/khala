@@ -1,6 +1,7 @@
 ---
 name: public-api-guard
 description: Prevent accidental breaking changes to public APIs during cleanup/refactor work. Use this skill when users request behavior-preserving cleanup, large refactors, or any change that may alter exported interfaces, CLI contracts, schemas, or integration surfaces.
+license: MIT
 ---
 
 ## Use when

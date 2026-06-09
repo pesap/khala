@@ -1,6 +1,7 @@
 ---
 name: dependency-untangler
 description: Reduce unnecessary coupling by mapping and trimming dependency edges (including cycles) with behavior-preserving, low-risk edits. Use this skill when users ask to untangle imports/modules, break circular dependencies, improve layering, or simplify architecture without changing behavior.
+license: MIT
 ---
 
 ## Use when

@@ -51,6 +51,7 @@ function createHandlers(state: {
     },
     enqueueWorkflow: async () => ({ loadedSkills: [] }),
     notifyWorkflowStarted: () => undefined,
+    clearPendingWorkflow: () => undefined,
     parseDebugArgs: (args) => ({ problem: args ?? "" }),
     parseReviewArgs: () => ({ mode: "uncommitted" }),
     buildReviewTarget: () => ({ summary: "", instruction: "", flags: {} }),

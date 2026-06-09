@@ -1,6 +1,7 @@
 ---
 name: github
 description: Use this skill when the user needs GitHub terminal workflows (PRs, issues, CI failures, workflow optimization, caching/artifacts, matrix builds, runner sizing), even if they do not explicitly mention GitHub Actions or `gh` and instead ask to check a PR, inspect CI, reply to review comments, optimize workflows, or work an issue from the terminal.
+license: MIT
 ---
 
 ## Use when
@@ -28,7 +29,7 @@ description: Use this skill when the user needs GitHub terminal workflows (PRs, 
 - Prefer replying in-thread to reviewer comments, not as loose PR comments.
 - Check for an existing open PR for the same head branch before creating a new one.
 - Prefer explicit PR body injection over implicit defaults.
-- Use repo-local templates when present; otherwise use `skills/github/pr-template.md`.
+- Use repo-local templates when present; otherwise use `./pr-template.md`.
 - Before creating/updating a PR body, resolve the durable source issue from explicit instruction, issue-numbered branch name, session capsule, or forge context. Write `Closes #N`/`Closes owner/repo#N` only when resolved; otherwise omit close text.
 - Before claiming PR success, inspect the real remote PR and verify base branch, commit list, signature state, body format, close marker, and checks status.
 

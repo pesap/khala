@@ -1,6 +1,7 @@
 ---
 name: plan
 description: Run a rigorous planning session that challenges plans against existing terminology, code reality, and documented decisions. Use when users want to stress-test a design, sharpen domain language, and update CONTEXT.md/ADRs as decisions become clear.
+license: MIT
 ---
 
 ## Source

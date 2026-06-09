@@ -1,6 +1,7 @@
 ---
 name: cli-ux
 description: Design, review, or improve command-line interfaces for strong UX, accessibility, composability, and automation. Use when users ask about CLI design, command trees, flags, help text, onboarding, errors, streams, exit codes, progress output, color, completions, interactive modes, screen-reader accessibility, or CLI best practices.
+license: MIT
 ---
 
 ## Use when

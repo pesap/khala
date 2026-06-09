@@ -53,7 +53,7 @@ export interface WorkflowInference<TWorkflowOutcome extends string = string> {
   strictViolation?: string;
 }
 
-export function describeBlockedWorkflowSlot<TWorkflowType extends string>(
+function describeBlockedWorkflowSlot<TWorkflowType extends string>(
   pendingWorkflow: PendingWorkflow<TWorkflowType>,
 ): string {
   if (pendingWorkflow.completionWait?.kind === "missing_footer") {

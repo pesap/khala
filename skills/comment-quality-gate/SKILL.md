@@ -1,6 +1,7 @@
 ---
 name: comment-quality-gate
 description: Remove noisy, stale, or non-informative comments and keep concise comments that explain intent, invariants, or non-obvious constraints. Use this skill when users ask to remove comment slop, AI noise, or improve readability without behavior changes.
+license: MIT
 ---
 
 ## Use when

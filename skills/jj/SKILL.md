@@ -1,6 +1,7 @@
 ---
 name: jj
 description: Operate Jujutsu (jj) in Git-backed repos for parallel task sessions, clean change shaping, and GitHub-friendly publishing. Use when users ask about jj setup, parallel workflows without branch clutter, session switching, split/squash/rebase, or shipping jj work to PRs.
+license: MIT
 ---
 
 ## Use when

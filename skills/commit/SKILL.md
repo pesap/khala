@@ -1,6 +1,7 @@
 ---
 name: commit
 description: "Create one intentional Git commit with a concise Conventional Commits-style message and verified scope. Use when users ask to commit current changes, commit selected files, write a commit message, or prepare a local commit without pushing."
+license: MIT
 ---
 
 Create a Git commit for the current changes using a concise Conventional Commits-style subject.
@@ -54,7 +55,7 @@ Create a Git commit for the current changes using a concise Conventional Commits
 ## Validation
 
 ```bash
-TOOL=skills/commit/commit-check.sh
+TOOL=./commit-check.sh
 $TOOL                # checks HEAD^!
 $TOOL HEAD~3..HEAD   # checks a custom range
 ```

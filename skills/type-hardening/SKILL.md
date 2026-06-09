@@ -1,6 +1,7 @@
 ---
 name: type-hardening
 description: Strengthen type guarantees and contracts to reduce runtime surprises while preserving behavior. Use this skill when users ask to tighten typing, remove weak/implicit types, improve static analysis signal, or harden interfaces during cleanup/refactor work.
+license: MIT
 ---
 
 ## Use when

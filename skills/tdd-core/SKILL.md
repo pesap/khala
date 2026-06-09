@@ -1,6 +1,7 @@
 ---
 name: tdd-core
 description: Test-driven development with a red-green-refactor loop. Use when the user wants test-first development, mentions "red-green-refactor" or TDD, asks for behavior-first tests, or wants a feature/bugfix built through small vertical slices instead of writing all code first.
+license: MIT
 ---
 
 # Test-Driven Development

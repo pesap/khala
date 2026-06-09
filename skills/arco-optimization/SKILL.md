@@ -1,6 +1,7 @@
 ---
 name: arco-optimization
 description: Debug and optimize Arco `.kdl` models with spec-first validation, minimal edits, and solver-safe checks. Use when users ask to fix Arco parse/validation/solve failures, improve model feasibility or objective behavior, or tune Arco scenario performance.
+license: MIT
 ---
 
 ## Use when
@@ -20,8 +21,8 @@ description: Debug and optimize Arco `.kdl` models with spec-first validation, m
 2. Reproduce first
    - Run the failing `arco run ...` command before edits.
    - Classify failure: parse vs validation vs solve-time.
-3. Spec-first triage (arco-spec.md)
-   - Check high-impact rules first: 14, 23, 34, 36, 37, 42, 44, 45, 54, 58, 60, 63, 68, 72, 74.
+3. Spec-first triage
+   - Check high-impact Arco spec rules first: 14, 23, 34, 36, 37, 42, 44, 45, 54, 58, 60, 63, 68, 72, 74.
    - Verify objective count, index declarations, predicate form, operator context, bounds consistency, and param resolution.
 4. Apply minimal fix
    - Prefer explicit generated constraints (`index` + `if` + `expression`) when inference is ambiguous.

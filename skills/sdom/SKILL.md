@@ -1,6 +1,7 @@
 ---
 name: sdom
 description: Build, run, debug, and extend the SDOM (Storage Deployment Optimization Model) Python package across data ingestion, Pyomo formulation wiring, solver configuration, outputs, and parametric studies. Use when users ask about SDOM runs, SDOM datasets, SDOM formulations, SDOM solver errors, SDOM result validation, or SDOM documentation updates, even if they only say "storage deployment model", "GenMix target", "parametric sweep", "Pyomo model", or "energy storage expansion model".
+license: MIT
 ---
 
 # sdom
