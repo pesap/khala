@@ -756,9 +756,11 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.match(rendered, /Launch eligibility: active Zellij no/);
     assert.match(rendered, /Worktree status: started/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk.feat-65/);
+    assert.match(rendered, /Route: started/);
+    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
     assert.match(rendered, /Handoff recovery:/);
     assert.match(rendered, new RegExp(`Retry Zellij handoff[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
-    assert.match(rendered, new RegExp(`Manual Pi restore: cd '/tmp/worktrunk.feat-65'[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
+    assert.doesNotMatch(rendered, /Manual Pi restore/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
@@ -770,9 +772,11 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.match(capsule, /Worktree status: started/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
     assert.match(capsule, /Launch eligibility: active Zellij no/);
+    assert.match(capsule, /## Deterministic \/workon route/);
+    assert.match(capsule, /Route: started/);
     assert.match(capsule, /## Handoff recovery/);
     assert.match(capsule, new RegExp(`Retry Zellij handoff[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
-    assert.match(capsule, new RegExp(`Manual Pi restore: cd '/tmp/worktrunk.feat-65'[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
+    assert.doesNotMatch(capsule, /Manual Pi restore/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "started");
@@ -837,7 +841,9 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(scriptCall, /--repo pesap\/agents/);
     assert.match(scriptCall, /--branch feat\/65-detect-local-worktrees-stale/);
     assert.match(scriptCall, /--capsule .+github\.com\/pesap\/agents\/capsule\.md/);
-    assert.match(scriptCall, /--prompt I want to discuss and possibly work on:/);
+    assert.match(scriptCall, /--prompt ## Deterministic \/workon route/);
+    assert.match(scriptCall, /Route: launched/);
+    assert.match(scriptCall, /I want to discuss and possibly work on:/);
     assert.match(scriptCall, /Draft PR and feedback heartbeat:/);
     assert.match(scriptCall, /--heartbeat 0\.25/);
     assert.match(scriptCall, /--model anthropic\/claude-sonnet-4/);
@@ -1009,12 +1015,15 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(rendered, /Worktree status: blocked/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
+    assert.match(rendered, /Route: blocked/);
     assert.match(rendered, /Worktree\/tab was created but Pi was not launched/);
+    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
     assert.match(rendered, /Retry Zellij handoff from an active Zellij pane/);
-    assert.match(rendered, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane'/);
-    assert.match(rendered, /Manual heartbeat restore: cd '\/tmp\/worktrunk\.feat-65'/);
+    assert.doesNotMatch(rendered, /Manual Pi restore/);
+    assert.doesNotMatch(rendered, /Manual heartbeat restore/);
     assert.match(rendered, new RegExp(`--branch ${branch}`));
     assert.match(rendered, /--prompt <redacted>/);
+    assert.doesNotMatch(rendered, /\bwt start\b/);
     assert.doesNotMatch(rendered, /Before doing any implementation:/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
@@ -1022,8 +1031,9 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Worktree status: blocked/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
+    assert.match(capsule, /Route: blocked/);
     assert.match(capsule, /Retry Zellij handoff from an active Zellij pane/);
-    assert.match(capsule, /Manual Pi restore: cd '\/tmp\/worktrunk\.feat-65' && pi -a --name 'fix\/67-tab-created-pi-pane'/);
+    assert.doesNotMatch(capsule, /Manual Pi restore/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
@@ -1495,12 +1505,22 @@ test("refuses issue targets that are not autonomous-ready", async () => {
     const rendered = sections.join("\n");
 
     assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /## Deterministic \/workon route/);
+    assert.match(rendered, /Route: not_ready/);
     assert.match(rendered, /Autonomous readiness: not-ready/);
     assert.match(rendered, /Action items to make the source issue\(s\) \/workon-ready/);
     assert.match(rendered, /Suggested next command\(s\):/);
+    assert.match(rendered, /Only next command: \/triage https:\/\/github.com\/pesap\/agents\/issues\/81/);
     assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/81/);
+    assert.doesNotMatch(rendered, /Suggested Worktrunk command/);
+    assert.doesNotMatch(rendered, /wt switch --create/);
+    assert.doesNotMatch(rendered, /workon-zellij-handoff\.sh/);
+    assert.doesNotMatch(rendered, /Pi handoff command/);
+    assert.doesNotMatch(rendered, /Forge heartbeat command/);
 
     const ledger = await readHandoffLedger(rendered);
+    assert.equal(ledger.route, "not_ready");
+    assert.equal(ledger.safeNextAction, "/triage https://github.com/pesap/agents/issues/81");
     assert.equal((ledger.worktree as { status: string }).status, "not-started");
     assert.equal((ledger.phases as Record<string, string>).readiness, "not-ready");
     assert.deepEqual((ledger.readinessActionItems as string[]).slice(0, 2), [

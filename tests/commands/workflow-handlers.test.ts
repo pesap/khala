@@ -112,6 +112,22 @@ test("workon handler groups comma-separated issue targets into one bootstrap", a
   );
 });
 
+test("workon handler puts deterministic route before advisory instructions", async () => {
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+  const handlers = createHandlers(captured);
+
+  await handlers.workon("73 --repo pesap/agents --forge gitlab", { cwd: process.cwd() } as never);
+
+  const rendered = captured.sections?.join("\n") ?? "";
+  const routeIndex = rendered.indexOf("## Deterministic /workon route");
+  const advisoryIndex = rendered.indexOf("Instruction: Treat the deterministic /workon route above");
+
+  assert.ok(routeIndex >= 0);
+  assert.ok(advisoryIndex > routeIndex);
+  assert.match(rendered, /Route: not_ready/);
+  assert.doesNotMatch(rendered.slice(0, routeIndex), /Instruction:/);
+});
+
 test("workon handler groups space-separated issue targets into one bootstrap", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
   const handlers = createHandlers(captured);
