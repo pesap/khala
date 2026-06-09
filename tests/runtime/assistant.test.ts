@@ -6,6 +6,7 @@ import {
   assistantTurnHasToolCallSinceLatestUser,
   evaluateObligationLoopGuard,
   findPendingMemoryGateRecovery,
+  hasRequiredWorkflowFooter,
   inferTurnObligation,
   isEmptyTerminalAssistantResponse,
   normalizeLoopGuardText,
@@ -40,6 +41,24 @@ function memoryReadRequired(toolName: string): Message {
     ],
   };
 }
+
+test("workflow footer requires Bias Check plus result and confidence", () => {
+  assert.equal(
+    hasRequiredWorkflowFooter("Result: success\nConfidence: 0.9"),
+    false,
+  );
+  assert.equal(
+    hasRequiredWorkflowFooter(
+      [
+        "Bias Check (Tier 1):",
+        "claim/hypothesis tested: workflow completed",
+        "Result: success",
+        "Confidence: 0.9",
+      ].join("\n"),
+    ),
+    true,
+  );
+});
 
 test("detects incomplete same-turn recovery after khala_read_memory", () => {
   const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [

@@ -7,6 +7,7 @@ import {
   readLearnedWorkflow,
 } from "../learning/workflows.ts";
 import type { LearningPaths } from "../learning/store.ts";
+import { buildDeterministicWorkflowContract } from "../workflows/engine.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (
@@ -111,6 +112,11 @@ export function createLearnedWorkflowCommandHandlers(params: {
         "```yaml",
         workflow.workflowText.trim(),
         "```",
+        "",
+        buildDeterministicWorkflowContract({
+          workflowSpec: workflow.workflowText,
+          workflowName: workflow.record.name,
+        }),
         prompt ? ["", "Prompt template:", "```markdown", prompt, "```"].join("\n") : "",
         "",
         `User input: ${rest || "(none)"}`,

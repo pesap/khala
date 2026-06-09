@@ -58,9 +58,9 @@ function describeBlockedWorkflowSlot<TWorkflowType extends string>(
 ): string {
   if (pendingWorkflow.completionWait?.kind === "missing_footer") {
     const action = pendingWorkflow.completionWait.awaitingUserAction
-      ? "It appears to be waiting for your approval or clarification before it can finish. Reply in the current workflow to continue, or include the required Result/Confidence footer to complete it."
-      : "It stopped without the required Result/Confidence footer, so khala cannot record it as complete yet. Continue the current workflow with the footer, or rerun the final response with the footer.";
-    return `Workflow ${pendingWorkflow.type} is still occupying the workflow slot because its last response is missing the required Result/Confidence footer. ${action} To cancel the pending workflow, run /end-agent before starting another workflow.`;
+      ? "It appears to be waiting for your approval or clarification before it can finish. Reply in the current workflow to continue, or include the required Bias Check plus Result/Confidence footer to complete it."
+      : "It stopped without the required Bias Check plus Result/Confidence footer, so khala cannot record it as complete yet. Continue the current workflow with the footer, or rerun the final response with the footer.";
+    return `Workflow ${pendingWorkflow.type} is still occupying the workflow slot because its last response is missing the required Bias Check plus Result/Confidence footer. ${action} To cancel the pending workflow, run /end-agent before starting another workflow.`;
   }
 
   return `Workflow already running (${pendingWorkflow.type}). Wait for completion before starting another.`;
@@ -161,6 +161,89 @@ function extractSkillDescription(skillMarkdown: string): string {
   }
 }
 
+function scalarSummary(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function parseWorkflowStepSummary(step: unknown): string | null {
+  const scalar = scalarSummary(step);
+  if (scalar) return scalar;
+  if (!isRecord(step)) return null;
+
+  const id = scalarSummary(step.id);
+  const action = scalarSummary(step.action);
+  if (id && action) return `${id}: ${action}`;
+  if (id) return id;
+  if (action) return action;
+
+  const entries = Object.entries(step);
+  if (entries.length !== 1) return null;
+  const [key, value] = entries[0] ?? [];
+  const valueSummary = scalarSummary(value);
+  return valueSummary ? `${key}: ${valueSummary}` : key;
+}
+
+function parseWorkflowControlSummary(rawWorkflowYaml: string): {
+  name: string | null;
+  objective: string | null;
+  steps: string[];
+} {
+  try {
+    const parsed = loadYaml(rawWorkflowYaml);
+    if (!isRecord(parsed)) return { name: null, objective: null, steps: [] };
+
+    const steps = Array.isArray(parsed.steps)
+      ? parsed.steps
+          .map(parseWorkflowStepSummary)
+          .filter((step): step is string => Boolean(step))
+      : [];
+
+    return {
+      name: scalarSummary(parsed.name),
+      objective: scalarSummary(parsed.objective),
+      steps,
+    };
+  } catch {
+    return { name: null, objective: null, steps: [] };
+  }
+}
+
+export function buildDeterministicWorkflowContract(params: {
+  workflowSpec: string;
+  workflowName?: string;
+}): string {
+  const summary = parseWorkflowControlSummary(params.workflowSpec);
+  const workflowName = summary.name ?? params.workflowName ?? "workflow";
+  const stepText =
+    summary.steps.length > 0
+      ? summary.steps.map((step, index) => `${index + 1}. ${step}`).join("\n")
+      : "1. Use the ordered `steps` list in the workflow spec.";
+
+  return [
+    "Deterministic workflow contract:",
+    `- Workflow: ${workflowName}`,
+    summary.objective ? `- Objective: ${summary.objective}` : "",
+    "- Treat the YAML workflow spec as the state machine. Execute steps in order, keep exactly one current step active, and do not reorder, restart, or skip a step unless current evidence proves it is impossible or irrelevant.",
+    "- For each loop, choose the next unfinished step, name the evidence needed, take the smallest action that advances that step, record the result, then move to the next step.",
+    "- Prefer deterministic command, file, memory, and guide evidence before model-only reasoning. Use bounded reads/searches and avoid repeating equivalent evidence calls.",
+    "- When the workflow or prompt lists skills, guides, project rules, or review guidelines, load the required guide before that track and convert its concrete constraints into the active step checklist.",
+    "- If creating or improving a reusable workflow, skill, prompt, or guide, do not call it done until the artifact has clear triggers/use-when conditions, ordered steps, expected inputs/outputs, validation or eval prompts, and reuse instructions.",
+    "- If mutating files, identify target paths before editing, run focused khala_search_memory before the first mutation, apply the smallest scoped edit, and run targeted validation or explain the exact blocker.",
+    "- If blocked, ask one concrete blocking question or report the external blocker. Otherwise continue through the ordered steps.",
+    "Ordered workflow steps:",
+    stepText,
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
 export async function enqueueWorkflow(params: {
   pi: ExtensionAPI;
   workflowPromptName: string;
@@ -224,6 +307,11 @@ export async function enqueueWorkflow(params: {
     "```yaml",
     workflowSpec.trim(),
     "```",
+    "",
+    buildDeterministicWorkflowContract({
+      workflowSpec,
+      workflowName: params.workflowFileName,
+    }),
     "",
     ...params.sections,
   ]

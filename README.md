@@ -199,6 +199,7 @@ When khala is enabled (`/khala` or any khala workflow command), the harness prov
 
 - **Policy-checked commands** — `bash` and mutation calls are gated through risk approval.
 - **Evidence requirements** — preflight before mutation, postflight after, result/confidence footer on workflow output.
+- **Deterministic workflow loop** — workflow launches inject a state-machine contract derived from the YAML steps so models keep one active step, gather evidence, act, validate, and then advance.
 - **Anti-stall enforcement** — low-confidence answers, repeated tool failures, and duplicate evidence calls are flagged and escalated.
 - **Skill routing** — explicit and implicit skill loads are verified; placeholder results are rejected.
 - **Source tracking** — local artifacts, external docs, command evidence, and citations are matched to tool calls.
@@ -224,6 +225,7 @@ When khala is enabled (`/khala` or any khala workflow command), the harness prov
   <li>Assistant claims of verification, source backing, tool work, code changes, or test/build success require matching same-turn evidence.</li>
   <li>Citation/source/link requests require concrete URLs or local artifact references backed by same-turn evidence.</li>
   <li>Workflow commands create auto-preflight records; mutation workflows are checked for postflight evidence.</li>
+  <li>Packaged and learned workflow runs inject a deterministic execution contract from the workflow YAML: ordered steps, one active step at a time, deterministic evidence before model reasoning, guide/skill constraints folded into the active step checklist, and validation/eval requirements for reusable workflow artifacts.</li>
   <li>Selected active runtime rules are injected as <code>[ACTIVE RUNTIME RULES]</code> before agent start.</li>
   <li>Final workflow responses are checked for <code>Bias Check (Tier 1)</code> plus <code>Result: success|partial|failed</code> and <code>Confidence: &lt;0..1&gt;</code> when response compliance is enabled.</li>
 </ul>

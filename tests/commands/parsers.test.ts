@@ -147,7 +147,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "61",
+    extraInstruction: "",
   });
 
   assert.deepEqual(
@@ -163,7 +163,7 @@ test("parses workon target and flags", () => {
       heartbeat: "1.0",
       dryRun: false,
       modelSelection: defaultModelSelection,
-      extraInstruction: "collect GitHub maintainer queue",
+      extraInstruction: "",
     },
   );
 
@@ -176,7 +176,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "73",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("topic --mode invalid --forge unknown"), {
@@ -188,7 +188,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "topic",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("73 --mode start --heartbeat 0.25"), {
@@ -200,7 +200,7 @@ test("parses workon target and flags", () => {
     heartbeat: "0.25",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "73",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("73 --mode start --interval 0.01"), {
@@ -212,7 +212,7 @@ test("parses workon target and flags", () => {
     heartbeat: "0.01",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "73",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("73 --heartbeat nope"), {
@@ -224,7 +224,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "73",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("73 --dry-run --mode start"), {
@@ -236,7 +236,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: true,
     modelSelection: defaultModelSelection,
-    extraInstruction: "73",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("73 --model anthropic/claude-sonnet-4"), {
@@ -253,7 +253,7 @@ test("parses workon target and flags", () => {
       routingMode: "exact-model",
       routingReason: "explicit --model override with default workon thinking",
     },
-    extraInstruction: "73",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("73, 74 --repo pesap/agents"), {
@@ -265,7 +265,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "73, 74",
+    extraInstruction: "",
   });
 
   assert.deepEqual(parseWorkonArgs("73 74 --repo pesap/agents"), {
@@ -277,7 +277,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
-    extraInstruction: "73 74",
+    extraInstruction: "",
   });
 
   assert.deepEqual(
@@ -296,7 +296,7 @@ test("parses workon target and flags", () => {
       heartbeat: "1.0",
       dryRun: false,
       modelSelection: defaultModelSelection,
-      extraInstruction: "https://github.nrel.gov/org/repo/issues/123 https://github.nrel.gov/org/repo/issues/124",
+      extraInstruction: "",
     },
   );
 });

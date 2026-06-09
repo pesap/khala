@@ -193,5 +193,10 @@ test("builds autonomous workflow artifact for repeated successful actions", () =
   assert.match(artifact, /source: khala-autonomous-memory/);
   assert.match(artifact, /read_memory: call khala_read_memory/);
   assert.match(artifact, /search_memory: call khala_search_memory/);
+  assert.match(artifact, /validate: run targeted validation/);
+  assert.match(artifact, /eval: define reusable validation prompts or checks/);
+  assert.match(artifact, /artifactRequirements:/);
+  assert.match(artifact, /triggers: explicit use-when conditions/);
+  assert.match(artifact, /validation: commands, checks, or eval prompts/);
   assert.match(artifact, /taskType: "review"/);
 });

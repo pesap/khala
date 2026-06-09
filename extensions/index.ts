@@ -2097,7 +2097,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         "The assistant stopped without visible output or a tool call.",
         "Continue with the next tool call or send a final user-visible response.",
         workflow
-          ? "If this is the workflow conclusion, include the required `Result:` and `Confidence:` footer lines."
+          ? "If this is the workflow conclusion, include the required `Bias Check (Tier 1)`, `Result:`, and `Confidence:` footer."
           : "",
       ]
         .filter(Boolean)
@@ -2264,8 +2264,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           reason: [
             "HARNESS COMPLIANCE FAILED",
             "",
-            "Workflow response is missing the required final footer lines.",
-            "Add both lines and retry:",
+            "Workflow response is missing the required final Bias Check or footer lines.",
+            "Add all required final fields and retry:",
+            "- Bias Check (Tier 1)",
             "- Result: success|partial|failed",
             "- Confidence: 0..1",
           ].join("\n"),
@@ -2279,7 +2280,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         );
         notify(
           ctx,
-          `Workflow ${workflow.type} still active; waiting for final Result/Confidence footer. Reply in this workflow to continue, include the footer to complete it, or run /end-agent to cancel before starting another workflow.`,
+          `Workflow ${workflow.type} still active; waiting for final Bias Check plus Result/Confidence footer. Reply in this workflow to continue, include the footer to complete it, or run /end-agent to cancel before starting another workflow.`,
           "info",
         );
       }

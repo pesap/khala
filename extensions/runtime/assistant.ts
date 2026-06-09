@@ -114,6 +114,7 @@ export function extractLastUserText(messages: AgentEndEventMessages): string {
 
 export function hasRequiredWorkflowFooter(text: string): boolean {
   return (
+    /(?:^|\n)\s*Bias Check \(Tier 1\)\s*:?/i.test(text) &&
     /(?:^|\n)\s*Result\s*:\s*(success|partial|failed)\b/i.test(text) &&
     /(?:^|\n)\s*Confidence\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?%?)/i.test(text)
   );

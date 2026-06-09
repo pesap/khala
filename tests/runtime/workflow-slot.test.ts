@@ -141,7 +141,10 @@ test("/debug missing-footer wait produces actionable workflow-slot guidance", ()
   );
 
   assert.equal(available, false);
-  assert.match(notifications[0] ?? "", /missing the required Result\/Confidence footer/);
+  assert.match(
+    notifications[0] ?? "",
+    /missing the required Bias Check plus Result\/Confidence footer/,
+  );
   assert.match(notifications[0] ?? "", /waiting for your approval or clarification/);
   assert.match(notifications[0] ?? "", /\/end-agent/);
   assert.doesNotMatch(notifications[0] ?? "", /^Workflow already running \(debug\)/);

@@ -44,5 +44,8 @@ test("learned workflow prompt templates are listable and readable", async () => 
   const loaded = await readLearnedWorkflow(paths, "review-autonomous-workflow");
   assert.ok(loaded);
   assert.match(loaded.promptText, /\$ARGUMENTS/);
+  assert.match(loaded.promptText, /Validate the result with targeted commands/);
+  assert.match(loaded.promptText, /validation\/eval prompts/);
   assert.match(loaded.workflowText, /steps:/);
+  assert.match(loaded.workflowText, /artifactRequirements:/);
 });
