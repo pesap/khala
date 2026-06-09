@@ -16,6 +16,11 @@ import type { RuntimeState } from "../state/runtime.ts";
 
 export type NotifyType = "info" | "error" | "warning" | "success";
 
+export interface PendingWorkflowCompletionWait {
+  kind: "missing_footer";
+  awaitingUserAction: boolean;
+}
+
 export interface PendingWorkflow<
   TWorkflowType extends string = string,
   TWorkflowFlags extends WorkflowFlags = WorkflowFlags,
@@ -29,6 +34,7 @@ export interface PendingWorkflow<
   loadedSkills: string[];
   mutationCount: number;
   policyWarnings: string[];
+  completionWait?: PendingWorkflowCompletionWait;
 }
 
 export interface LearningPathsLike {
@@ -47,6 +53,29 @@ export interface WorkflowInference<TWorkflowOutcome extends string = string> {
   strictViolation?: string;
 }
 
+export function describeBlockedWorkflowSlot<TWorkflowType extends string>(
+  pendingWorkflow: PendingWorkflow<TWorkflowType>,
+): string {
+  if (pendingWorkflow.completionWait?.kind === "missing_footer") {
+    const action = pendingWorkflow.completionWait.awaitingUserAction
+      ? "It appears to be waiting for your approval or clarification before it can finish. Reply in the current workflow to continue, or include the required Result/Confidence footer to complete it."
+      : "It stopped without the required Result/Confidence footer, so khala cannot record it as complete yet. Continue the current workflow with the footer, or rerun the final response with the footer.";
+    return `Workflow ${pendingWorkflow.type} is still occupying the workflow slot because its last response is missing the required Result/Confidence footer. ${action} To cancel the pending workflow, run /end-agent before starting another workflow.`;
+  }
+
+  return `Workflow already running (${pendingWorkflow.type}). Wait for completion before starting another.`;
+}
+
+export function markWorkflowWaitingForFooter<TWorkflowType extends string>(
+  workflow: PendingWorkflow<TWorkflowType>,
+  awaitingUserAction: boolean,
+): void {
+  workflow.completionWait = {
+    kind: "missing_footer",
+    awaitingUserAction,
+  };
+}
+
 export function ensureWorkflowSlotAvailable<TWorkflowType extends string>(
   ctx: ExtensionCommandContext,
   pendingWorkflow: PendingWorkflow<TWorkflowType> | null,
@@ -57,11 +86,7 @@ export function ensureWorkflowSlotAvailable<TWorkflowType extends string>(
   ) => void,
 ): boolean {
   if (!pendingWorkflow) return true;
-  notify(
-    ctx,
-    `Workflow already running (${pendingWorkflow.type}). Wait for completion before starting another.`,
-    "error",
-  );
+  notify(ctx, describeBlockedWorkflowSlot(pendingWorkflow), "error");
   return false;
 }
 

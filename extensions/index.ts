@@ -143,6 +143,7 @@ import {
   completeWorkflowTracking as completeTrackedWorkflow,
   enqueueWorkflow as enqueueWorkflowMessage,
   ensureWorkflowSlotAvailable as ensureWorkflowSlotAvailableForCommand,
+  markWorkflowWaitingForFooter,
 } from "./workflows/engine.ts";
 import { notifyWorkflowStarted } from "./workflows/notifications.ts";
 import {
@@ -156,6 +157,7 @@ import {
   inferOutcomeFromText,
   inferTurnObligation,
   isActionOrApprovalObligation,
+  isAssistantClarification,
   isAssistantClarificationAllowedForObligation,
   isEmptyTerminalAssistantResponse,
   normalizeLoopGuardText,
@@ -2271,9 +2273,13 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       }
 
       if (lastAssistantMessage?.stopReason === "stop") {
+        markWorkflowWaitingForFooter(
+          workflow,
+          isAssistantClarification(lastAssistantMessage),
+        );
         notify(
           ctx,
-          `Workflow ${workflow.type} still active; waiting for final Result/Confidence footer.`,
+          `Workflow ${workflow.type} still active; waiting for final Result/Confidence footer. Reply in this workflow to continue, include the footer to complete it, or run /end-agent to cancel before starting another workflow.`,
           "info",
         );
       }
