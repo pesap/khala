@@ -1031,9 +1031,14 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Worktree status: blocked/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
-    assert.match(capsule, /Route: blocked/);
+    assert.match(capsule, /Parent \/workon route: blocked/);
     assert.match(capsule, /Retry Zellij handoff from an active Zellij pane/);
     assert.doesNotMatch(capsule, /Manual Pi restore/);
+
+    const nextPrompt = capsule.split("## Next prompt")[1] ?? "";
+    assert.match(nextPrompt, /Workon child handoff context/);
+    assert.match(nextPrompt, /Do not treat the parent blocked bootstrap route as a prohibition/);
+    assert.doesNotMatch(nextPrompt, /Forbidden actions: do not improvise alternate launch paths/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");

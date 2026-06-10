@@ -1,0 +1,26 @@
+{
+  "positive": [
+    "Audit this CLI for agent ergonomics and machine readability.",
+    "Make this tool easier for coding agents to use safely.",
+    "Review whether our --json output is stable enough for automation.",
+    "Design a capabilities command for this CLI so agents can discover features.",
+    "Score the robot mode and error messages for this command-line tool.",
+    "Agents keep scraping our table output. How should we fix the CLI contract?",
+    "Add non-interactive flags and dry-run behavior for this destructive command.",
+    "Make CLI errors parseable with stable codes and remediation guidance.",
+    "Can an AI agent discover, run, and validate this command without reading source?",
+    "Improve help text, stdout/stderr behavior, and schema versioning for automation."
+  ],
+  "negative": [
+    "Design a nicer color theme for my terminal prompt.",
+    "Write a Bash script that loops over files.",
+    "Review this REST API for developer ergonomics.",
+    "Improve the UX of this React dashboard.",
+    "Debug why my CLI crashes with a stack trace.",
+    "Write documentation for installing this package.",
+    "Optimize the runtime performance of this command.",
+    "Design a full-screen terminal UI layout.",
+    "Review this GitHub Actions workflow for caching.",
+    "Create a JSON parser for logs."
+  ]
+}

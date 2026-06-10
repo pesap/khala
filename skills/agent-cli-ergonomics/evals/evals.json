@@ -1,0 +1,73 @@
+{
+  "cases": [
+    {
+      "name": "audit_human_only_cli",
+      "prompt": "Audit this CLI for agent ergonomics. It has `tool list` with table output only, prose errors, and interactive delete confirmation.",
+      "expected": {
+        "must_include": [
+          "machine-readable output",
+          "structured errors",
+          "non-interactive",
+          "dry-run",
+          "stdout",
+          "stderr"
+        ],
+        "must_not_include": [
+          "scrape the table as the preferred solution",
+          "safe for agents as-is"
+        ]
+      }
+    },
+    {
+      "name": "design_agent_contract",
+      "prompt": "Design the machine contract for a CLI with list, get, create, and delete commands that agents will call in CI.",
+      "expected": {
+        "must_include": [
+          "--json",
+          "schemaVersion",
+          "commands --json",
+          "--no-input",
+          "--dry-run",
+          "--limit",
+          "exit codes"
+        ],
+        "must_not_include": [
+          "interactive prompts as the only path"
+        ]
+      }
+    },
+    {
+      "name": "score_existing_cli",
+      "prompt": "Score this CLI: `list --json` works, errors are prose only, there is no schema command, delete has --dry-run, and logs are mixed into stdout.",
+      "expected": {
+        "must_include": [
+          "fail",
+          "mid",
+          "parseability",
+          "structured error",
+          "schema",
+          "stream separation"
+        ],
+        "must_not_include": [
+          "pass"
+        ]
+      }
+    },
+    {
+      "name": "context_efficiency",
+      "prompt": "Our CLI returns 20,000 JSON records by default. Improve it for agents.",
+      "expected": {
+        "must_include": [
+          "--limit",
+          "--cursor",
+          "--fields",
+          "--output ndjson",
+          "summary"
+        ],
+        "must_not_include": [
+          "raise the model context limit"
+        ]
+      }
+    }
+  ]
+}

@@ -450,6 +450,25 @@ function routeInstructionBlock(params: {
   }
 }
 
+function handoffPromptInstructionBlock(params: {
+  route: WorkonRoute;
+  issueUrl?: string;
+  recoveryCommand?: string;
+}): string {
+  if (params.route !== "blocked") {
+    return routeInstructionBlock(params);
+  }
+
+  return [
+    "## Workon child handoff context",
+    "Parent /workon route: blocked",
+    `Parent recovery command: ${params.recoveryCommand ?? "(not available)"}`,
+    "This prompt is for a child Pi session after a launcher or operator has placed it in the target worktree.",
+    "Do not treat the parent blocked bootstrap route as a prohibition on reading the capsule or implementing the source issue.",
+    "If the session is not in the target worktree or no capsule path was provided, stop and report the missing launch context.",
+  ].join("\n");
+}
+
 function routeFromWorktreeStatus(status: WorkonLedgerWorktreeStatus): WorkonRoute {
   return status === "not-started" ? "not_ready" : status;
 }
@@ -1199,7 +1218,7 @@ function buildMultiIssueHandoffPrompt(params: {
     .map((issue) => `  - ${issue.url} (#${issue.number})`)
     .join("\n");
 
-  return `${routeInstructionBlock({
+  return `${handoffPromptInstructionBlock({
     route: params.route,
     issueUrl: params.issue.url,
     recoveryCommand: params.recoveryCommand,
@@ -1288,7 +1307,7 @@ async function buildHandoffPrompt(params: {
     model_routing_mode: params.modelSelection.routingMode,
     model_routing_reason: params.modelSelection.routingReason,
     handoff_ledger: params.ledgerPath,
-    route_instruction_block: routeInstructionBlock({
+    route_instruction_block: handoffPromptInstructionBlock({
       route: params.route,
       issueUrl: params.issue.url,
       recoveryCommand: params.recoveryCommand,
