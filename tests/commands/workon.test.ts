@@ -55,6 +55,13 @@ function fakeGhRunner(outputs: Record<string, string>): {
             stderr: "Pi model auth preflight failed for github-copilot/gpt-5.5 with PI_CODING_AGENT_DIR=/tmp/empty-pi-agent (auth path: /tmp/empty-pi-agent/auth.json). Run /login github-copilot using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n",
           };
         }
+        if (branch.includes("no-json-handoff-failure")) {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: "zellij socket unavailable\n",
+          };
+        }
         return {
           ok: true,
           stdout: `${JSON.stringify({
@@ -978,6 +985,85 @@ test("blocks before recording Pi started when the handoff auth preflight fails",
     assert.equal((ledger.zellij as { status: string }).status, "blocked");
     assert.equal((ledger.pi as { status: string }).status, "not-launched");
     assert.match(String(ledger.failureReason), /Pi model auth preflight failed/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocked Zellij handoff without JSON still returns recovery and failure context", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-no-json-failure-test-"));
+  try {
+    const branch = "fix/181-no-json-handoff-failure";
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 181 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        181,
+        "fix(workon): no json handoff failure",
+        [
+          "## Current behavior",
+          "",
+          "/workon reports a blocked Zellij handoff without a recovery command.",
+          "",
+          "## Acceptance criteria",
+          "",
+          "- Return a route-owned recovery command when Zellij handoff fails before structured JSON is available.",
+          "- Propagate the failed handoff diagnostic into the capsule, ledger, and child prompt.",
+          "",
+          "## Validation",
+          "",
+          "- Add a focused regression test for the no-JSON failure path.",
+          "",
+          "## Non-goals",
+          "",
+          "- Do not invent alternate Zellij launch paths.",
+        ].join("\n"),
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "181",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Route: blocked/);
+    assert.match(rendered, /Allowed action: run or report the one route-owned recovery command/);
+    assert.match(rendered, /Worktree status: blocked/);
+    assert.match(rendered, /Worktree path: \(not available\)/);
+    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: zellij socket unavailable/);
+    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.match(rendered, /failed before a Worktrunk path was reported/);
+    assert.doesNotMatch(rendered, /Recovery command: \(not available\)/);
+    assert.match(rendered, new RegExp(`--branch ${branch}`));
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /## Bootstrap failure/);
+    assert.match(capsule, /Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: zellij socket unavailable/);
+    assert.match(capsule, /Parent failure: Zellij Pi handoff fix\/181-no-json-handoff-failure/);
+    assert.match(capsule, /Parent recovery command: Retry Zellij handoff from an active Zellij pane/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
+    assert.equal((ledger.worktree as { status: string; path: string | null }).path, null);
+    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
+    assert.equal((ledger.failure as { phase: string }).phase, "zellij-handoff");
+    assert.equal(
+      (ledger.failure as { summary: string }).summary,
+      "Zellij Pi handoff fix/181-no-json-handoff-failure: command failed: zellij socket unavailable",
+    );
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

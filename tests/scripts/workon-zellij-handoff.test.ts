@@ -1072,8 +1072,9 @@ exit 2
 
     const repoRoot = path.resolve(import.meta.dirname, "..", "..");
     const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
-    await assert.rejects(
-      execFileAsync(
+    let caught: unknown;
+    try {
+      await execFileAsync(
         "bash",
         [
           scriptPath,
@@ -1100,9 +1101,27 @@ exit 2
             PI_CODING_AGENT_DIR: piAgentDir,
           },
         },
-      ),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught);
+    const stderr = String((caught as { stderr?: string }).stderr ?? "");
+    assert.match(
+      stderr,
       /Pi model auth preflight failed for github-copilot\/gpt-5\.5[\s\S]*No API key found for github-copilot/,
     );
+    const resultLine = stderr
+      .trim()
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("{"));
+    assert.ok(resultLine);
+    const result = JSON.parse(resultLine);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.reason, "pi-auth-preflight-failed");
+    assert.match(result.detail, /No API key found for github-copilot/);
+    assert.equal(result.path, null);
+    assert.equal(result.tabName, "agents/work-108-model-routing");
 
     const piCalls = await readFile(piLog, "utf8");
     assert.ok(piCalls.includes(`PI_CODING_AGENT_DIR=${piAgentDir} args=--list-models gpt-5.5`));

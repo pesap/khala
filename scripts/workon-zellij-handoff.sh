@@ -81,19 +81,6 @@ if [[ -z "${repo}" || -z "${branch}" || -z "${capsule}" || -z "${prompt}" ]]; th
   exit 2
 fi
 
-if [[ ! -s "${capsule}" ]]; then
-  printf 'capsule is missing or empty: %s\n' "${capsule}" >&2
-  exit 1
-fi
-
-require_command() {
-  local command_name="${1:?command name required}"
-  if ! command -v "${command_name}" >/dev/null 2>&1; then
-    printf 'required command not found: %s\n' "${command_name}" >&2
-    exit 1
-  fi
-}
-
 slugify() {
   local value="${1:?value required}"
   printf '%s' "${value}" \
@@ -110,6 +97,49 @@ json_string_or_null() {
     printf 'null'
   else
     json_string "$1"
+  fi
+}
+
+worktree_path=""
+tab_name=""
+tab_id=""
+pi_pane_id=""
+heartbeat_pane_id=""
+worktree_action="not-attempted"
+pi_handoff_command=""
+heartbeat_command=""
+
+emit_blocked_json() {
+  local reason="${1:?blocked reason required}"
+  local detail="${2:-}"
+  printf '{"status":"blocked","reason":%s,"detail":%s,"path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatPaneId":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
+    "$(json_string "${reason}")" \
+    "$(json_string "${detail}")" \
+    "$(json_string_or_null "${worktree_path}")" \
+    "$(json_string_or_null "${tab_name}")" \
+    "$(json_string_or_null "${tab_id}")" \
+    "$(json_string_or_null "${pi_pane_id}")" \
+    "$(json_string_or_null "${heartbeat_pane_id}")" \
+    "$(json_string "${worktree_action}")" \
+    "$(json_string_or_null "${pi_handoff_command}")" \
+    "$(json_string_or_null "${heartbeat_command}")"
+}
+
+fail_blocked() {
+  local reason="${1:?blocked reason required}"
+  local detail="${2:-}"
+  local status="${3:-1}"
+  emit_blocked_json "${reason}" "${detail}" >&2
+  if [[ -n "${detail}" ]]; then
+    printf '%s\n' "${detail}" >&2
+  fi
+  exit "${status}"
+}
+
+require_command() {
+  local command_name="${1:?command name required}"
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    fail_blocked "missing-command" "required command not found: ${command_name}" 1
   fi
 }
 
@@ -160,8 +190,7 @@ validate_thinking() {
 validate_model() {
   local selected_model="${1:?model required}"
   if [[ "${selected_model}" =~ [[:space:]] ]]; then
-    printf 'invalid model value contains whitespace: %s\n' "${selected_model}" >&2
-    exit 2
+    fail_blocked "invalid-model" "invalid model value contains whitespace: ${selected_model}" 2
   fi
 }
 
@@ -223,13 +252,12 @@ preflight_selected_model() {
     if pi_preflight_lock_failure "${models_output}"; then
       return 0
     fi
-    printf 'model lookup failed for %s. Output:\n%s\n' "${selected_model}" "${models_output}" >&2
-    exit "${model_status}"
+    fail_blocked "pi-model-lookup-failed" "model lookup failed for ${selected_model}. Output:
+${models_output}" "${model_status}"
   fi
 
   if ! model_list_has_exact_match "${selected_model}" "${models_output}"; then
-    printf 'model not found: %s\n' "${selected_model}" >&2
-    exit 1
+    fail_blocked "pi-model-not-found" "model not found: ${selected_model}" 1
   fi
 
   if [[ ! -s "${pi_agent_dir}/auth.json" ]]; then
@@ -244,8 +272,8 @@ preflight_selected_model() {
 
   auth_output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" "${auth_args[@]}" 2>&1)" || auth_status=$?
   if ((auth_status != 0)); then
-    printf 'Pi model auth preflight failed for %s. Output:\n%s\n' "${selected_model}" "${auth_output}" >&2
-    exit "${auth_status}"
+    fail_blocked "pi-auth-preflight-failed" "Pi model auth preflight failed for ${selected_model}. Output:
+${auth_output}" "${auth_status}"
   fi
 }
 
@@ -306,22 +334,6 @@ run_zellij_new_pane() {
     fi
   done
   return "${status}"
-}
-
-emit_blocked_json() {
-  local reason="${1:?blocked reason required}"
-  local detail="${2:-}"
-  printf '{"status":"blocked","reason":%s,"detail":%s,"path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatPaneId":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
-    "$(json_string "${reason}")" \
-    "$(json_string "${detail}")" \
-    "$(json_string "${worktree_path}")" \
-    "$(json_string "${tab_name}")" \
-    "$(json_string_or_null "${tab_id}")" \
-    "$(json_string_or_null "${pi_pane_id}")" \
-    "$(json_string_or_null "${heartbeat_pane_id}")" \
-    "$(json_string "${worktree_action}")" \
-    "$(json_string_or_null "${pi_handoff_command}")" \
-    "$(json_string_or_null "${heartbeat_command}")"
 }
 
 handoff_state_dir() {
@@ -398,26 +410,30 @@ record_ledger_status() {
   bash "${ack_script}" --ledger "${ledger}" --status "${status}" --message "${detail}" >/dev/null || true
 }
 
+repo_name="${repo##*/}"
+tab_name="$(slugify "${repo_name}")/$(slugify "${branch}")"
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'required command not found: jq\n' >&2
+  exit 1
+fi
 require_command wt
 require_command zellij
-require_command jq
+if [[ ! -s "${capsule}" ]]; then
+  fail_blocked "capsule-missing" "capsule is missing or empty: ${capsule}" 1
+fi
 pi_agent_dir="$(resolve_pi_agent_dir)"
 if ! validate_heartbeat "${heartbeat}"; then
-  printf 'invalid heartbeat interval: %s (expected decimal hours, e.g. 0.25 or 2.0)\n' "${heartbeat}" >&2
-  exit 2
+  fail_blocked "invalid-heartbeat" "invalid heartbeat interval: ${heartbeat} (expected decimal hours, e.g. 0.25 or 2.0)" 2
 fi
 if [[ -n "${thinking}" ]] && ! validate_thinking "${thinking}"; then
-  printf 'invalid thinking level: %s (expected one of: off, minimal, low, medium, high, xhigh)\n' "${thinking}" >&2
-  exit 2
+  fail_blocked "invalid-thinking" "invalid thinking level: ${thinking} (expected one of: off, minimal, low, medium, high, xhigh)" 2
 fi
 if [[ -n "${model}" ]]; then
   validate_model "${model}"
   require_command "${pi_command}"
   preflight_selected_model "${model}" "${thinking}"
 fi
-
-repo_name="${repo##*/}"
-tab_name="$(slugify "${repo_name}")/$(slugify "${branch}")"
 
 switch_status=0
 switch_output="$(wt switch --create "${branch}" --format json 2>&1)" || switch_status=$?
@@ -430,14 +446,16 @@ if ((switch_status != 0)); then
     worktree_action="reused"
   fi
   if ((switch_status != 0)); then
-    printf 'Worktrunk failed to create or switch to branch %s. Output:\n%s\n' "${branch}" "${create_output}" >&2
+    detail="Worktrunk failed to create or switch to branch ${branch}. Output:
+${create_output}"
     if [[ "${worktree_action}" == "reused" ]]; then
-      printf 'Fallback wt switch output:\n%s\n' "${switch_output}" >&2
+      detail="${detail}
+Fallback wt switch output:
+${switch_output}"
     fi
-    exit "${switch_status}"
+    fail_blocked "worktrunk-switch-failed" "${detail}" "${switch_status}"
   fi
 fi
-worktree_path=""
 # Worktrunk hooks can print human-readable status lines such as
 # "◎ Running pre-start: ..." around the machine-readable JSON. Inspect only
 # trimmed JSON-looking lines so hook chatter is ignored instead of parsed as a path.
@@ -453,16 +471,11 @@ while IFS= read -r line; do
   fi
 done <<<"${switch_output}"
 if [[ -z "${worktree_path}" ]]; then
-  printf 'Worktrunk did not report a worktree path. Output:\n%s\n' "${switch_output}" >&2
-  exit 1
+  fail_blocked "worktree-path-missing" "Worktrunk did not report a worktree path. Output:
+${switch_output}" 1
 fi
 
-tab_id=""
 tabs_error=""
-pi_pane_id=""
-heartbeat_pane_id=""
-pi_handoff_command=""
-heartbeat_command=""
 for ((attempt = 1; attempt <= wait_attempts; attempt += 1)); do
   if tabs_json="$(zellij action list-tabs --json 2>&1)"; then
     tab_id="$(find_tab_id "${tabs_json}" "${tab_name}")"
