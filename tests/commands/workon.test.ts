@@ -49,10 +49,15 @@ function fakeGhRunner(outputs: Record<string, string>): {
           };
         }
         if (branch.includes("preflight-github-copilot-auth")) {
+          const detail = "Pi model auth preflight failed for github-copilot/gpt-5.5 with PI_CODING_AGENT_DIR=/tmp/empty-pi-agent (auth path: /tmp/empty-pi-agent/auth.json). Run /login github-copilot using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.";
           return {
             ok: false,
             stdout: "",
-            stderr: "Pi model auth preflight failed for github-copilot/gpt-5.5 with PI_CODING_AGENT_DIR=/tmp/empty-pi-agent (auth path: /tmp/empty-pi-agent/auth.json). Run /login github-copilot using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.\n",
+            stderr: `${JSON.stringify({
+              status: "blocked",
+              reason: "pi-auth-preflight-failed",
+              detail,
+            })}\n${detail}\n`,
           };
         }
         if (branch.includes("no-json-handoff-failure")) {
@@ -1019,12 +1024,24 @@ test("blocks before recording Pi started when the handoff auth preflight fails",
     assert.match(rendered, /Worktree status: blocked/);
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
     assert.match(rendered, /Pi model auth preflight failed for github-copilot\/gpt-5\.5 with PI_CODING_AGENT_DIR=\/tmp\/empty-pi-agent/);
+    assert.match(rendered, /Allowed action: report the blocked state and the operator action below/);
+    assert.match(rendered, /Recovery command: \(none safe for this blocked state\)/);
+    assert.match(rendered, /Next operator action: Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
+    assert.match(rendered, /Handoff recovery:\n- Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
+    assert.doesNotMatch(rendered, /Recovery command: Retry Zellij handoff/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /## Handoff recovery\n\n- Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
+    assert.match(capsule, /Parent recovery command: Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string }).status, "blocked");
     assert.equal((ledger.zellij as { status: string }).status, "blocked");
     assert.equal((ledger.pi as { status: string }).status, "not-launched");
     assert.match(String(ledger.failureReason), /Pi model auth preflight failed/);
+    assert.equal(String(ledger.safeNextAction), "Human action required: authenticate github-copilot/gpt-5.5 for Pi, then rerun /workon.");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
