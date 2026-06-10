@@ -434,6 +434,10 @@ function buildHandoffAcknowledgementCommand(ledgerPath: string): string {
   return `bash ${shellQuote(ackScript)} --ledger ${shellQuote(ledgerPath)} --status capsule-acknowledged`;
 }
 
+function blockedNoRecoveryAction(): string {
+  return "No route-owned recovery command is safe for this blocked state. Resolve the bootstrap failure above, then rerun /workon.";
+}
+
 function routeInstructionBlock(params: {
   route: WorkonRoute;
   issueUrl?: string;
@@ -471,15 +475,22 @@ function routeInstructionBlock(params: {
         "Allowed action: continue in the launched Pi handoff after reading and acknowledging the capsule.",
         "Forbidden actions: do not relaunch or create alternate tabs.",
       ].join("\n");
-    case "blocked":
+    case "blocked": {
+      const recoveryCommand = params.recoveryCommand?.trim();
       return [
         "## Deterministic /workon route",
         "Route: blocked",
-        "Allowed action: run or report the one route-owned recovery command; if it fails, report that exact failure.",
+        recoveryCommand
+          ? "Allowed action: run or report the one route-owned recovery command; if it fails, report that exact failure."
+          : "Allowed action: report the blocked state and the operator action below; do not retry without a route-owned recovery command.",
         `Failure: ${params.failureSummary ?? "(see evidence gaps)"}`,
-        `Recovery command: ${params.recoveryCommand ?? "(not available)"}`,
+        recoveryCommand
+          ? `Recovery command: ${recoveryCommand}`
+          : "Recovery command: (none safe for this blocked state)",
+        ...(recoveryCommand ? [] : [`Next operator action: ${blockedNoRecoveryAction()}`]),
         "Forbidden actions: do not improvise alternate launch paths.",
       ].join("\n");
+    }
   }
 }
 
@@ -493,11 +504,12 @@ function handoffPromptInstructionBlock(params: {
     return routeInstructionBlock(params);
   }
 
+  const recoveryCommand = params.recoveryCommand?.trim();
   return [
     "## Workon child handoff context",
     "Parent /workon route: blocked",
     `Parent failure: ${params.failureSummary ?? "(see parent bootstrap evidence)"}`,
-    `Parent recovery command: ${params.recoveryCommand ?? "(not available)"}`,
+    `Parent recovery command: ${recoveryCommand || blockedNoRecoveryAction()}`,
     "This prompt is for a child Pi session after a launcher or operator has placed it in the target worktree.",
     "Do not treat the parent blocked bootstrap route as a prohibition on reading the capsule or implementing the source issue.",
     "If the session is not in the target worktree or no capsule path was provided, stop and report the missing launch context.",
@@ -527,6 +539,9 @@ function buildLedgerSafeNextAction(params: {
   }
   if (params.recoveryInstructions.length > 0) {
     return params.recoveryInstructions[0] ?? "Inspect the session capsule before continuing.";
+  }
+  if (params.worktreeStatus === "blocked") {
+    return blockedNoRecoveryAction();
   }
   return params.worktreeCommand ?? "Inspect deterministic workon evidence before retrying.";
 }
@@ -1197,7 +1212,7 @@ ${params.handoffFailureSummary}
 
 ` : ""}## Handoff recovery
 
-${params.handoffRecoveryInstructions?.length ? params.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`).join("\n") : "- No restore command needed for the recorded bootstrap state."}
+${params.handoffRecoveryInstructions?.length ? params.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`).join("\n") : params.worktreeStatus === "blocked" ? `- ${blockedNoRecoveryAction()}` : "- No restore command needed for the recorded bootstrap state."}
 
 ## Open questions
 
