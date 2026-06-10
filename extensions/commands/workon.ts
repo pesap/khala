@@ -1303,7 +1303,9 @@ Draft PR and feedback heartbeat:
 ${sourceIssueReferences}
 - Make clear the draft PR is not ready to merge until validation and review are complete.
 - In the draft PR body, use the repo PR template shape: resolved source-closing marker when applicable, Summary, checklist-style Acceptance criteria copied from every source issue criterion, Deviations from the original plan, command-only Testing Strategy, and References.
-- For each source issue criterion, mark checklist items \`Addressed\` with evidence when met, or \`Not addressed\` with the reason and follow-up when unmet.
+- For each source issue criterion, use checkbox state, not textual status prefixes: checked means met; unchecked means unmet.
+- Preserve useful concise evidence as nested \`Evidence:\` lines under checklist items.
+- For unmet criteria, keep the checkbox unchecked and include a concise reason/follow-up under the item or in Deviations.
 - After opening the draft PR, check the PR/issue forge for human feedback every ${heartbeatLabel(params.heartbeat)} while you are still working.
 - Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.
 

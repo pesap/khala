@@ -1540,8 +1540,12 @@ test("handoff template requires source-closing checklist PR body", async () => {
   assert.match(template, /References/);
   assert.match(template, /Acknowledge that the capsule was read by running/);
   assert.match(template, /{{ack_command}}/);
-  assert.match(template, /`Addressed` with evidence/);
-  assert.match(template, /`Not addressed` with the reason and follow-up/);
+  assert.match(template, /use checkbox state, not textual status prefixes/i);
+  assert.match(template, /checked means met; unchecked means unmet/i);
+  assert.match(template, /nested `Evidence:` lines/i);
+  assert.match(template, /For unmet criteria, keep the checkbox unchecked/i);
+  assert.doesNotMatch(template, /`Addressed` with evidence/);
+  assert.doesNotMatch(template, /`Not addressed` with the reason and follow-up/);
 });
 
 test("handoff template requires bounded dirty-tree simplify before implementation commit", async () => {
