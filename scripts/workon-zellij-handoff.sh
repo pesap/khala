@@ -244,8 +244,19 @@ auth_fingerprint() {
 
 file_mtime() {
   local file_path="${1:?file path required}"
+  local modified=""
 
-  stat -f '%m' "${file_path}" 2>/dev/null || stat -c '%Y' "${file_path}" 2>/dev/null || printf '0'
+  modified="$(stat -f '%m' "${file_path}" 2>/dev/null || true)"
+  if [[ "${modified}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${modified}"
+    return 0
+  fi
+  modified="$(stat -c '%Y' "${file_path}" 2>/dev/null || true)"
+  if [[ "${modified}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${modified}"
+    return 0
+  fi
+  printf '0'
 }
 
 preflight_cache_ttl_seconds() {

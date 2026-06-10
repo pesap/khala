@@ -1207,6 +1207,21 @@ test("blocks start mode when Worktrunk is unavailable", async () => {
     assert.equal(calls.some((call) => call.startsWith("wt switch")), false);
     assert.match(rendered, /Worktree status: blocked/);
     assert.match(rendered, /Worktrunk availability:/);
+    assert.match(rendered, /Allowed action: report the blocked state and the operator action below/);
+    assert.match(rendered, /Recovery command: \(none safe for this blocked state\)/);
+    assert.match(rendered, /Next operator action: No route-owned recovery command is safe/);
+    assert.doesNotMatch(rendered, /run or report the one route-owned recovery command/);
+    assert.doesNotMatch(rendered, /Recovery command: \(not available\)/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /## Handoff recovery\n\n- No route-owned recovery command is safe/);
+    assert.match(capsule, /Parent recovery command: No route-owned recovery command is safe/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.deepEqual(ledger.recoveryInstructions, []);
+    assert.match(String(ledger.safeNextAction), /No route-owned recovery command is safe/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
