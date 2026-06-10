@@ -232,6 +232,89 @@ pi_preflight_lock_failure() {
   grep -qiE 'EPERM|operation not permitted|trust\.json\.lock|lock' <<<"${output}"
 }
 
+auth_fingerprint() {
+  local auth_path="${pi_agent_dir}/auth.json"
+
+  if [[ ! -s "${auth_path}" ]]; then
+    printf 'missing'
+    return 0
+  fi
+  cksum "${auth_path}" 2>/dev/null | awk '{ print $1 ":" $2 }'
+}
+
+file_mtime() {
+  local file_path="${1:?file path required}"
+
+  stat -f '%m' "${file_path}" 2>/dev/null || stat -c '%Y' "${file_path}" 2>/dev/null || printf '0'
+}
+
+preflight_cache_ttl_seconds() {
+  local ttl="${WORKON_PI_PREFLIGHT_CACHE_SECONDS:-21600}"
+
+  if [[ "${ttl}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${ttl}"
+  else
+    printf '0'
+  fi
+}
+
+preflight_cache_path() {
+  local selected_model="${1:?model required}"
+  local selected_thinking="${2:-}"
+  local cache_dir=""
+  local cache_slug=""
+
+  cache_dir="$(handoff_state_dir)/handoff/preflight-cache"
+  cache_slug="$(slugify "${selected_model}-${selected_thinking:-default}")"
+  mkdir -p "${cache_dir}" 2>/dev/null || true
+  printf '%s/%s.txt' "${cache_dir}" "${cache_slug}"
+}
+
+preflight_cache_key() {
+  local selected_model="${1:?model required}"
+  local selected_thinking="${2:-}"
+  local pi_command_path=""
+
+  pi_command_path="$(command -v "${pi_command}" 2>/dev/null || printf '%s' "${pi_command}")"
+  printf 'v1|agent=%s|command=%s|model=%s|thinking=%s|auth=%s' \
+    "${pi_agent_dir}" \
+    "${pi_command_path}" \
+    "${selected_model}" \
+    "${selected_thinking}" \
+    "$(auth_fingerprint)"
+}
+
+preflight_cache_hit() {
+  local cache_path="${1:?cache path required}"
+  local expected_key="${2:?cache key required}"
+  local ttl=""
+  local now=""
+  local modified=""
+  local cached_key=""
+
+  ttl="$(preflight_cache_ttl_seconds)"
+  if [[ "${ttl}" == "0" || ! -s "${cache_path}" ]]; then
+    return 1
+  fi
+  now="$(date +%s)"
+  modified="$(file_mtime "${cache_path}")"
+  if ((now - modified > ttl)); then
+    return 1
+  fi
+  IFS= read -r cached_key <"${cache_path}" || return 1
+  [[ "${cached_key}" == "${expected_key}" ]]
+}
+
+store_preflight_cache() {
+  local cache_path="${1:?cache path required}"
+  local cache_key="${2:?cache key required}"
+  local temp_path="${cache_path}.$$"
+
+  {
+    printf '%s\n' "${cache_key}" >"${temp_path}" && mv "${temp_path}" "${cache_path}"
+  } 2>/dev/null || true
+}
+
 preflight_selected_model() {
   local selected_model="${1:?model required}"
   local selected_thinking="${2:-}"
@@ -241,12 +324,20 @@ preflight_selected_model() {
   local auth_output=""
   local auth_status=0
   local auth_args=()
+  local cache_path=""
+  local cache_key=""
 
   if [[ -n "${PI_CODING_AGENT_DIR:-}" && ! -s "${pi_agent_dir}/auth.json" ]]; then
     return 0
   fi
 
   name="$(model_name "${selected_model}")"
+  cache_path="$(preflight_cache_path "${selected_model}" "${selected_thinking}")"
+  cache_key="$(preflight_cache_key "${selected_model}" "${selected_thinking}")"
+  if preflight_cache_hit "${cache_path}" "${cache_key}"; then
+    return 0
+  fi
+
   models_output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" --list-models "${name}" 2>&1)" || model_status=$?
   if ((model_status != 0)); then
     if pi_preflight_lock_failure "${models_output}"; then
@@ -261,6 +352,7 @@ ${models_output}" "${model_status}"
   fi
 
   if [[ ! -s "${pi_agent_dir}/auth.json" ]]; then
+    store_preflight_cache "${cache_path}" "${cache_key}"
     return 0
   fi
 
@@ -275,6 +367,7 @@ ${models_output}" "${model_status}"
     fail_blocked "pi-auth-preflight-failed" "Pi model auth preflight failed for ${selected_model}. Output:
 ${auth_output}" "${auth_status}"
   fi
+  store_preflight_cache "${cache_path}" "${cache_key}"
 }
 
 find_named_pane() {

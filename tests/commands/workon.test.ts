@@ -537,6 +537,7 @@ test("ZELLIJ=0 selects Zellij handoff path", async () => {
     const rendered = sections.join("\n");
 
     assert.ok(calls.some((call) => call.startsWith("bash ") && call.includes("workon-zellij-handoff.sh")));
+    assert.equal(calls.includes("wt --version"), false);
     assert.equal(calls.includes(`wt switch --create ${branch} --format json`), false);
     assert.match(rendered, /Suggested Worktrunk command: cd .+ && wt switch --create fix\/148-package-handoff-script-robust --format json/);
     assert.match(rendered, /Launch eligibility: active Zellij yes/);
@@ -575,6 +576,45 @@ test("infers repo and issue from GitHub issue URL", async () => {
 
     assert.equal(calls.some((call) => call.startsWith("repo view")), false);
     assert.match(sections.join("\n"), /Source issue: pesap\/agents#64/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("uses current GitHub issue context without a separate repo lookup", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-current-repo-issue-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 63 --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        63,
+        "feat(inbox): render deterministic maintainer queue locally",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "63",
+        repo: "",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.deepEqual(calls.slice(0, 2), [
+      "auth status",
+      "issue view 63 --json number,title,url,body,state,author,labels,assignees",
+    ]);
+    assert.equal(calls.some((call) => call.startsWith("repo view")), false);
+    assert.match(rendered, /Source issue: pesap\/agents#63/);
+    assert.match(rendered, /Session capsule: .+github\.com\/pesap\/agents\/capsule\.md/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

@@ -800,6 +800,116 @@ exit 0
   }
 });
 
+test("workon zellij handoff caches successful selected model preflight", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-preflight-cache-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const paneLog = path.join(tempDir, "panes.log");
+    const piLog = path.join(tempDir, "pi.log");
+    const piAgentDir = path.join(tempDir, "pi-agent");
+    const worktreePath = path.join(tempDir, "worktree");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    const branch = "work/108-model-routing";
+    const tabName = "agents/work-108-model-routing";
+
+    await mkdir(piAgentDir);
+    await mkdir(worktreePath);
+    await writeFile(path.join(piAgentDir, "auth.json"), "{}\n", "utf8");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '{"action":"created","path":"${worktreePath}"}\\n'
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "zellij"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "action list-tabs --json" ]]; then
+  printf '[{"name":"${tabName}","tab_id":12}]\\n'
+  exit 0
+fi
+if [[ "$*" == "action list-panes --json" ]]; then
+  printf '[]\\n'
+  exit 0
+fi
+if [[ "$*" == "action go-to-tab-name ${tabName}" ]]; then
+  exit 0
+fi
+if [[ "$1 $2" == "action new-pane" ]]; then
+  printf '%s\\n' "$*" >> "${paneLog}"
+  printf 'terminal_99\\n'
+  exit 0
+fi
+printf 'unexpected zellij args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "pi-custom"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${piLog}"
+if [[ "$*" == "--list-models claude-sonnet-4" ]]; then
+  printf 'provider model\\nanthropic claude-sonnet-4\\n'
+  exit 0
+fi
+if [[ "$*" == "--no-session --no-tools --model anthropic/claude-sonnet-4 --thinking medium -p Return exactly: ok" ]]; then
+  printf 'ok\\n'
+  exit 0
+fi
+printf 'unexpected pi args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    const args = [
+      scriptPath,
+      "--repo",
+      "pesap/agents",
+      "--branch",
+      branch,
+      "--capsule",
+      capsulePath,
+      "--prompt",
+      "handoff prompt",
+      "--heartbeat",
+      "0",
+      "--model",
+      "anthropic/claude-sonnet-4",
+      "--thinking",
+      "medium",
+    ];
+    const env = {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      PI_COMMAND: "pi-custom",
+      PI_CODING_AGENT_DIR: piAgentDir,
+      ZELLIJ_TAB_WAIT_SECONDS: "0.01",
+    };
+
+    await execFileAsync("bash", args, { cwd: repoRoot, env });
+    await execFileAsync("bash", args, { cwd: repoRoot, env });
+
+    const piCalls = (await readFile(piLog, "utf8")).trim().split(/\r?\n/);
+    assert.deepEqual(piCalls, [
+      "--list-models claude-sonnet-4",
+      "--no-session --no-tools --model anthropic/claude-sonnet-4 --thinking medium -p Return exactly: ok",
+    ]);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff pins selected thinking despite ambient Pi default", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-thinking-test-"));
   try {

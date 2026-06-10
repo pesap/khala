@@ -154,10 +154,6 @@ interface GithubIssueMetadata {
   repository?: { nameWithOwner?: string };
 }
 
-interface GithubRepositoryMetadata {
-  nameWithOwner: string;
-}
-
 interface WorkonBootstrapEvidence {
   commands: string[];
   gaps: string[];
@@ -303,11 +299,16 @@ function githubIssueTargetFromUrl(target: string): GithubIssueTarget | null {
 }
 
 function githubRepoSelector(target: GithubIssueTarget): string {
+  if (!target.repo) return "";
   return target.fromUrl && target.host !== "github.com" ? `${target.host}/${target.repo}` : target.repo;
 }
 
 function githubIssueTargetKey(target: GithubIssueTarget): string {
   return `${target.host}/${target.repo}`.toLowerCase();
+}
+
+function repoFromGithubIssueUrl(url: string | undefined): string | null {
+  return githubIssueTargetFromUrl(url ?? "")?.repo ?? null;
 }
 
 function numericTarget(target: string): number | null {
@@ -715,43 +716,15 @@ async function ensureGithubAuth(
   return true;
 }
 
-async function resolveCurrentGithubRepo(
-  request: WorkonBootstrapRequest,
-  runner: WorkonCommandRunner,
-  evidence: WorkonBootstrapEvidence,
-): Promise<string> {
-  if (request.repo) return request.repo;
-  const result = await runGh(runner, request.cwd, evidence.commands, [
-    "repo",
-    "view",
-    "--json",
-    "nameWithOwner",
-  ]);
-  const gap = resultGap("current GitHub repository", result);
-  if (gap) {
-    evidence.gaps.push(gap);
-    return "";
-  }
-  const repo = parseJsonObject<GithubRepositoryMetadata>(
-    result.stdout,
-    "current GitHub repository",
-    evidence.gaps,
-  );
-  return repo?.nameWithOwner ?? "";
-}
-
 async function resolveIssueTarget(
   request: WorkonBootstrapRequest,
-  runner: WorkonCommandRunner,
   evidence: WorkonBootstrapEvidence,
 ): Promise<GithubIssueTarget | null> {
   const issueUrlTarget = githubIssueTargetFromUrl(request.target);
   if (issueUrlTarget) return issueUrlTarget;
 
   const issueNumber = numericTarget(request.target);
-  const repo = await resolveCurrentGithubRepo(request, runner, evidence);
-  if (!repo) return null;
-  if (issueNumber) return { host: stateForgeHost(request), repo, number: issueNumber, fromUrl: false };
+  if (issueNumber) return { host: stateForgeHost(request), repo: request.repo, number: issueNumber, fromUrl: false };
 
   evidence.gaps.push(
     "Workon target is not an issue URL or issue number; use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.",
@@ -765,15 +738,20 @@ async function readGithubIssue(
   evidence: WorkonBootstrapEvidence,
   target: GithubIssueTarget,
 ): Promise<GithubIssueMetadata | null> {
-  const result = await runGh(runner, request.cwd, evidence.commands, [
+  const args = [
     "issue",
     "view",
     String(target.number),
-    "--repo",
-    githubRepoSelector(target),
+  ];
+  const repoSelector = githubRepoSelector(target);
+  if (repoSelector) {
+    args.push("--repo", repoSelector);
+  }
+  args.push(
     "--json",
     "number,title,url,body,state,author,labels,assignees",
-  ]);
+  );
+  const result = await runGh(runner, request.cwd, evidence.commands, args);
   const gap = resultGap(`GitHub issue ${target.repo}#${target.number}`, result);
   if (gap) {
     evidence.gaps.push(gap);
@@ -1466,15 +1444,6 @@ async function startWorktreeIfRequested(
 }> {
   if (request.mode !== "start" || request.dryRun) return { status: "prepared" };
 
-  const version = await runCommand(runner, request.cwd, evidence.commands, "wt", [
-    "--version",
-  ]);
-  const versionGap = resultGap("Worktrunk availability", version);
-  if (versionGap) {
-    evidence.gaps.push(versionGap);
-    return { status: "blocked" };
-  }
-
   if (request.launchInZellij) {
     const scriptPath = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
     const handoffArgs = [
@@ -1552,6 +1521,15 @@ async function startWorktreeIfRequested(
       heartbeatCommand: parsed.heartbeatCommand,
       zellijResult: parsed,
     };
+  }
+
+  const version = await runCommand(runner, request.cwd, evidence.commands, "wt", [
+    "--version",
+  ]);
+  const versionGap = resultGap("Worktrunk availability", version);
+  if (versionGap) {
+    evidence.gaps.push(versionGap);
+    return { status: "blocked" };
   }
 
   const result = await runCommand(runner, request.cwd, evidence.commands, "wt", [
@@ -1694,13 +1672,24 @@ export async function prepareWorkonBootstrap(
       return formatWorkonBootstrapEvidence(evidence);
     }
     for (const rawTarget of rawTargets) {
-      const target = await resolveIssueTarget({ ...request, target: rawTarget }, runner, evidence);
+      const target = await resolveIssueTarget({ ...request, target: rawTarget }, evidence);
       if (!target) return formatWorkonBootstrapEvidence(evidence);
       issueTargets.push(target);
     }
   }
 
-  const uniqueRepoKeys = [...new Set(issueTargets.map(githubIssueTargetKey))];
+  const explicitRepoTargets = issueTargets.filter((target) => target.repo);
+  const uniqueExplicitRepoKeys = [...new Set(explicitRepoTargets.map(githubIssueTargetKey))];
+  if (uniqueExplicitRepoKeys.length === 1) {
+    const explicitTarget = explicitRepoTargets[0];
+    for (const target of issueTargets) {
+      if (!target.repo && explicitTarget) {
+        target.host = explicitTarget.host;
+        target.repo = explicitTarget.repo;
+      }
+    }
+  }
+  const uniqueRepoKeys = [...new Set(issueTargets.filter((target) => target.repo).map(githubIssueTargetKey))];
   if (uniqueRepoKeys.length > 1) {
     evidence.gaps.push(`Grouped GitHub workon requires one repo and host; found ${issueTargets.map(githubRepoSelector).join(", ")}`);
     return formatWorkonBootstrapEvidence(evidence);
@@ -1721,7 +1710,20 @@ export async function prepareWorkonBootstrap(
   const issue = issues[0];
   if (!issue) return formatWorkonBootstrapEvidence(evidence);
 
-  const repo = issueTargets[0]?.repo ?? "";
+  const resolvedRepos = [
+    ...issueTargets.map((target) => target.repo).filter(Boolean),
+    ...issues.map((sourceIssue) => repoFromGithubIssueUrl(sourceIssue.url)).filter((repo): repo is string => Boolean(repo)),
+  ];
+  const uniqueResolvedRepos = [...new Set(resolvedRepos.map((resolvedRepo) => resolvedRepo.toLowerCase()))];
+  if (uniqueResolvedRepos.length > 1) {
+    evidence.gaps.push(`Grouped GitHub workon requires one repo and host; found ${resolvedRepos.join(", ")}`);
+    return formatWorkonBootstrapEvidence(evidence);
+  }
+  const repo = resolvedRepos[0] ?? "";
+  if (!repo) {
+    evidence.gaps.push("GitHub issue repository could not be resolved from --repo, issue URL, or issue metadata.");
+    return formatWorkonBootstrapEvidence(evidence);
+  }
   const readinessActionItemsByIssue = issues.map((sourceIssue) => ({
     issue: sourceIssue,
     actionItems: evaluateWorkonReadiness(sourceIssue),
