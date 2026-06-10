@@ -173,6 +173,7 @@ interface WorkonBootstrapEvidence {
   ledger?: WorkonHandoffLedger;
   zellijActive?: boolean;
   handoffRecoveryInstructions?: string[];
+  handoffOperatorAction?: string;
   handoffFailureSummary?: string;
   modelSelection?: WorkonModelSelection;
   readinessActionItems?: string[];
@@ -353,12 +354,35 @@ function zellijHandoffFailureSummary(
   parsed: ZellijHandoffResult | null,
 ): string {
   const reason = parsed?.reason ? `reason=${parsed.reason}` : "command failed";
-  const detail = firstDiagnosticLine(parsed?.detail)
+  const detail = zellijHandoffDiagnostic(result, parsed);
+  return `Zellij Pi handoff ${branchName}: ${reason}: ${detail}`;
+}
+
+function zellijHandoffDiagnostic(result: CommandResult, parsed: ZellijHandoffResult | null): string {
+  return firstDiagnosticLine(parsed?.detail)
     || firstDiagnosticLine(result.stderr)
     || firstDiagnosticLine(result.stdout)
     || firstDiagnosticLine(result.error)
     || "no diagnostic output";
-  return `Zellij Pi handoff ${branchName}: ${reason}: ${detail}`;
+}
+
+function noRetryHandoffAction(
+  parsed: ZellijHandoffResult | null,
+  modelSelection: WorkonModelSelection,
+): string | undefined {
+  switch (parsed?.reason) {
+    case "pi-auth-preflight-failed":
+      return `Human action required: authenticate ${modelSelection.exactModel} for Pi, then rerun /workon.`;
+    case "pi-model-not-found":
+      return `Human action required: select an available Pi model or configure access for ${modelSelection.exactModel}, then rerun /workon.`;
+    case "invalid-model":
+    case "invalid-thinking":
+    case "invalid-heartbeat":
+    case "capsule-missing":
+      return "Operator action required: fix the invalid /workon handoff input, then rerun /workon.";
+    default:
+      return undefined;
+  }
 }
 
 export function isActiveZellijEnv(value: string | undefined): boolean {
@@ -434,14 +458,16 @@ function buildHandoffAcknowledgementCommand(ledgerPath: string): string {
   return `bash ${shellQuote(ackScript)} --ledger ${shellQuote(ledgerPath)} --status capsule-acknowledged`;
 }
 
-function blockedNoRecoveryAction(): string {
-  return "No route-owned recovery command is safe for this blocked state. Resolve the bootstrap failure above, then rerun /workon.";
+function blockedNoRecoveryAction(operatorAction?: string): string {
+  return operatorAction
+    ?? "No route-owned recovery command is safe for this blocked state. Resolve the bootstrap failure above, then rerun /workon.";
 }
 
 function routeInstructionBlock(params: {
   route: WorkonRoute;
   issueUrl?: string;
   recoveryCommand?: string;
+  operatorAction?: string;
   failureSummary?: string;
 }): string {
   switch (params.route) {
@@ -487,7 +513,7 @@ function routeInstructionBlock(params: {
         recoveryCommand
           ? `Recovery command: ${recoveryCommand}`
           : "Recovery command: (none safe for this blocked state)",
-        ...(recoveryCommand ? [] : [`Next operator action: ${blockedNoRecoveryAction()}`]),
+        ...(recoveryCommand ? [] : [`Next operator action: ${blockedNoRecoveryAction(params.operatorAction)}`]),
         "Forbidden actions: do not improvise alternate launch paths.",
       ].join("\n");
     }
@@ -498,6 +524,7 @@ function handoffPromptInstructionBlock(params: {
   route: WorkonRoute;
   issueUrl?: string;
   recoveryCommand?: string;
+  operatorAction?: string;
   failureSummary?: string;
 }): string {
   if (params.route !== "blocked") {
@@ -509,7 +536,7 @@ function handoffPromptInstructionBlock(params: {
     "## Workon child handoff context",
     "Parent /workon route: blocked",
     `Parent failure: ${params.failureSummary ?? "(see parent bootstrap evidence)"}`,
-    `Parent recovery command: ${recoveryCommand || blockedNoRecoveryAction()}`,
+    `Parent recovery command: ${recoveryCommand || blockedNoRecoveryAction(params.operatorAction)}`,
     "This prompt is for a child Pi session after a launcher or operator has placed it in the target worktree.",
     "Do not treat the parent blocked bootstrap route as a prohibition on reading the capsule or implementing the source issue.",
     "If the session is not in the target worktree or no capsule path was provided, stop and report the missing launch context.",
@@ -527,6 +554,7 @@ function buildLedgerSafeNextAction(params: {
   worktreeStatus: WorkonLedgerWorktreeStatus;
   piStatus: WorkonHandoffLedger["pi"]["status"];
   recoveryInstructions: string[];
+  operatorAction?: string;
 }): string {
   if (params.readinessActionItems.length > 0) {
     return `/triage ${params.issue.url}`;
@@ -541,7 +569,7 @@ function buildLedgerSafeNextAction(params: {
     return params.recoveryInstructions[0] ?? "Inspect the session capsule before continuing.";
   }
   if (params.worktreeStatus === "blocked") {
-    return blockedNoRecoveryAction();
+    return blockedNoRecoveryAction(params.operatorAction);
   }
   return params.worktreeCommand ?? "Inspect deterministic workon evidence before retrying.";
 }
@@ -560,6 +588,7 @@ function buildHandoffLedger(params: {
   heartbeatCommand?: string;
   readinessActionItems?: string[];
   handoffRecoveryInstructions?: string[];
+  handoffOperatorAction?: string;
   handoffFailureSummary?: string;
   gaps?: string[];
   zellijResult?: ZellijHandoffResult | null;
@@ -659,6 +688,7 @@ function buildHandoffLedger(params: {
       worktreeStatus: params.worktreeStatus,
       piStatus,
       recoveryInstructions,
+      operatorAction: params.handoffOperatorAction,
     }),
     recoveryInstructions,
     attempts: [
@@ -1122,6 +1152,7 @@ function capsuleMarkdown(params: {
   handoffPrompt: string;
   zellijActive?: boolean;
   handoffRecoveryInstructions?: string[];
+  handoffOperatorAction?: string;
   handoffFailureSummary?: string;
 }): string {
   const labels = params.issue.labels
@@ -1212,7 +1243,7 @@ ${params.handoffFailureSummary}
 
 ` : ""}## Handoff recovery
 
-${params.handoffRecoveryInstructions?.length ? params.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`).join("\n") : params.worktreeStatus === "blocked" ? `- ${blockedNoRecoveryAction()}` : "- No restore command needed for the recorded bootstrap state."}
+${params.handoffRecoveryInstructions?.length ? params.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`).join("\n") : params.worktreeStatus === "blocked" ? `- ${blockedNoRecoveryAction(params.handoffOperatorAction)}` : "- No restore command needed for the recorded bootstrap state."}
 
 ## Open questions
 
@@ -1256,6 +1287,7 @@ function buildMultiIssueHandoffPrompt(params: {
   ledgerPath: string;
   route: WorkonRoute;
   recoveryCommand?: string;
+  operatorAction?: string;
   failureSummary?: string;
 }): string {
   const sourceIssueLines = issueLines(params.sourceIssues);
@@ -1271,6 +1303,7 @@ function buildMultiIssueHandoffPrompt(params: {
     route: params.route,
     issueUrl: params.issue.url,
     recoveryCommand: params.recoveryCommand,
+    operatorAction: params.operatorAction,
     failureSummary: params.failureSummary,
   })}
 
@@ -1350,6 +1383,7 @@ async function buildHandoffPrompt(params: {
   ledgerPath: string;
   route: WorkonRoute;
   recoveryCommand?: string;
+  operatorAction?: string;
   failureSummary?: string;
 }): Promise<string> {
   const template = await readHandoffTemplate(params.cwd);
@@ -1364,6 +1398,7 @@ async function buildHandoffPrompt(params: {
       route: params.route,
       issueUrl: params.issue.url,
       recoveryCommand: params.recoveryCommand,
+      operatorAction: params.operatorAction,
       failureSummary: params.failureSummary,
     }),
     ack_command: buildHandoffAcknowledgementCommand(params.ledgerPath),
@@ -1385,6 +1420,7 @@ async function buildHandoffPrompt(params: {
     ledgerPath: params.ledgerPath,
     route: params.route,
     recoveryCommand: params.recoveryCommand,
+    operatorAction: params.operatorAction,
     failureSummary: params.failureSummary,
   });
 }
@@ -1403,6 +1439,7 @@ async function writeCapsule(params: {
   handoffPrompt: string;
   zellijActive?: boolean;
   handoffRecoveryInstructions?: string[];
+  handoffOperatorAction?: string;
   handoffFailureSummary?: string;
 }): Promise<string> {
   const filePath = capsulePath(params.request, params.repo);
@@ -1456,6 +1493,7 @@ async function startWorktreeIfRequested(
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffRecoveryInstructions?: string[];
+  handoffOperatorAction?: string;
   handoffFailureSummary?: string;
   zellijResult?: ZellijHandoffResult | null;
 }> {
@@ -1488,27 +1526,35 @@ async function startWorktreeIfRequested(
     const handoffGap = resultGap(`Zellij Pi handoff ${params.branchName}`, handoffResult);
     if (handoffGap) {
       const handoffFailureSummary = zellijHandoffFailureSummary(params.branchName, handoffResult, parsed);
-      const handoffRecoveryInstructions = buildHandoffRecoveryInstructions({
-        request,
-        repo: params.repo,
-        branchName: params.branchName,
-        capsulePath: params.capsulePath,
-      });
+      const handoffOperatorAction = noRetryHandoffAction(parsed, modelSelection);
+      const handoffRecoveryInstructions = handoffOperatorAction
+        ? []
+        : buildHandoffRecoveryInstructions({
+          request,
+          repo: params.repo,
+          branchName: params.branchName,
+          capsulePath: params.capsulePath,
+        });
       evidence.gaps.push(handoffFailureSummary);
       if (parsed?.path) {
         evidence.gaps.push(
           `Zellij Pi handoff ${params.branchName}: Worktree/tab was created but Pi was not launched; continue in ${parsed.tabName ?? "the Worktrunk tab"}, not this session.`,
         );
-      } else {
+      } else if (!handoffOperatorAction) {
         evidence.gaps.push(
           `Zellij Pi handoff ${params.branchName}: failed before a Worktrunk path was reported; retry is still safe because the handoff script reuses an existing branch/worktree when Worktrunk reports one.`,
         );
       }
-      evidence.gaps.push(...handoffRecoveryInstructions);
+      evidence.gaps.push(
+        ...(handoffRecoveryInstructions.length
+          ? handoffRecoveryInstructions
+          : [blockedNoRecoveryAction(handoffOperatorAction)]),
+      );
       return {
         status: "blocked",
         path: parsed?.path,
         handoffRecoveryInstructions,
+        handoffOperatorAction,
         handoffFailureSummary,
         zellijResult: parsed,
       };
@@ -1591,6 +1637,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
       route,
       issueUrl: issue?.url,
       recoveryCommand: evidence.handoffRecoveryInstructions?.[0] ?? evidence.ledger?.recoveryInstructions[0],
+      operatorAction: evidence.handoffOperatorAction ?? (evidence.ledger?.recoveryInstructions.length ? undefined : evidence.ledger?.safeNextAction),
       failureSummary: evidence.handoffFailureSummary ?? evidence.ledger?.failure.summary ?? undefined,
     }),
     "Deterministic workon bootstrap evidence:",
@@ -1640,7 +1687,9 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Handoff ledger: ${evidence.ledgerPath ?? "not written"}`,
         ...(evidence.handoffRecoveryInstructions?.length
           ? ["Handoff recovery:", ...evidence.handoffRecoveryInstructions.map((instruction) => `- ${instruction}`)]
-          : []),
+          : evidence.handoffOperatorAction
+            ? ["Handoff recovery:", `- ${evidence.handoffOperatorAction}`]
+            : []),
       ].join("\n"),
     );
   } else {
@@ -1816,6 +1865,7 @@ export async function prepareWorkonBootstrap(
     ledgerPath: handoffLedgerPath(resolvedRequest, repo),
     route: worktree.status,
     recoveryCommand: worktree.handoffRecoveryInstructions?.[0],
+    operatorAction: worktree.handoffOperatorAction,
     failureSummary: worktree.handoffFailureSummary,
   });
   const capsule = await writeCapsule({
@@ -1832,6 +1882,7 @@ export async function prepareWorkonBootstrap(
     handoffPrompt: finalHandoffPrompt,
     zellijActive: resolvedRequest.launchInZellij,
     handoffRecoveryInstructions: worktree.handoffRecoveryInstructions,
+    handoffOperatorAction: worktree.handoffOperatorAction,
     handoffFailureSummary: worktree.handoffFailureSummary,
   });
 
@@ -1849,6 +1900,7 @@ export async function prepareWorkonBootstrap(
   evidence.handoffPrompt = finalHandoffPrompt;
   evidence.zellijActive = resolvedRequest.launchInZellij;
   evidence.handoffRecoveryInstructions = worktree.handoffRecoveryInstructions;
+  evidence.handoffOperatorAction = worktree.handoffOperatorAction;
   evidence.handoffFailureSummary = worktree.handoffFailureSummary;
   evidence.capsulePath = capsule;
   const ledger = buildHandoffLedger({
@@ -1864,6 +1916,7 @@ export async function prepareWorkonBootstrap(
     piHandoffCommand: worktree.piHandoffCommand,
     heartbeatCommand: worktree.heartbeatCommand,
     handoffRecoveryInstructions: worktree.handoffRecoveryInstructions,
+    handoffOperatorAction: worktree.handoffOperatorAction,
     handoffFailureSummary: worktree.handoffFailureSummary,
     gaps: evidence.gaps,
     zellijResult: worktree.zellijResult,
