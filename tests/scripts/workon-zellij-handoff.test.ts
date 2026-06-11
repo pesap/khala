@@ -56,8 +56,8 @@ test("workon zellij handoff emits structured blocked JSON when jq is missing", a
   try {
     const binDir = path.join(tempDir, "bin");
     await mkdir(binDir);
-    await writeExecutable(path.join(binDir, "tr"), "#!/usr/bin/env bash\nexec /usr/bin/tr \"$@\"\n");
-    await writeExecutable(path.join(binDir, "sed"), "#!/usr/bin/env bash\nexec /usr/bin/sed \"$@\"\n");
+    await writeExecutable(path.join(binDir, "tr"), "#!/bin/sh\nexec /usr/bin/tr \"$@\"\n");
+    await writeExecutable(path.join(binDir, "sed"), "#!/bin/sh\nexec /usr/bin/sed \"$@\"\n");
 
     const capsulePath = path.join(tempDir, "capsule.md");
     await writeFile(capsulePath, "# capsule\n", "utf8");
@@ -66,7 +66,7 @@ test("workon zellij handoff emits structured blocked JSON when jq is missing", a
     const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
     await assert.rejects(
       execFileAsync(
-        "bash",
+        "/bin/bash",
         [
           scriptPath,
           "--repo",
@@ -82,7 +82,7 @@ test("workon zellij handoff emits structured blocked JSON when jq is missing", a
           cwd: repoRoot,
           env: {
             ...process.env,
-            PATH: `${binDir}:/bin`,
+            PATH: binDir,
           },
         },
       ),
