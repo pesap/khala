@@ -89,7 +89,17 @@ slugify() {
 }
 
 json_string() {
-  jq -Rn --arg value "$1" '$value'
+  local value="${1:-}"
+  if command -v jq >/dev/null 2>&1; then
+    jq -Rn --arg value "${value}" '$value'
+    return 0
+  fi
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '"%s"' "${value}"
 }
 
 json_string_or_null() {
@@ -517,10 +527,7 @@ record_ledger_status() {
 repo_name="${repo##*/}"
 tab_name="$(slugify "${repo_name}")/$(slugify "${branch}")"
 
-if ! command -v jq >/dev/null 2>&1; then
-  printf 'required command not found: jq\n' >&2
-  exit 1
-fi
+require_command jq
 require_command wt
 require_command zellij
 if [[ ! -s "${capsule}" ]]; then

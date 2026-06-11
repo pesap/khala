@@ -28,6 +28,9 @@
     "extensions": [
       "./khala/index.ts"
     ],
+    "prompts": [
+      "./prompts"
+    ],
     "skills": [
       "./skills",
       "./node_modules/pi-subagents/skills"

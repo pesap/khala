@@ -51,6 +51,57 @@ test("workon handoff ack records capsule acknowledgement in the ledger", async (
   }
 });
 
+test("workon zellij handoff emits structured blocked JSON when jq is missing", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-missing-jq-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+    await writeExecutable(path.join(binDir, "tr"), "#!/usr/bin/env bash\nexec /usr/bin/tr \"$@\"\n");
+    await writeExecutable(path.join(binDir, "sed"), "#!/usr/bin/env bash\nexec /usr/bin/sed \"$@\"\n");
+
+    const capsulePath = path.join(tempDir, "capsule.md");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    await assert.rejects(
+      execFileAsync(
+        "bash",
+        [
+          scriptPath,
+          "--repo",
+          "pesap/agents",
+          "--branch",
+          "fix/182-structured-handoff-failure",
+          "--capsule",
+          capsulePath,
+          "--prompt",
+          "handoff prompt",
+        ],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PATH: `${binDir}:/bin`,
+          },
+        },
+      ),
+      (error: unknown) => {
+        const nodeError = error as { stderr?: string };
+        const firstLine = nodeError.stderr?.trim().split(/\r?\n/)[0] ?? "";
+        const parsed = JSON.parse(firstLine);
+        assert.equal(parsed.status, "blocked");
+        assert.equal(parsed.reason, "missing-command");
+        assert.equal(parsed.detail, "required command not found: jq");
+        assert.match(nodeError.stderr ?? "", /required command not found: jq/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff waits long enough for delayed Worktrunk tab", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-handoff-test-"));
   try {

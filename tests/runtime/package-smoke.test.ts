@@ -17,6 +17,7 @@ const requiredPackageFiles = [
   "runtime/profile.yaml",
   "runtime/RULES.md",
   "commands/review-workflow.md",
+  "prompts/fresh-eyes.md",
   "workflows/review-workflow.yaml",
   "skills/code-review/SKILL.md",
   "intercepted-commands/python",
@@ -81,7 +82,11 @@ test("package smoke exposes harness through packed package surface", async () =>
       await readFile(path.join(packageRoot, "package.json"), "utf8"),
     ) as {
       exports?: Record<string, string>;
+      pi?: {
+        prompts?: string[];
+      };
     };
+    assert.deepEqual(packageJson.pi?.prompts, ["./prompts"]);
     const harnessEntry = packageJson.exports?.["./harness"];
     assert.equal(harnessEntry, "./khala/harness.ts");
 

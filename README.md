@@ -258,6 +258,7 @@ The long-term maintainer-control-plane direction is captured in
 ```text
 .
 ├── commands/      # user-facing workflow prompts
+├── prompts/       # packaged Pi prompt templates
 ├── workflows/     # workflow specs queued into Pi messages
 ├── skills/        # packaged reusable skills
 ├── extensions/    # Pi extension implementation

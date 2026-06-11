@@ -21,14 +21,18 @@ Requirements:
 - If splitting is proposed, ask approval before creating or updating any split issues.
 - Produce a work packet with:
   - category: bug, enhancement, chore, or unclear
-  - current behavior or current state
-  - desired behavior or goal
-  - narrow acceptance criteria (plain markdown bullet list items, not task-list `- [ ]` items)
-  - validation/tests, with behavior/regression validation for bugs
-  - non-goals
-  - breaking-change risk
-  - review-size risk, especially whether likely PR changes may exceed ~500 LOC
-  - `/workon` readiness status and action items when not ready
+  - canonical issue-body headings that `/workon` parses exactly:
+    - `Current behavior`
+    - `Desired behavior` or `Goal`
+    - `Acceptance criteria`
+    - `Validation plan`
+    - `Non-goals`
+    - `Breaking-change risk`
+    - `Review-size risk`
+    - `/workon readiness notes`
+  - narrow acceptance criteria (plain markdown bullet list items, not task-list `- [ ]` items) under `Acceptance criteria`
+  - validation/tests under `Validation plan`, with behavior/regression validation for bugs
+  - breaking-change risk and review-size risk explicitly stated as low/absent/resolved when applicable
 - Ask explicit approval before creating or updating GitHub issues, labels, or comments.
 - If you mutate files or forge state, include: `Postflight: verify="<command_or_check>" result=<pass|fail|not-run>`.
 - End with: triage recommendation, proposed work packet or split table, readiness status, approval question or next action, risks, `Result: success|partial|failed`, and `Confidence: 0..1`.

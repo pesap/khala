@@ -721,6 +721,23 @@ function formatLoggedCommand(command: string, args: string[]): string {
   return `${command} ${redactedArgs.join(" ")}`;
 }
 
+function redactSensitiveCommandArgs(value: string | undefined, args: string[]): string | undefined {
+  if (!value) return value;
+  let redacted = value;
+  for (const flag of ["--prompt"]) {
+    const index = args.indexOf(flag);
+    const sensitiveValue = index >= 0 ? args[index + 1] : undefined;
+    if (sensitiveValue) {
+      redacted = redacted.split(sensitiveValue).join("<redacted>");
+    }
+  }
+  redacted = redacted.replace(
+    /(--prompt\s+)([\s\S]*?)(?=\s--(?:heartbeat|ledger|model|thinking)\b|$)/g,
+    "$1<redacted>",
+  );
+  return redacted;
+}
+
 async function runCommand(
   runner: WorkonCommandRunner,
   cwd: string,
@@ -729,7 +746,13 @@ async function runCommand(
   args: string[],
 ): Promise<CommandResult> {
   commands.push(formatLoggedCommand(command, args));
-  return runner(command, args, { cwd });
+  const result = await runner(command, args, { cwd });
+  return {
+    ...result,
+    stdout: redactSensitiveCommandArgs(result.stdout, args) ?? "",
+    stderr: redactSensitiveCommandArgs(result.stderr, args) ?? "",
+    error: redactSensitiveCommandArgs(result.error, args),
+  };
 }
 
 async function runGh(
@@ -809,13 +832,26 @@ async function readGithubIssue(
   );
 }
 
+const WORKON_ACCEPTANCE_SECTION_HEADINGS = new Set(["acceptance criteria"]);
+const WORKON_VALIDATION_SECTION_HEADINGS = new Set(["validation", "validation plan", "testing", "test plan"]);
+const WORKON_NON_GOALS_SECTION_HEADINGS = new Set(["non goals", "non-goals", "out of scope"]);
+
+const MARKDOWN_LIST_ITEM_PATTERN = /^(?:[-*]\s+\[[ xX]\]\s+|[-*]\s+|\d+\.\s+)/;
+
+function workonPacketSectionItems(body: string | undefined, headings: Set<string>): string[] {
+  return parseMarkdownSections(body)
+    .filter((section) => headings.has(section.normalizedHeading))
+    .flatMap((section) =>
+      section.lines
+        .map((line) => line.trim())
+        .filter((line) => MARKDOWN_LIST_ITEM_PATTERN.test(line))
+        .map((line) => line.replace(MARKDOWN_LIST_ITEM_PATTERN, "").trim())
+        .filter(Boolean),
+    );
+}
+
 function acceptanceCriteriaFromBody(body: string | undefined): string[] {
-  if (!body) return [];
-  const lines = body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /^(?:[-*]|\d+\.|- \[[ xX]\])\s+/.test(line) && /\b(should|must|add|detect|collect|return|render|preserve|support|emit|write|create|resolve|validate|test|pass|fail)\b/i.test(line));
-  return lines.slice(0, 8).map((line) => line.replace(/^(?:[-*]|\d+\.|- \[[ xX]\])\s+/, ""));
+  return workonPacketSectionItems(body, WORKON_ACCEPTANCE_SECTION_HEADINGS);
 }
 
 function bodyHasHeading(body: string | undefined, headings: string[]): boolean {
@@ -838,18 +874,14 @@ function issueLooksLikeBug(issue: GithubIssueMetadata): boolean {
 }
 
 function validationItemsFromBody(body: string | undefined): string[] {
-  if (!body) return [];
-  const lines = body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /^(?:[-*]|\d+\.|- \[[ xX]\])\s+/.test(line) && /\b(test|validation|validate|check|lint|typecheck|regression|repro|reproduce)\b/i.test(line));
-  return lines.slice(0, 8).map((line) => line.replace(/^(?:[-*]|\d+\.|- \[[ xX]\])\s+/, ""));
+  return workonPacketSectionItems(body, WORKON_VALIDATION_SECTION_HEADINGS);
 }
 
 type MarkdownSection = {
   heading: string;
   normalizedHeading: string;
   text: string;
+  lines: string[];
 };
 
 const BREAKING_CHANGE_SECTION_HEADINGS = new Set([
@@ -975,6 +1007,7 @@ function parseMarkdownSections(body: string | undefined): MarkdownSection[] {
           heading: current.heading,
           normalizedHeading: current.normalizedHeading,
           text: [current.heading, ...current.lines].join("\n"),
+          lines: current.lines,
         });
       }
       current = { heading, normalizedHeading: normalizeHeading(heading), lines: [] };
@@ -989,6 +1022,7 @@ function parseMarkdownSections(body: string | undefined): MarkdownSection[] {
       heading: current.heading,
       normalizedHeading: current.normalizedHeading,
       text: [current.heading, ...current.lines].join("\n"),
+      lines: current.lines,
     });
   }
 
@@ -1045,7 +1079,7 @@ function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {
   if (acceptance.length === 0) {
     actionItems.push("Add narrow, testable acceptance criteria to the issue/work packet.");
   }
-  if (validation.length === 0 && !bodyHasHeading(body, ["Validation", "Testing", "Test plan"])) {
+  if (validation.length === 0 && !bodyHasHeading(body, [...WORKON_VALIDATION_SECTION_HEADINGS])) {
     actionItems.push("Add validation or test expectations, preferably a behavior/regression test for changed behavior.");
   }
   if (
@@ -1055,7 +1089,7 @@ function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {
   ) {
     actionItems.push("Add reproduction steps, observed behavior, or a concrete failing feedback loop for the bug.");
   }
-  if (!bodyHasHeading(body, ["Non-goals", "Out of scope"])) {
+  if (!bodyHasHeading(body, [...WORKON_NON_GOALS_SECTION_HEADINGS])) {
     actionItems.push("Add non-goals or out-of-scope boundaries so autonomous work does not expand scope.");
   }
   if (unresolvedBreakingChange(body)) {
@@ -1942,9 +1976,9 @@ export function createExecFileRunner(): WorkonCommandRunner {
       };
       return {
         ok: false,
-        stdout: nodeError.stdout ?? "",
-        stderr: nodeError.stderr ?? "",
-        error: nodeError.message,
+        stdout: redactSensitiveCommandArgs(nodeError.stdout, args) ?? "",
+        stderr: redactSensitiveCommandArgs(nodeError.stderr, args) ?? "",
+        error: redactSensitiveCommandArgs(nodeError.message, args),
       };
     }
   };
