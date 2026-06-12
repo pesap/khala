@@ -1,6 +1,6 @@
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -11,6 +11,35 @@ import {
   prepareWorkonBootstrap,
   type WorkonCommandRunner,
 } from "../../extensions/commands/workon.ts";
+import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
+
+let defaultPiPathDir: string | null = null;
+let previousPath: string | undefined;
+
+before(async () => {
+  defaultPiPathDir = await mkdtemp(path.join(tmpdir(), "khala-workon-default-pi-"));
+  previousPath = process.env.PATH;
+  await writeFile(
+    path.join(defaultPiPathDir, "pi"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models gpt-5.4-mini" ]]; then
+  printf 'provider model context max-out thinking images\n'
+  printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
+fi
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${defaultPiPathDir}${path.delimiter}${previousPath ?? ""}`;
+  resetKhalaProfileDiscoveryForTests();
+});
+
+after(async () => {
+  resetKhalaProfileDiscoveryForTests();
+  if (previousPath === undefined) delete process.env.PATH;
+  else process.env.PATH = previousPath;
+  if (defaultPiPathDir) await rm(defaultPiPathDir, { force: true, recursive: true });
+});
 
 function fakeGhRunner(outputs: Record<string, string>): {
   calls: string[];
@@ -49,7 +78,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
           };
         }
         if (branch.includes("preflight-github-copilot-auth")) {
-          const detail = "Pi model auth preflight failed for github-copilot/gpt-5.5 with PI_CODING_AGENT_DIR=/tmp/empty-pi-agent (auth path: /tmp/empty-pi-agent/auth.json). Run /login github-copilot using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.";
+          const detail = `Pi model auth preflight failed for ${model} with PI_CODING_AGENT_DIR=/tmp/empty-pi-agent (auth path: /tmp/empty-pi-agent/auth.json). Run /login github-copilot using that Pi config directory, set PI_CODING_AGENT_DIR to the intended config, or pass --model for a configured provider.`;
           return {
             ok: false,
             stdout: "",
@@ -891,7 +920,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
         modelSelection: {
           exactModel: "anthropic/claude-sonnet-4",
           exactThinkingLevel: DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel,
-          routingMode: "exact-model",
+          routingMode: "override",
           routingReason: "explicit --model override with default workon thinking",
         },
       },
@@ -916,7 +945,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(scriptCall, new RegExp(`--thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Exact model: anthropic\/claude-sonnet-4/);
     assert.match(rendered, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
-    assert.match(rendered, /Model routing mode: exact-model/);
+    assert.match(rendered, /Model routing mode: override/);
     assert.match(rendered, /explicit --model override/);
     assert.match(rendered, /Launch eligibility: active Zellij yes/);
     assert.match(rendered, /Worktree status: launched/);
@@ -937,7 +966,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-stale --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(capsule, /Exact model: anthropic\/claude-sonnet-4/);
     assert.match(capsule, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
-    assert.match(capsule, /Model routing mode: exact-model/);
+    assert.match(capsule, /Model routing mode: override/);
     assert.match(capsule, /Model routing reason: explicit --model override with default workon thinking/);
 
     const ledger = await readHandoffLedger(rendered);
@@ -986,7 +1015,7 @@ test("pins the default model when launching a Worktrunk Zellij handoff", async (
     assert.match(rendered, new RegExp(`Exact model: ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
     assert.match(rendered, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Model routing mode: default/);
-    assert.match(rendered, /default-pinned model routing/);
+    assert.match(rendered, /development profile/);
     assert.match(rendered, new RegExp(`Pi handoff command: .*--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
@@ -994,11 +1023,76 @@ test("pins the default model when launching a Worktrunk Zellij handoff", async (
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, new RegExp(`Exact model: ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
     assert.match(capsule, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
-    assert.match(capsule, /Model routing reason: Khala\/workon default-pinned model routing/);
+    assert.match(capsule, /Model routing reason: Khala\/workon development profile/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.deepEqual(ledger.modelSelection, DEFAULT_WORKON_MODEL_SELECTION);
   } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocks before handoff when the default development profile is unresolved", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-unresolved-profile-test-"));
+  const previousPath = process.env.PATH;
+  try {
+    const piPath = path.join(tempDir, "pi");
+    await writeFile(
+      piPath,
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models gpt-5.4-mini" ]]; then
+  printf 'provider model\n'
+  printf 'github-copilot gpt-5.4\n'
+fi
+`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${tempDir}${path.delimiter}${previousPath ?? ""}`;
+    resetKhalaProfileDiscoveryForTests();
+
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        65,
+        "feat(inbox): detect local worktrees and stale sessions",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "65",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "0.25",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+
+    assert.equal(scriptCall, undefined);
+    assert.match(rendered, /Route: blocked/);
+    assert.match(rendered, /development profile unresolved/);
+    assert.match(rendered, /Run \/khala status for model profile setup guidance/);
+    assert.match(rendered, /Pi handoff command: \(not launched\)/);
+    assert.match(rendered, /Exact model: \(unresolved\)/);
+    assert.doesNotMatch(rendered, /Handoff failure:/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string }).status, "blocked");
+    assert.equal((ledger.pi as { status: string }).status, "not-launched");
+    assert.equal((ledger.failure as { phase: string }).phase, "bootstrap");
+    assert.match(String(ledger.safeNextAction), /\/khala status/);
+  } finally {
+    resetKhalaProfileDiscoveryForTests();
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
     await rm(tempDir, { force: true, recursive: true });
   }
 });
@@ -1037,25 +1131,25 @@ test("blocks before recording Pi started when the handoff auth preflight fails",
     assert.match(scriptCall, new RegExp(`--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
     assert.match(rendered, /Worktree status: blocked/);
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
-    assert.match(rendered, /Pi model auth preflight failed for github-copilot\/gpt-5\.5 with PI_CODING_AGENT_DIR=\/tmp\/empty-pi-agent/);
+    assert.match(rendered, new RegExp(`Pi model auth preflight failed for ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} with PI_CODING_AGENT_DIR=/tmp/empty-pi-agent`));
     assert.match(rendered, /Allowed action: report the blocked state and the operator action below/);
     assert.match(rendered, /Recovery command: \(none safe for this blocked state\)/);
-    assert.match(rendered, /Next operator action: Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
-    assert.match(rendered, /Handoff recovery:\n- Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
+    assert.match(rendered, new RegExp(`Next operator action: Human action required: authenticate ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} for Pi, then rerun /workon\\.`));
+    assert.match(rendered, new RegExp(`Handoff recovery:\\n- Human action required: authenticate ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} for Pi, then rerun /workon\\.`));
     assert.doesNotMatch(rendered, /Recovery command: Retry Zellij handoff/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
-    assert.match(capsule, /## Handoff recovery\n\n- Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
-    assert.match(capsule, /Parent recovery command: Human action required: authenticate github-copilot\/gpt-5\.5 for Pi, then rerun \/workon\./);
+    assert.match(capsule, new RegExp(`## Handoff recovery\\n\\n- Human action required: authenticate ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} for Pi, then rerun /workon\\.`));
+    assert.match(capsule, new RegExp(`Parent recovery command: Human action required: authenticate ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} for Pi, then rerun /workon\\.`));
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string }).status, "blocked");
     assert.equal((ledger.zellij as { status: string }).status, "blocked");
     assert.equal((ledger.pi as { status: string }).status, "not-launched");
     assert.match(String(ledger.failureReason), /Pi model auth preflight failed/);
-    assert.equal(String(ledger.safeNextAction), "Human action required: authenticate github-copilot/gpt-5.5 for Pi, then rerun /workon.");
+    assert.equal(String(ledger.safeNextAction), `Human action required: authenticate ${DEFAULT_WORKON_MODEL_SELECTION.exactModel} for Pi, then rerun /workon.`);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

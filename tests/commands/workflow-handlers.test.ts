@@ -40,7 +40,7 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
     parseReviewArgs: () => ({ mode: "uncommitted" }),
     buildReviewTarget: () => ({ summary: "", instruction: "", flags: {} }),
     loadProjectReviewGuidelines: async () => null,
-    parsePlanArgs: () => ({ plan: "" }),
+    parsePlanArgs: (args) => ({ plan: args ?? "" }),
     parseAuditArgs: () => ({ claim: "" }),
     parseTriageArgs: (args) => ({ target: args ?? "" }),
     parseAddressOpenIssuesArgs: () => ({ limit: 20, repo: "" }),
@@ -71,6 +71,23 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
     },
   });
 }
+
+test("plan handler tags planning model profile routing", async () => {
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+  const handlers = createHandlers(captured);
+
+  await handlers.plan("shape model profiles", { cwd: process.cwd() } as never);
+
+  const rendered = captured.sections?.join("\n") ?? "";
+  assert.equal(captured.input, "shape model profiles");
+  assert.equal(captured.flags?.model, "github-copilot/gpt-5.5");
+  assert.equal(captured.flags?.thinkingLevel, "xhigh");
+  assert.equal(captured.flags?.modelRoutingMode, "default");
+  assert.match(String(captured.flags?.modelRoutingReason), /Khala planning profile/);
+  assert.match(rendered, /Model routing: default \(Khala planning profile/);
+  assert.match(rendered, /Exact model: github-copilot\/gpt-5\.5/);
+  assert.match(rendered, /Exact thinking level: xhigh/);
+});
 
 test("triage handler asks for /workon-ready packet contract headings", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};

@@ -115,9 +115,16 @@ test("/workon starts after a completed /debug workflow releases the slot", async
   // Simulates agent_end successfully completing debug with the required footer.
   state.pendingWorkflow = null;
 
-  await handlers.workon("177 --repo pesap/agents --forge gitlab", {
-    cwd: process.cwd(),
-  } as never);
+  const previousZellij = process.env.ZELLIJ;
+  process.env.ZELLIJ = "/tmp/pi-workflow-slot-test-zellij";
+  try {
+    await handlers.workon("177 --repo pesap/agents --forge gitlab", {
+      cwd: process.cwd(),
+    } as never);
+  } finally {
+    if (previousZellij === undefined) delete process.env.ZELLIJ;
+    else process.env.ZELLIJ = previousZellij;
+  }
 
   assert.equal(state.workonStarted, true);
   assert.equal(

@@ -70,8 +70,8 @@ flowchart LR
 |---|---|
 | `/debug <unreported-problem>` | Investigate a maintainer-observed symptom, gather evidence, and draft a new issue proposal after approval. |
 | `/triage <issue-url\|user-posted-request>` | Clean user-posted issue/request intake into a `/workon`-ready work packet, asking approval before forge updates. |
-| `/plan <topic>` | Shape maintainer planned changes or codebase improvement ideas into scoped issue/work packet(s) with a slice table before issue creation. |
-| `/workon <issue-url\|issue-number> [--repo owner/repo] [--forge auto\|github\|gitlab\|all] [--dry-run] [--model MODEL]` | Start autonomous work by default only when the issue passes the readiness rubric; child Pi launches pin the workon default model and thinking level, and `--dry-run` prepares only the capsule and branch suggestion. |
+| `/plan <topic>` | Shape maintainer planned changes or codebase improvement ideas into scoped issue/work packet(s) with a slice table before issue creation. Uses the `planning` model profile by default. |
+| `/workon <issue-url\|issue-number> [--repo owner/repo] [--forge auto\|github\|gitlab\|all] [--dry-run] [--model MODEL] [--thinking LEVEL]` | Start autonomous work by default only when the issue passes the readiness rubric; child Pi launches use the `development` model profile, and `--dry-run` prepares only the capsule and branch suggestion. |
 | `/review [scope] [--extra "focus"]` | Review changes by scope: uncommitted, branch, commit, PR, folder, file, or paths. |
 | `/git-review` | Run git-history diagnostics before reading code. |
 | `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |
@@ -101,6 +101,26 @@ Gaps: local collector skipped for focus=reviews
 Pass `--details` or `--evidence` to include repository discovery, full bucketed
 item lists, evidence gaps, and read-only command dumps.
 
+### Model profiles
+
+Khala workflow routing uses typed model profiles as the single source of truth:
+
+| Profile | Default model | Thinking | Used by |
+|---|---|---|---|
+| `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan` prompt metadata and routing reason. |
+| `development` (`agents` alias) | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon` child Pi handoffs and development/agent routes. |
+
+Run `/khala status` to inspect profile resolution. The status output lists each
+profile's resolved model id, thinking level, source, and `ok` or
+`unresolved (<reason>)` state. If the development profile is unresolved,
+`/workon` refuses to emit handoff evidence and points operators back to
+`/khala status` instead of silently falling back to the planning model.
+
+Explicit `/workon --model <provider/model>` remains available and records
+`routingMode=override`. When `--model` is used without `--thinking`, Khala keeps
+the development profile's default thinking level (`medium`); pass
+`--thinking off|minimal|low|medium|high|xhigh` to override both.
+
 <details>
 <summary><strong>Run workflows outside the REPL</strong></summary>
 
@@ -119,7 +139,7 @@ pi -e https://github.com/pesap/agents -p "/plan 'Add retry policy for hook loadi
 | Command | Purpose |
 |---|---|
 | `/khala` | Initialize khala and set compliance to `warn`. |
-| `/khala status\|strict\|enforce\|warn\|monitor\|reset` | Report or change compliance mode. |
+| `/khala status\|strict\|enforce\|warn\|monitor\|reset` | Report or change compliance mode. `status` also reports Khala model profiles and setup hints when a default model is unresolved. |
 | `/end-agent` | Disable khala session context injection. |
 | `/approve-risk <reason> [--ttl MINUTES]` | Approve one high-risk command (TTL 1–120 min, default 20). |
 | `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Record manual mutation intent. |

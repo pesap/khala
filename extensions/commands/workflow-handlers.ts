@@ -19,6 +19,7 @@ import {
   type WorkonMode,
   type WorkonModelSelection,
 } from "./workon.ts";
+import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
 import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
 import type { PendingWorkflow } from "../workflows/engine.ts";
 
@@ -551,6 +552,8 @@ export function createWorkflowCommandHandlers(params: {
     },
 
     plan: async (args, ctx) => {
+      const planningProfile = resolveKhalaProfile("planning");
+      const routingReason = `Khala planning profile (${planningProfile.source})`;
       await runRequiredSourceWorkflow({
         ctx,
         type: "plan",
@@ -559,6 +562,9 @@ export function createWorkflowCommandHandlers(params: {
         usage: "Usage: /plan <plan_or_topic>",
         sections: (plan) => [
           `Plan/topic: ${plan}`,
+          `Model routing: default (${routingReason})`,
+          `Exact model: ${planningProfile.model ?? "(unresolved)"}`,
+          `Exact thinking level: ${planningProfile.thinkingLevel}`,
           "Instruction: Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.",
           "Instruction: If a question can be answered from code/docs, inspect first and do not ask it.",
           "Instruction: Capture edge cases and trade-offs, then update CONTEXT.md/ADR docs lazily when terms/decisions are resolved.",
@@ -567,7 +573,19 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Ask approval on the exact slice table before creating or updating issues.",
           "Instruction: Detect issue tracker platform first and use matching skill: github for GitHub, gitlab for GitLab.",
         ],
-        entry: (plan) => ({ plan }),
+        entry: (plan) => ({
+          plan,
+          model: planningProfile.model,
+          thinkingLevel: planningProfile.thinkingLevel,
+          modelRoutingMode: "default",
+          modelRoutingReason: routingReason,
+        }),
+        flags: () => ({
+          model: planningProfile.model,
+          thinkingLevel: planningProfile.thinkingLevel,
+          modelRoutingMode: "default",
+          modelRoutingReason: routingReason,
+        }),
         startedMessage: (plan) => `Started plan workflow (${plan}).`,
       });
     },

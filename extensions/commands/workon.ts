@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -20,7 +21,7 @@ export type WorkonThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" 
 export interface WorkonModelSelection {
   exactModel: string;
   exactThinkingLevel: WorkonThinkingLevel;
-  routingMode: "default" | "exact-model";
+  routingMode: "default" | "override";
   routingReason: string;
 }
 
@@ -121,18 +122,37 @@ export interface WorkonBootstrapRequest {
   modelSelection?: WorkonModelSelection;
 }
 
-export const WORKON_DEFAULT_MODEL = "github-copilot/gpt-5.5";
 export const WORKON_DEFAULT_THINKING_LEVEL: WorkonThinkingLevel = "medium";
 
+function defaultWorkonModelSelection(): WorkonModelSelection {
+  const profile = resolveKhalaProfile("development");
+  return {
+    exactModel: profile.model ?? "",
+    exactThinkingLevel: profile.thinkingLevel,
+    routingMode: "default",
+    routingReason: profile.model
+      ? `Khala/workon development profile (${profile.source})`
+      : `Khala/workon development profile unresolved: ${profile.reason ?? "unknown reason"}. Run /khala status for setup guidance or pass --model <id>.`,
+  };
+}
+
 export const DEFAULT_WORKON_MODEL_SELECTION: WorkonModelSelection = {
-  exactModel: WORKON_DEFAULT_MODEL,
-  exactThinkingLevel: WORKON_DEFAULT_THINKING_LEVEL,
-  routingMode: "default",
-  routingReason: "Khala/workon default-pinned model routing",
+  get exactModel() {
+    return defaultWorkonModelSelection().exactModel;
+  },
+  get exactThinkingLevel() {
+    return defaultWorkonModelSelection().exactThinkingLevel;
+  },
+  get routingMode() {
+    return defaultWorkonModelSelection().routingMode;
+  },
+  get routingReason() {
+    return defaultWorkonModelSelection().routingReason;
+  },
 };
 
 function workonModelSelection(request: WorkonBootstrapRequest): WorkonModelSelection {
-  return request.modelSelection ?? DEFAULT_WORKON_MODEL_SELECTION;
+  return request.modelSelection ?? defaultWorkonModelSelection();
 }
 
 interface GithubIssueTarget {
@@ -175,6 +195,7 @@ interface WorkonBootstrapEvidence {
   handoffRecoveryInstructions?: string[];
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
+  failureSummary?: string;
   modelSelection?: WorkonModelSelection;
   readinessActionItems?: string[];
   readinessActionItemsByIssue?: Array<{
@@ -590,6 +611,7 @@ function buildHandoffLedger(params: {
   handoffRecoveryInstructions?: string[];
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
+  failureSummary?: string;
   gaps?: string[];
   zellijResult?: ZellijHandoffResult | null;
 }): WorkonHandoffLedger {
@@ -613,16 +635,18 @@ function buildHandoffLedger(params: {
         : "not-attempted";
   const failureReason = readinessActionItems.length > 0
     ? "Autonomous readiness failed."
-    : params.handoffFailureSummary ?? firstMeaningfulGap(params.gaps ?? []);
+    : params.handoffFailureSummary ?? params.failureSummary ?? firstMeaningfulGap(params.gaps ?? []);
   const route: WorkonRoute = readinessActionItems.length > 0 ? "not_ready" : routeFromWorktreeStatus(params.worktreeStatus);
   const failurePhase = failureReason
     ? readinessActionItems.length > 0
       ? "readiness"
       : params.handoffFailureSummary || params.zellijResult
         ? "zellij-handoff"
-        : params.worktreeStatus === "blocked"
-          ? "worktree"
-          : "bootstrap"
+        : params.failureSummary
+          ? "bootstrap"
+          : params.worktreeStatus === "blocked"
+            ? "worktree"
+            : "bootstrap"
     : null;
 
   return {
@@ -1719,7 +1743,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
       issueUrl: issue?.url,
       recoveryCommand: evidence.handoffRecoveryInstructions?.[0] ?? evidence.ledger?.recoveryInstructions[0],
       operatorAction: evidence.handoffOperatorAction ?? (evidence.ledger?.recoveryInstructions.length ? undefined : evidence.ledger?.safeNextAction),
-      failureSummary: evidence.handoffFailureSummary ?? evidence.ledger?.failure.summary ?? undefined,
+      failureSummary: evidence.handoffFailureSummary ?? evidence.failureSummary ?? evidence.ledger?.failure.summary ?? undefined,
     }),
     "Deterministic workon bootstrap evidence:",
   ];
@@ -1760,7 +1784,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         ...(evidence.ledger?.heartbeat.action ? [`Heartbeat action: ${evidence.ledger.heartbeat.action}`] : []),
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
-        `Exact model: ${evidence.modelSelection?.exactModel ?? DEFAULT_WORKON_MODEL_SELECTION.exactModel}`,
+        `Exact model: ${evidence.modelSelection?.exactModel || DEFAULT_WORKON_MODEL_SELECTION.exactModel || "(unresolved)"}`,
         `Exact thinking level: ${evidence.modelSelection?.exactThinkingLevel ?? DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
         `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
@@ -1900,6 +1924,37 @@ export async function prepareWorkonBootstrap(
 
   const branchName = buildWorkonBranchName(issues);
   const worktreeCommand = `cd ${shellQuote(resolvedRequest.cwd)} && wt switch --create ${branchName} --format json`;
+  const modelSelection = workonModelSelection(resolvedRequest);
+  if (modelSelection.routingMode === "default" && !modelSelection.exactModel) {
+    const operatorAction = "Run /khala status for model profile setup guidance, or rerun /workon with an explicit --model <provider/model> override.";
+    const failureSummary = modelSelection.routingReason;
+    evidence.issue = issue;
+    evidence.issues = issues;
+    evidence.repo = repo;
+    evidence.branchName = branchName;
+    evidence.worktreeCommand = worktreeCommand;
+    evidence.worktreeStatus = "blocked";
+    evidence.route = "blocked";
+    evidence.modelSelection = modelSelection;
+    evidence.handoffOperatorAction = operatorAction;
+    evidence.failureSummary = failureSummary;
+    evidence.gaps.push(failureSummary);
+    const ledger = buildHandoffLedger({
+      request: resolvedRequest,
+      repo,
+      issue,
+      issues,
+      branchName,
+      worktreeCommand,
+      worktreeStatus: "blocked",
+      handoffOperatorAction: operatorAction,
+      failureSummary,
+      gaps: evidence.gaps,
+    });
+    evidence.ledger = ledger;
+    evidence.ledgerPath = await writeHandoffLedger(ledger);
+    return formatWorkonBootstrapEvidence(evidence);
+  }
   if (resolvedRequest.dryRun) {
     evidence.gaps.push("Dry run requested: prepared capsule and branch suggestion only; no Worktrunk, Zellij, Pi, or heartbeat launch was attempted.");
   }
