@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +12,34 @@ import {
   type WorkonCommandRunner,
 } from "../../extensions/commands/workon.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
+
+let defaultPiPathDir: string | null = null;
+let previousPath: string | undefined;
+
+before(async () => {
+  defaultPiPathDir = await mkdtemp(path.join(tmpdir(), "khala-workon-default-pi-"));
+  previousPath = process.env.PATH;
+  await writeFile(
+    path.join(defaultPiPathDir, "pi"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models gpt-5.4-mini" ]]; then
+  printf 'provider model context max-out thinking images\n'
+  printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
+fi
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${defaultPiPathDir}${path.delimiter}${previousPath ?? ""}`;
+  resetKhalaProfileDiscoveryForTests();
+});
+
+after(async () => {
+  resetKhalaProfileDiscoveryForTests();
+  if (previousPath === undefined) delete process.env.PATH;
+  else process.env.PATH = previousPath;
+  if (defaultPiPathDir) await rm(defaultPiPathDir, { force: true, recursive: true });
+});
 
 function fakeGhRunner(outputs: Record<string, string>): {
   calls: string[];
