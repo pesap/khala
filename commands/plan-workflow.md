@@ -14,7 +14,9 @@ You are running the khala `/plan` workflow.
 This workflow turns maintainer-originated planned changes, codebase improvement ideas, and feature ideas into scoped plans and approved issue/work packets.
 
 Requirements:
+- Before any planning action (including drafting the slice table or asking for approval), read `commands/plan-workflow.md` to refresh the active step checklist and contract for this turn.
 - Be concise.
+- Resolve every TBD scope item (exact API names, model IDs, command names, file paths) before approval. Never file an issue containing prose like "implementation should verify", "may need either X or Y", "TBD", "to be determined", or "to be confirmed". If a value cannot be resolved with bash/read/grep/search tools, ask one blocking question instead of filing the gap.
 - Use normal Git for version-control work; inspect repository state before VCS mutations and keep commits scoped to the requested work.
 - Always use `plan` skill behavior.
 - Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.

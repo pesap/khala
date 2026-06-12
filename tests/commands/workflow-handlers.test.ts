@@ -4,6 +4,13 @@ import assert from "node:assert/strict";
 import { createWorkflowCommandHandlers } from "../../extensions/commands/workflow-handlers.ts";
 import { parseWorkonArgs } from "../../extensions/commands/parsers.ts";
 
+// /workon now fails fast when no active Zellij session is detected. Default to
+// a sentinel value so existing handler tests continue to exercise the launch
+// path; tests that need the fail-fast path manage ZELLIJ explicitly.
+if (!process.env.ZELLIJ) {
+  process.env.ZELLIJ = "/tmp/pi-workflow-handlers-test-zellij";
+}
+
 function createHandlers(captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; notifications?: string[] }) {
   return createWorkflowCommandHandlers({
     pi: { appendEntry: () => undefined } as never,
@@ -211,4 +218,40 @@ test("workon handler fails fast when issue URL does not match repo override", as
   assert.deepEqual(captured.notifications, [
     "All /workon targets must match --repo pesap/agents; found issue URL for pesap/other.",
   ]);
+});
+
+test("workon handler fails fast when no active Zellij session in start mode", async () => {
+  const captured: { sections?: string[]; notifications?: string[] } = { notifications: [] };
+  const handlers = createHandlers(captured);
+  const previous = process.env.ZELLIJ;
+  delete process.env.ZELLIJ;
+  try {
+    await handlers.workon("73 --repo pesap/agents", { cwd: process.cwd() } as never);
+  } finally {
+    if (previous !== undefined) process.env.ZELLIJ = previous;
+  }
+
+  assert.equal(captured.sections, undefined);
+  assert.equal(captured.notifications?.length, 1);
+  assert.match(
+    captured.notifications?.[0] ?? "",
+    /needs an active Zellij session/,
+  );
+  assert.match(captured.notifications?.[0] ?? "", /--dry-run/);
+});
+
+test("workon handler skips the Zellij gate in --dry-run mode", async () => {
+  const captured: { sections?: string[]; notifications?: string[] } = { notifications: [] };
+  const handlers = createHandlers(captured);
+  const previous = process.env.ZELLIJ;
+  delete process.env.ZELLIJ;
+  try {
+    await handlers.workon("73 --repo pesap/agents --dry-run", { cwd: process.cwd() } as never);
+  } finally {
+    if (previous !== undefined) process.env.ZELLIJ = previous;
+  }
+
+  // Dry-run should still build sections (it never launches anything).
+  assert.ok(captured.sections);
+  assert.deepEqual(captured.notifications, []);
 });

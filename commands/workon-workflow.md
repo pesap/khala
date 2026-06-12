@@ -12,6 +12,7 @@ You are running the khala `/workon` workflow.
 This workflow starts or prepares autonomous work from a clear, approved issue/work packet. It is a session bootstrap workflow, not a planning or implementation workflow.
 
 Requirements:
+- Before any workon action (including reporting readiness or recovery), read `commands/workon-workflow.md` to refresh the active step checklist and contract for this turn.
 - Be concise.
 - Accept only an issue URL or issue number. Use `/plan` for maintainer ideas and `/triage` for user-posted issue intake before `/workon`.
 - Preserve issue-first discipline: every autonomous work session needs a durable source issue.

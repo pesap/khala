@@ -27,6 +27,7 @@ import {
   evaluateModelEscalation,
   evaluateSkillRouting,
   evaluateToolEfficiency,
+  evaluateWorkflowContract,
   evidenceNeedReason,
   externalEvidenceQueryQuality,
   explicitSkillNamesForUserText,
@@ -10179,5 +10180,60 @@ test("uses configured tool-failure escalation threshold", () => {
       satisfied: false,
       reason: "2 tool failure results in this turn",
     },
+  );
+});
+
+const WORKFLOW_CONTRACT_USER_TEXT = [
+  "Workflow skills manifest:",
+  "- worktrunk: Worktrunk skill summary. File: skills/worktrunk/SKILL.md",
+  "Load full skill docs only when needed for a concrete analysis track or edit.",
+  "",
+  "Deterministic workflow contract:",
+  "- Workflow: workon-workflow",
+  "- Treat the YAML workflow spec as the state machine. Execute steps in order.",
+  "- When the workflow or prompt lists skills, guides, project rules, or review guidelines, load the required guide before that track and convert its concrete constraints into the active step checklist.",
+  "Ordered workflow steps:",
+  "1. scope",
+  "2. handoff",
+].join("\n");
+
+test("workflow contract accepts a read of commands/<name>-workflow.md as a guide load", () => {
+  const messages: Message[] = [
+    textMessage("user", WORKFLOW_CONTRACT_USER_TEXT),
+    assistantToolCall("read", { path: "commands/workon-workflow.md" }),
+    toolResult("workon command prompt body"),
+    assistantToolCall("read", { path: "workflows/workon-workflow.yaml" }),
+    toolResult("workflow yaml body"),
+  ];
+
+  const decision = evaluateWorkflowContract({
+    messages,
+    userText: WORKFLOW_CONTRACT_USER_TEXT,
+    assistantText: "Bootstrap report follows.",
+  });
+
+  assert.equal(decision.required, true);
+  assert.equal(decision.satisfied, true);
+  assert.equal(decision.reason, "workflow contract evidence is present");
+});
+
+test("workflow contract still flags drift when no guide-shaped file was read", () => {
+  const messages: Message[] = [
+    textMessage("user", WORKFLOW_CONTRACT_USER_TEXT),
+    assistantToolCall("read", { path: "README.md" }),
+    toolResult("readme body"),
+  ];
+
+  const decision = evaluateWorkflowContract({
+    messages,
+    userText: WORKFLOW_CONTRACT_USER_TEXT,
+    assistantText: "Bootstrap report follows.",
+  });
+
+  assert.equal(decision.required, true);
+  assert.equal(decision.satisfied, false);
+  assert.equal(
+    decision.reason,
+    "required workflow guide or skill was not loaded",
   );
 });

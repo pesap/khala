@@ -4357,7 +4357,7 @@ function conversationHasGuideLoad(messages: AgentEndEventMessage[]): boolean {
         const targets = localArtifactTargetsFromToolArguments(item.arguments);
         if (
           targets.some((target) =>
-            /(?:SKILL\.md|(?:guide|guidelines?|rules?)\.(?:md|txt|ya?ml)|AGENTS\.md|CONTRIBUTING\.md)$/i.test(
+            /(?:SKILL\.md|(?:guide|guidelines?|rules?)\.(?:md|txt|ya?ml)|AGENTS\.md|CONTRIBUTING\.md|[-_]workflow\.(?:md|ya?ml)|[-_]handoff-template\.(?:md|txt))$/i.test(
               target,
             ),
           )

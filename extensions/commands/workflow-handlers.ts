@@ -701,6 +701,14 @@ export function createWorkflowCommandHandlers(params: {
         notify(ctx, targetRepoError, "error");
         return;
       }
+      if (parsed.mode === "start" && !parsed.dryRun && !isActiveZellijEnv(process.env.ZELLIJ)) {
+        notify(
+          ctx,
+          "/workon needs an active Zellij session to launch the worktree and Pi handoff. Run 'zellij' (or 'zellij attach <session>'), then re-run /workon <issue>. Use '/workon <issue> --dry-run' to prepare the capsule without launching.",
+          "error",
+        );
+        return;
+      }
       const workonBootstrapSections = await prepareWorkonBootstrap({
         cwd: ctx.cwd,
         target: parsed.target,

@@ -949,6 +949,48 @@ const REVIEW_SIZE_RISK_TERMS = [
   "over 500",
 ];
 
+// Phrases that signal an issue body still defers a concrete scope decision to
+// implementation time (exact API/model/file/command names). /workon must not
+// start when these are present in the substantive issue body — workon's
+// "Do not redefine issue scope" contract would otherwise force the autonomous
+// agent to invent the missing decision.
+const SCOPE_DEFERRAL_PHRASES: RegExp[] = [
+  /\bimplementation should verify\b/i,
+  /\bverify\b[\s\S]{0,40}\bduring implementation\b/i,
+  /\bto be (?:determined|confirmed|decided)\b/i,
+  /(?:^|[^a-zA-Z0-9])TBD(?:[^a-zA-Z0-9]|$)/,
+  /\bmay need\b[\s\S]{0,80}\beither\b[\s\S]{0,80}\bor\b/i,
+  /\bwe(?:'ll| will)\s+(?:figure\s+out|decide|determine)\b/i,
+];
+
+const SCOPE_DEFERRAL_EXCLUDED_SECTION_HEADINGS = new Set([
+  "non goals",
+  "non-goals",
+  "out of scope",
+  "open questions",
+  "unresolved questions",
+  "questions",
+  "risks",
+  "workon readiness notes",
+  "/workon readiness notes",
+]);
+
+function substantiveBodyForDeferralScan(body: string | undefined): string {
+  if (!body) return "";
+  const sections = parseMarkdownSections(body);
+  if (sections.length === 0) return body;
+  return sections
+    .filter((section) => !SCOPE_DEFERRAL_EXCLUDED_SECTION_HEADINGS.has(section.normalizedHeading))
+    .map((section) => section.text)
+    .join("\n");
+}
+
+function hasUnresolvedScopeDeferral(body: string | undefined): boolean {
+  const text = substantiveBodyForDeferralScan(body);
+  if (!text) return false;
+  return SCOPE_DEFERRAL_PHRASES.some((pattern) => pattern.test(text));
+}
+
 function normalizeHeading(heading: string): string {
   return heading
     .toLowerCase()
@@ -1097,6 +1139,11 @@ function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {
   }
   if (reviewSizeRisk(body)) {
     actionItems.push("Narrow or split the issue so the resulting PR is likely under about 500 LOC changed.");
+  }
+  if (hasUnresolvedScopeDeferral(body)) {
+    actionItems.push(
+      "Resolve deferred scope decisions in the issue body (replace 'implementation should verify', 'TBD', 'may need either X or Y', etc. with concrete API/model/file/command names) before /workon.",
+    );
   }
 
   return actionItems;

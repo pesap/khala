@@ -1958,3 +1958,117 @@ test("groups grouped readiness failures by each blocking source issue", async ()
     await rm(tempDir, { force: true, recursive: true });
   }
 });
+
+test("refuses issues whose substantive body defers scope decisions to implementation", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-deferral-test-"));
+  try {
+    const deferredBody = [
+      "## Goal",
+      "",
+      "Add typed Khala model profiles.",
+      "",
+      "Implementation should verify the exact Pi model ID for '5.4 mini' before relying on it.",
+      "",
+      "## Acceptance criteria",
+      "",
+      "- Add a typed model-profile contract.",
+      "",
+      "## Validation plan",
+      "",
+      "- Run npm run test:node.",
+      "",
+      "## Non-goals",
+      "",
+      "- Do not rewrite the workflow engine broadly.",
+    ].join("\n");
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 192 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees":
+        incompleteIssueViewOutput(192, "feat: model profiles", deferredBody),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "192",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /Resolve deferred scope decisions in the issue body/);
+    assert.match(rendered, /Autonomous readiness: not-ready/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("allows deferral phrases inside Non-goals or Open questions sections", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-deferral-allowed-test-"));
+  try {
+    const allowedBody = [
+      "## Goal",
+      "",
+      "Add typed Khala model profiles.",
+      "",
+      "## Acceptance criteria",
+      "",
+      "- Add a typed model-profile contract with defaults `planning=copilot/gpt-5.5` and `agents=copilot/gpt-5.4-mini`.",
+      "",
+      "## Validation plan",
+      "",
+      "- Run npm run test:node.",
+      "",
+      "## Non-goals",
+      "",
+      "- Do not rewrite the workflow engine broadly.",
+      "",
+      "## Open questions",
+      "",
+      "- TBD whether to also surface auth status in the same command (tracked separately).",
+    ].join("\n");
+    const issueJson = JSON.stringify({
+      number: 193,
+      title: "feat: model profiles",
+      url: "https://github.com/pesap/agents/issues/193",
+      state: "OPEN",
+      body: allowedBody,
+      labels: [{ name: "enhancement" }],
+      assignees: [{ login: "pesap" }],
+      author: { login: "pesap" },
+    });
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 193 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueJson,
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "193",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.doesNotMatch(rendered, /Resolve deferred scope decisions/);
+    assert.match(rendered, /Autonomous readiness: ready/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
