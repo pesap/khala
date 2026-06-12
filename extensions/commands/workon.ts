@@ -195,6 +195,7 @@ interface WorkonBootstrapEvidence {
   handoffRecoveryInstructions?: string[];
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
+  failureSummary?: string;
   modelSelection?: WorkonModelSelection;
   readinessActionItems?: string[];
   readinessActionItemsByIssue?: Array<{
@@ -610,6 +611,7 @@ function buildHandoffLedger(params: {
   handoffRecoveryInstructions?: string[];
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
+  failureSummary?: string;
   gaps?: string[];
   zellijResult?: ZellijHandoffResult | null;
 }): WorkonHandoffLedger {
@@ -633,16 +635,18 @@ function buildHandoffLedger(params: {
         : "not-attempted";
   const failureReason = readinessActionItems.length > 0
     ? "Autonomous readiness failed."
-    : params.handoffFailureSummary ?? firstMeaningfulGap(params.gaps ?? []);
+    : params.handoffFailureSummary ?? params.failureSummary ?? firstMeaningfulGap(params.gaps ?? []);
   const route: WorkonRoute = readinessActionItems.length > 0 ? "not_ready" : routeFromWorktreeStatus(params.worktreeStatus);
   const failurePhase = failureReason
     ? readinessActionItems.length > 0
       ? "readiness"
       : params.handoffFailureSummary || params.zellijResult
         ? "zellij-handoff"
-        : params.worktreeStatus === "blocked"
-          ? "worktree"
-          : "bootstrap"
+        : params.failureSummary
+          ? "bootstrap"
+          : params.worktreeStatus === "blocked"
+            ? "worktree"
+            : "bootstrap"
     : null;
 
   return {
@@ -1739,7 +1743,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
       issueUrl: issue?.url,
       recoveryCommand: evidence.handoffRecoveryInstructions?.[0] ?? evidence.ledger?.recoveryInstructions[0],
       operatorAction: evidence.handoffOperatorAction ?? (evidence.ledger?.recoveryInstructions.length ? undefined : evidence.ledger?.safeNextAction),
-      failureSummary: evidence.handoffFailureSummary ?? evidence.ledger?.failure.summary ?? undefined,
+      failureSummary: evidence.handoffFailureSummary ?? evidence.failureSummary ?? evidence.ledger?.failure.summary ?? undefined,
     }),
     "Deterministic workon bootstrap evidence:",
   ];
@@ -1933,7 +1937,7 @@ export async function prepareWorkonBootstrap(
     evidence.route = "blocked";
     evidence.modelSelection = modelSelection;
     evidence.handoffOperatorAction = operatorAction;
-    evidence.handoffFailureSummary = failureSummary;
+    evidence.failureSummary = failureSummary;
     evidence.gaps.push(failureSummary);
     const ledger = buildHandoffLedger({
       request: resolvedRequest,
@@ -1944,7 +1948,7 @@ export async function prepareWorkonBootstrap(
       worktreeCommand,
       worktreeStatus: "blocked",
       handoffOperatorAction: operatorAction,
-      handoffFailureSummary: failureSummary,
+      failureSummary,
       gaps: evidence.gaps,
     });
     evidence.ledger = ledger;
