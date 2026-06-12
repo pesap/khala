@@ -13,6 +13,7 @@ import {
   WORKON_DEFAULT_THINKING_LEVEL,
   type WorkonMode,
   type WorkonModelSelection,
+  type WorkonThinkingLevel,
 } from "./workon.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
@@ -49,6 +50,7 @@ export interface ParseRecordResult<T> {
 export type CompliancePreset = "status" | "reset" | PolicyMode;
 
 const WORKON_MODES: readonly WorkonMode[] = ["prepare", "start"];
+const WORKON_THINKING_LEVELS: readonly WorkonThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
@@ -282,12 +284,23 @@ export function parseWorkonArgs(args: string): {
   const modelResult = removeFlag(rest, /(^|\s)--model\s+(\S+)(\s|$)/);
   rest = modelResult.value;
   const exactModel = normalizeWhitespace(modelResult.match?.[2] ?? "");
+
+  const thinkingResult = removeFlag(rest, /(^|\s)--thinking\s+(\S+)(\s|$)/);
+  rest = thinkingResult.value;
+  const exactThinkingLevel = parseAllowedInboxValue(
+    thinkingResult.match?.[2],
+    WORKON_DEFAULT_THINKING_LEVEL,
+    WORKON_THINKING_LEVELS,
+  );
+
   const modelSelection: WorkonModelSelection = exactModel
     ? {
         exactModel,
-        exactThinkingLevel: WORKON_DEFAULT_THINKING_LEVEL,
-        routingMode: "exact-model",
-        routingReason: "explicit --model override with default workon thinking",
+        exactThinkingLevel,
+        routingMode: "override",
+        routingReason: thinkingResult.match
+          ? "explicit --model and --thinking override"
+          : "explicit --model override with default workon thinking",
       }
     : DEFAULT_WORKON_MODEL_SELECTION;
 
