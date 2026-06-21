@@ -273,13 +273,18 @@ function searchableRunText(record: RunLedgerRecord): string {
   return parts.join(" ").toLowerCase();
 }
 
+function matchesRunListFilter(record: RunLedgerRecord, filter: string): boolean {
+  if (filter === "active") return record.status !== "completed";
+  return searchableRunText(record).includes(filter);
+}
+
 function formatRunListHelp(): string {
   return [
     "Usage: /run-list [filter]",
     "",
     "Lists newest durable Khala runs first.",
     `Default ledger: ${getGlobalRunLedgerDir()}`,
-    "Filter searches run id, status, workflow type, recovery classification, input, workflow state, structured completion text, ledger event ids/timestamps/text, skill metadata, and tool metadata.",
+    "Filter searches run id, status, workflow type, recovery classification, input, workflow state, structured completion text, ledger event ids/timestamps/text, skill metadata, and tool metadata. Use `active` to show unfinished runs.",
     "",
     "Examples:",
     "- /run-list needs_operator_review",
@@ -645,9 +650,7 @@ export function createRunLedgerCommandHandlers(params: {
       const runLedgerDir = params.runLedgerDir ?? getGlobalRunLedgerDir();
       const { runs, skipped } = await listRuns(runLedgerDir);
       const filter = rawArgs.toLowerCase();
-      const visibleRuns = filter
-        ? runs.filter(({ record }) => searchableRunText(record).includes(filter))
-        : runs;
+      const visibleRuns = filter ? runs.filter(({ record }) => matchesRunListFilter(record, filter)) : runs;
       if (visibleRuns.length === 0) {
         const skippedLine = skipped > 0 ? ` Skipped unreadable run files: ${skipped}.` : "";
         const filterLine = filter ? ` matching "${filter}"` : "";
