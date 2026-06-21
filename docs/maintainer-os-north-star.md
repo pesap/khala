@@ -190,3 +190,19 @@ Non-goals for the first prototype:
 4. Add session capsule discovery and stale-session detection.
 5. Add `/recheck-pr` for Copilot/reviewer/CI feedback loops.
 6. Promote repeated inbox findings into Khala lessons, repo docs, or automation.
+## Current harness gap
+
+The paused Khala work is still missing the local-first harness layer that turns
+run metadata into an operator-ready control surface. Recent slices expose
+durable ledgers, recovery classifications, resume attempts, tool gates, skill
+activity, and workflow progress, but the north star requires those signals to
+compose into a clear local answer to:
+
+- what work is active;
+- why it exists, including the source issue or PR when available;
+- where the local worktree, capsule, and run ledger live;
+- what state the workflow reached; and
+- what action is safe to take next.
+
+Until that surface exists across the primary commands, Khala has useful local
+telemetry but not yet the solid local-first agent harness described above.
