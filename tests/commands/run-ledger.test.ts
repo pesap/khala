@@ -147,6 +147,15 @@ test("run-list renders durable runs newest first", async () => {
         input: "investigate failing test",
         flags: {},
         startedAt: "2026-06-20T00:00:00.000Z",
+        events: [
+          {
+            id: "debug-1:resume_attempted:2026-06-20T00:05:00.000Z",
+            at: "2026-06-20T00:05:00.000Z",
+            type: "resume_attempted",
+            summary: "Operator requested conservative run resume.",
+            replaySafe: true,
+          },
+        ],
       }),
     );
     await writeRunLedger(
@@ -173,7 +182,7 @@ test("run-list renders durable runs newest first", async () => {
 
     assert.match(messages[0] ?? "", /Khala run ledger:/);
     assert.match(messages[0] ?? "", /- ship-1 started ship at=2026-06-20T00:10:00.000Z recovery=resumable input=ship branch/);
-    assert.match(messages[0] ?? "", /- debug-1 started debug at=2026-06-20T00:00:00.000Z recovery=resumable input=investigate failing test/);
+    assert.match(messages[0] ?? "", /- debug-1 started debug at=2026-06-20T00:00:00.000Z recovery=resumable resume_attempted=2026-06-20T00:05:00.000Z input=investigate failing test/);
     assert.ok((messages[0] ?? "").indexOf("ship-1") < (messages[0] ?? "").indexOf("debug-1"));
   } finally {
     await rm(tempDir, { recursive: true, force: true });

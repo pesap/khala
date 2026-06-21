@@ -452,6 +452,10 @@ function formatResumeAttemptSummary(recovery: ReturnType<typeof summarizeRunReco
   return `Resume attempts: latest=${recovery.latestResumeAttempt.at}${reason}`;
 }
 
+function formatResumeAttemptListPart(recovery: ReturnType<typeof summarizeRunRecovery>): string {
+  return recovery.latestResumeAttempt ? ` resume_attempted=${recovery.latestResumeAttempt.at}` : "";
+}
+
 function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): string {
   const unsafe = formatUnsafeEventDetails(record);
   const recovery = summarizeRunRecovery(record);
@@ -602,6 +606,7 @@ export function createRunLedgerCommandHandlers(params: {
         const completion = formatStructuredCompletionListPart(record.structuredCompletion);
         const workflowState = formatWorkflowStateListPart(record.workflow.state);
         const checkpoints = formatCheckpointListPart(record);
+        const resumeAttempt = formatResumeAttemptListPart(summarizeRunRecovery(record));
         const unsafe =
           record.resume.unsafeEventIds.length > 0
             ? ` unsafe=${record.resume.unsafeEventIds.length}`
@@ -610,7 +615,7 @@ export function createRunLedgerCommandHandlers(params: {
           record.resume.classification === "needs_operator_review"
             ? ` review_reason=${summarizeWorkflowText(record.resume.reason, 80)}`
             : "";
-        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${checkpoints} input=${summarizeRunInput(record.input)}`;
+        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${resumeAttempt}${checkpoints} input=${summarizeRunInput(record.input)}`;
       });
       if (skipped > 0) lines.push(`Skipped unreadable run files: ${skipped}`);
       const title = filter ? `Khala run ledger matching "${filter}":` : "Khala run ledger:";
