@@ -371,6 +371,57 @@ function formatCheckpointListPart(record: RunLedgerRecord): string {
   return ` checkpoints=${checkpoints.length} latest_checkpoint=${latest.at}${reasonPart}`;
 }
 
+function formatSkillActivitySummary(record: RunLedgerRecord): string {
+  const skillEvents = record.events.filter((event) =>
+    event.type === "skill_routed" ||
+    event.type === "skill_loaded" ||
+    event.type === "skill_missing" ||
+    event.type === "skill_used_without_load"
+  );
+  if (skillEvents.length === 0) return "";
+
+  const counts = new Map<string, number>();
+  const sources = new Set<string>();
+  const missing = new Set<string>();
+  const usedWithoutLoad = new Set<string>();
+
+  for (const event of skillEvents) {
+    counts.set(event.type, (counts.get(event.type) ?? 0) + 1);
+    if (!isRecord(event.data?.skill)) continue;
+
+    const skill = event.data.skill;
+    if (typeof skill.source === "string" && skill.source.trim()) {
+      sources.add(skill.source.trim());
+    }
+    if (typeof skill.name !== "string" || !skill.name.trim()) continue;
+
+    const skillName = skill.name.trim();
+    if (event.type === "skill_missing") {
+      missing.add(skillName);
+    } else if (event.type === "skill_used_without_load") {
+      usedWithoutLoad.add(skillName);
+    }
+  }
+
+  const countParts = [
+    "skill_routed",
+    "skill_loaded",
+    "skill_missing",
+    "skill_used_without_load",
+  ].flatMap((type) => {
+    const count = counts.get(type) ?? 0;
+    return count > 0 ? [`${type}=${count}`] : [];
+  });
+  const sourcePart = sources.size > 0 ? ` sources=${[...sources].sort().join(",")}` : "";
+  const missingPart = missing.size > 0 ? ` missing=${[...missing].sort().join(",")}` : "";
+  const usedPart =
+    usedWithoutLoad.size > 0
+      ? ` used_without_load=${[...usedWithoutLoad].sort().join(",")}`
+      : "";
+
+  return `Skills: ${countParts.join(" ")}${sourcePart}${missingPart}${usedPart}`;
+}
+
 function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): string {
   const unsafe = formatUnsafeEventDetails(record);
   const recovery = summarizeRunRecovery(record);
@@ -390,6 +441,7 @@ function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): strin
     `Input: ${summarizeRunInput(record.input)}`,
     `Recovery: ${recovery.classification} - ${recovery.reason}${unsafe}`,
     `Next action: ${recovery.recommendedAction}`,
+    formatSkillActivitySummary(record),
     formatCheckpointSummary(record),
     ...formatWorkflowStateSummary(record.workflow.state),
     ...formatStructuredCompletionSummary(record.structuredCompletion),

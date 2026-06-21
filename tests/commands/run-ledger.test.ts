@@ -63,6 +63,77 @@ test("run-show renders a durable run ledger summary", async () => {
   }
 });
 
+test("run-show summarizes skill registry activity", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-run-show-skills-"));
+  try {
+    const runDir = path.join(tempDir, "runs");
+    await mkdir(runDir, { recursive: true });
+    const runFile = path.join(runDir, "skills-1.json");
+    await writeRunLedger(
+      runFile,
+      buildRunLedgerRecord({
+        version: 1,
+        id: "skills-1",
+        type: "debug",
+        input: "inspect skill routing",
+        flags: {
+          hasMutation: false,
+          hasExternalSideEffect: false,
+          hasUnsafeReplay: false,
+        },
+        startedAt: "2026-06-20T00:00:00.000Z",
+        events: [
+          {
+            id: "skills-1:skill_loaded:code-review:2026-06-20T00:01:00.000Z",
+            at: "2026-06-20T00:01:00.000Z",
+            type: "skill_loaded",
+            summary: "skill_loaded: code-review source=packaged.",
+            data: {
+              skill: {
+                name: "code-review",
+                source: "packaged",
+              },
+            },
+            sideEffectClass: "read_only",
+            replaySafe: true,
+          },
+          {
+            id: "skills-1:skill_missing:debugging:2026-06-20T00:02:00.000Z",
+            at: "2026-06-20T00:02:00.000Z",
+            type: "skill_missing",
+            summary: "skill_missing: debugging source=unknown.",
+            data: {
+              skill: {
+                name: "debugging",
+                source: "unknown",
+              },
+            },
+            sideEffectClass: "read_only",
+            replaySafe: true,
+          },
+        ],
+      }),
+    );
+
+    const messages: string[] = [];
+    const handlers = createRunLedgerCommandHandlers({
+      pi: { sendUserMessage: () => undefined } as never,
+      runLedgerDir: runDir,
+      nowIso: () => "2026-06-20T00:10:00.000Z",
+      notify: (_ctx, message) => messages.push(message),
+    });
+
+    await handlers.runShow("skills-1", fakeCtx(tempDir));
+
+    assert.match(
+      messages[0] ?? "",
+      /Skills: skill_loaded=1 skill_missing=1 sources=packaged,unknown missing=debugging/,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("run-list renders durable runs newest first", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-run-list-"));
   try {
