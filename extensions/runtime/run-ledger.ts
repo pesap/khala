@@ -503,3 +503,99 @@ export async function markRunInterrupted(params: {
   await writeRunLedger(params.runFile, record);
   return record;
 }
+export interface RunRecoverySummary {
+  classification: RunLedgerRecord["resume"]["classification"];
+  reason: string;
+  recommendedAction: string;
+  latestCheckpoint?: {
+    id: string;
+    at: string;
+    reason?: string;
+  };
+  latestCompletion?: {
+    id: string;
+    at: string;
+    outcome?: string;
+  };
+  latestResumeAttempt?: {
+    id: string;
+    at: string;
+    reason?: string;
+  };
+  unsafeEventIds: string[];
+}
+
+function findLastRunEvent(
+  record: RunLedgerRecord,
+  type: RunLedgerEvent["type"],
+): RunLedgerEvent | undefined {
+  for (let index = record.events.length - 1; index >= 0; index -= 1) {
+    const event = record.events[index];
+    if (event?.type === type) {
+      return event;
+    }
+  }
+  return undefined;
+}
+
+function eventStringData(
+  event: RunLedgerEvent | undefined,
+  key: string,
+): string | undefined {
+  if (!event || !isRecord(event.data)) {
+    return undefined;
+  }
+  const value = event.data[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export function summarizeRunRecovery(
+  record: RunLedgerRecord,
+): RunRecoverySummary {
+  const latestCheckpoint = findLastRunEvent(record, "checkpoint");
+  const latestCompletion = findLastRunEvent(record, "workflow_completed");
+  const latestResumeAttempt = findLastRunEvent(record, "resume_attempted");
+
+  let recommendedAction: string;
+  if (record.status === "completed") {
+    recommendedAction =
+      "Inspect structured completion and validation before starting follow-up work.";
+  } else if (record.resume.classification === "needs_operator_review") {
+    recommendedAction =
+      "Review unsafe events before resuming; do not repeat uncertain side effects.";
+  } else if (record.resume.classification === "resumable") {
+    recommendedAction =
+      "Resume from the latest safe checkpoint and skip already recorded side effects.";
+  } else {
+    recommendedAction =
+      "Continue the active run and record a checkpoint before risky side effects.";
+  }
+
+  return {
+    classification: record.resume.classification,
+    reason: record.resume.reason,
+    recommendedAction,
+    latestCheckpoint: latestCheckpoint
+      ? {
+          id: latestCheckpoint.id,
+          at: latestCheckpoint.at,
+          reason: eventStringData(latestCheckpoint, "reason"),
+        }
+      : undefined,
+    latestCompletion: latestCompletion
+      ? {
+          id: latestCompletion.id,
+          at: latestCompletion.at,
+          outcome: eventStringData(latestCompletion, "outcome"),
+        }
+      : undefined,
+    latestResumeAttempt: latestResumeAttempt
+      ? {
+          id: latestResumeAttempt.id,
+          at: latestResumeAttempt.at,
+          reason: eventStringData(latestResumeAttempt, "reason"),
+        }
+      : undefined,
+    unsafeEventIds: [...record.resume.unsafeEventIds],
+  };
+}
