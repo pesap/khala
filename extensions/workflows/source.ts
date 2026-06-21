@@ -13,7 +13,22 @@ function sourceFromUrl(url: string): RunLedgerSourceContext {
 export function workflowSourceFromFlags(flags: Record<string, unknown>): RunLedgerSourceContext | undefined {
   const target = typeof flags.target === "string" ? flags.target.trim() : "";
   const repo = typeof flags.repo === "string" ? flags.repo.trim() : "";
+  const issue =
+    typeof flags.issue === "string"
+      ? flags.issue.trim()
+      : typeof flags.issueNumber === "string"
+        ? flags.issueNumber.trim()
+        : typeof flags.issue_number === "string"
+          ? flags.issue_number.trim()
+          : "";
   const pr = typeof flags.pr === "string" ? flags.pr.trim() : "";
+  if (/^\d+$/.test(issue)) {
+    return {
+      issue: Number(issue),
+      ...(repo ? { url: `https://github.com/${repo}/issues/${issue}` } : {}),
+    };
+  }
+  if (/^https?:\/\//.test(issue)) return sourceFromUrl(issue);
   if (/^\d+$/.test(pr)) {
     return {
       pr: Number(pr),

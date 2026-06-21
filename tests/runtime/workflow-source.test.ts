@@ -10,6 +10,25 @@ test("workflowSourceFromFlags derives GitHub issue source context", () => {
   });
 });
 
+test("workflowSourceFromFlags derives source context from issue flags", () => {
+  assert.deepEqual(workflowSourceFromFlags({ issue: "196", repo: "pesap/agents" }), {
+    issue: 196,
+    url: "https://github.com/pesap/agents/issues/196",
+  });
+  assert.deepEqual(workflowSourceFromFlags({ issueNumber: "197", repo: "pesap/agents" }), {
+    issue: 197,
+    url: "https://github.com/pesap/agents/issues/197",
+  });
+  assert.deepEqual(workflowSourceFromFlags({ issue_number: "198", repo: "pesap/agents" }), {
+    issue: 198,
+    url: "https://github.com/pesap/agents/issues/198",
+  });
+  assert.deepEqual(workflowSourceFromFlags({ issue: "https://github.com/pesap/agents/issues/199" }), {
+    issue: 199,
+    url: "https://github.com/pesap/agents/issues/199",
+  });
+});
+
 test("workflowSourceFromFlags preserves URL source targets", () => {
   assert.deepEqual(workflowSourceFromFlags({ target: "https://github.com/pesap/agents/issues/196" }), {
     issue: 196,
