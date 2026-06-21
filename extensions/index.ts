@@ -146,6 +146,7 @@ import {
   ensureWorkflowSlotAvailable as ensureWorkflowSlotAvailableForCommand,
   markWorkflowWaitingForFooter,
 } from "./workflows/engine.ts";
+import { workflowSourceFromFlags } from "./workflows/source.ts";
 import { notifyWorkflowStarted } from "./workflows/notifications.ts";
 import {
   extractLastAssistantText,
@@ -1273,6 +1274,7 @@ async function beginWorkflowTracking(
     input,
     flags,
     workflowSpec,
+    source: workflowSourceFromFlags(flags),
     learningVersion: LEARNING_VERSION,
     ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
     makeId,
