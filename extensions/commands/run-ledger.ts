@@ -148,7 +148,11 @@ function formatWorkflowStateListPart(value: unknown): string {
   const currentStepIndex = Number.isInteger(value.currentStepIndex)
     ? (value.currentStepIndex as number)
     : null;
-  if (currentStepIndex === null || steps.length === 0) return "";
+  if (steps.length === 0) return "";
+  if (currentStepIndex === null) {
+    const completed = steps.filter((step) => step.status === "completed").length;
+    return completed > 0 ? ` step=completed:${completed}/${steps.length}` : "";
+  }
 
   const currentStep = steps[currentStepIndex];
   const currentStepId = currentStep

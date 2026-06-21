@@ -498,6 +498,46 @@ test("run-list filters by workflow state text", async () => {
   }
 });
 
+test("run-list shows completed workflow step progress", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-run-list-workflow-complete-"));
+  try {
+    const runLedgerDir = path.join(tempDir, "runs");
+    const record = buildRunLedgerRecord({
+      version: 1,
+      id: "workflow-complete-1",
+      type: "debug",
+      input: "finish ordered workflow",
+      flags: {},
+      startedAt: "2026-06-20T00:00:00.000Z",
+      workflowState: {
+        currentStepIndex: null,
+        steps: [
+          { index: 0, id: "inspect", action: "gather_evidence", status: "completed" },
+          { index: 1, id: "validate", action: "run_tests", status: "completed" },
+        ],
+      },
+    });
+    record.status = "completed";
+    record.finishedAt = "2026-06-20T00:10:00.000Z";
+    await writeRunLedger(path.join(runLedgerDir, "workflow-complete-1.json"), record);
+
+    const messages: string[] = [];
+    const handlers = createRunLedgerCommandHandlers({
+      pi: { sendUserMessage: () => undefined } as never,
+      runLedgerDir,
+      nowIso: () => "2026-06-20T00:20:00.000Z",
+      notify: (_ctx, message) => messages.push(message),
+    });
+
+    await handlers.runList("", fakeCtx(tempDir));
+
+    assert.match(messages[0] ?? "", /- workflow-complete-1 completed debug/);
+    assert.match(messages[0] ?? "", /step=completed:2\/2/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("run-list filters by ledger event text", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-run-list-event-filter-"));
   try {
