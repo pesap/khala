@@ -71,6 +71,7 @@ test("run-list active shows unfinished local runs", async () => {
 
     assert.match(messages[0] ?? "", /matching "active"/);
     assert.match(messages[0] ?? "", /active-1/);
+    assert.match(messages[0] ?? "", /next_action=/);
     assert.doesNotMatch(messages[0] ?? "", /completed-1/);
   } finally {
     await rm(runLedgerDir, { force: true, recursive: true });
@@ -141,6 +142,7 @@ test("run-list needs_operator_review shows review-gated runs", async () => {
 
     assert.match(messages[0] ?? "", /matching "needs_operator_review"/);
     assert.match(messages[0] ?? "", /review-1/);
+    assert.match(messages[0] ?? "", /next_action=/);
     assert.doesNotMatch(messages[0] ?? "", /resumable-1/);
 
     messages.length = 0;

@@ -451,6 +451,11 @@ function formatCheckpointListPart(record: RunLedgerRecord): string {
   return ` checkpoints=${checkpoints.length} latest_checkpoint=${latest.at}${reasonPart}`;
 }
 
+function formatRecommendedActionListPart(recovery: ReturnType<typeof summarizeRunRecovery>): string {
+  const action = summarizeWorkflowText(recovery.recommendedAction, 100);
+  return action ? ` next_action=${action}` : "";
+}
+
 function formatSkillActivitySummary(record: RunLedgerRecord): string {
   const skillEvents = record.events.filter((event) =>
     event.type === "skill_routed" ||
@@ -665,7 +670,9 @@ export function createRunLedgerCommandHandlers(params: {
         const source = formatRunSourceListPart(record.source);
         const workflowState = formatWorkflowStateListPart(record.workflow.state);
         const checkpoints = formatCheckpointListPart(record);
-        const resumeAttempt = formatResumeAttemptListPart(summarizeRunRecovery(record));
+        const recovery = summarizeRunRecovery(record);
+        const resumeAttempt = formatResumeAttemptListPart(recovery);
+        const nextAction = formatRecommendedActionListPart(recovery);
         const unsafe =
           record.resume.unsafeEventIds.length > 0
             ? ` unsafe=${record.resume.unsafeEventIds.length}`
@@ -674,7 +681,7 @@ export function createRunLedgerCommandHandlers(params: {
           record.resume.classification === "needs_operator_review"
             ? ` review_reason=${summarizeWorkflowText(record.resume.reason, 80)}`
             : "";
-        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at}${source} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${resumeAttempt}${checkpoints} input=${summarizeRunInput(record.input)}`;
+        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at}${source} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${resumeAttempt}${checkpoints} input=${summarizeRunInput(record.input)}${nextAction}`;
       });
       if (skipped > 0) lines.push(`Skipped unreadable run files: ${skipped}`);
       const title = filter ? `Khala run ledger matching "${filter}":` : "Khala run ledger:";
