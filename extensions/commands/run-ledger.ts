@@ -10,6 +10,7 @@ import {
   getGlobalRunLedgerDir,
   readRunLedger,
   resolveRunLedgerFile,
+  summarizeRunRecovery,
   type RunLedgerEvent,
   type RunLedgerRecord,
 } from "../runtime/run-ledger.ts";
@@ -358,6 +359,7 @@ function formatCheckpointListPart(record: RunLedgerRecord): string {
 
 function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): string {
   const unsafe = formatUnsafeEventDetails(record);
+  const recovery = summarizeRunRecovery(record);
   const events = record.events
     .slice(-8)
     .map(formatRunLedgerEventLine)
@@ -372,7 +374,8 @@ function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): strin
     `Started: ${record.startedAt}`,
     record.finishedAt ? `Finished: ${record.finishedAt}` : "",
     `Input: ${summarizeRunInput(record.input)}`,
-    `Recovery: ${record.resume.classification} - ${record.resume.reason}${unsafe}`,
+    `Recovery: ${recovery.classification} - ${recovery.reason}${unsafe}`,
+    `Next action: ${recovery.recommendedAction}`,
     formatCheckpointSummary(record),
     ...formatWorkflowStateSummary(record.workflow.state),
     ...formatStructuredCompletionSummary(record.structuredCompletion),

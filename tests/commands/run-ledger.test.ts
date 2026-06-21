@@ -52,6 +52,10 @@ test("run-show renders a durable run ledger summary", async () => {
 
     assert.match(messages[0] ?? "", /Run debug-1/);
     assert.match(messages[0] ?? "", /Status: started/);
+    assert.match(
+      messages[0] ?? "",
+      /Next action: /,
+    );
     assert.match(messages[0] ?? "", /Repo: pesap\/agents/);
     assert.match(messages[0] ?? "", /Input: investigate failing test/);
   } finally {
