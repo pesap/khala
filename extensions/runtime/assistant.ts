@@ -1,5 +1,7 @@
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 
+import { isMemoryRefreshToolName } from "./tool-registry.ts";
+
 export type WorkflowOutcome = "success" | "partial" | "failed";
 
 type AgentEndEventMessage = {
@@ -366,7 +368,7 @@ export function findPendingMemoryGateRecovery(
 
     if (message.role !== "assistant") continue;
     for (const toolName of extractToolCallNames(message)) {
-      if (toolName === "khala_read_memory") {
+      if (isMemoryRefreshToolName(toolName)) {
         sawMemoryRead = true;
         continue;
       }

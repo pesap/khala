@@ -18,6 +18,7 @@ import { createAgentCommandHandlers } from "./commands/agent.ts";
 import { createComplianceCommandHandlers } from "./commands/compliance.ts";
 import { createCuratorCommandHandlers } from "./commands/curator.ts";
 import { createLearnedWorkflowCommandHandlers } from "./commands/learned-workflows.ts";
+import { createRunLedgerCommandHandlers } from "./commands/run-ledger.ts";
 import { createRuleCommandHandlers } from "./commands/rules.ts";
 import {
   buildReviewTarget,
@@ -186,11 +187,22 @@ import {
   requiresFreshMemoryToolCall,
 } from "./runtime/tool-interception.ts";
 import {
+  appendRunLedgerEvent,
+  buildRunLedgerSkillEvent,
+  buildRunLedgerToolCallEvent,
+} from "./runtime/run-ledger.ts";
+import {
+  buildSkillUsedWithoutLoadEvents,
+  type SkillRegistryEvent,
+} from "./runtime/skill-registry.ts";
+import { getToolMetadata } from "./runtime/tool-registry.ts";
+import {
   runSessionEndHooks,
   type LowConfidenceEvent,
 } from "./runtime/lifecycle.ts";
 import {
   evaluateHarnessTurn,
+  assistantClaimedSkillNames,
   memorySearchQueryQuality,
   type HarnessTurnIssue,
 } from "./runtime/escalation.ts";
@@ -232,6 +244,68 @@ let memoryGate = {
   toolCallsSinceRead: 0,
   invalidReason: "task start",
 };
+
+async function recordPendingWorkflowToolCall(params: {
+  workflow: PendingWorkflow | null;
+  toolName: string;
+  input?: unknown;
+  at: string;
+  mutation: boolean;
+}): Promise<void> {
+  if (!params.workflow) return;
+  const metadata = getToolMetadata({
+    toolName: params.toolName,
+    input: params.input,
+  });
+  await appendRunLedgerEvent({
+    runFile: params.workflow.runFile,
+    event: buildRunLedgerToolCallEvent({
+      workflowId: params.workflow.id,
+      workflowMutationCount: params.workflow.mutationCount,
+      toolName: params.toolName,
+      at: params.at,
+      mutation: params.mutation,
+      metadata,
+      input: params.input,
+    }),
+  });
+}
+
+async function recordPendingWorkflowSkillEvent(params: {
+  workflow: PendingWorkflow | null;
+  event: SkillRegistryEvent;
+  at: string;
+}): Promise<void> {
+  if (!params.workflow) return;
+  await appendRunLedgerEvent({
+    runFile: params.workflow.runFile,
+    event: buildRunLedgerSkillEvent({
+      workflowId: params.workflow.id,
+      event: params.event,
+      at: params.at,
+    }),
+  });
+}
+
+async function recordSkillUsedWithoutLoadEvents(params: {
+  workflow: PendingWorkflow | null;
+  assistantText: string;
+  reason: string;
+  at: string;
+}): Promise<void> {
+  const events = buildSkillUsedWithoutLoadEvents({
+    claimedSkills: assistantClaimedSkillNames(params.assistantText),
+    loadedSkills: params.workflow?.loadedSkills ?? [],
+    reason: params.reason,
+  });
+  for (const event of events) {
+    await recordPendingWorkflowSkillEvent({
+      workflow: params.workflow,
+      event,
+      at: params.at,
+    });
+  }
+}
 
 function clampPositiveInt(
   value: unknown,
@@ -1162,6 +1236,7 @@ async function enqueueWorkflow(
   workflowPromptName: string,
   workflowFileName: string,
   sections: string[],
+  workflow?: PendingWorkflow,
 ): Promise<{ loadedSkills: string[] }> {
   return enqueueWorkflowMessage({
     pi,
@@ -1171,6 +1246,12 @@ async function enqueueWorkflow(
     readCommandPrompt: workflowReaders.readCommandPrompt,
     readWorkflow: workflowReaders.readWorkflow,
     readSkill: workflowReaders.readSkill,
+    onSkillEvent: (event) =>
+      recordPendingWorkflowSkillEvent({
+        workflow: workflow ?? null,
+        event,
+        at: nowIso(),
+      }),
   });
 }
 
@@ -1181,12 +1262,17 @@ async function beginWorkflowTracking(
   input: string,
   flags: WorkflowFlags,
 ): Promise<PendingWorkflow> {
+  const workflowConfig = getWorkflowConfig(activeRuntimeProfile, type);
+  const workflowSpec = workflowConfig
+    ? await workflowReaders.readWorkflow(workflowConfig.workflowFile)
+    : undefined;
   const pending = await beginTrackedWorkflow({
     pi,
     ctx,
     type,
     input,
     flags,
+    workflowSpec,
     learningVersion: LEARNING_VERSION,
     ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
     makeId,
@@ -2016,6 +2102,13 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     }
     if (counters.isMemoryRead) {
       markMemoryRead();
+      await recordPendingWorkflowToolCall({
+        workflow: pendingWorkflow,
+        toolName: event.toolName,
+        input: event.input,
+        at: nowIso(),
+        mutation: false,
+      });
       return;
     }
 
@@ -2029,13 +2122,18 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     }
 
     if (!isMutationToolCall(event)) {
+      await recordPendingWorkflowToolCall({
+        workflow: pendingWorkflow,
+        toolName: event.toolName,
+        input: event.input,
+        at: nowIso(),
+        mutation: false,
+      });
       if (isMemoryPersistenceToolName(event.toolName)) {
         resetMemoryGate("memory was updated");
       }
       return;
     }
-
-    if (pendingWorkflow) pendingWorkflow.mutationCount += 1;
 
     const decision = evaluateMutationPreflightPolicy({
       preflightMode: runtimeState.firstPrinciplesConfig.preflightMode,
@@ -2064,6 +2162,15 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         reason: decision.blockReason,
       };
     }
+
+    if (pendingWorkflow) pendingWorkflow.mutationCount += 1;
+    await recordPendingWorkflowToolCall({
+      workflow: pendingWorkflow,
+      toolName: event.toolName,
+      input: event.input,
+      at: nowIso(),
+      mutation: true,
+    });
   });
 
   loosePi.on("agent_end", async (event, ctx) => {
@@ -2245,6 +2352,16 @@ export default function khalaExtension(pi: ExtensionAPI): void {
           runtimeState.firstPrinciplesConfig.responseComplianceMode,
         harnessLimits: activeRuntimeProfile.harnessLimits,
       });
+
+      for (const issue of harnessIssues) {
+        if (issue.code !== "skill_routing") continue;
+        await recordSkillUsedWithoutLoadEvents({
+          workflow,
+          assistantText,
+          reason: issue.message,
+          at: nowIso(),
+        });
+      }
 
       for (const issue of harnessIssues) {
         appendHarnessIssueEntry(pi, issue, { workflow, userText });
@@ -2461,6 +2578,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     notify,
   });
 
+  const runLedgerHandlers = createRunLedgerCommandHandlers({
+    pi,
+    nowIso,
+    notify,
+  });
+
   const ruleHandlers = createRuleCommandHandlers({
     ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
     nowIso,
@@ -2518,6 +2641,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ...workflowHandlers,
       ...curatorHandlers,
       ...learnedWorkflowHandlers,
+      ...runLedgerHandlers,
       ...ruleHandlers,
       endAgent: agentHandlers.endAgent,
       khala,

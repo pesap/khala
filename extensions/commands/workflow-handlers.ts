@@ -135,6 +135,7 @@ export function createWorkflowCommandHandlers(params: {
     workflowPromptName: string,
     workflowFileName: string,
     sections: string[],
+    workflow?: PendingWorkflow<WorkflowType, WorkflowFlags>,
   ) => Promise<{ loadedSkills: string[] }>;
   clearPendingWorkflow: () => void;
   notifyWorkflowStarted: (
@@ -297,6 +298,7 @@ export function createWorkflowCommandHandlers(params: {
         runtime.promptFile,
         runtime.workflowFile,
         config.sections,
+        pending,
       );
       pending.loadedSkills = queued.loadedSkills;
 

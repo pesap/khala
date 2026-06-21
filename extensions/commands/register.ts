@@ -39,6 +39,10 @@ interface CommandRegistrarDeps {
     workflowList: CommandHandler;
     workflowShow: CommandHandler;
     workflowRun: CommandHandler;
+    runList: CommandHandler;
+    runShow: CommandHandler;
+    runResume: CommandHandler;
+    runCheckpoint: CommandHandler;
     ruleList: CommandHandler;
     ruleShow: CommandHandler;
     ruleAdd: CommandHandler;
@@ -87,6 +91,10 @@ export function registerCommands({
     { name: "workflow-list", description: "List reviewed khala learned workflows", handler: handlers.workflowList },
     { name: "workflow-show", description: "Show a khala learned workflow artifact and prompt template", handler: handlers.workflowShow },
     { name: "workflow-run", description: "Run a khala learned workflow by sending it to the agent", handler: handlers.workflowRun },
+    { name: "run-list", description: "List khala durable run ledgers, optionally filtered by text", handler: handlers.runList },
+    { name: "run-show", description: "Show a khala durable run ledger", handler: handlers.runShow },
+    { name: "run-resume", description: "Resume a khala durable run only when recovery is classified safe", handler: handlers.runResume },
+    { name: "run-checkpoint", description: "Record a safe checkpoint in a khala durable run ledger", handler: handlers.runCheckpoint },
     { name: "rule-list", description: "List active khala runtime rules", handler: handlers.ruleList },
     { name: "rule-show", description: "Show a khala runtime rule by id", handler: handlers.ruleShow },
     { name: "rule-add", description: "Add a durable khala runtime rule", handler: handlers.ruleAdd },

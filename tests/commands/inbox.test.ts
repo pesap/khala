@@ -13,6 +13,11 @@ import {
   type InboxCommandRunner,
 } from "../../extensions/commands/inbox.ts";
 import { parseInboxArgs } from "../../extensions/commands/parsers.ts";
+import {
+  buildRunLedgerRecord,
+  markRunInterrupted,
+  writeRunLedger,
+} from "../../extensions/runtime/run-ledger.ts";
 
 async function emptyCapsuleRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "khala-inbox-empty-test-"));
@@ -570,6 +575,139 @@ test("session focus reports blocked capsules with deleted worktrees", async () =
     assert.match(
       rendered,
       /evidence=session capsule metadata; capsule worktree path/,
+    );
+  } finally {
+    await rm(capsuleRoot, { recursive: true, force: true });
+  }
+});
+
+test("session focus reports interrupted global run ledger records", async () => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  const runLedgerDir = path.join(capsuleRoot, "runs");
+  try {
+    const safeRun = path.join(runLedgerDir, "review-resumable.json");
+    await writeRunLedger(
+      safeRun,
+      buildRunLedgerRecord({
+        version: 1,
+        id: "review-resumable",
+        type: "review",
+        input: "review current diff",
+        flags: { repo: "pesap/agents" },
+        cwd: "/repo/agents",
+        repo: "pesap/agents",
+        startedAt: "2026-06-05T12:00:00.000Z",
+      }),
+    );
+    await markRunInterrupted({
+      runFile: safeRun,
+      at: "2026-06-05T12:10:00.000Z",
+      eventId: "review-resumable:interrupted",
+      reason: "agent stopped after read-only evidence",
+    });
+
+    const { runner } = fakeCommandRunner({
+      "git worktree list --porcelain":
+        "worktree /repo/agents\nHEAD abc\nbranch refs/heads/main\n\n",
+      "git rev-parse --is-inside-work-tree": "true\n",
+      "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+    });
+
+    const sections = await collectInboxEvidence(
+      {
+        cwd: "/repo/agents",
+        limit: 5,
+        repo: "pesap/agents",
+        user: "",
+        forge: "gitlab",
+        focus: "sessions",
+        capsuleRoot,
+        runLedgerDir,
+        nowIso: "2026-06-05T13:00:00.000Z",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Agent\/session needs attention \(1\):/);
+    assert.match(rendered, /source=run-ledger-resumable/);
+    assert.match(
+      rendered,
+      /title="#review\/review-resumable: resumable run "review current diff""/,
+    );
+    assert.match(rendered, /next=\/run-resume review-resumable/);
+    assert.match(rendered, /evidence=global run ledger; resumable:/);
+  } finally {
+    await rm(capsuleRoot, { recursive: true, force: true });
+  }
+});
+
+test("session focus reports unsafe interrupted run ledgers as broken work", async () => {
+  const capsuleRoot = await emptyCapsuleRoot();
+  const runLedgerDir = path.join(capsuleRoot, "runs");
+  try {
+    const runFile = path.join(runLedgerDir, "ship-needs-review.json");
+    await writeRunLedger(
+      runFile,
+      buildRunLedgerRecord({
+        version: 1,
+        id: "ship-needs-review",
+        type: "ship",
+        input: "ship the current branch",
+        flags: { repo: "pesap/agents" },
+        cwd: "/repo/agents",
+        repo: "pesap/agents",
+        startedAt: "2026-06-05T11:00:00.000Z",
+        events: [
+          {
+            id: "ship-needs-review:mutation",
+            at: "2026-06-05T11:05:00.000Z",
+            type: "mutation",
+            summary: "mutating shell command started",
+            toolName: "bash",
+            sideEffectClass: "shell",
+            replaySafe: false,
+          },
+        ],
+      }),
+    );
+    await markRunInterrupted({
+      runFile,
+      at: "2026-06-05T11:10:00.000Z",
+      eventId: "ship-needs-review:interrupted",
+      reason: "agent stopped after shell mutation",
+    });
+
+    const { runner } = fakeCommandRunner({
+      "git worktree list --porcelain":
+        "worktree /repo/agents\nHEAD abc\nbranch refs/heads/main\n\n",
+      "git rev-parse --is-inside-work-tree": "true\n",
+      "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+    });
+
+    const sections = await collectInboxEvidence(
+      {
+        cwd: "/repo/agents",
+        limit: 5,
+        repo: "pesap/agents",
+        user: "",
+        forge: "gitlab",
+        focus: "sessions",
+        capsuleRoot,
+        runLedgerDir,
+        nowIso: "2026-06-05T13:00:00.000Z",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /My work is broken \(1\):/);
+    assert.match(rendered, /source=run-ledger-needs-review/);
+    assert.match(rendered, /needs_operator_review run "ship the current branch"/);
+    assert.match(rendered, /next=\/run-show ship-needs-review/);
+    assert.match(
+      rendered,
+      /evidence=global run ledger; needs_operator_review: .*; unsafe_events=1/,
     );
   } finally {
     await rm(capsuleRoot, { recursive: true, force: true });
