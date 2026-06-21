@@ -386,11 +386,14 @@ function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): strin
 }
 
 function buildResumePrompt(record: RunLedgerRecord, runFile: string): string {
+  const recovery = summarizeRunRecovery(record);
   return [
     `Resume Khala run \`${record.id}\` conservatively.`,
     "",
     "Run ledger:",
     runFile,
+    "",
+    `Next action: ${recovery.recommendedAction}`,
     "",
     "Recovery contract:",
     "- Read the run ledger before acting.",

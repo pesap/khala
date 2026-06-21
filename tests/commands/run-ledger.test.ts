@@ -743,6 +743,7 @@ test("run-resume queues prompt and records resume attempt for resumable run", as
 
     assert.match(sent[0] ?? "", /Resume Khala run `review-1` conservatively/);
     assert.match(sent[0] ?? "", /Do not repeat uncertain mutation/);
+    assert.match(sent[0] ?? "", /Next action: /);
     const persisted = JSON.parse(await readFile(runFile, "utf8"));
     assert.equal(persisted.events.at(-1).type, "resume_attempted");
   } finally {
