@@ -19,6 +19,7 @@ import {
   getGlobalRunLedgerDir,
   writeRunLedger,
   type RunLedgerEvent,
+  type RunLedgerSourceContext,
 } from "../runtime/run-ledger.ts";
 import {
   buildSkillRegistryEvent,
@@ -533,6 +534,7 @@ export async function beginWorkflowTracking<
   workflowSpec?: string;
   learningVersion: number;
   runLedgerDir?: string;
+  source?: RunLedgerSourceContext;
   ensureLearningStore: (cwd: string) => Promise<LearningPathsLike>;
   makeId: (prefix: string) => string;
   nowIso: () => string;
@@ -562,6 +564,7 @@ export async function beginWorkflowTracking<
       repo: typeof params.flags.repo === "string" ? params.flags.repo : undefined,
       startedAt,
       workflowState,
+      source: params.source,
       events: [
         buildRunLedgerWorkflowStartedEvent({
           workflowId: id,

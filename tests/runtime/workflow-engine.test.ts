@@ -165,6 +165,11 @@ test("workflow skill events can be recorded in the active run ledger", async () 
       ].join("\n"),
       learningVersion: 7,
       runLedgerDir: runsDir,
+      source: {
+        issue: 196,
+        pr: 194,
+        url: "https://github.com/pesap/agents/issues/196",
+      },
       ensureLearningStore: async () => ({
         runsDir,
         learningJsonl: path.join(tempDir, "memory", "learning.jsonl"),
@@ -216,6 +221,9 @@ test("workflow skill events can be recorded in the active run ledger", async () 
     });
 
     const ledger = JSON.parse(await readFile(workflow.runFile, "utf8"));
+    assert.equal(ledger.source.issue, 196);
+    assert.equal(ledger.source.pr, 194);
+    assert.equal(ledger.source.url, "https://github.com/pesap/agents/issues/196");
     assert.deepEqual(
       ledger.events
         .filter((event: { type: string }) => event.type.startsWith("skill_"))

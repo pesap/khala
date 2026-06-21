@@ -310,6 +310,7 @@ export function buildRunLedgerRecord(params: {
   repo?: string;
   startedAt: string;
   workflowState?: unknown;
+  source?: RunLedgerSourceContext;
   events?: RunLedgerEvent[];
 }): RunLedgerRecord {
   const events = params.events ?? [];
@@ -321,6 +322,7 @@ export function buildRunLedgerRecord(params: {
     flags: params.flags,
     cwd: params.cwd,
     repo: params.repo,
+    source: params.source,
     status: "started",
     startedAt: params.startedAt,
     workflow: {
