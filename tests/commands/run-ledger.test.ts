@@ -818,6 +818,8 @@ test("run-resume queues prompt and records resume attempt for resumable run", as
     assert.match(sent[0] ?? "", /Next action: /);
     const persisted = JSON.parse(await readFile(runFile, "utf8"));
     assert.equal(persisted.events.at(-1).type, "resume_attempted");
+    assert.equal(persisted.events.at(-1).data.recovery.classification, "resumable");
+    assert.deepEqual(persisted.events.at(-1).data.recovery.unsafeEventIds, []);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -88,12 +88,26 @@ export function buildRunLedgerSkillEvent(params: {
 export function buildRunLedgerResumeAttemptEvent(params: {
   runId: string;
   at: string;
+  recovery?: Pick<
+    RunRecoverySummary,
+    "classification" | "reason" | "recommendedAction" | "unsafeEventIds"
+  >;
 }): RunLedgerEvent {
   return {
     id: `${params.runId}:resume_attempted:${params.at}`,
     at: params.at,
     type: "resume_attempted",
     summary: "Operator requested conservative run resume.",
+    data: params.recovery
+      ? {
+          recovery: {
+            classification: params.recovery.classification,
+            reason: params.recovery.reason,
+            recommendedAction: params.recovery.recommendedAction,
+            unsafeEventIds: [...params.recovery.unsafeEventIds],
+          },
+        }
+      : undefined,
     replaySafe: true,
   };
 }

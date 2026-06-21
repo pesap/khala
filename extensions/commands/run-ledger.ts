@@ -611,11 +611,13 @@ export function createRunLedgerCommandHandlers(params: {
       }
 
       const resumedAt = params.nowIso();
+      const recovery = summarizeRunRecovery(record);
       await appendRunLedgerEvent({
         runFile,
         event: buildRunLedgerResumeAttemptEvent({
           runId: record.id,
           at: resumedAt,
+          recovery,
         }),
       });
 

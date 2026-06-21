@@ -177,6 +177,13 @@ test("resume attempt ledger event is replay-safe operator metadata", () => {
   const event = buildRunLedgerResumeAttemptEvent({
     runId: "review-1",
     at: "2026-06-20T00:10:00.000Z",
+    recovery: {
+      classification: "resumable",
+      reason: "Interrupted without unsafe side effects.",
+      recommendedAction:
+        "Resume from the latest safe checkpoint and skip already recorded side effects.",
+      unsafeEventIds: [],
+    },
   });
 
   assert.deepEqual(event, {
@@ -184,6 +191,15 @@ test("resume attempt ledger event is replay-safe operator metadata", () => {
     at: "2026-06-20T00:10:00.000Z",
     type: "resume_attempted",
     summary: "Operator requested conservative run resume.",
+    data: {
+      recovery: {
+        classification: "resumable",
+        reason: "Interrupted without unsafe side effects.",
+        recommendedAction:
+          "Resume from the latest safe checkpoint and skip already recorded side effects.",
+        unsafeEventIds: [],
+      },
+    },
     replaySafe: true,
   });
 });
