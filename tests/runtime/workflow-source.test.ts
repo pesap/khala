@@ -24,6 +24,17 @@ test("workflowSourceFromFlags derives GitHub PR source context", () => {
   });
 });
 
+test("workflowSourceFromFlags derives source context from PR flags", () => {
+  assert.deepEqual(workflowSourceFromFlags({ pr: "194", repo: "pesap/agents" }), {
+    pr: 194,
+    url: "https://github.com/pesap/agents/pull/194",
+  });
+  assert.deepEqual(workflowSourceFromFlags({ pr: "https://github.com/pesap/agents/pull/195" }), {
+    pr: 195,
+    url: "https://github.com/pesap/agents/pull/195",
+  });
+});
+
 test("workflowSourceFromFlags preserves non-GitHub URL source targets", () => {
   assert.deepEqual(workflowSourceFromFlags({ target: "https://gitlab.example.com/group/project/-/issues/7" }), {
     url: "https://gitlab.example.com/group/project/-/issues/7",
