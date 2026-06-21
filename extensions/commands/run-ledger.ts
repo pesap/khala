@@ -234,6 +234,7 @@ function searchableRunText(record: RunLedgerRecord): string {
     record.workflow.type,
     record.resume.classification,
     record.resume.reason,
+    summarizeRunRecovery(record).recommendedAction,
     ...record.resume.unsafeEventIds,
     record.input,
     ...searchableValueParts(record.source),

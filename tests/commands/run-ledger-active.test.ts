@@ -73,6 +73,12 @@ test("run-list active shows unfinished local runs", async () => {
     assert.match(messages[0] ?? "", /active-1/);
     assert.match(messages[0] ?? "", /next_action=/);
     assert.doesNotMatch(messages[0] ?? "", /completed-1/);
+
+    messages.length = 0;
+    await handlers.runList("resume", {} as never);
+
+    assert.match(messages[0] ?? "", /matching "resume"/);
+    assert.match(messages[0] ?? "", /active-1/);
   } finally {
     await rm(runLedgerDir, { force: true, recursive: true });
   }
