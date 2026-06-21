@@ -19,6 +19,7 @@ import {
   getGlobalRunLedgerDir,
   writeRunLedger,
   type RunLedgerEvent,
+  type RunLedgerLocalContext,
   type RunLedgerSourceContext,
 } from "../runtime/run-ledger.ts";
 import {
@@ -535,6 +536,7 @@ export async function beginWorkflowTracking<
   learningVersion: number;
   runLedgerDir?: string;
   source?: RunLedgerSourceContext;
+  local?: RunLedgerLocalContext;
   ensureLearningStore: (cwd: string) => Promise<LearningPathsLike>;
   makeId: (prefix: string) => string;
   nowIso: () => string;
@@ -565,6 +567,7 @@ export async function beginWorkflowTracking<
       startedAt,
       workflowState,
       source: params.source,
+      local: params.local,
       events: [
         buildRunLedgerWorkflowStartedEvent({
           workflowId: id,

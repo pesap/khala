@@ -170,6 +170,11 @@ test("workflow skill events can be recorded in the active run ledger", async () 
         pr: 194,
         url: "https://github.com/pesap/agents/issues/196",
       },
+      local: {
+        worktreePath: "/tmp/worktrunk.khala",
+        capsulePath: "/home/user/.pi/khala/github.com/pesap/agents/capsule.md",
+        ledgerPath: "/home/user/.pi/khala/github.com/pesap/agents/handoff.json",
+      },
       ensureLearningStore: async () => ({
         runsDir,
         learningJsonl: path.join(tempDir, "memory", "learning.jsonl"),
@@ -224,6 +229,9 @@ test("workflow skill events can be recorded in the active run ledger", async () 
     assert.equal(ledger.source.issue, 196);
     assert.equal(ledger.source.pr, 194);
     assert.equal(ledger.source.url, "https://github.com/pesap/agents/issues/196");
+    assert.equal(ledger.local.worktreePath, "/tmp/worktrunk.khala");
+    assert.equal(ledger.local.capsulePath, "/home/user/.pi/khala/github.com/pesap/agents/capsule.md");
+    assert.equal(ledger.local.ledgerPath, "/home/user/.pi/khala/github.com/pesap/agents/handoff.json");
     assert.deepEqual(
       ledger.events
         .filter((event: { type: string }) => event.type.startsWith("skill_"))
