@@ -826,6 +826,7 @@ test("run-resume blocks unsafe interrupted runs", async () => {
       notifications[0]?.message ?? "",
       /evidence=local mutation=filesystem side_effect=shell replay_safe=false memory_refresh=not_required/,
     );
+    assert.match(notifications[0]?.message ?? "", /gate=counts_task_tool_call,ages_memory/);
     assert.equal(sent.length, 0);
     assert.equal(notifications[0]?.type, "error");
     assert.match(notifications[0]?.message ?? "", /not safe to resume/);

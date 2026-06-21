@@ -279,7 +279,21 @@ function formatUnsafeEventMetadata(eventData: Record<string, unknown> | undefine
     typeof metadata.memoryRefreshRequirement === "string"
       ? ` memory_refresh=${metadata.memoryRefreshRequirement}`
       : "";
-  return `${evidence}${mutation}${sideEffect}${replay}${memory}`;
+  const gate = formatGateSatisfaction(metadata.gateSatisfaction);
+  return `${evidence}${mutation}${sideEffect}${replay}${memory}${gate}`;
+}
+
+function formatGateSatisfaction(value: unknown): string {
+  if (!isRecord(value)) return "";
+
+  const gates = [
+    value.countsTaskToolCall === true ? "counts_task_tool_call" : "",
+    value.agesMemory === true ? "ages_memory" : "",
+    value.satisfiesMemoryRead === true ? "satisfies_memory_read" : "",
+    value.persistsMemory === true ? "persists_memory" : "",
+  ].filter(Boolean);
+
+  return gates.length > 0 ? ` gate=${gates.join(",")}` : "";
 }
 
 function formatEventSkillSummary(eventData: Record<string, unknown> | undefined): string {
