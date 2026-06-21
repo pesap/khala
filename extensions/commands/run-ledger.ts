@@ -443,6 +443,15 @@ function formatSkillActivitySummary(record: RunLedgerRecord): string {
   return `Skills: ${countParts.join(" ")}${sourcePart}${missingPart}${usedPart}`;
 }
 
+function formatResumeAttemptSummary(recovery: ReturnType<typeof summarizeRunRecovery>): string {
+  if (!recovery.latestResumeAttempt) return "";
+
+  const reason = recovery.latestResumeAttempt.reason
+    ? ` reason=${summarizeWorkflowText(recovery.latestResumeAttempt.reason, 80)}`
+    : "";
+  return `Resume attempts: latest=${recovery.latestResumeAttempt.at}${reason}`;
+}
+
 function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): string {
   const unsafe = formatUnsafeEventDetails(record);
   const recovery = summarizeRunRecovery(record);
@@ -462,6 +471,7 @@ function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): strin
     `Input: ${summarizeRunInput(record.input)}`,
     `Recovery: ${recovery.classification} - ${recovery.reason}${unsafe}`,
     `Next action: ${recovery.recommendedAction}`,
+    formatResumeAttemptSummary(recovery),
     formatSkillActivitySummary(record),
     formatCheckpointSummary(record),
     ...formatWorkflowStateSummary(record.workflow.state),

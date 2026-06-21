@@ -823,6 +823,10 @@ test("run-resume queues prompt and records resume attempt for resumable run", as
     assert.deepEqual(persisted.events.at(-1).data.recovery.unsafeEventIds, []);
 
     await handlers.runShow("review-1", fakeCtx(tempDir));
+    assert.match(
+      notifications.at(-1) ?? "",
+      /Resume attempts: latest=2026-06-20T00:10:00.000Z/,
+    );
     assert.match(notifications.at(-1) ?? "", /resume_recovery=resumable/);
     assert.match(notifications.at(-1) ?? "", /resume_unsafe=0/);
   } finally {
