@@ -275,6 +275,7 @@ function searchableRunText(record: RunLedgerRecord): string {
 
 function matchesRunListFilter(record: RunLedgerRecord, filter: string): boolean {
   if (filter === "active") return record.status !== "completed";
+  if (filter === "resumable" || filter === "needs_operator_review") return record.resume.classification === filter;
   return searchableRunText(record).includes(filter);
 }
 
