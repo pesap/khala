@@ -148,6 +148,24 @@ function formatRunSourceSummary(sourceContext: unknown): string[] {
   return summary.length > 0 ? [`Source: ${summary}`] : [];
 }
 
+function formatRunLocalListPart(localContext: unknown): string {
+  if (!isRecord(localContext)) return "";
+  const worktree = firstString(localContext.worktreePath, localContext.worktree, localContext.worktree_path);
+  const capsule = firstString(localContext.capsulePath, localContext.capsule, localContext.capsule_path);
+  const ledger = firstString(localContext.ledgerPath, localContext.ledger, localContext.ledger_path);
+  const parts = [
+    worktree ? `worktree=${summarizeWorkflowText(worktree, 80)}` : "",
+    capsule ? `capsule=${summarizeWorkflowText(capsule, 80)}` : "",
+    ledger ? `ledger=${summarizeWorkflowText(ledger, 80)}` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
+function formatRunLocalSummary(localContext: unknown): string[] {
+  const summary = formatRunLocalListPart(localContext).trim();
+  return summary.length > 0 ? [`Local: ${summary}`] : [];
+}
+
 function summarizeWorkflowText(value: unknown, maxLength = 120): string {
   if (typeof value !== "string") return "";
   const normalized = value.trim().replace(/\s+/g, " ");
@@ -219,6 +237,7 @@ function searchableRunText(record: RunLedgerRecord): string {
     ...record.resume.unsafeEventIds,
     record.input,
     ...searchableValueParts(record.source),
+    ...searchableValueParts(record.local),
   ];
   if (isRecord(record.structuredCompletion)) {
     const completion = record.structuredCompletion;
@@ -539,6 +558,7 @@ function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): strin
     record.finishedAt ? `Finished: ${record.finishedAt}` : "",
     `Input: ${summarizeRunInput(record.input)}`,
     ...formatRunSourceSummary(record.source),
+    ...formatRunLocalSummary(record.local),
     `Recovery: ${recovery.classification} - ${recovery.reason}${unsafe}`,
     `Next action: ${recovery.recommendedAction}`,
     formatResumeAttemptSummary(recovery),
@@ -669,6 +689,7 @@ export function createRunLedgerCommandHandlers(params: {
         const at = record.finishedAt ?? record.startedAt;
         const completion = formatStructuredCompletionListPart(record.structuredCompletion);
         const source = formatRunSourceListPart(record.source);
+        const local = formatRunLocalListPart(record.local);
         const workflowState = formatWorkflowStateListPart(record.workflow.state);
         const checkpoints = formatCheckpointListPart(record);
         const recovery = summarizeRunRecovery(record);
@@ -682,7 +703,7 @@ export function createRunLedgerCommandHandlers(params: {
           record.resume.classification === "needs_operator_review"
             ? ` review_reason=${summarizeWorkflowText(record.resume.reason, 80)}`
             : "";
-        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at}${source} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${resumeAttempt}${checkpoints} input=${summarizeRunInput(record.input)}${nextAction}`;
+        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at}${source}${local} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${resumeAttempt}${checkpoints} input=${summarizeRunInput(record.input)}${nextAction}`;
       });
       if (skipped > 0) lines.push(`Skipped unreadable run files: ${skipped}`);
       const title = filter ? `Khala run ledger matching "${filter}":` : "Khala run ledger:";

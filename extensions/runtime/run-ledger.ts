@@ -192,12 +192,19 @@ export interface RunLedgerSourceContext {
   url?: string;
 }
 
+export interface RunLedgerLocalContext {
+  worktreePath?: string;
+  capsulePath?: string;
+  ledgerPath?: string;
+}
+
 export interface RunLedgerRecord {
   version: number;
   id: string;
   type: string;
   input: string;
   source?: RunLedgerSourceContext;
+  local?: RunLedgerLocalContext;
   flags: WorkflowFlags;
   cwd?: string;
   repo?: string;
@@ -311,6 +318,7 @@ export function buildRunLedgerRecord(params: {
   startedAt: string;
   workflowState?: unknown;
   source?: RunLedgerSourceContext;
+  local?: RunLedgerLocalContext;
   events?: RunLedgerEvent[];
 }): RunLedgerRecord {
   const events = params.events ?? [];
@@ -323,6 +331,7 @@ export function buildRunLedgerRecord(params: {
     cwd: params.cwd,
     repo: params.repo,
     source: params.source,
+    local: params.local,
     status: "started",
     startedAt: params.startedAt,
     workflow: {
