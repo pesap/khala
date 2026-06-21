@@ -225,6 +225,7 @@ function formatRunListHelp(): string {
     "Usage: /run-list [filter]",
     "",
     "Lists newest durable Khala runs first.",
+    `Default ledger: ${getGlobalRunLedgerDir()}`,
     "Filter searches run id, status, workflow type, recovery classification, input, workflow state, structured completion text, ledger event ids/timestamps/text, skill metadata, and tool metadata.",
     "",
     "Examples:",

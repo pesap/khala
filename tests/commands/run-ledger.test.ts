@@ -194,6 +194,7 @@ test("run-list help explains searchable filters", async () => {
     await handlers.runList("--help", fakeCtx(tempDir));
 
     assert.match(messages[0] ?? "", /Usage: \/run-list \[filter\]/);
+    assert.match(messages[0] ?? "", /Default ledger: .*\/\.pi\/khala\/runs/);
     assert.match(messages[0] ?? "", /status, workflow type, recovery classification/);
     assert.match(messages[0] ?? "", /workflow state/);
     assert.match(messages[0] ?? "", /structured completion text/);
