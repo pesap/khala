@@ -804,11 +804,12 @@ test("run-resume queues prompt and records resume attempt for resumable run", as
     });
 
     const sent: string[] = [];
+    const notifications: string[] = [];
     const handlers = createRunLedgerCommandHandlers({
       pi: { sendUserMessage: (message: string) => sent.push(message) } as never,
       runLedgerDir,
       nowIso: () => "2026-06-20T00:10:00.000Z",
-      notify: () => undefined,
+      notify: (_ctx, message) => notifications.push(message),
     });
 
     await handlers.runResume("review-1", fakeCtx(tempDir));
@@ -820,6 +821,10 @@ test("run-resume queues prompt and records resume attempt for resumable run", as
     assert.equal(persisted.events.at(-1).type, "resume_attempted");
     assert.equal(persisted.events.at(-1).data.recovery.classification, "resumable");
     assert.deepEqual(persisted.events.at(-1).data.recovery.unsafeEventIds, []);
+
+    await handlers.runShow("review-1", fakeCtx(tempDir));
+    assert.match(notifications.at(-1) ?? "", /resume_recovery=resumable/);
+    assert.match(notifications.at(-1) ?? "", /resume_unsafe=0/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

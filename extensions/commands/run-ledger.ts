@@ -313,6 +313,25 @@ function formatEventSkillSummary(eventData: Record<string, unknown> | undefined)
   ].join("");
 }
 
+function formatResumeRecoverySummary(eventData: Record<string, unknown> | undefined): string {
+  if (!isRecord(eventData?.recovery)) return "";
+
+  const recovery = eventData.recovery;
+  const classification =
+    typeof recovery.classification === "string" && recovery.classification.trim()
+      ? ` resume_recovery=${summarizeWorkflowText(recovery.classification, 40)}`
+      : "";
+  const unsafeCount = Array.isArray(recovery.unsafeEventIds)
+    ? ` resume_unsafe=${recovery.unsafeEventIds.length}`
+    : "";
+  const action =
+    typeof recovery.recommendedAction === "string" && recovery.recommendedAction.trim()
+      ? ` resume_next=${summarizeWorkflowText(recovery.recommendedAction, 80)}`
+      : "";
+
+  return `${classification}${unsafeCount}${action}`;
+}
+
 function formatUnsafeEventDetails(record: RunLedgerRecord): string {
   if (record.resume.unsafeEventIds.length === 0) return "";
 
@@ -339,7 +358,8 @@ function formatRunLedgerEventLine(event: RunLedgerEvent): string {
   const input = formatEventInputSummary(event.data?.input);
   const metadata = formatUnsafeEventMetadata(event.data);
   const skill = formatEventSkillSummary(event.data);
-  return `- ${event.at} ${event.type}${tool}${sideEffect}${replay}${input}${metadata}${skill}: ${event.summary}`;
+  const resume = formatResumeRecoverySummary(event.data);
+  return `- ${event.at} ${event.type}${tool}${sideEffect}${replay}${input}${metadata}${skill}${resume}: ${event.summary}`;
 }
 
 function formatCheckpointReason(event: RunLedgerEvent, maxLength: number): string {
