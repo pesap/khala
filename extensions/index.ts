@@ -146,6 +146,7 @@ import {
   ensureWorkflowSlotAvailable as ensureWorkflowSlotAvailableForCommand,
   markWorkflowWaitingForFooter,
 } from "./workflows/engine.ts";
+import { workflowLocalContextFromFlags } from "./workflows/local.ts";
 import { workflowSourceFromFlags } from "./workflows/source.ts";
 import { notifyWorkflowStarted } from "./workflows/notifications.ts";
 import {
@@ -1275,6 +1276,7 @@ async function beginWorkflowTracking(
     flags,
     workflowSpec,
     source: workflowSourceFromFlags(flags),
+    local: workflowLocalContextFromFlags(flags),
     learningVersion: LEARNING_VERSION,
     ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
     makeId,
