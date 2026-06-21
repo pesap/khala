@@ -211,6 +211,9 @@ test("run-list help explains searchable filters", async () => {
     assert.match(messages[0] ?? "", /skill metadata/);
     assert.match(messages[0] ?? "", /tool metadata/);
     assert.match(messages[0] ?? "", /\/run-list needs_operator_review/);
+    assert.match(messages[0] ?? "", /Named views: active, resumable, needs_operator_review\./);
+    assert.match(messages[0] ?? "", /source issue\/PR\/url/);
+    assert.match(messages[0] ?? "", /next action/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
