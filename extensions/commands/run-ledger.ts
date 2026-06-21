@@ -304,7 +304,7 @@ function formatRunListHelp(): string {
     "",
     "Lists newest durable Khala runs first.",
     `Default ledger: ${getGlobalRunLedgerDir()}`,
-    "Filter searches run id, status, workflow type, recovery classification, source issue/PR/url, input, next action, workflow state, structured completion text, ledger event ids/timestamps/text, skill metadata, and tool metadata.",
+    "Filter searches run id, status, workflow type, recovery classification, source issue/PR/url, local worktree/capsule/ledger paths, input, next action, workflow state, structured completion text, ledger event ids/timestamps/text, skill metadata, and tool metadata.",
     "Named views: active, resumable, needs_operator_review.",
     "",
     "Examples:",
