@@ -186,11 +186,18 @@ export interface RunLedgerWorkflow {
   state?: unknown;
 }
 
+export interface RunLedgerSourceContext {
+  issue?: string | number;
+  pr?: string | number;
+  url?: string;
+}
+
 export interface RunLedgerRecord {
   version: number;
   id: string;
   type: string;
   input: string;
+  source?: RunLedgerSourceContext;
   flags: WorkflowFlags;
   cwd?: string;
   repo?: string;

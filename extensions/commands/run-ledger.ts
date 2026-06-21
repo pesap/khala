@@ -100,6 +100,49 @@ function formatStructuredCompletionListPart(value: unknown): string {
   return ` completion=${outcome}${confidence}${validationCount}${openQuestionCount}${learningCount}`;
 }
 
+function firstString(...values: readonly unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+}
+
+function firstStringFromRecord(value: unknown, ...keys: readonly string[]): string | undefined {
+  if (!isRecord(value)) return undefined;
+  return firstString(...keys.map((key) => value[key]));
+}
+
+function formatRunSourceListPart(sourceContext: unknown): string {
+  if (!isRecord(sourceContext)) return "";
+  const issue =
+    firstString(
+      sourceContext.issue,
+      sourceContext.issueNumber,
+      sourceContext.issue_number,
+      sourceContext.sourceIssue,
+      sourceContext.source_issue,
+    ) ?? firstStringFromRecord(sourceContext.issue, "number", "id", "url");
+  const pr =
+    firstString(
+      sourceContext.pr,
+      sourceContext.pullRequest,
+      sourceContext.pull_request,
+      sourceContext.sourcePr,
+      sourceContext.source_pr,
+    ) ??
+    firstStringFromRecord(sourceContext.pr, "number", "id", "url") ??
+    firstStringFromRecord(sourceContext.pullRequest, "number", "id", "url") ??
+    firstStringFromRecord(sourceContext.pull_request, "number", "id", "url");
+  const source = firstString(sourceContext.source, sourceContext.sourceUrl, sourceContext.source_url, sourceContext.url);
+  const parts = [
+    issue ? `issue=${summarizeWorkflowText(issue, 40)}` : "",
+    pr ? `pr=${summarizeWorkflowText(pr, 40)}` : "",
+    source ? `source=${summarizeWorkflowText(source, 60)}` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
 function summarizeWorkflowText(value: unknown, maxLength = 120): string {
   if (typeof value !== "string") return "";
   const normalized = value.trim().replace(/\s+/g, " ");
@@ -608,6 +651,7 @@ export function createRunLedgerCommandHandlers(params: {
       const lines = visibleRuns.map(({ record }) => {
         const at = record.finishedAt ?? record.startedAt;
         const completion = formatStructuredCompletionListPart(record.structuredCompletion);
+        const source = formatRunSourceListPart(record.source);
         const workflowState = formatWorkflowStateListPart(record.workflow.state);
         const checkpoints = formatCheckpointListPart(record);
         const resumeAttempt = formatResumeAttemptListPart(summarizeRunRecovery(record));
@@ -619,7 +663,7 @@ export function createRunLedgerCommandHandlers(params: {
           record.resume.classification === "needs_operator_review"
             ? ` review_reason=${summarizeWorkflowText(record.resume.reason, 80)}`
             : "";
-        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${resumeAttempt}${checkpoints} input=${summarizeRunInput(record.input)}`;
+        return `- ${record.id} ${record.status} ${record.workflow.type} at=${at}${source} recovery=${record.resume.classification}${unsafe}${reviewReason}${completion}${workflowState}${resumeAttempt}${checkpoints} input=${summarizeRunInput(record.input)}`;
       });
       if (skipped > 0) lines.push(`Skipped unreadable run files: ${skipped}`);
       const title = filter ? `Khala run ledger matching "${filter}":` : "Khala run ledger:";
