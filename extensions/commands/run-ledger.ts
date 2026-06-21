@@ -218,6 +218,7 @@ function searchableRunText(record: RunLedgerRecord): string {
     record.resume.reason,
     ...record.resume.unsafeEventIds,
     record.input,
+    ...searchableValueParts(record.source),
   ];
   if (isRecord(record.structuredCompletion)) {
     const completion = record.structuredCompletion;

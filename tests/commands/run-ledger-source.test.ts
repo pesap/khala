@@ -58,6 +58,13 @@ test("run-list surfaces source work context from run input", async () => {
     assert.match(messages[0] ?? "", /issue=196/);
     assert.match(messages[0] ?? "", /pr=194/);
     assert.match(messages[0] ?? "", /source=https:\/\/github\.com\/pesap\/agents\/issues\/196/);
+
+    messages.length = 0;
+    await handlers.runList("196", {} as never);
+
+    assert.match(messages[0] ?? "", /matching "196"/);
+    assert.match(messages[0] ?? "", /source-1/);
+    assert.match(messages[0] ?? "", /issue=196/);
   } finally {
     await rm(runLedgerDir, { force: true, recursive: true });
   }
