@@ -143,6 +143,11 @@ function formatRunSourceListPart(sourceContext: unknown): string {
   return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
 
+function formatRunSourceSummary(sourceContext: unknown): string[] {
+  const summary = formatRunSourceListPart(sourceContext).trim();
+  return summary.length > 0 ? [`Source: ${summary}`] : [];
+}
+
 function summarizeWorkflowText(value: unknown, maxLength = 120): string {
   if (typeof value !== "string") return "";
   const normalized = value.trim().replace(/\s+/g, " ");
@@ -520,6 +525,7 @@ function formatRunLedgerSummary(record: RunLedgerRecord, runFile: string): strin
     `Started: ${record.startedAt}`,
     record.finishedAt ? `Finished: ${record.finishedAt}` : "",
     `Input: ${summarizeRunInput(record.input)}`,
+    ...formatRunSourceSummary(record.source),
     `Recovery: ${recovery.classification} - ${recovery.reason}${unsafe}`,
     `Next action: ${recovery.recommendedAction}`,
     formatResumeAttemptSummary(recovery),
