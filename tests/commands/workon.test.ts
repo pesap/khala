@@ -215,6 +215,8 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const PROMPT_USAGE_TEXT = "  --prompt TEXT [--heartbeat HOURS] [--model MODEL] [--thinking LEVEL]";
+
 function incompleteIssueViewOutput(number: number, title: string, body = ""): string {
   return JSON.stringify({
     number,
@@ -720,6 +722,169 @@ test("uses current GitHub issue context without a separate repo lookup", async (
     assert.equal(calls.some((call) => call.startsWith("repo view")), false);
     assert.match(rendered, /Source issue: pesap\/agents#63/);
     assert.match(rendered, /Session capsule: .+github\.com\/pesap\/agents\/capsule\.md/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("parses GitHub issue JSON when body contains literal prompt usage text", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-issue-json-redaction-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 210 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        210,
+        "fix(workon): preserve raw stdout before JSON parsing",
+        [
+          "## Current behavior",
+          "",
+          "- The issue body includes literal usage text that must not be interpreted as a prompt flag:",
+          PROMPT_USAGE_TEXT,
+          "",
+          "## Acceptance criteria",
+          "",
+          "- Parse raw GitHub issue JSON without redaction-driven corruption.",
+        ].join("\n"),
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "210",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Source issue: pesap\/agents#210/);
+    assert.doesNotMatch(rendered, /failed to parse JSON/);
+    assert.ok(calls.includes("issue view 210 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees"));
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("parses grouped GitHub issue JSON when issue bodies contain literal prompt usage text", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-grouped-issue-json-redaction-test-"));
+  try {
+    const issues = [
+      {
+        number: 209,
+        title: "fix(workon): keep source issue JSON raw",
+        body: [
+          "## Current behavior",
+          "",
+          "- Baseline issue body without prompt usage text.",
+          "",
+          "## Acceptance criteria",
+          "",
+          "- Keep the source issue JSON parseable.",
+          "",
+          "## Validation",
+          "",
+          "- Run the focused workon regression test.",
+          "",
+          "## Non-goals",
+          "",
+          "- Do not widen scope beyond the parser fix.",
+        ].join("\n"),
+      },
+      {
+        number: 210,
+        title: "fix(workon): preserve raw stdout before JSON parsing",
+        body: [
+          "## Current behavior",
+          "",
+          "- The issue body includes literal usage text that must not be interpreted as a prompt flag:",
+          PROMPT_USAGE_TEXT,
+          "",
+          "## Acceptance criteria",
+          "",
+          "- Parse raw GitHub issue JSON without redaction-driven corruption.",
+          "",
+          "## Validation",
+          "",
+          "- Run the focused workon regression test.",
+          "",
+          "## Non-goals",
+          "",
+          "- Do not widen scope beyond the parser fix.",
+        ].join("\n"),
+      },
+      {
+        number: 211,
+        title: "fix(workon): keep diagnostic redaction separate",
+        body: [
+          "## Current behavior",
+          "",
+          "- Another issue body includes literal usage text that must remain raw until parsing completes:",
+          PROMPT_USAGE_TEXT,
+          "",
+          "## Acceptance criteria",
+          "",
+          "- Keep redaction in diagnostics without mutating parser input.",
+          "",
+          "## Validation",
+          "",
+          "- Run the focused workon regression test.",
+          "",
+          "## Non-goals",
+          "",
+          "- Do not widen scope beyond the parser fix.",
+        ].join("\n"),
+      },
+    ];
+    const branch = buildWorkonBranchName(issues);
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 209 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        issues[0].number,
+        issues[0].title,
+        issues[0].body,
+      ),
+      "issue view 210 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        issues[1].number,
+        issues[1].title,
+        issues[1].body,
+      ),
+      "issue view 211 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        issues[2].number,
+        issues[2].title,
+        issues[2].body,
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+      [`wt switch --create ${branch} --format json`]: `{"action":"created","branch":"${branch}","path":"/tmp/worktrunk.${branch}"}\n`,
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "209 210 211",
+        targets: ["209", "210", "211"],
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.filter((call) => call.startsWith("issue view ")).length, 3);
+    assert.ok(calls.some((call) => call.startsWith("wt switch --create ")));
+    assert.match(rendered, /Source issues: #209, #210, #211/);
+    assert.doesNotMatch(rendered, /failed to parse JSON/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

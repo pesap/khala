@@ -112,6 +112,8 @@ interface CommandResult {
   stdout: string;
   stderr: string;
   error?: string;
+  rawStdout?: string;
+  rawStderr?: string;
   exitCode?: string | number | null;
   signal?: string | null;
   killed?: boolean;
@@ -854,6 +856,8 @@ async function runCommand(
     ...result,
     command: loggedCommand,
     timeoutMs: timeoutMs ?? result.timeoutMs,
+    rawStdout: result.rawStdout ?? result.stdout,
+    rawStderr: result.rawStderr ?? result.stderr,
     stdout: redactSensitiveCommandArgs(result.stdout, args) ?? "",
     stderr: redactSensitiveCommandArgs(result.stderr, args) ?? "",
     error: redactSensitiveCommandArgs(result.error, args),
@@ -931,7 +935,7 @@ async function readGithubIssue(
     return null;
   }
   return parseJsonObject<GithubIssueMetadata>(
-    result.stdout,
+    result.rawStdout ?? result.stdout,
     `GitHub issue ${target.repo}#${target.number}`,
     evidence.gaps,
   );
@@ -2172,7 +2176,7 @@ export function createExecFileRunner(): WorkonCommandRunner {
         timeout: timeoutMs,
         maxBuffer: DEFAULT_MAX_BUFFER,
       });
-      return { ok: true, stdout, stderr, timeoutMs };
+      return { ok: true, stdout, stderr, rawStdout: stdout, rawStderr: stderr, timeoutMs };
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException & {
         stdout?: string;
@@ -2186,6 +2190,8 @@ export function createExecFileRunner(): WorkonCommandRunner {
         stdout: redactSensitiveCommandArgs(nodeError.stdout, args) ?? "",
         stderr: redactSensitiveCommandArgs(nodeError.stderr, args) ?? "",
         error: redactSensitiveCommandArgs(nodeError.message, args),
+        rawStdout: nodeError.stdout,
+        rawStderr: nodeError.stderr,
         exitCode: nodeError.code,
         signal: nodeError.signal ?? null,
         killed: nodeError.killed,
