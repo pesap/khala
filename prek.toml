@@ -17,4 +17,5 @@ hooks = [
     { id = "yamllint", name = "yamllint", entry = "yamllint --strict skills/", language = "system", pass_filenames = false, types = ["yaml"] },
     { id = "shellcheck", name = "shellcheck", entry = "bash -c 'npx shellcheck scripts/*.sh'", language = "system", pass_filenames = false, types = ["shell"] },
     { id = "cspell", name = "cspell", entry = "npx cspell --no-progress 'skills/**/*.md' 'runtime/**/*.yaml' 'workflows/**/*.yaml'", language = "system", pass_filenames = false, types = ["markdown", "yaml"] },
+    { id = "actionlint", name = "actionlint", entry = "actionlint", language = "system", files = "\\.github/workflows/.*\\.ya?ml$", types = ["yaml"] },
 ]
