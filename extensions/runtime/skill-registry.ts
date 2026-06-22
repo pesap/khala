@@ -70,7 +70,7 @@ const PROACTIVE_SKILL_ROUTES: Array<{
   pattern: RegExp;
 }> = [
   {
-    skills: ["code-review"],
+    skills: ["design-quality-review"],
     pattern:
       /\b(?:review|code review|pr review|pull request review|inspect changes|review changes)\b/i,
   },
@@ -104,7 +104,7 @@ const PROACTIVE_SKILL_ROUTES: Array<{
       /\b(?:first principles|feynman|explain simply|simple explanation|challenge this approach|be more skeptical|reviewer2|reviewer 2|decomplexify (?:this )?(?:paper|concept|approach)|academic paper)\b/i,
   },
   {
-    skills: ["dependency-untangler"],
+    skills: ["design-quality-review"],
     pattern:
       /\b(?:dependency|dependencies|import graph|module boundaries|coupling|circular imports?|circular dependencies|dependency cycles?|layering)\b/i,
   },
@@ -124,12 +124,12 @@ const PROACTIVE_SKILL_ROUTES: Array<{
       /\b(?:api design|developer-facing api|sdk design|api ergonomics|ergonomic api|beginner-friendly api|enterprise-ready api|learning ladder|composable api|awkward api|api review)\b/i,
   },
   {
-    skills: ["dead-code-proof"],
+    skills: ["design-quality-review"],
     pattern:
       /\b(?:dead code|unused code|unused exports?|unused files?|unused dependencies|remove unused|delete unused|prune exports?|knip|vulture|ruff-unused|legacy paths?)\b/i,
   },
   {
-    skills: ["type-hardening"],
+    skills: ["design-quality-review"],
     pattern:
       /\b(?:type safety|type hardening|tighten (?:the )?(?:[a-z0-9_-]+\s+){0,3}types?|remove any|unsafe casts?|implicit any|static analysis|type drift|contract ambiguity)\b/i,
   },
@@ -194,9 +194,9 @@ const PROACTIVE_SKILL_ROUTES: Array<{
       /\b(?:cli ux|command[- ]line interface|command tree|subcommands?|help text|exit codes?|stdout|stderr|structured output|--json|no_color|no-color|shell completions?)\b/i,
   },
   {
-    skills: ["simplify"],
+    skills: ["design-quality-review"],
     pattern:
-      /\b(?:simplify|refactor|decomplexify|clean up|cleanup|reduce complexity)\b/i,
+      /\b(?:simplify|refactor|decomplexify|clean up|cleanup|reduce complexity|design-quality-review)\b/i,
   },
 ];
 

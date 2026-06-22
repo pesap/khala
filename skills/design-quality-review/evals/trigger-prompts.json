@@ -1,0 +1,22 @@
+[
+  {"id": "pos-1", "query": "Review this PR for correctness and security issues.", "should_trigger": true},
+  {"id": "pos-2", "query": "Look at my diff and find bugs, structural problems, or dead code.", "should_trigger": true},
+  {"id": "pos-3", "query": "Do a comprehensive code review of these changes.", "should_trigger": true},
+  {"id": "pos-4", "query": "Is this code clean? Review it thoroughly.", "should_trigger": true},
+  {"id": "pos-5", "query": "Audit this diff for type safety and spaghetti growth.", "should_trigger": true},
+  {"id": "pos-6", "query": "Review this and flag any missed simplifications or thin abstractions.", "should_trigger": true},
+  {"id": "pos-7", "query": "Check this branch for correctness, maintainability, and dependency hygiene.", "should_trigger": true},
+  {"id": "pos-8", "query": "I need a rigorous code quality review before merging.", "should_trigger": true},
+  {"id": "pos-9", "query": "Assess the structural health of this change — is it making the codebase messier?", "should_trigger": true},
+  {"id": "pos-10", "query": "review this code", "should_trigger": true},
+  {"id": "neg-1", "query": "Implement the requested feature.", "should_trigger": false},
+  {"id": "neg-2", "query": "Commit the current diff.", "should_trigger": false},
+  {"id": "neg-3", "query": "Explain how this module works.", "should_trigger": false},
+  {"id": "neg-4", "query": "Run git churn diagnostics before reading code.", "should_trigger": false},
+  {"id": "neg-5", "query": "Do a full-app threat assessment and penetration test plan.", "should_trigger": false},
+  {"id": "neg-6", "query": "Apply NASA/JPL Power of Ten constraints to this code.", "should_trigger": false},
+  {"id": "neg-7", "query": "Remove all dead code from the entire codebase.", "should_trigger": false},
+  {"id": "neg-8", "query": "Check if the public API contract is stable between versions.", "should_trigger": false},
+  {"id": "neg-9", "query": "Write a script to parse these log files.", "should_trigger": false},
+  {"id": "neg-10", "query": "How do I set up the development environment?", "should_trigger": false}
+]

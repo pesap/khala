@@ -425,7 +425,7 @@ test("skill registry derives metadata from exact SKILL.md read paths", () => {
 
 test("skill registry recommends proactive skill routes", () => {
   assert.deepEqual(recommendedSkillsForUserText("Review this PR."), [
-    "code-review",
+    "design-quality-review",
     "github",
   ]);
   assert.deepEqual(
@@ -434,7 +434,7 @@ test("skill registry recommends proactive skill routes", () => {
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Review this SDK design for API ergonomics."),
-    ["code-review", "good-api"],
+    ["design-quality-review", "good-api"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Improve skill routing in the runtime."),

@@ -2,12 +2,9 @@
 skills:
   - librarian
   - surgical-dev
-  - simplify
+  - design-quality-review
   - public-api-guard
   - comment-quality-gate
-  - dead-code-proof
-  - dependency-untangler
-  - type-hardening
   - nasa-guidelines
 ---
 
@@ -20,10 +17,10 @@ Requirements:
 - Use normal Git for version-control work; inspect repository state before VCS mutations and keep commits scoped to the requested work.
 - Simplify only the requested scope (uncommitted, branch diff, commit, PR, or folder snapshot).
 - Default to behavior-preserving and non-breaking changes.
-- Always use: `surgical-dev`, `simplify`, `public-api-guard`, `nasa-guidelines`.
+- Always use: `surgical-dev`, `design-quality-review`, `public-api-guard`, `nasa-guidelines`.
 - Use language-aware skills based on repo stack:
-  - TypeScript/JavaScript: `type-hardening`, `dead-code-proof`, `dependency-untangler`
-  - Python: `python-developer`, `testing-pytest`, `uv`, `dead-code-proof`
+  - TypeScript/JavaScript: `design-quality-review` (references/type-safety.md, references/maintainability.md)
+  - Python: `python-developer`, `testing-pytest`, `uv`, `design-quality-review` (references/maintainability.md)
   - Comment/docs-heavy scope: `comment-quality-gate` (and `docs-authoring` if substantial rewrites)
 - If a useful skill is missing for the detected language, state it and proceed with closest safe skills.
 - Run a scope probe first, then activate only relevant analysis tracks.
