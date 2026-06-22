@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { createComplianceCommandHandlers } from "../../extensions/commands/compliance.ts";
-import { parseComplianceArgs } from "../../extensions/commands/parsers.ts";
+import { parseComplianceArgs, parseKhalaModeArgs } from "../../extensions/commands/parsers.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
 
 let fakePiDir: string | null = null;
@@ -72,4 +72,20 @@ test("khala status includes model profile doctor output", async () => {
   assert.match(messages[0], /Model profiles:/);
   assert.match(messages[0], /planning: model=github-copilot\/gpt-5\.5, thinking=xhigh/);
   assert.match(messages[0], /development: model=.*thinking=medium/);
+});
+
+test("parseKhalaModeArgs recognizes aliases and rejects status", () => {
+  assert.deepEqual(parseKhalaModeArgs(""), { preset: "status" });
+  assert.deepEqual(parseKhalaModeArgs("strict"), { preset: "enforce" });
+  assert.deepEqual(parseKhalaModeArgs("enforce"), { preset: "enforce" });
+  assert.deepEqual(parseKhalaModeArgs("warn"), { preset: "warn" });
+  assert.deepEqual(parseKhalaModeArgs("warning"), { preset: "warn" });
+  assert.deepEqual(parseKhalaModeArgs("monitor"), { preset: "monitor" });
+  assert.deepEqual(parseKhalaModeArgs("reset"), { preset: "reset" });
+  assert.deepEqual(parseKhalaModeArgs("default"), { preset: "reset" });
+  assert.deepEqual(parseKhalaModeArgs("defaults"), { preset: "reset" });
+  assert.deepEqual(parseKhalaModeArgs("status"), {
+    preset: "status",
+    error: "Usage: /khala-mode [strict|enforce|warn|warning|monitor|reset|default|defaults] or /khala-health for status",
+  });
 });

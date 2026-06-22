@@ -48,12 +48,24 @@ export interface ParseRecordResult<T> {
 }
 
 export type CompliancePreset = "status" | "reset" | PolicyMode;
+export type KhalaModePreset = "status" | "reset" | PolicyMode;
 
 const WORKON_MODES: readonly WorkonMode[] = ["prepare", "start"];
 const WORKON_THINKING_LEVELS: readonly WorkonThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
+  strict: "enforce",
+  enforce: "enforce",
+  warn: "warn",
+  warning: "warn",
+  monitor: "monitor",
+  reset: "reset",
+  default: "reset",
+  defaults: "reset",
+};
+
+const KHALA_MODE_PRESET_ALIASES: Record<string, Exclude<KhalaModePreset, "status">> = {
   strict: "enforce",
   enforce: "enforce",
   warn: "warn",
@@ -78,6 +90,29 @@ export function parseComplianceArgs(args: string): {
           error: "Usage: /khala [strict|enforce|warn|monitor|reset] or /khala-health for status",
         }
       : { preset: "status" };
+}
+
+export function parseKhalaModeArgs(args: string): {
+  preset: KhalaModePreset;
+  error?: string;
+} {
+  const value = normalizeWhitespace(args).toLowerCase();
+
+  if (!value) return { preset: "status" };
+  if (value === "status") {
+    return {
+      preset: "status",
+      error: "Usage: /khala-mode [strict|enforce|warn|warning|monitor|reset|default|defaults] or /khala-health for status",
+    };
+  }
+
+  const preset = KHALA_MODE_PRESET_ALIASES[value];
+  return preset
+    ? { preset }
+    : {
+        preset: "status",
+        error: "Usage: /khala-mode [strict|enforce|warn|warning|monitor|reset|default|defaults] or /khala-health for status",
+      };
 }
 
 export function parseApproveRiskArgs(args: string): {

@@ -68,6 +68,11 @@ function makeHarness(overrides?: Partial<RuntimeState>): {
   const messages: string[] = [];
   const agentStateEntries: Array<{ enabled: boolean; at: string; source?: string }> = [];
   const compliancePresets: string[] = [];
+  const defaultConfig = {
+    preflightMode: "warn",
+    postflightMode: "warn",
+    responseComplianceMode: "warn",
+  } as const;
 
   return {
     runtimeState,
@@ -88,6 +93,14 @@ function makeHarness(overrides?: Partial<RuntimeState>): {
       nowIso: () => "2026-06-22T00:00:00.000Z",
       runCompliancePreset: async (preset) => {
         compliancePresets.push(preset);
+        runtimeState.firstPrinciplesConfig =
+          preset === "reset"
+            ? { ...defaultConfig }
+            : {
+                preflightMode: preset as RuntimeState["firstPrinciplesConfig"]["preflightMode"],
+                postflightMode: preset as RuntimeState["firstPrinciplesConfig"]["postflightMode"],
+                responseComplianceMode: preset as RuntimeState["firstPrinciplesConfig"]["responseComplianceMode"],
+              };
       },
     }),
     ctx: {} as never,
@@ -165,18 +178,127 @@ test("/khala preserves memory tool limit aliases and 1..100 clamping", async () 
   assert.deepEqual(harness.compliancePresets, ["warn", "warn"]);
 });
 
-test("/khala invalid usage points users to /khala-health for status", async () => {
-  const harness = makeHarness();
+test("/khala-mode with no arguments reports compliance status without mutating session state", async () => {
+  const harness = makeHarness({
+    agentEnabled: false,
+    memoryToolCallLimit: 17,
+  });
 
-  await harness.handlers.khala("invalid preset", harness.ctx);
+  await harness.handlers.khalaMode(undefined, harness.ctx);
 
   assert.equal(harness.messages.length, 1);
-  assert.equal(
-    harness.messages[0],
-    "Usage: /khala [strict|enforce|warn|monitor|reset] or /khala-health for status",
-  );
+  assert.match(harness.messages[0], /Khala health \(read-only\):/);
+  assert.match(harness.messages[0], /Compliance modes \(session\): preflight=warn, postflight=warn, response=warn\./);
+  assert.equal(harness.runtimeState.agentEnabled, false);
   assert.equal(harness.agentStateEntries.length, 0);
   assert.deepEqual(harness.compliancePresets, []);
+});
+
+for (const [args, expectedPreset, expectedConfig] of [
+  [undefined, "status", {
+    preflightMode: "warn",
+    postflightMode: "warn",
+    responseComplianceMode: "warn",
+  }],
+  ["strict", "enforce", {
+    preflightMode: "enforce",
+    postflightMode: "enforce",
+    responseComplianceMode: "enforce",
+  }],
+  ["enforce", "enforce", {
+    preflightMode: "enforce",
+    postflightMode: "enforce",
+    responseComplianceMode: "enforce",
+  }],
+  ["warn", "warn", {
+    preflightMode: "warn",
+    postflightMode: "warn",
+    responseComplianceMode: "warn",
+  }],
+  ["warning", "warn", {
+    preflightMode: "warn",
+    postflightMode: "warn",
+    responseComplianceMode: "warn",
+  }],
+  ["monitor", "monitor", {
+    preflightMode: "monitor",
+    postflightMode: "monitor",
+    responseComplianceMode: "monitor",
+  }],
+  ["reset", "reset", {
+    preflightMode: "warn",
+    postflightMode: "warn",
+    responseComplianceMode: "warn",
+  }],
+  ["default", "reset", {
+    preflightMode: "warn",
+    postflightMode: "warn",
+    responseComplianceMode: "warn",
+  }],
+  ["defaults", "reset", {
+    preflightMode: "warn",
+    postflightMode: "warn",
+    responseComplianceMode: "warn",
+  }],
+] as const) {
+  test(`/khala-mode ${args ?? "<no args>"} maps to ${expectedPreset}`, async () => {
+    const harness = makeHarness();
+
+    await harness.handlers.khalaMode(args, harness.ctx);
+
+    if (expectedPreset === "status") {
+      assert.equal(harness.messages.length, 1);
+      assert.match(harness.messages[0], /Khala health \(read-only\):/);
+      assert.deepEqual(harness.compliancePresets, []);
+      assert.equal(harness.runtimeState.agentEnabled, false);
+      assert.equal(harness.agentStateEntries.length, 0);
+      return;
+    }
+
+    assert.equal(harness.messages.length, 0);
+    assert.deepEqual(harness.compliancePresets, [expectedPreset]);
+    assert.equal(harness.runtimeState.agentEnabled, false);
+    assert.equal(harness.agentStateEntries.length, 0);
+    assert.deepEqual(harness.runtimeState.firstPrinciplesConfig, expectedConfig);
+  });
+}
+
+test("/khala-mode status is invalid and points users to /khala-health", async () => {
+  const harness = makeHarness();
+
+  await harness.handlers.khalaMode("status", harness.ctx);
+
+  assert.equal(harness.messages.length, 1);
+  assert.match(harness.messages[0], /\/khala-health for status/);
+  assert.equal(harness.agentStateEntries.length, 0);
+  assert.deepEqual(harness.compliancePresets, []);
+});
+
+test("legacy /khala compliance aliases are rejected without mutating state", async () => {
+  for (const args of ["strict", "enforce", "warn", "warning", "monitor", "reset", "default", "defaults"] as const) {
+    const harness = makeHarness({
+      memoryToolCallLimit: 23,
+      firstPrinciplesConfig: {
+        preflightMode: "warn",
+        postflightMode: "warn",
+        responseComplianceMode: "warn",
+      },
+    });
+
+    await harness.handlers.khala(args, harness.ctx);
+
+    assert.equal(harness.messages.length, 1, args);
+    assert.match(harness.messages[0], /Usage: \/khala/);
+    assert.equal(harness.runtimeState.agentEnabled, false, args);
+    assert.equal(harness.runtimeState.memoryToolCallLimit, 23, args);
+    assert.deepEqual(harness.runtimeState.firstPrinciplesConfig, {
+      preflightMode: "warn",
+      postflightMode: "warn",
+      responseComplianceMode: "warn",
+    }, args);
+    assert.equal(harness.agentStateEntries.length, 0, args);
+    assert.deepEqual(harness.compliancePresets, [], args);
+  }
 });
 
 test("formatKhalaHealthStatus includes session state and model profiles", () => {
