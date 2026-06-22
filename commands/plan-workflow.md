@@ -27,6 +27,8 @@ Requirements:
 - Offer ADRs only for hard-to-reverse, surprising, trade-off decisions.
 - Create `CONTEXT.md` and `docs/adr/` lazily (only when needed).
 - Default to one issue/work packet unless splitting clearly improves reviewability.
+- Before any issue creation, run the internal Reviewer Two pass over the normalized draft work packet; synthesize findings as must-fix, optional/deferred, or rejected with rationale, and keep Reviewer Two advisory only.
+- Review defaults are fresh-context, one pass, and a bounded maximum of two loops unless the operator explicitly disables review or overrides the review model/thinking/loop budget.
 - If multiple issues are useful, produce an exact slice table before any issue creation:
   - slice title
   - outcome
