@@ -19,7 +19,7 @@ const requiredPackageFiles = [
   "commands/review-workflow.md",
   "prompts/fresh-eyes.md",
   "workflows/review-workflow.yaml",
-  "skills/code-review/SKILL.md",
+  "skills/design-quality-review/SKILL.md",
   "intercepted-commands/python",
   "package.json",
   "README.md",

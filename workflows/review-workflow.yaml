@@ -13,7 +13,7 @@ version_control:
 
 skill_contracts:
   review:
-    skill: code-review
+    skill: design-quality-review
     load_before: evaluating code findings
   remote_reference:
     skill: librarian

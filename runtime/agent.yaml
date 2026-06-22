@@ -15,8 +15,7 @@ skills:
   - surgical-dev
   - feature-delivery
   - debug-investigation
-  - simplify
-  - code-review
+  - design-quality-review
   - security-audit
   - python-developer
   - testing-pytest
@@ -34,9 +33,6 @@ skills:
   - plan
   - vertical-slice-planning
   - nasa-guidelines
-  - dead-code-proof
-  - dependency-untangler
-  - type-hardening
   - comment-quality-gate
   - public-api-guard
   - infrasys
