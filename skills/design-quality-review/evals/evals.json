@@ -1,0 +1,66 @@
+{
+  "skill_name": "design-quality-review",
+  "evals": [
+    {
+      "id": "severity-classification",
+      "prompt": "Review this diff. The change adds `user.name.toLowerCase()` in a payment processing function without null-checking `user.name`. The function is called after auth but `name` is optional in the type. Classify the severity.",
+      "expected_output": "C1 or C2 finding. The null-check gap could crash, but only if name is null in practice. Should NOT be C0 (no data loss/corruption) and should NOT be D1 (it's a correctness issue, not just a type issue — the type already says optional).",
+      "assertions": [
+        "The response classifies this as a correctness finding (C), not a type finding (D)",
+        "The severity is C1 or C2, not C0",
+        "The response includes concrete evidence (file, line, the nullable field)"
+      ]
+    },
+    {
+      "id": "structural-regression",
+      "prompt": "Review this diff. The PR adds 350 lines to a 900-line utility module, including 12 new `if featureFlag === 'new_thing'` conditionals scattered across 6 different functions. No new abstractions were introduced. Classify and recommend.",
+      "expected_output": "T1 finding. The file crosses 1000 lines and adds spaghetti conditionals in a shared path. Recommendation should push for extracting the feature into a dedicated module or abstraction, not just accepting the growth.",
+      "assertions": [
+        "The response flags the file-size crossing (T1)",
+        "The response flags the scattered conditionals as spaghetti (T1)",
+        "The recommendation proposes extraction or abstraction, not cosmetic fixes",
+        "The verdict is 'Needs attention', not 'Approved'"
+      ]
+    },
+    {
+      "id": "scope-discipline",
+      "prompt": "Review this 5-line diff that renames a local variable from `x` to `userCount`. The surrounding 2000-line file has many pre-existing issues (dead code, God function, missing tests). Do not flag pre-existing problems.",
+      "expected_output": "Lightweight review. Verdict: Approved or minor M3 (if the rename is misleading). Should NOT flag the 2000-line file size, pre-existing dead code, or missing tests — those were not introduced by this diff.",
+      "assertions": [
+        "The response does NOT report findings about pre-existing issues outside the diff",
+        "The verdict is 'Approved' or at most a minor M3",
+        "The response is short — no full structured report for a trivial rename"
+      ]
+    },
+    {
+      "id": "approval-bar-gating",
+      "prompt": "Review this diff. It has: (1) a C2 edge-case bug with empty arrays, (2) a T3 nit about a function that could be inlined, (3) an M2 stale comment. No C1/S1/T1/D1/M1 findings. What should the verdict be?",
+      "expected_output": "Approved. The approval bar only blocks on severity 0 or 1 in any dimension. All findings are severity 2 or 3, which are non-blocking.",
+      "assertions": [
+        "The verdict is 'Approved', not 'Needs attention'",
+        "All findings are correctly classified as non-blocking (severity 2 or 3)",
+        "The response does not inflate severity to justify blocking"
+      ]
+    },
+    {
+      "id": "dimension-selection",
+      "prompt": "Review this diff. The change is purely a CSS styling tweak in a React component — changes `margin: 10px` to `margin: 12px` and adjusts a color hex. No logic, no types, no new files, no dependencies.",
+      "expected_output": "Lightweight review with zero or near-zero references loaded. The diff triggers no correctness, security, structural, type, or maintainability signals. Only language-map.md should load. Verdict: Approved.",
+      "assertions": [
+        "Only language-map.md is loaded among the references",
+        "The response explicitly notes that correctness, security, structure, type, and maintainability were skipped",
+        "The verdict is 'Approved'"
+      ]
+    },
+    {
+      "id": "dead-code-detection",
+      "prompt": "Review this diff. The PR removes the last call site of a function `calculateLegacyTax()` in `billing.ts`, but leaves the function definition and its import intact in the file. The function is 40 lines and references a deprecated API.",
+      "expected_output": "M1 or M2 finding. The function is now dead code in an active path. The diff exposed it as an orphan. Recommendation: remove the function and its import, or flag it for follow-up removal.",
+      "assertions": [
+        "The response identifies the orphaned function as dead code",
+        "The severity is M1 or M2, not C or T",
+        "The recommendation addresses removal of both the function and its import"
+      ]
+    }
+  ]
+}
