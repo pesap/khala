@@ -1,5 +1,33 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { HarnessLimits } from "./profile.ts";
+import {
+  assistantClaimedSkillNames as registryAssistantClaimedSkillNames,
+  explicitSkillNamesForUserText as registryExplicitSkillNamesForUserText,
+  isSkillReadPath,
+  recommendedSkillsForUserText as registryRecommendedSkillsForUserText,
+  skillMetadataFromSkillReadPath,
+  skillNeedReason as registrySkillNeedReason,
+} from "./skill-registry.ts";
+import {
+  getToolMetadata,
+  isCommandExecutionToolName,
+  isDuplicateEvidenceCandidateToolCall,
+  isEvidenceToolCall,
+  isExternalEvidenceToolCall,
+  isExternalOpenToolName,
+  isExternalSearchToolName,
+  isKhalaMemoryToolName,
+  isLocalEvidenceToolCall,
+  isLocalFileReadToolName,
+  isMemoryPersistenceToolName,
+  isMemoryRefreshToolName,
+  isMemorySearchToolName,
+  isMutationToolCall,
+  isSkillLoaderToolName,
+  MEMORY_SEARCH_TOOL_NAMES,
+  resetsDuplicateEvidenceWindowToolCall,
+  toolNameLooksLikeExternalEvidence,
+} from "./tool-registry.ts";
 
 type AgentEndEventMessage = {
   role: "assistant" | "user" | "toolResult" | "system" | string;
@@ -156,247 +184,18 @@ const ARTIFACT_REFERENCE_REGEX =
   /(?:https?:\/\/|github\.com\/|(?:^|\s)[\w.-]+\/[\w.-]+(?:\s|$)|(?:^|\s)(?:\.{0,2}\/|~\/)[^\s]+|[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml|lock|txt)\b)/i;
 const LOCAL_ARTIFACT_TARGET_REGEX =
   /(?:^|\s)((?:\.{0,2}\/|~\/)?[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|jsonl|ya?ml|toml|lock|log|txt)\b)/gi;
-const EXPLICIT_SKILL_REQUEST_REGEX =
-  /(?:\b(?:load|use|read|apply|follow|invoke)\s+(?:(?:the|your)\s+)?(?:[a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,8}\s+)?skills?\b|\/skill:[a-z0-9_.:-]+|\$[A-Z][A-Za-z0-9_.:-]+|skills\/[a-z0-9_.:-]+\/SKILL\.md)/i;
-const EXPLICIT_NAMED_SKILL_REGEX =
-  /\b(?:load|use|read|apply|follow|invoke)\s+(?:the\s+|your\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})\s+skill\b/gi;
-const EXPLICIT_NAMED_SKILLS_LIST_REGEX =
-  /\b(?:load|use|read|apply|follow|invoke)\s+(?:the\s+|your\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,8}(?:\s*(?:,|and)\s*[a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})+)\s+skills\b/gi;
-const CHAINED_NAMED_SKILL_REGEX =
-  /(?:,|\band\b)\s+(?:the\s+|your\s+)?(?!(?:used|applied|followed|loaded|read|invoked)\b)([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})\s+skill\b/gi;
-const ASSISTANT_SKILL_CLAIM_REGEX =
-  /\b(?:i|we)\s+(?:used|applied|followed|loaded|read|invoked)\s+(?:the\s+|your\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})\s+skill(?:\s+guidance)?\b|\b(?:using|following|applying|followed|applied)\s+(?:the\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})\s+skill(?:\s+guidance)?\b/gi;
-const ASSISTANT_SKILLS_LIST_CLAIM_REGEX =
-  /\b(?:i|we)\s+(?:used|applied|followed|loaded|read|invoked)\s+(?:the\s+|your\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,8}(?:\s*(?:,|and)\s*[a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})+)\s+skills(?:\s+guidance)?\b|\b(?:using|following|applying|followed|applied)\s+(?:the\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,8}(?:\s*(?:,|and)\s*[a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})+)\s+skills(?:\s+guidance)?\b/gi;
-const ASSISTANT_SKILL_GUIDANCE_CLAIM_REGEX =
-  /\b(?:i|we)\s+(?:used|applied|followed)\s+(?:the\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})\s+(?:guidance|best practices?)\b|\b(?:using|following|applying|followed|applied)\s+(?:the\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})\s+(?:guidance|best practices?)\b/gi;
-const ASSISTANT_SKILL_GUIDANCE_LIST_CLAIM_REGEX =
-  /\b(?:i|we)\s+(?:used|applied|followed)\s+(?:the\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,8}(?:\s*(?:,|and)\s*(?!(?:used|applied|followed|loaded|read|invoked)\b)[a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})+)\s+(?:guidance|best practices?)\b|\b(?:using|following|applying|followed|applied)\s+(?:the\s+)?([a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,8}(?:\s*(?:,|and)\s*(?!(?:used|applied|followed|loaded|read|invoked)\b)[a-z0-9_.:-]+(?:\s+[a-z0-9_.:-]+){0,2})+)\s+(?:guidance|best practices?)\b/gi;
-const SLASH_SKILL_REGEX = /\/skill:([a-z0-9_.:-]+)/gi;
-const DOLLAR_SKILL_REGEX = /\$([A-Z][A-Za-z0-9_.:-]+)/g;
-const SKILL_READ_PATH_REGEX =
-  /(?:^|[\s"'/])(?:skills(?:\/\.system)?|\.agents\/skills|\.pi\/khala\/skills)\/[^/"']+\/SKILL\.md(?=$|[\s"',}\]]|\.(?:$|[\s"',}\]]))/i;
-const SKILL_NAME_PATH_REGEX =
-  /(?:^|[\s"'/])(?:skills(?:\/\.system)?|\.agents\/skills|\.pi\/khala\/skills)\/([^/"']+)\/SKILL\.md(?=$|[\s"',}\]]|\.(?:$|[\s"',}\]]))/i;
-const SKILL_NAME_PATH_GLOBAL_REGEX =
-  /(?:^|[\s"'/])(?:skills(?:\/\.system)?|\.agents\/skills|\.pi\/khala\/skills)\/([^/"']+)\/SKILL\.md(?=$|[\s"',}\]]|\.(?:$|[\s"',}\]]))/gi;
 const EXPLICIT_LEARNING_CAPTURE_REGEX =
   /\b(?:(?:remember|learn|store|save|record|note)\s+(?:this|that|the|my|a|an)\s+(?:lesson|rule|preference|correction|workflow|pattern|fact|instruction)|remember\s+to\s+(?:use|prefer|run|check|avoid|do|don't|do not|call|read|search|verify|store|save|keep)|(?:remember|learn|store|save|record|note)\s+this\s+for\s+(?:future|next time|later)|(?:from now on|going forward|next time)\s*,?\s+(?:remember|use|prefer|do|don't|do not)|don't forget\s+(?:this|that)|add\s+this\s+to\s+(?:memory|khala memory|your memory))\b/i;
 const ASSISTANT_MEMORY_CLAIM_REGEX =
   /\b(?:i(?:'ll| will)?\s+(?:remember|learn|store|save|record|note)\s+(?:this|that|the lesson|the rule|the preference)|i(?:'ll| will| can)?\s+keep\s+(?:this|that|it|the lesson|the rule|the preference)\s+in\s+mind|i(?:'ve| have)\s+(?:remembered|learned|stored|saved|recorded|noted)|(?:stored|saved|recorded|learned)\s+(?:this|that|the lesson|the rule|the preference)\s+(?:in|to)\s+(?:memory|khala memory)|(?:stored|saved|recorded|learned|remembered)\s+(?:in|to)\s+(?:memory|khala memory)|(?:stored|saved|recorded|learned|remembered|noted)\b[\s\S]{0,80}\b(?:in|to)\s+(?:memory|khala memory)|(?:stored|saved|recorded|learned|remembered|noted)\s+for\s+(?:future|next time|later))\b/i;
 const LEARNING_STORAGE_NEGATION_REGEX =
   /\b(?:not|never|no|did(?:n't| not)|was(?:n't| not)|is(?:n't| not)|could(?:n't| not)|failed to|unable to|skipped|skip(?:ped)?|temporary|session[- ]only|not durable|non[- ]durable)\b[\s\S]{0,40}\b(?:stored|saved|recorded|persisted|learned|written|created|memory|storage)\b|\b(?:stored|saved|recorded|persisted|learned|written|created)\b[\s\S]{0,40}\b(?:not|never|failed|temporary|session[- ]only|not durable|non[- ]durable)\b|["']?(?:stored|saved|recorded|persisted|learned|written|created|success|ok)["']?\s*[:=]\s*(?:false|null|0|["'](?:false|no)["'])\b/i;
-const EVIDENCE_TOOL_NAMES = new Set([
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "bash",
-  "ast_search",
-  "fff",
-  "search",
-  "web.run",
-  "web_search",
-  "khala_read_memory",
-  "khala_search_memory",
-]);
-const LOCAL_EVIDENCE_TOOL_NAMES = new Set([
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "bash",
-  "ast_search",
-  "fff",
-]);
-const EXTERNAL_EVIDENCE_TOOL_NAMES = new Set([
-  "search",
-  "web.run",
-  "web_search",
-  "browser_search",
-  "browser_open",
-  "fetch",
-]);
-const COMMAND_EVIDENCE_TOOL_NAMES = new Set([
-  "bash",
-  "exec",
-  "exec_command",
-  "shell",
-  "run",
-]);
-const MUTATION_TOOL_NAMES = new Set([
-  "edit",
-  "write",
-  "apply_patch",
-  "bash",
-]);
-const DEDUPE_TOOL_NAMES = new Set([
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "ast_search",
-  "fff",
-  "search",
-  "web.run",
-  "web_search",
-  "browser_search",
-  "browser_open",
-  "fetch",
-  "khala_read_memory",
-  "khala_search_memory",
-  "bash",
-]);
 const SESSION_ARTIFACT_SUMMARY_HINT_REGEX =
   /(?:^|[/\\])(?:sessions?|session-runs?|chain-runs?|agent-runs?|intercom)[/\\].+\.(?:jsonl?|log|txt|md)$|(?:^|[/\\])(?:transcript|messages|conversation|session|debug|progress)\.(?:jsonl?|log|txt|md)$/i;
 const SHELL_QUOTING_ERROR_REGEX =
   /\b(?:unexpected eof|unexpected end of file|unterminated (?:quoted )?string|quote>|dquote>|squote>|syntax error near unexpected token|no closing quotation|unmatched [`'"]|bad substitution)\b/i;
-const TOOL_DEDUPE_RESET_NAMES = new Set([
-  "edit",
-  "write",
-  "khala_learn",
-]);
-const MEMORY_SEARCH_REQUIRED_MUTATION_TOOLS = new Set([
-  "apply_patch",
-  "edit",
-  "write",
-]);
 const SUBSTANTIAL_TASK_REGEX =
   /\b(?:implement|fix|debug|review|refactor|audit|investigate|triage|ship|feature|continue working|keep working|make progress|improve|cleanup|clean up)\b/i;
-const PROACTIVE_SKILL_ROUTES: Array<{
-  skills: string[];
-  pattern: RegExp;
-}> = [
-  {
-    skills: ["design-quality-review"],
-    pattern:
-      /\b(?:review|code review|pr review|pull request review|inspect changes|review changes)\b/i,
-  },
-  {
-    skills: ["debug-investigation"],
-    pattern:
-      /\b(?:debug|diagnose|root cause|failing test|test failure|failing(?:\s+[a-z0-9_-]+){0,5}\s+(?:checks?|ci|workflow)|check failure|ci failure|failing ci|failing workflow|workflow failure|not working|investigate failure)\b/i,
-  },
-  {
-    skills: ["tdd-core"],
-    pattern: /\b(?:tdd|test[- ]driven|red[- ]green[- ]refactor)\b/i,
-  },
-  {
-    skills: ["skill-creator"],
-    pattern:
-      /\b(?:create|write|build|update|improve|refine)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:agent\s+)?skill\b(?!\s+routing)/i,
-  },
-  {
-    skills: ["security-audit"],
-    pattern:
-      /\b(?:security audit|audit security|vulnerabilit(?:y|ies)|threat model|secrets? exposure)\b/i,
-  },
-  {
-    skills: ["docs-authoring"],
-    pattern:
-      /\b(?:write|draft|update|improve|author)\s+(?:the\s+)?(?:docs?|documentation|readme|adr)\b/i,
-  },
-  {
-    skills: ["academic-review"],
-    pattern:
-      /\b(?:first principles|feynman|explain simply|simple explanation|challenge this approach|be more skeptical|reviewer2|reviewer 2|decomplexify (?:this )?(?:paper|concept|approach)|academic paper)\b/i,
-  },
-  {
-    skills: ["design-quality-review"],
-    pattern:
-      /\b(?:dependency|dependencies|import graph|module boundaries|coupling|circular imports?|circular dependencies|dependency cycles?|layering)\b/i,
-  },
-  {
-    skills: ["data-model"],
-    pattern:
-      /\b(?:data model|data contract|typed config|schema evolution|serialization shape|loose dict|pydantic|dataclass|field constraints?|validators?|payload filtering|validated contracts?)\b/i,
-  },
-  {
-    skills: ["openai-docs"],
-    pattern:
-      /\b(?:openai|chatgpt|responses api|assistants api|openai api|gpt[- ]?[45]|structured outputs?|function calling|tool calling|prompt caching)\b/i,
-  },
-  {
-    skills: ["good-api"],
-    pattern:
-      /\b(?:api design|developer-facing api|sdk design|api ergonomics|ergonomic api|beginner-friendly api|enterprise-ready api|learning ladder|composable api|awkward api|api review)\b/i,
-  },
-  {
-    skills: ["design-quality-review"],
-    pattern:
-      /\b(?:dead code|unused code|unused exports?|unused files?|unused dependencies|remove unused|delete unused|prune exports?|knip|vulture|ruff-unused|legacy paths?)\b/i,
-  },
-  {
-    skills: ["design-quality-review"],
-    pattern:
-      /\b(?:type safety|type hardening|tighten (?:the )?(?:[a-z0-9_-]+\s+){0,3}types?|remove any|unsafe casts?|implicit any|static analysis|type drift|contract ambiguity)\b/i,
-  },
-  {
-    skills: ["public-api-guard"],
-    pattern:
-      /\b(?:public api|api compatibility|breaking change|non[- ]breaking|exported interfaces?|cli contracts?|schema contracts?|compatibility diff)\b/i,
-  },
-  {
-    skills: ["feature-delivery"],
-    pattern:
-      /\b(?:new feature|add (?:a )?feature|feature delivery|scoped enhancement|end[- ]to[- ]end delivery|acceptance criteria)\b/i,
-  },
-  {
-    skills: ["github"],
-    pattern:
-      /\b(?:github|github actions?|actions? workflow|pull request|\bpr\b|pr comments?|review comments?|issues?|copilot comments?)\b/i,
-  },
-  {
-    skills: ["commit"],
-    pattern:
-      /\b(?:(?:create|make|write|prepare|draft)\s+(?:a\s+|an\s+)?(?:local\s+|signed\s+)?commit|commit\s+(?:(?:these|those|the|my)\s+)?(?:(?:current|selected|staged)\s+)?(?:changes|files|fix|work))\b/i,
-  },
-  {
-    skills: ["rust-developer"],
-    pattern:
-      /\b(?:rust|cargo|clippy|rustfmt|crate::|\.rs\b|unsafe block|panic-prone|unwrap\(|expect\()\b/i,
-  },
-  {
-    skills: ["python-developer"],
-    pattern:
-      /\b(?:python|pytest|pyproject\.toml|requirements\.txt|uv\b|\.py\b)\b/i,
-  },
-  {
-    skills: ["testing-pytest"],
-    pattern:
-      /\b(?:pytest|pytests|conftest\.py|pytest fixture|pytest fixtures|parametrize|hypothesis|flaky pytest|pytest coverage)\b/i,
-  },
-  {
-    skills: ["uv"],
-    pattern:
-      /\b(?:uv run|uv add|uv lock|uv init|pip install|venv|virtualenv|python script\.py|script dependencies|standalone python script)\b/i,
-  },
-  {
-    skills: ["infrasys"],
-    pattern:
-      /\b(?:infrasys|system component|system components|component graph|supplemental attributes?|cost curves?|fuel curves?|time series (?:on|for) components?|system serialization|system deserialization|schema migration hooks?|power system model|grid model)\b/i,
-  },
-  {
-    skills: ["typescript"],
-    pattern:
-      /\b(?:typescript|tsconfig|\.tsx?\b|node --test|npm test|npm run)\b/i,
-  },
-  {
-    skills: ["bash-script"],
-    pattern:
-      /\b(?:bash script|shell script|\.sh\b|shellcheck|set -euo pipefail|bash pitfalls?|strict mode|cleanup traps?|idempotent setup script)\b/i,
-  },
-  {
-    skills: ["cli-ux"],
-    pattern:
-      /\b(?:cli ux|command[- ]line interface|command tree|subcommands?|help text|exit codes?|stdout|stderr|structured output|--json|no_color|no-color|shell completions?)\b/i,
-  },
-  {
-    skills: ["design-quality-review"],
-    pattern:
-      /\b(?:simplify|refactor|decomplexify|clean up|cleanup|reduce complexity|design-quality-review)\b/i,
-  },
-];
 export const DEFAULT_SUBSTANTIAL_TOOL_CALL_THRESHOLD = 4;
 export const DEFAULT_TOOL_FAILURE_ESCALATION_THRESHOLD = 3;
 const MIN_LEARNING_CAPTURE_SCORE = 0.75;
@@ -540,18 +339,6 @@ const MEMORY_QUERY_TERM_ALIASES = new Map<string, string>([
   ["tests", "test"],
   ["testing", "test"],
   ["workflows", "workflow"],
-]);
-const GENERIC_SKILL_NAME_TERMS = new Set([
-  "a",
-  "an",
-  "appropriate",
-  "best",
-  "few",
-  "needed",
-  "relevant",
-  "right",
-  "several",
-  "some",
 ]);
 const GENERIC_LEARNING_REQUEST_TERMS = new Set([
   "before",
@@ -1254,37 +1041,41 @@ function advisoryResultSucceeded(
   return matchedTerms.length >= requiredMatches;
 }
 
-function isMutatingShellCommand(command: string): boolean {
+function toolCallRequiresMemorySearchBeforeMutation(item: ToolCallContent): boolean {
+  if (typeof item.name !== "string") return false;
+  const metadata = getToolMetadata({
+    toolName: item.name,
+    input: item.arguments,
+  });
   return (
-    /\b(?:sed\s+-i|perl\s+-pi|mv\s+|cp\s+|rm\s+|mkdir\s+|touch\s+|git\s+apply|npm\s+pkg\s+set|tee\s+|cat\s+>)\b/i.test(
-      command,
-    ) ||
-    /\b(?:npm\s+(?:i|install|add|remove|uninstall|update)|pnpm\s+(?:i|install|add|remove|update)|yarn\s+(?:install|add|remove|upgrade)|bun\s+(?:install|add|remove)|cargo\s+(?:add|remove|update)|go\s+get)\b/i.test(
-      command,
-    ) ||
-    /\bgit\s+(?:add|apply|commit|checkout|switch|restore|reset|merge|rebase|cherry-pick|stash|clean|push|pull|tag|branch\s+(?:-d|-D|--delete))\b/i.test(
-      command,
-    ) ||
-    /\b(?:dd\b[\s\S]*\bof=|install\s+(?:-[\w=]+\s+)*\S+|rsync\s+|tar\s+[\s\S]*\s-C\s+\S+|unzip\s+[\s\S]*\s-d\s+\S+)/i.test(
-      command,
-    ) ||
-    /\bpython3?\b[\s\S]*\b(?:write|write_text|write_bytes|open\s*\([^)]*["'][wa+]|Path\s*\([^)]*\)\.(?:write_text|write_bytes))\b/i.test(
-      command,
-    ) ||
-    /\b(?:node|bun|deno)\b[\s\S]*\b(?:writeFileSync|appendFileSync|createWriteStream)\b/i.test(
-      command,
-    ) ||
-    /(?:^|[\s;|&])(?:[12]?>>?|&>>)\s*[\w./-]+/i.test(command)
+    metadata.memoryRefreshRequirement === "required_before_mutation" &&
+    metadata.mutationClass !== "none"
   );
 }
 
-function toolCallRequiresMemorySearchBeforeMutation(item: ToolCallContent): boolean {
-  if (typeof item.name !== "string") return false;
-  if (MEMORY_SEARCH_REQUIRED_MUTATION_TOOLS.has(item.name)) return true;
-  return (
-    item.name === "bash" &&
-    isMutatingShellCommand(extractCommandArgument(item.arguments))
-  );
+function toolMetadataForCall(name: string, args: unknown) {
+  return getToolMetadata({ toolName: name, input: args });
+}
+
+function toolCallIsLocalEvidence(name: string, args: unknown): boolean {
+  return isLocalEvidenceToolCall({ toolName: name, input: args });
+}
+
+function toolCallIsExternalEvidence(name: string, args: unknown): boolean {
+  return isExternalEvidenceToolCall({ toolName: name, input: args });
+}
+
+function toolCallIsCommandEvidence(name: string, args: unknown): boolean {
+  if (isCommandExecutionToolName(name)) return true;
+  return toolMetadataForCall(name, args).sideEffectClass === "shell";
+}
+
+function toolCallIsMutationEvidence(name: string, args: unknown): boolean {
+  return isMutationToolCall({ toolName: name, input: args });
+}
+
+function toolCallIsEvidence(name: string, args: unknown): boolean {
+  return isEvidenceToolCall({ toolName: name, input: args });
 }
 
 function sedPrintRangeIsUnbounded(command: string): boolean {
@@ -1993,8 +1784,8 @@ function localEvidenceDedupeTargets(
   name: string,
   args: unknown,
 ): Array<{ key: string; label: string }> {
-  if (!LOCAL_EVIDENCE_TOOL_NAMES.has(name)) return [];
-  if (name === "khala_read_memory" || name === "khala_search_memory") return [];
+  if (!toolCallIsLocalEvidence(name, args)) return [];
+  if (isKhalaMemoryToolName(name)) return [];
 
   if (name === "bash") {
     const command = extractCommandArgument(args);
@@ -3062,7 +2853,7 @@ function conversationHasCitationUrlEvidence(
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       if (
-        !EXTERNAL_EVIDENCE_TOOL_NAMES.has(item.name) &&
+        !toolCallIsExternalEvidence(item.name, item.arguments) &&
         item.name !== "subagent"
       ) {
         continue;
@@ -3465,90 +3256,15 @@ export function assistantToolWorkCompletionReason(
 }
 
 export function skillNeedReason(userText: string): string | null {
-  return EXPLICIT_SKILL_REQUEST_REGEX.test(userText)
-    ? "user explicitly requested a skill"
-    : null;
+  return registrySkillNeedReason(userText);
 }
 
 export function explicitSkillNamesForUserText(userText: string): string[] {
-  const skills = new Set<string>();
-  for (const match of userText.matchAll(EXPLICIT_NAMED_SKILLS_LIST_REGEX)) {
-    for (const skill of normalizedExplicitSkillList(match[1])) {
-      skills.add(skill.toLowerCase());
-    }
-  }
-  for (const match of userText.matchAll(EXPLICIT_NAMED_SKILL_REGEX)) {
-    const skill = normalizedExplicitSkillName(match[1]);
-    if (skill) skills.add(skill.toLowerCase());
-  }
-  if (skills.size > 0 || skillNeedReason(userText)) {
-    for (const match of userText.matchAll(CHAINED_NAMED_SKILL_REGEX)) {
-      const skill = normalizedExplicitSkillName(match[1]);
-      if (skill) skills.add(skill.toLowerCase());
-    }
-  }
-  for (const match of userText.matchAll(SLASH_SKILL_REGEX)) {
-    const skill = match[1]?.trim();
-    if (skill) skills.add(skill.toLowerCase());
-  }
-  for (const match of userText.matchAll(DOLLAR_SKILL_REGEX)) {
-    const skill = match[1]?.trim();
-    if (skill) skills.add(skill.toLowerCase());
-  }
-  for (const match of userText.matchAll(SKILL_NAME_PATH_GLOBAL_REGEX)) {
-    const skill = match[1]?.trim();
-    if (skill) skills.add(skill.toLowerCase());
-  }
-  return [...skills];
+  return registryExplicitSkillNamesForUserText(userText);
 }
 
 export function assistantClaimedSkillNames(assistantText: string): string[] {
-  const skills = new Set<string>();
-  for (const match of assistantText.matchAll(ASSISTANT_SKILLS_LIST_CLAIM_REGEX)) {
-    for (const skill of normalizedExplicitSkillList(match[1] ?? match[2])) {
-      skills.add(skill.toLowerCase());
-    }
-  }
-  for (const match of assistantText.matchAll(
-    ASSISTANT_SKILL_GUIDANCE_LIST_CLAIM_REGEX,
-  )) {
-    for (const skill of normalizedExplicitSkillList(match[1] ?? match[2])) {
-      skills.add(skill.toLowerCase());
-    }
-  }
-  for (const match of assistantText.matchAll(ASSISTANT_SKILL_CLAIM_REGEX)) {
-    const skill = normalizedExplicitSkillName(match[1] ?? match[2]);
-    if (skill) skills.add(skill.toLowerCase());
-  }
-  for (const match of assistantText.matchAll(
-    ASSISTANT_SKILL_GUIDANCE_CLAIM_REGEX,
-  )) {
-    const skill = normalizedExplicitSkillName(
-      (match[1] ?? match[2])?.replace(/\s+skills?$/i, ""),
-    );
-    if (skill) skills.add(skill.toLowerCase());
-  }
-  if (skills.size > 0) {
-    for (const match of assistantText.matchAll(CHAINED_NAMED_SKILL_REGEX)) {
-      const skill = normalizedExplicitSkillName(match[1]);
-      if (skill) skills.add(skill.toLowerCase());
-    }
-  }
-  return [...skills];
-}
-
-function normalizedExplicitSkillList(skills: string | undefined): string[] {
-  return (
-    skills
-      ?.split(/\s*(?:,|\band\b)\s*/i)
-      .map((skill) => normalizedExplicitSkillName(skill))
-      .filter(Boolean) ?? []
-  );
-}
-
-function normalizedExplicitSkillName(skill: string | undefined): string {
-  const normalized = normalizeSkillAssignmentName(skill ?? "");
-  return GENERIC_SKILL_NAME_TERMS.has(normalized) ? "" : normalized;
+  return registryAssistantClaimedSkillNames(assistantText);
 }
 
 function escapeRegExp(text: string): string {
@@ -3602,15 +3318,7 @@ function skillLoaderTargetsFromArgs(args: unknown): string[] {
 }
 
 export function recommendedSkillsForUserText(userText: string): string[] {
-  const text = userText.trim();
-  if (!text) return [];
-
-  const skills = new Set<string>();
-  for (const route of PROACTIVE_SKILL_ROUTES) {
-    if (!route.pattern.test(text)) continue;
-    for (const skill of route.skills) skills.add(skill);
-  }
-  return [...skills];
+  return registryRecommendedSkillsForUserText(userText);
 }
 
 function skillRoutingNeed(params: {
@@ -3744,7 +3452,7 @@ export function conversationHasEvidenceTool(
       if (typeof item.name !== "string") continue;
 
       const args = stringifyToolArguments(item.arguments);
-      if (sourceClass === "local" && LOCAL_EVIDENCE_TOOL_NAMES.has(item.name)) {
+      if (sourceClass === "local" && toolCallIsLocalEvidence(item.name, item.arguments)) {
         latestMatchingAttemptSucceeded = shellSafeEvidenceResultSucceeded(
           item,
           scopedMessages[messageIndex + 1],
@@ -3754,7 +3462,7 @@ export function conversationHasEvidenceTool(
 
       if (
         sourceClass === "command" &&
-        COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)
+        toolCallIsCommandEvidence(item.name, item.arguments)
       ) {
         const command = extractCommandArgument(item.arguments);
         latestMatchingAttemptSucceeded =
@@ -3763,20 +3471,15 @@ export function conversationHasEvidenceTool(
         continue;
       }
 
-      if (sourceClass === "mutation" && MUTATION_TOOL_NAMES.has(item.name)) {
-        if (
-          item.name !== "bash" ||
-          isMutatingShellCommand(extractCommandArgument(item.arguments))
-        ) {
-          latestMatchingAttemptSucceeded = mutationToolResultSucceeded(
-            item,
-            scopedMessages[messageIndex + 1],
-          );
-        }
+      if (sourceClass === "mutation" && toolCallIsMutationEvidence(item.name, item.arguments)) {
+        latestMatchingAttemptSucceeded = mutationToolResultSucceeded(
+          item,
+          scopedMessages[messageIndex + 1],
+        );
         continue;
       }
 
-      if (sourceClass === "any" && EVIDENCE_TOOL_NAMES.has(item.name)) {
+      if (sourceClass === "any" && toolCallIsEvidence(item.name, item.arguments)) {
         latestMatchingAttemptSucceeded = evidenceToolCallQualitySatisfied(item)
           ? shellSafeEvidenceResultSucceeded(
               item,
@@ -3815,7 +3518,7 @@ export function conversationHasEvidenceTool(
 
       if (
         sourceClass === "any" &&
-        (toolNameLooksLikeExternalEvidence(item.name) ||
+        (toolCallIsExternalEvidence(item.name, item.arguments) ||
           /\b(?:memory|read|grep|find|review)\b/i.test(item.name))
       ) {
         latestMatchingAttemptSucceeded = evidenceToolCallQualitySatisfied(item)
@@ -3829,29 +3532,17 @@ export function conversationHasEvidenceTool(
 }
 
 function evidenceToolCallQualitySatisfied(item: ToolCallContent): boolean {
-  if (item.name === "khala_search_memory") {
+  if (isMemorySearchToolName(item.name)) {
     return memorySearchQueryQuality(extractQueryArgument(item.arguments)).focused;
   }
   if (
-    item.name === "search" ||
-    item.name === "web.run" ||
-    item.name === "web_search" ||
-    item.name === "browser_search" ||
-    toolNameLooksLikeExternalEvidence(item.name)
+    isExternalSearchToolName(item.name) ||
+    toolCallIsExternalEvidence(item.name, item.arguments)
   ) {
     return externalEvidenceQueryQuality(extractExternalQueryArgument(item.arguments))
       .focused;
   }
   return true;
-}
-
-function toolNameLooksLikeExternalEvidence(name: string): boolean {
-  if (name === "khala_search_memory" || name === "khala_read_memory") {
-    return false;
-  }
-  return /(?:^|[_:.-])(?:research|search|browse|source|doc|docs|web)(?:$|[_:.-])/i.test(
-    name,
-  );
 }
 
 function mutationToolResultSucceeded(
@@ -3902,9 +3593,9 @@ function externalEvidenceToolResultSucceeded(
 function externalEvidenceAttemptKey(name: string, args: unknown): string | null {
   const argsText = stringifyToolArguments(args);
 
-  if (EXTERNAL_EVIDENCE_TOOL_NAMES.has(name)) {
+  if (toolCallIsExternalEvidence(name, args)) {
     const openTarget = canonicalExternalOpenTarget(args);
-    if (name === "fetch" || name === "browser_open" || openTarget) {
+    if (isExternalOpenToolName(name) || openTarget) {
       return openTarget ? `open:${openTarget.key}` : `open:${normalizeToolArguments(args)}`;
     }
 
@@ -3989,8 +3680,8 @@ export function conversationHasLocalEvidenceTarget(
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
-      if (!LOCAL_EVIDENCE_TOOL_NAMES.has(item.name)) continue;
-      if (item.name === "khala_read_memory" || item.name === "khala_search_memory") {
+      if (!toolCallIsLocalEvidence(item.name, item.arguments)) continue;
+      if (isKhalaMemoryToolName(item.name)) {
         continue;
       }
 
@@ -4026,7 +3717,7 @@ export function conversationHasCommandEvidence(
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
-      if (!COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)) continue;
+      if (!toolCallIsCommandEvidence(item.name, item.arguments)) continue;
 
       const command = extractCommandArgument(item.arguments);
       const succeeded = commandToolResultSucceeded(
@@ -4073,14 +3764,7 @@ export function conversationHasMutationEvidence(
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
-      if (!MUTATION_TOOL_NAMES.has(item.name)) continue;
-
-      if (
-        item.name === "bash" &&
-        !isMutatingShellCommand(extractCommandArgument(item.arguments))
-      ) {
-        continue;
-      }
+      if (!toolCallIsMutationEvidence(item.name, item.arguments)) continue;
 
       const succeeded = mutationToolResultSucceeded(
         item,
@@ -4129,19 +3813,18 @@ export function conversationHasSkillRead(
       );
 
       const args = stringifyToolArguments(item.arguments).replaceAll("\\", "/");
-      if (item.name === "read") {
+      if (isLocalFileReadToolName(item.name)) {
         const skillReadTargets = skillReadPathTargetsFromArgs(item.arguments);
-        const matchingSkillReadTarget = skillReadTargets.find((target) =>
-          SKILL_READ_PATH_REGEX.test(target),
-        );
-        if (!matchingSkillReadTarget) continue;
+        const matchingSkillRead = skillReadTargets
+          .map((target) => skillMetadataFromSkillReadPath(target))
+          .find((metadata) => metadata !== null);
+        if (!matchingSkillRead) continue;
         if (!requiresSpecificSkill) {
           latestGenericSkillAttemptSucceeded = succeeded;
           continue;
         }
-        const skillName = matchingSkillReadTarget.match(SKILL_NAME_PATH_REGEX)?.[1];
-        if (skillName && requiredSkillSet.has(skillName.toLowerCase())) {
-          latestSkillResults.set(skillName.toLowerCase(), succeeded);
+        if (requiredSkillSet.has(matchingSkillRead.name)) {
+          latestSkillResults.set(matchingSkillRead.name, succeeded);
         }
         continue;
       }
@@ -4162,7 +3845,7 @@ export function conversationHasSkillRead(
         continue;
       }
 
-      if (!/\b(?:readSkill|loadSkill|skill_read|skill_load)\b/i.test(item.name)) {
+      if (!isSkillLoaderToolName(item.name)) {
         continue;
       }
       const loaderTargets = skillLoaderTargetsFromArgs(item.arguments);
@@ -4196,8 +3879,8 @@ export function conversationHasMemorySearch(
   for (const [messageIndex, message] of scopedMessages.entries()) {
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
-      if (item.name !== "khala_search_memory") {
-        if (item.name !== "khala_read_memory") {
+      if (!isMemorySearchToolName(item.name)) {
+        if (!isMemoryRefreshToolName(item.name)) {
           nonMemoryToolCallsAfterLatestSearch += 1;
         }
         continue;
@@ -4241,8 +3924,8 @@ export function conversationHasMemorySearchBeforeFirstMutation(
           nonMemoryToolCallsAfterLatestSearch < maxNonMemoryToolCallsAfterSearch
         );
       }
-      if (item.name !== "khala_search_memory") {
-        if (item.name !== "khala_read_memory") {
+      if (!isMemorySearchToolName(item.name)) {
+        if (!isMemoryRefreshToolName(item.name)) {
           nonMemoryToolCallsAfterLatestSearch += 1;
         }
         continue;
@@ -4275,7 +3958,7 @@ export function conversationHasLearningCapture(
   for (const [index, message] of scopedMessages.entries()) {
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
-      if (item.name !== "khala_learn") continue;
+      if (!isMemoryPersistenceToolName(item.name)) continue;
       latestLearningAttemptSucceeded =
         learningCaptureArgumentsAreConcrete(item.arguments) &&
         learningCaptureArgumentsMatchRequest(item.arguments, userText) &&
@@ -4322,14 +4005,12 @@ function conversationStartedMutationBeforeWorkflowContext(
       if (typeof item.name !== "string") continue;
 
       if (
-        MUTATION_TOOL_NAMES.has(item.name) &&
-        (item.name !== "bash" ||
-          isMutatingShellCommand(extractCommandArgument(item.arguments)))
+        toolCallIsMutationEvidence(item.name, item.arguments)
       ) {
         return !sawContextEvidence;
       }
 
-      if (!EVIDENCE_TOOL_NAMES.has(item.name)) continue;
+      if (!toolCallIsEvidence(item.name, item.arguments)) continue;
       if (toolResultHasSubstantiveEvidence(scopedMessages[messageIndex + 1])) {
         sawContextEvidence = true;
       }
@@ -4353,7 +4034,7 @@ function conversationHasGuideLoad(messages: AgentEndEventMessage[]): boolean {
       );
       if (!succeeded) continue;
 
-      if (item.name === "read") {
+      if (isLocalFileReadToolName(item.name)) {
         const targets = localArtifactTargetsFromToolArguments(item.arguments);
         if (
           targets.some((target) =>
@@ -4367,7 +4048,7 @@ function conversationHasGuideLoad(messages: AgentEndEventMessage[]): boolean {
       }
 
       if (
-        /\b(?:readSkill|loadSkill|skill_read|skill_load)\b/i.test(item.name) &&
+        isSkillLoaderToolName(item.name) &&
         skillLoaderTargetsFromArgs(item.arguments).length > 0
       ) {
         return true;
@@ -4485,10 +4166,7 @@ export function memorySearchNeedReason(params: {
     DEFAULT_SUBSTANTIAL_TOOL_CALL_THRESHOLD;
   const toolNames = scopedToolCallNames(params.messages);
   const nonMemoryToolCount = toolNames.filter(
-    (name) =>
-      name !== "khala_read_memory" &&
-      name !== "khala_search_memory" &&
-      name !== "khala_learn",
+    (name) => !isKhalaMemoryToolName(name),
   ).length;
 
   const performedMemorySearchRequiredMutation = scopedMessagesAfterLatestUser(
@@ -4546,17 +4224,18 @@ export function findRedundantEvidenceToolCall(
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
-      if (item.name === "khala_learn") {
-        deleteSeenToolEntries(seen, "khala_search_memory");
+      if (isMemoryPersistenceToolName(item.name)) {
+        for (const toolName of MEMORY_SEARCH_TOOL_NAMES) {
+          deleteSeenToolEntries(seen, toolName);
+        }
         seenMemoryQueries.clear();
         continue;
       }
 
-      if (
-        TOOL_DEDUPE_RESET_NAMES.has(item.name) ||
-        (item.name === "bash" &&
-          isMutatingShellCommand(extractCommandArgument(item.arguments)))
-      ) {
+      if (resetsDuplicateEvidenceWindowToolCall({
+        toolName: item.name,
+        input: item.arguments,
+      })) {
         seen.clear();
         seenLocalArtifacts.clear();
         seenMemoryQueries.clear();
@@ -4565,7 +4244,10 @@ export function findRedundantEvidenceToolCall(
         continue;
       }
 
-      if (!DEDUPE_TOOL_NAMES.has(item.name) && !toolNameLooksLikeExternalEvidence(item.name)) {
+      if (!isDuplicateEvidenceCandidateToolCall({
+        toolName: item.name,
+        input: item.arguments,
+      })) {
         continue;
       }
 
@@ -4585,7 +4267,7 @@ export function findRedundantEvidenceToolCall(
         seenLocalArtifacts.set(target.key, target.label);
       }
 
-      if (item.name === "khala_search_memory") {
+      if (isMemorySearchToolName(item.name)) {
         const memoryQuery = canonicalMemorySearchQuery(item.arguments);
         if (memoryQuery && seenMemoryQueries.has(memoryQuery.key)) {
           return `khala_search_memory query ${
@@ -4598,11 +4280,8 @@ export function findRedundantEvidenceToolCall(
       }
 
       if (
-        item.name === "search" ||
-        item.name === "web.run" ||
-        item.name === "web_search" ||
-        item.name === "browser_search" ||
-        toolNameLooksLikeExternalEvidence(item.name)
+        isExternalSearchToolName(item.name) ||
+        toolCallIsExternalEvidence(item.name, item.arguments)
       ) {
         for (const externalQuery of canonicalExternalSearchQueries(
           item.arguments,
@@ -4616,11 +4295,7 @@ export function findRedundantEvidenceToolCall(
         }
       }
 
-      if (
-        item.name === "browser_open" ||
-        item.name === "fetch" ||
-        item.name === "web.run"
-      ) {
+      if (isExternalOpenToolName(item.name)) {
         for (const openTarget of canonicalExternalOpenTargets(item.arguments)) {
           if (seenExternalOpenTargets.has(openTarget.key)) {
             return `external URL ${
@@ -4645,7 +4320,7 @@ function findRedundantLearningCaptureCall(
   for (const [index, message] of scopedMessages.entries()) {
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
-      if (item.name !== "khala_learn") continue;
+      if (!isMemoryPersistenceToolName(item.name)) continue;
       if (!learningCaptureArgumentsAreConcrete(item.arguments)) continue;
 
       const key =
@@ -4671,7 +4346,7 @@ export function findInefficientShellEvidenceCall(
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
-      if (!COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)) continue;
+      if (!toolCallIsCommandEvidence(item.name, item.arguments)) continue;
 
       const command = extractCommandArgument(item.arguments);
       const reason = unboundedShellEvidenceReason(command);
@@ -4692,7 +4367,7 @@ export function findShellQuotingRepairLoop(
     for (const item of message.content) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
-      if (!COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)) continue;
+      if (!toolCallIsCommandEvidence(item.name, item.arguments)) continue;
 
       const result = scopedMessages[index + 1];
       const resultText =
@@ -4725,9 +4400,9 @@ export function findFullSessionArtifactRead(
       if (typeof item.name !== "string") continue;
 
       const targets =
-        item.name === "read"
+        isLocalFileReadToolName(item.name)
           ? localArtifactTargetsFromToolArguments(item.arguments)
-          : COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)
+          : toolCallIsCommandEvidence(item.name, item.arguments)
             ? localArtifactTargetsFromText(extractCommandArgument(item.arguments))
             : [];
       const sessionArtifact = targets.find((target) =>
@@ -4752,7 +4427,7 @@ export function findBroadEvidenceQueryCall(
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
-      if (item.name === "khala_search_memory") {
+      if (isMemorySearchToolName(item.name)) {
         const quality = memorySearchQueryQuality(
           extractQueryArgument(item.arguments),
         );
@@ -4761,11 +4436,8 @@ export function findBroadEvidenceQueryCall(
       }
 
       if (
-        item.name === "search" ||
-        item.name === "web.run" ||
-        item.name === "web_search" ||
-        item.name === "browser_search" ||
-        toolNameLooksLikeExternalEvidence(item.name)
+        isExternalSearchToolName(item.name) ||
+        toolCallIsExternalEvidence(item.name, item.arguments)
       ) {
         for (const query of extractExternalQueryArguments(item.arguments)) {
           const quality = externalEvidenceQueryQuality(query);
@@ -5221,7 +4893,7 @@ export function evaluateHarnessTurnMetrics(params: {
       if (typeof item.name !== "string") continue;
       metrics.toolCallCount += 1;
 
-      if (item.name === "khala_search_memory") {
+      if (isMemorySearchToolName(item.name)) {
         metrics.memorySearches.total += 1;
         if (memorySearchQueryQuality(extractQueryArgument(item.arguments)).focused) {
           metrics.memorySearches.focused += 1;
@@ -5235,19 +4907,17 @@ export function evaluateHarnessTurnMetrics(params: {
         }
       }
 
-      if (item.name === "khala_learn") {
+      if (isMemoryPersistenceToolName(item.name)) {
         metrics.learningCaptures += 1;
       }
 
       if (
-        item.name === "read" &&
-        skillReadPathTargetsFromArgs(item.arguments).some((target) =>
-          SKILL_READ_PATH_REGEX.test(target),
-        )
+        isLocalFileReadToolName(item.name) &&
+        skillReadPathTargetsFromArgs(item.arguments).some(isSkillReadPath)
       ) {
         metrics.skillLoads += 1;
       } else if (
-        /\b(?:readSkill|loadSkill|skill_read|skill_load)\b/i.test(item.name) &&
+        isSkillLoaderToolName(item.name) &&
         skillLoaderTargetsFromArgs(item.arguments).length > 0
       ) {
         metrics.skillLoads += 1;
@@ -5258,22 +4928,15 @@ export function evaluateHarnessTurnMetrics(params: {
         metrics.skillLoads += 1;
       }
 
-      if (
-        EXTERNAL_EVIDENCE_TOOL_NAMES.has(item.name) ||
-        toolNameLooksLikeExternalEvidence(item.name)
-      ) {
+      if (toolCallIsExternalEvidence(item.name, item.arguments)) {
         metrics.externalEvidenceCalls += 1;
       }
 
-      if (COMMAND_EVIDENCE_TOOL_NAMES.has(item.name)) {
+      if (toolCallIsCommandEvidence(item.name, item.arguments)) {
         metrics.commandEvidenceCalls += 1;
       }
 
-      if (
-        MUTATION_TOOL_NAMES.has(item.name) &&
-        (item.name !== "bash" ||
-          isMutatingShellCommand(extractCommandArgument(item.arguments)))
-      ) {
+      if (toolCallIsMutationEvidence(item.name, item.arguments)) {
         metrics.mutationCalls += 1;
       }
 

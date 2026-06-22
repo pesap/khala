@@ -25,10 +25,10 @@ function textMessage(role: Message["role"], text: string): Message {
   };
 }
 
-function assistantToolCall(name: string): Message {
+function assistantToolCall(name: string, args: Record<string, unknown> = {}): Message {
   return {
     role: "assistant",
-    content: [{ type: "toolCall", id: `call-${name}`, name, arguments: {} }],
+    content: [{ type: "toolCall", id: `call-${name}`, name, arguments: args }],
   };
 }
 
@@ -79,6 +79,28 @@ test("clears recovery requirement once the blocked mutation is retried", () => {
     memoryReadRequired("write"),
     assistantToolCall("khala_read_memory"),
     assistantToolCall("write"),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
+test("clears recovery requirement once blocked apply_patch is retried", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("apply_patch"),
+    memoryReadRequired("apply_patch"),
+    assistantToolCall("khala_read_memory"),
+    assistantToolCall("apply_patch"),
+  ];
+
+  assert.equal(findPendingMemoryGateRecovery(messages), null);
+});
+
+test("clears recovery requirement once a blocked namespaced command mutation is retried", () => {
+  const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
+    assistantToolCall("functions.exec_command", { cmd: "npm install" }),
+    memoryReadRequired("functions.exec_command"),
+    assistantToolCall("khala_read_memory"),
+    assistantToolCall("functions.exec_command", { cmd: "npm install" }),
   ];
 
   assert.equal(findPendingMemoryGateRecovery(messages), null);

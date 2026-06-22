@@ -1,7 +1,5 @@
-import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { load as loadYaml } from "js-yaml";
-import { MUTATION_BASH_PATTERN, POSTFLIGHT_LINE_REGEX, PREFLIGHT_LINE_REGEX } from "../lib/constants.ts";
+import { POSTFLIGHT_LINE_REGEX, PREFLIGHT_LINE_REGEX } from "../lib/constants.ts";
 import { isRecord } from "../lib/io.ts";
 
 export type PolicyMode = "monitor" | "warn" | "enforce";
@@ -136,16 +134,6 @@ export function extractPostflightFromAssistantText(text: string, nowIso: () => s
   }
 
   return null;
-}
-
-export function isMutationCapableBash(command: string): boolean {
-  return MUTATION_BASH_PATTERN.test(command);
-}
-
-export function isMutationToolCall(event: ToolCallEvent): boolean {
-  if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) return true;
-  if (!isToolCallEventType("bash", event)) return false;
-  return isMutationCapableBash(event.input.command);
 }
 
 export function modeOutcome(mode: PolicyMode, violation: boolean): PolicyOutcome {

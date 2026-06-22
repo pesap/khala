@@ -1,58 +1,37 @@
-import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { isMutationToolCall } from "../policy/first-principles.ts";
+import {
+  getToolMetadata,
+  isSkillMemoryReadToolCall as isRegistrySkillMemoryReadToolCall,
+} from "./tool-registry.ts";
 
 export interface ToolInterceptionCounters {
   incrementTaskToolCall: boolean;
   incrementMemoryToolCallsSinceRead: boolean;
   isMemoryRead: boolean;
+  persistsMemory: boolean;
 }
 
-export function isMemoryPersistenceToolName(toolName: string): boolean {
-  return toolName === "khala_learn";
-}
-
-export function isKhalaMemoryToolName(toolName: string): boolean {
-  return (
-    toolName === "khala_read_memory" ||
-    toolName === "khala_search_memory" ||
-    toolName === "khala_learn"
-  );
-}
-
-export function requiresFreshMemoryToolCall(event: ToolCallEvent): boolean {
-  if (isKhalaMemoryToolName(event.toolName)) return false;
-  return isMutationToolCall(event);
-}
+export {
+  isKhalaMemoryToolName,
+  requiresFreshMemoryToolCall,
+} from "./tool-registry.ts";
 
 export function isSkillMemoryReadToolCall(event: {
   toolName: string;
   input?: unknown;
 }): boolean {
-  if (event.toolName !== "read") return false;
-  const input = event.input as { path?: unknown } | undefined;
-  if (typeof input?.path !== "string") return false;
-
-  const normalizedPath = input.path.replaceAll("\\", "/");
-  return (
-    normalizedPath.startsWith("skills/") ||
-    normalizedPath.startsWith(".agents/skills/") ||
-    normalizedPath.startsWith(".pi/khala/skills/") ||
-    normalizedPath.includes("/skills/") ||
-    normalizedPath.includes("/.agents/skills/") ||
-    normalizedPath.includes("/.pi/khala/skills/")
-  );
+  return isRegistrySkillMemoryReadToolCall(event);
 }
 
 export function getToolInterceptionCounters(event: {
   toolName: string;
   input?: unknown;
 }): ToolInterceptionCounters {
-  const isMemoryRead = event.toolName === "khala_read_memory";
-  const isKhalaMemoryTool = isKhalaMemoryToolName(event.toolName);
+  const metadata = getToolMetadata(event);
   return {
-    incrementTaskToolCall: !isMemoryRead,
+    incrementTaskToolCall: metadata.gateSatisfaction.countsTaskToolCall,
     incrementMemoryToolCallsSinceRead:
-      !isKhalaMemoryTool && !isSkillMemoryReadToolCall(event),
-    isMemoryRead,
+      metadata.gateSatisfaction.agesMemory && !isSkillMemoryReadToolCall(event),
+    isMemoryRead: metadata.gateSatisfaction.satisfiesMemoryRead,
+    persistsMemory: metadata.gateSatisfaction.persistsMemory,
   };
 }

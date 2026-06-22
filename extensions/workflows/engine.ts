@@ -4,7 +4,6 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { load as loadYaml } from "js-yaml";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isRecord } from "../lib/io.ts";
 import type { LearningObservation, WorkflowFlags } from "../learning/store.ts";
@@ -12,6 +11,30 @@ import type {
   PostflightRecord,
   PreflightRecord,
 } from "../policy/first-principles.ts";
+import {
+  appendRunLedgerEvent,
+  buildRunLedgerCheckpointEvent,
+  buildRunLedgerToolCallEventFromRegistry,
+  buildRunLedgerWorkflowCompletedEvent,
+  buildRunLedgerWorkflowStartedEvent,
+  buildRunLedgerRecord,
+  completeRunLedger,
+  getGlobalRunLedgerDir,
+  markRunInterrupted,
+  writeRunLedger,
+  type RunLedgerEvent,
+  type RunLedgerLocalContext,
+  type RunLedgerSourceContext,
+} from "../runtime/run-ledger.ts";
+import { isMutationToolCall } from "../runtime/tool-registry.ts";
+import {
+  buildSkillMetadata,
+  buildSkillRegistryEvent,
+  normalizeSkillMetadata,
+  normalizeSkillName,
+  type SkillMetadata,
+  type SkillRegistryEvent,
+} from "../runtime/skill-registry.ts";
 import type { RuntimeState } from "../state/runtime.ts";
 
 export type NotifyType = "info" | "error" | "warning" | "success";
@@ -32,8 +55,11 @@ export interface PendingWorkflow<
   startedAt: string;
   runFile: string;
   loadedSkills: string[];
+  skillMetadata: SkillMetadata[];
   mutationCount: number;
+  toolCallCount: number;
   policyWarnings: string[];
+  workflowState?: WorkflowRuntimeState;
   completionWait?: PendingWorkflowCompletionWait;
 }
 
@@ -51,6 +77,44 @@ export interface WorkflowInference<TWorkflowOutcome extends string = string> {
   outcome: TWorkflowOutcome;
   confidence: number;
   strictViolation?: string;
+}
+
+export type WorkflowStepStatus = "pending" | "active" | "completed" | "skipped";
+
+export interface WorkflowRuntimeStep {
+  index: number;
+  id: string;
+  action: string;
+  status: WorkflowStepStatus;
+}
+
+export interface WorkflowRuntimeState {
+  name: string | null;
+  objective: string | null;
+  currentStepIndex: number | null;
+  steps: WorkflowRuntimeStep[];
+}
+
+export interface WorkflowStructuredCompletion {
+  outcome: string;
+  confidence: number;
+  validation: string[];
+  openQuestions: string[];
+  learningCandidates: string[];
+}
+
+export interface WorkflowStepSnapshot {
+  index: number;
+  id: string;
+  action: string;
+  status: WorkflowStepStatus;
+  totalSteps: number;
+}
+
+export interface WorkflowSkillLoadResult {
+  content: string;
+  metadata?: SkillMetadata;
+  attemptedSources?: SkillRegistryEvent["attemptedSources"];
 }
 
 function describeBlockedWorkflowSlot<TWorkflowType extends string>(
@@ -96,7 +160,8 @@ function normalizeSkills(raw: unknown): string[] {
     .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
     .filter(
       (entry) => entry.length > 0 && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(entry),
-    );
+    )
+    .map(normalizeSkillName);
   return [...new Set(validSkills)];
 }
 
@@ -126,25 +191,39 @@ function parsePromptFrontmatter(rawPrompt: string): {
   template: string;
   skills: string[];
   skillContext: SkillContextMode;
+  skillContextSpecified: boolean;
 } {
   const frontmatterMatch = rawPrompt.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!frontmatterMatch) {
-    return { template: rawPrompt, skills: [], skillContext: "manifest" };
+    return {
+      template: rawPrompt,
+      skills: [],
+      skillContext: "manifest",
+      skillContextSpecified: false,
+    };
   }
 
   const [, frontmatter] = frontmatterMatch;
   try {
     const parsed = loadYaml(frontmatter);
     const skills = isRecord(parsed) ? normalizeSkills(parsed.skills) : [];
+    const skillContextSpecified =
+      isRecord(parsed) && Object.hasOwn(parsed, "skillContext");
     return {
       template: rawPrompt.slice(frontmatterMatch[0].length),
       skills,
       skillContext: isRecord(parsed)
         ? normalizeSkillContextMode(parsed.skillContext)
         : "manifest",
+      skillContextSpecified,
     };
   } catch {
-    return { template: rawPrompt, skills: [], skillContext: "manifest" };
+    return {
+      template: rawPrompt,
+      skills: [],
+      skillContext: "manifest",
+      skillContextSpecified: false,
+    };
   }
 }
 
@@ -190,6 +269,423 @@ function parseWorkflowStepSummary(step: unknown): string | null {
   return valueSummary ? `${key}: ${valueSummary}` : key;
 }
 
+function parseWorkflowRuntimeStep(
+  step: unknown,
+  index: number,
+): WorkflowRuntimeStep | null {
+  if (!isRecord(step)) {
+    const summary = scalarSummary(step);
+    if (!summary) return null;
+    return {
+      index,
+      id: `step-${index + 1}`,
+      action: summary,
+      status: index === 0 ? "active" : "pending",
+    };
+  }
+
+  const parsedId = scalarSummary(step.id);
+  const parsedAction = scalarSummary(step.action);
+  const parsedStatus = normalizeWorkflowStepStatus(step.status);
+  const fallback = parseWorkflowStepSummary(step);
+  const id = parsedId ?? `step-${index + 1}`;
+  const action = parsedAction ?? fallback ?? id;
+
+  return {
+    index,
+    id,
+    action,
+    status: parsedStatus ?? (index === 0 ? "active" : "pending"),
+  };
+}
+
+function normalizeWorkflowStepStatus(value: unknown): WorkflowStepStatus | null {
+  if (value !== "pending" && value !== "active" && value !== "completed" && value !== "skipped") {
+    return null;
+  }
+  return value;
+}
+
+function workflowCurrentStepIndex(
+  parsed: Record<string, unknown>,
+  steps: readonly WorkflowRuntimeStep[],
+): number | null {
+  if (steps.length === 0) return null;
+  if (
+    Number.isInteger(parsed.currentStepIndex) &&
+    (parsed.currentStepIndex as number) >= 0 &&
+    (parsed.currentStepIndex as number) < steps.length
+  ) {
+    return parsed.currentStepIndex as number;
+  }
+
+  const currentStepId = scalarSummary(parsed.currentStepId ?? parsed.currentStep);
+  if (currentStepId) {
+    const index = steps.findIndex((step) => step.id === currentStepId);
+    if (index >= 0) return index;
+  }
+
+  const activeIndex = steps.findIndex((step) => step.status === "active");
+  if (activeIndex >= 0) return activeIndex;
+  const pendingIndex = steps.findIndex((step) => step.status === "pending");
+  return pendingIndex >= 0 ? pendingIndex : null;
+}
+
+function normalizeWorkflowRuntimeSteps(
+  steps: readonly WorkflowRuntimeStep[],
+  currentStepIndex: number | null,
+): WorkflowRuntimeStep[] {
+  return steps.map((step, index) => {
+    if (currentStepIndex === index) return { ...step, status: "active" };
+    if (step.status === "active") return { ...step, status: "pending" };
+    return step;
+  });
+}
+
+interface ParsedWorkflowTextStep {
+  id?: string;
+  action?: string;
+  summary: string;
+}
+
+function parseWorkflowTextFallback(rawWorkflowYaml: string): {
+  name: string | null;
+  objective: string | null;
+  steps: ParsedWorkflowTextStep[];
+} {
+  const lines = rawWorkflowYaml.split(/\r?\n/);
+  const name =
+    lines
+      .map((line) => line.match(/^name:\s*(.+?)\s*$/)?.[1])
+      .find((value): value is string => Boolean(value?.trim())) ?? null;
+  const objective =
+    lines
+      .map((line) => line.match(/^objective:\s*(.+?)\s*$/)?.[1])
+      .find((value): value is string => Boolean(value?.trim())) ?? null;
+  const stepsStart = lines.findIndex((line) => /^steps:\s*$/.test(line));
+  if (stepsStart < 0) {
+    return {
+      name: scalarSummary(name),
+      objective: scalarSummary(objective),
+      steps: [],
+    };
+  }
+
+  const steps: ParsedWorkflowTextStep[] = [];
+  let current: { id?: string; action?: string; inline?: string } | null = null;
+  const flushCurrent = () => {
+    if (!current) return;
+    const summary =
+      current.id && current.action
+        ? `${current.id}: ${current.action}`
+        : current.id ?? current.action ?? current.inline;
+    if (summary) steps.push({ ...current, summary });
+    current = null;
+  };
+
+  for (const line of lines.slice(stepsStart + 1)) {
+    if (!line.trim()) continue;
+    if (/^\S/.test(line)) break;
+
+    const item = line.match(/^\s*-\s*(.*)$/);
+    if (item) {
+      flushCurrent();
+      const inline = item[1]?.trim() ?? "";
+      const keyValue = inline.match(/^(id|action):\s*(.+)$/);
+      current = {};
+      if (keyValue?.[1] === "id") current.id = keyValue[2]?.trim();
+      else if (keyValue?.[1] === "action") current.action = keyValue[2]?.trim();
+      else if (inline) current.inline = inline;
+      continue;
+    }
+
+    if (!current) continue;
+    const field = line.match(/^\s+(id|action):\s*(.+)$/);
+    if (field?.[1] === "id") current.id = field[2]?.trim();
+    if (field?.[1] === "action") current.action = field[2]?.trim();
+  }
+  flushCurrent();
+
+  return {
+    name: scalarSummary(name),
+    objective: scalarSummary(objective),
+    steps,
+  };
+}
+
+export function parseWorkflowRuntimeState(
+  rawWorkflowYaml: string,
+): WorkflowRuntimeState {
+  try {
+    const parsed = loadYaml(rawWorkflowYaml);
+    if (!isRecord(parsed)) {
+      return {
+        name: null,
+        objective: null,
+        currentStepIndex: null,
+        steps: [],
+      };
+    }
+
+    const steps = Array.isArray(parsed.steps)
+      ? parsed.steps
+          .map(parseWorkflowRuntimeStep)
+          .filter((step): step is WorkflowRuntimeStep => Boolean(step))
+      : [];
+    const currentStepIndex = workflowCurrentStepIndex(parsed, steps);
+
+    return {
+      name: scalarSummary(parsed.name),
+      objective: scalarSummary(parsed.objective),
+      currentStepIndex,
+      steps: normalizeWorkflowRuntimeSteps(steps, currentStepIndex),
+    };
+  } catch {
+    const fallback = parseWorkflowTextFallback(rawWorkflowYaml);
+    const steps = fallback.steps.map((step, index) => ({
+      index,
+      id: step.id ?? `step-${index + 1}`,
+      action: step.action ?? step.summary,
+      status: index === 0 ? "active" as const : "pending" as const,
+    }));
+    return {
+      name: fallback.name,
+      objective: fallback.objective,
+      currentStepIndex: steps.length > 0 ? 0 : null,
+      steps,
+    };
+  }
+}
+
+function completeWorkflowRuntimeState(
+  state: WorkflowRuntimeState | undefined,
+  outcome: string,
+): WorkflowRuntimeState | undefined {
+  if (!state) return undefined;
+  const completeRemainingSteps = outcome === "success";
+  return {
+    ...state,
+    currentStepIndex: null,
+    steps: state.steps.map((step) => ({
+      ...step,
+      status:
+        completeRemainingSteps && step.status !== "skipped"
+          ? "completed"
+          : step.status,
+    })),
+  };
+}
+
+function activeWorkflowStepSnapshot(
+  state: WorkflowRuntimeState | undefined,
+): WorkflowStepSnapshot | undefined {
+  if (!state || state.steps.length === 0) return undefined;
+  const indexedStep =
+    typeof state.currentStepIndex === "number"
+      ? state.steps.find((step) => step.index === state.currentStepIndex)
+      : undefined;
+  const step = indexedStep ?? state.steps.find((entry) => entry.status === "active");
+  if (!step) return undefined;
+  return {
+    index: step.index,
+    id: step.id,
+    action: step.action,
+    status: step.status,
+    totalSteps: state.steps.length,
+  };
+}
+
+function advanceWorkflowRuntimeState(
+  state: WorkflowRuntimeState | undefined,
+  expectedStepId?: string,
+): WorkflowRuntimeState | undefined {
+  if (!state || state.currentStepIndex === null) return state;
+
+  const currentStep = state.steps[state.currentStepIndex];
+  if (!currentStep) return state;
+  if (expectedStepId && currentStep.id !== expectedStepId) {
+    throw new Error(
+      `Cannot advance workflow step ${expectedStepId}; active step is ${currentStep.id}.`,
+    );
+  }
+
+  const nextStepIndex = state.steps.findIndex(
+    (step) => step.index > currentStep.index && step.status === "pending",
+  );
+  return {
+    ...state,
+    currentStepIndex: nextStepIndex >= 0 ? nextStepIndex : null,
+    steps: state.steps.map((step) => {
+      if (step.index === currentStep.index) return { ...step, status: "completed" };
+      if (nextStepIndex >= 0 && step.index === nextStepIndex) return { ...step, status: "active" };
+      return step;
+    }),
+  };
+}
+
+export async function advanceWorkflowTracking<
+  TWorkflowType extends string,
+  TWorkflowFlags extends WorkflowFlags,
+>(params: {
+  workflow: PendingWorkflow<TWorkflowType, TWorkflowFlags>;
+  at: string;
+  stepId?: string;
+  reason?: string;
+}): Promise<WorkflowRuntimeState | undefined> {
+  const nextState = advanceWorkflowRuntimeState(
+    params.workflow.workflowState,
+    params.stepId,
+  );
+  if (!nextState || nextState === params.workflow.workflowState) return nextState;
+
+  params.workflow.workflowState = nextState;
+  const currentStep = nextState.steps.find((step) => step.status === "active");
+  const explicitReason = params.reason?.trim();
+  const reason =
+    explicitReason ||
+    (currentStep
+      ? `Workflow advanced to step ${currentStep.index + 1}/${nextState.steps.length}: ${currentStep.id}`
+      : "Workflow completed all runtime steps");
+  const updated = await appendRunLedgerEvent({
+    runFile: params.workflow.runFile,
+    event: buildRunLedgerCheckpointEvent({
+      runId: params.workflow.id,
+      at: params.at,
+      reason,
+      workflowState: nextState,
+    }),
+  });
+  await writeRunLedger(params.workflow.runFile, {
+    ...updated,
+    workflow: {
+      ...updated.workflow,
+      state: nextState,
+    },
+  });
+  return nextState;
+}
+
+export async function advanceWorkflowTrackingForTurnBoundary<
+  TWorkflowType extends string,
+  TWorkflowFlags extends WorkflowFlags,
+>(params: {
+  workflow: PendingWorkflow<TWorkflowType, TWorkflowFlags>;
+  at: string;
+  assistantText: string;
+  awaitingUserAction: boolean;
+}): Promise<WorkflowRuntimeState | undefined> {
+  if (params.awaitingUserAction || !params.assistantText.trim()) {
+    return params.workflow.workflowState;
+  }
+
+  const activeStep = activeWorkflowStepSnapshot(params.workflow.workflowState);
+  if (!activeStep) return params.workflow.workflowState;
+
+  return advanceWorkflowTracking({
+    workflow: params.workflow,
+    at: params.at,
+    stepId: activeStep.id,
+    reason: `Workflow turn completed step ${activeStep.index + 1}/${activeStep.totalSteps}: ${activeStep.id}`,
+  });
+}
+
+export async function recordWorkflowToolCall<
+  TWorkflowType extends string,
+  TWorkflowFlags extends WorkflowFlags,
+>(params: {
+  workflow: PendingWorkflow<TWorkflowType, TWorkflowFlags> | null;
+  toolName: string;
+  input?: unknown;
+  at: string;
+}): Promise<RunLedgerEvent | null> {
+  if (!params.workflow) return null;
+
+  const nextToolCallCount = params.workflow.toolCallCount + 1;
+  const mutationIncrement = isMutationToolCall({
+    toolName: params.toolName,
+    input: params.input,
+  })
+    ? 1
+    : 0;
+  const nextMutationCount = params.workflow.mutationCount + mutationIncrement;
+  const event = buildRunLedgerToolCallEventFromRegistry({
+    workflowId: params.workflow.id,
+    workflowMutationCount: nextMutationCount,
+    workflowToolCallCount: nextToolCallCount,
+    toolName: params.toolName,
+    at: params.at,
+    input: params.input,
+    workflowStep: activeWorkflowStepSnapshot(params.workflow.workflowState),
+  });
+
+  await appendRunLedgerEvent({
+    runFile: params.workflow.runFile,
+    event,
+  });
+  params.workflow.toolCallCount = nextToolCallCount;
+  params.workflow.mutationCount = nextMutationCount;
+  return event;
+}
+
+const STRUCTURED_COMPLETION_SECTION_HEADING_REGEX =
+  /^(?:validation|validated|verification|verified|checks?|test results?|open questions?|questions?|open items?|follow-?ups?|remaining questions?|unknowns?|learning candidates?|learnings?|learning notes?|memory candidates?|reuse candidates?)\s*:?\s*$/i;
+const RESULT_OR_CONFIDENCE_HEADING_REGEX = /^(?:result|outcome|confidence)\s*:/i;
+
+function extractListSection(text: string, headingPattern: RegExp): string[] {
+  const lines = text.split(/\r?\n/);
+  const startIndex = lines.findIndex((line) => headingPattern.test(line.trim()));
+  if (startIndex < 0) return [];
+
+  const entries: string[] = [];
+  const inlineEntry = lines[startIndex].trim().match(/^[^:]+:\s*(.+)$/)?.[1]?.trim();
+  if (inlineEntry) entries.push(stripStructuredCompletionListMarker(inlineEntry));
+  for (const line of lines.slice(startIndex + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (entries.length > 0) break;
+      continue;
+    }
+    if (
+      STRUCTURED_COMPLETION_SECTION_HEADING_REGEX.test(trimmed) ||
+      RESULT_OR_CONFIDENCE_HEADING_REGEX.test(trimmed) ||
+      (entries.length > 0 && /^[A-Z][A-Za-z ]{2,}:/.test(trimmed))
+    ) {
+      break;
+    }
+    entries.push(stripStructuredCompletionListMarker(trimmed));
+  }
+  return entries.filter((entry) => entry.length > 0);
+}
+
+function stripStructuredCompletionListMarker(value: string): string {
+  const bullet = value.match(/^[-*]\s+(.+)$/);
+  const numbered = value.match(/^\d+[.)]\s+(.+)$/);
+  return (bullet?.[1] ?? numbered?.[1] ?? value).trim();
+}
+
+function buildStructuredCompletion(params: {
+  assistantText: string;
+  outcome: string;
+  confidence: number;
+}): WorkflowStructuredCompletion {
+  return {
+    outcome: params.outcome,
+    confidence: params.confidence,
+    validation: extractListSection(
+      params.assistantText,
+      /^(?:validation|validated|verification|verified|checks?|test results?)\b/i,
+    ),
+    openQuestions: extractListSection(
+      params.assistantText,
+      /^(?:open questions?|questions?|open items?|follow-?ups?|remaining questions?|unknowns?)\b/i,
+    ),
+    learningCandidates: extractListSection(
+      params.assistantText,
+      /^(?:learning candidates?|learnings?|learning notes?|memory candidates?|reuse candidates?)\b/i,
+    ),
+  };
+}
+
 function parseWorkflowControlSummary(rawWorkflowYaml: string): {
   name: string | null;
   objective: string | null;
@@ -211,7 +707,12 @@ function parseWorkflowControlSummary(rawWorkflowYaml: string): {
       steps,
     };
   } catch {
-    return { name: null, objective: null, steps: [] };
+    const fallback = parseWorkflowTextFallback(rawWorkflowYaml);
+    return {
+      name: fallback.name,
+      objective: fallback.objective,
+      steps: fallback.steps.map((step) => step.summary),
+    };
   }
 }
 
@@ -251,8 +752,9 @@ export async function enqueueWorkflow(params: {
   sections: string[];
   readCommandPrompt: (name: string) => Promise<string>;
   readWorkflow: (name: string) => Promise<string>;
-  readSkill?: (name: string) => Promise<string>;
-}): Promise<{ loadedSkills: string[] }> {
+  readSkill?: (name: string) => Promise<string | WorkflowSkillLoadResult>;
+  onSkillEvent?: (event: SkillRegistryEvent) => Promise<void> | void;
+}): Promise<{ loadedSkills: string[]; skillMetadata: SkillMetadata[] }> {
   const [promptTemplateRaw, workflowSpec] = await Promise.all([
     params.readCommandPrompt(params.workflowPromptName),
     params.readWorkflow(params.workflowFileName),
@@ -262,25 +764,105 @@ export async function enqueueWorkflow(params: {
   const workflowMetadata = parseWorkflowMetadata(workflowSpec);
   const workflowSkills =
     prompt.skills.length > 0 ? prompt.skills : workflowMetadata.skills;
-  const skillContext =
+  const defaultSkillMetadata = workflowSkills.map((skillName) =>
+    buildSkillMetadata({
+      name: skillName,
+      path: `skills/${skillName}/SKILL.md`,
+      source: "packaged",
+    }),
+  );
+  const skillRouteReason =
     prompt.skills.length > 0
+      ? `Workflow prompt ${params.workflowPromptName} requested skill.`
+      : `Workflow spec ${params.workflowFileName} requested skill.`;
+  const skillContext =
+    prompt.skills.length > 0 || prompt.skillContextSpecified
       ? prompt.skillContext
       : workflowMetadata.skillContext;
-  const skillSections = await Promise.all(
+  const skillResults = await Promise.all(
     workflowSkills.map(async (skillName) => {
+      const defaultMetadata =
+        defaultSkillMetadata.find((skill) => skill.name === skillName) ??
+        buildSkillMetadata({
+          name: skillName,
+          path: `skills/${skillName}/SKILL.md`,
+          source: "packaged",
+        });
       if (!params.readSkill) {
-        return `- ${skillName}: Skill loading unavailable in this runtime. File: skills/${skillName}/SKILL.md`;
+        await params.onSkillEvent?.({
+          type: "skill_routed",
+          skill: defaultMetadata,
+          reason: skillRouteReason,
+        });
+        await params.onSkillEvent?.(
+          {
+            type: "skill_missing",
+            skill: defaultMetadata,
+          reason: "Skill loading unavailable in this runtime.",
+          },
+        );
+        return {
+          loaded: false,
+          metadata: defaultMetadata,
+          section: `- ${skillName}: Skill loading unavailable in this runtime. File: skills/${skillName}/SKILL.md`,
+        };
       }
-      const content = (await params.readSkill(skillName)).trim();
+      const loaded = await params.readSkill(skillName);
+      const content = (typeof loaded === "string" ? loaded : loaded.content).trim();
+      const loadedMetadata =
+        typeof loaded === "string" ? undefined : loaded.metadata;
+      const attemptedSources =
+        typeof loaded === "string" ? undefined : loaded.attemptedSources;
+      const skillMetadata =
+        loadedMetadata
+          ? normalizeSkillMetadata(loadedMetadata)
+          : defaultMetadata;
+      await params.onSkillEvent?.(
+        buildSkillRegistryEvent({
+          type: "skill_routed",
+          name: skillMetadata.name,
+          path: skillMetadata.path,
+          source: skillMetadata.source,
+          reason: skillRouteReason,
+          attemptedSources,
+        }),
+      );
       if (!content) {
+        await params.onSkillEvent?.(
+          buildSkillRegistryEvent({
+            type: "skill_missing",
+            name: skillMetadata.name,
+            path: skillMetadata.path,
+            source: skillMetadata.source,
+            reason: `Workflow prompt ${params.workflowPromptName} requires missing skill.`,
+            attemptedSources,
+          }),
+        );
         throw new Error(
           `Workflow prompt ${params.workflowPromptName} requires missing skill: ${skillName}`,
         );
       }
-      if (skillContext === "full") return `[SKILL:${skillName}]\n${content}`;
-      return `- ${skillName}: ${extractSkillDescription(content)} File: skills/${skillName}/SKILL.md`;
+      await params.onSkillEvent?.(
+        buildSkillRegistryEvent({
+          type: "skill_loaded",
+          name: skillMetadata.name,
+          path: skillMetadata.path,
+          source: skillMetadata.source,
+          reason: `Workflow prompt ${params.workflowPromptName} loaded skill context.`,
+          attemptedSources,
+        }),
+      );
+      return {
+        loaded: true,
+        metadata: skillMetadata,
+        section:
+          skillContext === "full"
+            ? `[SKILL:${skillName}]\n${content}`
+            : `- ${skillName}: ${extractSkillDescription(content)} File: skills/${skillName}/SKILL.md`,
+      };
     }),
   );
+  const skillSections = skillResults.map((result) => result.section);
   const shouldIncludeSkills =
     skillContext !== "none" && skillSections.length > 0;
 
@@ -319,7 +901,12 @@ export async function enqueueWorkflow(params: {
     .join("\n");
 
   params.pi.sendUserMessage(payload);
-  return { loadedSkills: workflowSkills };
+  return {
+    loadedSkills: skillResults
+      .filter((result) => result.loaded)
+      .map((result) => result.metadata.name),
+    skillMetadata: skillResults.map((result) => result.metadata),
+  };
 }
 
 export async function beginWorkflowTracking<
@@ -331,7 +918,11 @@ export async function beginWorkflowTracking<
   type: TWorkflowType;
   input: string;
   flags: TWorkflowFlags;
+  workflowSpec?: string;
   learningVersion: number;
+  runLedgerDir?: string;
+  source?: RunLedgerSourceContext;
+  local?: RunLedgerLocalContext;
   ensureLearningStore: (cwd: string) => Promise<LearningPathsLike>;
   makeId: (prefix: string) => string;
   nowIso: () => string;
@@ -339,28 +930,49 @@ export async function beginWorkflowTracking<
   runtimeState: RuntimeState;
   appendPreflightEntry: (pi: ExtensionAPI, record: PreflightRecord) => void;
 }): Promise<PendingWorkflow<TWorkflowType, TWorkflowFlags>> {
-  const paths = await params.ensureLearningStore(params.ctx.cwd);
+  await params.ensureLearningStore(params.ctx.cwd);
   const id = params.makeId(params.type);
   const startedAt = params.nowIso();
-  const runFile = path.join(paths.runsDir, `${id}.json`);
+  const runFile = path.join(
+    params.runLedgerDir ?? getGlobalRunLedgerDir(),
+    `${id}.json`,
+  );
+  const workflowState = params.workflowSpec
+    ? parseWorkflowRuntimeState(params.workflowSpec)
+    : undefined;
 
   const record = {
-    version: params.learningVersion,
-    id,
-    type: params.type,
-    input: params.input,
-    flags: params.flags,
-    status: "started",
-    startedAt,
+    ...buildRunLedgerRecord({
+      version: params.learningVersion,
+      id,
+      type: params.type,
+      input: params.input,
+      flags: params.flags,
+      cwd: params.ctx.cwd,
+      repo: typeof params.flags.repo === "string" ? params.flags.repo : undefined,
+      startedAt,
+      workflowState,
+      source: params.source,
+      local: params.local,
+      events: [
+        buildRunLedgerWorkflowStartedEvent({
+          workflowId: id,
+          workflowType: params.type,
+          at: startedAt,
+          workflowState,
+        }),
+      ],
+    }),
   };
 
-  await fs.writeFile(runFile, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+  await writeRunLedger(runFile, record);
   params.pi.appendEntry("khala-workflow-start", {
     id,
     type: params.type,
     input: params.input,
     flags: params.flags,
     startedAt,
+    runFile,
   });
 
   const pending: PendingWorkflow<TWorkflowType, TWorkflowFlags> = {
@@ -371,8 +983,11 @@ export async function beginWorkflowTracking<
     startedAt,
     runFile,
     loadedSkills: [],
+    skillMetadata: [],
     mutationCount: 0,
+    toolCallCount: 0,
     policyWarnings: [],
+    workflowState,
   };
 
   params.runtimeState.latestPostflight = null;
@@ -392,6 +1007,23 @@ export async function beginWorkflowTracking<
   params.appendPreflightEntry(params.pi, params.runtimeState.activePreflight);
 
   return pending;
+}
+
+export async function interruptWorkflowTracking<
+  TWorkflowType extends string,
+  TWorkflowFlags extends WorkflowFlags,
+>(params: {
+  workflow: PendingWorkflow<TWorkflowType, TWorkflowFlags>;
+  at: string;
+  reason: string;
+}): Promise<void> {
+  await markRunInterrupted({
+    runFile: params.workflow.runFile,
+    at: params.at,
+    eventId: `${params.workflow.id}:interrupted:${params.at}`,
+    reason: params.reason,
+    workflowState: params.workflow.workflowState,
+  });
 }
 
 export async function completeWorkflowTracking<
@@ -504,6 +1136,15 @@ export async function completeWorkflowTracking<
   const evidenceSnippet = strictViolation
     ? params.summarizeEvidence(`${strictViolation} ${params.assistantText}`)
     : params.summarizeEvidence(params.assistantText);
+  const completedWorkflowState = completeWorkflowRuntimeState(
+    params.workflow.workflowState,
+    outcome,
+  );
+  const structuredCompletion = buildStructuredCompletion({
+    assistantText: params.assistantText,
+    outcome,
+    confidence,
+  });
 
   const runRecord = {
     version: params.learningVersion,
@@ -517,6 +1158,14 @@ export async function completeWorkflowTracking<
     confidence,
     strictViolation,
     evidenceSnippet,
+    structuredCompletion,
+    workflowState: completedWorkflowState,
+    workflow: {
+      type: params.workflow.type,
+      input: params.workflow.input,
+      flags: params.workflow.flags,
+      state: completedWorkflowState,
+    },
     policy: {
       preflightMode: params.runtimeState.firstPrinciplesConfig.preflightMode,
       postflightMode: params.runtimeState.firstPrinciplesConfig.postflightMode,
@@ -525,14 +1174,41 @@ export async function completeWorkflowTracking<
       postflightMissing,
       qualityScore,
       postflight: postflightFromOutput,
+      validation: structuredCompletion.validation,
+      openQuestions: structuredCompletion.openQuestions,
+      learningCandidates: structuredCompletion.learningCandidates,
     },
   };
 
-  await fs.writeFile(
-    params.workflow.runFile,
-    `${JSON.stringify(runRecord, null, 2)}\n`,
-    "utf8",
-  );
+  const completedEvent: RunLedgerEvent = buildRunLedgerWorkflowCompletedEvent({
+    workflowId: params.workflow.id,
+    at: finishedAt,
+    outcome,
+    confidence,
+    structuredCompletion,
+    data: {
+      workflowState: completedWorkflowState,
+      loadedSkills: [...params.workflow.loadedSkills],
+      skillMetadata: params.workflow.skillMetadata.map((skill) => ({ ...skill })),
+      postflightMissing,
+      strictViolation: Boolean(strictViolation),
+      strictViolationReason: strictViolation,
+      qualityScore,
+      mutationCount: params.workflow.mutationCount,
+      policyWarnings: params.workflow.policyWarnings,
+      validation: structuredCompletion.validation,
+      openQuestions: structuredCompletion.openQuestions,
+      learningCandidates: structuredCompletion.learningCandidates,
+    },
+  });
+  const completedLedger = await completeRunLedger({
+    runFile: params.workflow.runFile,
+    finishedAt,
+    outcome,
+    confidence,
+    event: completedEvent,
+    patch: runRecord,
+  });
 
   const observation: LearningObservation<TWorkflowType, TWorkflowOutcome> = {
     version: params.learningVersion,
@@ -543,7 +1219,7 @@ export async function completeWorkflowTracking<
     flags: params.workflow.flags,
     outcome,
     confidence,
-    evidenceSnippet: runRecord.evidenceSnippet,
+    evidenceSnippet: String(completedLedger.evidenceSnippet ?? ""),
     workflowId: params.workflow.id,
   };
 
@@ -562,6 +1238,12 @@ export async function completeWorkflowTracking<
     qualityScore,
     mutationCount: params.workflow.mutationCount,
     postflightMissing,
+    runFile: params.workflow.runFile,
+    workflowState: completedWorkflowState,
+    structuredCompletion,
+    validation: structuredCompletion.validation,
+    openQuestions: structuredCompletion.openQuestions,
+    learningCandidates: structuredCompletion.learningCandidates,
     at: finishedAt,
   });
 

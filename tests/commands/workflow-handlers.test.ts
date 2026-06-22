@@ -11,7 +11,7 @@ if (!process.env.ZELLIJ) {
   process.env.ZELLIJ = "/tmp/pi-workflow-handlers-test-zellij";
 }
 
-function createHandlers(captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; notifications?: string[] }) {
+function createHandlers(captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; notifications?: string[]; enqueueCwd?: string }) {
   return createWorkflowCommandHandlers({
     pi: { appendEntry: () => undefined } as never,
     notify: (_ctx, message) => captured.notifications?.push(message),
@@ -30,9 +30,10 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
       captured.flags = flags as Record<string, unknown>;
       return {} as never;
     },
-    enqueueWorkflow: async (_pi, _prompt, _workflow, sections) => {
+    enqueueWorkflow: async (_pi, _prompt, _workflow, sections, _pending, cwd) => {
       captured.sections = sections;
-      return { loadedSkills: [] };
+      captured.enqueueCwd = cwd;
+      return { loadedSkills: [], skillMetadata: [] };
     },
     notifyWorkflowStarted: () => undefined,
     clearPendingWorkflow: () => undefined,
@@ -73,13 +74,15 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
 }
 
 test("plan handler tags planning model profile routing", async () => {
-  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; enqueueCwd?: string } = {};
   const handlers = createHandlers(captured);
+  const cwd = process.cwd();
 
-  await handlers.plan("shape model profiles", { cwd: process.cwd() } as never);
+  await handlers.plan("shape model profiles", { cwd } as never);
 
   const rendered = captured.sections?.join("\n") ?? "";
   assert.equal(captured.input, "shape model profiles");
+  assert.equal(captured.enqueueCwd, cwd);
   assert.equal(captured.flags?.model, "github-copilot/gpt-5.5");
   assert.equal(captured.flags?.thinkingLevel, "xhigh");
   assert.equal(captured.flags?.modelRoutingMode, "default");

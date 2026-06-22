@@ -101,6 +101,19 @@ Gaps: local collector skipped for focus=reviews
 Pass `--details` or `--evidence` to include repository discovery, full bucketed
 item lists, evidence gaps, and read-only command dumps.
 
+### Run ledger harness
+
+Khala workflow runs are recorded in a global durable ledger under
+`~/.pi/khala/runs/`. Use these commands to inspect interrupted work and resume
+only when the ledger proves it is safe.
+
+| Command | Purpose |
+|---|---|
+| `/run-list [filter]` | List newest durable runs first. Named filters include `active`, `resumable`, and `needs_operator_review`; text filters search workflow state, source/local context, structured completion, skill events, tool metadata, and recovery details. |
+| `/run-show <run-id\|path>` | Show one run ledger with recovery classification, unsafe events, workflow state, structured completion, skill activity, checkpoints, and recent events. |
+| `/run-resume <run-id\|path>` | Queue a conservative resume prompt only when the ledger is classified `resumable`; unsafe mutation, shell, forge, external, or unknown tool side effects require operator review first. |
+| `/run-checkpoint <run-id\|path> [reason]` | Record an operator-verified replay-safe checkpoint after confirming earlier side effects must not be repeated. |
+
 ### Model profiles
 
 Khala workflow routing uses typed model profiles as the single source of truth:
@@ -337,7 +350,9 @@ sequenceDiagram
   K->>M: append compact lesson, safe skill patch, or promotion candidate when clear
 ```
 
-Durable artifacts are written to `<repo>/.pi/khala/` when `.pi/` exists in cwd, or `~/.pi/khala/` otherwise.
+Learning artifacts are written to `<repo>/.pi/khala/` when `.pi/` exists in cwd,
+or `~/.pi/khala/` otherwise. Run ledgers are global and always use
+`~/.pi/khala/runs/` so interrupted work is visible from any repository.
 
 | File | Purpose |
 |---|---|
@@ -351,7 +366,7 @@ Durable artifacts are written to `<repo>/.pi/khala/` when `.pi/` exists in cwd, 
 | `rules/candidates.jsonl` | Proposed rules not yet active. |
 | `rules/audit.jsonl` | Runtime rule hit/warn/block/reload audit events. |
 | `rules/RULES.md` | Human-readable durable rule mirror. Prefer `/rule-add`; if edited by hand, run `/rule-reload`. |
-| `runs/*.json` | Per-run workflow records. |
+| `~/.pi/khala/runs/*.json` | Global per-run workflow records, including tool events, checkpoints, recovery classification, resume attempts, and structured completion. |
 | `workflows/*.yaml` | Reviewed reusable workflow artifacts. |
 | `prompts/*.md` | Pi prompt templates for reviewed workflows. |
 | `skills/<name>/SKILL.md` | Main learned skill instructions. |

@@ -3,6 +3,11 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+  getGlobalRunLedgerDir,
+  readRunLedger,
+  type RunLedgerRecord,
+} from "../runtime/run-ledger.ts";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -49,6 +54,7 @@ export interface InboxEvidenceRequest {
   focus: InboxFocus;
   scope?: InboxScope;
   capsuleRoot?: string;
+  runLedgerDir?: string;
   nowIso?: string;
 }
 
@@ -176,6 +182,8 @@ const SOURCE_PRIORITY = new Map<string, number>([
   ["authored-mr-ci-pending", 1],
   ["local-worktree", 2],
   ["stale-session-capsule", 3],
+  ["run-ledger-needs-review", 4],
+  ["run-ledger-resumable", 5],
   ["assigned-issue", 0],
   ["authored-issue", 1],
 ]);
@@ -365,6 +373,7 @@ function isBlockingInboxItem(item: InboxItem): boolean {
     item.source === "authored-pr-ci-failure" ||
     item.bucket === "My work is broken" ||
     item.source === "stale-session-capsule" ||
+    item.source === "run-ledger-needs-review" ||
     item.source === "local-worktree"
   );
 }
@@ -719,6 +728,89 @@ async function discoverSessionCapsules(
   return capsules;
 }
 
+function runLedgerRepo(record: RunLedgerRecord): string {
+  if (typeof record.repo === "string" && record.repo.trim()) {
+    return record.repo.trim();
+  }
+  const flagRepo = record.flags.repo;
+  if (typeof flagRepo === "string" && flagRepo.trim()) {
+    return flagRepo.trim();
+  }
+  if (typeof record.cwd === "string" && record.cwd.trim()) {
+    return path.basename(record.cwd.trim()) || "unknown/repo";
+  }
+  return "unknown/repo";
+}
+
+function summarizeRunInput(input: string): string {
+  const normalized = input.trim().replace(/\s+/g, " ");
+  if (!normalized) return "no input recorded";
+  return normalized.length > 96 ? `${normalized.slice(0, 93)}...` : normalized;
+}
+
+async function collectRunLedgerItems(params: {
+  runLedgerDir: string;
+  request: InboxEvidenceRequest;
+  gaps: string[];
+}): Promise<InboxItem[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(params.runLedgerDir);
+  } catch {
+    return [];
+  }
+
+  const items: InboxItem[] = [];
+  for (const entry of entries
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .slice(0, params.request.limit)) {
+    const runFile = path.join(params.runLedgerDir, entry);
+    let record: RunLedgerRecord | null = null;
+    try {
+      record = await readRunLedger(runFile);
+    } catch (error) {
+      params.gaps.push(
+        `run ledger ${runFile}: failed to read (${error instanceof Error ? error.message : String(error)})`,
+      );
+      continue;
+    }
+    if (!record) continue;
+    if (
+      record.status !== "resumable" &&
+      record.status !== "needs_operator_review"
+    ) {
+      continue;
+    }
+
+    const repo = runLedgerRepo(record);
+    if (params.request.repo && repo !== params.request.repo) continue;
+
+    const needsReview = record.status === "needs_operator_review";
+    const unsafeSummary =
+      needsReview && record.resume.unsafeEventIds.length > 0
+        ? `; unsafe_events=${record.resume.unsafeEventIds.length}`
+        : "";
+    items.push({
+      bucket: needsReview
+        ? "My work is broken"
+        : "Agent/session needs attention",
+      repo,
+      source: needsReview
+        ? "run-ledger-needs-review"
+        : "run-ledger-resumable",
+      title: `${record.type}/${record.id}: ${record.status} run "${summarizeRunInput(record.input)}"`,
+      url: runFile,
+      updatedAt: record.finishedAt ?? record.startedAt,
+      suggestedCommand: needsReview
+        ? `/run-show ${record.id}`
+        : `/run-resume ${record.id}`,
+      evidence: `global run ledger; ${record.resume.classification}: ${record.resume.reason}${unsafeSummary}`,
+    });
+  }
+  return items;
+}
+
 async function pathExists(candidate: string): Promise<boolean> {
   try {
     await stat(candidate);
@@ -853,10 +945,12 @@ async function collectLocalEvidence(
 
   const capsuleRoot =
     request.capsuleRoot ?? path.join(homedir(), ".pi", "khala");
+  const runLedgerDir =
+    request.runLedgerDir ??
+    (request.capsuleRoot ? path.join(request.capsuleRoot, "runs") : getGlobalRunLedgerDir());
   const capsules = (await discoverSessionCapsules(capsuleRoot, evidence.gaps))
     .filter((capsule) => !request.repo || capsule.repo === request.repo)
     .slice(0, request.limit);
-  if (capsules.length === 0) return evidence;
 
   const now = new Date(request.nowIso ?? new Date().toISOString());
   for (const capsule of capsules) {
@@ -894,6 +988,13 @@ async function collectLocalEvidence(
       evidence: `session capsule metadata; ${worktree.matchedBy}`,
     });
   }
+  evidence.items.push(
+    ...(await collectRunLedgerItems({
+      runLedgerDir,
+      request,
+      gaps: evidence.gaps,
+    })),
+  );
   return evidence;
 }
 
@@ -1655,7 +1756,8 @@ function renderCompactCounts(items: InboxItem[]): string {
     countBySource(items, "authored-mr-ci-pending");
   const blockedSessionCount = items.filter(
     (item) =>
-      item.source === "stale-session-capsule" &&
+      (item.source === "stale-session-capsule" ||
+        item.source === "run-ledger-needs-review") &&
       item.bucket === "My work is broken",
   ).length;
   const issueCount =
