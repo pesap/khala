@@ -1,6 +1,6 @@
 ---
 skills:
-  - simplify
+  - design-quality-review
   - commit
   - github
   - gitlab

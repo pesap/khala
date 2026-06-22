@@ -58,7 +58,7 @@ jobs:
 
       - name: Install actionlint
         run: |
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- -o /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /usr/local/bin
           echo "/usr/local/bin" >>"$GITHUB_PATH"
 
       - name: Run prek hooks
