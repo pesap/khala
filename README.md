@@ -80,7 +80,7 @@ flowchart LR
 | --- | --- |
 | `/debug <problem>` | Investigate an unreported maintainer-observed symptom and draft an issue-ready brief. |
 | `/triage <issue-url\|request>` | Convert rough issue/request text into a `/workon`-ready packet. |
-| `/plan <topic>` | Turn a maintainer idea into scoped work with risks, slices, and acceptance criteria. |
+| `/plan <topic>` | Turn a maintainer idea into scoped work with risks, slices, acceptance criteria, and an internal Reviewer Two pass. |
 | `/workon <issue-url\|issue-number>` | Start autonomous implementation from a ready issue packet. |
 | `/review [scope]` | Review uncommitted changes, branches, commits, PRs, files, folders, or paths. |
 | `/git-review` | Inspect git-history signals before reading implementation code. |
@@ -99,6 +99,15 @@ Common `/workon` flags:
 --dry-run
 --model provider/model
 --thinking off|minimal|low|medium|high|xhigh
+```
+
+Common `/plan` flags:
+
+```text
+--review-model provider/model
+--review-thinking off|minimal|low|medium|high|xhigh
+--review-loops 1|2
+--no-review
 ```
 
 Use `/inbox` from a non-repository directory for a global side-terminal

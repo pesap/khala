@@ -22,6 +22,8 @@ import {
 import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
 import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
 import type { PendingWorkflow } from "../workflows/engine.ts";
+import { buildPlanReviewerTwoSections } from "./plan-review.ts";
+import type { ReviewerTwoReviewSettings } from "./plan-review.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (
@@ -161,7 +163,9 @@ export function createWorkflowCommandHandlers(params: {
     parsed: Exclude<ReviewArgsResult, { error: string }>,
   ) => ScopedTarget;
   loadProjectReviewGuidelines: (cwd: string) => Promise<string | null>;
-  parsePlanArgs: (args: string) => { plan: string };
+  parsePlanArgs: (
+    args: string,
+  ) => { plan: string; review: ReviewerTwoReviewSettings } | { error: string };
   parseAuditArgs: (args: string) => { claim: string };
   parseTriageArgs: (args: string) => { target: string };
   parseAddressOpenIssuesArgs: (args: string) => { limit: number; repo: string };
@@ -562,33 +566,61 @@ export function createWorkflowCommandHandlers(params: {
     plan: async (args, ctx) => {
       const planningProfile = resolveKhalaProfile("planning");
       const routingReason = `Khala planning profile (${planningProfile.source})`;
+      const parsed = parsePlanArgs(args ?? "");
+      if ("error" in parsed) {
+        notify(ctx, parsed.error, "error");
+        return;
+      }
+      const reviewSections = buildPlanReviewerTwoSections(parsed.plan || "current plan/topic", parsed.review);
       await runRequiredSourceWorkflow({
         ctx,
         type: "plan",
         source: constants.PLAN_COMMAND_SOURCE,
-        value: parsePlanArgs(args ?? "").plan,
-        usage: "Usage: /plan <plan_or_topic>",
+        value: parsed.plan,
+        usage: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]",
         sections: (plan) => [
           `Plan/topic: ${plan}`,
           `Model routing: default (${routingReason})`,
           `Exact model: ${planningProfile.model ?? "(unresolved)"}`,
           `Exact thinking level: ${planningProfile.thinkingLevel}`,
+          `Reviewer Two routing: ${parsed.review.enabled ? "enabled" : "disabled"}`,
+          `Reviewer Two default context: ${parsed.review.context}`,
+          `Reviewer Two loop budget: ${parsed.review.loops}`,
+          `Reviewer Two model: ${parsed.review.model || "(unresolved)"}`,
+          `Reviewer Two thinking level: ${parsed.review.thinkingLevel}`,
+          `Reviewer Two routing reason: ${parsed.review.routingMode} (${parsed.review.routingReason})`,
           "Instruction: Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.",
           "Instruction: If a question can be answered from code/docs, inspect first and do not ask it.",
           "Instruction: Capture edge cases and trade-offs, then update CONTEXT.md/ADR docs lazily when terms/decisions are resolved.",
           "Instruction: Produce a slice table before any issue creation, using one issue by default and at most three slices unless the user explicitly approves more.",
           "Instruction: Each proposed slice must be independently reviewable, list dependencies and AFK/HITL status, and target less than about 500 lines of code change per PR.",
           "Instruction: Ask approval on the exact slice table before creating or updating issues.",
+          "Instruction: Before any issue creation, run the internal Reviewer Two pass over a normalized draft work packet, synthesize findings as must-fix, optional/deferred, or rejected with rationale, and keep Reviewer Two advisory only.",
+          ...reviewSections,
           "Instruction: Detect issue tracker platform first and use matching skill: github for GitHub, gitlab for GitLab.",
         ],
         entry: (plan) => ({
           plan,
+          review_enabled: parsed.review.enabled,
+          review_context: parsed.review.context,
+          review_loops: parsed.review.loops,
+          review_model: parsed.review.model,
+          review_thinking_level: parsed.review.thinkingLevel,
+          review_routing_mode: parsed.review.routingMode,
+          review_routing_reason: parsed.review.routingReason,
           model: planningProfile.model,
           thinkingLevel: planningProfile.thinkingLevel,
           modelRoutingMode: "default",
           modelRoutingReason: routingReason,
         }),
         flags: () => ({
+          review_enabled: parsed.review.enabled,
+          review_context: parsed.review.context,
+          review_loops: parsed.review.loops,
+          review_model: parsed.review.model,
+          review_thinking_level: parsed.review.thinkingLevel,
+          review_routing_mode: parsed.review.routingMode,
+          review_routing_reason: parsed.review.routingReason,
           model: planningProfile.model,
           thinkingLevel: planningProfile.thinkingLevel,
           modelRoutingMode: "default",

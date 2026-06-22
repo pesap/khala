@@ -10,6 +10,7 @@ import {
   chooseAvailableSkillName,
   parseDebugArgs,
   parseInboxArgs,
+  parsePlanArgs,
   parseReviewArgs,
   parseWorkonArgs,
 } from "../../extensions/commands/parsers.ts";
@@ -83,6 +84,61 @@ test("builds PR review instructions with pi-review checkout safeguards", () => {
   assert.match(target.instruction, /Require GitHub CLI/);
   assert.match(target.instruction, /no staged or unstaged tracked-file changes/);
   assert.match(target.instruction, /compute the merge base/);
+});
+
+test("parses plan review flags with bounded defaults", () => {
+  assert.deepEqual(parsePlanArgs("shape reviewer two"), {
+    plan: "shape reviewer two",
+    review: {
+      enabled: true,
+      model: "github-copilot/gpt-5.4-mini",
+      thinkingLevel: "medium",
+      loops: 1,
+      context: "fresh",
+      routingMode: "default",
+      routingReason: "Reviewer Two development profile (pi-model-discovery)",
+    },
+  });
+
+  assert.deepEqual(parsePlanArgs("shape reviewer two --no-review"), {
+    plan: "shape reviewer two",
+    review: {
+      enabled: false,
+      model: "github-copilot/gpt-5.4-mini",
+      thinkingLevel: "medium",
+      loops: 0,
+      context: "fresh",
+      routingMode: "override",
+      routingReason: "explicit --no-review override",
+    },
+  });
+
+  assert.deepEqual(parsePlanArgs("shape reviewer two --review-model github-copilot/gpt-5.5 --review-thinking high --review-loops 2"), {
+    plan: "shape reviewer two",
+    review: {
+      enabled: true,
+      model: "github-copilot/gpt-5.5",
+      thinkingLevel: "high",
+      loops: 2,
+      context: "fresh",
+      routingMode: "override",
+      routingReason: "explicit --review-model override",
+    },
+  });
+});
+
+test("rejects invalid plan review flags", () => {
+  assert.deepEqual(parsePlanArgs("shape reviewer two --review-model invalid"), {
+    error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]",
+  });
+
+  assert.deepEqual(parsePlanArgs("shape reviewer two --review-thinking weird"), {
+    error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]",
+  });
+
+  assert.deepEqual(parsePlanArgs("shape reviewer two --review-loops 3"), {
+    error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]",
+  });
 });
 
 test("parses debug input as an issue-evidence brief and strips legacy fix flag", () => {

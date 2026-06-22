@@ -41,7 +41,36 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
     parseReviewArgs: () => ({ mode: "uncommitted" }),
     buildReviewTarget: () => ({ summary: "", instruction: "", flags: {} }),
     loadProjectReviewGuidelines: async () => null,
-    parsePlanArgs: (args) => ({ plan: args ?? "" }),
+    parsePlanArgs: (args) => {
+      const raw = args ?? "";
+      const plan = raw
+        .replace(/(^|\s)--review-model\s+\S+(\s|$)/g, " ")
+        .replace(/(^|\s)--review-thinking\s+\S+(\s|$)/g, " ")
+        .replace(/(^|\s)--review-loops\s+\S+(\s|$)/g, " ")
+        .replace(/(^|\s)--no-review(\s|$)/g, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+      return {
+        plan,
+        review: {
+          enabled: !/--no-review\b/.test(raw),
+          model: /--review-model\s+\S+/.test(raw) ? "github-copilot/gpt-5.5" : "github-copilot/gpt-5.4-mini",
+          thinkingLevel: /--review-thinking\s+high/.test(raw) ? "high" : "medium",
+          loops: /--review-loops\s+2/.test(raw) ? 2 : 1,
+          context: "fresh",
+          routingMode: /--review-model\s+\S+|--no-review\b|--review-thinking\s+\S+/.test(raw)
+            ? "override"
+            : "default",
+          routingReason: /--no-review\b/.test(raw)
+            ? "explicit --no-review override"
+            : /--review-model\s+\S+/.test(raw)
+              ? "explicit --review-model override"
+              : /--review-thinking\s+\S+/.test(raw)
+                ? "explicit --review-thinking override"
+                : "Reviewer Two development profile (pi-model-discovery)",
+        },
+      };
+    },
     parseAuditArgs: () => ({ claim: "" }),
     parseTriageArgs: (args) => ({ target: args ?? "" }),
     parseAddressOpenIssuesArgs: () => ({ limit: 20, repo: "" }),
@@ -73,12 +102,12 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
   });
 }
 
-test("plan handler tags planning model profile routing", async () => {
+test("plan handler tags planning and Reviewer Two routing", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; enqueueCwd?: string } = {};
   const handlers = createHandlers(captured);
   const cwd = process.cwd();
 
-  await handlers.plan("shape model profiles", { cwd } as never);
+  await handlers.plan("shape model profiles --review-model github-copilot/gpt-5.5 --review-thinking high --review-loops 2", { cwd } as never);
 
   const rendered = captured.sections?.join("\n") ?? "";
   assert.equal(captured.input, "shape model profiles");
@@ -87,9 +116,21 @@ test("plan handler tags planning model profile routing", async () => {
   assert.equal(captured.flags?.thinkingLevel, "xhigh");
   assert.equal(captured.flags?.modelRoutingMode, "default");
   assert.match(String(captured.flags?.modelRoutingReason), /Khala planning profile/);
+  assert.equal(captured.flags?.review_enabled, true);
+  assert.equal(captured.flags?.review_context, "fresh");
+  assert.equal(captured.flags?.review_loops, 2);
+  assert.equal(captured.flags?.review_model, "github-copilot/gpt-5.5");
+  assert.equal(captured.flags?.review_thinking_level, "high");
+  assert.equal(captured.flags?.review_routing_mode, "override");
+  assert.match(String(captured.flags?.review_routing_reason), /explicit --review-model override/);
   assert.match(rendered, /Model routing: default \(Khala planning profile/);
-  assert.match(rendered, /Exact model: github-copilot\/gpt-5\.5/);
-  assert.match(rendered, /Exact thinking level: xhigh/);
+  assert.match(rendered, /Reviewer Two routing: enabled/);
+  assert.match(rendered, /Reviewer Two default context: fresh/);
+  assert.match(rendered, /Reviewer Two loop budget: 2/);
+  assert.match(rendered, /Reviewer Two model: github-copilot\/gpt-5\.5/);
+  assert.match(rendered, /Reviewer Two thinking level: high/);
+  assert.match(rendered, /Reviewer prompt contract: do not implement edits/);
+  assert.match(rendered, /Stop rules: use one fresh-context Reviewer Two pass by default/);
 });
 
 test("triage handler asks for /workon-ready packet contract headings", async () => {
