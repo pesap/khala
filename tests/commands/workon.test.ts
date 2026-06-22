@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   buildWorkonBranchName,
+  createExecFileRunner,
   DEFAULT_WORKON_MODEL_SELECTION,
   isActiveZellijEnv,
   prepareWorkonBootstrap,
@@ -96,6 +97,19 @@ function fakeGhRunner(outputs: Record<string, string>): {
             stderr: "",
             error: `Command failed: bash ${args[0]} --repo ${repo} --branch ${branch} --prompt ## Deterministic /workon route --heartbeat 1.0\n<redacted>`,
             exitCode: "ETIMEDOUT",
+            signal: "SIGTERM",
+            killed: true,
+            timedOut: true,
+            timeoutMs: 41_500,
+          };
+        }
+        if (branch.includes("honor-zellij-handoff-timeout")) {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: "",
+            error: `Command failed: bash ${args[0]} --repo ${repo} --branch ${branch} --prompt ## Deterministic /workon route --heartbeat 1.0\n<redacted>`,
+            exitCode: null,
             signal: "SIGTERM",
             killed: true,
             timedOut: true,
@@ -265,6 +279,24 @@ test("builds bounded Conventional Commit-style branch names", () => {
     ]),
     "work/170-171-workon-bootstrap",
   );
+});
+
+test("createExecFileRunner honors explicit timeout options", async () => {
+  const runner = createExecFileRunner();
+  const started = Date.now();
+  const result = await runner(
+    process.execPath,
+    ["-e", "setTimeout(() => {}, 3000)"],
+    { cwd: process.cwd(), timeoutMs: 250 },
+  );
+  const elapsedMs = Date.now() - started;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.timeoutMs, 250);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.signal, "SIGTERM");
+  assert.equal(result.killed, true);
+  assert.ok(elapsedMs < 1500, `expected timeout before 1500ms, got ${elapsedMs}ms`);
 });
 
 test("prepares GitHub issue workon capsule in global repo path", async () => {
@@ -1267,7 +1299,7 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-timeout-failure-test-"));
   try {
     const branch = "fix/207-prevent-zellij-handoff-timeout";
-    const { runner } = fakeGhRunner({
+    const { runner: baseRunner } = fakeGhRunner({
       "auth status": "",
       "issue view 207 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
         207,
@@ -1294,6 +1326,13 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
       ),
       "wt --version": "worktrunk 1.0.0\n",
     });
+    let observedTimeoutMs: number | undefined;
+    const runner: WorkonCommandRunner = async (command, args, options) => {
+      if (command === "bash" && args[0]?.endsWith("scripts/workon-zellij-handoff.sh")) {
+        observedTimeoutMs = options.timeoutMs;
+      }
+      return baseRunner(command, args, options);
+    };
 
     const sections = await prepareWorkonBootstrap(
       {
@@ -1317,6 +1356,7 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
     assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/207-prevent-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
     assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
     assert.match(rendered, /timed out while waiting for the Zellij handoff script's normal tab discovery window/);
+    assert.equal(observedTimeoutMs, 41_500);
     assert.doesNotMatch(rendered, /Command failed: bash .*--prompt ## Deterministic \/workon route/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
@@ -1330,6 +1370,76 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
     assert.equal((ledger.worktree as { path: string | null }).path, null);
     assert.equal((ledger.failure as { phase: string }).phase, "zellij-handoff");
+    assert.equal((ledger.failure as { reason: string | null }).reason, "timeout");
+    assert.match(String((ledger.failure as { summary: string }).summary), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(String((ledger.failure as { detail: string | null }).detail), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocked Zellij handoff classifies SIGTERM timeout shapes and keeps route recovery safe", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-sigterm-timeout-test-"));
+  try {
+    const { runner: baseRunner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 216 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        216,
+        "fix(workon): honor Zellij handoff timeout in exec runner",
+        [
+          "## Current behavior",
+          "",
+          "`/workon --mode start` can still block the deterministic Zellij handoff route with generic `Command failed: bash ... workon-zellij-handoff.sh ...` output, even after the handoff timeout work from #207.",
+          "",
+          "## Acceptance criteria",
+          "",
+          "- Extend `WorkonCommandRunner` options to carry an optional `timeoutMs` or equivalent command-specific timeout.",
+          "- `runCommand(..., timeoutMs)` passes the requested timeout to the runner.",
+          "- `createExecFileRunner()` uses `options.timeoutMs ?? DEFAULT_TIMEOUT_MS` for `execFileAsync`.",
+          "- The Zellij handoff call uses `DEFAULT_ZELLIJ_HANDOFF_TIMEOUT_MS` in the actual `execFile` timeout, not only in returned metadata.",
+          "- Timeout diagnostics report the effective timeout budget, signal, killed state, and redacted command.",
+          "- Timeout classification treats timeout-killed processes as timeouts when the runner has an effective timeout and the child was killed by timeout, even if `nodeError.code` is `null` and the message lacks `timed out`.",
+          "- Existing `--prompt` redaction remains intact in commands, stdout/stderr, errors, ledger, capsule, and final route text.",
+          "- Add a regression test that uses or directly exercises `createExecFileRunner()` enough to prove call-site timeout options are honored.",
+          "- Add a regression test for timeout classification when the error shape is `signal: \"SIGTERM\"`, `killed: true`, `exitCode/code: null`, and no `timed out` text.",
+          "- Preserve the safe route-owned recovery command behavior for blocked handoff routes.",
+        ].join("\n"),
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+    });
+    let observedTimeoutMs: number | undefined;
+    const runner: WorkonCommandRunner = async (command, args, options) => {
+      if (command === "bash" && args[0]?.endsWith("scripts/workon-zellij-handoff.sh")) {
+        observedTimeoutMs = options.timeoutMs;
+      }
+      return baseRunner(command, args, options);
+    };
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "216",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(observedTimeoutMs, 41_500);
+    assert.match(rendered, /Route: blocked/);
+    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/216-honor-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(rendered, /timed out while waiting for the Zellij handoff script's normal tab discovery window/);
+    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.doesNotMatch(rendered, /Command failed: bash .*--prompt ## Deterministic \/workon route/);
+
+    const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.failure as { reason: string | null }).reason, "timeout");
     assert.match(String((ledger.failure as { summary: string }).summary), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
     assert.match(String((ledger.failure as { detail: string | null }).detail), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);

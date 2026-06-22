@@ -123,7 +123,7 @@ interface CommandResult {
 export type WorkonCommandRunner = (
   command: string,
   args: string[],
-  options: { cwd: string },
+  options: { cwd: string; timeoutMs?: number },
 ) => Promise<CommandResult>;
 
 export interface WorkonBootstrapRequest {
@@ -372,8 +372,12 @@ function parseJsonObject<T>(raw: string, gapLabel: string, gaps: string[]): T | 
   }
 }
 
+function commandTimedOut(result: CommandResult): boolean {
+  return result.timedOut || result.exitCode === "ETIMEDOUT";
+}
+
 function commandTimeoutDiagnostic(result: CommandResult): string | null {
-  if (!result.timedOut && result.exitCode !== "ETIMEDOUT") return null;
+  if (!commandTimedOut(result)) return null;
   const parts = [`timed out after ${result.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`];
   if (typeof result.killed === "boolean") parts.push(`killed=${result.killed}`);
   if (result.signal) parts.push(`signal=${result.signal}`);
@@ -845,7 +849,7 @@ async function runCommand(
 ): Promise<CommandResult> {
   const loggedCommand = formatLoggedCommand(command, args);
   commands.push(loggedCommand);
-  const result = await runner(command, args, { cwd });
+  const result = await runner(command, args, { cwd, timeoutMs });
   return {
     ...result,
     command: loggedCommand,
@@ -1730,7 +1734,7 @@ async function startWorktreeIfRequested(
         evidence.gaps.push(
           `Zellij Pi handoff ${params.branchName}: Worktree/tab was created but Pi was not launched; continue in ${parsed.tabName ?? "the Worktrunk tab"}, not this session.`,
         );
-      } else if (handoffResult.timedOut) {
+      } else if (commandTimedOut(handoffResult)) {
         evidence.gaps.push(
           `Zellij Pi handoff ${params.branchName}: timed out while waiting for the Zellij handoff script's normal tab discovery window; retry is still safe because the handoff script reuses an existing branch/worktree when Worktrunk reports one.`,
         );
@@ -1752,7 +1756,7 @@ async function startWorktreeIfRequested(
         handoffRecoveryInstructions,
         handoffOperatorAction,
         handoffFailureSummary,
-        handoffTimedOut: handoffResult.timedOut ?? false,
+        handoffTimedOut: commandTimedOut(handoffResult),
         zellijResult: parsed,
       };
     }
@@ -2162,12 +2166,13 @@ export async function prepareWorkonBootstrap(
 export function createExecFileRunner(): WorkonCommandRunner {
   return async (command, args, options) => {
     try {
+      const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const { stdout, stderr } = await execFileAsync(command, args, {
         cwd: options.cwd,
-        timeout: DEFAULT_TIMEOUT_MS,
+        timeout: timeoutMs,
         maxBuffer: DEFAULT_MAX_BUFFER,
       });
-      return { ok: true, stdout, stderr };
+      return { ok: true, stdout, stderr, timeoutMs };
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException & {
         stdout?: string;
@@ -2175,6 +2180,7 @@ export function createExecFileRunner(): WorkonCommandRunner {
         signal?: string | null;
         killed?: boolean;
       };
+      const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       return {
         ok: false,
         stdout: redactSensitiveCommandArgs(nodeError.stdout, args) ?? "",
@@ -2183,8 +2189,11 @@ export function createExecFileRunner(): WorkonCommandRunner {
         exitCode: nodeError.code,
         signal: nodeError.signal ?? null,
         killed: nodeError.killed,
-        timedOut: nodeError.code === "ETIMEDOUT" || /timed out/i.test(nodeError.message),
-        timeoutMs: DEFAULT_TIMEOUT_MS,
+        timedOut:
+          nodeError.code === "ETIMEDOUT"
+          || /timed out/i.test(nodeError.message)
+          || (timeoutMs !== undefined && nodeError.killed === true && nodeError.signal === "SIGTERM" && nodeError.code == null),
+        timeoutMs,
       };
     }
   };
