@@ -5946,11 +5946,11 @@ test("requires skill routing for explicit skill requests", () => {
   assert.deepEqual(
     evaluateSkillRouting({
       messages: [
-        textMessage("user", "Use the code review skill."),
+        textMessage("user", "Use the design-quality-review skill."),
         assistantToolCall("read", { path: "/repo/skills/design-quality-review/SKILL.md" }),
-        toolResult("loaded code review skill"),
+        toolResult("loaded design-quality-review skill"),
       ],
-      userText: "Use the code review skill.",
+      userText: "Use the design-quality-review skill.",
     }),
     {
       required: true,
@@ -5964,7 +5964,7 @@ test("requires skill routing for explicit skill requests", () => {
       messages: [
         textMessage("user", "Use the design-quality-review skill and github skill."),
         assistantToolCall("read", { path: "/repo/skills/design-quality-review/SKILL.md" }),
-        toolResult("loaded code review skill"),
+        toolResult("loaded design-quality-review skill"),
       ],
       userText: "Use the design-quality-review skill and github skill.",
     }),
@@ -5980,7 +5980,7 @@ test("requires skill routing for explicit skill requests", () => {
       messages: [
         textMessage("user", "Use the design-quality-review skill and github skill."),
         assistantToolCall("read", { path: "/repo/skills/design-quality-review/SKILL.md" }),
-        toolResult("loaded code review skill"),
+        toolResult("loaded design-quality-review skill"),
         assistantToolCall("read", { path: "/repo/skills/github/SKILL.md" }),
         toolResult("loaded GitHub skill"),
       ],
@@ -6159,11 +6159,11 @@ test("requires skill reads when assistant claims skill use", () => {
         assistantToolCall("read", {
           path: "/repo/skills/design-quality-review/SKILL.md",
         }),
-        toolResult("loaded code review skill"),
-        textMessage("assistant", "I used the code review skill."),
+        toolResult("loaded design-quality-review skill"),
+        textMessage("assistant", "I used the design-quality-review skill."),
       ],
       userText: "Review this change.",
-      assistantText: "I used the code review skill.",
+      assistantText: "I used the design-quality-review skill.",
     }),
     {
       required: true,
@@ -6184,7 +6184,7 @@ test("requires skill reads when assistant claims skill use", () => {
     {
       required: true,
       satisfied: false,
-      reason: "assistant claimed skill use: design-quality-review",
+      reason: "assistant claimed skill use: code-review",
     },
   );
 
@@ -6224,7 +6224,7 @@ test("requires skill reads when assistant claims skill use", () => {
     {
       required: true,
       satisfied: false,
-      reason: "assistant claimed skill use: typescript, design-quality-review",
+      reason: "assistant claimed skill use: typescript, code-review",
     },
   );
 
@@ -6239,11 +6239,11 @@ test("requires skill reads when assistant claims skill use", () => {
         assistantToolCall("read", {
           path: "/repo/skills/design-quality-review/SKILL.md",
         }),
-        toolResult("loaded code review skill"),
-        textMessage("assistant", "I used the TypeScript and code review skills."),
+        toolResult("loaded design-quality-review skill"),
+        textMessage("assistant", "I used the TypeScript and design-quality-review skills."),
       ],
       userText: "Review this TypeScript change.",
-      assistantText: "I used the TypeScript and code review skills.",
+      assistantText: "I used the TypeScript and design-quality-review skills.",
     }),
     {
       required: true,
@@ -6271,7 +6271,7 @@ test("requires skill reads when assistant claims skill use", () => {
     {
       required: true,
       satisfied: false,
-      reason: "assistant claimed skill use: typescript, design-quality-review",
+      reason: "assistant claimed skill use: typescript, code-review",
     },
   );
 });
@@ -6428,7 +6428,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
         textMessage("user", "Review this change."),
         assistantToolCall("subagent", {
           agent: "worker",
-          skills: ["code review"],
+          skills: ["design-quality-review"],
           task: "Review the change.",
         }),
         toolResult("subagent completed change review"),
@@ -6484,7 +6484,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
         textMessage("user", "Review this change."),
         assistantToolCall("subagent", {
           agent: "worker",
-          skills: ["code review"],
+          skills: ["design-quality-review"],
           task: "Review the change.",
         }),
         toolResult("ok"),
