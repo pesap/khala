@@ -132,7 +132,7 @@ or `unresolved (<reason>)` state. If the development profile is unresolved,
 |---|---|
 | `/khala` | Initialize khala and set compliance to `warn`. |
 | `/khala-health` | Report read-only Khala health/status, including session enablement, memory tool limit, compliance modes, and model profiles. `/khala status` is a compatibility alias. |
-| `/khala status\|strict\|enforce\|warn\|monitor\|reset` | Report or change compliance mode. `status` matches `/khala-health` while `strict`, `enforce`, `warn`, `monitor`, and `reset` change compliance. |
+| `/khala-mode status\|strict\|enforce\|warn\|warning\|monitor\|reset\|default\|defaults` | Report or change compliance mode. `status` matches `/khala-health` while the other values change compliance; `default` and `defaults` restore the first-principles defaults. |
 | `/end-agent` | Disable khala session context injection. |
 | `/approve-risk <reason> [--ttl MINUTES]` | Approve one high-risk command (TTL 1–120 min, default 20). |
 | `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Record manual mutation intent. |

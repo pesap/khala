@@ -34,6 +34,19 @@ grep -q "enabled (session): no" <<<"$health_output"
 grep -q "Compliance modes" <<<"$health_output"
 grep -q "Model profiles" <<<"$health_output"
 
+mode_output="$(
+  cd "$tmpdir"
+  pi --no-extensions \
+    -e "$repo_root/khala/index.ts" \
+    --offline \
+    --no-session \
+    --no-tools \
+    -p "/khala-mode" 2>&1
+)"
+
+grep -q "Khala health (read-only):" <<<"$mode_output"
+grep -q "Compliance modes" <<<"$mode_output"
+
 rpc_output="$(
   cd "$tmpdir"
   pi --no-extensions \
@@ -92,6 +105,7 @@ if proc.returncode != 0:
 
 required_commands = {
     "khala-health",
+    "khala-mode",
     "khala-reload",
     "workflow-list",
     "workflow-show",
