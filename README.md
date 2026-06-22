@@ -123,11 +123,12 @@ Khala workflow routing uses typed model profiles as the single source of truth:
 | `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan` prompt metadata and routing reason. |
 | `development` (`agents` alias) | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon` child Pi handoffs and development/agent routes. |
 
-Run `/khala status` to inspect profile resolution. The status output lists each
-profile's resolved model id, thinking level, source, and `ok` or
-`unresolved (<reason>)` state. If the development profile is unresolved,
+Run `/khala-health` to inspect profile resolution. `/khala status` remains a
+compatibility alias that returns the same read-only health output. The status
+output lists each profile's resolved model id, thinking level, source, and `ok`
+or `unresolved (<reason>)` state. If the development profile is unresolved,
 `/workon` refuses to emit handoff evidence and points operators back to
-`/khala status` instead of silently falling back to the planning model.
+`/khala-health` instead of silently falling back to the planning model.
 
 Explicit `/workon --model <provider/model>` remains available and records
 `routingMode=override`. When `--model` is used without `--thinking`, Khala keeps
@@ -152,7 +153,8 @@ pi -e https://github.com/pesap/agents -p "/plan 'Add retry policy for hook loadi
 | Command | Purpose |
 |---|---|
 | `/khala` | Initialize khala and set compliance to `warn`. |
-| `/khala status\|strict\|enforce\|warn\|monitor\|reset` | Report or change compliance mode. `status` also reports Khala model profiles and setup hints when a default model is unresolved. |
+| `/khala-health` | Report read-only Khala health/status, including session enablement, memory tool limit, compliance modes, and model profiles. `/khala status` is a compatibility alias. |
+| `/khala status\|strict\|enforce\|warn\|monitor\|reset` | Report or change compliance mode. `status` matches `/khala-health` while `strict`, `enforce`, `warn`, `monitor`, and `reset` change compliance. |
 | `/end-agent` | Disable khala session context injection. |
 | `/approve-risk <reason> [--ttl MINUTES]` | Approve one high-risk command (TTL 1–120 min, default 20). |
 | `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Record manual mutation intent. |

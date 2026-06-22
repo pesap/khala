@@ -14,6 +14,7 @@ interface CommandRegistrarDeps {
   pi: ExtensionAPI;
   handlers: {
     khala: CommandHandler;
+    khalaHealth: CommandHandler;
     endAgent: CommandHandler;
     approveRisk: CommandHandler;
     preflight: CommandHandler;
@@ -65,7 +66,8 @@ export function registerCommands({
   completions,
 }: CommandRegistrarDeps): void {
   const commands = [
-    { name: "khala", description: "Initialize khala context injection, enable end-of-turn learning assessment, and optionally set compliance mode or memory threshold (/khala warn --learn-tool-limit 15)", handler: handlers.khala },
+    { name: "khala", description: "Initialize khala context injection, enable end-of-turn learning assessment, and optionally set compliance mode or memory threshold (/khala warn --learn-tool-limit 15); use /khala-health for read-only status", handler: handlers.khala },
+    { name: "khala-health", description: "Inspect read-only Khala health/status without enabling Khala or changing compliance", handler: handlers.khalaHealth },
     { name: "end-agent", description: "Stop khala context injection for this session", handler: handlers.endAgent },
     { name: "approve-risk", description: "Record checker approval for one high-risk command", handler: handlers.approveRisk },
     { name: "preflight", description: "Set mutation intent line for first-principles gate", handler: handlers.preflight },
