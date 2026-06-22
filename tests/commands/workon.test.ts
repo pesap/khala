@@ -890,6 +890,178 @@ test("parses grouped GitHub issue JSON when issue bodies contain literal prompt 
   }
 });
 
+test("blocks source issue reads when gh issue view returns invalid JSON", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-source-read-invalid-json-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 220 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": "{\"number\":220,\"title\":\"fix(workon): classify source-read parse failures\",\"url\":\"https://github.com/pesap/agents/issues/220\",\"body\":\"unterminated",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "220",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.filter((call) => call.startsWith("issue view ")).length, 1);
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.equal(calls.some((call) => call.startsWith("bash ")), false);
+    assert.match(rendered, /Route: blocked/);
+    assert.match(rendered, /Source issue read blocked for pesap\/agents#220: parse failure/);
+    assert.match(rendered, /command=gh issue view 220 --repo pesap\/agents --json number,title,url,body,state,author,labels,assignees/);
+    assert.match(rendered, /raw-stdout-bytes=\d+/);
+    assert.match(rendered, /parse-input-bytes=\d+/);
+    assert.match(rendered, /redaction-changed-stdout=false/);
+    assert.match(rendered, /parse-input-starts-with-brace=true/);
+    assert.match(rendered, /parse-input-ends-with-brace=false/);
+    assert.match(rendered, /parse-input-hash=[0-9a-f]{8}/);
+    assert.doesNotMatch(rendered, /Only next command: \/triage <issue-url>/);
+    assert.doesNotMatch(rendered, /workon-ready/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocks source issue reads when gh issue view command fails", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-source-read-command-failure-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+    });
+    const failingRunner: WorkonCommandRunner = async (command, args) => {
+      const key = command === "gh" ? args.join(" ") : `${command} ${args.join(" ")}`;
+      calls.push(key);
+      if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+        return { ok: true, stdout: "", stderr: "" };
+      }
+      if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "gh: issue view failed: not authenticated\n",
+          exitCode: 1,
+          rawStdout: "",
+        };
+      }
+      return runner(command, args);
+    };
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "221",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      failingRunner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.filter((call) => call.startsWith("issue view ")).length, 1);
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /Route: blocked/);
+    assert.match(rendered, /Source issue read blocked for pesap\/agents#221: gh: issue view failed: not authenticated/);
+    assert.match(rendered, /command-failure=gh: issue view failed: not authenticated/);
+    assert.match(rendered, /parse-input-bytes=0/);
+    assert.match(rendered, /redaction-changed-stdout=false/);
+    assert.doesNotMatch(rendered, /Only next command: \/triage <issue-url>/);
+    assert.doesNotMatch(rendered, /workon-ready/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("preserves parseability when stdout is redacted into invalid JSON but raw stdout remains valid", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-source-read-redaction-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+    });
+    const issue = {
+      number: 222,
+      title: "fix(workon): keep raw stdout before parsing",
+      body: [
+        "## Current behavior",
+        "",
+        "- The issue body includes literal usage text that can be redacted in diagnostics:",
+        PROMPT_USAGE_TEXT,
+        "",
+        "## Acceptance criteria",
+        "",
+        "- Parse raw GitHub issue JSON without redaction-driven corruption.",
+        "",
+        "## Validation",
+        "",
+        "- Run the focused workon regression test.",
+        "",
+        "## Non-goals",
+        "",
+        "- Do not widen scope beyond the parser fix.",
+      ].join("\n"),
+    };
+    const rawStdout = issueViewOutput(issue.number, issue.title, issue.body);
+    const redactedStdout = "{\"number\":222,\"title\":\"fix(workon): keep raw stdout before parsing\",\"body\":\"<redacted>";
+    const parsingRunner: WorkonCommandRunner = async (command, args) => {
+      const key = command === "gh" ? args.join(" ") : `${command} ${args.join(" ")}`;
+      calls.push(key);
+      if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+        return { ok: true, stdout: "", stderr: "" };
+      }
+      if (command === "gh" && args[0] === "issue" && args[1] === "view") {
+        return {
+          ok: true,
+          stdout: redactedStdout,
+          stderr: "",
+          rawStdout,
+        };
+      }
+      return runner(command, args);
+    };
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "222",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      parsingRunner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.filter((call) => call.startsWith("issue view ")).length, 1);
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /Route: prepared/);
+    assert.match(rendered, /Source issue: pesap\/agents#222/);
+    assert.doesNotMatch(rendered, /failed to parse JSON/);
+    assert.doesNotMatch(rendered, /Route: blocked/);
+    assert.ok(calls.includes("issue view 222 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees"));
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("groups multiple GitHub issues into one capsule and Worktrunk session", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-multi-test-"));
   try {
