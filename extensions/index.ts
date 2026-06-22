@@ -16,6 +16,7 @@ import path from "node:path";
 import registerSubagentExtension from "pi-subagents/src/extension/index.ts";
 import { createAgentCommandHandlers } from "./commands/agent.ts";
 import { createComplianceCommandHandlers } from "./commands/compliance.ts";
+import { createKhalaCommandHandlers } from "./commands/khala.ts";
 import { createCuratorCommandHandlers } from "./commands/curator.ts";
 import { createLearnedWorkflowCommandHandlers } from "./commands/learned-workflows.ts";
 import { createRuleCommandHandlers } from "./commands/rules.ts";
@@ -2467,46 +2468,15 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     notify,
   });
 
-  const khala = async (
-    args: string | undefined,
-    ctx: ExtensionCommandContext,
-  ): Promise<void> => {
-    const rawArgs = args ?? "";
-    const limitMatch = rawArgs.match(
-      /(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+(\d+)(?=\s|$)/,
-    );
-    if (limitMatch) {
-      runtimeState.memoryToolCallLimit = Math.max(
-        1,
-        Math.min(100, Number.parseInt(limitMatch[1] ?? "15", 10)),
-      );
-    }
-    const complianceArgs = normalizeWhitespace(
-      rawArgs.replace(
-        /(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+\d+(?=\s|$)/,
-        " ",
-      ),
-    );
-
-    if (!runtimeState.agentEnabled) {
-      setAgentEnabledState(ctx, true);
-      appendAgentStateEntry(pi, true, nowIso(), "khala");
-      notify(
-        ctx,
-        `khala initialized. End-of-turn learning assessment is now active. memory_tool_limit=${runtimeState.memoryToolCallLimit}`,
-        "success",
-      );
-    } else if (limitMatch) {
-      notify(
-        ctx,
-        `khala memory/tool learning threshold updated: memory_tool_limit=${runtimeState.memoryToolCallLimit}`,
-        "success",
-      );
-    }
-
-    const compliancePreset = complianceArgs || "warn";
-    await complianceHandlers.compliance(compliancePreset, ctx);
-  };
+  const khalaHandlers = createKhalaCommandHandlers({
+    runtimeState,
+    notify,
+    setAgentEnabledState,
+    appendAgentStateEntry: (enabled, at, source) =>
+      appendAgentStateEntry(pi, enabled, at, source),
+    nowIso,
+    runCompliancePreset: (preset, ctx) => complianceHandlers.compliance(preset, ctx),
+  });
 
   const { compliance: _unusedComplianceHandler, ...complianceGateHandlers } =
     complianceHandlers;
@@ -2520,7 +2490,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ...learnedWorkflowHandlers,
       ...ruleHandlers,
       endAgent: agentHandlers.endAgent,
-      khala,
+      ...khalaHandlers,
     },
     completions: {
       learnedSkills: (prefix) =>

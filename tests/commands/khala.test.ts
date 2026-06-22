@@ -1,0 +1,198 @@
+import test, { after, before } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { createKhalaCommandHandlers, formatKhalaHealthStatus } from "../../extensions/commands/khala.ts";
+import type { RuntimeState } from "../../extensions/state/runtime.ts";
+import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
+
+let fakePiDir: string | null = null;
+let previousPath: string | undefined;
+
+before(async () => {
+  fakePiDir = await mkdtemp(path.join(tmpdir(), "khala-health-pi-"));
+  previousPath = process.env.PATH;
+  await writeFile(
+    path.join(fakePiDir, "pi"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models gpt-5.4-mini" ]]; then
+  printf 'provider model context max-out thinking images\n'
+  printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
+fi
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${fakePiDir}${path.delimiter}${previousPath ?? ""}`;
+  resetKhalaProfileDiscoveryForTests();
+});
+
+after(async () => {
+  resetKhalaProfileDiscoveryForTests();
+  if (previousPath === undefined) delete process.env.PATH;
+  else process.env.PATH = previousPath;
+  if (fakePiDir) await rm(fakePiDir, { force: true, recursive: true });
+});
+
+function makeHarness(overrides?: Partial<RuntimeState>): {
+  runtimeState: RuntimeState;
+  messages: string[];
+  agentStateEntries: Array<{ enabled: boolean; at: string; source?: string }>;
+  compliancePresets: string[];
+  handlers: ReturnType<typeof createKhalaCommandHandlers>;
+  ctx: never;
+} {
+  const runtimeState: RuntimeState = {
+    agentEnabled: false,
+    riskApproval: null,
+    riskEvents: [],
+    firstPrinciplesConfig: {
+      preflightMode: "warn",
+      postflightMode: "warn",
+      responseComplianceMode: "warn",
+    },
+    activePreflight: null,
+    latestPostflight: null,
+    policyEvents: [],
+    memoryToolCallLimit: 15,
+    lastObligationBlockKey: null,
+    lastObligationBlockCount: 0,
+    lastMemoryGateBlockKey: null,
+    lastMemoryGateBlockCount: 0,
+    lastEmptyResponseBlockKey: null,
+    lastEmptyResponseBlockCount: 0,
+    ...overrides,
+  };
+  const messages: string[] = [];
+  const agentStateEntries: Array<{ enabled: boolean; at: string; source?: string }> = [];
+  const compliancePresets: string[] = [];
+
+  return {
+    runtimeState,
+    messages,
+    agentStateEntries,
+    compliancePresets,
+    handlers: createKhalaCommandHandlers({
+      runtimeState,
+      notify: (_ctx, message) => {
+        messages.push(message);
+      },
+      setAgentEnabledState: (_ctx, enabled) => {
+        runtimeState.agentEnabled = enabled;
+      },
+      appendAgentStateEntry: (enabled, at, source) => {
+        agentStateEntries.push({ enabled, at, source });
+      },
+      nowIso: () => "2026-06-22T00:00:00.000Z",
+      runCompliancePreset: async (preset) => {
+        compliancePresets.push(preset);
+      },
+    }),
+    ctx: {} as never,
+  };
+}
+
+test("/khala-health is read-only and reports health status", async () => {
+  const harness = makeHarness({
+    agentEnabled: false,
+    memoryToolCallLimit: 17,
+  });
+
+  await harness.handlers.khalaHealth(undefined, harness.ctx);
+
+  assert.equal(harness.messages.length, 1);
+  assert.match(harness.messages[0], /Khala health \(read-only\):/);
+  assert.match(harness.messages[0], /enabled \(session\): no/);
+  assert.match(harness.messages[0], /memory_tool_limit: 17/);
+  assert.match(harness.messages[0], /Compliance modes \(session\): preflight=warn, postflight=warn, response=warn\./);
+  assert.match(harness.messages[0], /Model profiles:/);
+  assert.equal(harness.agentStateEntries.length, 0);
+  assert.deepEqual(harness.compliancePresets, []);
+});
+
+test("/khala status remains a compatibility alias for /khala-health", async () => {
+  const harness = makeHarness({
+    agentEnabled: true,
+    memoryToolCallLimit: 21,
+  });
+
+  await harness.handlers.khalaHealth(undefined, harness.ctx);
+  const healthOutput = harness.messages.at(-1);
+
+  await harness.handlers.khala("status", harness.ctx);
+
+  assert.equal(harness.messages.length, 2);
+  assert.equal(harness.messages[1], healthOutput);
+  assert.equal(harness.agentStateEntries.length, 0);
+  assert.deepEqual(harness.compliancePresets, []);
+});
+
+test("/khala with no arguments initializes Khala and applies warn compliance", async () => {
+  const harness = makeHarness({
+    agentEnabled: false,
+    memoryToolCallLimit: 15,
+  });
+
+  await harness.handlers.khala(undefined, harness.ctx);
+
+  assert.equal(harness.runtimeState.agentEnabled, true);
+  assert.equal(harness.agentStateEntries.length, 1);
+  assert.deepEqual(harness.agentStateEntries[0], {
+    enabled: true,
+    at: "2026-06-22T00:00:00.000Z",
+    source: "khala",
+  });
+  assert.deepEqual(harness.compliancePresets, ["warn"]);
+  assert.match(harness.messages[0], /khala initialized\. End-of-turn learning assessment is now active\. memory_tool_limit=15/);
+});
+
+test("/khala preserves memory tool limit aliases and 1..100 clamping", async () => {
+  const harness = makeHarness({
+    agentEnabled: true,
+    memoryToolCallLimit: 15,
+  });
+
+  await harness.handlers.khala("--learn-tool-limit 0", harness.ctx);
+  assert.equal(harness.runtimeState.memoryToolCallLimit, 1);
+  assert.match(harness.messages[0], /memory_tool_limit=1/);
+
+  await harness.handlers.khala("--memory-tool-limit 101", harness.ctx);
+  assert.equal(harness.runtimeState.memoryToolCallLimit, 100);
+  assert.match(harness.messages[1], /memory_tool_limit=100/);
+
+  assert.deepEqual(harness.compliancePresets, ["warn", "warn"]);
+});
+
+test("/khala invalid usage points users to /khala-health for status", async () => {
+  const harness = makeHarness();
+
+  await harness.handlers.khala("invalid preset", harness.ctx);
+
+  assert.equal(harness.messages.length, 1);
+  assert.equal(
+    harness.messages[0],
+    "Usage: /khala [strict|enforce|warn|monitor|reset] or /khala-health for status",
+  );
+  assert.equal(harness.agentStateEntries.length, 0);
+  assert.deepEqual(harness.compliancePresets, []);
+});
+
+test("formatKhalaHealthStatus includes session state and model profiles", () => {
+  const rendered = formatKhalaHealthStatus({
+    enabled: true,
+    memoryToolLimit: 9,
+    firstPrinciplesConfig: {
+      preflightMode: "warn",
+      postflightMode: "enforce",
+      responseComplianceMode: "monitor",
+    },
+  });
+
+  assert.match(rendered, /Khala health \(read-only\):/);
+  assert.match(rendered, /enabled \(session\): yes/);
+  assert.match(rendered, /memory_tool_limit: 9/);
+  assert.match(rendered, /preflight=warn, postflight=enforce, response=monitor/);
+  assert.match(rendered, /Model profiles:/);
+});
