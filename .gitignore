@@ -7,7 +7,7 @@ dist/
 !extensions/runtime/
 !extensions/runtime/*.ts
 .tmp/
-.pi/khala/
+.pi/
 
 # Python
 __pycache__/
