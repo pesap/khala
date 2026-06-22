@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   advanceWorkflowTracking,
+  advanceWorkflowTrackingForTurnBoundary,
   beginWorkflowTracking,
   buildDeterministicWorkflowContract,
   completeWorkflowTracking,
@@ -939,6 +940,121 @@ test("advanceWorkflowTracking persists active step progress as a checkpoint", as
       ledger.events.at(-1).data.workflowState,
       ledger.workflow.state,
     );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("advanceWorkflowTrackingForTurnBoundary advances non-final workflow turns", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workflow-turn-advance-"));
+  try {
+    const runtimeState = createRuntimeState();
+    const runsDir = path.join(tempDir, "runs");
+    const workflow = await beginWorkflowTracking({
+      pi: { appendEntry: () => undefined } as never,
+      ctx: { cwd: tempDir } as never,
+      type: "debug",
+      input: "investigate failing test",
+      flags: {},
+      workflowSpec: [
+        "name: debug-workflow",
+        "objective: Investigate a symptom",
+        "steps:",
+        "  - id: intake",
+        "    action: restate_problem",
+        "  - id: evidence",
+        "    action: collect_signals",
+      ].join("\n"),
+      learningVersion: 7,
+      runLedgerDir: runsDir,
+      ensureLearningStore: async () => ({
+        runsDir,
+        learningJsonl: path.join(tempDir, "learning.jsonl"),
+        memoryMd: path.join(tempDir, "MEMORY.md"),
+        promotionQueue: path.join(tempDir, "promotion.md"),
+        stateJson: path.join(tempDir, "state.json"),
+        workflowsDir: path.join(tempDir, "workflows"),
+        promptsDir: path.join(tempDir, "prompts"),
+      }),
+      makeId: (prefix) => `${prefix}-turn-advance`,
+      nowIso: () => "2026-06-20T00:00:00.000Z",
+      summarizeEvidence: (text) => text,
+      runtimeState,
+      appendPreflightEntry: () => undefined,
+    });
+
+    await advanceWorkflowTrackingForTurnBoundary({
+      workflow,
+      at: "2026-06-20T00:03:00.000Z",
+      assistantText: "Completed intake and gathered the next evidence target.",
+      awaitingUserAction: false,
+    });
+
+    const ledger = JSON.parse(await readFile(workflow.runFile, "utf8"));
+    assert.deepEqual(
+      ledger.workflow.state.steps.map((step: { status: string }) => step.status),
+      ["completed", "active"],
+    );
+    assert.equal(
+      ledger.events.at(-1).summary,
+      "Checkpoint recorded: Workflow turn completed step 1/2: intake",
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("advanceWorkflowTrackingForTurnBoundary does not advance clarification turns", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workflow-turn-wait-"));
+  try {
+    const runtimeState = createRuntimeState();
+    const runsDir = path.join(tempDir, "runs");
+    const workflow = await beginWorkflowTracking({
+      pi: { appendEntry: () => undefined } as never,
+      ctx: { cwd: tempDir } as never,
+      type: "debug",
+      input: "investigate failing test",
+      flags: {},
+      workflowSpec: [
+        "name: debug-workflow",
+        "objective: Investigate a symptom",
+        "steps:",
+        "  - id: intake",
+        "    action: restate_problem",
+        "  - id: evidence",
+        "    action: collect_signals",
+      ].join("\n"),
+      learningVersion: 7,
+      runLedgerDir: runsDir,
+      ensureLearningStore: async () => ({
+        runsDir,
+        learningJsonl: path.join(tempDir, "learning.jsonl"),
+        memoryMd: path.join(tempDir, "MEMORY.md"),
+        promotionQueue: path.join(tempDir, "promotion.md"),
+        stateJson: path.join(tempDir, "state.json"),
+        workflowsDir: path.join(tempDir, "workflows"),
+        promptsDir: path.join(tempDir, "prompts"),
+      }),
+      makeId: (prefix) => `${prefix}-turn-wait`,
+      nowIso: () => "2026-06-20T00:00:00.000Z",
+      summarizeEvidence: (text) => text,
+      runtimeState,
+      appendPreflightEntry: () => undefined,
+    });
+
+    await advanceWorkflowTrackingForTurnBoundary({
+      workflow,
+      at: "2026-06-20T00:03:00.000Z",
+      assistantText: "Which failing test should I inspect first?",
+      awaitingUserAction: true,
+    });
+
+    const ledger = JSON.parse(await readFile(workflow.runFile, "utf8"));
+    assert.deepEqual(
+      ledger.workflow.state.steps.map((step: { status: string }) => step.status),
+      ["active", "pending"],
+    );
+    assert.equal(ledger.events.length, 1);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

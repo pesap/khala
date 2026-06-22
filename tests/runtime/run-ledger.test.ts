@@ -2200,6 +2200,24 @@ test("interrupted run with mutation after checkpoint needs operator review", () 
   assert.deepEqual(classification.unsafeEventIds, ["run-1:mutation"]);
 });
 
+test("interrupted run treats metadata-less mutation events as unsafe", () => {
+  const classification = classifyInterruptedRun([
+    {
+      id: "run-1:mutation:legacy",
+      at: "2026-06-20T00:02:00.000Z",
+      type: "mutation",
+      summary: "legacy mutation with missing metadata",
+    },
+  ]);
+
+  assert.equal(classification.classification, "needs_operator_review");
+  assert.deepEqual(classification.unsafeEventIds, ["run-1:mutation:legacy"]);
+  assert.equal(
+    classification.unsafeEvents?.[0]?.reason,
+    "not explicitly replay-safe",
+  );
+});
+
 test("markRunInterrupted persists conservative resume classification", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-ledger-"));
   try {

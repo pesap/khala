@@ -565,6 +565,30 @@ export async function advanceWorkflowTracking<
   return nextState;
 }
 
+export async function advanceWorkflowTrackingForTurnBoundary<
+  TWorkflowType extends string,
+  TWorkflowFlags extends WorkflowFlags,
+>(params: {
+  workflow: PendingWorkflow<TWorkflowType, TWorkflowFlags>;
+  at: string;
+  assistantText: string;
+  awaitingUserAction: boolean;
+}): Promise<WorkflowRuntimeState | undefined> {
+  if (params.awaitingUserAction || !params.assistantText.trim()) {
+    return params.workflow.workflowState;
+  }
+
+  const activeStep = activeWorkflowStepSnapshot(params.workflow.workflowState);
+  if (!activeStep) return params.workflow.workflowState;
+
+  return advanceWorkflowTracking({
+    workflow: params.workflow,
+    at: params.at,
+    stepId: activeStep.id,
+    reason: `Workflow turn completed step ${activeStep.index + 1}/${activeStep.totalSteps}: ${activeStep.id}`,
+  });
+}
+
 export async function recordWorkflowToolCall<
   TWorkflowType extends string,
   TWorkflowFlags extends WorkflowFlags,

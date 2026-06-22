@@ -140,6 +140,7 @@ import {
   getRiskApprovalFromSession,
 } from "./state/session.ts";
 import {
+  advanceWorkflowTrackingForTurnBoundary as advanceTrackedWorkflowForTurnBoundary,
   beginWorkflowTracking as beginTrackedWorkflow,
   completeWorkflowTracking as completeTrackedWorkflow,
   enqueueWorkflow as enqueueWorkflowMessage,
@@ -2442,9 +2443,16 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       }
 
       if (lastAssistantMessage?.stopReason === "stop") {
+        const awaitingUserAction = isAssistantClarification(lastAssistantMessage);
+        await advanceTrackedWorkflowForTurnBoundary({
+          workflow,
+          at: nowIso(),
+          assistantText,
+          awaitingUserAction,
+        });
         markWorkflowWaitingForFooter(
           workflow,
-          isAssistantClarification(lastAssistantMessage),
+          awaitingUserAction,
         );
         notify(
           ctx,

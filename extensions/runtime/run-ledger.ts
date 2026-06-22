@@ -473,6 +473,18 @@ function unsafeEventDetail(event: RunLedgerEvent): RunLedgerUnsafeEvent {
   };
 }
 
+function eventUnsafeForConservativeReplay(event: RunLedgerEvent): boolean {
+  const replaySafe = eventReplaySafe(event);
+  const sideEffectClass = eventSideEffectClass(event);
+  if (event.type === "mutation") {
+    return replaySafe !== true || sideEffectClass !== "read_only";
+  }
+  return isUnsafeForConservativeReplay({
+    replaySafe,
+    sideEffectClass,
+  });
+}
+
 function parseToolGateSatisfaction(value: unknown): ToolGateSatisfaction | undefined {
   if (!isRecord(value)) return undefined;
   return {
@@ -515,15 +527,7 @@ export function classifyInterruptedRun(
   );
   const replayWindow =
     latestCheckpointIndex >= 0 ? events.slice(latestCheckpointIndex + 1) : events;
-  const unsafeEvents = replayWindow.filter(
-    (event) => {
-      const sideEffectClass = eventSideEffectClass(event);
-      return isUnsafeForConservativeReplay({
-        replaySafe: eventReplaySafe(event),
-        sideEffectClass,
-      });
-    },
-  );
+  const unsafeEvents = replayWindow.filter(eventUnsafeForConservativeReplay);
 
   if (unsafeEvents.length > 0) {
     const unsafeDetails = unsafeEvents.map(unsafeEventDetail);
