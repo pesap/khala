@@ -5668,11 +5668,11 @@ test("detects explicit skill requests without triggering on generic skill mentio
     ["tdd-core", "github", "typescript"],
   );
   assert.deepEqual(explicitSkillNamesForUserText("Use the code review skill."), [
-    "design-quality-review",
+    "code-review",
   ]);
   assert.deepEqual(
     explicitSkillNamesForUserText("Use GitHub and code review skills for this PR."),
-    ["github", "design-quality-review"],
+    ["github", "code-review"],
   );
   assert.deepEqual(
     explicitSkillNamesForUserText("Use commit and github skills."),
@@ -5702,28 +5702,28 @@ test("detects explicit skill requests without triggering on generic skill mentio
   );
   assert.deepEqual(
     assistantClaimedSkillNames("I used the TypeScript and code review skills."),
-    ["typescript", "design-quality-review"],
+    ["typescript", "code-review"],
   );
   assert.deepEqual(
     assistantClaimedSkillNames("I used the TypeScript skill and code review skill."),
-    ["typescript", "design-quality-review"],
+    ["typescript", "code-review"],
   );
   assert.deepEqual(
     assistantClaimedSkillNames("I followed code review guidance."),
-    ["design-quality-review"],
+    ["code-review"],
   );
   assert.deepEqual(
     assistantClaimedSkillNames(
       "I followed TypeScript and code review best practices.",
     ),
-    ["typescript", "design-quality-review"],
+    ["typescript", "code-review"],
   );
   assert.deepEqual(
     assistantClaimedSkillNames("I applied TypeScript best practices."),
     ["typescript"],
   );
   assert.deepEqual(assistantClaimedSkillNames("I used the code review skill."), [
-    "design-quality-review",
+    "code-review",
   ]);
   assert.deepEqual(assistantClaimedSkillNames("I used a skill."), []);
   assert.deepEqual(assistantClaimedSkillNames("I used a few skills."), []);
