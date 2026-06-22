@@ -64,7 +64,7 @@
       "expectedIssueCodes": ["skill_routing"]
     },
     {
-      "name": "rejects review task without code-review skill load",
+      "name": "rejects review task without design-quality-review skill load",
       "userText": "Review this change for regressions.",
       "assistantText": "I reviewed the change for regressions.",
       "messages": [
@@ -73,14 +73,14 @@
       "expectedIssueCodes": ["skill_routing"]
     },
     {
-      "name": "accepts review task with exact code-review skill load",
+      "name": "accepts review task with exact design-quality-review skill load",
       "userText": "Review this change for regressions.",
       "assistantText": "Findings first, then residual risk and verdict.",
       "messages": [
         { "role": "user", "text": "Review this change for regressions." },
         {
           "role": "assistant",
-          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+          "toolCall": { "name": "read", "arguments": { "path": "skills/design-quality-review/SKILL.md" } }
         },
         {
           "role": "toolResult",
@@ -90,12 +90,12 @@
           "role": "assistant",
           "toolCall": {
             "name": "khala_search_memory",
-            "arguments": { "query": "Review this change regressions code-review skill" }
+            "arguments": { "query": "Review this change regressions design-quality-review skill" }
           }
         },
         {
           "role": "toolResult",
-          "text": "Memory: code review regression tasks require code-review skill instructions before findings."
+          "text": "Memory: code review regression tasks require design-quality-review skill instructions before findings."
         }
       ],
       "expectedIssueCodes": [],
@@ -160,7 +160,7 @@
         },
         {
           "role": "assistant",
-          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+          "toolCall": { "name": "read", "arguments": { "path": "skills/design-quality-review/SKILL.md" } }
         },
         { "role": "toolResult", "text": "Code review skill loaded." }
       ],
@@ -260,11 +260,11 @@
         },
         {
           "role": "toolResult",
-          "text": "Memory: SDK ergonomics reviews require code-review and good-api skills."
+          "text": "Memory: SDK ergonomics reviews require design-quality-review and good-api skills."
         },
         {
           "role": "assistant",
-          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+          "toolCall": { "name": "read", "arguments": { "path": "skills/design-quality-review/SKILL.md" } }
         },
         {
           "role": "toolResult",
@@ -290,11 +290,11 @@
         },
         {
           "role": "toolResult",
-          "text": "Memory: API ergonomics review should load code-review and good-api instructions."
+          "text": "Memory: API ergonomics review should load design-quality-review and good-api instructions."
         },
         {
           "role": "assistant",
-          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+          "toolCall": { "name": "read", "arguments": { "path": "skills/design-quality-review/SKILL.md" } }
         },
         {
           "role": "toolResult",
@@ -361,30 +361,30 @@
     {
       "name": "rejects manifest-only skill mention",
       "userText": "Review this change for regressions.",
-      "assistantText": "I used the code-review skill.",
+      "assistantText": "I used the design-quality-review skill.",
       "messages": [
         { "role": "user", "text": "Review this change for regressions." },
         {
           "role": "assistant",
           "toolCall": {
             "name": "read",
-            "arguments": { "path": "package.json", "note": "skills/code-review/SKILL.md" }
+            "arguments": { "path": "package.json", "note": "skills/design-quality-review/SKILL.md" }
           }
         },
         {
           "role": "toolResult",
-          "text": "package manifest mentions code-review skill metadata"
+          "text": "package manifest mentions design-quality-review skill metadata"
         },
         {
           "role": "assistant",
           "toolCall": {
             "name": "khala_search_memory",
-            "arguments": { "query": "Review this change regressions code-review skill" }
+            "arguments": { "query": "Review this change regressions design-quality-review skill" }
           }
         },
         {
           "role": "toolResult",
-          "text": "Memory: review tasks need exact code-review skill load, not metadata mentions."
+          "text": "Memory: review tasks need exact design-quality-review skill load, not metadata mentions."
         }
       ],
       "expectedIssueCodes": ["skill_routing"],
@@ -1066,10 +1066,10 @@
           "role": "assistant",
           "toolCall": {
             "name": "khala_search_memory",
-            "arguments": { "query": "Review this change regressions code-review skill" }
+            "arguments": { "query": "Review this change regressions design-quality-review skill" }
           }
         },
-        { "role": "toolResult", "text": "Memory: review tasks need code-review skill." }
+        { "role": "toolResult", "text": "Memory: review tasks need design-quality-review skill." }
       ],
       "expectedIssueCodes": ["skill_routing"],
       "expectedIssueActions": ["load_required_skill"],
@@ -1083,17 +1083,17 @@
         { "role": "user", "text": "Review this change for regressions." },
         {
           "role": "assistant",
-          "toolCall": { "name": "read", "arguments": { "path": "skills/code-review/SKILL.md" } }
+          "toolCall": { "name": "read", "arguments": { "path": "skills/design-quality-review/SKILL.md" } }
         },
         { "role": "toolResult", "text": "Code review skill loaded." },
         {
           "role": "assistant",
           "toolCall": {
             "name": "khala_search_memory",
-            "arguments": { "query": "Review this change regressions code-review skill" }
+            "arguments": { "query": "Review this change regressions design-quality-review skill" }
           }
         },
-        { "role": "toolResult", "text": "Memory: review tasks need code-review skill." }
+        { "role": "toolResult", "text": "Memory: review tasks need design-quality-review skill." }
       ],
       "expectedIssueCodes": [],
       "expectedMetrics": {

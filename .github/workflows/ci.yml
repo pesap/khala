@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
 
       - name: Install dependencies
@@ -37,3 +37,30 @@ jobs:
 
       - name: Test
         run: npm run test:node
+
+  prek:
+    name: prek checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install actionlint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash -s -- latest /usr/local/bin
+          echo "/usr/local/bin" >>"$GITHUB_PATH"
+
+      - name: Run prek hooks
+        uses: j178/prek-action@bdca6f102f98e2b4c7029491a53dfd366469e33d # v2
+        continue-on-error: true

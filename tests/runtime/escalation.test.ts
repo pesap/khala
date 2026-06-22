@@ -5680,9 +5680,9 @@ test("detects explicit skill requests without triggering on generic skill mentio
   );
   assert.deepEqual(
     explicitSkillNamesForUserText(
-      "Use the code-review skill and github skill for this PR.",
+      "Use the design-quality-review skill and github skill for this PR.",
     ),
-    ["code-review", "github"],
+    ["design-quality-review", "github"],
   );
   assert.deepEqual(
     explicitSkillNamesForUserText(
@@ -5946,11 +5946,11 @@ test("requires skill routing for explicit skill requests", () => {
   assert.deepEqual(
     evaluateSkillRouting({
       messages: [
-        textMessage("user", "Use the code review skill."),
-        assistantToolCall("read", { path: "/repo/skills/code-review/SKILL.md" }),
-        toolResult("loaded code review skill"),
+        textMessage("user", "Use the design-quality-review skill."),
+        assistantToolCall("read", { path: "/repo/skills/design-quality-review/SKILL.md" }),
+        toolResult("loaded design-quality-review skill"),
       ],
-      userText: "Use the code review skill.",
+      userText: "Use the design-quality-review skill.",
     }),
     {
       required: true,
@@ -5962,11 +5962,11 @@ test("requires skill routing for explicit skill requests", () => {
   assert.deepEqual(
     evaluateSkillRouting({
       messages: [
-        textMessage("user", "Use the code-review skill and github skill."),
-        assistantToolCall("read", { path: "/repo/skills/code-review/SKILL.md" }),
-        toolResult("loaded code review skill"),
+        textMessage("user", "Use the design-quality-review skill and github skill."),
+        assistantToolCall("read", { path: "/repo/skills/design-quality-review/SKILL.md" }),
+        toolResult("loaded design-quality-review skill"),
       ],
-      userText: "Use the code-review skill and github skill.",
+      userText: "Use the design-quality-review skill and github skill.",
     }),
     {
       required: true,
@@ -5978,13 +5978,13 @@ test("requires skill routing for explicit skill requests", () => {
   assert.deepEqual(
     evaluateSkillRouting({
       messages: [
-        textMessage("user", "Use the code-review skill and github skill."),
-        assistantToolCall("read", { path: "/repo/skills/code-review/SKILL.md" }),
-        toolResult("loaded code review skill"),
+        textMessage("user", "Use the design-quality-review skill and github skill."),
+        assistantToolCall("read", { path: "/repo/skills/design-quality-review/SKILL.md" }),
+        toolResult("loaded design-quality-review skill"),
         assistantToolCall("read", { path: "/repo/skills/github/SKILL.md" }),
         toolResult("loaded GitHub skill"),
       ],
-      userText: "Use the code-review skill and github skill.",
+      userText: "Use the design-quality-review skill and github skill.",
     }),
     {
       required: true,
@@ -6082,7 +6082,7 @@ test("requires skill routing for explicit skill requests", () => {
     evaluateSkillRouting({
       messages: [
         textMessage("user", "Use a skill for this failing TypeScript test."),
-        assistantToolCall("read", { path: "/repo/skills/code-review/SKILL.md" }),
+        assistantToolCall("read", { path: "/repo/skills/design-quality-review/SKILL.md" }),
         toolResult("loaded code review skill"),
       ],
       userText: "Use a skill for this failing TypeScript test.",
@@ -6157,18 +6157,18 @@ test("requires skill reads when assistant claims skill use", () => {
       messages: [
         textMessage("user", "Review this change."),
         assistantToolCall("read", {
-          path: "/repo/skills/code-review/SKILL.md",
+          path: "/repo/skills/design-quality-review/SKILL.md",
         }),
-        toolResult("loaded code review skill"),
-        textMessage("assistant", "I used the code review skill."),
+        toolResult("loaded design-quality-review skill"),
+        textMessage("assistant", "I used the design-quality-review skill."),
       ],
       userText: "Review this change.",
-      assistantText: "I used the code review skill.",
+      assistantText: "I used the design-quality-review skill.",
     }),
     {
       required: true,
       satisfied: true,
-      reason: "assistant claimed skill use: code-review",
+      reason: "assistant claimed skill use: design-quality-review",
     },
   );
 
@@ -6237,18 +6237,18 @@ test("requires skill reads when assistant claims skill use", () => {
         }),
         toolResult("loaded TypeScript skill"),
         assistantToolCall("read", {
-          path: "/repo/skills/code-review/SKILL.md",
+          path: "/repo/skills/design-quality-review/SKILL.md",
         }),
-        toolResult("loaded code review skill"),
-        textMessage("assistant", "I used the TypeScript and code review skills."),
+        toolResult("loaded design-quality-review skill"),
+        textMessage("assistant", "I used the TypeScript and design-quality-review skills."),
       ],
       userText: "Review this TypeScript change.",
-      assistantText: "I used the TypeScript and code review skills.",
+      assistantText: "I used the TypeScript and design-quality-review skills.",
     }),
     {
       required: true,
       satisfied: true,
-      reason: "assistant claimed skill use: typescript, code-review",
+      reason: "assistant claimed skill use: typescript, design-quality-review",
     },
   );
 
@@ -6278,7 +6278,7 @@ test("requires skill reads when assistant claims skill use", () => {
 
 test("recommends packaged skills for common best-practice task classes", () => {
   assert.deepEqual(recommendedSkillsForUserText("Review this PR."), [
-    "code-review",
+    "design-quality-review",
     "github",
   ]);
   assert.deepEqual(
@@ -6291,7 +6291,7 @@ test("recommends packaged skills for common best-practice task classes", () => {
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Review this commit for bugs."),
-    ["code-review"],
+    ["design-quality-review"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Debug the failing pytest test."),
@@ -6315,7 +6315,7 @@ test("recommends packaged skills for common best-practice task classes", () => {
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Break circular dependencies in the import graph."),
-    ["dependency-untangler"],
+    ["design-quality-review"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Turn these loose dicts into a typed data contract."),
@@ -6327,15 +6327,15 @@ test("recommends packaged skills for common best-practice task classes", () => {
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Review this SDK design for API ergonomics."),
-    ["code-review", "good-api"],
+    ["design-quality-review", "good-api"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Remove unused exports after proving dead code."),
-    ["dead-code-proof"],
+    ["design-quality-review"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Tighten the types and remove any unsafe casts."),
-    ["type-hardening"],
+    ["design-quality-review"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Preserve public API compatibility."),
@@ -6347,7 +6347,7 @@ test("recommends packaged skills for common best-practice task classes", () => {
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Refactor this Rust crate and run clippy."),
-    ["rust-developer", "simplify"],
+    ["rust-developer", "design-quality-review"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Replace pip install with uv run for this Python script."),
@@ -6359,7 +6359,7 @@ test("recommends packaged skills for common best-practice task classes", () => {
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Review this bash script for ShellCheck fixes."),
-    ["code-review", "bash-script"],
+    ["design-quality-review", "bash-script"],
   );
   assert.deepEqual(
     recommendedSkillsForUserText("Improve CLI help text, exit codes, and --json output."),
@@ -6390,7 +6390,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
       messages: [
         textMessage("user", "Debug the failing TypeScript test."),
         assistantToolCall("read", {
-          path: "/repo/skills/code-review/SKILL.md",
+          path: "/repo/skills/design-quality-review/SKILL.md",
         }),
         toolResult("loaded code review skill"),
       ],
@@ -6428,7 +6428,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
         textMessage("user", "Review this change."),
         assistantToolCall("subagent", {
           agent: "worker",
-          skills: ["code review"],
+          skills: ["design-quality-review"],
           task: "Review the change.",
         }),
         toolResult("subagent completed change review"),
@@ -6438,7 +6438,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: true,
-      reason: "request matches packaged skill route: code-review",
+      reason: "request matches packaged skill route: design-quality-review",
     },
   );
 
@@ -6456,7 +6456,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: false,
-      reason: "request matches packaged skill route: code-review",
+      reason: "request matches packaged skill route: design-quality-review",
     },
   );
 
@@ -6474,7 +6474,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: false,
-      reason: "request matches packaged skill route: code-review",
+      reason: "request matches packaged skill route: design-quality-review",
     },
   );
 
@@ -6484,7 +6484,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
         textMessage("user", "Review this change."),
         assistantToolCall("subagent", {
           agent: "worker",
-          skills: ["code review"],
+          skills: ["design-quality-review"],
           task: "Review the change.",
         }),
         toolResult("ok"),
@@ -6494,7 +6494,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: false,
-      reason: "request matches packaged skill route: code-review",
+      reason: "request matches packaged skill route: design-quality-review",
     },
   );
 
@@ -6514,7 +6514,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
     {
       required: true,
       satisfied: false,
-      reason: "request matches packaged skill route: code-review",
+      reason: "request matches packaged skill route: design-quality-review",
     },
   );
 
@@ -6650,7 +6650,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
           "Tighten the public API types without breaking compatibility.",
         ),
         assistantToolCall("read", {
-          path: "/repo/skills/type-hardening/SKILL.md",
+          path: "/repo/skills/design-quality-review/SKILL.md",
         }),
         toolResult("loaded type hardening skill"),
         assistantToolCall("read", {
@@ -6664,7 +6664,7 @@ test("requires relevant skill reads for proactive skill routes", () => {
       required: true,
       satisfied: true,
       reason:
-        "request matches packaged skill route: type-hardening, public-api-guard",
+        "request matches packaged skill route: design-quality-review, public-api-guard",
     },
   );
 

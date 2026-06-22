@@ -1,0 +1,21 @@
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+    { id = "trailing-whitespace" },
+    { id = "end-of-file-fixer" },
+    { id = "check-added-large-files", args = ["--maxkb=500"] },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+    { id = "biome-check", name = "biome (lint)", entry = "npx biome lint --no-errors-on-unmatched .", language = "system", pass_filenames = false, types = ["javascript", "json"] },
+    { id = "prettier", name = "prettier", entry = "npx prettier --check 'skills/**/*.md' 'skills/**/*.yaml' 'skills/**/*.yml' 'runtime/**/*.yaml' 'workflows/**/*.yaml' '.github/**/*.yml'", language = "system", pass_filenames = false, types = ["markdown", "yaml"] },
+    { id = "markdownlint", name = "markdownlint", entry = "npx markdownlint-cli2 'skills/**/*.md' '#**/node_modules/**'", language = "system", pass_filenames = false, types = ["markdown"] },
+    { id = "yamllint", name = "yamllint", entry = "yamllint --strict skills/", language = "system", pass_filenames = false, types = ["yaml"] },
+    { id = "shellcheck", name = "shellcheck", entry = "bash -c 'npx shellcheck scripts/*.sh'", language = "system", pass_filenames = false, types = ["shell"] },
+    { id = "cspell", name = "cspell", entry = "npx cspell --no-progress 'skills/**/*.md' 'runtime/**/*.yaml' 'workflows/**/*.yaml'", language = "system", pass_filenames = false, types = ["markdown", "yaml"] },
+    { id = "actionlint", name = "actionlint", entry = "actionlint", language = "system", files = "\\.github/workflows/.*\\.ya?ml$", types = ["yaml"] },
+]

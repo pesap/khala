@@ -1,7 +1,7 @@
 ---
 skills:
   - librarian
-  - code-review
+  - design-quality-review
   - github
 ---
 
@@ -13,7 +13,7 @@ Source attribution: adapted from Earendil's pi-review command:
 https://github.com/earendil-works/pi-review
 
 Use this file only for target resolution and response contract.
-Use `code-review` for review judgment.
+Use `design-quality-review` for review judgment.
 Load `github` only for PR targets.
 Load `librarian` only when repository navigation/search is needed.
 
@@ -68,7 +68,7 @@ Do not mutate files unless the user explicitly asks for fixes.
 2. Determine scope.
 3. Read changed files or requested files.
 4. Read callers, tests, contracts, config, and migrations when needed.
-5. Apply `code-review`.
+5. Apply `design-quality-review`.
 6. Produce final report.
 
 ## Human Reviewer Callouts (Non-Blocking)
@@ -95,12 +95,12 @@ Return only:
 
 ## Key Findings
 
-- [P<0-3>] <title> 
-  - Evidence: 
+- [<dimension><severity>] <title>  (e.g., C1, S2, T1, D0, M1)
+  - Evidence:
     - <bullets of evidence with fpath if needed>,
-  - Impact(s): 
+  - Impact(s):
     - <bullets of impact with fpath if needed>,
-  - Suggested action(s): 
+  - Suggested action(s):
     - <bullet of fix direction per file if needed>.
 
 ## Human Reviewer Callouts (Non-Blocking)
