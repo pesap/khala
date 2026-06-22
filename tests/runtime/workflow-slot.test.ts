@@ -18,7 +18,9 @@ function createPendingWorkflow(type: string): PendingWorkflow {
     startedAt: "2026-06-09T00:00:00.000Z",
     runFile: "/tmp/workflow.json",
     loadedSkills: [],
+    skillMetadata: [],
     mutationCount: 0,
+    toolCallCount: 0,
     policyWarnings: [],
   };
 }
@@ -49,7 +51,7 @@ function createHandlers(state: {
       if (type === "workon") state.workonStarted = true;
       return state.pendingWorkflow as never;
     },
-    enqueueWorkflow: async () => ({ loadedSkills: [] }),
+    enqueueWorkflow: async () => ({ loadedSkills: [], skillMetadata: [] }),
     notifyWorkflowStarted: () => undefined,
     clearPendingWorkflow: () => undefined,
     parseDebugArgs: (args) => ({ problem: args ?? "" }),

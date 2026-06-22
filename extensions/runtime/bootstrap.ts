@@ -19,6 +19,11 @@ import {
   parseFirstPrinciplesConfig,
   type FirstPrinciplesConfig,
 } from "../policy/first-principles.ts";
+import {
+  buildSkillMetadataFromMarkdown,
+  type SkillSourceKind,
+  type SkillMetadata,
+} from "./skill-registry.ts";
 import type { HarnessLimits } from "./profile.ts";
 
 export const DEFAULT_BOOTSTRAP_MEMORY_TAIL_LINE_LIMIT = 8;
@@ -32,14 +37,98 @@ export async function loadFirstPrinciplesConfig(
   return parseFirstPrinciplesConfig(raw, defaults);
 }
 
+async function readSkillFileFromRoot(params: {
+  name: string;
+  root: string;
+  source: "packaged" | "learned" | "repo-local" | "user" | "plugin";
+}): Promise<{ content: string; metadata?: SkillMetadata }> {
+  const skillFile = path.resolve(params.root, params.name, "SKILL.md");
+  const skillsRoot = `${path.resolve(params.root)}${path.sep}`;
+  if (!skillFile.startsWith(skillsRoot)) {
+    return { content: "" };
+  }
+  const content = await readTextIfExists(skillFile);
+  if (!content.trim()) return { content };
+  return {
+    content,
+    metadata: buildSkillMetadataFromMarkdown({
+      name: params.name,
+      markdown: content,
+      path: skillFile,
+      source: params.source,
+      packageRoot: params.source === "packaged" ? params.root : undefined,
+      repoRoot: params.source === "repo-local" ? path.dirname(params.root) : undefined,
+    }),
+  };
+}
+
+export async function readWorkflowSkill(params: {
+  name: string;
+  packageSkillsPath: string;
+  learnedSkillsPath?: string;
+  repoSkillsPath?: string;
+  userSkillsPaths?: readonly string[];
+  pluginSkillsPaths?: readonly string[];
+}): Promise<{ content: string; metadata?: SkillMetadata; attemptedSources: SkillSourceKind[] }> {
+  const attemptedSources: SkillSourceKind[] = [];
+  const packaged = await readSkillFileFromRoot({
+    name: params.name,
+    root: params.packageSkillsPath,
+    source: "packaged",
+  });
+  attemptedSources.push("packaged");
+  if (packaged.content.trim()) return { ...packaged, attemptedSources };
+  if (params.learnedSkillsPath) {
+    const learned = await readSkillFileFromRoot({
+      name: params.name,
+      root: params.learnedSkillsPath,
+      source: "learned",
+    });
+    attemptedSources.push("learned");
+    if (learned.content.trim()) return { ...learned, attemptedSources };
+  }
+  if (params.repoSkillsPath) {
+    const repoLocal = await readSkillFileFromRoot({
+      name: params.name,
+      root: params.repoSkillsPath,
+      source: "repo-local",
+    });
+    attemptedSources.push("repo-local");
+    if (repoLocal.content.trim()) return { ...repoLocal, attemptedSources };
+  }
+  for (const userSkillsPath of params.userSkillsPaths ?? []) {
+    const user = await readSkillFileFromRoot({
+      name: params.name,
+      root: userSkillsPath,
+      source: "user",
+    });
+    if (!attemptedSources.includes("user")) attemptedSources.push("user");
+    if (user.content.trim()) return { ...user, attemptedSources };
+  }
+  for (const pluginSkillsPath of params.pluginSkillsPaths ?? []) {
+    const plugin = await readSkillFileFromRoot({
+      name: params.name,
+      root: pluginSkillsPath,
+      source: "plugin",
+    });
+    if (!attemptedSources.includes("plugin")) attemptedSources.push("plugin");
+    if (plugin.content.trim()) return { ...plugin, attemptedSources };
+  }
+  return { ...packaged, attemptedSources };
+}
+
 export function createWorkflowReaders(params: {
   skillflowsDir: string;
   commandsDir: string;
   packageSkillsPath: string;
+  learnedSkillsPath?: string;
+  repoSkillsPath?: string;
+  userSkillsPaths?: readonly string[];
+  pluginSkillsPaths?: readonly string[];
 }): {
   readWorkflow: (name: string) => Promise<string>;
   readCommandPrompt: (name: string) => Promise<string>;
-  readSkill: (name: string) => Promise<string>;
+  readSkill: (name: string) => Promise<{ content: string; metadata?: SkillMetadata; attemptedSources: SkillSourceKind[] }>;
 } {
   async function readWorkflow(name: string): Promise<string> {
     return readText(path.join(params.skillflowsDir, name));
@@ -49,13 +138,15 @@ export function createWorkflowReaders(params: {
     return readText(path.join(params.commandsDir, name));
   }
 
-  async function readSkill(name: string): Promise<string> {
-    const skillFile = path.resolve(params.packageSkillsPath, name, "SKILL.md");
-    const skillsRoot = `${path.resolve(params.packageSkillsPath)}${path.sep}`;
-    if (!skillFile.startsWith(skillsRoot)) {
-      return "";
-    }
-    return readTextIfExists(skillFile);
+  async function readSkill(name: string): Promise<{ content: string; metadata?: SkillMetadata; attemptedSources: SkillSourceKind[] }> {
+    return readWorkflowSkill({
+      name,
+      packageSkillsPath: params.packageSkillsPath,
+      learnedSkillsPath: params.learnedSkillsPath,
+      repoSkillsPath: params.repoSkillsPath,
+      userSkillsPaths: params.userSkillsPaths,
+      pluginSkillsPaths: params.pluginSkillsPaths,
+    });
   }
 
   return { readWorkflow, readCommandPrompt, readSkill };

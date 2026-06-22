@@ -1,6 +1,10 @@
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 
-import { isMemoryRefreshToolName } from "./tool-registry.ts";
+import {
+  isKnownMemoryGateRetryToolName,
+  isMemoryGateRetryToolCall,
+  isMemoryRefreshToolName,
+} from "./tool-registry.ts";
 
 export type WorkflowOutcome = "success" | "partial" | "failed";
 
@@ -323,14 +327,15 @@ export function isAssistantClarificationAllowedForObligation(
   return !GENERIC_PERMISSION_QUESTION_REGEX.test(text.toLowerCase());
 }
 
-function isMemoryGateRetryToolName(name: string): boolean {
-  return name === "edit" || name === "write" || name === "bash";
-}
-
-function extractToolCallNames(message: AgentEndEventMessage): string[] {
+function extractToolCalls(message: AgentEndEventMessage): Array<{
+  toolName: string;
+  input: unknown;
+}> {
   return message.content.flatMap((item) => {
     if (item.type !== "toolCall") return [];
-    return typeof item.name === "string" ? [item.name] : [];
+    return typeof item.name === "string"
+      ? [{ toolName: item.name, input: item.arguments }]
+      : [];
   });
 }
 
@@ -357,7 +362,7 @@ export function findPendingMemoryGateRecovery(
     }
 
     if (isMemoryReadRequiredToolResult(message)) {
-      blockedToolName = isMemoryGateRetryToolName(message.toolName ?? "")
+      blockedToolName = isKnownMemoryGateRetryToolName(message.toolName ?? "")
         ? (message.toolName ?? "mutation")
         : "mutation";
       sawMemoryRead = false;
@@ -367,7 +372,8 @@ export function findPendingMemoryGateRecovery(
     if (blockedToolName === null) continue;
 
     if (message.role !== "assistant") continue;
-    for (const toolName of extractToolCallNames(message)) {
+    for (const toolCall of extractToolCalls(message)) {
+      const { toolName } = toolCall;
       if (isMemoryRefreshToolName(toolName)) {
         sawMemoryRead = true;
         continue;
@@ -377,8 +383,8 @@ export function findPendingMemoryGateRecovery(
       const allowFallbackRetry = blockedToolName === "mutation";
       if (
         sawMemoryRead &&
-        ((matchesBlockedTool && isMemoryGateRetryToolName(toolName)) ||
-          (allowFallbackRetry && isMemoryGateRetryToolName(toolName)))
+        ((matchesBlockedTool && isMemoryGateRetryToolCall(toolCall)) ||
+          (allowFallbackRetry && isMemoryGateRetryToolCall(toolCall)))
       ) {
         blockedToolName = null;
         sawMemoryRead = false;

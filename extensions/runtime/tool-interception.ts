@@ -7,11 +7,11 @@ export interface ToolInterceptionCounters {
   incrementTaskToolCall: boolean;
   incrementMemoryToolCallsSinceRead: boolean;
   isMemoryRead: boolean;
+  persistsMemory: boolean;
 }
 
 export {
   isKhalaMemoryToolName,
-  isMemoryPersistenceToolName,
   requiresFreshMemoryToolCall,
 } from "./tool-registry.ts";
 
@@ -32,5 +32,6 @@ export function getToolInterceptionCounters(event: {
     incrementMemoryToolCallsSinceRead:
       metadata.gateSatisfaction.agesMemory && !isSkillMemoryReadToolCall(event),
     isMemoryRead: metadata.gateSatisfaction.satisfiesMemoryRead,
+    persistsMemory: metadata.gateSatisfaction.persistsMemory,
   };
 }

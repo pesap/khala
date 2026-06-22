@@ -2,12 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
-import { isMutationCapableBash } from "../../extensions/policy/first-principles.ts";
 import {
   getToolInterceptionCounters,
   isSkillMemoryReadToolCall,
   requiresFreshMemoryToolCall,
 } from "../../extensions/runtime/tool-interception.ts";
+import { isMutationCapableBash } from "../../extensions/runtime/tool-registry.ts";
 
 function event(toolName: string, input: unknown = {}): ToolCallEvent {
   return {
@@ -21,18 +21,21 @@ test("interception counters avoid aging memory for khala memory tools and skill 
     incrementTaskToolCall: false,
     incrementMemoryToolCallsSinceRead: false,
     isMemoryRead: true,
+    persistsMemory: false,
   });
 
   assert.deepEqual(getToolInterceptionCounters(event("khala_search_memory")), {
     incrementTaskToolCall: true,
     incrementMemoryToolCallsSinceRead: false,
     isMemoryRead: false,
+    persistsMemory: false,
   });
 
   assert.deepEqual(getToolInterceptionCounters(event("khala_learn")), {
     incrementTaskToolCall: true,
     incrementMemoryToolCallsSinceRead: false,
     isMemoryRead: false,
+    persistsMemory: true,
   });
 
   assert.deepEqual(
@@ -41,6 +44,17 @@ test("interception counters avoid aging memory for khala memory tools and skill 
       incrementTaskToolCall: true,
       incrementMemoryToolCallsSinceRead: false,
       isMemoryRead: false,
+      persistsMemory: false,
+    },
+  );
+
+  assert.deepEqual(
+    getToolInterceptionCounters(event("read_file", { path: ".codex/skills/review/SKILL.md" })),
+    {
+      incrementTaskToolCall: true,
+      incrementMemoryToolCallsSinceRead: false,
+      isMemoryRead: false,
+      persistsMemory: false,
     },
   );
 
@@ -48,6 +62,7 @@ test("interception counters avoid aging memory for khala memory tools and skill 
     incrementTaskToolCall: true,
     incrementMemoryToolCallsSinceRead: true,
     isMemoryRead: false,
+    persistsMemory: false,
   });
 });
 
@@ -67,6 +82,13 @@ test("skill-memory detection handles noisy inputs without throwing", () => {
   );
 
   assert.deepEqual(matches, [false, false, false, false, false, true, true]);
+  assert.equal(
+    isSkillMemoryReadToolCall({
+      toolName: "read_file",
+      input: { path: ".agents/skills/review/SKILL.md" },
+    }),
+    true,
+  );
 });
 
 test("bash mutation detection does not treat read-only git merge-base as merge", () => {

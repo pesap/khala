@@ -136,8 +136,12 @@ export function createWorkflowCommandHandlers(params: {
     workflowFileName: string,
     sections: string[],
     workflow?: PendingWorkflow<WorkflowType, WorkflowFlags>,
-  ) => Promise<{ loadedSkills: string[] }>;
-  clearPendingWorkflow: () => void;
+    cwd?: string,
+  ) => Promise<{
+    loadedSkills: string[];
+    skillMetadata: PendingWorkflow<WorkflowType, WorkflowFlags>["skillMetadata"];
+  }>;
+  clearPendingWorkflow: () => Promise<void> | void;
   notifyWorkflowStarted: (
     ctx: ExtensionCommandContext,
     message: string,
@@ -299,8 +303,10 @@ export function createWorkflowCommandHandlers(params: {
         runtime.workflowFile,
         config.sections,
         pending,
+        config.ctx.cwd,
       );
       pending.loadedSkills = queued.loadedSkills;
+      pending.skillMetadata = queued.skillMetadata;
 
       pi.appendEntry(runtime.entryType, {
         ...config.entry,
@@ -309,7 +315,7 @@ export function createWorkflowCommandHandlers(params: {
 
       notifyWorkflowStarted(config.ctx, config.startedMessage, notify);
     } catch (error) {
-      clearPendingWorkflow();
+      await clearPendingWorkflow();
       const message = error instanceof Error ? error.message : String(error);
       notify(
         config.ctx,

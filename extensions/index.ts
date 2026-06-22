@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import registerFffExtension from "@ff-labs/pi-fff/src/index.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import registerSubagentExtension from "pi-subagents/src/extension/index.ts";
 import { createAgentCommandHandlers } from "./commands/agent.ts";
@@ -111,7 +112,6 @@ import { listLearnedWorkflows } from "./learning/workflows.ts";
 import { validateGeneratedSkillDir } from "./learning/skill-guard.ts";
 import {
   extractPostflightFromAssistantText,
-  isMutationToolCall,
   modeOutcome,
   parsePostflightLine,
   parsePreflightLine,
@@ -144,7 +144,9 @@ import {
   completeWorkflowTracking as completeTrackedWorkflow,
   enqueueWorkflow as enqueueWorkflowMessage,
   ensureWorkflowSlotAvailable as ensureWorkflowSlotAvailableForCommand,
+  interruptWorkflowTracking as interruptTrackedWorkflow,
   markWorkflowWaitingForFooter,
+  recordWorkflowToolCall,
 } from "./workflows/engine.ts";
 import { workflowLocalContextFromFlags } from "./workflows/local.ts";
 import { workflowSourceFromFlags } from "./workflows/source.ts";
@@ -182,22 +184,21 @@ import {
   createWorkflowReaders,
   getBootstrapPayload,
   loadFirstPrinciplesConfig,
+  readWorkflowSkill,
 } from "./runtime/bootstrap.ts";
 import {
   getToolInterceptionCounters,
-  isMemoryPersistenceToolName,
   requiresFreshMemoryToolCall,
 } from "./runtime/tool-interception.ts";
 import {
   appendRunLedgerEvent,
   buildRunLedgerSkillEvent,
-  buildRunLedgerToolCallEvent,
 } from "./runtime/run-ledger.ts";
 import {
   buildSkillUsedWithoutLoadEvents,
   type SkillRegistryEvent,
 } from "./runtime/skill-registry.ts";
-import { getToolMetadata } from "./runtime/tool-registry.ts";
+import { isMutationToolCall, toolCallContextParts } from "./runtime/tool-registry.ts";
 import {
   runSessionEndHooks,
   type LowConfidenceEvent,
@@ -252,25 +253,8 @@ async function recordPendingWorkflowToolCall(params: {
   toolName: string;
   input?: unknown;
   at: string;
-  mutation: boolean;
 }): Promise<void> {
-  if (!params.workflow) return;
-  const metadata = getToolMetadata({
-    toolName: params.toolName,
-    input: params.input,
-  });
-  await appendRunLedgerEvent({
-    runFile: params.workflow.runFile,
-    event: buildRunLedgerToolCallEvent({
-      workflowId: params.workflow.id,
-      workflowMutationCount: params.workflow.mutationCount,
-      toolName: params.toolName,
-      at: params.at,
-      mutation: params.mutation,
-      metadata,
-      input: params.input,
-    }),
-  });
+  await recordWorkflowToolCall(params);
 }
 
 async function recordPendingWorkflowSkillEvent(params: {
@@ -298,6 +282,7 @@ async function recordSkillUsedWithoutLoadEvents(params: {
   const events = buildSkillUsedWithoutLoadEvents({
     claimedSkills: assistantClaimedSkillNames(params.assistantText),
     loadedSkills: params.workflow?.loadedSkills ?? [],
+    knownSkills: params.workflow?.skillMetadata ?? [],
     reason: params.reason,
   });
   for (const event of events) {
@@ -306,6 +291,29 @@ async function recordSkillUsedWithoutLoadEvents(params: {
       event,
       at: params.at,
     });
+  }
+}
+
+async function interruptPendingWorkflow(params: {
+  reason: string;
+  notifyContext?: Pick<ExtensionContext, "hasUI" | "ui">;
+}): Promise<void> {
+  const workflow = pendingWorkflow;
+  if (!workflow) return;
+  try {
+    await interruptTrackedWorkflow({
+      workflow,
+      at: nowIso(),
+      reason: params.reason,
+    });
+  } catch (error) {
+    if (params.notifyContext) {
+      notify(
+        params.notifyContext,
+        `Failed to mark workflow ${workflow.id} interrupted: ${error instanceof Error ? error.message : String(error)}`,
+        "warning",
+      );
+    }
   }
 }
 
@@ -350,12 +358,51 @@ function resolveRepoMemoryKey(cwd: string): string {
   return normalizeRepoRemote(root || cwd);
 }
 
+function resolveRepoLocalSkillsPath(cwd: string): string {
+  const root = runGitValue(cwd, ["rev-parse", "--show-toplevel"]);
+  return path.join(root || cwd, "skills");
+}
+
+function resolveUserSkillPaths(): string[] {
+  const home = homedir();
+  return [
+    path.join(home, ".codex", "skills"),
+    path.join(home, ".agents", "skills"),
+  ];
+}
+
+async function resolvePluginSkillPaths(): Promise<string[]> {
+  const pluginCache = path.join(homedir(), ".codex", "plugins", "cache");
+  let pluginNames: string[];
+  try {
+    pluginNames = await fs.readdir(pluginCache);
+  } catch {
+    return [];
+  }
+
+  const skillRoots: string[] = [];
+  for (const pluginName of pluginNames) {
+    const pluginRoot = path.join(pluginCache, pluginName);
+    let versions: string[];
+    try {
+      versions = await fs.readdir(pluginRoot);
+    } catch {
+      continue;
+    }
+    for (const version of versions) {
+      skillRoots.push(path.join(pluginRoot, version, "skills"));
+    }
+  }
+  return skillRoots;
+}
+
 let sessionFirstPrinciplesDefaults = { ...runtimeState.firstPrinciplesConfig };
 
 const workflowReaders = createWorkflowReaders({
   skillflowsDir: RUNTIME_PATHS.skillflowsDir,
   commandsDir: RUNTIME_PATHS.commandsDir,
   packageSkillsPath: RUNTIME_PATHS.packageSkillsPath,
+  learnedSkillsPath: path.join(homedir(), ".pi", "khala", "skills"),
 });
 const USER_CORRECTION_PATTERN =
   /\b(wrong|not working|stalling|stalled|do not|don't|instead|actually|stop planning|implement it)\b/i;
@@ -1016,18 +1063,6 @@ function staleMemoryReason(): string {
   return "unknown";
 }
 
-function toolCallContextParts(event: { toolName: string; input?: unknown }): string[] {
-  const input = event.input as Record<string, unknown> | undefined;
-  const parts = [event.toolName];
-  for (const key of ["path", "file", "cwd", "command", "pattern", "query"]) {
-    const value = input?.[key];
-    if (typeof value === "string" && value.trim()) {
-      parts.push(`${key}:${value.trim().slice(0, 180)}`);
-    }
-  }
-  return parts;
-}
-
 function buildMemoryRefreshQuery(event: { toolName: string; input?: unknown }): string {
   return [latestTaskInput || latestUserInput, ...toolCallContextParts(event)]
     .filter(Boolean)
@@ -1239,7 +1274,8 @@ async function enqueueWorkflow(
   workflowFileName: string,
   sections: string[],
   workflow?: PendingWorkflow,
-): Promise<{ loadedSkills: string[] }> {
+  cwd?: string,
+): Promise<{ loadedSkills: string[]; skillMetadata: PendingWorkflow["skillMetadata"] }> {
   return enqueueWorkflowMessage({
     pi,
     workflowPromptName,
@@ -1247,7 +1283,18 @@ async function enqueueWorkflow(
     sections,
     readCommandPrompt: workflowReaders.readCommandPrompt,
     readWorkflow: workflowReaders.readWorkflow,
-    readSkill: workflowReaders.readSkill,
+    readSkill: async (skillName) => {
+      if (!cwd) return workflowReaders.readSkill(skillName);
+      const paths = await ensureLearningStore(cwd, learningPathCache);
+      return readWorkflowSkill({
+        name: skillName,
+        packageSkillsPath: RUNTIME_PATHS.packageSkillsPath,
+        learnedSkillsPath: paths.skillsDir,
+        repoSkillsPath: resolveRepoLocalSkillsPath(cwd),
+        userSkillsPaths: resolveUserSkillPaths(),
+        pluginSkillsPaths: await resolvePluginSkillPaths(),
+      });
+    },
     onSkillEvent: (event) =>
       recordPendingWorkflowSkillEvent({
         workflow: workflow ?? null,
@@ -2022,6 +2069,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     if (!runtimeState.agentEnabled) return;
+    await interruptPendingWorkflow({
+      reason: "Khala session shut down before workflow completion.",
+      notifyContext: ctx,
+    });
     pendingWorkflow = null;
     const paths = await ensureLearningStore(ctx.cwd, learningPathCache);
     await clearSessionRules(paths);
@@ -2111,7 +2162,6 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         toolName: event.toolName,
         input: event.input,
         at: nowIso(),
-        mutation: false,
       });
       return;
     }
@@ -2131,9 +2181,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         toolName: event.toolName,
         input: event.input,
         at: nowIso(),
-        mutation: false,
       });
-      if (isMemoryPersistenceToolName(event.toolName)) {
+      if (counters.persistsMemory) {
         resetMemoryGate("memory was updated");
       }
       return;
@@ -2167,13 +2216,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       };
     }
 
-    if (pendingWorkflow) pendingWorkflow.mutationCount += 1;
     await recordPendingWorkflowToolCall({
       workflow: pendingWorkflow,
       toolName: event.toolName,
       input: event.input,
       at: nowIso(),
-      mutation: true,
     });
   });
 
@@ -2472,7 +2519,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     setAgentEnabledState,
     appendAgentStateEntry: (enabled) =>
       appendAgentStateEntry(pi, enabled, nowIso()),
-    clearPendingWorkflow: () => {
+    clearPendingWorkflow: async () => {
+      await interruptPendingWorkflow({
+        reason: "Operator cancelled workflow with /end-agent.",
+      });
       pendingWorkflow = null;
     },
     runSessionEndHooks: async (ctx) => {
@@ -2525,7 +2575,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     beginWorkflowTracking,
     enqueueWorkflow,
     notifyWorkflowStarted,
-    clearPendingWorkflow: () => { pendingWorkflow = null; },
+    clearPendingWorkflow: async () => {
+      await interruptPendingWorkflow({
+        reason: "Workflow command failed before completion.",
+      });
+      pendingWorkflow = null;
+    },
     parseDebugArgs,
     parseReviewArgs,
     buildReviewTarget,

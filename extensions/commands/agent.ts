@@ -8,7 +8,7 @@ export function createAgentCommandHandlers(params: {
   runtimeState: RuntimeState;
   setAgentEnabledState: (ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">, enabled: boolean) => void;
   appendAgentStateEntry: (enabled: boolean) => void;
-  clearPendingWorkflow: () => void;
+  clearPendingWorkflow: () => Promise<void> | void;
   runSessionEndHooks: (ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">) => Promise<void>;
   notify: (ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">, message: string, type: NotifyType) => void;
 }): {
@@ -19,7 +19,7 @@ export function createAgentCommandHandlers(params: {
       if (!params.runtimeState.agentEnabled) {
         return;
       }
-      params.clearPendingWorkflow();
+      await params.clearPendingWorkflow();
       await params.runSessionEndHooks(ctx);
       params.setAgentEnabledState(ctx, false);
       params.appendAgentStateEntry(false);

@@ -1563,6 +1563,17 @@ test("requires local evidence tools to touch referenced artifact targets", () =>
   assert.equal(
     conversationHasLocalEvidenceTarget(
       [
+        textMessage("user", "Explain README.md."),
+        assistantToolCall("read_file", { path: "/repo/README.md" }),
+        toolResult("README contents"),
+      ],
+      "README.md",
+    ),
+    true,
+  );
+  assert.equal(
+    conversationHasLocalEvidenceTarget(
+      [
         textMessage("user", "Explain src/runtime/bootstrap.ts."),
         assistantToolCall("grep", {
           pattern: "getBootstrapPayload",
@@ -5757,6 +5768,38 @@ test("recognizes Codex system skill reads", () => {
   );
 });
 
+test("recognizes read_file skill reads from user skill roots", () => {
+  assert.equal(
+    conversationHasSkillRead(
+      [
+        textMessage("user", "Load your code-review skill."),
+        assistantToolCall("read_file", {
+          path: "/home/morgoth/.codex/skills/code-review/SKILL.md",
+        }),
+        toolResult("code review skill instructions"),
+      ],
+      ["code-review"],
+    ),
+    true,
+  );
+});
+
+test("recognizes plugin skill reads through registry metadata", () => {
+  assert.equal(
+    conversationHasSkillRead(
+      [
+        textMessage("user", "Load your gh-fix-ci skill."),
+        assistantToolCall("read", {
+          path: "/home/user/.codex/plugins/cache/github/rev/skills/gh-fix-ci/SKILL.md",
+        }),
+        toolResult("GitHub CI repair plugin skill instructions"),
+      ],
+      ["gh-fix-ci"],
+    ),
+    true,
+  );
+});
+
 test("ignores stale skill reads from an earlier user turn", () => {
   const messages: Message[] = [
     assistantToolCall("read", { path: "skills/librarian/SKILL.md" }),
@@ -7332,7 +7375,7 @@ test("detects shell quoting repair loops", () => {
 test("detects full session artifact reads when summaries should be preferred", () => {
   const messages: Message[] = [
     textMessage("user", "Check whether the old agent session needs attention."),
-    assistantToolCall("read", {
+    assistantToolCall("read_file", {
       path: "/tmp/pi-subagents/chain-runs/run-123/messages.jsonl",
     }),
   ];
@@ -8571,6 +8614,14 @@ test("uses configured substantial tool-call threshold", () => {
     memorySearchNeedReason({
       messages: [
         textMessage("user", "Inspect files."),
+        assistantToolCall("khala_read_memory", {}),
+        assistantToolCall("khala_search_memory", { query: "inspect files" }),
+        assistantToolCall("khala_learn", {
+          kind: "preference",
+          scope: "global",
+          trigger: "inspect files",
+          lesson: "Memory tools do not count as non-memory work.",
+        }),
         assistantToolCall("read", { path: "a.ts" }),
         assistantToolCall("read", { path: "b.ts" }),
       ],
@@ -9241,6 +9292,52 @@ test("requires focused khala_search_memory queries for memory routing", () => {
       satisfied: false,
       reason: "turn performed mutation",
     },
+  );
+});
+
+test("escalation gates use typed tool registry aliases", () => {
+  assert.equal(
+    conversationHasMemorySearchBeforeFirstMutation([
+      textMessage("user", "Patch README.md."),
+      assistantToolCall("khala_search_memory", { query: "README patch" }),
+      toolResult("relevant README patch memory"),
+      assistantToolCall("functions.apply_patch", {
+        patch: "*** Begin Patch\n...",
+      }),
+    ]),
+    true,
+  );
+
+  assert.equal(
+    conversationHasMemorySearchBeforeFirstMutation([
+      textMessage("user", "Install dependencies."),
+      assistantToolCall("functions.exec_command", {
+        cmd: "npm install",
+      }),
+    ]),
+    false,
+  );
+
+  assert.equal(
+    conversationHasCommandEvidence([
+      textMessage("user", "Run the tests."),
+      assistantToolCall("functions.exec_command", {
+        cmd: "npm test",
+      }),
+      toolResult("tests passed"),
+    ]),
+    true,
+  );
+
+  assert.equal(
+    conversationHasMutationEvidence([
+      textMessage("user", "Patch README.md."),
+      assistantToolCall("functions.apply_patch", {
+        patch: "*** Begin Patch\n*** Update File: README.md\n",
+      }),
+      toolResult("patch applied"),
+    ]),
+    true,
   );
 });
 
@@ -10200,7 +10297,7 @@ const WORKFLOW_CONTRACT_USER_TEXT = [
 test("workflow contract accepts a read of commands/<name>-workflow.md as a guide load", () => {
   const messages: Message[] = [
     textMessage("user", WORKFLOW_CONTRACT_USER_TEXT),
-    assistantToolCall("read", { path: "commands/workon-workflow.md" }),
+    assistantToolCall("read_file", { path: "commands/workon-workflow.md" }),
     toolResult("workon command prompt body"),
     assistantToolCall("read", { path: "workflows/workon-workflow.yaml" }),
     toolResult("workflow yaml body"),

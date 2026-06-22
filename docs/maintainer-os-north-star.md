@@ -190,13 +190,15 @@ Non-goals for the first prototype:
 4. Add session capsule discovery and stale-session detection.
 5. Add `/recheck-pr` for Copilot/reviewer/CI feedback loops.
 6. Promote repeated inbox findings into Khala lessons, repo docs, or automation.
-## Current harness gap
+## Current harness layer
 
-The paused Khala work is still missing the local-first harness layer that turns
-run metadata into an operator-ready control surface. Recent slices expose
-durable ledgers, recovery classifications, resume attempts, tool gates, skill
-activity, and workflow progress, but the north star requires those signals to
-compose into a clear local answer to:
+The first local-first harness layer now turns run metadata into an
+operator-ready control surface. Workflow starts open global run ledgers under
+`~/.pi/khala/runs/`; tool calls, mutations, checkpoints, interruption,
+completion, resume attempts, skill activity, source context, local artifacts,
+and workflow progress are recorded in the same durable record.
+
+The primary operator commands answer:
 
 - what work is active;
 - why it exists, including the source issue or PR when available;
@@ -204,5 +206,9 @@ compose into a clear local answer to:
 - what state the workflow reached; and
 - what action is safe to take next.
 
-Until that surface exists across the primary commands, Khala has useful local
-telemetry but not yet the solid local-first agent harness described above.
+Use `/run-list active`, `/run-list resumable`, and
+`/run-list needs_operator_review` for the maintainer queue; `/run-show` for
+full recovery context; `/run-resume` only for ledgers classified `resumable`;
+and `/run-checkpoint` after operator verification that prior side effects must
+not be repeated. Runs with uncertain mutation, shell, forge, external, or
+unknown tool side effects stay gated behind operator review.

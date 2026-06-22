@@ -7,6 +7,7 @@ import test from "node:test";
 import type { RunLedgerEvent } from "../../extensions/runtime/run-ledger.ts";
 import {
   appendRunLedgerEvent,
+  buildRunLedgerRecord,
   completeRunLedger,
   markRunInterrupted,
   readRunLedger,
@@ -17,6 +18,43 @@ const local = {
   capsulePath: "/home/user/.pi/khala/github.com/pesap/agents/issue-196",
   ledgerPath: "/home/user/.pi/khala/github.com/pesap/agents/issue-196/ledger.jsonl",
 };
+
+test("buildRunLedgerRecord normalizes local artifact context before persistence", () => {
+  const record = buildRunLedgerRecord({
+    version: 1,
+    id: "local-build-1",
+    type: "workon",
+    input: "continue local-first harness work",
+    flags: {},
+    startedAt: "2026-06-20T00:00:00.000Z",
+    local: {
+      worktreePath: " /tmp/worktrunk.khala ",
+      capsulePath: " /home/user/.pi/khala/github.com/pesap/agents/issue-196 ",
+      ledgerPath: " /home/user/.pi/khala/github.com/pesap/agents/issue-196/ledger.jsonl ",
+    },
+  });
+
+  assert.deepEqual(record.local, local);
+});
+
+test("buildRunLedgerRecord omits empty local artifact context", () => {
+  const record = buildRunLedgerRecord({
+    version: 1,
+    id: "local-empty-build-1",
+    type: "workon",
+    input: "continue local-first harness work",
+    flags: {},
+    startedAt: "2026-06-20T00:00:00.000Z",
+    local: {
+      worktreePath: "",
+      capsulePath: " ",
+      ledgerPath: "",
+    },
+  });
+
+  assert.equal(record.local, undefined);
+  assert.equal(Object.hasOwn(record, "local"), false);
+});
 
 test("readRunLedger preserves optional local artifact context", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "khala-run-ledger-local-"));
@@ -51,6 +89,87 @@ test("readRunLedger preserves optional local artifact context", async () => {
     assert.equal(record?.local?.worktreePath, "/tmp/worktrunk.khala");
     assert.equal(record?.local?.capsulePath, "/home/user/.pi/khala/github.com/pesap/agents/issue-196");
     assert.equal(record?.local?.ledgerPath, "/home/user/.pi/khala/github.com/pesap/agents/issue-196/ledger.jsonl");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readRunLedger normalizes legacy local artifact aliases", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "khala-run-ledger-local-"));
+  const ledgerPath = path.join(dir, "local-legacy.json");
+
+  try {
+    await writeFile(
+      ledgerPath,
+      JSON.stringify(
+        {
+          workflowId: "local-legacy-1",
+          status: "interrupted",
+          startedAt: "2026-06-20T00:00:00.000Z",
+          updatedAt: "2026-06-20T00:00:00.000Z",
+          workflow: {
+            name: "workon",
+          },
+          input: {
+            issue: "196",
+          },
+          local: {
+            worktree: " /tmp/worktrunk.khala ",
+            capsule_path: " /home/user/.pi/khala/github.com/pesap/agents/issue-196 ",
+            ledger: " /home/user/.pi/khala/github.com/pesap/agents/issue-196/ledger.jsonl ",
+          },
+          events: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const record = await readRunLedger(ledgerPath);
+
+    assert.deepEqual(record?.local, local);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readRunLedger drops empty local artifact context", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "khala-run-ledger-local-"));
+  const ledgerPath = path.join(dir, "local-empty.json");
+
+  try {
+    await writeFile(
+      ledgerPath,
+      JSON.stringify(
+        {
+          workflowId: "local-empty-1",
+          status: "interrupted",
+          startedAt: "2026-06-20T00:00:00.000Z",
+          updatedAt: "2026-06-20T00:00:00.000Z",
+          workflow: {
+            name: "workon",
+          },
+          input: {
+            issue: "196",
+          },
+          local: {
+            worktreePath: " ",
+            capsule: "",
+            ledger_path: 42,
+          },
+          events: [],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const record = await readRunLedger(ledgerPath);
+
+    assert.equal(record?.local, undefined);
+    assert.equal(Object.hasOwn(record ?? {}, "local"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

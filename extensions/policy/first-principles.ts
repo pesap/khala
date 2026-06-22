@@ -1,10 +1,6 @@
 import { load as loadYaml } from "js-yaml";
 import { POSTFLIGHT_LINE_REGEX, PREFLIGHT_LINE_REGEX } from "../lib/constants.ts";
 import { isRecord } from "../lib/io.ts";
-export {
-  isMutationCapableBash,
-  isMutationToolCall,
-} from "../runtime/tool-registry.ts";
 
 export type PolicyMode = "monitor" | "warn" | "enforce";
 export type PolicyOutcome = "allow" | "warn" | "block";
