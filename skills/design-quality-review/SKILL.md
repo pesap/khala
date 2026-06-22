@@ -47,8 +47,9 @@ Skills that remain standalone and complement this one:
 - User asks to check API contract stability across versions — use
   `public-api-guard`.
 - User asks to clean up comments only — use `comment-quality-gate`.
-- User asks to remove dead code from the entire codebase — use `dead-code-proof`
-  or run static analysis tools directly.
+- User asks to remove dead code from the entire codebase — run static analysis
+  tools directly (`vulture`, `knip`, `ts-prune`, etc.) rather than a full
+  review.
 - The task is a one-line or trivial change with no structural or correctness
   surface — a full review is disproportionate.
 

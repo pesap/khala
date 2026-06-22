@@ -34,7 +34,7 @@ license: MIT
    - `git shortlog -sn --no-merges`
    - `git shortlog -sn --no-merges --since="6 months ago"`
    - `git log -i -E --grep="fix|bug|broken" --name-only --format='' | sort | uniq -c | sort -nr | head -20`
-   - `git log --format='%ad' --date=short \| sort \| uniq -c`
+   - `git log --format='%ad' --date=short | sort | uniq -c`
    - `git log --oneline --since="1 year ago" | grep -iE 'revert|hotfix|emergency|rollback'`
 3. Compare churn hotspots with bug hotspots and recent authorship concentration.
 4. Call out caveats: squash merges, generated files, vendored code, monorepo
