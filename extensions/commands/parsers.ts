@@ -15,6 +15,8 @@ import {
   type WorkonModelSelection,
   type WorkonThinkingLevel,
 } from "./workon.ts";
+import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
+import type { ReviewerTwoReviewSettings } from "./plan-review.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -168,9 +170,100 @@ export const parseDebugArgs = (args: string): { problem: string } => {
   return { problem: rest };
 };
 
-export const parsePlanArgs = (args: string): { plan: string } => ({
-  plan: normalizeWhitespace(args),
-});
+export interface ParsedPlanArgs {
+  plan: string;
+  review: ReviewerTwoReviewSettings;
+}
+
+const SUPPORTED_REVIEW_THINKING_LEVELS: readonly WorkonThinkingLevel[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
+
+const PLAN_REVIEW_MAX_LOOPS = 2;
+
+function defaultPlanReviewSettings(): ReviewerTwoReviewSettings {
+  const reviewProfile = resolveKhalaProfile("development");
+  const fallbackProfile = resolveKhalaProfile("planning");
+  const model = reviewProfile.model ?? fallbackProfile.model ?? "";
+  const routingReason = reviewProfile.model
+    ? `Reviewer Two development profile (${reviewProfile.source})`
+    : `Reviewer Two fallback to planning profile: ${reviewProfile.reason ?? "unresolved development profile"}`;
+
+  return {
+    enabled: true,
+    model,
+    thinkingLevel: reviewProfile.thinkingLevel,
+    loops: 1,
+    context: "fresh",
+    routingMode: "default",
+    routingReason,
+  };
+}
+
+export const parsePlanArgs = (args: string): ParsedPlanArgs | { error: string } => {
+  let rest = normalizeWhitespace(args);
+  const review = defaultPlanReviewSettings();
+
+  const noReviewResult = removeFlag(rest, /(^|\s)--no-review(\s|$)/);
+  rest = noReviewResult.value;
+  if (noReviewResult.match) {
+    review.enabled = false;
+    review.loops = 0;
+    review.routingMode = "override";
+    review.routingReason = "explicit --no-review override";
+  }
+
+  const reviewModelResult = removeFlag(rest, /(^|\s)--review-model\s+(\S+)(\s|$)/);
+  rest = reviewModelResult.value;
+  const explicitReviewModel = normalizeWhitespace(reviewModelResult.match?.[2] ?? "");
+  if (explicitReviewModel) {
+    if (!/^\S+\/\S+$/.test(explicitReviewModel)) {
+      return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]" };
+    }
+    review.model = explicitReviewModel;
+    review.routingMode = "override";
+    review.routingReason = "explicit --review-model override";
+  }
+
+  const reviewThinkingResult = removeFlag(rest, /(^|\s)--review-thinking\s+(\S+)(\s|$)/);
+  rest = reviewThinkingResult.value;
+  const explicitReviewThinking = normalizeWhitespace(reviewThinkingResult.match?.[2] ?? "");
+  if (explicitReviewThinking) {
+    if (!SUPPORTED_REVIEW_THINKING_LEVELS.includes(explicitReviewThinking as WorkonThinkingLevel)) {
+      return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]" };
+    }
+    review.thinkingLevel = explicitReviewThinking as WorkonThinkingLevel;
+    if (!reviewModelResult.match) {
+      review.routingMode = "override";
+      review.routingReason = "explicit --review-thinking override";
+    }
+  }
+
+  const reviewLoopsResult = removeFlag(rest, /(^|\s)--review-loops\s+(\S+)(\s|$)/);
+  rest = reviewLoopsResult.value;
+  const explicitReviewLoops = normalizeWhitespace(reviewLoopsResult.match?.[2] ?? "");
+  if (explicitReviewLoops) {
+    const loopCount = Number(explicitReviewLoops);
+    if (!Number.isInteger(loopCount) || loopCount < 1 || loopCount > PLAN_REVIEW_MAX_LOOPS) {
+      return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]" };
+    }
+    review.loops = loopCount;
+  }
+
+  if (/--review-(?:model|thinking|loops)\b/.test(rest) || /(^|\s)--no-review(\s|$)/.test(rest)) {
+    return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]" };
+  }
+
+  return {
+    plan: rest,
+    review,
+  };
+};
 export const parseAuditArgs = (args: string): { claim: string } => ({
   claim: normalizeWhitespace(args),
 });
