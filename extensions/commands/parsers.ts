@@ -75,7 +75,7 @@ export function parseComplianceArgs(args: string): {
     : value
       ? {
           preset: "status",
-          error: "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
+          error: "Usage: /khala [strict|enforce|warn|monitor|reset] or /khala-health for status",
         }
       : { preset: "status" };
 }

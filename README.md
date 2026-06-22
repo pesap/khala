@@ -119,18 +119,24 @@ Khala records durable workflow runs under `~/.pi/khala/runs/`.
 Resume is intentionally conservative. Unknown, shell, mutation, forge, external,
 or metadata-less mutation events after the latest checkpoint require operator
 review before Khala will resume automatically.
+Run `/khala-health` to inspect profile resolution. `/khala status` remains a
+compatibility alias that returns the same read-only health output. The status
+output lists each profile's resolved model id, thinking level, source, and `ok`
+or `unresolved (<reason>)` state. If the development profile is unresolved,
+`/workon` refuses to emit handoff evidence and points operators back to
+`/khala-health` instead of silently falling back to the planning model.
 
 ### Policy Commands
 
 | Command | Purpose |
-| --- | --- |
-| `/khala` | Enable Khala for the session and set compliance to `warn`. |
-| `/khala status` | Show compliance mode, model profile health, and setup hints. |
-| `/khala strict\|enforce\|warn\|monitor\|reset` | Change compliance behavior for the session. |
-| `/end-agent` | Stop Khala session context injection. |
-| `/approve-risk <reason> [--ttl MINUTES]` | Approve one high-risk command for a bounded time window. |
-| `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Manually record mutation intent. |
-| `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>` | Manually record verification evidence. |
+|---|---|
+| `/khala` | Initialize khala and set compliance to `warn`. |
+| `/khala-health` | Report read-only Khala health/status, including session enablement, memory tool limit, compliance modes, and model profiles. `/khala status` is a compatibility alias. |
+| `/khala status\|strict\|enforce\|warn\|monitor\|reset` | Report or change compliance mode. `status` matches `/khala-health` while `strict`, `enforce`, `warn`, `monitor`, and `reset` change compliance. |
+| `/end-agent` | Disable khala session context injection. |
+| `/approve-risk <reason> [--ttl MINUTES]` | Approve one high-risk command (TTL 1–120 min, default 20). |
+| `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Record manual mutation intent. |
+| `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>` | Record verification evidence. |
 
 ### Learning, Skills, and Rules
 

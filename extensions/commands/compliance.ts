@@ -1,6 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { PolicyMode, PostflightRecord, PreflightRecord } from "../policy/first-principles.ts";
-import { formatKhalaModelProfilesStatus } from "../runtime/khala-profiles.ts";
+import { formatKhalaHealthStatus } from "./khala.ts";
 import type { RuntimeState } from "../state/runtime.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
@@ -47,11 +47,11 @@ export function createComplianceCommandHandlers(params: {
       if (parsed.preset === "status") {
         params.notify(
           ctx,
-          [
-            `Compliance modes (session): ${formatCompliance(params.runtimeState.firstPrinciplesConfig)}.`,
-            formatKhalaModelProfilesStatus(),
-            "Usage: /khala [status|strict|enforce|warn|monitor|reset]",
-          ].join("\n"),
+          formatKhalaHealthStatus({
+            enabled: params.runtimeState.agentEnabled,
+            memoryToolLimit: params.runtimeState.memoryToolCallLimit,
+            firstPrinciplesConfig: params.runtimeState.firstPrinciplesConfig,
+          }),
           "info",
         );
         return;

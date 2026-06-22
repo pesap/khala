@@ -19,18 +19,20 @@ trap cleanup EXIT
 
 mkdir -p "$tmpdir/.pi"
 
-status_output="$(
+health_output="$(
   cd "$tmpdir"
   pi --no-extensions \
     -e "$repo_root/khala/index.ts" \
     --offline \
     --no-session \
     --no-tools \
-    -p "/khala status" 2>&1
+    -p "/khala-health" 2>&1
 )"
 
-grep -q "khala initialized" <<<"$status_output"
-grep -q "Compliance modes" <<<"$status_output"
+grep -q "Khala health (read-only):" <<<"$health_output"
+grep -q "enabled (session): no" <<<"$health_output"
+grep -q "Compliance modes" <<<"$health_output"
+grep -q "Model profiles" <<<"$health_output"
 
 rpc_output="$(
   cd "$tmpdir"
@@ -40,7 +42,7 @@ rpc_output="$(
     --no-session \
     --no-tools \
     --mode rpc \
-    -p "/khala status" 2>&1
+    -p "/khala-health" 2>&1
 )"
 
 grep -q '"type":"extension_ui_request"' <<<"$rpc_output"
@@ -89,6 +91,7 @@ if proc.returncode != 0:
     raise SystemExit(proc.returncode)
 
 required_commands = {
+    "khala-health",
     "khala-reload",
     "workflow-list",
     "workflow-show",
@@ -110,6 +113,6 @@ learn_output="$(
     -p "/learn-skill repeated repo audit --dry-run" 2>&1
 )"
 
-grep -q "Started learn-skill dry run for repeated-repo-audit" <<<"$learn_output"
+grep -q "Started learn-skill dry run for khala-repeated-repo-audit" <<<"$learn_output"
 
 echo "pi khala memory smoke passed"
