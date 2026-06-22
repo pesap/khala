@@ -2,10 +2,10 @@
 
 # khala
 
-**A guarded, self-learning Pi coding-agent runtime for pragmatic engineering work.**
+**A guarded, self-learning Pi coding-agent runtime for serious engineering work.**
 
 <p>
-  <a href="https://github.com/pesap/agents/blob/main/LICENSE.txt"><img alt="License: MIT" src="https://img.shields.io/github/license/pesap/agents?labelColor=1a1a2e&color=6f42c1"></a>
+  <a href="https://github.com/pesap/agents/blob/main/LICENSE.txt"><img alt="License: MIT" src="https://img.shields.io/github/license/pesap/agents?labelColor=111827&color=6f42c1"></a>
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white">
   <img alt="Pi package" src="https://img.shields.io/badge/Pi-package-6f42c1?style=flat&logo=gnometerminal&logoColor=white">
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-guarded-22c55e?style=flat">
@@ -13,116 +13,112 @@
 
 </div>
 
+Khala turns Pi into a more deliberate maintainer agent: it adds workflow commands,
+runtime safety gates, durable run ledgers, skill-aware routing, and conservative
+file-backed learning. It is designed for local-first development, long-running
+maintenance work, and recoverable agent sessions.
 
-## Quick start
+## Quick Start
+
+Install Khala as a Pi package:
 
 ```bash
-pi install https://github.com/pesap/agents
+pi install https://github.com/pesap/agents.git
 ```
 
-Inside Pi:
+Start a session:
 
 ```text
 /khala
 ```
 
-One-shot (no install):
+Run without installing:
 
 ```bash
-pi -e https://github.com/pesap/agents -p "/khala"
+pi -e https://github.com/pesap/agents.git -p "/khala status"
 ```
 
----
+Useful first checks:
 
-## What khala adds
+```text
+/khala status
+/inbox
+/run-list active
+```
 
-| Capability | Description |
-|---|---|
-| **Workflow commands** | Debug, triage, plan, workon, review, inbox, simplify, ship, and skill creation workflows. |
-| **Safety gates** | Risk approval, preflight/postflight evidence, blocked destructive commands, response compliance, anti-stall turn obligations. |
-| **Local-first learning** | File-backed workflow observations and corrective lessons with quality gates; no model fine-tuning or transcript storage. |
-| **Bundled tooling** | Pi extensions for fast search (`@ff-labs/pi-fff`) and subagent workflows (`pi-subagents`). |
+## What Khala Adds
+
+| Area | What it gives you |
+| --- | --- |
+| Workflow commands | Debug, triage, planning, workon, review, simplify, ship, inbox, audit, and skill creation flows. |
+| Safety gates | Risk approval, mutation preflight, postflight evidence, destructive-command blocking, response checks, and anti-stall rules. |
+| Durable recovery | Global run ledgers with checkpoints, unsafe-event classification, and conservative resume prompts. |
+| Learning | File-backed lessons, runtime rules, learned skills, and reusable workflow artifacts. |
+| Tooling | Bundled fast search via `@ff-labs/pi-fff` and subagent support via `pi-subagents`. |
 
 > [!IMPORTANT]
-> khala favors minimal, reversible changes. High-risk operations require explicit checker approval.
+> Khala favors small, reversible changes. Risky operations require explicit
+> approval or a clear operator checkpoint before they can be treated as safe.
 
----
-
-## Core flow
+## Core Loop
 
 ```mermaid
 flowchart LR
-  A[User command] --> B[Workflow prompt]
-  B --> C[Skill manifest]
+  A[Command or task] --> B[Workflow contract]
+  B --> C[Skill and rule context]
   C --> D[Policy gates]
-  D --> E[Tools + edits]
+  D --> E[Tools and edits]
   E --> F[Validation]
-  F --> G[Learning record]
+  F --> G[Ledger and learning]
 ```
-
----
 
 ## Commands
 
-### Core workflows
+### Workflow Commands
 
 | Command | Purpose |
-|---|---|
-| `/debug <unreported-problem>` | Investigate a maintainer-observed symptom, gather evidence, and draft a new issue proposal after approval. |
-| `/triage <issue-url\|user-posted-request>` | Clean user-posted issue/request intake into a `/workon`-ready work packet, asking approval before forge updates. |
-| `/plan <topic>` | Shape maintainer planned changes or codebase improvement ideas into scoped issue/work packet(s) with a slice table before issue creation. Uses the `planning` model profile by default. |
-| `/workon <issue-url\|issue-number> [--repo owner/repo] [--forge auto\|github\|gitlab\|all] [--dry-run] [--model MODEL] [--thinking LEVEL]` | Start autonomous work by default only when the issue passes the readiness rubric; child Pi launches use the `development` model profile, and `--dry-run` prepares only the capsule and branch suggestion. |
-| `/review [scope] [--extra "focus"]` | Review changes by scope: uncommitted, branch, commit, PR, folder, file, or paths. |
-| `/git-review` | Run git-history diagnostics before reading code. |
-| `/simplify [scope] [--extra "focus"]` | Behavior-preserving simplification and slop cleanup. |
-| `/ship [extra instruction]` | Simplify, validate, commit, push, and open/confirm PR/MR. |
-| `/inbox [--scope auto\|current\|global] [--global] [--focus all\|reviews\|issues\|prs\|ci\|local\|sessions] [--repo owner/repo] [--user [login\|@me]] [--forge auto\|github\|gitlab\|all] [--limit N] [--details\|--evidence]` | Show a compact read-only maintainer dashboard from local, forge, and session signals. Defaults to global mode outside git repos for side-terminal dashboards; pass `--details` for full deterministic evidence. |
-| `/audit <claim>` | Anti-confirmation-bias claim audit with evidence-ranked revision. |
-| `/address-open-issues [--limit N] [--repo owner/repo]` | Sweep open GitHub issues authored by the current user through triage, workon, review, and remediation. |
-| `/learn-skill <topic> [--from <path\|url>] [--dry-run]` | Create or refine a reusable skill in the learning store. |
+| --- | --- |
+| `/debug <problem>` | Investigate an unreported maintainer-observed symptom and draft an issue-ready brief. |
+| `/triage <issue-url\|request>` | Convert rough issue/request text into a `/workon`-ready packet. |
+| `/plan <topic>` | Turn a maintainer idea into scoped work with risks, slices, and acceptance criteria. |
+| `/workon <issue-url\|issue-number>` | Start autonomous implementation from a ready issue packet. |
+| `/review [scope]` | Review uncommitted changes, branches, commits, PRs, files, folders, or paths. |
+| `/git-review` | Inspect git-history signals before reading implementation code. |
+| `/simplify [scope]` | Perform behavior-preserving cleanup and slop removal. |
+| `/ship [instruction]` | Validate, commit, push, and open or confirm a PR/MR. |
+| `/inbox [flags]` | Show a read-only maintainer dashboard from local, forge, and session signals. |
+| `/audit <claim>` | Run an anti-confirmation-bias audit against a claim or plan. |
+| `/address-open-issues [flags]` | Sweep your open issues through triage, workon, review, and remediation. |
+| `/learn-skill <topic>` | Create or refine a reusable skill in the learning store. |
 
-For a parked maintainer side terminal, run `/inbox` from a non-git directory such
-as `$HOME`; that defaults to the global queue. From inside a repository, `/inbox`
-stays repo-scoped unless you pass `--global` or `--scope global`. The default
-human output is a compact dashboard:
+Common `/workon` flags:
 
 ```text
-Inbox · 2026-06-06 00:12 · partial
-GitHub ok · local skipped
-
-Do next
-1. NatLabRockies/R2X #256: Review request — review requested pr, updated 2026-06-05T00:00:00Z
-   /review pr https://github.com/NatLabRockies/R2X/pull/256
-
-Counts: reviews 1, broken CI 0, blocked sessions 0, issues 0, local 0
-Gaps: local collector skipped for focus=reviews
+--repo owner/repo
+--forge auto|github|gitlab|all
+--dry-run
+--model provider/model
+--thinking off|minimal|low|medium|high|xhigh
 ```
 
-Pass `--details` or `--evidence` to include repository discovery, full bucketed
-item lists, evidence gaps, and read-only command dumps.
+Use `/inbox` from a non-repository directory for a global side-terminal
+dashboard. Inside a repository it defaults to repo scope; pass `--global` or
+`--scope global` for the global view.
 
-### Run ledger harness
+### Run Ledger Commands
 
-Khala workflow runs are recorded in a global durable ledger under
-`~/.pi/khala/runs/`. Use these commands to inspect interrupted work and resume
-only when the ledger proves it is safe.
+Khala records durable workflow runs under `~/.pi/khala/runs/`.
 
 | Command | Purpose |
-|---|---|
-| `/run-list [filter]` | List newest durable runs first. Named filters include `active`, `resumable`, and `needs_operator_review`; text filters search workflow state, source/local context, structured completion, skill events, tool metadata, and recovery details. |
-| `/run-show <run-id\|path>` | Show one run ledger with recovery classification, unsafe events, workflow state, structured completion, skill activity, checkpoints, and recent events. |
-| `/run-resume <run-id\|path>` | Queue a conservative resume prompt only when the ledger is classified `resumable`; unsafe mutation, shell, forge, external, or unknown tool side effects require operator review first. |
-| `/run-checkpoint <run-id\|path> [reason]` | Record an operator-verified replay-safe checkpoint after confirming earlier side effects must not be repeated. |
+| --- | --- |
+| `/run-list [filter]` | List durable runs. Useful filters include `active`, `resumable`, and `needs_operator_review`. |
+| `/run-show <run-id\|path>` | Show workflow state, recent events, skill activity, checkpoints, and recovery classification. |
+| `/run-resume <run-id\|path>` | Queue a resume prompt only when the ledger is classified as safe to resume. |
+| `/run-checkpoint <run-id\|path> [reason]` | Record an operator-verified safe checkpoint. |
 
-### Model profiles
-
-Khala workflow routing uses typed model profiles as the single source of truth:
-
-| Profile | Default model | Thinking | Used by |
-|---|---|---|---|
-| `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan` prompt metadata and routing reason. |
-| `development` (`agents` alias) | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon` child Pi handoffs and development/agent routes. |
-
+Resume is intentionally conservative. Unknown, shell, mutation, forge, external,
+or metadata-less mutation events after the latest checkpoint require operator
+review before Khala will resume automatically.
 Run `/khala-health` to inspect profile resolution. `/khala status` remains a
 compatibility alias that returns the same read-only health output. The status
 output lists each profile's resolved model id, thinking level, source, and `ok`
@@ -130,25 +126,7 @@ or `unresolved (<reason>)` state. If the development profile is unresolved,
 `/workon` refuses to emit handoff evidence and points operators back to
 `/khala-health` instead of silently falling back to the planning model.
 
-Explicit `/workon --model <provider/model>` remains available and records
-`routingMode=override`. When `--model` is used without `--thinking`, Khala keeps
-the development profile's default thinking level (`medium`); pass
-`--thinking off|minimal|low|medium|high|xhigh` to override both.
-
-<details>
-<summary><strong>Run workflows outside the REPL</strong></summary>
-
-```bash
-pi -e https://github.com/pesap/agents -p "/review README.md --extra 'focus on correctness'"
-pi -e https://github.com/pesap/agents -p "/review https://github.com/owner/repo/pull/123"
-pi -e https://github.com/pesap/agents -p "/simplify src/commands/review.ts"
-pi -e https://github.com/pesap/agents -p "/ship"
-pi -e https://github.com/pesap/agents -p "/plan 'Add retry policy for hook loading'"
-```
-
-</details>
-
-### Policy & rule control
+### Policy Commands
 
 | Command | Purpose |
 |---|---|
@@ -160,268 +138,164 @@ pi -e https://github.com/pesap/agents -p "/plan 'Add retry policy for hook loadi
 | `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Record manual mutation intent. |
 | `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>` | Record verification evidence. |
 
-### Learned skills & rules
+### Learning, Skills, and Rules
 
 | Command | Purpose |
-|---|---|
+| --- | --- |
 | `/skill-status <name>` | Show learned skill provenance and lifecycle state. |
 | `/skill-report` | Regenerate the learned skill curator report. |
 | `/pin-skill <name> [on\|off]` | Pin or unpin a learned skill. |
-| `/archive-skill <name>` | Archive a learned skill. |
+| `/archive-skill <name>` | Archive a learned skill without deleting it. |
 | `/restore-skill <name>` | Restore an archived learned skill. |
-| `/khala-reload` | Reload Pi resources so learned skills and workflows become slash commands. |
-| `/workflow-list` | List reviewed khala learned workflows. |
+| `/khala-reload` | Reload learned skills and workflow prompts into Pi. |
+| `/workflow-list` | List reviewed learned workflows. |
 | `/workflow-show <name>` | Show a learned workflow artifact and prompt template. |
-| `/workflow-run <name> [input]` | Run a learned workflow with optional input. |
-| `/rule-list [--all]` | List active khala runtime rules. |
-| `/rule-show <id>` | Show a runtime rule and its structured metadata. |
-| `/rule-audit [--limit N]` | Show recent rule promotion, disable, reload, hit, warn, and block events. |
-| `/rule-promote <candidate-id> [--enforce\|--warn\|--advisory]` | Promote a candidate rule to active. |
-| `/rule-session <trigger> => <instruction>` | Add a per-session runtime rule (expires on shutdown). |
-| `/rule-replace <id> key=value [...]` | Append a replacement record for a runtime rule. |
-| `/rule-disable <id> <reason>` | Disable a runtime rule. |
-| `/rule-reload` | Parse user edits from `rules/RULES.md` and append valid replacements. |
+| `/workflow-run <name> [input]` | Run a learned workflow. |
+| `/rule-list [--all]` | List active runtime rules. |
+| `/rule-add <trigger> => <instruction>` | Add a durable runtime rule. |
+| `/rule-session <trigger> => <instruction>` | Add a temporary session-only rule. |
+| `/rule-promote <candidate-id>` | Promote a candidate rule. |
+| `/rule-replace <id> key=value [...]` | Replace a rule by appending a new record. |
+| `/rule-disable <id> <reason>` | Disable a rule. |
+| `/rule-audit [--limit N]` | Show recent rule activity. |
+| `/rule-reload` | Reload hand-edited `rules/RULES.md` from the learning store. |
 
----
-
-## Rules, simplified
-
-Three layers of rules:
-
-1. **Packaged defaults** — always-on rules shipped in `runtime/RULES.md`.
-2. **Persistent user/repo rules** — durable local rules added with `/rule-add <trigger> => <instruction>` and mirrored to `.pi/khala/rules/RULES.md` (or `~/.pi/khala/rules/RULES.md` when no repo-local `.pi/` exists). If you edit `RULES.md` by hand, run `/rule-reload`.
-3. **Session-only rules** — temporary rules added with `/rule-session <trigger> => <instruction>`.
-
-Use `runtime/RULES.md` to change default shipped behavior. Use `/rule-add` for local or repo-specific persistent rules. Use `/rule-session` for temporary guidance.
-
-### Runtime rule examples
-
-Add a durable repo/user rule that should be available in future sessions:
+Rule examples:
 
 ```text
-/rule-add mutation work => Read memory and search task-specific lessons before editing files. --warn
+/rule-add mutation work => Search task-specific memory before editing files. --warn
+/rule-add destructive commands => Ask before destructive filesystem or git operations. --enforce
+/rule-session current debug task => Prefer root-cause evidence before fixes. --advisory
 ```
 
-Add a stricter durable rule:
+## Model Profiles
+
+Khala routes workflows through named model profiles instead of scattering model
+choices through prompts.
+
+| Profile | Default | Thinking | Used by |
+| --- | --- | --- | --- |
+| `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan` and planning-heavy work. |
+| `development` (`agents`) | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon` child Pi handoffs and development routes. |
+
+Run `/khala status` to see whether profiles resolve in the current Pi
+environment. If the development profile is unavailable, `/workon` stops before
+handoff and tells you how to override or configure the model.
+
+## Runtime Behavior
+
+When Khala is active, it adds guardrails around normal agent work:
+
+- Mutation tools require fresh task context and preflight evidence.
+- Workflows require postflight evidence and a structured final footer.
+- Destructive commands are blocked unless approved.
+- Empty responses, promise-only replies, repeated tool failures, duplicate
+  evidence calls, and incomplete memory-gate recoveries are flagged.
+- Explicit or claimed skill use must be backed by actual skill loading or
+  delegated skill output.
+- Workflow runs write durable events, checkpoints, completion summaries, and
+  recovery classifications.
+- Learning is accepted only when it is concrete, reusable, non-sensitive, and
+  above quality thresholds.
+
+Persistent defaults live in:
 
 ```text
-/rule-add destructive commands => Stop and ask for explicit approval before destructive filesystem or git operations. --enforce
+runtime/profile.yaml
+runtime/compliance/first-principles-gate.yaml
+runtime/hooks/hooks.yaml
 ```
 
-Add a temporary rule for only the current session:
+## Storage
 
-```text
-/rule-session current debugging task => Prefer evidence-backed root-cause analysis before proposing fixes. --advisory
-```
+Khala keeps package code and mutable state separate.
 
-List active runtime rules and the resolved store path:
+| Location | Purpose |
+| --- | --- |
+| `runtime/` | Packaged defaults, compliance config, hook docs, and bootstrap instructions. |
+| `commands/` | User-facing workflow prompts. |
+| `workflows/` | Workflow specs queued into Pi messages. |
+| `skills/` | Packaged reusable skills. |
+| `extensions/` | Pi extension implementation. |
+| `scripts/` | Lightweight guard and regression checks. |
+| `~/.pi/khala/` | Mutable Khala state: memory, learned skills, rules, run ledgers, and runtime logs. |
 
-```text
-/rule-list
-```
+The repository intentionally ignores `.pi/`. Project-local Pi settings and
+runtime artifacts are local state, not source code.
 
-If you manually edit `.pi/khala/rules/RULES.md`, reload it into the runtime JSONL store:
-
-```text
-/rule-reload
-```
-
----
-
-## Runtime behavior
-
-When khala is enabled (`/khala` or any khala workflow command), the harness provides:
-
-- **Policy-checked commands** — `bash` and mutation calls are gated through risk approval.
-- **Evidence requirements** — preflight before mutation, postflight after, result/confidence footer on workflow output.
-- **Deterministic workflow loop** — workflow launches inject a state-machine contract derived from the YAML steps so models keep one active step, gather evidence, act, validate, and then advance.
-- **Anti-stall enforcement** — low-confidence answers, repeated tool failures, and duplicate evidence calls are flagged and escalated.
-- **Skill routing** — explicit and implicit skill loads are verified; placeholder results are rejected.
-- **Source tracking** — local artifacts, external docs, command evidence, and citations are matched to tool calls.
-- **Memory hygiene** — task-specific `khala_search_memory` refreshes are required before mutation turns.
-- **Learning persistence** — `khala_learn` stores durable lessons when quality gates pass.
-
-<details>
-<summary><strong>Full harness rule reference</strong></summary>
-
-<ul>
-  <li><code>bash</code> calls are policy-checked.</li>
-  <li>On Windows, khala can override <code>bash</code> to execute via PowerShell when the parent shell is PowerShell. Set <code>KHALA_FORCE_POWERSHELL_BASH=true|false</code> to force or disable this override, and <code>KHALA_POWERSHELL_PATH</code> to pin a specific executable.</li>
-  <li>Risky/destructive commands may be blocked unless approved.</li>
-  <li>Low-confidence or knowledge-gap final answers are flagged, and in enforce mode blocked. Stronger advisory model escalation must have concrete task context beyond a bare "low confidence" reason, and a substantive successful advisory result that matches the escalated question; the final answer must not still leave the uncertainty unresolved.</li>
-  <li>Repeated tool failures trigger stronger-model escalation with the failed command/error context and require the latest advisory escalation to return a substantive result.</li>
-  <li>Repeated identical evidence-tool calls, local evidence for the same file across different tools, equivalent <code>khala_search_memory</code> queries, equivalent external search queries, and repeated <code>khala_learn</code> storage are flagged.</li>
-  <li>Tool results that report no usable evidence (empty results, generic acknowledgements, placeholders) do not satisfy evidence, memory, citation, skill, mutation, or escalation gates.</li>
-  <li>Unbounded local shell evidence dumps are flagged in favor of bounded read/search tools.</li>
-  <li>Broad memory and external evidence queries are flagged before they waste context.</li>
-  <li>Substantial tool-backed work is checked for focused, task-specific <code>khala_search_memory</code> use; mutation turns require the latest focused matching search before the first mutation to succeed and still be fresh.</li>
-  <li>Explicit named skill requests and assistant claims of named skill use require same-turn <code>SKILL.md</code> reads or explicit skill-assigned delegation with substantive output.</li>
-  <li>Evidence routing distinguishes local artifacts from current/URL/docs/external facts; official-source requests require authority indicators.</li>
-  <li>Assistant claims of verification, source backing, tool work, code changes, or test/build success require matching same-turn evidence.</li>
-  <li>Citation/source/link requests require concrete URLs or local artifact references backed by same-turn evidence.</li>
-  <li>Workflow commands create auto-preflight records; mutation workflows are checked for postflight evidence.</li>
-  <li>Packaged and learned workflow runs inject a deterministic execution contract from the workflow YAML: ordered steps, one active step at a time, deterministic evidence before model reasoning, guide/skill constraints folded into the active step checklist, and validation/eval requirements for reusable workflow artifacts.</li>
-  <li>Selected active runtime rules are injected as <code>[ACTIVE RUNTIME RULES]</code> before agent start.</li>
-  <li>Final workflow responses are checked for <code>Bias Check (Tier 1)</code> plus <code>Result: success|partial|failed</code> and <code>Confidence: &lt;0..1&gt;</code> when response compliance is enabled.</li>
-</ul>
-
-</details>
-
-Stronger-model escalation is a result contract: the advisory result must be substantive and matched to the escalated question. Same-model delegation, vague tasks, hedged results, and unresolved uncertainty remain blocked.
-
-The harness is configured via `runtime/profile.yaml`:
-
-```yaml
-harness:
-  bootstrap_memory_tail_lines: 8
-  bootstrap_runtime_rules: 8
-  substantial_tool_call_threshold: 4
-  tool_failure_escalation_threshold: 3
-```
-
-Bootstrap limits keep the stable prompt prefix cache-friendly. Substantial turns should use `khala_search_memory` instead of expanding startup memory.
-
----
-
-## Maintainer OS direction
-
-The long-term maintainer-control-plane direction is captured in
-[`docs/maintainer-os-north-star.md`](docs/maintainer-os-north-star.md).
-
-## Configuration & layout
-
-```text
-.
-├── commands/      # user-facing workflow prompts
-├── prompts/       # packaged Pi prompt templates
-├── workflows/     # workflow specs queued into Pi messages
-├── skills/        # packaged reusable skills
-├── extensions/    # Pi extension implementation
-├── runtime/       # profile, compliance, hooks, and bootstrap docs
-└── scripts/       # lightweight guard/regression checks
-```
-
-### Runtime config
-
-| Path | Purpose |
-|---|---|
-| `runtime/profile.yaml` | Workflow enablement, prompt/spec names, low-confidence threshold, first-principles defaults. |
-| `runtime/compliance/first-principles-gate.yaml` | Persistent compliance gate defaults. |
-| `runtime/hooks/hooks.yaml` | Lifecycle hook configuration (paths constrained to `runtime/hooks/`). |
-| `runtime/hooks/bootstrap.md` / `runtime/hooks/teardown.md` | Default session start/end hook docs. |
-
-### Workflow prompts & specs
-
-Workflow prompt frontmatter can set `skills:`. By default, khala injects a skill manifest (name, description, path). Set `skillContext: full` to inject full skill bodies, or `skillContext: none` to disable. Missing required skills stop the workflow before it is queued.
-
-### Skills & learned skills
-
-Package-registered skills come from `package.json` Pi config (`./skills` and `./node_modules/pi-subagents/skills`).
-
-`/learn-skill` writes to the khala learning store, not to package `skills/`. Learned skills use a `khala-` prefix to avoid collisions with packaged/global Pi skills. After `/khala-reload`, learned skills are available as normal Pi skills via `/skill:<name>`.
-
-### Memory tools
-
-| Tool | Purpose |
-|---|---|
-| `khala_read_memory` | Read current memory context filtered by task/edit context when available: active runtime rules, relevant memory snippets, and contextual recent learnings. |
-| `khala_search_memory` | Search older memory, runtime rules, learned skills, prompt templates, and workflow artifacts by relevance. |
-| `khala_assess_learning` | Score whether a task produced a durable, non-sensitive lesson. |
-| `khala_learn` | Persist a structured learning record. |
-
-Learning persistence is conservative: a candidate must have a concrete trigger, a specific operating lesson, enough evidence, no sensitive material, and score/confidence at or above the storage threshold.
-
----
-
-## Learning model
-
-Learning is event-based memory, not model fine-tuning.
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant K as khala
-  participant R as Run record
-  participant M as Memory files
-
-  U->>K: workflow command
-  K->>R: open runs/{id}.json
-  K->>K: execute + validate
-  K->>M: append learning.jsonl + MEMORY.md
-  U->>K: corrective feedback
-  K->>M: append compact lesson, safe skill patch, or promotion candidate when clear
-```
-
-Learning artifacts are written to `<repo>/.pi/khala/` when `.pi/` exists in cwd,
-or `~/.pi/khala/` otherwise. Run ledgers are global and always use
-`~/.pi/khala/runs/` so interrupted work is visible from any repository.
+Important mutable files under `~/.pi/khala/`:
 
 | File | Purpose |
-|---|---|
-| `memory/learning.jsonl` | Structured observations per workflow run. |
-| `memory/lessons.jsonl` | Passive lessons from corrective normal prompts. |
-| `memory/MEMORY.md` | Concise chronological learnings. |
-| `memory/promotion-queue.md` | Promotion/improvement candidates from repeated outcomes. |
-| `memory/skill-curator-report.md` | Learned-skill review notes and patch recommendations. |
-| `rules/active.jsonl` | Durable active runtime rules with replacement records. |
-| `rules/session.jsonl` | Per-session active rules, cleared on shutdown. |
-| `rules/candidates.jsonl` | Proposed rules not yet active. |
-| `rules/audit.jsonl` | Runtime rule hit/warn/block/reload audit events. |
-| `rules/RULES.md` | Human-readable durable rule mirror. Prefer `/rule-add`; if edited by hand, run `/rule-reload`. |
-| `~/.pi/khala/runs/*.json` | Global per-run workflow records, including tool events, checkpoints, recovery classification, resume attempts, and structured completion. |
-| `workflows/*.yaml` | Reviewed reusable workflow artifacts. |
-| `prompts/*.md` | Pi prompt templates for reviewed workflows. |
-| `skills/<name>/SKILL.md` | Main learned skill instructions. |
-| `skills/<name>/metadata.json` | Learned skill provenance and lifecycle metadata. |
-| `archive/skills/<name>/` | Recoverable archive for archived learned skills. |
+| --- | --- |
+| `runs/*.json` | Durable workflow run ledgers with events, checkpoints, resume attempts, and completion metadata. |
+| `memory/learning.jsonl` | Structured workflow observations. |
+| `memory/lessons.jsonl` | Passive lessons from corrective prompts. |
+| `memory/MEMORY.md` | Compact chronological memory. |
+| `memory/promotion-queue.md` | Candidate improvements from repeated outcomes. |
+| `memory/skill-curator-report.md` | Learned-skill review notes. |
+| `rules/active.jsonl` | Durable active runtime rules. |
+| `rules/session.jsonl` | Session-only rules, cleared on shutdown. |
+| `rules/candidates.jsonl` | Proposed rules waiting for promotion. |
+| `rules/audit.jsonl` | Rule hit, warn, block, reload, and promotion events. |
+| `rules/RULES.md` | Human-readable durable rule mirror. |
+| `runtime/live/dailylog.md` | Hook teardown summaries and runtime notes. |
 
-<details>
-<summary><strong>What is enforced vs. not enforced</strong></summary>
+## Memory Tools
 
-**Enforced** in configurable warn/enforce modes:
+Khala exposes four tools to the model:
 
-- preflight before mutation tools (`edit`, `write`, mutating `bash`)
-- postflight evidence after mutation
-- workflow response footer lines: `Result: ...` and `Confidence: 0..1`
-- runtime checks for promise-only tool work, generic permission-question stalls, incomplete memory-gate recovery, and approval-required destructive requests
-- learning quality gates before storage or promotion
-- replay fixtures in `tests/runtime/fixtures/harness-replay.json` exercise end-to-end cheap-model failure modes
+| Tool | Purpose |
+| --- | --- |
+| `khala_read_memory` | Read current task memory, active rules, recent learnings, and context snippets. |
+| `khala_search_memory` | Search older memory, rules, learned skills, prompt templates, and workflow artifacts. |
+| `khala_assess_learning` | Score whether a lesson is worth storing. |
+| `khala_learn` | Persist a structured learning record after quality checks. |
 
-**Not automatic:**
+## Development
 
-- no automatic edits to `README.md`, `INSTRUCTIONS.md`, or user-authored/imported skills from learning
-- no automatic hot-reload after background learning; run `/khala-reload` to refresh Pi resources
-- no automatic runnable workflow creation from repeated success statistics; repeated outcomes create review candidates
-- no model training/fine-tuning
-- no raw transcript or full tool-output storage for passive normal-chat learning
+Install dependencies:
 
-</details>
-
----
-
-## Compliance modes
-
-```text
-/khala enforce   # strict mode
-/khala warn      # warnings only
-/khala reset     # configured defaults
+```bash
+npm install
 ```
 
-Persistent defaults live in `runtime/compliance/first-principles-gate.yaml`.
+Run the main checks:
 
-Strict mode behavior:
+```bash
+npm run smoke
+```
 
-- Missing preflight before first mutation → mutation is blocked with remediation text.
-- Missing postflight evidence after mutation → workflow is marked failed at completion.
-- Missing final `Result:` / `Confidence:` lines in workflow output → response is blocked until fixed.
+Run the Pi integration smoke:
 
----
+```bash
+npm run test:pi
+```
 
-## Design goals
+Use an editable local install while developing:
 
-1. One canonical agent identity.
-2. Learn from user feedback and workflow outcomes.
-3. Stay concise/token-efficient by default.
-4. Prefer transparent file-backed learning (`learning.jsonl`, `lessons.jsonl`, `MEMORY.md`).
-5. Enable safe self-improvement with explicit guardrails.
-6. Keep memory fresh during long or mutating tasks.
+```bash
+pi install -l .
+pi -p "/khala status"
+```
+
+If a global URL install is also enabled, remove it to avoid duplicate extension
+registration:
+
+```bash
+pi remove https://github.com/pesap/agents.git
+```
+
+## Design Goals
+
+1. Keep one canonical agent identity.
+2. Make long-running work resumable and auditable.
+3. Prefer small, reversible, evidence-backed changes.
+4. Store learning in transparent local files, not model weights.
+5. Keep startup context compact and retrieve task-specific memory on demand.
+6. Let the harness improve without hiding state from the maintainer.
+
+## Further Reading
+
+- [`docs/maintainer-os-north-star.md`](docs/maintainer-os-north-star.md)
+- [`runtime/RULES.md`](runtime/RULES.md)
+- [`runtime/INSTRUCTIONS.md`](runtime/INSTRUCTIONS.md)
