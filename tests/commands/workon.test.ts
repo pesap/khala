@@ -94,6 +94,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
             ok: false,
             stdout: "",
             stderr: "zellij socket unavailable\n",
+            exitCode: 1,
           };
         }
         if (branch.includes("structured-handoff-failure")) {
@@ -106,8 +107,19 @@ function fakeGhRunner(outputs: Record<string, string>): {
               status: "blocked",
               reason: "tab-not-found",
               detail,
+              path: "/tmp/worktrunk.feat-182",
+              tabName: "agents/fix-182-structured-handoff-failure",
+              tabId: 44,
+              piPaneId: "terminal_91",
+              piPaneAction: `zellij action new-pane --tab-id 44 --name pi --cwd /tmp/worktrunk.feat-182 -- pi -a --name ${branch}${modelArgs}${thinkingArgs} <clean-prompt>`,
+              heartbeatPaneId: "terminal_92",
+              heartbeatAction: `zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd /tmp/worktrunk.feat-182 -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
+              worktreeAction: `zellij action new-pane --tab-id 44 --name worktree --cwd /tmp/worktrunk.feat-182 -- wt switch --create ${branch} --format json`,
+              piHandoffCommand: `zellij action new-pane --tab-id 44 --name pi --cwd /tmp/worktrunk.feat-182 -- pi -a --name ${branch}${modelArgs}${thinkingArgs} <clean-prompt>`,
+              heartbeatCommand: `zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd /tmp/worktrunk.feat-182 -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
             })}\n`,
             error: `Command failed: bash ${args[0]} --repo ${repo} --branch ${branch} --prompt ## Deterministic /workon route --heartbeat 1.0\n${prompt}`,
+            exitCode: 1,
           };
         }
         return {
@@ -1206,7 +1218,7 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
     assert.match(rendered, /Allowed action: run or report the one route-owned recovery command/);
     assert.match(rendered, /Worktree status: blocked/);
     assert.match(rendered, /Worktree path: \(not available\)/);
-    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: zellij socket unavailable/);
+    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable/);
     assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
     assert.match(rendered, /failed before a Worktrunk path was reported/);
     assert.doesNotMatch(rendered, /Recovery command: \(not available\)/);
@@ -1216,7 +1228,7 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /## Bootstrap failure/);
-    assert.match(capsule, /Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: zellij socket unavailable/);
+    assert.match(capsule, /Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable/);
     assert.match(capsule, /Parent failure: Zellij Pi handoff fix\/181-no-json-handoff-failure/);
     assert.match(capsule, /Parent recovery command: Retry Zellij handoff from an active Zellij pane/);
 
@@ -1227,7 +1239,11 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
     assert.equal((ledger.failure as { phase: string }).phase, "zellij-handoff");
     assert.equal(
       (ledger.failure as { summary: string }).summary,
-      "Zellij Pi handoff fix/181-no-json-handoff-failure: command failed: zellij socket unavailable",
+      "Zellij Pi handoff fix/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable",
+    );
+    assert.equal(
+      (ledger.failure as { detail: string | null }).detail,
+      "Zellij Pi handoff fix/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable",
     );
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -1283,19 +1299,38 @@ test("blocked Zellij handoff preserves structured reason and redacts raw prompt 
 
     assert.match(rendered, /Route: blocked/);
     assert.match(rendered, /reason=tab-not-found/);
-    assert.match(rendered, /Zellij Worktrunk tab not found after 1 attempts/);
+    assert.match(rendered, /exit code 1/);
+    assert.match(rendered, /detail: Zellij Worktrunk tab not found after 1 attempts/);
+    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/182-structured-handoff-failure: reason=tab-not-found: exit code 1; detail: Zellij Worktrunk tab not found after 1 attempts: agents\/fix-182-structured-handoff-failure/);
+    assert.match(rendered, /Zellij tab name: agents\/fix-182-structured-handoff-failure/);
+    assert.match(rendered, /Zellij tab ID: 44/);
+    assert.match(rendered, /Pi pane ID: terminal_91/);
+    assert.match(rendered, /Heartbeat pane ID: terminal_92/);
+    assert.match(rendered, /Pi handoff command: zellij action new-pane --tab-id 44 --name pi --cwd \/tmp\/worktrunk\.feat-182 -- pi -a --name fix\/182-structured-handoff-failure/);
+    assert.match(rendered, /Forge heartbeat command: zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd \/tmp\/worktrunk\.feat-182 -- bash scripts\/workon-forge-heartbeat\.sh --repo pesap\/agents --branch fix\/182-structured-handoff-failure/);
     assert.match(rendered, /--prompt <redacted>/);
     assert.doesNotMatch(rendered, /--prompt ## Deterministic \/workon route/);
     assert.doesNotMatch(rendered, /Draft PR and feedback heartbeat:/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.failure as { reason: string | null }).reason, "tab-not-found");
-    assert.match(
-      String((ledger.failure as { detail: string | null }).detail),
-      /Zellij Worktrunk tab not found after 1 attempts/,
+    assert.equal(
+      (ledger.failure as { detail: string | null }).detail,
+      "Zellij Worktrunk tab not found after 1 attempts: agents/fix-182-structured-handoff-failure",
     );
+    assert.match(
+      String((ledger.failure as { summary: string | null }).summary),
+      /^Zellij Pi handoff fix\/182-structured-handoff-failure: reason=tab-not-found: exit code 1; detail: Zellij Worktrunk tab not found after 1 attempts: agents\/fix-182-structured-handoff-failure/,
+    );
+    assert.equal((ledger.zellij as { tabName: string | null }).tabName, "agents/fix-182-structured-handoff-failure");
+    assert.equal((ledger.zellij as { tabId: number | null }).tabId, 44);
+    assert.equal((ledger.worktree as { path: string | null }).path, "/tmp/worktrunk.feat-182");
+    assert.equal((ledger.pi as { paneId: string | null }).paneId, "terminal_91");
+    assert.equal((ledger.heartbeat as { paneId: string | null }).paneId, "terminal_92");
+    assert.match(String((ledger.pi as { handoffCommand: string | null }).handoffCommand), /--tab-id 44 --name pi/);
+    assert.match(String((ledger.heartbeat as { command: string | null }).command), /--tab-id 44 --name forge-heartbeat/);
     assert.doesNotMatch(String(ledger.failureReason), /Draft PR and feedback heartbeat:/);
-    assert.match(String(ledger.safeNextAction), new RegExp(`--branch '${escapeRegExp(branch)}'`));
+    assert.match(String(ledger.safeNextAction), /Wait for capsule acknowledgement/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

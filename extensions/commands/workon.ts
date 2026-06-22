@@ -8,6 +8,8 @@ import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
+const MAX_HANDOFF_DIAGNOSTIC_PART_LENGTH = 160;
+const MAX_HANDOFF_DIAGNOSTIC_SUMMARY_LENGTH = 320;
 const MAX_BRANCH_NAME_LENGTH = 64;
 const MAX_BRANCH_SCOPE_WORDS = 4;
 const MIN_SHARED_BRANCH_SCOPE_WORDS = 2;
@@ -98,6 +100,7 @@ interface CommandResult {
   stdout: string;
   stderr: string;
   error?: string;
+  exitCode?: string | number | null;
 }
 
 export type WorkonCommandRunner = (
@@ -354,7 +357,11 @@ function parseJsonObject<T>(raw: string, gapLabel: string, gaps: string[]): T | 
 
 function resultGap(label: string, result: CommandResult): string | null {
   if (result.ok) return null;
-  const detail = result.stderr || result.stdout || result.error || "command failed";
+  const detail =
+    result.stderr
+    || result.stdout
+    || result.error
+    || (result.exitCode !== undefined && result.exitCode !== null ? `exit code ${result.exitCode}` : "command failed");
   const diagnosticLine = detail.trim().split(/\r?\n/).find((line) => {
     const trimmed = line.trim();
     return trimmed.length > 0 && !trimmed.startsWith("{");
@@ -369,6 +376,37 @@ function firstDiagnosticLine(value: string | undefined): string {
   })?.trim() ?? "";
 }
 
+function compactDiagnosticSnippet(value: string | undefined): string {
+  const line = firstDiagnosticLine(value);
+  if (!line) return "";
+  if (line.length <= MAX_HANDOFF_DIAGNOSTIC_PART_LENGTH) return line;
+  return `${line.slice(0, MAX_HANDOFF_DIAGNOSTIC_PART_LENGTH - 1)}…`;
+}
+
+function zellijHandoffDiagnosticParts(result: CommandResult, parsed: ZellijHandoffResult | null): string[] {
+  const parts: string[] = [];
+  if (result.exitCode !== undefined && result.exitCode !== null) {
+    parts.push(`exit code ${result.exitCode}`);
+  }
+  const diagnostics: Array<[string, string | undefined]> = [
+    ["detail", parsed?.detail],
+    ["stderr", result.stderr],
+    ["stdout", result.stdout],
+    ["error", result.error],
+  ];
+  for (const [label, value] of diagnostics) {
+    const snippet = compactDiagnosticSnippet(value);
+    if (snippet) parts.push(`${label}: ${snippet}`);
+  }
+  return parts;
+}
+
+function boundedDiagnosticSummary(parts: string[]): string {
+  const summary = parts.join("; ");
+  if (summary.length <= MAX_HANDOFF_DIAGNOSTIC_SUMMARY_LENGTH) return summary;
+  return `${summary.slice(0, MAX_HANDOFF_DIAGNOSTIC_SUMMARY_LENGTH - 1)}…`;
+}
+
 function zellijHandoffFailureSummary(
   branchName: string,
   result: CommandResult,
@@ -380,11 +418,8 @@ function zellijHandoffFailureSummary(
 }
 
 function zellijHandoffDiagnostic(result: CommandResult, parsed: ZellijHandoffResult | null): string {
-  return firstDiagnosticLine(parsed?.detail)
-    || firstDiagnosticLine(result.stderr)
-    || firstDiagnosticLine(result.stdout)
-    || firstDiagnosticLine(result.error)
-    || "no diagnostic output";
+  const parts = zellijHandoffDiagnosticParts(result, parsed);
+  return parts.length > 0 ? boundedDiagnosticSummary(parts) : "no diagnostic output";
 }
 
 function noRetryHandoffAction(
@@ -702,7 +737,7 @@ function buildHandoffLedger(params: {
     failure: {
       phase: failurePhase,
       reason: params.zellijResult?.reason ?? (readinessActionItems.length > 0 ? "readiness-not-ready" : null),
-      detail: params.zellijResult?.detail ?? null,
+      detail: params.zellijResult?.detail ?? (readinessActionItems.length > 0 ? null : failureReason),
       summary: failureReason,
     },
     safeNextAction: buildLedgerSafeNextAction({
@@ -1658,6 +1693,8 @@ async function startWorktreeIfRequested(
       return {
         status: "blocked",
         path: parsed?.path,
+        piHandoffCommand: parsed?.piHandoffCommand,
+        heartbeatCommand: parsed?.heartbeatCommand,
         handoffRecoveryInstructions,
         handoffOperatorAction,
         handoffFailureSummary,
@@ -1779,8 +1816,12 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         ...(evidence.handoffFailureSummary ? [`Handoff failure: ${evidence.handoffFailureSummary}`] : []),
+        ...(evidence.ledger?.zellij.tabName ? [`Zellij tab name: ${evidence.ledger.zellij.tabName}`] : []),
+        ...(evidence.ledger?.zellij.tabId !== null && evidence.ledger?.zellij.tabId !== undefined ? [`Zellij tab ID: ${evidence.ledger.zellij.tabId}`] : []),
         ...(evidence.ledger?.zellij.worktreeAction ? [`Worktree action: ${evidence.ledger.zellij.worktreeAction}`] : []),
+        ...(evidence.ledger?.pi.paneId ? [`Pi pane ID: ${evidence.ledger.pi.paneId}`] : []),
         ...(evidence.ledger?.pi.paneAction ? [`Pi pane action: ${evidence.ledger.pi.paneAction}`] : []),
+        ...(evidence.ledger?.heartbeat.paneId ? [`Heartbeat pane ID: ${evidence.ledger.heartbeat.paneId}`] : []),
         ...(evidence.ledger?.heartbeat.action ? [`Heartbeat action: ${evidence.ledger.heartbeat.action}`] : []),
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
@@ -2081,6 +2122,7 @@ export function createExecFileRunner(): WorkonCommandRunner {
         stdout: redactSensitiveCommandArgs(nodeError.stdout, args) ?? "",
         stderr: redactSensitiveCommandArgs(nodeError.stderr, args) ?? "",
         error: redactSensitiveCommandArgs(nodeError.message, args),
+        exitCode: nodeError.code,
       };
     }
   };
