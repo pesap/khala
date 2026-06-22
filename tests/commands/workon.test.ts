@@ -89,6 +89,19 @@ function fakeGhRunner(outputs: Record<string, string>): {
             })}\n${detail}\n`,
           };
         }
+        if (branch.includes("prevent-zellij-handoff-timeout")) {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: "",
+            error: `Command failed: bash ${args[0]} --repo ${repo} --branch ${branch} --prompt ## Deterministic /workon route --heartbeat 1.0\n<redacted>`,
+            exitCode: "ETIMEDOUT",
+            signal: "SIGTERM",
+            killed: true,
+            timedOut: true,
+            timeoutMs: 41_500,
+          };
+        }
         if (branch.includes("no-json-handoff-failure")) {
           return {
             ok: false,
@@ -1245,6 +1258,82 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
       (ledger.failure as { detail: string | null }).detail,
       "Zellij Pi handoff fix/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable",
     );
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("blocked Zellij handoff timeout is classified explicitly and keeps route recovery safe", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-timeout-failure-test-"));
+  try {
+    const branch = "fix/207-prevent-zellij-handoff-timeout";
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 207 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        207,
+        "fix(workon): prevent Zellij handoff timeout from masking startup progress",
+        [
+          "## Current behavior",
+          "",
+          "/workon can report a blocked Zellij Pi handoff as a generic shell failure before the handoff script's normal wait window completes.",
+          "",
+          "## Acceptance criteria",
+          "",
+          "- Longer timeout budget for the Zellij handoff path.",
+          "- Timeout diagnostics include timeout duration and command metadata.",
+          "- Route/capsule/ledger identify timeout explicitly.",
+          "",
+          "## Validation",
+          "",
+          "- Add a focused regression test for the timeout failure path.",
+          "",
+          "## Non-goals",
+          "",
+          "- Do not broaden scope beyond the timeout diagnostic mismatch.",
+        ].join("\n"),
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "207",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: true,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Route: blocked/);
+    assert.match(rendered, /Worktree status: blocked/);
+    assert.match(rendered, /Worktree path: \(not available\)/);
+    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/207-prevent-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.match(rendered, /timed out while waiting for the Zellij handoff script's normal tab discovery window/);
+    assert.doesNotMatch(rendered, /Command failed: bash .*--prompt ## Deterministic \/workon route/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Zellij Pi handoff fix\/207-prevent-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(capsule, /Parent failure: Zellij Pi handoff fix\/207-prevent-zellij-handoff-timeout: timeout:/);
+    assert.match(capsule, /Parent recovery command: Retry Zellij handoff from an active Zellij pane/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
+    assert.equal((ledger.worktree as { path: string | null }).path, null);
+    assert.equal((ledger.failure as { phase: string }).phase, "zellij-handoff");
+    assert.equal((ledger.failure as { reason: string | null }).reason, "timeout");
+    assert.match(String((ledger.failure as { summary: string }).summary), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(String((ledger.failure as { detail: string | null }).detail), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
