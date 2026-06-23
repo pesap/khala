@@ -97,8 +97,7 @@ Common `/workon` flags:
 --repo owner/repo
 --forge auto|github|gitlab|all
 --dry-run
---model provider/model
---thinking off|minimal|low|medium|high|xhigh
+--heartbeat HOURS
 ```
 
 Common `/plan` flags:
@@ -113,6 +112,83 @@ Common `/plan` flags:
 Use `/inbox` from a non-repository directory for a global side-terminal
 dashboard. Inside a repository it defaults to repo scope; pass `--global` or
 `--scope global` for the global view.
+
+## Model Selection
+
+Pi has two independent model-configuration scopes:
+
+### Pi session model
+
+Flags and commands that affect the **current interactive Pi session**:
+
+```bash
+pi --model provider/model --thinking high
+```
+or at runtime:
+```text
+/model provider/model
+```
+
+These change the model used for your current conversation. They do **not** affect
+Khala-launched workflow sessions.
+
+### Khala workflow model routing
+
+Flags and config that affect **Khala workflow launches** (child Pi sessions spawned
+by `/workon`, `/plan`, `/triage`, etc.):
+
+```bash
+pi --khala-workflow-profile development --khala-workflow-task workon
+```
+
+- `--khala-workflow-profile <name>` — override the profile used for all spawned
+  workflow sessions (e.g. `development`, `planning`).
+- `--khala-workflow-task <task>` — resolve a workflow route by task name
+  (e.g. `workon` -> `development`, `plan` -> `planning`).
+
+These flags are read at session start and stored for the lifetime of the session.
+They never change the current Pi session model.
+
+#### Durable workflow model config
+
+Instead of passing flags each time, create `~/.pi/khala/workflow-model.yaml`:
+
+```yaml
+profiles:
+  planning: "github-copilot/gpt-5.5:xhigh"
+  development: "github-copilot/gpt-5.4-mini:medium"
+  review: "github-copilot/gpt-5.5:high"
+
+routes:
+  plan: "planning"
+  debug: "planning"
+  triage: "planning"
+  workon: "development"
+  review: "review"
+```
+
+Profiles are keyed by name with `"provider/model:thinking"` format. Routes map
+workflow task names to profile names. Builtin defaults remain as fallback for any
+key not present in the config file.
+
+#### Precedence
+
+```text
+explicit workflow override > --khala-workflow-* flag >
+  route config > profile config > builtin default
+```
+
+When no flags or config are provided, Khala uses builtin defaults:
+
+| Task | Resolved profile | Model | Thinking |
+| --- | --- | --- | --- |
+| `/workon` | development | `github-copilot/gpt-5.4-mini` (Pi-discovered) | `medium` |
+| `/plan`, `/triage`, `/debug` | planning | `github-copilot/gpt-5.5` | `xhigh` |
+| `/review`, `/audit` | development | `github-copilot/gpt-5.4-mini` (Pi-discovered) | `medium` |
+
+> **Pi native flags vs Khala flags**: `pi --model` changes your current session.
+> `--khala-workflow-*` flags configure Khala workflow launches. They are
+> independent — you can use both at once without conflict.
 
 ### Run Ledger Commands
 
@@ -129,18 +205,25 @@ Resume is intentionally conservative. Unknown, shell, mutation, forge, external,
 or metadata-less mutation events after the latest checkpoint require operator
 review before Khala will resume automatically.
 Run `/khala-health` to inspect profile resolution. `/khala status` remains a
-compatibility alias that returns the same read-only health output. The status
-output lists each profile's resolved model id, thinking level, source, and `ok`
-or `unresolved (<reason>)` state. If the development profile is unresolved,
-`/workon` refuses to emit handoff evidence and points operators back to
-`/khala-health` instead of silently falling back to the planning model.
+compatibility alias that returns the same read-only health output in a
+`:checkhealth`-style diagnostic format. The health output includes:
+
+- **Session** section: enabled status, memory tool limit, compliance modes.
+- **Pi session model** section: current interactive Pi model and thinking level.
+- **Khala workflow model routing** section: active `--khala-workflow-*` flags.
+- **Model profiles** section: per-profile `OK`/`WARNING`/`ERROR` status with
+  resolved model, thinking level, used-by routes, problems, and fix steps.
+
+If the development profile is unresolved, `/workon` refuses to emit handoff
+evidence and points operators back to `/khala-health` instead of silently
+falling back to the planning model.
 
 ### Policy Commands
 
 | Command | Purpose |
 |---|---|
 | `/khala` | Initialize khala and set compliance to `warn`. |
-| `/khala-health` | Report read-only Khala health/status, including session enablement, memory tool limit, compliance modes, and model profiles. `/khala status` is a compatibility alias. |
+| `/khala-health` | Report read-only Khala health/status in `:checkhealth`-style format, including session enablement, memory tool limit, compliance modes, Pi session model, workflow routing flags, and model profiles. `/khala status` is a compatibility alias. |
 | `/khala-mode status\|strict\|enforce\|warn\|warning\|monitor\|reset\|default\|defaults` | Report or change compliance mode. `status` matches `/khala-health` while the other values change compliance; `default` and `defaults` restore the first-principles defaults. |
 | `/end-agent` | Disable khala session context injection. |
 | `/approve-risk <reason> [--ttl MINUTES]` | Approve one high-risk command (TTL 1–120 min, default 20). |
@@ -180,16 +263,20 @@ Rule examples:
 ## Model Profiles
 
 Khala routes workflows through named model profiles instead of scattering model
-choices through prompts.
+choices through prompts. Profiles are configured via the durable workflow model
+config (`~/.pi/khala/workflow-model.yaml`) or builtin defaults.
 
 | Profile | Default | Thinking | Used by |
 | --- | --- | --- | --- |
-| `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan` and planning-heavy work. |
-| `development` (`agents`) | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon` child Pi handoffs and development routes. |
+| `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan`, `/triage`, `/debug` |
+| `development` (`agents`) | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon`, `/review`, `/audit` |
+| `review` | (custom, config-only) | configurable | `/review` (if configured) |
 
-Run `/khala status` to see whether profiles resolve in the current Pi
-environment. If the development profile is unavailable, `/workon` stops before
-handoff and tells you how to override or configure the model.
+Run `/khala-health` to see whether profiles resolve in the current Pi
+environment, with `OK`/`WARNING`/`ERROR` status per profile, used-by routes,
+problem details, and fix steps. If the development profile is unavailable,
+`/workon` stops before handoff and tells you how to override or configure the
+model via `~/.pi/khala/workflow-model.yaml` or `--khala-workflow-*` flags.
 
 ## Runtime Behavior
 
