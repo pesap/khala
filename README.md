@@ -175,14 +175,17 @@ falling back to the planning model.
 
 ### Policy Commands
 
+<!-- markdownlint-disable MD013 MD060 -->
 | Command                                                                       | Purpose                                                                                                                                       |
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/khala`                                                                      | Initialize khala and set compliance to `warn`.                                                                                                |
 | `/khala-health`                                                               | Report read-only Khala health/status, including session enablement, memory tool limit, compliance modes, workflow config, and model profiles. |
+| `/khala-hub [--path <path\|git-ref> [--subdir <relative-path>]]`               | Report or set the Khala hub path for the LLM wiki. Default storage is `~/.pi/khala/hub/`.                                                    |
 | `/khala-mode [enforce\|warn\|ignore]`                                         | With no arguments, report read-only status. With a mode argument, change all compliance modes.                                                |
 | `/approve-risk <reason> [--ttl MINUTES]`                                      | Approve one high-risk command (TTL 1–120 min, default 20).                                                                                    |
 | `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Record manual mutation intent.                                                                                                                |
 | `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>`     | Record verification evidence.                                                                                                                 |
+<!-- markdownlint-enable MD013 MD060 -->
 
 ### Learning, Skills, and Rules
 
