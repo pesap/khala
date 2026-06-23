@@ -38,7 +38,7 @@ export type TurnObligation =
   | "clarify_required"
   | "approval_required";
 
-export type ResponseComplianceMode = "monitor" | "warn" | "enforce";
+export type ResponseComplianceMode = "ignore" | "warn" | "enforce";
 
 interface TurnObligationResult {
   obligation: TurnObligation;

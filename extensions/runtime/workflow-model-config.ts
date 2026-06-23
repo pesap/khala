@@ -8,14 +8,15 @@
  * profiles:
  *   planning: "github-copilot/gpt-5.5:xhigh"
  *   development: "github-copilot/gpt-5.4-mini:medium"
- *   review: "github-copilot/gpt-5.5:high"
+ *   peer-review: "github-copilot/opus4.7:high"
  *
  * routes:
  *   plan: "planning"
  *   debug: "planning"
  *   triage: "planning"
  *   workon: "development"
- *   review: "review"
+ *   review: "development"
+ *   reviewer-two: "peer-review"
  * ```
  *
  * Precedence: explicit workflow override > khala workflow flag >
@@ -43,6 +44,7 @@ const CONFIG_FILE_NAME = "workflow-model.yaml";
 export const BUILTIN_WORKFLOW_PROFILES: Record<string, string> = {
   planning: "github-copilot/gpt-5.5:xhigh",
   development: "github-copilot/gpt-5.4-mini:medium",
+  "peer-review": "github-copilot/opus4.7:high",
 };
 
 export const BUILTIN_WORKFLOW_ROUTES: Record<string, string> = {
@@ -51,6 +53,7 @@ export const BUILTIN_WORKFLOW_ROUTES: Record<string, string> = {
   triage: "planning",
   debug: "planning",
   review: "development",
+  "reviewer-two": "peer-review",
 };
 
 // ── Profile string parsing ───────────────────────────────────────

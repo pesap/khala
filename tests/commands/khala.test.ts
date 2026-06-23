@@ -124,13 +124,13 @@ test("/khala-health is read-only and reports health status", async () => {
   assert.match(harness.messages[0], /enabled: no/);
   assert.match(harness.messages[0], /memory_tool_limit: 17/);
   assert.match(harness.messages[0], /compliance: preflight=warn, postflight=warn, response=warn/);
-  assert.match(harness.messages[0], /Model profiles ~/);
+  assert.match(harness.messages[0], /Model profiles/);
   assert.match(harness.messages[0], /OK planning/);
   assert.equal(harness.agentStateEntries.length, 0);
   assert.deepEqual(harness.compliancePresets, []);
 });
 
-test("/khala status reports durable workflow config without not-set wording", async () => {
+test("/khala-health reports compact durable workflow config and profiles", async () => {
   resetActiveWorkflowRouteForTests();
   try {
     setWorkflowModelConfig(
@@ -153,35 +153,33 @@ test("/khala status reports durable workflow config without not-set wording", as
       memoryToolCallLimit: 21,
     });
 
-    await harness.handlers.khala("status", harness.ctx);
+    await harness.handlers.khalaHealth(undefined, harness.ctx);
 
     assert.equal(harness.messages.length, 1);
-    assert.match(harness.messages[0], /workflow config: found at \/tmp\/khala\/workflow-model\.yaml/);
-    assert.match(harness.messages[0], /workflow profile flag: none \(CLI override not set; workflow config still applies\)/);
-    assert.match(harness.messages[0], /active profiles: .*planning=openai-codex\/gpt-5\.5:high/);
-    assert.match(harness.messages[0], /active profiles: .*development=openai-codex\/gpt-5\.4-mini:low/);
+    assert.match(harness.messages[0], /OK found at \/tmp\/khala\/workflow-model\.yaml/);
+    assert.match(harness.messages[0], /OK planning/);
+    assert.match(harness.messages[0], /OK development/);
+    assert.match(harness.messages[0], /OK peer-review/);
     assert.match(harness.messages[0], /model: openai-codex\/gpt-5\.5/);
     assert.match(harness.messages[0], /model: openai-codex\/gpt-5\.4-mini/);
-    assert.doesNotMatch(harness.messages[0], /workflow profile flag: \(not set\)/);
-    assert.doesNotMatch(harness.messages[0], /workflow task flag: \(not set\)/);
+    assert.doesNotMatch(harness.messages[0], /workflow profile flag/);
+    assert.doesNotMatch(harness.messages[0], /workflow task flag/);
   } finally {
     resetActiveWorkflowRouteForTests();
   }
 });
 
-test("/khala status remains a compatibility alias for /khala-health", async () => {
+test("/khala status is rejected in favor of /khala-health", async () => {
   const harness = makeHarness({
     agentEnabled: true,
     memoryToolCallLimit: 21,
   });
 
-  await harness.handlers.khalaHealth(undefined, harness.ctx);
-  const healthOutput = harness.messages.at(-1);
-
   await harness.handlers.khala("status", harness.ctx);
 
-  assert.equal(harness.messages.length, 2);
-  assert.equal(harness.messages[1], healthOutput);
+  assert.equal(harness.messages.length, 1);
+  assert.match(harness.messages[0], /Usage: \/khala/);
+  assert.match(harness.messages[0], /\/khala-health/);
   assert.equal(harness.agentStateEntries.length, 0);
   assert.deepEqual(harness.compliancePresets, []);
 });
@@ -244,11 +242,6 @@ for (const [args, expectedPreset, expectedConfig] of [
     postflightMode: "warn",
     responseComplianceMode: "warn",
   }],
-  ["strict", "enforce", {
-    preflightMode: "enforce",
-    postflightMode: "enforce",
-    responseComplianceMode: "enforce",
-  }],
   ["enforce", "enforce", {
     preflightMode: "enforce",
     postflightMode: "enforce",
@@ -259,30 +252,10 @@ for (const [args, expectedPreset, expectedConfig] of [
     postflightMode: "warn",
     responseComplianceMode: "warn",
   }],
-  ["warning", "warn", {
-    preflightMode: "warn",
-    postflightMode: "warn",
-    responseComplianceMode: "warn",
-  }],
-  ["monitor", "monitor", {
-    preflightMode: "monitor",
-    postflightMode: "monitor",
-    responseComplianceMode: "monitor",
-  }],
-  ["reset", "reset", {
-    preflightMode: "warn",
-    postflightMode: "warn",
-    responseComplianceMode: "warn",
-  }],
-  ["default", "reset", {
-    preflightMode: "warn",
-    postflightMode: "warn",
-    responseComplianceMode: "warn",
-  }],
-  ["defaults", "reset", {
-    preflightMode: "warn",
-    postflightMode: "warn",
-    responseComplianceMode: "warn",
+  ["ignore", "ignore", {
+    preflightMode: "ignore",
+    postflightMode: "ignore",
+    responseComplianceMode: "ignore",
   }],
 ] as const) {
   test(`/khala-mode ${args ?? "<no args>"} maps to ${expectedPreset}`, async () => {
@@ -319,7 +292,7 @@ test("/khala-mode status is invalid and points users to /khala-health", async ()
 });
 
 test("legacy /khala compliance aliases are rejected without mutating state", async () => {
-  for (const args of ["strict", "enforce", "warn", "warning", "monitor", "reset", "default", "defaults"] as const) {
+  for (const args of ["strict", "enforce", "warn", "warning", "monitor", "reset", "default", "defaults", "ignore"] as const) {
     const harness = makeHarness({
       memoryToolCallLimit: 23,
       firstPrinciplesConfig: {
@@ -352,15 +325,16 @@ test("formatKhalaHealthStatus includes session state and model profiles", () => 
     firstPrinciplesConfig: {
       preflightMode: "warn",
       postflightMode: "enforce",
-      responseComplianceMode: "monitor",
+      responseComplianceMode: "ignore",
     },
   });
 
   assert.match(rendered, /Khala health:/);
   assert.match(rendered, /enabled: yes/);
   assert.match(rendered, /memory_tool_limit: 9/);
-  assert.match(rendered, /preflight=warn, postflight=enforce, response=monitor/);
-  assert.match(rendered, /Model profiles ~/);
+  assert.match(rendered, /preflight=warn, postflight=enforce, response=ignore/);
+  assert.match(rendered, /Model profiles/);
   assert.match(rendered, /OK planning/);
+  assert.match(rendered, /OK peer-review/);
   assert.match(rendered, /used by:/);
 });

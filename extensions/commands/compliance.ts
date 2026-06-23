@@ -9,7 +9,7 @@ type CommandHandler = (args: string | undefined, ctx: ExtensionCommandContext) =
 export function createComplianceCommandHandlers(params: {
   runtimeState: RuntimeState;
   notify: (ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">, message: string, type: NotifyType) => void;
-  parseComplianceArgs: (args: string) => { preset: "status" | "reset" | PolicyMode; error?: string };
+  parseComplianceArgs: (args: string) => { preset: "status" | PolicyMode; error?: string };
   parseApproveRiskArgs: (args: string) => { reason: string; ttlMinutes: number; error?: string };
   parsePreflightArgs: (args: string) => { record?: PreflightRecord; error?: string };
   parsePostflightArgs: (args: string) => { record?: PostflightRecord; error?: string };
@@ -58,10 +58,7 @@ export function createComplianceCommandHandlers(params: {
         return;
       }
 
-      const isReset = parsed.preset === "reset";
-      const nextConfig = isReset
-        ? { ...params.getDefaultFirstPrinciplesConfig() }
-        : applyMode(parsed.preset as PolicyMode);
+      const nextConfig = applyMode(parsed.preset as PolicyMode);
 
       params.runtimeState.firstPrinciplesConfig = nextConfig;
       params.appendComplianceModeEntry({
@@ -73,9 +70,7 @@ export function createComplianceCommandHandlers(params: {
 
       params.notify(
         ctx,
-        isReset
-          ? `Compliance modes reset to defaults: ${formatCompliance(nextConfig)}.`
-          : `Compliance strictness updated: ${formatCompliance(nextConfig)}.`,
+        `Compliance mode updated: ${formatCompliance(nextConfig)}.`,
         "success",
       );
     },

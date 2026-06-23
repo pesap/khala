@@ -311,7 +311,7 @@ export function parseRuntimeProfile(
       const mode = parsePolicyMode(rawValue);
       if (!mode) {
         warnings.push(
-          `runtime/profile.yaml: first_principles.${field} must be monitor|warn|enforce; default kept.`,
+          `runtime/profile.yaml: first_principles.${field} must be ignore|warn|enforce; default kept.`,
         );
         continue;
       }

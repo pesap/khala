@@ -70,7 +70,7 @@ test("khala status includes model profile doctor output", async () => {
 
   assert.equal(messages.length, 1);
   assert.match(messages[0], /compliance: preflight=warn, postflight=warn, response=warn/);
-  assert.match(messages[0], /Model profiles ~/);
+  assert.match(messages[0], /Model profiles/);
   assert.match(messages[0], /OK planning/);
   assert.match(messages[0], /model: github-copilot\/gpt-5\.5/);
   assert.match(messages[0], /thinking: medium/);
@@ -109,23 +109,22 @@ test("compliance mode changes refresh khala-mode status", async () => {
     appendPostflightEntry: () => undefined,
   });
 
-  await handlers.compliance("strict", { cwd: process.cwd() } as never);
+  await handlers.compliance("enforce", { cwd: process.cwd() } as never);
 
   assert.deepEqual(refreshed, ["enforce"]);
 });
 
 test("parseKhalaModeArgs recognizes aliases and rejects status", () => {
   assert.deepEqual(parseKhalaModeArgs(""), { preset: "status" });
-  assert.deepEqual(parseKhalaModeArgs("strict"), { preset: "enforce" });
   assert.deepEqual(parseKhalaModeArgs("enforce"), { preset: "enforce" });
   assert.deepEqual(parseKhalaModeArgs("warn"), { preset: "warn" });
-  assert.deepEqual(parseKhalaModeArgs("warning"), { preset: "warn" });
-  assert.deepEqual(parseKhalaModeArgs("monitor"), { preset: "monitor" });
-  assert.deepEqual(parseKhalaModeArgs("reset"), { preset: "reset" });
-  assert.deepEqual(parseKhalaModeArgs("default"), { preset: "reset" });
-  assert.deepEqual(parseKhalaModeArgs("defaults"), { preset: "reset" });
+  assert.deepEqual(parseKhalaModeArgs("ignore"), { preset: "ignore" });
   assert.deepEqual(parseKhalaModeArgs("status"), {
     preset: "status",
-    error: "Usage: /khala-mode [strict|enforce|warn|warning|monitor|reset|default|defaults] or /khala-health for status",
+    error: "Usage: /khala-mode [enforce|warn|ignore] or /khala-health for status",
+  });
+  assert.deepEqual(parseKhalaModeArgs("monitor"), {
+    preset: "status",
+    error: "Usage: /khala-mode [enforce|warn|ignore] or /khala-health for status",
   });
 });

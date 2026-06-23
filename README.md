@@ -146,8 +146,8 @@ configured through Khala workflow profiles, not command flags. See
 [docs/workflow-model-routing.md](docs/workflow-model-routing.md) for flags,
 durable YAML config, precedence, and builtin defaults.
 
-Run `/khala-health` to inspect the current Pi session model and Khala workflow
-model routing side by side.
+Run `/khala-health` to inspect session configuration and Khala workflow model
+profiles.
 
 ### Run Ledger Commands
 
@@ -163,13 +163,10 @@ Khala records durable workflow runs under `~/.pi/khala/runs/`.
 Resume is intentionally conservative. Unknown, shell, mutation, forge, external,
 or metadata-less mutation events after the latest checkpoint require operator
 review before Khala will resume automatically. Run `/khala-health` to inspect
-profile resolution. The health output uses a `:checkhealth`-style diagnostic
-format and includes:
+profile resolution. The health output includes:
 
 - **Session** section: enabled status, memory tool limit, compliance modes.
-- **Pi session model** section: current interactive Pi model and thinking level.
-- **Khala workflow model routing** section: active `--khala-workflow-*` flags.
-- **Model profiles** section: per-profile `OK`/`WARNING`/`ERROR` status with
+- **Model profiles** section: per-profile `OK`/`ERROR` status with
   resolved model, thinking level, used-by routes, problems, and fix steps.
 
 If the development profile is unresolved, `/workon` refuses to emit handoff
@@ -181,8 +178,8 @@ falling back to the planning model.
 | Command                                                                                 | Purpose                                                                                                                                                                                               |
 | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/khala`                                                                                | Initialize khala and set compliance to `warn`.                                                                                                                                                        |
-| `/khala-health`                                                                         | Report read-only Khala health/status in `:checkhealth`-style format, including session enablement, memory tool limit, compliance modes, Pi session model, workflow routing flags, and model profiles. |
-| `/khala-mode [strict\|enforce\|warn\|warning\|monitor\|reset\|default\|defaults]`       | With no arguments, report read-only status. With a mode argument, change compliance mode; `default` and `defaults` restore the first-principles defaults.                                             |
+| `/khala-health`                                                                         | Report read-only Khala health/status, including session enablement, memory tool limit, compliance modes, workflow config, and model profiles.                                                          |
+| `/khala-mode [enforce\|warn\|ignore]`                                                   | With no arguments, report read-only status. With a mode argument, change all compliance modes.                                                                                                         |
 | `/approve-risk <reason> [--ttl MINUTES]`                                                | Approve one high-risk command (TTL 1–120 min, default 20).                                                                                                                                            |
 | `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>`           | Record manual mutation intent.                                                                                                                                                                        |
 | `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>`               | Record verification evidence.                                                                                                                                                                         |

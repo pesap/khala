@@ -15,7 +15,7 @@ function themedCtx(): never {
 }
 
 test("khala-mode status label uses Pi theme colors by mode", () => {
-  assert.equal(formatKhalaStatusLabel(themedCtx(), "monitor"), "khala-mode: <accent>monitor</accent>");
+  assert.equal(formatKhalaStatusLabel(themedCtx(), "ignore"), "khala-mode: <accent>ignore</accent>");
   assert.equal(formatKhalaStatusLabel(themedCtx(), "warn"), "khala-mode: <warning>warn</warning>");
   assert.equal(formatKhalaStatusLabel(themedCtx(), "enforce"), "khala-mode: <error>enforce</error>");
 });

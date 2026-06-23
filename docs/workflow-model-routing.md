@@ -46,14 +46,15 @@ Example:
 profiles:
   planning: "github-copilot/gpt-5.5:xhigh"
   development: "github-copilot/gpt-5.4-mini:medium"
-  review: "github-copilot/gpt-5.5:high"
+  peer-review: "github-copilot/opus4.7:high"
 
 routes:
   plan: "planning"
   debug: "planning"
   triage: "planning"
   workon: "development"
-  review: "review"
+  review: "development"
+  reviewer-two: "peer-review"
 ```
 
 Profiles use `"provider/model:thinking"` format. Routes map workflow tasks to
@@ -74,21 +75,21 @@ When no flags or config are provided:
 |------|-----------------|-------|----------|
 | `/workon` | development | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
 | `/plan`, `/triage`, `/debug` | planning | `github-copilot/gpt-5.5` | `xhigh` |
+| Reviewer Two (`/plan`) | peer-review | `github-copilot/opus4.7` | `high` |
 | `/review`, `/audit` | development | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
 
 | Profile | Default | Thinking | Used by |
 |---------|---------|----------|---------|
 | `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan`, `/triage`, `/debug` |
 | `development` | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` | `/workon`, `/review`, `/audit` |
+| `peer-review` | `github-copilot/opus4.7` | `high` | Reviewer Two in `/plan` |
 
 ## Health
 
 Run `/khala-health` to inspect resolution. Health output includes:
 
 - **Session** section: enabled status, memory tool limit, compliance modes.
-- **Pi session model** section: current interactive Pi model and thinking.
-- **Khala workflow model routing** section: active `--khala-workflow-*` flags.
-- **Model profiles** section: per-profile `OK`/`WARNING`/`ERROR` status with
+- **Model profiles** section: per-profile `OK`/`ERROR` status with
   resolved model, thinking level, used-by routes, problems, and fix steps.
 
 If the development profile is unresolved, `/workon` refuses to handoff and

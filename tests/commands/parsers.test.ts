@@ -97,12 +97,12 @@ test("parses plan review flags with bounded defaults", () => {
     plan: "shape reviewer two",
     review: {
       enabled: true,
-      model: "github-copilot/gpt-5.4-mini",
-      thinkingLevel: "medium",
+      model: "github-copilot/opus4.7",
+      thinkingLevel: "high",
       loops: 1,
       context: "fresh",
       routingMode: "default",
-      routingReason: "Reviewer Two development profile (pi-model-discovery; builtin route review -> development)",
+      routingReason: "Reviewer Two peer-review profile (builtin; builtin route reviewer-two -> peer-review)",
     },
   });
 
@@ -110,8 +110,8 @@ test("parses plan review flags with bounded defaults", () => {
     plan: "shape reviewer two",
     review: {
       enabled: false,
-      model: "github-copilot/gpt-5.4-mini",
-      thinkingLevel: "medium",
+      model: "github-copilot/opus4.7",
+      thinkingLevel: "high",
       loops: 0,
       context: "fresh",
       routingMode: "override",
@@ -133,11 +133,11 @@ test("parses plan review flags with bounded defaults", () => {
   });
 });
 
-test("plan review defaults use workflow review route overrides", () => {
+test("plan review defaults use workflow reviewer-two route overrides", () => {
   resetActiveWorkflowRouteForTests();
   try {
     setWorkflowModelConfig({
-      routes: { review: "agents" },
+      routes: { "reviewer-two": "agents" },
       profiles: { agents: "openai-codex/gpt-5.4-mini:low" },
     });
 
@@ -147,7 +147,7 @@ test("plan review defaults use workflow review route overrides", () => {
     assert.equal(parsed.review.thinkingLevel, "low");
     assert.equal(parsed.review.routingMode, "default");
     assert.match(parsed.review.routingReason, /Reviewer Two agents profile/);
-    assert.match(parsed.review.routingReason, /workflow route config route review -> agents/);
+    assert.match(parsed.review.routingReason, /workflow route config route reviewer-two -> agents/);
 
     const explicit = parsePlanArgs("shape reviewer two --review-model anthropic/claude-sonnet-4");
     assert.ok(!("error" in explicit));

@@ -4,7 +4,7 @@ import type { PolicyMode } from "../policy/first-principles.ts";
 export type NotifyType = "info" | "error" | "warning" | "success";
 
 const KHALA_MODE_COLORS: Record<PolicyMode, "accent" | "warning" | "error"> = {
-  monitor: "accent",
+  ignore: "accent",
   warn: "warning",
   enforce: "error",
 };

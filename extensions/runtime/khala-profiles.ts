@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { parseProfileEntry } from "./workflow-model-config.ts";
 
-export type KhalaProfileName = "planning" | "development" | "agents" | (string & {});
+export type KhalaProfileName = "planning" | "development" | "peer-review" | "agents" | (string & {});
 export type KhalaThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type KhalaProfileSource = "builtin" | "pi-model-discovery" | "workflow-model-config";
 export type KhalaProfileStatus = "ok" | "unresolved";
@@ -23,6 +23,7 @@ interface DevelopmentModelDiscovery {
 }
 
 const PLANNING_MODEL = "github-copilot/gpt-5.5";
+const PEER_REVIEW_MODEL = "github-copilot/opus4.7";
 const DEVELOPMENT_PROVIDER = "github-copilot";
 const DEVELOPMENT_MODEL = "gpt-5.4-mini";
 const DEVELOPMENT_MODEL_ID = `${DEVELOPMENT_PROVIDER}/${DEVELOPMENT_MODEL}`;
@@ -155,6 +156,16 @@ export function resolveKhalaProfile(name: KhalaProfileName): KhalaModelProfile {
     };
   }
 
+  if (name === "peer-review") {
+    return {
+      name: "peer-review",
+      model: PEER_REVIEW_MODEL,
+      thinkingLevel: "high",
+      source: "builtin",
+      status: "ok",
+    };
+  }
+
   const discovery = discoverCopilotMiniId();
   return {
     name: "development",
@@ -168,7 +179,11 @@ export function resolveKhalaProfile(name: KhalaProfileName): KhalaModelProfile {
 }
 
 export function formatKhalaModelProfilesStatus(): string {
-  const profiles = [resolveKhalaProfile("planning"), resolveKhalaProfile("development")];
+  const profiles = [
+    resolveKhalaProfile("planning"),
+    resolveKhalaProfile("development"),
+    resolveKhalaProfile("peer-review"),
+  ];
   return [
     "Model profiles:",
     ...profiles.map((profile) => {

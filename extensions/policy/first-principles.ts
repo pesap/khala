@@ -2,7 +2,7 @@ import { load as loadYaml } from "js-yaml";
 import { POSTFLIGHT_LINE_REGEX, PREFLIGHT_LINE_REGEX } from "../lib/constants.ts";
 import { isRecord } from "../lib/io.ts";
 
-export type PolicyMode = "monitor" | "warn" | "enforce";
+export type PolicyMode = "ignore" | "warn" | "enforce";
 export type PolicyOutcome = "allow" | "warn" | "block";
 export type PreflightClarify = "yes" | "no";
 export type PreflightSource = "manual" | "auto";
@@ -34,7 +34,7 @@ export interface PostflightRecord {
 export function parsePolicyMode(value: string | undefined): PolicyMode | null {
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "monitor" || normalized === "warn" || normalized === "enforce") return normalized;
+  if (normalized === "ignore" || normalized === "warn" || normalized === "enforce") return normalized;
   return null;
 }
 

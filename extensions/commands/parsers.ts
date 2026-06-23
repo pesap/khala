@@ -50,33 +50,23 @@ export interface ParseRecordResult<T> {
   error?: string;
 }
 
-export type CompliancePreset = "status" | "reset" | PolicyMode;
-export type KhalaModePreset = "status" | "reset" | PolicyMode;
+export type CompliancePreset = "status" | PolicyMode;
+export type KhalaModePreset = "status" | PolicyMode;
 
 const WORKON_MODES: readonly WorkonMode[] = ["prepare", "start"];
 const WORKON_MULTIPLEXERS: readonly WorkonMultiplexer[] = ["auto", "none", "zellij", "tmux"];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
-  strict: "enforce",
   enforce: "enforce",
   warn: "warn",
-  warning: "warn",
-  monitor: "monitor",
-  reset: "reset",
-  default: "reset",
-  defaults: "reset",
+  ignore: "ignore",
 };
 
 const KHALA_MODE_PRESET_ALIASES: Record<string, Exclude<KhalaModePreset, "status">> = {
-  strict: "enforce",
   enforce: "enforce",
   warn: "warn",
-  warning: "warn",
-  monitor: "monitor",
-  reset: "reset",
-  default: "reset",
-  defaults: "reset",
+  ignore: "ignore",
 };
 
 export function parseComplianceArgs(args: string): {
@@ -90,7 +80,7 @@ export function parseComplianceArgs(args: string): {
     : value
       ? {
           preset: "status",
-          error: "Usage: /khala [strict|enforce|warn|monitor|reset] or /khala-health for status",
+          error: "Usage: /khala [--learn-tool-limit N|--memory-tool-limit N] or /khala-health for status",
         }
       : { preset: "status" };
 }
@@ -105,7 +95,7 @@ export function parseKhalaModeArgs(args: string): {
   if (value === "status") {
     return {
       preset: "status",
-      error: "Usage: /khala-mode [strict|enforce|warn|warning|monitor|reset|default|defaults] or /khala-health for status",
+      error: "Usage: /khala-mode [enforce|warn|ignore] or /khala-health for status",
     };
   }
 
@@ -114,7 +104,7 @@ export function parseKhalaModeArgs(args: string): {
     ? { preset }
     : {
         preset: "status",
-        error: "Usage: /khala-mode [strict|enforce|warn|warning|monitor|reset|default|defaults] or /khala-health for status",
+        error: "Usage: /khala-mode [enforce|warn|ignore] or /khala-health for status",
       };
 }
 
@@ -196,7 +186,7 @@ function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute
 }
 
 function defaultPlanReviewSettings(): ReviewerTwoReviewSettings {
-  const reviewRoute = resolveWorkflowRoute("review");
+  const reviewRoute = resolveWorkflowRoute("reviewer-two");
   const reviewProfile = reviewRoute.profile;
   const fallbackRoute = resolveWorkflowRoute("plan");
   const fallbackProfile = fallbackRoute.profile;

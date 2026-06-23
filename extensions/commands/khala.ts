@@ -3,8 +3,8 @@ import {
   resolveKhalaProfile,
 } from "../runtime/khala-profiles.ts";
 import {
-  formatWorkflowRouteStatus,
   getMergedRoutes,
+  getWorkflowModelConfigStatus,
 } from "../runtime/workflow-model-router.ts";
 import type { RuntimeState } from "../state/runtime.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -32,100 +32,76 @@ function routesForProfile(profileName: string): string[] {
     .map(([task]) => `/${task}`);
 }
 
+const ANSI = {
+  green: "\x1b[32m",
+  red: "\x1b[31m",
+  reset: "\x1b[0m",
+} as const;
+
+function colorStatusLine(status: "OK" | "ERROR", line: string): string {
+  const color = status === "OK" ? ANSI.green : ANSI.red;
+  return `${color}${line}${ANSI.reset}`;
+}
+
+function profileStatusLabel(profileStatus: "ok" | "unresolved"): "OK" | "ERROR" {
+  return profileStatus === "ok" ? "OK" : "ERROR";
+}
+
+function routedProfileNames(): string[] {
+  const routeProfiles = Object.values(getMergedRoutes());
+  return Array.from(new Set(["planning", "development", ...routeProfiles]));
+}
+
 export function formatKhalaHealthStatus(state: KhalaHealthState): string {
-  const sessionModelLine = state.piSessionModel
-    ? `- model: ${state.piSessionModel}`
-    : "- model: (not available)";
-  const sessionThinkingLine = state.piSessionThinking
-    ? `- thinking: ${state.piSessionThinking}`
-    : "- thinking: (not set)";
-
-  // Build checkhealth-style model profiles section
-  const planningProfile = resolveKhalaProfile("planning");
-  const developmentProfile = resolveKhalaProfile("development");
-
-  const planningStatus = planningProfile.status === "ok" ? "OK" : "ERROR";
-  const devStatus = developmentProfile.status === "ok" ? "OK" : "WARNING";
-
-  const planningRoutes = routesForProfile("planning");
-  const devRoutes = routesForProfile("development");
-
-  const healthSummary: string[] = [];
-  let warningCount = 0;
+  const profiles = routedProfileNames().map((name) => resolveKhalaProfile(name));
+  const configStatus = getWorkflowModelConfigStatus();
   let errorCount = 0;
 
-  if (planningProfile.status !== "ok") errorCount += 1;
-  if (developmentProfile.status !== "ok") warningCount += 1;
+  for (const profile of profiles) {
+    if (profile.status !== "ok") errorCount += 1;
+  }
+  if (!configStatus.found) errorCount += 1;
 
-  const issues: string[] = [];
-  if (warningCount > 0) issues.push(`${warningCount} warning`);
-  if (errorCount > 0) issues.push(`${errorCount} error`);
-  const healthLabel = issues.length > 0
-    ? `Khala health: ${issues.join(", ")}`
-    : "Khala health: OK";
-  healthSummary.push(healthLabel, "");
+  const healthLine = errorCount > 0
+    ? colorStatusLine("ERROR", `Khala health: ${errorCount} error${errorCount === 1 ? "" : "s"}`)
+    : colorStatusLine("OK", "Khala health: OK");
 
-  // Session section
-  healthSummary.push(
-    "Session ~",
+  const lines: string[] = [
+    healthLine,
+    "",
+    "Session Configuration",
+    "=====================",
     `- enabled: ${state.enabled ? "yes" : "no"}`,
     `- memory_tool_limit: ${state.memoryToolLimit}`,
     `- compliance: preflight=${state.firstPrinciplesConfig.preflightMode}, postflight=${state.firstPrinciplesConfig.postflightMode}, response=${state.firstPrinciplesConfig.responseComplianceMode}`,
     "",
-  );
-
-  // Pi session model section
-  healthSummary.push(
-    "Pi session model ~",
-    sessionModelLine,
-    sessionThinkingLine,
+    "Model profiles",
+    "==============",
     "",
-  );
+  ];
 
-  // Khala workflow model routing section
-  healthSummary.push("Khala workflow model routing ~");
-  healthSummary.push(formatWorkflowRouteStatus());
-  healthSummary.push("");
+  const configLine = configStatus.found
+    ? `- OK found at ${configStatus.path ?? "(path unavailable)"}`
+    : `- ERROR workflow-model.yaml not found${configStatus.path ? ` at ${configStatus.path}` : ""}`;
+  lines.push(colorStatusLine(configStatus.found ? "OK" : "ERROR", configLine));
 
-  // Model profiles section (checkhealth-style)
-  const profileLines: string[] = ["Model profiles ~", ""];
-
-  profileLines.push(`- ${planningStatus} planning`);
-  profileLines.push(`  - model: ${planningProfile.model ?? "(unresolved)"}`);
-  profileLines.push(`  - thinking: ${planningProfile.thinkingLevel}`);
-  if (planningRoutes.length > 0) {
-    profileLines.push(`  - used by: ${planningRoutes.join(", ")}`);
-  }
-  if (planningProfile.status !== "ok" && planningProfile.reason) {
-    profileLines.push(`  - problem: ${planningProfile.reason}`);
-  }
-  if (planningProfile.setupHint) {
-    profileLines.push(
-      "  - fix:",
-      ...planningProfile.setupHint
-        .split(/\d\.\s+/)
-        .filter((s) => s.trim())
-        .map((s, i) => `    ${i + 1}. ${s.trim()}`),
-    );
-  }
-  profileLines.push("");
-
-  profileLines.push(`- ${devStatus} development`);
-  profileLines.push(`  - model: ${developmentProfile.model ?? "(unresolved)"}`);
-  profileLines.push(`  - thinking: ${developmentProfile.thinkingLevel}`);
-  if (devRoutes.length > 0) {
-    profileLines.push(`  - used by: ${devRoutes.join(", ")}`);
-  }
-  if (developmentProfile.status !== "ok") {
-    profileLines.push(`  - problem: ${developmentProfile.reason ?? "model was not found in Pi model discovery"}`);
-    profileLines.push(
-      "  - fix:",
-      "    1. pi --list-models gpt-5.4-mini",
-      "    2. edit Khala workflow model config",
-    );
+  for (const profile of profiles) {
+    const status = profileStatusLabel(profile.status);
+    const routes = routesForProfile(profile.name);
+    lines.push("");
+    lines.push(colorStatusLine(status, `- ${status} ${profile.name}`));
+    lines.push(`  - model: ${profile.model ?? "(unresolved)"}`);
+    lines.push(`  - thinking: ${profile.thinkingLevel}`);
+    if (routes.length > 0) {
+      lines.push(`  - used by: ${routes.join(", ")}`);
+    }
+    if (profile.status !== "ok") {
+      lines.push(`  - problem: ${profile.reason ?? "model was not found in Pi model discovery"}`);
+      if (profile.setupHint) lines.push(`  - fix: ${profile.setupHint}`);
+    }
   }
 
-  return [...healthSummary, ...profileLines].join("\n");
+  return lines.join("\n");
 }
 
 export function parseKhalaArgs(args: string | undefined): {
@@ -210,24 +186,10 @@ export function createKhalaCommandHandlers(params: {
       const parsed = parseKhalaArgs(args);
       const normalizedArgs = normalizeWhitespace(parsed.remainingArgs).toLowerCase();
 
-      if (normalizedArgs === "status") {
-        params.notify(
-          ctx,
-          formatKhalaHealthStatus({
-            enabled: params.runtimeState.agentEnabled,
-            memoryToolLimit: params.runtimeState.memoryToolCallLimit,
-            firstPrinciplesConfig: params.runtimeState.firstPrinciplesConfig,
-          }),
-          "info",
-        );
-        return;
-      }
-
       if (normalizedArgs) {
-        const modeArgs = parseKhalaModeArgs(normalizedArgs);
         params.notify(
           ctx,
-          modeArgs.error ?? "Usage: /khala [--learn-tool-limit N|--memory-tool-limit N] or /khala-health for status",
+          "Usage: /khala [--learn-tool-limit N|--memory-tool-limit N] or /khala-health for status",
           "error",
         );
         return;
