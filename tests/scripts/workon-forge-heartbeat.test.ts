@@ -24,7 +24,7 @@ async function writeFakeGh(binDir: string, scenario: string): Promise<void> {
     `#!/usr/bin/env bash
 set -euo pipefail
 fixture_dir=${JSON.stringify(fixtureDir)}
-if [[ "$*" == "api user --jq .login" ]]; then
+if [[ "$*" == *"user"* && "$*" == *".login"* ]]; then
   printf 'pesap\n'
   exit 0
 fi
@@ -32,19 +32,19 @@ if [[ "$*" == "pr list --repo pesap/agents --state open --head ${branch} --json 
   printf '{"number":103,"title":"heartbeat","url":"https://github.com/pesap/agents/pull/103"}\n'
   exit 0
 fi
-if [[ "$*" == "api repos/pesap/agents/issues/103/comments --paginate" ]]; then
+if [[ "$*" == *"repos/pesap/agents/issues/103/comments --paginate"* ]]; then
   cat "$fixture_dir/issue-comments.json"
   exit 0
 fi
-if [[ "$*" == "api repos/pesap/agents/pulls/103/comments --paginate" ]]; then
+if [[ "$*" == *"repos/pesap/agents/pulls/103/comments --paginate"* ]]; then
   cat "$fixture_dir/review-comments.json"
   exit 0
 fi
-if [[ "$*" == "api repos/pesap/agents/pulls/103/reviews --paginate" ]]; then
+if [[ "$*" == *"repos/pesap/agents/pulls/103/reviews --paginate"* ]]; then
   cat "$fixture_dir/reviews.json"
   exit 0
 fi
-if [[ "\${1:-} \${2:-}" == "api graphql" ]]; then
+if [[ "\${1:-}" == "api" && "$*" == *"graphql"* ]]; then
   cat "$fixture_dir/review-threads.json"
   exit 0
 fi

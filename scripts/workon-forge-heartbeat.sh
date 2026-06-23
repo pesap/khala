@@ -18,7 +18,6 @@ repo_owner=""
 repo_name=""
 repo_path=""
 repo_selector=""
-gh_hostname_args=()
 branch=""
 interval="1.0"
 author="@me"
@@ -108,10 +107,8 @@ parse_repo_selector() {
   repo_path="${repo_owner}/${repo_name}"
   if [[ -n "${repo_host}" ]]; then
     repo_selector="${repo_host}/${repo_path}"
-    gh_hostname_args=(--hostname "${repo_host}")
   else
     repo_selector="${repo_path}"
-    gh_hostname_args=()
   fi
 }
 
@@ -137,6 +134,22 @@ interval_seconds() {
 
 json_string() {
   jq -Rn --arg value "$1" '$value'
+}
+
+gh_api() {
+  if [[ -n "${repo_host}" ]]; then
+    gh api --hostname "${repo_host}" "$@"
+  else
+    gh api "$@"
+  fi
+}
+
+gh_api_graphql() {
+  if [[ -n "${repo_host}" ]]; then
+    gh api graphql --hostname "${repo_host}" "$@"
+  else
+    gh api graphql "$@"
+  fi
 }
 
 encode_state_segment() {
@@ -222,7 +235,7 @@ resolve_feedback_author() {
   local resolved_author=""
 
   if [[ "${requested_author}" == "@me" ]]; then
-    resolved_author="$(gh api "${gh_hostname_args[@]}" user --jq .login)"
+    resolved_author="$(gh_api user --jq .login)"
   else
     resolved_author="${requested_author}"
   fi
@@ -244,7 +257,7 @@ fetch_review_threads() {
 
   # GraphQL variable names must remain literal for gh to bind -f/-F values.
   # shellcheck disable=SC2016
-  gh api graphql "${gh_hostname_args[@]}" \
+  gh_api_graphql \
     -f owner="${owner}" \
     -f name="${name}" \
     -F number="${pr_number}" \
@@ -284,13 +297,13 @@ print_feedback_records() {
   local reviews_json=""
   local feedback_filter_path="${script_dir}/workon-forge-heartbeat-feedback.jq"
 
-  if ! issue_comments_json="$(gh api "${gh_hostname_args[@]}" "repos/${repo_path}/issues/${pr_number}/comments" --paginate 2>&1)"; then
+  if ! issue_comments_json="$(gh_api "repos/${repo_path}/issues/${pr_number}/comments" --paginate 2>&1)"; then
     printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
       "$(json_string "repos/${repo_path}/issues/${pr_number}/comments")" \
       "$(json_string "${issue_comments_json}")"
     return 1
   fi
-  if ! review_comments_json="$(gh api "${gh_hostname_args[@]}" "repos/${repo_path}/pulls/${pr_number}/comments" --paginate 2>&1)"; then
+  if ! review_comments_json="$(gh_api "repos/${repo_path}/pulls/${pr_number}/comments" --paginate 2>&1)"; then
     printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
       "$(json_string "repos/${repo_path}/pulls/${pr_number}/comments")" \
       "$(json_string "${review_comments_json}")"
@@ -302,7 +315,7 @@ print_feedback_records() {
       "$(json_string "${review_threads_json}")"
     return 1
   fi
-  if ! reviews_json="$(gh api "${gh_hostname_args[@]}" "repos/${repo_path}/pulls/${pr_number}/reviews" --paginate 2>&1)"; then
+  if ! reviews_json="$(gh_api "repos/${repo_path}/pulls/${pr_number}/reviews" --paginate 2>&1)"; then
     printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
       "$(json_string "repos/${repo_path}/pulls/${pr_number}/reviews")" \
       "$(json_string "${reviews_json}")"
