@@ -377,7 +377,6 @@ export function parseWorkonArgs(args: string): {
   dryRun: boolean;
   modelSelection: WorkonModelSelection;
   extraInstruction: string;
-  error?: string;
 } {
   let rest = normalizeWhitespace(args);
 
@@ -409,29 +408,6 @@ export function parseWorkonArgs(args: string): {
   const heartbeatResult = removeFlag(rest, /(^|\s)--(?:heartbeat|interval)\s+(\S+)(\s|$)/);
   rest = heartbeatResult.value;
   const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
-
-  // --model and --thinking are no longer supported. Reject with a clear message.
-  const modelFlag = /(^|\s)--model\s+/;
-  const thinkingFlag = /(^|\s)--thinking\s+/;
-  if (modelFlag.test(rest) || thinkingFlag.test(rest)) {
-    const error =
-      "/workon no longer accepts --model or --thinking.\n" +
-      "Use Khala workflow profiles for child workflow sessions.\n" +
-      "Use Pi --model/--thinking only for the current Pi session.\n" +
-      "Run /khala-health to inspect workflow routing.";
-    return {
-      target: "",
-      targets: [],
-      repo: "",
-      forge: "auto" as InboxForge,
-      mode: "start" as WorkonMode,
-      heartbeat: "1.0",
-      dryRun: false,
-      modelSelection: DEFAULT_WORKON_MODEL_SELECTION,
-      extraInstruction: "",
-      error,
-    };
-  }
 
   const targets = parseWorkonIssueTargets(rest);
 

@@ -213,7 +213,6 @@ import {
 } from "./runtime/escalation.ts";
 import { RUNTIME_PATHS } from "./runtime/paths.ts";
 import {
-  resetActiveWorkflowRouteForTests,
   setActiveWorkflowRoute,
   setWorkflowModelConfig,
 } from "./runtime/workflow-model-router.ts";

@@ -327,16 +327,15 @@ test("parses workon target and flags", () => {
     extraInstruction: "",
   });
 
-  // --model and --thinking are now rejected with a clear error
+  // --model and --thinking are silently ignored by parseWorkonArgs and flow into target
+  // (the handler rejects them as unrecognized issue targets)
   const modelOnlyResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4");
-  assert.ok(modelOnlyResult.error);
-  assert.match(modelOnlyResult.error!, /no longer accepts --model/);
-  assert.match(modelOnlyResult.error!, /Khala workflow profiles/);
-  assert.match(modelOnlyResult.error!, /Run \/khala-health/);
+  assert.equal(modelOnlyResult.error, undefined);
+  assert.equal(modelOnlyResult.target, "73 --model anthropic/claude-sonnet-4");
 
   const modelAndThinkingResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4 --thinking high");
-  assert.ok(modelAndThinkingResult.error);
-  assert.match(modelAndThinkingResult.error!, /no longer accepts --model/);
+  assert.equal(modelAndThinkingResult.error, undefined);
+  assert.equal(modelAndThinkingResult.target, "73 --model anthropic/claude-sonnet-4 --thinking high");
 
   assert.deepEqual(parseWorkonArgs("73, 74 --repo pesap/agents"), {
     target: "73, 74",

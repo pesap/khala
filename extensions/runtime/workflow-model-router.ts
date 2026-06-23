@@ -11,7 +11,6 @@
  */
 
 import { resolveKhalaProfile, type KhalaModelProfile, type KhalaProfileName } from "./khala-profiles.ts";
-import { parseProfileEntry } from "./workflow-model-config.ts";
 
 // ── Task-to-profile routing ──────────────────────────────────────
 

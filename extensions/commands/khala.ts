@@ -1,6 +1,5 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
-  formatKhalaModelProfilesStatus,
   resolveKhalaProfile,
 } from "../runtime/khala-profiles.ts";
 import {
