@@ -15,6 +15,7 @@ import {
 import {
   prepareWorkonBootstrap,
   resolveWorkonMultiplexer,
+  type WorkonBootstrapRequest,
   type WorkonForge,
   type WorkonMultiplexer,
   type WorkonMode,
@@ -153,6 +154,7 @@ export function createWorkflowCommandHandlers(params: {
     source: WorkflowType,
   ) => void;
   resolveWorkflowConfig: (type: WorkflowType) => WorkflowCommandConfig | null;
+  prepareWorkonBootstrap?: (request: WorkonBootstrapRequest) => Promise<string[]>;
   beginWorkflowTracking: (
     pi: ExtensionAPI,
     ctx: ExtensionCommandContext,
@@ -793,7 +795,8 @@ export function createWorkflowCommandHandlers(params: {
         );
         return;
       }
-      const workonBootstrapSections = await prepareWorkonBootstrap({
+      const workonBootstrap = params.prepareWorkonBootstrap ?? prepareWorkonBootstrap;
+      const workonBootstrapSections = await workonBootstrap({
         cwd: ctx.cwd,
         target: parsed.target,
         targets,

@@ -6,6 +6,7 @@ import {
   workonLocalContextFlags,
 } from "../../extensions/commands/workflow-handlers.ts";
 import { parseWorkonArgs } from "../../extensions/commands/parsers.ts";
+import type { WorkonBootstrapRequest } from "../../extensions/commands/workon.ts";
 
 // /workon now fails fast when no active Zellij session is detected. Default to
 // a sentinel value so existing handler tests continue to exercise the launch
@@ -14,7 +15,10 @@ if (!process.env.ZELLIJ) {
   process.env.ZELLIJ = "/tmp/pi-workflow-handlers-test-zellij";
 }
 
-function createHandlers(captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; notifications?: string[]; enqueueCwd?: string }) {
+function createHandlers(
+  captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string; notifications?: string[]; enqueueCwd?: string },
+  overrides: { prepareWorkonBootstrap?: (request: WorkonBootstrapRequest) => Promise<string[]> } = {},
+) {
   return createWorkflowCommandHandlers({
     pi: { appendEntry: () => undefined } as never,
     notify: (_ctx, message) => captured.notifications?.push(message),
@@ -28,6 +32,7 @@ function createHandlers(captured: { sections?: string[]; flags?: Record<string, 
       workflowFile: "workflows/workon-workflow.yaml",
       entryType: "workflow",
     }) as never,
+    prepareWorkonBootstrap: overrides.prepareWorkonBootstrap,
     beginWorkflowTracking: async (_pi, _ctx, _type, input, flags) => {
       captured.input = input;
       captured.flags = flags as Record<string, unknown>;
@@ -332,7 +337,18 @@ test("workon handler fails fast when no active Zellij session in start mode", as
 
 test("workon handler skips the Zellij gate in --dry-run mode", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; notifications?: string[] } = { notifications: [] };
-  const handlers = createHandlers(captured);
+  const handlers = createHandlers(captured, {
+    prepareWorkonBootstrap: async () => [
+      "Deterministic workon bootstrap evidence:",
+      [
+        "Route: prepared",
+        "Worktree status: prepared",
+        "Worktree path: (not available)",
+        "Session capsule: not written",
+        "Handoff ledger: /tmp/khala/github.com/pesap/agents/issue-73/handoff-ledger.json",
+      ].join("\n"),
+    ],
+  });
   const previous = process.env.ZELLIJ;
   delete process.env.ZELLIJ;
   try {
