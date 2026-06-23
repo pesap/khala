@@ -10,7 +10,7 @@ import test from "node:test";
 const execFileAsync = promisify(execFile);
 
 const requiredPackageFiles = [
-  "khala/index.ts",
+  "bin/khala.js",
   "khala/harness.ts",
   "extensions/index.ts",
   "extensions/runtime/escalation.ts",
@@ -82,11 +82,16 @@ test("package smoke exposes harness through packed package surface", async () =>
       await readFile(path.join(packageRoot, "package.json"), "utf8"),
     ) as {
       exports?: Record<string, string>;
+      bin?: Record<string, string>;
       pi?: {
+        extensions?: string[];
         prompts?: string[];
       };
     };
+    assert.equal(packageJson.bin?.khala, "./bin/khala.js");
+    assert.deepEqual(packageJson.pi?.extensions, ["./extensions/index.ts"]);
     assert.deepEqual(packageJson.pi?.prompts, ["./prompts"]);
+    assert.equal(packageJson.exports?.["."], "./extensions/index.ts");
     const harnessEntry = packageJson.exports?.["./harness"];
     assert.equal(harnessEntry, "./khala/harness.ts");
 

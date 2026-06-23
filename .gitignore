@@ -6,6 +6,7 @@ dist/
 # Runtime / local state
 !extensions/runtime/
 !extensions/runtime/*.ts
+auth.json
 .tmp/
 .pi/
 

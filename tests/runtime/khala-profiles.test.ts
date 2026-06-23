@@ -58,7 +58,28 @@ fi
   }
 });
 
-test("reports unresolved development profile when Pi discovery misses Copilot mini", async () => {
+test("discovers a usable non-Copilot 5.4 mini provider", async () => {
+  await withFakePi(
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models gpt-5.4-mini" ]]; then
+  printf 'provider model context max-out thinking images\n'
+  printf 'openai-codex gpt-5.4-mini 272K 128K yes yes\n'
+  printf 'openrouter openai/gpt-5.4-mini 400K 128K yes yes\n'
+fi
+`,
+    () => {
+      const discovered = discoverCopilotMiniId();
+      assert.deepEqual(discovered, { model: "openai-codex/gpt-5.4-mini" });
+
+      const profile = resolveKhalaProfile("development");
+      assert.equal(profile.model, "openai-codex/gpt-5.4-mini");
+      assert.equal(profile.status, "ok");
+    },
+  );
+});
+
+test("reports unresolved development profile when Pi discovery misses a usable 5.4 mini provider", async () => {
   await withFakePi(
     `#!/usr/bin/env bash
 set -euo pipefail

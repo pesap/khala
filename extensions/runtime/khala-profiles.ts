@@ -15,7 +15,7 @@ export interface KhalaModelProfile {
   setupHint?: string;
 }
 
-interface CopilotMiniDiscovery {
+interface DevelopmentModelDiscovery {
   model: string | null;
   reason?: string;
   setupHint?: string;
@@ -25,30 +25,41 @@ const PLANNING_MODEL = "github-copilot/gpt-5.5";
 const DEVELOPMENT_PROVIDER = "github-copilot";
 const DEVELOPMENT_MODEL = "gpt-5.4-mini";
 const DEVELOPMENT_MODEL_ID = `${DEVELOPMENT_PROVIDER}/${DEVELOPMENT_MODEL}`;
+const DEVELOPMENT_PROVIDER_PREFERENCE = [DEVELOPMENT_PROVIDER, "openai-codex"];
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
-let copilotMiniDiscoveryCache: CopilotMiniDiscovery | null = null;
+let copilotMiniDiscoveryCache: DevelopmentModelDiscovery | null = null;
 
 function setupHint(reason: string): string {
   return [
     `Run /khala status to inspect model profiles (${reason}).`,
-    `Ensure Pi model discovery lists ${DEVELOPMENT_MODEL_ID} with: pi --list-models ${DEVELOPMENT_MODEL}`,
+    `Ensure Pi model discovery lists a usable ${DEVELOPMENT_MODEL} with: pi --list-models ${DEVELOPMENT_MODEL}`,
     "If this environment intentionally lacks that model, pass /workon --model <provider/model> for an explicit override.",
   ].join(" ");
 }
 
 function parsePiListModelsTable(output: string): string | null {
-  const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  for (const line of lines) {
-    const [provider, model] = line.split(/\s+/);
-    if (provider === DEVELOPMENT_PROVIDER && model === DEVELOPMENT_MODEL) {
-      return `${provider}/${model}`;
-    }
+  const candidates = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [provider, model] = line.split(/\s+/);
+      return provider && model ? { provider, model } : null;
+    })
+    .filter((candidate): candidate is { provider: string; model: string } => candidate !== null)
+    .filter((candidate) => candidate.model === DEVELOPMENT_MODEL);
+
+  for (const provider of DEVELOPMENT_PROVIDER_PREFERENCE) {
+    const preferred = candidates.find((candidate) => candidate.provider === provider);
+    if (preferred) return `${preferred.provider}/${preferred.model}`;
   }
-  return null;
+
+  const fallback = candidates[0];
+  return fallback ? `${fallback.provider}/${fallback.model}` : null;
 }
 
-export function discoverCopilotMiniId(): CopilotMiniDiscovery {
+export function discoverCopilotMiniId(): DevelopmentModelDiscovery {
   if (copilotMiniDiscoveryCache) return copilotMiniDiscoveryCache;
 
   const result = spawnSync("pi", ["--list-models", DEVELOPMENT_MODEL], {
@@ -83,7 +94,7 @@ export function discoverCopilotMiniId(): CopilotMiniDiscovery {
     return copilotMiniDiscoveryCache;
   }
 
-  const reason = `${DEVELOPMENT_MODEL_ID} was not found in Pi model discovery output`;
+  const reason = `No usable ${DEVELOPMENT_MODEL} provider was found in Pi model discovery output; preferred ${DEVELOPMENT_MODEL_ID}`;
   copilotMiniDiscoveryCache = {
     model: null,
     reason,

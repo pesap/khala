@@ -20,30 +20,39 @@ maintenance work, and recoverable agent sessions.
 
 ## Quick Start
 
-Install Khala as a Pi package:
+Run the setup helper with `npx`:
 
 ```bash
-pi install https://github.com/pesap/agents.git
+npx khala
 ```
 
-Start a session:
+The helper asks whether to install globally or into the current project, then
+asks which workflow models to write into Khala's workflow config.
+
+If the package is already installed, run the helper directly:
+
+```bash
+khala
+```
+
+Or configure Pi directly:
+
+```bash
+pi install npm:khala              # writes ~/.pi/agent/settings.json
+pi install -l npm:khala           # writes .pi/settings.json for this project
+```
+
+Start Pi and initialize Khala:
 
 ```text
 /khala
+/khala status
 ```
 
-Run without installing:
+Try the current checkout without installing:
 
 ```bash
-pi -e https://github.com/pesap/agents.git -p "/khala status"
-```
-
-Useful first checks:
-
-```text
-/khala status
-/inbox
-/run-list active
+pi --no-extensions -e ./extensions/index.ts -p "/khala status"
 ```
 
 ## What Khala Adds
@@ -194,8 +203,9 @@ Rule examples:
 ## Model Profiles
 
 Khala routes workflow child sessions through named model profiles.
-Profiles and routes are configurable via `~/.pi/khala/workflow-model.yaml`.
-See [docs/workflow-model-routing.md](docs/workflow-model-routing.md) for details.
+Profiles and routes are configurable via `.pi/khala/workflow-model.yaml` for project installs or `~/.pi/agent/khala/workflow-model.yaml` for global installs.
+Set `PI_CODING_AGENT_DIR` if your global Pi config directory is elsewhere. See
+[docs/workflow-model-routing.md](docs/workflow-model-routing.md) for details.
 
 ## Runtime Behavior
 
@@ -233,6 +243,10 @@ Khala keeps package code and mutable state separate.
 | `skills/` | Packaged reusable skills. |
 | `extensions/` | Pi extension implementation. |
 | `scripts/` | Lightweight guard and regression checks. |
+| `~/.pi/agent/settings.json` | Global Pi package configuration; `pi install npm:khala` writes here. |
+| `.pi/settings.json` | Project-local Pi package configuration; `pi install -l npm:khala` writes here. |
+| `.pi/khala/` | Project-local Khala configuration files such as `workflow-model.yaml`. |
+| `~/.pi/agent/khala/` | Global Khala configuration files such as `workflow-model.yaml`. |
 | `~/.pi/khala/` | Mutable Khala state: memory, learned skills, rules, run ledgers, and runtime logs. |
 
 The repository intentionally ignores `.pi/`. Project-local Pi settings and
@@ -286,11 +300,10 @@ Run the Pi integration smoke:
 npm run test:pi
 ```
 
-Use an editable local install while developing:
+Use the current checkout while developing:
 
 ```bash
-pi install -l .
-pi -p "/khala status"
+pi --no-extensions -e ./extensions/index.ts -p "/khala status"
 ```
 
 If a global URL install is also enabled, remove it to avoid duplicate extension

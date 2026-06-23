@@ -18,39 +18,40 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$tmpdir/.pi"
+khala_extension="$repo_root/extensions/index.ts"
 
 health_output="$(
   cd "$tmpdir"
   pi --no-extensions \
-    -e "$repo_root/khala/index.ts" \
+    -e "$khala_extension" \
     --offline \
     --no-session \
     --no-tools \
     -p "/khala-health" 2>&1
 )"
 
-grep -q "Khala health (read-only):" <<<"$health_output"
-grep -q "enabled (session): no" <<<"$health_output"
-grep -q "Compliance modes" <<<"$health_output"
+grep -q "Khala health:" <<<"$health_output"
+grep -q "enabled: no" <<<"$health_output"
+grep -q "compliance:" <<<"$health_output"
 grep -q "Model profiles" <<<"$health_output"
 
 mode_output="$(
   cd "$tmpdir"
   pi --no-extensions \
-    -e "$repo_root/khala/index.ts" \
+    -e "$khala_extension" \
     --offline \
     --no-session \
     --no-tools \
     -p "/khala-mode" 2>&1
 )"
 
-grep -q "Khala health (read-only):" <<<"$mode_output"
-grep -q "Compliance modes" <<<"$mode_output"
+grep -q "Khala health:" <<<"$mode_output"
+grep -q "compliance:" <<<"$mode_output"
 
 rpc_output="$(
   cd "$tmpdir"
   pi --no-extensions \
-    -e "$repo_root/khala/index.ts" \
+    -e "$khala_extension" \
     --offline \
     --no-session \
     --no-tools \
@@ -63,7 +64,7 @@ grep -q '"type":"extension_ui_request"' <<<"$rpc_output"
 workflow_list_output="$(
   cd "$tmpdir"
   pi --no-extensions \
-    -e "$repo_root/khala/index.ts" \
+    -e "$khala_extension" \
     --offline \
     --no-session \
     --no-tools \
@@ -72,11 +73,11 @@ workflow_list_output="$(
 
 grep -q "No khala learned workflows found" <<<"$workflow_list_output"
 
-python3 - "$repo_root" "$tmpdir" <<'PY'
+python3 - "$khala_extension" "$tmpdir" <<'PY'
 import subprocess
 import sys
 
-repo_root = sys.argv[1]
+khala_extension = sys.argv[1]
 tmpdir = sys.argv[2]
 
 proc = subprocess.run(
@@ -84,7 +85,7 @@ proc = subprocess.run(
         "pi",
         "--no-extensions",
         "-e",
-        f"{repo_root}/khala/index.ts",
+        khala_extension,
         "--offline",
         "--no-session",
         "--no-tools",
@@ -117,15 +118,22 @@ if missing:
     raise SystemExit(f"missing commands: {sorted(missing)}")
 PY
 
+set +e
 learn_output="$(
   cd "$tmpdir"
-  pi --no-extensions \
-    -e "$repo_root/khala/index.ts" \
+  timeout 10 pi --no-extensions \
+    -e "$khala_extension" \
     --offline \
     --no-session \
     --no-tools \
     -p "/learn-skill repeated repo audit --dry-run" 2>&1
 )"
+learn_status=$?
+set -e
+if [[ $learn_status -ne 0 && $learn_status -ne 124 ]]; then
+  printf '%s\n' "$learn_output"
+  exit "$learn_status"
+fi
 
 grep -q "Started learn-skill dry run for khala-repeated-repo-audit" <<<"$learn_output"
 

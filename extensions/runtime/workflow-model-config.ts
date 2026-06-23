@@ -1,7 +1,7 @@
 /**
  * Durable config for workflow model profiles and routes.
  *
- * Config path: <khala-store>/workflow-model.yaml
+ * Config path: <pi-agent-config>/khala/workflow-model.yaml
  *
  * Example config:
  * ```yaml
@@ -25,10 +25,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { exists } from "../lib/io.ts";
-import type {
-  KhalaProfileName,
-  KhalaThinkingLevel,
-} from "./khala-profiles.ts";
+import type { KhalaThinkingLevel } from "./khala-profiles.ts";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -122,8 +119,12 @@ function parseYamlLine(
   const match = trimmed.match(/^([a-zA-Z_][a-zA-Z0-9_-]*)\s*:\s*(.+)$/);
   if (!match) return null;
 
-  const value = match[2]!.trim().replace(/^["']|["']$/g, "");
-  return { key: match[1]!, value, indent };
+  const key = match[1];
+  const rawValue = match[2];
+  if (!key || !rawValue) return null;
+
+  const value = rawValue.trim().replace(/^["']|["']$/g, "");
+  return { key, value, indent };
 }
 
 function parseYamlConfig(raw: string): {
@@ -146,7 +147,8 @@ function parseYamlConfig(raw: string): {
         /^([a-zA-Z_][a-zA-Z0-9_-]*)\s*:\s*$/,
       );
       if (sectionMatch) {
-        const section = sectionMatch[1]!;
+        const section = sectionMatch[1];
+        if (!section) continue;
         if (section === "profiles" || section === "routes") {
           currentSection = section;
         } else if (parsed === null) {
@@ -269,7 +271,7 @@ export async function loadWorkflowModelConfig(
 }
 
 /**
- * Get the default config file path under the khala store root.
+ * Get the default config file path under a Khala config root.
  */
 export function getWorkflowModelConfigPath(khalaStoreRoot: string): string {
   return path.join(khalaStoreRoot, CONFIG_FILE_NAME);

@@ -2,6 +2,7 @@
 .codex
 .pi/
 agent/
+auth.json
 runtime/memory/
 
 # Repository and development-only metadata

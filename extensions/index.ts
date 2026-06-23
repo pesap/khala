@@ -211,7 +211,7 @@ import {
   memorySearchQueryQuality,
   type HarnessTurnIssue,
 } from "./runtime/escalation.ts";
-import { RUNTIME_PATHS } from "./runtime/paths.ts";
+import { RUNTIME_PATHS, resolveWorkflowModelConfigPath } from "./runtime/paths.ts";
 import {
   setActiveWorkflowRoute,
   setWorkflowModelConfig,
@@ -2018,8 +2018,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     });
 
     // Load workflow model config
+    const trustAwareCtx = ctx as typeof ctx & { isProjectTrusted?: () => boolean };
     const workflowModelConfig = await loadWorkflowModelConfig(
-      RUNTIME_PATHS.workflowModelConfigPath,
+      await resolveWorkflowModelConfigPath(ctx.cwd, trustAwareCtx.isProjectTrusted?.() ?? false),
     );
     setWorkflowModelConfig(workflowModelConfig.config);
 

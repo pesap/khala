@@ -11,8 +11,11 @@
   ],
   "license": "MIT",
   "exports": {
-    ".": "./khala/index.ts",
+    ".": "./extensions/index.ts",
     "./harness": "./khala/harness.ts"
+  },
+  "bin": {
+    "khala": "./bin/khala.js"
   },
   "scripts": {
     "smoke": "npm run lint && npm run test",
@@ -32,7 +35,7 @@
   },
   "pi": {
     "extensions": [
-      "./khala/index.ts"
+      "./extensions/index.ts"
     ],
     "prompts": [
       "./prompts"

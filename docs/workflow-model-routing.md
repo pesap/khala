@@ -32,7 +32,15 @@ model. You can use both scopes simultaneously without conflict.
 
 ## Durable Config
 
-Instead of passing flags each time, create `~/.pi/khala/workflow-model.yaml`:
+Instead of passing flags each time, create one of these files:
+
+- Project install: `.pi/khala/workflow-model.yaml`
+- Global install: `~/.pi/agent/khala/workflow-model.yaml`
+- Custom global Pi config: `$PI_CODING_AGENT_DIR/khala/workflow-model.yaml`
+
+Project config is used only after Pi trusts the project. If both project and global config exist, the trusted project config wins.
+
+Example:
 
 ```yaml
 profiles:
@@ -64,14 +72,14 @@ When no flags or config are provided:
 
 | Task | Resolved profile | Model | Thinking |
 |------|-----------------|-------|----------|
-| `/workon` | development | `github-copilot/gpt-5.4-mini` (Pi-discovered) | `medium` |
+| `/workon` | development | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
 | `/plan`, `/triage`, `/debug` | planning | `github-copilot/gpt-5.5` | `xhigh` |
-| `/review`, `/audit` | development | `github-copilot/gpt-5.4-mini` (Pi-discovered) | `medium` |
+| `/review`, `/audit` | development | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
 
 | Profile | Default | Thinking | Used by |
 |---------|---------|----------|---------|
 | `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan`, `/triage`, `/debug` |
-| `development` | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon`, `/review`, `/audit` |
+| `development` | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` | `/workon`, `/review`, `/audit` |
 
 ## Health
 
