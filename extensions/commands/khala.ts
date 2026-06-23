@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { formatKhalaModelProfilesStatus } from "../runtime/khala-profiles.ts";
+import { formatWorkflowRouteStatus } from "../runtime/workflow-model-router.ts";
 import type { RuntimeState } from "../state/runtime.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
 import { parseKhalaModeArgs } from "./parsers.ts";
@@ -14,6 +15,8 @@ export interface KhalaHealthState {
   enabled: boolean;
   memoryToolLimit: number;
   firstPrinciplesConfig: RuntimeState["firstPrinciplesConfig"];
+  piSessionModel?: string;
+  piSessionThinking?: string;
 }
 
 function formatComplianceModes(
@@ -23,11 +26,26 @@ function formatComplianceModes(
 }
 
 export function formatKhalaHealthStatus(state: KhalaHealthState): string {
+  const sessionModelLine = state.piSessionModel
+    ? `- model: ${state.piSessionModel}`
+    : "- model: (not available)";
+  const sessionThinkingLine = state.piSessionThinking
+    ? `- thinking: ${state.piSessionThinking}`
+    : "- thinking: (not set)";
+
   return [
     "Khala health (read-only):",
     `- enabled (session): ${state.enabled ? "yes" : "no"}`,
     `- memory_tool_limit: ${state.memoryToolLimit}`,
     `- Compliance modes (session): ${formatComplianceModes(state.firstPrinciplesConfig)}.`,
+    "",
+    "Pi session model ~",
+    sessionModelLine,
+    sessionThinkingLine,
+    "",
+    "Khala workflow model routing ~",
+    formatWorkflowRouteStatus(),
+    "",
     formatKhalaModelProfilesStatus(),
   ].join("\n");
 }

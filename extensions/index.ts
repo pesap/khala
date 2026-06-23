@@ -213,6 +213,10 @@ import {
 } from "./runtime/escalation.ts";
 import { RUNTIME_PATHS } from "./runtime/paths.ts";
 import {
+  resetActiveWorkflowRouteForTests,
+  setActiveWorkflowRoute,
+} from "./runtime/workflow-model-router.ts";
+import {
   cloneRuntimeProfile,
   DEFAULT_RUNTIME_PROFILE,
   getWorkflowConfig,
@@ -1587,6 +1591,21 @@ function renderKhalaLearnResult(
 
 export default function khalaExtension(pi: ExtensionAPI): void {
   ensureBundledExtensions(pi);
+
+  // ── Khala workflow model profile flags ────────────────────────
+  pi.registerFlag("khala-workflow-profile", {
+    description:
+      "Default Khala workflow profile for spawned workflow sessions (e.g., development, planning).",
+    type: "string",
+    default: "",
+  });
+  pi.registerFlag("khala-workflow-task", {
+    description:
+      "Resolve a Khala workflow route (e.g., workon -> development, plan -> planning).",
+    type: "string",
+    default: "",
+  });
+
   const loosePi = pi as unknown as LooseExtensionAPI;
 
   loosePi.registerTool({
@@ -1992,6 +2011,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    setActiveWorkflowRoute({
+      profileFlag: (pi.getFlag("khala-workflow-profile") as string) ?? "",
+      taskFlag: (pi.getFlag("khala-workflow-task") as string) ?? "",
+    });
+
     const [hookConfig, profileLoad] = await Promise.all([
       loadHooksConfig(RUNTIME_PATHS.hooksConfigPath, DEFAULT_HOOK_CONFIG),
       loadRuntimeProfile(RUNTIME_PATHS.profileConfigPath).catch((error) => ({
