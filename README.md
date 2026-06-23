@@ -6,7 +6,7 @@
 work.**
 
 <p>
-  <a href="https://github.com/pesap/agents/blob/main/LICENSE.txt"><img alt="License: MIT" src="https://img.shields.io/github/license/pesap/agents?labelColor=111827&color=6f42c1"></a>
+  <a href="https://github.com/pesap/khala/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/pesap/khala?labelColor=111827&color=6f42c1"></a>
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white">
   <img alt="Pi package" src="https://img.shields.io/badge/Pi-package-6f42c1?style=flat&logo=gnometerminal&logoColor=white">
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-guarded-22c55e?style=flat">
@@ -24,7 +24,13 @@ long-running maintenance work, and recoverable agent sessions.
 Run the setup helper directly from GitHub with `npm exec`:
 
 ```bash
-npm exec --yes --package "github:pesap/agents#main" -- khala
+npm exec --yes --package "github:pesap/khala#main" -- khala
+```
+
+The equivalent `npx` form is:
+
+```bash
+npx --yes github:pesap/khala
 ```
 
 The helper asks whether to install globally or into the current project, then
@@ -48,13 +54,13 @@ Start Pi and initialize Khala:
 
 ```text
 /khala
-/khala status
+/khala-health
 ```
 
 Try the current checkout without installing:
 
 ```bash
-pi --no-extensions -e ./extensions/index.ts -p "/khala status"
+pi --no-extensions -e ./extensions/index.ts -p "/khala-health"
 ```
 
 ## What Khala Adds
@@ -74,13 +80,16 @@ pi --no-extensions -e ./extensions/index.ts -p "/khala status"
 ## Core Loop
 
 ```mermaid
-flowchart LR
+flowchart TD
   A[Command or task] --> B[Workflow contract]
   B --> C[Skill and rule context]
   C --> D[Policy gates]
   D --> E[Tools and edits]
   E --> F[Validation]
   F --> G[Ledger and learning]
+  G --> H{More work?}
+  H -->|yes| C
+  H -->|no| I[Final response]
 ```
 
 ## Commands
@@ -154,9 +163,8 @@ Khala records durable workflow runs under `~/.pi/khala/runs/`.
 Resume is intentionally conservative. Unknown, shell, mutation, forge, external,
 or metadata-less mutation events after the latest checkpoint require operator
 review before Khala will resume automatically. Run `/khala-health` to inspect
-profile resolution. `/khala status` remains a compatibility alias that returns
-the same read-only health output in a `:checkhealth`-style diagnostic format.
-The health output includes:
+profile resolution. The health output uses a `:checkhealth`-style diagnostic
+format and includes:
 
 - **Session** section: enabled status, memory tool limit, compliance modes.
 - **Pi session model** section: current interactive Pi model and thinking level.
@@ -170,14 +178,14 @@ falling back to the planning model.
 
 ### Policy Commands
 
-| Command                                                                                 | Purpose                                                                                                                                                                                                                                         |
-| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/khala`                                                                                | Initialize khala and set compliance to `warn`.                                                                                                                                                                                                  |
-| `/khala-health`                                                                         | Report read-only Khala health/status in `:checkhealth`-style format, including session enablement, memory tool limit, compliance modes, Pi session model, workflow routing flags, and model profiles. `/khala status` is a compatibility alias. |
-| `/khala-mode status\|strict\|enforce\|warn\|warning\|monitor\|reset\|default\|defaults` | Report or change compliance mode. `status` matches `/khala-health` while the other values change compliance; `default` and `defaults` restore the first-principles defaults.                                                                    |
-| `/approve-risk <reason> [--ttl MINUTES]`                                                | Approve one high-risk command (TTL 1–120 min, default 20).                                                                                                                                                                                      |
-| `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>`           | Record manual mutation intent.                                                                                                                                                                                                                  |
-| `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>`               | Record verification evidence.                                                                                                                                                                                                                   |
+| Command                                                                                 | Purpose                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/khala`                                                                                | Initialize khala and set compliance to `warn`.                                                                                                                                                        |
+| `/khala-health`                                                                         | Report read-only Khala health/status in `:checkhealth`-style format, including session enablement, memory tool limit, compliance modes, Pi session model, workflow routing flags, and model profiles. |
+| `/khala-mode [strict\|enforce\|warn\|warning\|monitor\|reset\|default\|defaults]`       | With no arguments, report read-only status. With a mode argument, change compliance mode; `default` and `defaults` restore the first-principles defaults.                                             |
+| `/approve-risk <reason> [--ttl MINUTES]`                                                | Approve one high-risk command (TTL 1–120 min, default 20).                                                                                                                                            |
+| `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>`           | Record manual mutation intent.                                                                                                                                                                        |
+| `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>`               | Record verification evidence.                                                                                                                                                                         |
 
 ### Learning, Skills, and Rules
 
@@ -313,14 +321,14 @@ npm run test:pi
 Use the current checkout while developing:
 
 ```bash
-pi --no-extensions -e ./extensions/index.ts -p "/khala status"
+pi --no-extensions -e ./extensions/index.ts -p "/khala-health"
 ```
 
 If a global URL install is also enabled, remove it to avoid duplicate extension
 registration:
 
 ```bash
-pi remove https://github.com/pesap/agents.git
+pi remove https://github.com/pesap/khala.git
 ```
 
 ## Design Goals

@@ -91,7 +91,7 @@ printf 'github-copilot gpt-5.4 400K 128K yes yes\n'
       assert.equal(profile.model, null);
       assert.equal(profile.status, "unresolved");
       assert.match(profile.reason ?? "", /github-copilot\/gpt-5\.4-mini/);
-      assert.match(profile.setupHint ?? "", /\/khala status/);
+      assert.match(profile.setupHint ?? "", /\/khala-health/);
 
       const status = formatKhalaModelProfilesStatus();
       assert.match(status, /Model profiles:/);

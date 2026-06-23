@@ -225,7 +225,7 @@ import {
   type RuntimeProfile,
   type WorkflowType,
 } from "./runtime/profile.ts";
-import { notify, setKhalaStatus } from "./runtime/ui.ts";
+import { formatKhalaStatusLabel, notify, setKhalaStatus } from "./runtime/ui.ts";
 type PreflightClarify = PreflightRecord["clarify"];
 type PreflightSource = PreflightRecord["source"];
 
@@ -1207,7 +1207,10 @@ function setAgentEnabledState(
 }
 
 function refreshKhalaModeStatus(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
-  setKhalaStatus(ctx, `khala-mode: ${runtimeState.firstPrinciplesConfig.responseComplianceMode}`);
+  setKhalaStatus(
+    ctx,
+    formatKhalaStatusLabel(ctx, runtimeState.firstPrinciplesConfig.responseComplianceMode),
+  );
 }
 
 function ensureAgentEnabledForCommand(

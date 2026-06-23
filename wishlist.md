@@ -1,26 +1,40 @@
-- Fix CI/CD and add more meaningfull testing
-- Text displaying khala enabled on pi should be: "khala-mode: <mode>" and should
-  be on always similary to thinking steps.
-- Workflow spawning should be something like this wwhere we read the default
-  instructions from ther workflow and can pass a model and it uses or ledger
+- Be able to run khala-cli as npx github:pesap/khala. Add #!/usr/bin/env node to
+  the code
+- FIx/clean all the node installationL
 
-```
-import { createAgent, type FlueContext } from '@flue/runtime';
+```console
+khala on  main via  v25.2.1 via 37GiB/48GiB | 1GiB/2GiB took 4s
+❯ pi install  https://github.com/pesap/khala
+Installing https://github.com/pesap/khala...
+Cloning into '/Users/psanchez/.pi/agent/git/github.com/pesap/khala'...
+remote: Enumerating objects: 4659, done.
+remote: Counting objects: 100% (722/722), done.
+remote: Compressing objects: 100% (216/216), done.
+remote: Total 4659 (delta 617), reused 513 (delta 505), pack-reused 3937 (from 1)
+Receiving objects: 100% (4659/4659), 3.46 MiB | 8.75 MiB/s, done.
+Resolving deltas: 100% (2563/2563), done.
+npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
 
-const summarizer = createAgent(() => ({
-  model: 'anthropic/claude-haiku-4-5',
-  instructions: 'Summarize the supplied document clearly and concisely.',
-}));
-
-export async function run({ init, payload }: FlueContext<{ text: string }>) {
-  const harness = await init(summarizer);
-  const session = await harness.session();
-  const response = await session.prompt(payload.text);
-
-  return { summary: response.text };
-}
+added 252 packages, and audited 253 packages in 4s
 ```
 
-- Workon also uses ledget for resumable and resurreactable
-- Remove deprecated commands like end-agent
-- Finish issue 209-211
+- Fix preflight UX for agent when running enforce:
+
+```
+ $ /preflight Preflight: skill=github reason="Investigate failing CI/CD using gh read-only commands"
+ clarify=no (timeout 10s)
+
+ /bin/bash: line 1: /preflight: No such file or directory
+
+
+ Command exited with code 127
+```
+
+- Add MIT license
+- Clean README with new commands. It still uses : khala status instead of
+  khala-status
+- Uodate core loop diagram looks like a constant flow not a loop
+- Use same color pallete for khala-mode banner on pi. khala mode should
+  behiglight at different color dependdning on the mode but kahala mode should
+  follow similar pi colors.

@@ -236,7 +236,7 @@ async function main() {
     if (process.exitCode === 0) {
       writeWorkflowConfig(targetConfigPath, models);
       console.log(`Wrote ${targetConfigPath}`);
-      console.log("Next: start pi and run `/khala status`.");
+      console.log("Next: start pi and run `/khala-health`.");
     }
   } finally {
     rl?.close();

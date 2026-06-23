@@ -1,6 +1,23 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { PolicyMode } from "../policy/first-principles.ts";
 
 export type NotifyType = "info" | "error" | "warning" | "success";
+
+const KHALA_MODE_COLORS: Record<PolicyMode, "accent" | "warning" | "error"> = {
+  monitor: "accent",
+  warn: "warning",
+  enforce: "error",
+};
+
+export function formatKhalaStatusLabel(
+  ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+  mode: PolicyMode,
+): string {
+  const value = ctx.hasUI
+    ? ctx.ui.theme.fg(KHALA_MODE_COLORS[mode], mode)
+    : mode;
+  return `khala-mode: ${value}`;
+}
 
 export function setKhalaStatus(
   ctx: Pick<ExtensionContext, "hasUI" | "ui">,

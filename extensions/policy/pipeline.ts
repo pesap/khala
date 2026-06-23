@@ -13,6 +13,15 @@ export function evaluateSpawnPolicy(command: string, options: {
   hasValidRiskApproval: boolean;
   nowIso: () => string;
 }): SpawnPolicyResult {
+  const slashCommandBlock = getSlashCommandShellBlockMessage(command);
+  if (slashCommandBlock) {
+    return {
+      blockedMessage: slashCommandBlock,
+      riskEvent: null,
+      consumeRiskApproval: false,
+    };
+  }
+
   const blockedMessage = getBlockedCommandMessage(command);
   if (blockedMessage) {
     return {
@@ -28,6 +37,19 @@ export function evaluateSpawnPolicy(command: string, options: {
     riskEvent: riskResult.event,
     consumeRiskApproval: riskResult.consumeApproval,
   };
+}
+
+function getSlashCommandShellBlockMessage(command: string): string | null {
+  const normalized = command.trim();
+  const match = normalized.match(/^\/(preflight|postflight)\b/);
+  if (!match) return null;
+
+  const slashCommand = `/${match[1]}`;
+  return [
+    `Blocked shell execution of ${slashCommand}.`,
+    `${slashCommand} is a Pi chat command, not a shell command.`,
+    "Send the record as assistant text in the chat so Khala can parse it, then retry the blocked operation.",
+  ].join("\n");
 }
 
 interface MutationPreflightDecision {
@@ -110,7 +132,7 @@ export function evaluateMutationPreflightPolicy(options: {
       blockReason: [
         `Policy blocked ${options.toolName}.`,
         "Missing or invalid preflight before first mutation.",
-        "Run:",
+        "Send this as chat text, not through the shell:",
         "  /preflight Preflight: skill=<name|none> reason=\"<short>\" clarify=<yes|no>",
         "Remediate and retry.",
       ].join("\n"),

@@ -179,7 +179,7 @@ function defaultWorkonModelSelection(): WorkonModelSelection {
     routingMode: "default",
     routingReason: profile.model
       ? `Khala/workon ${route.profileName} profile (${profile.source}; ${routeSource})`
-      : `Khala/workon ${route.profileName} profile unresolved via ${routeSource}: ${profile.reason ?? "unknown reason"}. Run /khala status for setup guidance or pass --model <id>.`,
+    : `Khala/workon ${route.profileName} profile unresolved via ${routeSource}: ${profile.reason ?? "unknown reason"}. Run /khala-health for setup guidance or pass --model <id>.`,
   };
 }
 
@@ -2186,7 +2186,7 @@ export async function prepareWorkonBootstrap(
   const worktreeCommand = `cd ${shellQuote(resolvedRequest.cwd)} && wt switch --create ${branchName} --format json`;
   const modelSelection = workonModelSelection(resolvedRequest);
   if (modelSelection.routingMode === "default" && !modelSelection.exactModel) {
-    const operatorAction = "Run /khala status for model profile setup guidance, or rerun /workon with an explicit --model <provider/model> override.";
+    const operatorAction = "Run /khala-health for model profile setup guidance, or rerun /workon with an explicit --model <provider/model> override.";
     const failureSummary = modelSelection.routingReason;
     evidence.issue = issue;
     evidence.issues = issues;

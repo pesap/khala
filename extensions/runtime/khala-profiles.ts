@@ -43,7 +43,7 @@ export function setKhalaWorkflowProfilesForRuntime(
 
 function setupHint(reason: string): string {
   return [
-    `Run /khala status to inspect model profiles (${reason}).`,
+    `Run /khala-health to inspect model profiles (${reason}).`,
     `Ensure Pi model discovery lists a usable ${DEVELOPMENT_MODEL} with: pi --list-models ${DEVELOPMENT_MODEL}`,
     "If this environment intentionally lacks that model, pass /workon --model <provider/model> for an explicit override.",
   ].join(" ");
@@ -128,7 +128,7 @@ function resolveConfiguredProfile(name: KhalaProfileName): KhalaModelProfile | n
       source: "workflow-model-config",
       status: "unresolved",
       reason,
-      setupHint: `Edit Khala workflow model config and run /khala status again. ${reason}`,
+      setupHint: `Edit Khala workflow model config and run /khala-health again. ${reason}`,
     };
   }
 

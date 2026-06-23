@@ -1504,7 +1504,7 @@ fi
     assert.equal(scriptCall, undefined);
     assert.match(rendered, /Route: blocked/);
     assert.match(rendered, /development profile unresolved/);
-    assert.match(rendered, /Run \/khala status for model profile setup guidance/);
+    assert.match(rendered, /Run \/khala-health for model profile setup guidance/);
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
     assert.match(rendered, /Exact model: \(unresolved\)/);
     assert.doesNotMatch(rendered, /Handoff failure:/);
@@ -1513,7 +1513,7 @@ fi
     assert.equal((ledger.worktree as { status: string }).status, "blocked");
     assert.equal((ledger.pi as { status: string }).status, "not-launched");
     assert.equal((ledger.failure as { phase: string }).phase, "bootstrap");
-    assert.match(String(ledger.safeNextAction), /\/khala status/);
+    assert.match(String(ledger.safeNextAction), /\/khala-health/);
   } finally {
     resetKhalaProfileDiscoveryForTests();
     if (previousPath === undefined) delete process.env.PATH;
