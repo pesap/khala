@@ -34,8 +34,12 @@ npx --yes github:pesap/khala
 ```
 
 The helper asks whether to install globally or into the current project, then
-asks which workflow models to write into Khala's workflow config. This path does
-not require a local checkout or a published npm package.
+asks which workflow models to write into Khala's workflow config. After that it
+reacts to the Pi state already on disk: it checks `pi --list-models` for model
+availability, reads read-only `models.json` provider discovery from Pi's config
+directory, and shows LiteLLM-compatible aliases when they already exist. Khala
+does not prompt for raw API keys, call Pi `/login`, or manage a separate secret
+store. This path does not require a local checkout or a published npm package.
 
 If the package is already installed, run the helper directly:
 
