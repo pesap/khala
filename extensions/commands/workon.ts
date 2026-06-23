@@ -35,6 +35,8 @@ const PACKAGE_ROOT = path.resolve(MODULE_DIR, "..", "..");
 
 export type WorkonForge = "auto" | "github" | "gitlab" | "all";
 export type WorkonMode = "prepare" | "start";
+export type WorkonMultiplexer = "auto" | "none" | "zellij" | "tmux";
+export type ResolvedWorkonMultiplexer = "none" | "zellij" | "tmux";
 export type WorkonThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface WorkonModelSelection {
@@ -75,6 +77,17 @@ interface WorkonHandoffLedger {
   };
   launchEligibility: {
     activeZellij: boolean;
+    requestedMultiplexer: WorkonMultiplexer;
+    resolvedMultiplexer: ResolvedWorkonMultiplexer;
+  };
+  multiplexer: {
+    status: "skipped" | "not-attempted" | "launched" | "blocked";
+    requested: WorkonMultiplexer;
+    resolved: ResolvedWorkonMultiplexer;
+    scopeName: string | null;
+    scopeId: string | number | null;
+    paneId: string | null;
+    worktreeAction: string | null;
   };
   zellij: {
     status: "skipped" | "not-attempted" | "launched" | "blocked";
@@ -144,7 +157,8 @@ export interface WorkonBootstrapRequest {
   dryRun?: boolean;
   capsuleRoot: string;
   nowIso: string;
-  launchInZellij: boolean;
+  requestedMultiplexer: WorkonMultiplexer;
+  resolvedMultiplexer: ResolvedWorkonMultiplexer;
   heartbeat: string;
   modelSelection?: WorkonModelSelection;
 }
@@ -218,7 +232,8 @@ interface WorkonBootstrapEvidence {
   handoffPrompt?: string;
   ledgerPath?: string;
   ledger?: WorkonHandoffLedger;
-  zellijActive?: boolean;
+  requestedMultiplexer?: WorkonMultiplexer;
+  resolvedMultiplexer?: ResolvedWorkonMultiplexer;
   handoffRecoveryInstructions?: string[];
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
@@ -231,13 +246,34 @@ interface WorkonBootstrapEvidence {
   }>;
 }
 
-interface ZellijHandoffResult {
+export interface ResolveWorkonMultiplexerParams {
+  requested: WorkonMultiplexer;
+  env: Pick<NodeJS.ProcessEnv, "ZELLIJ" | "TMUX">;
+}
+
+export function isActiveZellijEnv(value: string | undefined): boolean {
+  return Boolean(value?.trim());
+}
+
+export function resolveWorkonMultiplexer(params: ResolveWorkonMultiplexerParams): ResolvedWorkonMultiplexer {
+  if (params.requested !== "auto") return params.requested;
+  if (isActiveZellijEnv(params.env.ZELLIJ)) return "zellij";
+  if (isActiveZellijEnv(params.env.TMUX)) return "tmux";
+  return "none";
+}
+
+interface MultiplexerHandoffResult {
+  multiplexer?: ResolvedWorkonMultiplexer;
   status?: string;
   reason?: string;
   detail?: string;
   path?: string;
+  scopeName?: string;
+  scopeId?: string | number;
   tabName?: string;
   tabId?: string | number;
+  sessionName?: string;
+  sessionId?: string | number;
   piPaneId?: string;
   piPaneAction?: string;
   heartbeatPaneId?: string;
@@ -480,7 +516,7 @@ function compactDiagnosticSnippet(value: string | undefined): string {
   return `${line.slice(0, MAX_HANDOFF_DIAGNOSTIC_PART_LENGTH - 1)}…`;
 }
 
-function zellijHandoffDiagnosticParts(result: CommandResult, parsed: ZellijHandoffResult | null): string[] {
+function multiplexerHandoffDiagnosticParts(result: CommandResult, parsed: MultiplexerHandoffResult | null): string[] {
   const parts: string[] = [];
   const timeoutDiagnostic = commandTimeoutDiagnostic(result);
   if (timeoutDiagnostic) parts.push(timeoutDiagnostic);
@@ -506,27 +542,28 @@ function boundedDiagnosticSummary(parts: string[]): string {
   return `${summary.slice(0, MAX_HANDOFF_DIAGNOSTIC_SUMMARY_LENGTH - 1)}…`;
 }
 
-function zellijHandoffFailureSummary(
+function multiplexerHandoffFailureSummary(
   branchName: string,
   result: CommandResult,
-  parsed: ZellijHandoffResult | null,
+  parsed: MultiplexerHandoffResult | null,
 ): string {
   const reason = commandTimeoutDiagnostic(result)
     ? "timeout"
     : parsed?.reason
     ? `reason=${parsed.reason}`
     : "command failed";
-  const detail = zellijHandoffDiagnostic(result, parsed);
-  return `Zellij Pi handoff ${branchName}: ${reason}: ${detail}`;
+  const detail = multiplexerHandoffDiagnostic(result, parsed);
+  const multiplexer = parsed?.multiplexer ?? "zellij";
+  return `Multiplexer Pi handoff (${multiplexer}) ${branchName}: ${reason}: ${detail}`;
 }
 
-function zellijHandoffDiagnostic(result: CommandResult, parsed: ZellijHandoffResult | null): string {
-  const parts = zellijHandoffDiagnosticParts(result, parsed);
+function multiplexerHandoffDiagnostic(result: CommandResult, parsed: MultiplexerHandoffResult | null): string {
+  const parts = multiplexerHandoffDiagnosticParts(result, parsed);
   return parts.length > 0 ? boundedDiagnosticSummary(parts) : "no diagnostic output";
 }
 
 function noRetryHandoffAction(
-  parsed: ZellijHandoffResult | null,
+  parsed: MultiplexerHandoffResult | null,
   modelSelection: WorkonModelSelection,
 ): string | undefined {
   switch (parsed?.reason) {
@@ -544,10 +581,6 @@ function noRetryHandoffAction(
   }
 }
 
-export function isActiveZellijEnv(value: string | undefined): boolean {
-  return Boolean(value?.trim());
-}
-
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -558,12 +591,13 @@ function buildHandoffRecoveryInstructions(params: {
   branchName: string;
   capsulePath: string;
 }): string[] {
-  const zellijHandoffScript = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
+  const handoffScript = path.join(PACKAGE_ROOT, "scripts", "workon-multiplexer-handoff.sh");
   const modelSelection = workonModelSelection(params.request);
   const modelArg = modelSelection.exactModel ? ` --model ${shellQuote(modelSelection.exactModel)}` : "";
   const thinkingArg = ` --thinking ${shellQuote(modelSelection.exactThinkingLevel)}`;
+  const multiplexer = params.request.resolvedMultiplexer === "none" ? "zellij" : params.request.resolvedMultiplexer;
   return [
-    `Retry Zellij handoff from an active Zellij pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(zellijHandoffScript)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}${modelArg}${thinkingArg} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
+    `Retry multiplexer handoff (${multiplexer}) from an active ${multiplexer} pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(handoffScript)} --multiplexer ${shellQuote(multiplexer)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}${modelArg}${thinkingArg} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
   ];
 }
 
@@ -636,14 +670,14 @@ function routeInstructionBlock(params: {
         "Route: not_ready",
         "Allowed action: stop and report the readiness action items.",
         `Only next command: /triage ${params.issueUrl ?? "<issue-url>"}`,
-        "Forbidden actions: no Worktrunk start, capsule writing, Zellij tab or pane creation, Pi launch, heartbeat launch, or GitHub comments.",
+        "Forbidden actions: no Worktrunk start, capsule writing, multiplexer scope or pane creation, Pi launch, heartbeat launch, or GitHub comments.",
       ].join("\n");
     case "prepared":
       return [
         "## Deterministic /workon route",
         "Route: prepared",
         "Allowed action: report the prepared branch, capsule, ledger, and exact next command.",
-        "Forbidden actions: do not start Worktrunk, Zellij, Pi, or heartbeat from this prompt.",
+        "Forbidden actions: do not start Worktrunk, a multiplexer, Pi, or heartbeat from this prompt.",
       ].join("\n");
     case "started":
       return [
@@ -651,7 +685,7 @@ function routeInstructionBlock(params: {
         "Route: started",
         "Allowed action: report the existing worktree/capsule/ledger and the route-owned recovery command.",
         `Recovery command: ${params.recoveryCommand ?? "(not available)"}`,
-        "Forbidden actions: do not create a second worktree/tab or rediscover Zellij launch commands.",
+        "Forbidden actions: do not create a second worktree/scope or rediscover multiplexer launch commands.",
       ].join("\n");
     case "launched":
       return [
@@ -752,7 +786,7 @@ function buildHandoffLedger(params: {
   handoffTimedOut?: boolean;
   failureSummary?: string;
   gaps?: string[];
-  zellijResult?: ZellijHandoffResult | null;
+  multiplexerResult?: MultiplexerHandoffResult | null;
 }): WorkonHandoffLedger {
   const sourceIssues = params.issues?.length ? params.issues : [params.issue];
   const readinessActionItems = params.readinessActionItems ?? [];
@@ -765,13 +799,22 @@ function buildHandoffLedger(params: {
     : params.heartbeatCommand
       ? "started"
       : "not-launched";
-  const zellijStatus = !params.request.launchInZellij
+  const multiplexerStatus = params.request.resolvedMultiplexer === "none"
     ? "skipped"
     : params.worktreeStatus === "launched"
       ? "launched"
       : params.worktreeStatus === "blocked"
         ? "blocked"
         : "not-attempted";
+  const zellijStatus = params.request.resolvedMultiplexer === "zellij" ? multiplexerStatus : "skipped";
+  const scopeName = params.multiplexerResult?.scopeName
+    ?? params.multiplexerResult?.tabName
+    ?? params.multiplexerResult?.sessionName
+    ?? null;
+  const scopeId = params.multiplexerResult?.scopeId
+    ?? params.multiplexerResult?.tabId
+    ?? params.multiplexerResult?.sessionId
+    ?? null;
   const failureReason = readinessActionItems.length > 0
     ? "Autonomous readiness failed."
     : params.handoffFailureSummary ?? params.failureSummary ?? firstMeaningfulGap(params.gaps ?? []);
@@ -779,8 +822,8 @@ function buildHandoffLedger(params: {
   const failurePhase = failureReason
     ? readinessActionItems.length > 0
       ? "readiness"
-      : params.handoffFailureSummary || params.handoffTimedOut || params.zellijResult
-        ? "zellij-handoff"
+      : params.handoffFailureSummary || params.handoffTimedOut || params.multiplexerResult
+        ? "multiplexer-handoff"
         : params.failureSummary
           ? "bootstrap"
           : params.worktreeStatus === "blocked"
@@ -805,26 +848,37 @@ function buildHandoffLedger(params: {
       path: params.worktreePath ?? null,
     },
     launchEligibility: {
-      activeZellij: params.request.launchInZellij,
+      activeZellij: params.request.resolvedMultiplexer === "zellij",
+      requestedMultiplexer: params.request.requestedMultiplexer,
+      resolvedMultiplexer: params.request.resolvedMultiplexer,
+    },
+    multiplexer: {
+      status: multiplexerStatus,
+      requested: params.request.requestedMultiplexer,
+      resolved: params.request.resolvedMultiplexer,
+      scopeName,
+      scopeId,
+      paneId: params.multiplexerResult?.piPaneId ?? null,
+      worktreeAction: params.multiplexerResult?.worktreeAction ?? null,
     },
     zellij: {
       status: zellijStatus,
-      tabName: params.zellijResult?.tabName ?? null,
-      tabId: params.zellijResult?.tabId ?? null,
-      worktreeAction: params.zellijResult?.worktreeAction ?? null,
+      tabName: params.request.resolvedMultiplexer === "zellij" ? params.multiplexerResult?.tabName ?? null : null,
+      tabId: params.request.resolvedMultiplexer === "zellij" ? params.multiplexerResult?.tabId ?? null : null,
+      worktreeAction: params.request.resolvedMultiplexer === "zellij" ? params.multiplexerResult?.worktreeAction ?? null : null,
     },
     pi: {
       status: piStatus,
-      paneId: params.zellijResult?.piPaneId ?? null,
-      paneAction: params.zellijResult?.piPaneAction ?? null,
+      paneId: params.multiplexerResult?.piPaneId ?? null,
+      paneAction: params.multiplexerResult?.piPaneAction ?? null,
       handoffCommand: params.piHandoffCommand ?? null,
       acknowledgementCommand: buildHandoffAcknowledgementCommand(ledgerPath),
     },
     heartbeat: {
       status: heartbeatStatus,
       interval: params.request.heartbeat,
-      paneId: params.zellijResult?.heartbeatPaneId ?? null,
-      action: params.zellijResult?.heartbeatAction ?? null,
+      paneId: params.multiplexerResult?.heartbeatPaneId ?? null,
+      action: params.multiplexerResult?.heartbeatAction ?? null,
       command: params.heartbeatCommand ?? null,
     },
     phases: {
@@ -832,6 +886,7 @@ function buildHandoffLedger(params: {
       readiness: readinessActionItems.length > 0 ? "not-ready" : "ready",
       capsule: params.capsulePath ? "written" : "not-written",
       worktree: params.worktreeStatus,
+      multiplexer: multiplexerStatus,
       zellij: zellijStatus,
       pi: piStatus,
       heartbeat: heartbeatStatus,
@@ -842,8 +897,8 @@ function buildHandoffLedger(params: {
       phase: failurePhase,
       reason: params.handoffTimedOut
         ? "timeout"
-        : params.zellijResult?.reason ?? (readinessActionItems.length > 0 ? "readiness-not-ready" : null),
-      detail: params.zellijResult?.detail ?? (readinessActionItems.length > 0 ? null : failureReason),
+        : params.multiplexerResult?.reason ?? (readinessActionItems.length > 0 ? "readiness-not-ready" : null),
+      detail: params.multiplexerResult?.detail ?? (readinessActionItems.length > 0 ? null : failureReason),
       summary: failureReason,
     },
     safeNextAction: buildLedgerSafeNextAction({
@@ -1424,7 +1479,8 @@ function capsuleMarkdown(params: {
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffPrompt: string;
-  zellijActive?: boolean;
+  requestedMultiplexer?: WorkonMultiplexer;
+  resolvedMultiplexer?: ResolvedWorkonMultiplexer;
   handoffRecoveryInstructions?: string[];
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
@@ -1480,7 +1536,9 @@ Pi handoff command: ${params.piHandoffCommand ?? "(not launched)"}
 Forge heartbeat command: ${params.heartbeatCommand ?? "(not launched)"}
 Handoff ledger: ${ledgerPath}
 Capsule acknowledgement command: ${buildHandoffAcknowledgementCommand(ledgerPath)}
-Launch eligibility: active Zellij ${params.zellijActive ? "yes" : "no"}
+Multiplexer requested: ${params.requestedMultiplexer ?? params.request.requestedMultiplexer}
+Multiplexer resolved: ${params.resolvedMultiplexer ?? params.request.resolvedMultiplexer}
+Launch eligibility: active multiplexer ${params.request.resolvedMultiplexer !== "none" ? "yes" : "no"}
 Heartbeat interval: ${params.request.heartbeat}
 Dry run: ${params.request.dryRun ? "yes" : "no"}
 Exact model: ${modelSelection.exactModel}
@@ -1711,7 +1769,8 @@ async function writeCapsule(params: {
   piHandoffCommand?: string;
   heartbeatCommand?: string;
   handoffPrompt: string;
-  zellijActive?: boolean;
+  requestedMultiplexer?: WorkonMultiplexer;
+  resolvedMultiplexer?: ResolvedWorkonMultiplexer;
   handoffRecoveryInstructions?: string[];
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
@@ -1736,12 +1795,12 @@ function extractWorktreePath(output: string): string | undefined {
   return output.match(/(?:^|\s)(\/[^\s]+)/)?.[1];
 }
 
-function parseZellijHandoffResult(output: string): ZellijHandoffResult | null {
+function parseMultiplexerHandoffResult(output: string): MultiplexerHandoffResult | null {
   for (const line of output.split(/\r?\n/).reverse()) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
     try {
-      const parsed = JSON.parse(trimmed) as ZellijHandoffResult;
+      const parsed = JSON.parse(trimmed) as MultiplexerHandoffResult;
       return parsed && typeof parsed === "object" ? parsed : null;
     } catch {
       return null;
@@ -1770,14 +1829,16 @@ async function startWorktreeIfRequested(
   handoffOperatorAction?: string;
   handoffFailureSummary?: string;
   handoffTimedOut?: boolean;
-  zellijResult?: ZellijHandoffResult | null;
+  multiplexerResult?: MultiplexerHandoffResult | null;
 }> {
   if (request.mode !== "start" || request.dryRun) return { status: "prepared" };
 
-  if (request.launchInZellij) {
-    const scriptPath = path.join(PACKAGE_ROOT, "scripts", "workon-zellij-handoff.sh");
+  if (request.resolvedMultiplexer !== "none") {
+    const scriptPath = path.join(PACKAGE_ROOT, "scripts", "workon-multiplexer-handoff.sh");
     const handoffArgs = [
       scriptPath,
+      "--multiplexer",
+      request.resolvedMultiplexer,
       "--repo",
       params.repo,
       "--branch",
@@ -1804,10 +1865,11 @@ async function startWorktreeIfRequested(
       handoffArgs,
       DEFAULT_ZELLIJ_HANDOFF_TIMEOUT_MS,
     );
-    const parsed = parseZellijHandoffResult(`${handoffResult.stdout}\n${handoffResult.stderr}`);
-    const handoffGap = resultGap(`Zellij Pi handoff ${params.branchName}`, handoffResult);
+    const parsed = parseMultiplexerHandoffResult(`${handoffResult.stdout}\n${handoffResult.stderr}`);
+    const multiplexerLabel = `Multiplexer Pi handoff (${request.resolvedMultiplexer}) ${params.branchName}`;
+    const handoffGap = resultGap(multiplexerLabel, handoffResult);
     if (handoffGap) {
-      const handoffFailureSummary = zellijHandoffFailureSummary(params.branchName, handoffResult, parsed);
+      const handoffFailureSummary = multiplexerHandoffFailureSummary(params.branchName, handoffResult, parsed);
       const handoffOperatorAction = noRetryHandoffAction(parsed, modelSelection);
       const handoffRecoveryInstructions = handoffOperatorAction
         ? []
@@ -1820,15 +1882,15 @@ async function startWorktreeIfRequested(
       evidence.gaps.push(handoffFailureSummary);
       if (parsed?.path) {
         evidence.gaps.push(
-          `Zellij Pi handoff ${params.branchName}: Worktree/tab was created but Pi was not launched; continue in ${parsed.tabName ?? "the Worktrunk tab"}, not this session.`,
+          `${multiplexerLabel}: Worktree/scope was created but Pi was not launched; continue in ${parsed.scopeName ?? parsed.tabName ?? parsed.sessionName ?? "the Worktrunk multiplexer scope"}, not this session.`,
         );
       } else if (commandTimedOut(handoffResult)) {
         evidence.gaps.push(
-          `Zellij Pi handoff ${params.branchName}: timed out while waiting for the Zellij handoff script's normal tab discovery window; retry is still safe because the handoff script reuses an existing branch/worktree when Worktrunk reports one.`,
+          `${multiplexerLabel}: timed out while waiting for the handoff script's normal discovery window; retry is still safe because the handoff script reuses an existing branch/worktree when Worktrunk reports one.`,
         );
       } else if (!handoffOperatorAction) {
         evidence.gaps.push(
-          `Zellij Pi handoff ${params.branchName}: failed before a Worktrunk path was reported; retry is still safe because the handoff script reuses an existing branch/worktree when Worktrunk reports one.`,
+          `${multiplexerLabel}: failed before a Worktrunk path was reported; retry is still safe because the handoff script reuses an existing branch/worktree when Worktrunk reports one.`,
         );
       }
       evidence.gaps.push(
@@ -1845,12 +1907,12 @@ async function startWorktreeIfRequested(
         handoffOperatorAction,
         handoffFailureSummary,
         handoffTimedOut: commandTimedOut(handoffResult),
-        zellijResult: parsed,
+        multiplexerResult: parsed,
       };
     }
 
     if (parsed?.status !== "launched" || !parsed.path) {
-      const handoffFailureSummary = `Zellij Pi handoff ${params.branchName}: result JSON missing launched path`;
+      const handoffFailureSummary = `${multiplexerLabel}: result JSON missing launched path`;
       const handoffRecoveryInstructions = buildHandoffRecoveryInstructions({
         request,
         repo: params.repo,
@@ -1862,16 +1924,16 @@ async function startWorktreeIfRequested(
         status: "blocked",
         handoffRecoveryInstructions,
         handoffFailureSummary,
-        zellijResult: parsed,
+        multiplexerResult: parsed,
       };
     }
 
     return {
       status: "launched",
       path: parsed.path,
-      piHandoffCommand: parsed.piHandoffCommand ?? "scripts/workon-zellij-handoff.sh",
+      piHandoffCommand: parsed.piHandoffCommand ?? "scripts/workon-multiplexer-handoff.sh",
       heartbeatCommand: parsed.heartbeatCommand,
-      zellijResult: parsed,
+      multiplexerResult: parsed,
     };
   }
 
@@ -1907,7 +1969,7 @@ async function startWorktreeIfRequested(
       })
     : [];
   evidence.gaps.push(
-    "Pi handoff skipped: active Zellij was not detected, so /workon used direct Worktrunk start; Pi and forge heartbeat cannot be launched from the direct path.",
+    "Pi handoff skipped: multiplexer resolved to none, so /workon used direct Worktrunk start; Pi and forge heartbeat cannot be launched from the direct path.",
     ...handoffRecoveryInstructions,
   );
 
@@ -1959,12 +2021,16 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Suggested branch: ${evidence.branchName}`,
         `Suggested Worktrunk command: ${evidence.worktreeCommand}`,
         `Bootstrap phase guidance: resolve issue -> prepare capsule -> ${evidence.worktreeStatus === "prepared" ? "suggest branch only" : "create worktree"} -> ${evidence.worktreeStatus === "launched" ? "launch Pi -> launch heartbeat" : "handoff not launched"}`,
-        `Launch eligibility: active Zellij ${evidence.zellijActive ? "yes" : "no"}`,
+        `Multiplexer requested: ${evidence.requestedMultiplexer ?? evidence.ledger?.multiplexer.requested ?? "auto"}`,
+        `Multiplexer resolved: ${evidence.resolvedMultiplexer ?? evidence.ledger?.multiplexer.resolved ?? "none"}`,
+        `Launch eligibility: active multiplexer ${(evidence.resolvedMultiplexer ?? evidence.ledger?.multiplexer.resolved) !== "none" ? "yes" : "no"}`,
         `Worktree status: ${evidence.worktreeStatus ?? "prepared"}`,
         `Worktree path: ${evidence.worktreePath ?? "(not available)"}`,
         ...(evidence.handoffFailureSummary ? [`Handoff failure: ${evidence.handoffFailureSummary}`] : []),
         ...(evidence.ledger?.zellij.tabName ? [`Zellij tab name: ${evidence.ledger.zellij.tabName}`] : []),
         ...(evidence.ledger?.zellij.tabId !== null && evidence.ledger?.zellij.tabId !== undefined ? [`Zellij tab ID: ${evidence.ledger.zellij.tabId}`] : []),
+        ...(evidence.ledger?.multiplexer.scopeName ? [`Multiplexer scope name: ${evidence.ledger.multiplexer.scopeName}`] : []),
+        ...(evidence.ledger?.multiplexer.scopeId !== null && evidence.ledger?.multiplexer.scopeId !== undefined ? [`Multiplexer scope ID: ${evidence.ledger.multiplexer.scopeId}`] : []),
         ...(evidence.ledger?.zellij.worktreeAction ? [`Worktree action: ${evidence.ledger.zellij.worktreeAction}`] : []),
         ...(evidence.ledger?.pi.paneId ? [`Pi pane ID: ${evidence.ledger.pi.paneId}`] : []),
         ...(evidence.ledger?.pi.paneAction ? [`Pi pane action: ${evidence.ledger.pi.paneAction}`] : []),
@@ -2144,9 +2210,9 @@ export async function prepareWorkonBootstrap(
     return formatWorkonBootstrapEvidence(evidence);
   }
   if (resolvedRequest.dryRun) {
-    evidence.gaps.push("Dry run requested: prepared capsule and branch suggestion only; no Worktrunk, Zellij, Pi, or heartbeat launch was attempted.");
+    evidence.gaps.push("Dry run requested: prepared capsule and branch suggestion only; no Worktrunk, multiplexer, Pi, or heartbeat launch was attempted.");
   }
-  const initialRoute: WorkonRoute = resolvedRequest.mode === "start" && !resolvedRequest.dryRun && resolvedRequest.launchInZellij
+  const initialRoute: WorkonRoute = resolvedRequest.mode === "start" && !resolvedRequest.dryRun && resolvedRequest.resolvedMultiplexer !== "none"
     ? "launched"
     : "prepared";
   const handoffPrompt = await buildHandoffPrompt({
@@ -2169,7 +2235,8 @@ export async function prepareWorkonBootstrap(
     worktreeCommand,
     worktreeStatus: "prepared",
     handoffPrompt,
-    zellijActive: resolvedRequest.launchInZellij,
+    requestedMultiplexer: resolvedRequest.requestedMultiplexer,
+    resolvedMultiplexer: resolvedRequest.resolvedMultiplexer,
   });
   const worktree = await startWorktreeIfRequested(resolvedRequest, runner, evidence, {
     repo,
@@ -2204,7 +2271,8 @@ export async function prepareWorkonBootstrap(
     piHandoffCommand: worktree.piHandoffCommand,
     heartbeatCommand: worktree.heartbeatCommand,
     handoffPrompt: finalHandoffPrompt,
-    zellijActive: resolvedRequest.launchInZellij,
+    requestedMultiplexer: resolvedRequest.requestedMultiplexer,
+    resolvedMultiplexer: resolvedRequest.resolvedMultiplexer,
     handoffRecoveryInstructions: worktree.handoffRecoveryInstructions,
     handoffOperatorAction: worktree.handoffOperatorAction,
     handoffFailureSummary: worktree.handoffFailureSummary,
@@ -2222,7 +2290,8 @@ export async function prepareWorkonBootstrap(
   evidence.modelSelection = workonModelSelection(resolvedRequest);
   evidence.route = worktree.status;
   evidence.handoffPrompt = finalHandoffPrompt;
-  evidence.zellijActive = resolvedRequest.launchInZellij;
+  evidence.requestedMultiplexer = resolvedRequest.requestedMultiplexer;
+  evidence.resolvedMultiplexer = resolvedRequest.resolvedMultiplexer;
   evidence.handoffRecoveryInstructions = worktree.handoffRecoveryInstructions;
   evidence.handoffOperatorAction = worktree.handoffOperatorAction;
   evidence.handoffFailureSummary = worktree.handoffFailureSummary;
@@ -2244,7 +2313,7 @@ export async function prepareWorkonBootstrap(
     handoffFailureSummary: worktree.handoffFailureSummary,
     handoffTimedOut: worktree.handoffTimedOut,
     gaps: evidence.gaps,
-    zellijResult: worktree.zellijResult,
+    multiplexerResult: worktree.multiplexerResult,
   });
   evidence.ledger = ledger;
   evidence.ledgerPath = await writeHandoffLedger(ledger);

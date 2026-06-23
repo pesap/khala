@@ -65,24 +65,39 @@ exit 0
   );
 }
 
+async function writeFakeTmux(binDir: string, tmuxLog: string): Promise<void> {
+  await writeExecutable(
+    path.join(binDir, "tmux"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> ${JSON.stringify(tmuxLog)}
+exit 0
+`,
+  );
+}
+
 async function setupScenario(scenario: string): Promise<{
   tempDir: string;
   env: NodeJS.ProcessEnv;
   stateFile: string;
   zellijLog: string;
+  tmuxLog: string;
 }> {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-forge-heartbeat-test-"));
   const binDir = path.join(tempDir, "bin");
   await mkdir(binDir);
   const stateFile = path.join(tempDir, "state", "heartbeat.json");
   const zellijLog = path.join(tempDir, "zellij.log");
+  const tmuxLog = path.join(tempDir, "tmux.log");
   await writeFakeGh(binDir, scenario);
   await writeFakeZellij(binDir, zellijLog);
+  await writeFakeTmux(binDir, tmuxLog);
 
   return {
     tempDir,
     stateFile,
     zellijLog,
+    tmuxLog,
     env: {
       ...process.env,
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -90,7 +105,7 @@ async function setupScenario(scenario: string): Promise<{
   };
 }
 
-async function runHeartbeat(env: NodeJS.ProcessEnv, stateFile: string): Promise<string> {
+async function runHeartbeat(env: NodeJS.ProcessEnv, stateFile: string, multiplexer = "zellij"): Promise<string> {
   const { stdout } = await execFileAsync(
     "bash",
     [
@@ -101,6 +116,8 @@ async function runHeartbeat(env: NodeJS.ProcessEnv, stateFile: string): Promise<
       branch,
       "--interval",
       "1.0",
+      "--multiplexer",
+      multiplexer,
       "--author",
       "@me",
       "--notify-pane",
@@ -155,6 +172,21 @@ test("forge heartbeat sends unresolved root review threads as structured actiona
 
     const state = JSON.parse(await readFile(stateFile, "utf8"));
     assert.deepEqual(state.notifiedKeys, [thread.dedupeKey]);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("forge heartbeat notifies tmux targets when requested", async () => {
+  const { tempDir, env, stateFile, tmuxLog } = await setupScenario("unresolved-review-thread");
+  try {
+    const stdout = await runHeartbeat(env, stateFile, "tmux");
+    assert.match(stdout, /"status":"notified-pi"/);
+
+    const tmuxActions = await readFile(tmuxLog, "utf8");
+    assert.match(tmuxActions, /send-keys -t terminal_99 -l/);
+    assert.match(tmuxActions, /BEGIN UNTRUSTED FORGE FEEDBACK JSON/);
+    assert.match(tmuxActions, /send-keys -t terminal_99 Enter/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

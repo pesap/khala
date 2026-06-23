@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createWorkflowCommandHandlers } from "../../extensions/commands/workflow-handlers.ts";
+import {
+  createWorkflowCommandHandlers,
+  workonLocalContextFlags,
+} from "../../extensions/commands/workflow-handlers.ts";
 import { parseWorkonArgs } from "../../extensions/commands/parsers.ts";
 
 // /workon now fails fast when no active Zellij session is detected. Default to
@@ -169,6 +172,29 @@ test("debug handler asks proposed issues to satisfy /workon packet contract", as
   assert.match(rendered, /Review-size risk/);
 });
 
+test("workon bootstrap sections expose resumable local run ledger context", () => {
+  assert.deepEqual(
+    workonLocalContextFlags([
+      "Worktree path: /tmp/worktrunk.fix-73",
+      "Session capsule: /tmp/khala/github.com/pesap/agents/issue-73/capsule.md",
+      "Handoff ledger: /tmp/khala/github.com/pesap/agents/issue-73/handoff-ledger.json",
+    ]),
+    {
+      worktreePath: "/tmp/worktrunk.fix-73",
+      capsulePath: "/tmp/khala/github.com/pesap/agents/issue-73/capsule.md",
+      ledgerPath: "/tmp/khala/github.com/pesap/agents/issue-73/handoff-ledger.json",
+    },
+  );
+  assert.deepEqual(
+    workonLocalContextFlags([
+      "Worktree path: (not available)",
+      "Session capsule: not written",
+      "Handoff ledger: not written",
+    ]),
+    {},
+  );
+});
+
 test("workon handler groups comma-separated issue targets into one bootstrap", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
   const handlers = createHandlers(captured);
@@ -299,13 +325,13 @@ test("workon handler fails fast when no active Zellij session in start mode", as
   assert.equal(captured.notifications?.length, 1);
   assert.match(
     captured.notifications?.[0] ?? "",
-    /needs an active Zellij session/,
+    /needs an active multiplexer session/,
   );
   assert.match(captured.notifications?.[0] ?? "", /--dry-run/);
 });
 
 test("workon handler skips the Zellij gate in --dry-run mode", async () => {
-  const captured: { sections?: string[]; notifications?: string[] } = { notifications: [] };
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; notifications?: string[] } = { notifications: [] };
   const handlers = createHandlers(captured);
   const previous = process.env.ZELLIJ;
   delete process.env.ZELLIJ;
@@ -317,5 +343,9 @@ test("workon handler skips the Zellij gate in --dry-run mode", async () => {
 
   // Dry-run should still build sections (it never launches anything).
   assert.ok(captured.sections);
+  assert.equal(captured.flags?.capsulePath, undefined);
+  assert.equal(typeof captured.flags?.ledgerPath, "string");
+  assert.match(String(captured.flags?.ledgerPath), /\/handoff-ledger\.json$/);
+  assert.equal(captured.flags?.worktreePath, undefined);
   assert.deepEqual(captured.notifications, []);
 });

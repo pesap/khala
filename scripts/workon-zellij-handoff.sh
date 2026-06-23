@@ -122,10 +122,12 @@ heartbeat_command=""
 emit_blocked_json() {
   local reason="${1:?blocked reason required}"
   local detail="${2:-}"
-  printf '{"status":"blocked","reason":%s,"detail":%s,"path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatPaneId":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
+  printf '{"status":"blocked","multiplexer":"zellij","reason":%s,"detail":%s,"path":%s,"scopeName":%s,"scopeId":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"heartbeatPaneId":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
     "$(json_string "${reason}")" \
     "$(json_string "${detail}")" \
     "$(json_string_or_null "${worktree_path}")" \
+    "$(json_string_or_null "${tab_name}")" \
+    "$(json_string_or_null "${tab_id}")" \
     "$(json_string_or_null "${tab_name}")" \
     "$(json_string_or_null "${tab_id}")" \
     "$(json_string_or_null "${pi_pane_id}")" \
@@ -664,13 +666,13 @@ if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
     heartbeat_action="reused"
     heartbeat_command="reused existing forge-heartbeat pane ${heartbeat_pane_id}"
   else
-    heartbeat_args=(bash "${heartbeat_script}" --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me)
+    heartbeat_args=(bash "${heartbeat_script}" --multiplexer zellij --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me)
     if [[ -n "${pi_pane_id}" ]]; then
       heartbeat_args+=(--notify-pane "${pi_pane_id}")
     else
       printf 'Zellij did not report a Pi pane id; forge heartbeat will not actively notify Pi.\n' >&2
     fi
-    heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
+    heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --multiplexer zellij --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
     if [[ -n "${pi_pane_id}" ]]; then
       heartbeat_command="${heartbeat_command} --notify-pane ${pi_pane_id}"
     fi
@@ -697,8 +699,10 @@ if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
   fi
 fi
 
-printf '{"status":"launched","path":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"piPaneAction":%s,"heartbeatPaneId":%s,"heartbeatAction":%s,"heartbeatInterval":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
+printf '{"status":"launched","multiplexer":"zellij","path":%s,"scopeName":%s,"scopeId":%s,"tabName":%s,"tabId":%s,"piPaneId":%s,"piPaneAction":%s,"heartbeatPaneId":%s,"heartbeatAction":%s,"heartbeatInterval":%s,"worktreeAction":%s,"piHandoffCommand":%s,"heartbeatCommand":%s}\n' \
   "$(json_string "${worktree_path}")" \
+  "$(json_string "${tab_name}")" \
+  "${tab_id}" \
   "$(json_string "${tab_name}")" \
   "${tab_id}" \
   "$(json_string_or_null "${pi_pane_id}")" \

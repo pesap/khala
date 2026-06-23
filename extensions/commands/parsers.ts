@@ -11,6 +11,7 @@ import {
 import {
   DEFAULT_WORKON_MODEL_SELECTION,
   WORKON_DEFAULT_THINKING_LEVEL,
+  type WorkonMultiplexer,
   type WorkonMode,
   type WorkonModelSelection,
   type WorkonThinkingLevel,
@@ -53,7 +54,7 @@ export type CompliancePreset = "status" | "reset" | PolicyMode;
 export type KhalaModePreset = "status" | "reset" | PolicyMode;
 
 const WORKON_MODES: readonly WorkonMode[] = ["prepare", "start"];
-const WORKON_THINKING_LEVELS: readonly WorkonThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const WORKON_MULTIPLEXERS: readonly WorkonMultiplexer[] = ["auto", "none", "zellij", "tmux"];
 
 const COMPLIANCE_PRESET_ALIASES: Record<string, CompliancePreset> = {
   status: "status",
@@ -373,6 +374,7 @@ export function parseWorkonArgs(args: string): {
   repo: string;
   forge: InboxForge;
   mode: WorkonMode;
+  multiplexer: WorkonMultiplexer;
   heartbeat: string;
   dryRun: boolean;
   modelSelection: WorkonModelSelection;
@@ -405,6 +407,26 @@ export function parseWorkonArgs(args: string): {
   );
   const mode = dryRun ? "prepare" : parsedMode;
 
+  const multiplexerResult = removeFlag(rest, /(^|\s)--multiplexer\s+(\S+)(\s|$)/);
+  rest = multiplexerResult.value;
+  const multiplexer = parseAllowedInboxValue(
+    multiplexerResult.match?.[2],
+    "auto",
+    WORKON_MULTIPLEXERS,
+  );
+
+  const modelResult = removeFlag(rest, /(^|\s)--model\s+(\S+)(\s|$)/);
+  rest = modelResult.value;
+  const explicitModel = normalizeWhitespace(modelResult.match?.[2] ?? "");
+  const modelSelection: WorkonModelSelection = explicitModel
+    ? {
+        exactModel: explicitModel,
+        exactThinkingLevel: WORKON_DEFAULT_THINKING_LEVEL,
+        routingMode: "override",
+        routingReason: "explicit --model override with default workon thinking",
+      }
+    : DEFAULT_WORKON_MODEL_SELECTION;
+
   const heartbeatResult = removeFlag(rest, /(^|\s)--(?:heartbeat|interval)\s+(\S+)(\s|$)/);
   rest = heartbeatResult.value;
   const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
@@ -417,9 +439,10 @@ export function parseWorkonArgs(args: string): {
     repo,
     forge,
     mode,
+    multiplexer,
     heartbeat,
     dryRun,
-    modelSelection: DEFAULT_WORKON_MODEL_SELECTION,
+    modelSelection,
     extraInstruction: "",
   };
 }

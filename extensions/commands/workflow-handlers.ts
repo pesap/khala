@@ -13,9 +13,10 @@ import {
   type InboxScope,
 } from "./inbox.ts";
 import {
-  isActiveZellijEnv,
   prepareWorkonBootstrap,
+  resolveWorkonMultiplexer,
   type WorkonForge,
+  type WorkonMultiplexer,
   type WorkonMode,
   type WorkonModelSelection,
 } from "./workon.ts";
@@ -85,7 +86,7 @@ function isWorkonIssueTarget(target: string): boolean {
 function validateWorkonIssueTargets(targets: string[]): string | null {
   return targets.every(isWorkonIssueTarget)
     ? null
-    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
+    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
 }
 
 function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
@@ -98,6 +99,31 @@ function validateWorkonTargetRepos(targets: string[], repo: string): string | nu
     return `All /workon targets must match --repo ${repo}; found issue URL for ${urlRepos[0]}.`;
   }
   return null;
+}
+
+function workonBootstrapLineValue(sections: string[], label: string): string | undefined {
+  const prefix = `${label}:`;
+  for (const line of sections.flatMap((section) => section.split(/\r?\n/))) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(prefix)) continue;
+    const value = trimmed.slice(prefix.length).trim();
+    if (!value || value.startsWith("(") || !path.isAbsolute(value)) {
+      return undefined;
+    }
+    return value;
+  }
+  return undefined;
+}
+
+export function workonLocalContextFlags(sections: string[]): WorkflowFlags {
+  const worktreePath = workonBootstrapLineValue(sections, "Worktree path");
+  const capsulePath = workonBootstrapLineValue(sections, "Session capsule");
+  const ledgerPath = workonBootstrapLineValue(sections, "Handoff ledger");
+  return {
+    ...(worktreePath ? { worktreePath } : {}),
+    ...(capsulePath ? { capsulePath } : {}),
+    ...(ledgerPath ? { ledgerPath } : {}),
+  };
 }
 
 interface RunWorkflowCommandParams {
@@ -187,6 +213,7 @@ export function createWorkflowCommandHandlers(params: {
     repo: string;
     forge: WorkonForge;
     mode: WorkonMode;
+    multiplexer: WorkonMultiplexer;
     heartbeat: string;
     dryRun: boolean;
     modelSelection: WorkonModelSelection;
@@ -734,7 +761,7 @@ export function createWorkflowCommandHandlers(params: {
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level.",
+          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level.",
           "error",
         );
         return;
@@ -751,10 +778,17 @@ export function createWorkflowCommandHandlers(params: {
         notify(ctx, targetRepoError, "error");
         return;
       }
-      if (parsed.mode === "start" && !parsed.dryRun && !isActiveZellijEnv(process.env.ZELLIJ)) {
+      const resolvedMultiplexer = resolveWorkonMultiplexer({
+        requested: parsed.multiplexer,
+        env: {
+          ZELLIJ: process.env.ZELLIJ,
+          TMUX: process.env.TMUX,
+        },
+      });
+      if (parsed.mode === "start" && !parsed.dryRun && parsed.multiplexer !== "none" && resolvedMultiplexer === "none") {
         notify(
           ctx,
-          "/workon needs an active Zellij session to launch the worktree and Pi handoff. Run 'zellij' (or 'zellij attach <session>'), then re-run /workon <issue>. Use '/workon <issue> --dry-run' to prepare the capsule without launching.",
+          "/workon needs an active multiplexer session to launch the worktree and Pi handoff. Run 'zellij', 'zellij attach <session>', or tmux, then re-run /workon <issue>. Use '--multiplexer none' for direct Worktrunk start without Pi/heartbeat launch, or '--dry-run' to prepare only.",
           "error",
         );
         return;
@@ -769,10 +803,12 @@ export function createWorkflowCommandHandlers(params: {
         dryRun: parsed.dryRun,
         capsuleRoot: path.join(homedir(), ".pi", "khala"),
         nowIso: nowIso(),
-        launchInZellij: isActiveZellijEnv(process.env.ZELLIJ),
+        requestedMultiplexer: parsed.multiplexer,
+        resolvedMultiplexer,
         heartbeat: parsed.heartbeat,
         modelSelection: parsed.modelSelection,
       });
+      const localContext = workonLocalContextFlags(workonBootstrapSections);
 
       await runMirroredSourceWorkflow({
         ctx,
@@ -785,12 +821,15 @@ export function createWorkflowCommandHandlers(params: {
           forge: parsed.forge,
           mode: parsed.mode,
           dryRun: parsed.dryRun,
+          multiplexer: parsed.multiplexer,
+          resolvedMultiplexer,
           heartbeat: parsed.heartbeat,
           model: parsed.modelSelection.exactModel || null,
           thinkingLevel: parsed.modelSelection.exactThinkingLevel,
           modelRoutingMode: parsed.modelSelection.routingMode,
           modelRoutingReason: parsed.modelSelection.routingReason,
           targets,
+          ...localContext,
           extraInstruction: parsed.extraInstruction || null,
         },
         sections: [
@@ -799,18 +838,20 @@ export function createWorkflowCommandHandlers(params: {
           `Repo override: ${parsed.repo || "(current repo / infer from target)"}`,
           `Forge preference: ${parsed.forge}`,
           `Dry run: ${parsed.dryRun ? "yes" : "no"}`,
+          `Multiplexer requested: ${parsed.multiplexer}`,
+          `Multiplexer resolved: ${resolvedMultiplexer}`,
           `Forge feedback heartbeat: ${parsed.heartbeat}`,
           `Exact model: ${parsed.modelSelection.exactModel}`,
           `Exact thinking level: ${parsed.modelSelection.exactThinkingLevel}`,
           `Model routing mode: ${parsed.modelSelection.routingMode}`,
           `Model routing reason: ${parsed.modelSelection.routingReason}`,
           ...workonBootstrapSections,
-          "Instruction: Treat the deterministic /workon route above as the source of truth. Do not reinterpret readiness, branch, capsule, Zellij, Pi, heartbeat, or recovery state from free-form reasoning.",
+          "Instruction: Treat the deterministic /workon route above as the source of truth. Do not reinterpret readiness, branch, capsule, multiplexer, Pi, heartbeat, or recovery state from free-form reasoning.",
           "Instruction: Resolve the durable source issue before branch/worktree work only when the route permits branch/worktree work.",
           "Instruction: Run the autonomous-readiness rubric before starting; if readiness fails, return only concrete action items needed to make the issue /workon-ready.",
-          "Instruction: Follow only route-owned branch/worktree/handoff/recovery commands. Never invent alternate Worktrunk or Zellij commands, and never bypass Worktrunk hook approval prompts.",
+          "Instruction: Follow only route-owned branch/worktree/handoff/recovery commands. Never invent alternate Worktrunk or multiplexer commands, and never bypass Worktrunk hook approval prompts.",
           "Instruction: Do not redefine the issue scope; consume the approved work packet and stop after source-of-truth, route-approved branch/worktree preparation, and route-approved session capsule handoff.",
-          "Instruction: Use the deterministic bootstrap evidence above as the source-of-truth handoff; do not spend model/tool tokens recreating issue, branch, capsule, Zellij, or heartbeat evidence the handler already supplied.",
+          "Instruction: Use the deterministic bootstrap evidence above as the source-of-truth handoff; do not spend model/tool tokens recreating issue, branch, capsule, multiplexer, or heartbeat evidence the handler already supplied.",
           "Instruction: When the route permits a session capsule, it must include repo, issue/PR, branch/worktree, problem, acceptance criteria, non-goals, validation, open questions, and next prompt.",
           parsed.extraInstruction
             ? `Additional focus: ${parsed.extraInstruction}`
@@ -831,6 +872,7 @@ export function createWorkflowCommandHandlers(params: {
           `Triage target: ${target}`,
           "Instruction: Treat this as user-posted issue/request intake. Gather issue context, comments, labels, reporter activity, relevant code/docs, repo guidelines, and prior out-of-scope decisions when available.",
           "Instruction: Default to one cleaned-up issue/work packet. Propose a split table only when the issue is clearly too broad or likely to exceed reviewable PR size.",
+          "Instruction: Write acceptance criteria (plain markdown bullets, not task-list checkboxes) so /workon can parse the packet without checklist syntax.",
           `Instruction: ${workonReadyPacketContractInstruction({ subject: "issue body", action: "produce or update" })}`,
           "Instruction: Ask explicit approval before creating or updating any GitHub issue, labels, or comments.",
         ],

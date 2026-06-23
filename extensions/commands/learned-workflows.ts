@@ -26,6 +26,17 @@ function splitNameAndRest(args: string | undefined): {
   return { name, rest: rest.join(" ").trim() };
 }
 
+function removeModelFlag(input: string): { input: string; model: string | null } {
+  const match = input.match(/(^|\s)--model\s+(\S+)(\s|$)/);
+  if (!match) return { input, model: null };
+  const before = input.slice(0, match.index).trim();
+  const after = input.slice((match.index ?? 0) + match[0].length).trim();
+  return {
+    input: [before, after].filter(Boolean).join(" "),
+    model: match[2] ?? null,
+  };
+}
+
 export function createLearnedWorkflowCommandHandlers(params: {
   pi: ExtensionAPI;
   ensureLearningStore: (cwd: string) => Promise<LearningPaths>;
@@ -34,6 +45,13 @@ export function createLearnedWorkflowCommandHandlers(params: {
     message: string,
     type: NotifyType,
   ) => void;
+  beginWorkflowTracking?: (
+    ctx: ExtensionCommandContext,
+    workflowName: string,
+    input: string,
+    flags: Record<string, string | boolean | null>,
+    workflowSpec: string,
+  ) => Promise<{ id: string; runFile: string }>;
 }): {
   khalaReload: CommandHandler;
   workflowList: CommandHandler;
@@ -101,12 +119,25 @@ export function createLearnedWorkflowCommandHandlers(params: {
     },
 
     workflowRun: async (args, ctx) => {
-      const loaded = await requireWorkflow(ctx, args, "Usage: /workflow-run <name> [input]");
+      const loaded = await requireWorkflow(ctx, args, "Usage: /workflow-run <name> [--model provider/model] [input]");
       if (!loaded) return;
       const { workflow, rest } = loaded;
+      const parsed = removeModelFlag(rest);
       const prompt = workflow.promptText.trim();
+      const run = await params.beginWorkflowTracking?.(
+        ctx,
+        `workflow-run:${workflow.record.name}`,
+        parsed.input,
+        {
+          workflow: workflow.record.name,
+          model: parsed.model,
+        },
+        workflow.workflowText,
+      );
       const message = [
         `Run khala learned workflow \`${workflow.record.name}\`.`,
+        run ? `Run ledger: ${run.runFile}` : "",
+        parsed.model ? `Requested model: ${parsed.model}` : "",
         "",
         "Workflow artifact:",
         "```yaml",
@@ -119,7 +150,7 @@ export function createLearnedWorkflowCommandHandlers(params: {
         }),
         prompt ? ["", "Prompt template:", "```markdown", prompt, "```"].join("\n") : "",
         "",
-        `User input: ${rest || "(none)"}`,
+        `User input: ${parsed.input || "(none)"}`,
       ]
         .filter(Boolean)
         .join("\n");

@@ -7,6 +7,7 @@ import path from "node:path";
 import { createComplianceCommandHandlers } from "../../extensions/commands/compliance.ts";
 import { parseComplianceArgs, parseKhalaModeArgs } from "../../extensions/commands/parsers.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
+import type { RuntimeState } from "../../extensions/state/runtime.ts";
 
 let fakePiDir: string | null = null;
 let previousPath: string | undefined;
@@ -73,6 +74,44 @@ test("khala status includes model profile doctor output", async () => {
   assert.match(messages[0], /OK planning/);
   assert.match(messages[0], /model: github-copilot\/gpt-5\.5/);
   assert.match(messages[0], /thinking: medium/);
+});
+
+test("compliance mode changes refresh khala-mode status", async () => {
+  const refreshed: string[] = [];
+  const runtimeState = {
+    agentEnabled: true,
+    memoryToolCallLimit: 15,
+    firstPrinciplesConfig: {
+      preflightMode: "warn",
+      postflightMode: "warn",
+      responseComplianceMode: "warn",
+    },
+  } as RuntimeState;
+  const handlers = createComplianceCommandHandlers({
+    runtimeState,
+    notify: () => undefined,
+    parseComplianceArgs,
+    parseApproveRiskArgs: () => ({ reason: "", ttlMinutes: 20 }),
+    parsePreflightArgs: () => ({}),
+    parsePostflightArgs: () => ({}),
+    nowIso: () => "2026-06-12T00:00:00.000Z",
+    getDefaultFirstPrinciplesConfig: () => ({
+      preflightMode: "warn",
+      postflightMode: "warn",
+      responseComplianceMode: "warn",
+    }) as never,
+    appendComplianceModeEntry: () => undefined,
+    onComplianceModeChanged: () => {
+      refreshed.push(runtimeState.firstPrinciplesConfig.responseComplianceMode);
+    },
+    appendRiskApprovalEntry: () => undefined,
+    appendPreflightEntry: () => undefined,
+    appendPostflightEntry: () => undefined,
+  });
+
+  await handlers.compliance("strict", { cwd: process.cwd() } as never);
+
+  assert.deepEqual(refreshed, ["enforce"]);
 });
 
 test("parseKhalaModeArgs recognizes aliases and rejects status", () => {

@@ -16,6 +16,7 @@ export function createComplianceCommandHandlers(params: {
   nowIso: () => string;
   getDefaultFirstPrinciplesConfig: () => RuntimeState["firstPrinciplesConfig"];
   appendComplianceModeEntry: (record: RuntimeState["firstPrinciplesConfig"] & { at: string; source: "command" }) => void;
+  onComplianceModeChanged?: (ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">) => void;
   appendRiskApprovalEntry: (approval: { reason: string; approvedAt: string; expiresAt: string }) => void;
   appendPreflightEntry: (record: PreflightRecord) => void;
   appendPostflightEntry: (record: PostflightRecord) => void;
@@ -68,6 +69,7 @@ export function createComplianceCommandHandlers(params: {
         source: "command",
         ...nextConfig,
       });
+      params.onComplianceModeChanged?.(ctx);
 
       params.notify(
         ctx,

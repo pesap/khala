@@ -24,12 +24,6 @@ export interface KhalaHealthState {
   piSessionThinking?: string;
 }
 
-function formatComplianceModes(
-  config: RuntimeState["firstPrinciplesConfig"],
-): string {
-  return `preflight=${config.preflightMode}, postflight=${config.postflightMode}, response=${config.responseComplianceMode}`;
-}
-
 /** Routes that use each profile, for health display. */
 function routesForProfile(profileName: string): string[] {
   const routes = getMergedRoutes();

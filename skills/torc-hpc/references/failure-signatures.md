@@ -105,4 +105,3 @@ Fix:
 - run `git worktree remove --force <path>` and `git worktree prune`
 - delete temporary refs after the run
 - keep logs and outputs, not the checkout
-

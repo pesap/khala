@@ -15,7 +15,6 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import registerSubagentExtension from "pi-subagents/src/extension/index.ts";
-import { createAgentCommandHandlers } from "./commands/agent.ts";
 import { createComplianceCommandHandlers } from "./commands/compliance.ts";
 import { createKhalaCommandHandlers } from "./commands/khala.ts";
 import { createCuratorCommandHandlers } from "./commands/curator.ts";
@@ -231,7 +230,7 @@ type PreflightClarify = PreflightRecord["clarify"];
 type PreflightSource = PreflightRecord["source"];
 
 type PendingWorkflow = import("./workflows/engine").PendingWorkflow<
-  WorkflowType,
+  string,
   WorkflowFlags
 >;
 
@@ -1204,7 +1203,11 @@ function setAgentEnabledState(
   enabled: boolean,
 ): void {
   setAgentEnabled(runtimeState, enabled);
-  setKhalaStatus(ctx, enabled ? "🔷 khala enabled" : undefined);
+  refreshKhalaModeStatus(ctx);
+}
+
+function refreshKhalaModeStatus(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
+  setKhalaStatus(ctx, `khala-mode: ${runtimeState.firstPrinciplesConfig.responseComplianceMode}`);
 }
 
 function ensureAgentEnabledForCommand(
@@ -1314,14 +1317,17 @@ async function enqueueWorkflow(
 async function beginWorkflowTracking(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
-  type: WorkflowType,
+  type: string,
   input: string,
   flags: WorkflowFlags,
+  workflowSpecOverride?: string,
 ): Promise<PendingWorkflow> {
-  const workflowConfig = getWorkflowConfig(activeRuntimeProfile, type);
+  const workflowConfig = Object.hasOwn(activeRuntimeProfile.workflows, type)
+    ? getWorkflowConfig(activeRuntimeProfile, type as WorkflowType)
+    : null;
   const workflowSpec = workflowConfig
     ? await workflowReaders.readWorkflow(workflowConfig.workflowFile)
-    : undefined;
+    : workflowSpecOverride;
   const pending = await beginTrackedWorkflow({
     pi,
     ctx,
@@ -2489,7 +2495,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
         );
         notify(
           ctx,
-          `Workflow ${workflow.type} still active; waiting for final Bias Check plus Result/Confidence footer. Reply in this workflow to continue, include the footer to complete it, or run /end-agent to cancel before starting another workflow.`,
+          `Workflow ${workflow.type} still active; waiting for final Bias Check plus Result/Confidence footer. Reply in this workflow to continue, or include the footer to complete it before starting another workflow.`,
           "info",
         );
       }
@@ -2555,34 +2561,6 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     }
   });
 
-  const agentHandlers = createAgentCommandHandlers({
-    runtimeState,
-    setAgentEnabledState,
-    appendAgentStateEntry: (enabled) =>
-      appendAgentStateEntry(pi, enabled, nowIso()),
-    clearPendingWorkflow: async () => {
-      await interruptPendingWorkflow({
-        reason: "Operator cancelled workflow with /end-agent.",
-      });
-      pendingWorkflow = null;
-    },
-    runSessionEndHooks: async (ctx) => {
-      await runSessionEndHooks({
-        pi,
-        ctx,
-        activeHookConfig,
-        hooksDir: RUNTIME_PATHS.hooksDir,
-        runtimeDailyLogPath: RUNTIME_PATHS.runtimeDailyLogPath,
-        runtimeState,
-        lowConfidenceEvents,
-        notify,
-        nowIso,
-      });
-      lowConfidenceEvents = [];
-    },
-    notify,
-  });
-
   const complianceHandlers = createComplianceCommandHandlers({
     runtimeState,
     notify,
@@ -2596,6 +2574,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     getDefaultFirstPrinciplesConfig: () => sessionFirstPrinciplesDefaults,
     appendComplianceModeEntry: (record) =>
       appendComplianceModeEntry(pi, record),
+    onComplianceModeChanged: refreshKhalaModeStatus,
     appendRiskApprovalEntry: (approval) =>
       appendRiskApprovalEntry(pi, approval),
     appendPreflightEntry: (record) => appendPreflightEntry(pi, record),
@@ -2613,7 +2592,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     ensureAgentEnabledForCommand,
     resolveWorkflowConfig: (type) =>
       getWorkflowConfig(activeRuntimeProfile, type),
-    beginWorkflowTracking,
+    beginWorkflowTracking: (pi, ctx, type, input, flags) =>
+      beginWorkflowTracking(pi, ctx, type, input, flags) as Promise<
+        import("./workflows/engine").PendingWorkflow<WorkflowType, WorkflowFlags>
+      >,
     enqueueWorkflow,
     notifyWorkflowStarted,
     clearPendingWorkflow: async () => {
@@ -2676,6 +2658,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     pi,
     ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
     notify,
+    beginWorkflowTracking: (ctx, workflowName, input, flags, workflowSpec) =>
+      beginWorkflowTracking(pi, ctx, workflowName, input, flags, workflowSpec),
   });
 
   const runLedgerHandlers = createRunLedgerCommandHandlers({
@@ -2712,7 +2696,6 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ...learnedWorkflowHandlers,
       ...runLedgerHandlers,
       ...ruleHandlers,
-      endAgent: agentHandlers.endAgent,
       ...khalaHandlers,
     },
     completions: {

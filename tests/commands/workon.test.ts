@@ -10,6 +10,7 @@ import {
   DEFAULT_WORKON_MODEL_SELECTION,
   isActiveZellijEnv,
   prepareWorkonBootstrap,
+  resolveWorkonMultiplexer,
   type WorkonCommandRunner,
 } from "../../extensions/commands/workon.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
@@ -55,7 +56,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
       if (command === "zellij" && args[0] === "action" && args[1] === "new-pane") {
         return { ok: true, stdout: "terminal_99\n", stderr: "" };
       }
-      if (command === "bash" && args[0]?.endsWith("scripts/workon-zellij-handoff.sh")) {
+      if (command === "bash" && args[0]?.endsWith("scripts/workon-multiplexer-handoff.sh")) {
         const branch = args[args.indexOf("--branch") + 1];
         const repo = args[args.indexOf("--repo") + 1];
         const heartbeat = args[args.indexOf("--heartbeat") + 1];
@@ -248,6 +249,15 @@ test("detects active Zellij from non-empty environment values", () => {
   assert.equal(isActiveZellijEnv("/tmp/zellij-session"), true);
 });
 
+test("resolves workon multiplexer from explicit requests and active environment", () => {
+  assert.equal(resolveWorkonMultiplexer({ requested: "auto", env: { ZELLIJ: "0", TMUX: "/tmp/tmux" } }), "zellij");
+  assert.equal(resolveWorkonMultiplexer({ requested: "auto", env: { ZELLIJ: undefined, TMUX: "/tmp/tmux" } }), "tmux");
+  assert.equal(resolveWorkonMultiplexer({ requested: "auto", env: { ZELLIJ: undefined, TMUX: undefined } }), "none");
+  assert.equal(resolveWorkonMultiplexer({ requested: "none", env: { ZELLIJ: "0", TMUX: "/tmp/tmux" } }), "none");
+  assert.equal(resolveWorkonMultiplexer({ requested: "zellij", env: { ZELLIJ: undefined, TMUX: undefined } }), "zellij");
+  assert.equal(resolveWorkonMultiplexer({ requested: "tmux", env: { ZELLIJ: undefined, TMUX: undefined } }), "tmux");
+});
+
 test("builds bounded Conventional Commit-style branch names", () => {
   assert.equal(
     buildWorkonBranchName({
@@ -322,7 +332,8 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -385,7 +396,8 @@ test("stores workon state under the resolved forge host", async () => {
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -425,7 +437,8 @@ test("prepares GitHub Enterprise issue URL with host-aware gh repo and state pat
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -484,7 +497,8 @@ test("groups multiple GitHub Enterprise issues from one host and repo", async ()
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -518,7 +532,8 @@ test("reports a host-specific GitHub Enterprise auth error", async () => {
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -554,7 +569,8 @@ test("uses packaged handoff template when target cwd has no commands directory",
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -596,17 +612,18 @@ test("uses package-local Zellij handoff script when target cwd has no scripts di
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
     );
     const rendered = sections.join("\n");
-    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-multiplexer-handoff.sh"));
 
     assert.ok(scriptCall);
-    assert.match(scriptCall, new RegExp(`^bash ${escapeRegExp(process.cwd())}/scripts/workon-zellij-handoff\\.sh\\b`));
-    assert.doesNotMatch(scriptCall, new RegExp(`^bash ${escapeRegExp(tempDir)}/scripts/workon-zellij-handoff\\.sh\\b`));
+    assert.match(scriptCall, new RegExp(`^bash ${escapeRegExp(process.cwd())}/scripts/workon-multiplexer-handoff\\.sh\\b`));
+    assert.doesNotMatch(scriptCall, new RegExp(`^bash ${escapeRegExp(tempDir)}/scripts/workon-multiplexer-handoff\\.sh\\b`));
     assert.match(scriptCall, new RegExp(`--branch ${branch}`));
     assert.match(rendered, /Worktree status: launched/);
   } finally {
@@ -636,20 +653,21 @@ test("ZELLIJ=0 selects Zellij handoff path", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: isActiveZellijEnv("0"),
+        requestedMultiplexer: "auto",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
     );
     const rendered = sections.join("\n");
 
-    assert.ok(calls.some((call) => call.startsWith("bash ") && call.includes("workon-zellij-handoff.sh")));
+    assert.ok(calls.some((call) => call.startsWith("bash ") && call.includes("workon-multiplexer-handoff.sh")));
     assert.equal(calls.includes("wt --version"), false);
     assert.equal(calls.includes(`wt switch --create ${branch} --format json`), false);
     assert.match(rendered, /Suggested Worktrunk command: cd .+ && wt switch --create fix\/148-package-handoff-script-robust --format json/);
-    assert.match(rendered, /Launch eligibility: active Zellij yes/);
+    assert.match(rendered, /Launch eligibility: active multiplexer yes/);
     assert.match(rendered, /Worktree status: launched/);
-    assert.doesNotMatch(rendered, /Pi handoff skipped: active Zellij was not detected/);
+    assert.doesNotMatch(rendered, /Pi handoff skipped: active multiplexer was not detected/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -675,7 +693,8 @@ test("infers repo and issue from GitHub issue URL", async () => {
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -708,7 +727,8 @@ test("uses current GitHub issue context without a separate repo lookup", async (
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -757,7 +777,8 @@ test("parses GitHub issue JSON when body contains literal prompt usage text", as
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -874,7 +895,8 @@ test("parses grouped GitHub issue JSON when issue bodies contain literal prompt 
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -907,7 +929,8 @@ test("blocks source issue reads when gh issue view returns invalid JSON", async 
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -966,7 +989,8 @@ test("blocks source issue reads when gh issue view command fails", async () => {
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       failingRunner,
@@ -1043,7 +1067,8 @@ test("preserves parseability when stdout is redacted into invalid JSON but raw s
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       parsingRunner,
@@ -1092,7 +1117,8 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -1167,7 +1193,8 @@ test("dry-run prepares capsule and branch suggestion without starting Worktrunk"
         dryRun: true,
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
@@ -1225,7 +1252,8 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -1242,13 +1270,13 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
       rendered,
       /Suggested Worktrunk command: cd .+ && wt switch --create feat\/65-detect-local-worktrees-stale --format json/,
     );
-    assert.match(rendered, /Launch eligibility: active Zellij no/);
+    assert.match(rendered, /Launch eligibility: active multiplexer no/);
     assert.match(rendered, /Worktree status: started/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk.feat-65/);
     assert.match(rendered, /Route: started/);
-    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.match(rendered, /Recovery command: Retry multiplexer handoff \(zellij\) from an active zellij pane/);
     assert.match(rendered, /Handoff recovery:/);
-    assert.match(rendered, new RegExp(`Retry Zellij handoff[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
+    assert.match(rendered, new RegExp(`Retry multiplexer handoff \\(zellij\\)[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
     assert.doesNotMatch(rendered, /Manual Pi restore/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
@@ -1260,11 +1288,11 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     );
     assert.match(capsule, /Worktree status: started/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk.feat-65/);
-    assert.match(capsule, /Launch eligibility: active Zellij no/);
+    assert.match(capsule, /Launch eligibility: active multiplexer no/);
     assert.match(capsule, /## Deterministic \/workon route/);
     assert.match(capsule, /Route: started/);
     assert.match(capsule, /## Handoff recovery/);
-    assert.match(capsule, new RegExp(`Retry Zellij handoff[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
+    assert.match(capsule, new RegExp(`Retry multiplexer handoff \\(zellij\\)[\\s\\S]*--model '${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}' --thinking '${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}'`));
     assert.doesNotMatch(capsule, /Manual Pi restore/);
 
     const ledger = await readHandoffLedger(rendered);
@@ -1273,7 +1301,7 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
     assert.equal((ledger.launchEligibility as { activeZellij: boolean }).activeZellij, false);
     assert.equal((ledger.zellij as { status: string }).status, "skipped");
     assert.equal((ledger.pi as { status: string }).status, "not-launched");
-    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
+    assert.match(String(ledger.safeNextAction), /Retry multiplexer handoff \(zellij\)/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -1309,7 +1337,8 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "0.25",
         modelSelection: {
           exactModel: "anthropic/claude-sonnet-4",
@@ -1321,7 +1350,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
       runner,
     );
     const rendered = sections.join("\n");
-    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-multiplexer-handoff.sh"));
 
     assert.equal(calls.some((call) => call.includes(" -x pi ")), false);
     assert.equal(calls.some((call) => call.startsWith("zellij run")), false);
@@ -1341,7 +1370,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(rendered, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Model routing mode: override/);
     assert.match(rendered, /explicit --model override/);
-    assert.match(rendered, /Launch eligibility: active Zellij yes/);
+    assert.match(rendered, /Launch eligibility: active multiplexer yes/);
     assert.match(rendered, /Worktree status: launched/);
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
@@ -1395,13 +1424,14 @@ test("pins the default model when launching a Worktrunk Zellij handoff", async (
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "0.25",
       },
       runner,
     );
     const rendered = sections.join("\n");
-    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-multiplexer-handoff.sh"));
 
     assert.ok(scriptCall);
     assert.match(scriptCall, new RegExp(`--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
@@ -1462,13 +1492,14 @@ fi
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "0.25",
       },
       runner,
     );
     const rendered = sections.join("\n");
-    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-multiplexer-handoff.sh"));
 
     assert.equal(scriptCall, undefined);
     assert.match(rendered, /Route: blocked/);
@@ -1513,13 +1544,14 @@ test("blocks before recording Pi started when the handoff auth preflight fails",
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
     );
     const rendered = sections.join("\n");
-    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-zellij-handoff.sh"));
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-multiplexer-handoff.sh"));
 
     assert.ok(scriptCall);
     assert.match(scriptCall, new RegExp(`--model ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)}`));
@@ -1530,7 +1562,7 @@ test("blocks before recording Pi started when the handoff auth preflight fails",
     assert.match(rendered, /Recovery command: \(none safe for this blocked state\)/);
     assert.match(rendered, new RegExp(`Next operator action: Human action required: authenticate ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} for Pi, then rerun /workon\\.`));
     assert.match(rendered, new RegExp(`Handoff recovery:\\n- Human action required: authenticate ${escapeRegExp(DEFAULT_WORKON_MODEL_SELECTION.exactModel)} for Pi, then rerun /workon\\.`));
-    assert.doesNotMatch(rendered, /Recovery command: Retry Zellij handoff/);
+    assert.doesNotMatch(rendered, /Recovery command: Retry multiplexer handoff \(zellij\)/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
@@ -1589,7 +1621,8 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
@@ -1600,8 +1633,8 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
     assert.match(rendered, /Allowed action: run or report the one route-owned recovery command/);
     assert.match(rendered, /Worktree status: blocked/);
     assert.match(rendered, /Worktree path: \(not available\)/);
-    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable/);
-    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.match(rendered, /Handoff failure: Multiplexer Pi handoff \(zellij\) fix\/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable/);
+    assert.match(rendered, /Recovery command: Retry multiplexer handoff \(zellij\) from an active zellij pane/);
     assert.match(rendered, /failed before a Worktrunk path was reported/);
     assert.doesNotMatch(rendered, /Recovery command: \(not available\)/);
     assert.match(rendered, new RegExp(`--branch ${branch}`));
@@ -1610,22 +1643,22 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /## Bootstrap failure/);
-    assert.match(capsule, /Zellij Pi handoff fix\/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable/);
-    assert.match(capsule, /Parent failure: Zellij Pi handoff fix\/181-no-json-handoff-failure/);
-    assert.match(capsule, /Parent recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.match(capsule, /Multiplexer Pi handoff \(zellij\) fix\/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable/);
+    assert.match(capsule, /Parent failure: Multiplexer Pi handoff \(zellij\) fix\/181-no-json-handoff-failure/);
+    assert.match(capsule, /Parent recovery command: Retry multiplexer handoff \(zellij\) from an active zellij pane/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
     assert.equal((ledger.worktree as { status: string; path: string | null }).path, null);
-    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
-    assert.equal((ledger.failure as { phase: string }).phase, "zellij-handoff");
+    assert.match(String(ledger.safeNextAction), /Retry multiplexer handoff \(zellij\)/);
+    assert.equal((ledger.failure as { phase: string }).phase, "multiplexer-handoff");
     assert.equal(
       (ledger.failure as { summary: string }).summary,
-      "Zellij Pi handoff fix/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable",
+      "Multiplexer Pi handoff (zellij) fix/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable",
     );
     assert.equal(
       (ledger.failure as { detail: string | null }).detail,
-      "Zellij Pi handoff fix/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable",
+      "Multiplexer Pi handoff (zellij) fix/181-no-json-handoff-failure: command failed: exit code 1; stderr: zellij socket unavailable",
     );
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -1635,7 +1668,6 @@ test("blocked Zellij handoff without JSON still returns recovery and failure con
 test("blocked Zellij handoff timeout is classified explicitly and keeps route recovery safe", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-timeout-failure-test-"));
   try {
-    const branch = "fix/207-prevent-zellij-handoff-timeout";
     const { runner: baseRunner } = fakeGhRunner({
       "auth status": "",
       "issue view 207 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
@@ -1644,7 +1676,7 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
         [
           "## Current behavior",
           "",
-          "/workon can report a blocked Zellij Pi handoff as a generic shell failure before the handoff script's normal wait window completes.",
+          "/workon can report a blocked Multiplexer Pi handoff (zellij) as a generic shell failure before the handoff script's normal wait window completes.",
           "",
           "## Acceptance criteria",
           "",
@@ -1665,7 +1697,7 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
     });
     let observedTimeoutMs: number | undefined;
     const runner: WorkonCommandRunner = async (command, args, options) => {
-      if (command === "bash" && args[0]?.endsWith("scripts/workon-zellij-handoff.sh")) {
+      if (command === "bash" && args[0]?.endsWith("scripts/workon-multiplexer-handoff.sh")) {
         observedTimeoutMs = options.timeoutMs;
       }
       return baseRunner(command, args, options);
@@ -1680,7 +1712,8 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
@@ -1690,27 +1723,27 @@ test("blocked Zellij handoff timeout is classified explicitly and keeps route re
     assert.match(rendered, /Route: blocked/);
     assert.match(rendered, /Worktree status: blocked/);
     assert.match(rendered, /Worktree path: \(not available\)/);
-    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/207-prevent-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
-    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
-    assert.match(rendered, /timed out while waiting for the Zellij handoff script's normal tab discovery window/);
+    assert.match(rendered, /Handoff failure: Multiplexer Pi handoff \(zellij\) fix\/207-prevent-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(rendered, /Recovery command: Retry multiplexer handoff \(zellij\) from an active zellij pane/);
+    assert.match(rendered, /timed out while waiting for the handoff script's normal discovery window/);
     assert.equal(observedTimeoutMs, 41_500);
     assert.doesNotMatch(rendered, /Command failed: bash .*--prompt ## Deterministic \/workon route/);
 
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
-    assert.match(capsule, /Zellij Pi handoff fix\/207-prevent-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
-    assert.match(capsule, /Parent failure: Zellij Pi handoff fix\/207-prevent-zellij-handoff-timeout: timeout:/);
-    assert.match(capsule, /Parent recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.match(capsule, /Multiplexer Pi handoff \(zellij\) fix\/207-prevent-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(capsule, /Parent failure: Multiplexer Pi handoff \(zellij\) fix\/207-prevent-zellij-handoff-timeout: timeout:/);
+    assert.match(capsule, /Parent recovery command: Retry multiplexer handoff \(zellij\) from an active zellij pane/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
     assert.equal((ledger.worktree as { path: string | null }).path, null);
-    assert.equal((ledger.failure as { phase: string }).phase, "zellij-handoff");
+    assert.equal((ledger.failure as { phase: string }).phase, "multiplexer-handoff");
     assert.equal((ledger.failure as { reason: string | null }).reason, "timeout");
     assert.match(String((ledger.failure as { summary: string }).summary), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
     assert.match(String((ledger.failure as { detail: string | null }).detail), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
-    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
+    assert.match(String(ledger.safeNextAction), /Retry multiplexer handoff \(zellij\)/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -1727,7 +1760,7 @@ test("blocked Zellij handoff classifies SIGTERM timeout shapes and keeps route r
         [
           "## Current behavior",
           "",
-          "`/workon --mode start` can still block the deterministic Zellij handoff route with generic `Command failed: bash ... workon-zellij-handoff.sh ...` output, even after the handoff timeout work from #207.",
+          "`/workon --mode start` can still block the deterministic Zellij handoff route with generic `Command failed: bash ... workon-multiplexer-handoff.sh ...` output, even after the handoff timeout work from #207.",
           "",
           "## Acceptance criteria",
           "",
@@ -1747,7 +1780,7 @@ test("blocked Zellij handoff classifies SIGTERM timeout shapes and keeps route r
     });
     let observedTimeoutMs: number | undefined;
     const runner: WorkonCommandRunner = async (command, args, options) => {
-      if (command === "bash" && args[0]?.endsWith("scripts/workon-zellij-handoff.sh")) {
+      if (command === "bash" && args[0]?.endsWith("scripts/workon-multiplexer-handoff.sh")) {
         observedTimeoutMs = options.timeoutMs;
       }
       return baseRunner(command, args, options);
@@ -1762,7 +1795,8 @@ test("blocked Zellij handoff classifies SIGTERM timeout shapes and keeps route r
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
@@ -1771,16 +1805,16 @@ test("blocked Zellij handoff classifies SIGTERM timeout shapes and keeps route r
 
     assert.equal(observedTimeoutMs, 41_500);
     assert.match(rendered, /Route: blocked/);
-    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/216-honor-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
-    assert.match(rendered, /timed out while waiting for the Zellij handoff script's normal tab discovery window/);
-    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
+    assert.match(rendered, /Handoff failure: Multiplexer Pi handoff \(zellij\) fix\/216-honor-zellij-handoff-timeout: timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
+    assert.match(rendered, /timed out while waiting for the handoff script's normal discovery window/);
+    assert.match(rendered, /Recovery command: Retry multiplexer handoff \(zellij\) from an active zellij pane/);
     assert.doesNotMatch(rendered, /Command failed: bash .*--prompt ## Deterministic \/workon route/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.failure as { reason: string | null }).reason, "timeout");
     assert.match(String((ledger.failure as { summary: string }).summary), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
     assert.match(String((ledger.failure as { detail: string | null }).detail), /timeout: timed out after 41500ms; killed=true; signal=SIGTERM; command=bash/);
-    assert.match(String(ledger.safeNextAction), /Retry Zellij handoff/);
+    assert.match(String(ledger.safeNextAction), /Retry multiplexer handoff \(zellij\)/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -1789,7 +1823,6 @@ test("blocked Zellij handoff classifies SIGTERM timeout shapes and keeps route r
 test("blocked Zellij handoff preserves structured reason and redacts raw prompt diagnostics", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-structured-failure-test-"));
   try {
-    const branch = "fix/182-structured-handoff-failure";
     const { runner } = fakeGhRunner({
       "auth status": "",
       "issue view 182 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
@@ -1826,7 +1859,8 @@ test("blocked Zellij handoff preserves structured reason and redacts raw prompt 
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
@@ -1837,7 +1871,7 @@ test("blocked Zellij handoff preserves structured reason and redacts raw prompt 
     assert.match(rendered, /reason=tab-not-found/);
     assert.match(rendered, /exit code 1/);
     assert.match(rendered, /detail: Zellij Worktrunk tab not found after 1 attempts/);
-    assert.match(rendered, /Handoff failure: Zellij Pi handoff fix\/182-structured-handoff-failure: reason=tab-not-found: exit code 1; detail: Zellij Worktrunk tab not found after 1 attempts: agents\/fix-182-structured-handoff-failure/);
+    assert.match(rendered, /Handoff failure: Multiplexer Pi handoff \(zellij\) fix\/182-structured-handoff-failure: reason=tab-not-found: exit code 1; detail: Zellij Worktrunk tab not found after 1 attempts: agents\/fix-182-structured-handoff-failure/);
     assert.match(rendered, /Zellij tab name: agents\/fix-182-structured-handoff-failure/);
     assert.match(rendered, /Zellij tab ID: 44/);
     assert.match(rendered, /Pi pane ID: terminal_91/);
@@ -1856,7 +1890,7 @@ test("blocked Zellij handoff preserves structured reason and redacts raw prompt 
     );
     assert.match(
       String((ledger.failure as { summary: string | null }).summary),
-      /^Zellij Pi handoff fix\/182-structured-handoff-failure: reason=tab-not-found: exit code 1; detail: Zellij Worktrunk tab not found after 1 attempts: agents\/fix-182-structured-handoff-failure/,
+      /^Multiplexer Pi handoff \(zellij\) fix\/182-structured-handoff-failure: reason=tab-not-found: exit code 1; detail: Zellij Worktrunk tab not found after 1 attempts: agents\/fix-182-structured-handoff-failure/,
     );
     assert.equal((ledger.zellij as { tabName: string | null }).tabName, "agents/fix-182-structured-handoff-failure");
     assert.equal((ledger.zellij as { tabId: number | null }).tabId, 44);
@@ -1894,7 +1928,8 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "0.25",
       },
       runner,
@@ -1905,9 +1940,9 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(rendered, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(rendered, /Pi handoff command: \(not launched\)/);
     assert.match(rendered, /Route: blocked/);
-    assert.match(rendered, /Worktree\/tab was created but Pi was not launched/);
-    assert.match(rendered, /Recovery command: Retry Zellij handoff from an active Zellij pane/);
-    assert.match(rendered, /Retry Zellij handoff from an active Zellij pane/);
+    assert.match(rendered, /Worktree\/scope was created but Pi was not launched/);
+    assert.match(rendered, /Recovery command: Retry multiplexer handoff \(zellij\) from an active zellij pane/);
+    assert.match(rendered, /Retry multiplexer handoff \(zellij\) from an active zellij pane/);
     assert.doesNotMatch(rendered, /Manual Pi restore/);
     assert.doesNotMatch(rendered, /Manual heartbeat restore/);
     assert.match(rendered, new RegExp(`--branch ${branch}`));
@@ -1921,7 +1956,7 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.match(capsule, /Worktree status: blocked/);
     assert.match(capsule, /Worktree path: \/tmp\/worktrunk\.feat-65/);
     assert.match(capsule, /Parent \/workon route: blocked/);
-    assert.match(capsule, /Retry Zellij handoff from an active Zellij pane/);
+    assert.match(capsule, /Retry multiplexer handoff \(zellij\) from an active zellij pane/);
     assert.doesNotMatch(capsule, /Manual Pi restore/);
 
     const nextPrompt = capsule.split("## Next prompt")[1] ?? "";
@@ -1933,7 +1968,7 @@ test("blocks in current session when Zellij tab exists but Pi handoff is not lau
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "blocked");
     assert.equal((ledger.zellij as { status: string }).status, "blocked");
     assert.equal((ledger.pi as { status: string }).status, "not-launched");
-    assert.match(String(ledger.failureReason), /Zellij Pi handoff/);
+    assert.match(String(ledger.failureReason), /Multiplexer Pi handoff \(zellij\)/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -1959,7 +1994,8 @@ test("blocks start mode when Worktrunk is unavailable", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2006,7 +2042,8 @@ test("refuses freeform topics before workon bootstrap", async () => {
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2080,7 +2117,8 @@ test("does not self-block readiness on quoted review-size keywords in diagnostic
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2147,7 +2185,8 @@ test("improve-labeled issues must use canonical workon-ready headings", async ()
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2219,7 +2258,8 @@ test("recognizes bold-label Agent Brief sections during readiness checks", async
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2301,7 +2341,8 @@ test("extracts Agent Brief acceptance criteria without leaking validation bullet
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2375,7 +2416,8 @@ test("blocks bold-label Agent Briefs that still lack non-goals", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: true,
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
         heartbeat: "1.0",
       },
       runner,
@@ -2450,7 +2492,8 @@ test("accepts resolved public-contract and bounded review-size risk sections", a
         mode: "prepare",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2532,7 +2575,8 @@ test("still blocks genuinely oversized review-size risk", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2568,7 +2612,8 @@ test("refuses issue targets that are not autonomous-ready", async () => {
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2585,7 +2630,7 @@ test("refuses issue targets that are not autonomous-ready", async () => {
     assert.match(rendered, /- \/triage https:\/\/github.com\/pesap\/agents\/issues\/81/);
     assert.doesNotMatch(rendered, /Suggested Worktrunk command/);
     assert.doesNotMatch(rendered, /wt switch --create/);
-    assert.doesNotMatch(rendered, /workon-zellij-handoff\.sh/);
+    assert.doesNotMatch(rendered, /workon-multiplexer-handoff\.sh/);
     assert.doesNotMatch(rendered, /Pi handoff command/);
     assert.doesNotMatch(rendered, /Forge heartbeat command/);
 
@@ -2629,7 +2674,8 @@ test("attributes grouped readiness failures to the blocking source issue", async
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2675,7 +2721,8 @@ test("groups grouped readiness failures by each blocking source issue", async ()
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2729,7 +2776,8 @@ test("refuses issues whose substantive body defers scope decisions to implementa
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,
@@ -2792,7 +2840,8 @@ test("allows deferral phrases inside Non-goals or Open questions sections", asyn
         mode: "start",
         capsuleRoot: tempDir,
         nowIso: "2026-06-05T00:00:00.000Z",
-        launchInZellij: false,
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
         heartbeat: "1.0",
       },
       runner,

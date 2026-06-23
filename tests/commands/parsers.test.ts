@@ -232,6 +232,7 @@ test("parses workon target and flags", () => {
     repo: "pesap/agents",
     forge: "github",
     mode: "start",
+    multiplexer: "auto",
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
@@ -248,6 +249,7 @@ test("parses workon target and flags", () => {
       repo: "",
       forge: "gitlab",
       mode: "start",
+      multiplexer: "auto",
       heartbeat: "1.0",
       dryRun: false,
       modelSelection: defaultModelSelection,
@@ -261,6 +263,7 @@ test("parses workon target and flags", () => {
     repo: "",
     forge: "auto",
     mode: "prepare",
+    multiplexer: "auto",
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
@@ -273,6 +276,7 @@ test("parses workon target and flags", () => {
     repo: "",
     forge: "auto",
     mode: "start",
+    multiplexer: "auto",
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
@@ -285,6 +289,7 @@ test("parses workon target and flags", () => {
     repo: "",
     forge: "auto",
     mode: "start",
+    multiplexer: "auto",
     heartbeat: "0.25",
     dryRun: false,
     modelSelection: defaultModelSelection,
@@ -297,11 +302,14 @@ test("parses workon target and flags", () => {
     repo: "",
     forge: "auto",
     mode: "start",
+    multiplexer: "auto",
     heartbeat: "0.01",
     dryRun: false,
     modelSelection: defaultModelSelection,
     extraInstruction: "",
   });
+
+  assert.equal(parseWorkonArgs("73 --multiplexer tmux").multiplexer, "tmux");
 
   assert.deepEqual(parseWorkonArgs("73 --heartbeat nope"), {
     target: "73",
@@ -309,6 +317,7 @@ test("parses workon target and flags", () => {
     repo: "",
     forge: "auto",
     mode: "start",
+    multiplexer: "auto",
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
@@ -321,19 +330,22 @@ test("parses workon target and flags", () => {
     repo: "",
     forge: "auto",
     mode: "prepare",
+    multiplexer: "auto",
     heartbeat: "1.0",
     dryRun: true,
     modelSelection: defaultModelSelection,
     extraInstruction: "",
   });
 
-  // --model and --thinking are silently ignored by parseWorkonArgs and flow into target
-  // (the handler rejects them as unrecognized issue targets)
   const modelOnlyResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4");
-  assert.equal(modelOnlyResult.target, "73 --model anthropic/claude-sonnet-4");
+  assert.equal(modelOnlyResult.target, "73");
+  assert.equal(modelOnlyResult.modelSelection.exactModel, "anthropic/claude-sonnet-4");
+  assert.equal(modelOnlyResult.modelSelection.routingMode, "override");
 
   const modelAndThinkingResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4 --thinking high");
-  assert.equal(modelAndThinkingResult.target, "73 --model anthropic/claude-sonnet-4 --thinking high");
+  assert.equal(modelAndThinkingResult.target, "73 --thinking high");
+  assert.equal(modelAndThinkingResult.modelSelection.exactModel, "anthropic/claude-sonnet-4");
+  assert.equal(modelAndThinkingResult.modelSelection.exactThinkingLevel, "medium");
 
   assert.deepEqual(parseWorkonArgs("73, 74 --repo pesap/agents"), {
     target: "73, 74",
@@ -341,6 +353,7 @@ test("parses workon target and flags", () => {
     repo: "pesap/agents",
     forge: "auto",
     mode: "start",
+    multiplexer: "auto",
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
@@ -353,6 +366,7 @@ test("parses workon target and flags", () => {
     repo: "pesap/agents",
     forge: "auto",
     mode: "start",
+    multiplexer: "auto",
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
@@ -372,6 +386,7 @@ test("parses workon target and flags", () => {
       repo: "",
       forge: "github",
       mode: "start",
+      multiplexer: "auto",
       heartbeat: "1.0",
       dryRun: false,
       modelSelection: defaultModelSelection,

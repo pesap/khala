@@ -124,7 +124,7 @@ function describeBlockedWorkflowSlot<TWorkflowType extends string>(
     const action = pendingWorkflow.completionWait.awaitingUserAction
       ? "It appears to be waiting for your approval or clarification before it can finish. Reply in the current workflow to continue, or include the required Bias Check plus Result/Confidence footer to complete it."
       : "It stopped without the required Bias Check plus Result/Confidence footer, so khala cannot record it as complete yet. Continue the current workflow with the footer, or rerun the final response with the footer.";
-    return `Workflow ${pendingWorkflow.type} is still occupying the workflow slot because its last response is missing the required Bias Check plus Result/Confidence footer. ${action} To cancel the pending workflow, run /end-agent before starting another workflow.`;
+    return `Workflow ${pendingWorkflow.type} is still occupying the workflow slot because its last response is missing the required Bias Check plus Result/Confidence footer. ${action} Complete the pending workflow with the required footer before starting another workflow.`;
   }
 
   return `Workflow already running (${pendingWorkflow.type}). Wait for completion before starting another.`;

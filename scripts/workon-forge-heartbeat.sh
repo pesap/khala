@@ -3,12 +3,12 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-forge-heartbeat.sh --repo OWNER/REPO --branch BRANCH --interval HOURS [--author LOGIN|@me] [--trusted-author LOGIN] [--notify-pane PANE_ID] [--state-file PATH] [--once]
+Usage: workon-forge-heartbeat.sh --repo OWNER/REPO --branch BRANCH --interval HOURS [--multiplexer zellij|tmux] [--author LOGIN|@me] [--trusted-author LOGIN] [--notify-pane PANE_ID] [--state-file PATH] [--once]
 
 Poll the forge CLI for feedback from the selected author on the open PR for a
 branch. Numeric intervals are decimal hours: 0.25 means 15 minutes, and 2.0
 means 2 hours. When --notify-pane is set, new actionable feedback is pasted into
-that Zellij pane so the launched Pi session can react while it is still running.
+that multiplexer target so the launched Pi session can react while it is still running.
 USAGE
 }
 
@@ -17,6 +17,7 @@ branch=""
 interval="1.0"
 author="@me"
 trusted_author="pesap"
+multiplexer="zellij"
 notify_pane=""
 state_file=""
 last_notified_comments=""
@@ -38,6 +39,10 @@ while (($#)); do
       ;;
     --author)
       author="${2:?--author requires LOGIN or @me}"
+      shift 2
+      ;;
+    --multiplexer)
+      multiplexer="${2:?--multiplexer requires zellij or tmux}"
       shift 2
       ;;
     --trusted-author)
@@ -155,8 +160,20 @@ Prefer in-thread replies for review comments. Do not merge, mark ready, close is
 --- BEGIN UNTRUSTED FORGE FEEDBACK JSON ---
 ${comments}
 --- END UNTRUSTED FORGE FEEDBACK JSON ---"
-  zellij action paste --pane-id "${notify_pane}" "${message}"
-  zellij action send-keys --pane-id "${notify_pane}" Enter
+  case "${multiplexer}" in
+    zellij)
+      zellij action paste --pane-id "${notify_pane}" "${message}"
+      zellij action send-keys --pane-id "${notify_pane}" Enter
+      ;;
+    tmux)
+      tmux send-keys -t "${notify_pane}" -l "${message}"
+      tmux send-keys -t "${notify_pane}" Enter
+      ;;
+    *)
+      printf 'unsupported multiplexer: %s\n' "${multiplexer}" >&2
+      return 1
+      ;;
+  esac
   last_notified_comments="${comments}"
   count="$(feedback_count "${comments}")"
   printf '{"status":"notified-pi","paneId":%s,"prUrl":%s,"feedbackCount":%s}\n' \
@@ -306,7 +323,14 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 require_command gh
 require_command jq
 if [[ -n "${notify_pane}" ]]; then
-  require_command zellij
+  case "${multiplexer}" in
+    zellij) require_command zellij ;;
+    tmux) require_command tmux ;;
+    *)
+      printf 'unsupported multiplexer: %s (expected zellij or tmux)\n' "${multiplexer}" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 sleep_seconds="$(interval_seconds "${interval}")"

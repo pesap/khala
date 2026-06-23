@@ -65,14 +65,14 @@ test("loadWorkflowModelConfig returns builtin defaults when no config path", asy
   assert.deepEqual(result.config.profiles, BUILTIN_WORKFLOW_PROFILES);
   assert.deepEqual(result.config.routes, BUILTIN_WORKFLOW_ROUTES);
   assert.ok(result.warnings.length > 0);
-  assert.match(result.warnings[0]!, /no workflow model config path/i);
+  assert.match(String(result.warnings[0]), /no workflow model config path/i);
 });
 
 test("loadWorkflowModelConfig returns builtin defaults when config file does not exist", async () => {
   const result = await loadWorkflowModelConfig("/nonexistent/path.yaml");
   assert.deepEqual(result.config.profiles, BUILTIN_WORKFLOW_PROFILES);
   assert.ok(result.warnings.length > 0);
-  assert.match(result.warnings[0]!, /not found/i);
+  assert.match(String(result.warnings[0]), /not found/i);
 });
 
 test("loadWorkflowModelConfig merges config over builtins", async () => {

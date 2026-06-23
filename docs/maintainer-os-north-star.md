@@ -4,7 +4,8 @@
 
 Khala should become a local-first maintainer control plane for a developer who
 owns many repositories across GitHub, GitLab, and enterprise forges while using
-Pi, Worktrunk, zellij, and Khala memory for day-to-day engineering work.
+Pi, Worktrunk, terminal multiplexers, and Khala memory for day-to-day
+engineering work.
 
 The goal is not to create a fully autonomous swarm. The goal is to make every
 agent run start from a durable work packet, every project state visible from one
@@ -20,7 +21,7 @@ session with enough context to make progress without rediscovering the world.
 /inbox
   -> ranked maintainer queue
   -> /workon issue|pr|session
-  -> Worktrunk worktree + zellij tab + Pi session capsule
+  -> Worktrunk worktree + multiplexer scope + Pi session capsule
   -> /review, /ship, /recheck-pr loops
   -> Khala learning promotion
 ```
@@ -46,8 +47,8 @@ Non-trivial development starts by finding or creating an issue. Branches,
 worktrees, PRs, and session capsules should carry the issue identifier whenever
 possible.
 
-If a change cannot be tied to an issue, the workflow should either create a small
-issue or require an explicit bypass reason.
+If a change cannot be tied to an issue, the workflow should either create a
+small issue or require an explicit bypass reason.
 
 ### One writer, many reviewers
 
@@ -112,15 +113,17 @@ The command should end with a short recommended action list, not a giant report.
 
 Issue-first session bootstrap. It resolves an issue, PR, or topic into a durable
 source of truth, derives an issue-numbered branch/worktree name, writes a global
-Pi capsule under `~/.pi/khala/github.com/<owner>/<repo>/capsule.md`, and in
-Zellij waits for the Worktrunk-created worktree tab before starting Pi there with
-the handoff prompt. It does not implement the feature or bugfix itself.
+Pi capsule under `~/.pi/khala/github.com/<owner>/<repo>/capsule.md`, and when a
+built-in multiplexer provider is active starts Pi there with the handoff prompt.
+Zellij and tmux are built-in providers; the direct Worktrunk path remains
+available with `--multiplexer none`. It does not implement the feature or bugfix
+itself.
 
 ### `/recheck-pr`
 
-Post-PR feedback loop. It reads unresolved review/Copilot/CI feedback, classifies
-comments, applies accepted fixes through one writer, re-runs validation, and
-replies in-thread when safe.
+Post-PR feedback loop. It reads unresolved review/Copilot/CI feedback,
+classifies comments, applies accepted fixes through one writer, re-runs
+validation, and replies in-thread when safe.
 
 ### Existing `/review` and `/ship`
 
@@ -133,13 +136,8 @@ reimplementing them.
 ```markdown
 # Session capsule
 
-Repo:
-Branch:
-Issue:
-PR/MR:
-Worktree:
-Zellij tab/session:
-Capsule: ~/.pi/khala/github.com/<owner>/<repo>/capsule.md
+Repo: Branch: Issue: PR/MR: Worktree: Multiplexer scope/session: Capsule:
+~/.pi/khala/github.com/<owner>/<repo>/capsule.md
 
 ## Problem
 
@@ -179,7 +177,7 @@ Non-goals for the first prototype:
 - no automatic issue/PR/MR mutation
 - no background daemon
 - no cross-repo registry requirement
-- no zellij/worktree launching
+- no multiplexer/worktree launching
 - no autonomous remediation
 
 ## Near-term roadmap
@@ -190,6 +188,7 @@ Non-goals for the first prototype:
 4. Add session capsule discovery and stale-session detection.
 5. Add `/recheck-pr` for Copilot/reviewer/CI feedback loops.
 6. Promote repeated inbox findings into Khala lessons, repo docs, or automation.
+
 ## Current harness layer
 
 The first local-first harness layer now turns run metadata into an
@@ -207,8 +206,13 @@ The primary operator commands answer:
 - what action is safe to take next.
 
 Use `/run-list active`, `/run-list resumable`, and
-`/run-list needs_operator_review` for the maintainer queue; `/run-show` for
-full recovery context; `/run-resume` only for ledgers classified `resumable`;
-and `/run-checkpoint` after operator verification that prior side effects must
-not be repeated. Runs with uncertain mutation, shell, forge, external, or
-unknown tool side effects stay gated behind operator review.
+`/run-list needs_operator_review` for the maintainer queue; `/run-show` for full
+recovery context; `/run-resume` only for ledgers classified `resumable`; and
+`/run-checkpoint` after operator verification that prior side effects must not
+be repeated. Runs with uncertain mutation, shell, forge, external, or unknown
+tool side effects stay gated behind operator review.
+
+Learned workflow launches use the same ledger-backed control surface:
+`/workflow-run <name> [--model provider/model] [input]` reads the workflow's
+authored instructions, records the run, and includes the requested model in the
+handoff prompt.
