@@ -21,7 +21,7 @@ const DEFAULT_ZELLIJ_HANDOFF_TIMEOUT_MS = Math.ceil((
   + ZELLIJ_HANDOFF_TIMEOUT_BUFFER_SECONDS
 ) * 1000);
 const MAX_HANDOFF_DIAGNOSTIC_PART_LENGTH = 160;
-const MAX_HANDOFF_DIAGNOSTIC_SUMMARY_LENGTH = 320;
+const MAX_HANDOFF_DIAGNOSTIC_SUMMARY_LENGTH = 500;
 const MAX_BRANCH_NAME_LENGTH = 64;
 const MAX_BRANCH_SCOPE_WORDS = 4;
 const MIN_SHARED_BRANCH_SCOPE_WORDS = 2;
@@ -359,19 +359,76 @@ function numericTarget(target: string): number | null {
   return /^[1-9]\d*$/.test(target.trim()) ? Number(target.trim()) : null;
 }
 
-function parseJsonObject<T>(raw: string, gapLabel: string, gaps: string[]): T | null {
-  if (!raw.trim()) return null;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as T)
-      : null;
-  } catch (error) {
-    gaps.push(
-      `${gapLabel}: failed to parse JSON (${error instanceof Error ? error.message : String(error)})`,
-    );
-    return null;
+function sourceReadSelector(target: GithubIssueTarget): string {
+  return `${githubRepoSelector(target)}#${target.number}`;
+}
+
+function parseInputHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
   }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function sourceReadDiagnosticParts(params: {
+  label: string;
+  target: GithubIssueTarget;
+  result: CommandResult;
+  parseInput: string;
+  parseError?: string;
+}): string[] {
+  const parts = [
+    "blocked source-read failure",
+    `target=${sourceReadSelector(params.target)}`,
+    `command=${params.result.command ?? params.label}`,
+  ];
+  const parseInput = params.parseInput;
+  const trimmed = parseInput.trim();
+  const parseError = params.parseError?.trim();
+  if (parseError) parts.push(`parse-error=${parseError}`);
+  if (!params.result.ok) {
+    const failure = commandTimeoutDiagnostic(params.result)
+      || firstDiagnosticLine(params.result.error)
+      || firstDiagnosticLine(params.result.stderr)
+      || firstDiagnosticLine(params.result.stdout)
+      || "command failed";
+    parts.push(`command-failure=${failure}`);
+  }
+  if (params.result.rawStdout !== undefined) {
+    parts.push(`raw-stdout-bytes=${Buffer.byteLength(params.result.rawStdout, "utf8")}`);
+  }
+  parts.push(`parse-input-bytes=${Buffer.byteLength(parseInput, "utf8")}`);
+  parts.push(`redaction-changed-stdout=${params.result.rawStdout !== undefined && params.result.stdout !== params.result.rawStdout}`);
+  parts.push(`parse-input-starts-with-brace=${trimmed.startsWith("{")}`);
+  parts.push(`parse-input-ends-with-brace=${trimmed.endsWith("}")}`);
+  if (parseInput) {
+    parts.push(`parse-input-hash=${parseInputHash(parseInput)}`);
+  }
+  return parts;
+}
+
+function sourceReadFailureGap(params: {
+  label: string;
+  target: GithubIssueTarget;
+  result: CommandResult;
+  parseInput: string;
+  parseError?: string;
+}): string {
+  return `${params.label}: ${boundedDiagnosticSummary(sourceReadDiagnosticParts(params))}`;
+}
+
+function sourceReadFailureSummary(target: GithubIssueTarget, result: CommandResult, parseError?: string): string {
+  const selector = sourceReadSelector(target);
+  const failure = parseError?.trim()
+    ? `parse failure (${compactDiagnosticSnippet(parseError) || parseError.trim()})`
+    : commandTimeoutDiagnostic(result)
+      || firstDiagnosticLine(result.error)
+      || firstDiagnosticLine(result.stderr)
+      || firstDiagnosticLine(result.stdout)
+      || "command failed";
+  return `Source issue read blocked for ${selector}: ${failure}`;
 }
 
 function commandTimedOut(result: CommandResult): boolean {
@@ -928,17 +985,31 @@ async function readGithubIssue(
     "--json",
     "number,title,url,body,state,author,labels,assignees",
   );
+  const label = `GitHub issue ${target.repo}#${target.number}`;
   const result = await runGh(runner, request.cwd, evidence.commands, args);
-  const gap = resultGap(`GitHub issue ${target.repo}#${target.number}`, result);
-  if (gap) {
-    evidence.gaps.push(gap);
+  const parseInput = result.rawStdout ?? result.stdout;
+  const markSourceReadBlocked = (parseError?: string): null => {
+    evidence.route = "blocked";
+    evidence.handoffOperatorAction = `Fix the GitHub issue read failure for ${sourceReadSelector(target)}, then rerun /workon.`;
+    evidence.failureSummary = sourceReadFailureSummary(target, result, parseError);
+    evidence.gaps.push(sourceReadFailureGap({ label, target, result, parseInput, parseError }));
     return null;
+  };
+  if (!result.ok) {
+    return markSourceReadBlocked();
   }
-  return parseJsonObject<GithubIssueMetadata>(
-    result.rawStdout ?? result.stdout,
-    `GitHub issue ${target.repo}#${target.number}`,
-    evidence.gaps,
-  );
+
+  try {
+    const parsed = JSON.parse(parseInput) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as GithubIssueMetadata;
+    }
+    const parseError = `expected a JSON object but received ${Array.isArray(parsed) ? "an array" : typeof parsed}`;
+    return markSourceReadBlocked(parseError);
+  } catch (error) {
+    const parseError = error instanceof Error ? error.message : String(error);
+    return markSourceReadBlocked(parseError);
+  }
 }
 
 const WORKON_ACCEPTANCE_SECTION_HEADINGS = new Set(["acceptance criteria"]);
