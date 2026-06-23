@@ -50,6 +50,12 @@ export interface ParseRecordResult<T> {
   error?: string;
 }
 
+export interface ParsedKhalaHubArgs {
+  path?: string;
+  subdir?: string;
+  error?: string;
+}
+
 export type CompliancePreset = "status" | PolicyMode;
 export type KhalaModePreset = "status" | PolicyMode;
 
@@ -265,6 +271,40 @@ export const parsePlanArgs = (args: string): ParsedPlanArgs | { error: string } 
     review,
   };
 };
+export function parseKhalaHubArgs(args: string): ParsedKhalaHubArgs {
+  const usage = "Usage: /khala-hub [--path <path|git-ref> [--subdir <relative-path>]]";
+  const tokens = tokenizeArgs(normalizeWhitespace(args));
+  let pathValue: string | undefined;
+  let subdirValue: string | undefined;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const value = tokens[index + 1];
+
+    if (token === "--path") {
+      if (!value || value.startsWith("--") || pathValue) return { error: usage };
+      pathValue = value;
+      index += 1;
+      continue;
+    }
+
+    if (token === "--subdir") {
+      if (!value || value.startsWith("--") || subdirValue) return { error: usage };
+      subdirValue = value;
+      index += 1;
+      continue;
+    }
+
+    return { error: usage };
+  }
+
+  if (subdirValue && !pathValue) return { error: usage };
+  return {
+    ...(pathValue ? { path: pathValue } : {}),
+    ...(subdirValue ? { subdir: subdirValue } : {}),
+  };
+}
+
 export const parseAuditArgs = (args: string): { claim: string } => ({
   claim: normalizeWhitespace(args),
 });
