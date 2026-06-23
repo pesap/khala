@@ -186,6 +186,7 @@ falling back to the planning model.
 | `/approve-risk <reason> [--ttl MINUTES]`                                      | Approve one high-risk command (TTL 1–120 min, default 20).                                                                                    |
 | `/preflight Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>` | Record manual mutation intent.                                                                                                                |
 | `/postflight Postflight: verify="<command>" result=<pass\|fail\|not-run>`     | Record verification evidence.                                                                                                                 |
+<!-- markdownlint-enable MD013 MD060 -->
 
 <!-- markdownlint-enable MD013 MD060 -->
 
