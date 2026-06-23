@@ -1293,6 +1293,103 @@ exit 2
   }
 });
 
+test("workon zellij handoff times out slow selected model auth before Worktrunk", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-model-auth-timeout-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const wtLog = path.join(tempDir, "wt.log");
+    const piAgentDir = path.join(tempDir, "pi-agent");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    await mkdir(piAgentDir);
+    await writeFile(path.join(piAgentDir, "auth.json"), "{}\n", "utf8");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${wtLog}"
+exit 0
+`,
+    );
+    await writeExecutable(path.join(binDir, "zellij"), "#!/usr/bin/env bash\nexit 0\n");
+    await writeExecutable(
+      path.join(binDir, "pi"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "--list-models gpt-5.5" ]]; then
+  printf 'provider model\\ngithub-copilot gpt-5.5\\n'
+  exit 0
+fi
+if [[ "$*" == "--no-session --no-tools --model github-copilot/gpt-5.5 --thinking medium -p Return exactly: ok" ]]; then
+  sleep 5
+  printf 'late ok\\n'
+  exit 0
+fi
+printf 'unexpected pi args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    const start = Date.now();
+    let caught: unknown;
+    try {
+      await execFileAsync(
+        "bash",
+        [
+          scriptPath,
+          "--repo",
+          "pesap/agents",
+          "--branch",
+          "work/108-model-routing",
+          "--capsule",
+          capsulePath,
+          "--prompt",
+          "handoff prompt",
+          "--heartbeat",
+          "0",
+          "--model",
+          "github-copilot/gpt-5.5",
+          "--thinking",
+          "medium",
+        ],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+            PI_CODING_AGENT_DIR: piAgentDir,
+            WORKON_PI_PREFLIGHT_TIMEOUT_SECONDS: "1",
+          },
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught);
+    assert.ok(Date.now() - start < 4_000);
+    const stderr = String((caught as { stderr?: string }).stderr ?? "");
+    assert.match(stderr, /Pi model auth preflight for github-copilot\/gpt-5\.5 timed out after 1s/);
+    const resultLine = stderr
+      .trim()
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("{"));
+    assert.ok(resultLine);
+    const result = JSON.parse(resultLine);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.reason, "pi-auth-preflight-timeout");
+    assert.equal(result.path, null);
+    assert.equal(result.tabName, "agents/work-108-model-routing");
+    await assert.rejects(readFile(wtLog, "utf8"), /ENOENT/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff fails before Worktrunk when selected model is unavailable", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-model-invalid-test-"));
   try {
