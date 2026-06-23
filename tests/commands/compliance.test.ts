@@ -68,10 +68,11 @@ test("khala status includes model profile doctor output", async () => {
   await handlers.compliance("status", { cwd: process.cwd() } as never);
 
   assert.equal(messages.length, 1);
-  assert.match(messages[0], /Compliance modes \(session\):/);
-  assert.match(messages[0], /Model profiles:/);
-  assert.match(messages[0], /planning: model=github-copilot\/gpt-5\.5, thinking=xhigh/);
-  assert.match(messages[0], /development: model=.*thinking=medium/);
+  assert.match(messages[0], /compliance: preflight=warn, postflight=warn, response=warn/);
+  assert.match(messages[0], /Model profiles ~/);
+  assert.match(messages[0], /OK planning/);
+  assert.match(messages[0], /model: github-copilot\/gpt-5\.5/);
+  assert.match(messages[0], /thinking: medium/);
 });
 
 test("parseKhalaModeArgs recognizes aliases and rejects status", () => {

@@ -327,39 +327,13 @@ test("parses workon target and flags", () => {
     extraInstruction: "",
   });
 
-  assert.deepEqual(parseWorkonArgs("73 --model anthropic/claude-sonnet-4"), {
-    target: "73",
-    targets: ["73"],
-    repo: "",
-    forge: "auto",
-    mode: "start",
-    heartbeat: "1.0",
-    dryRun: false,
-    modelSelection: {
-      exactModel: "anthropic/claude-sonnet-4",
-      exactThinkingLevel: defaultModelSelection.exactThinkingLevel,
-      routingMode: "override",
-      routingReason: "explicit --model override with default workon thinking",
-    },
-    extraInstruction: "",
-  });
+  // --model and --thinking are silently ignored by parseWorkonArgs and flow into target
+  // (the handler rejects them as unrecognized issue targets)
+  const modelOnlyResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4");
+  assert.equal(modelOnlyResult.target, "73 --model anthropic/claude-sonnet-4");
 
-  assert.deepEqual(parseWorkonArgs("73 --model anthropic/claude-sonnet-4 --thinking high"), {
-    target: "73",
-    targets: ["73"],
-    repo: "",
-    forge: "auto",
-    mode: "start",
-    heartbeat: "1.0",
-    dryRun: false,
-    modelSelection: {
-      exactModel: "anthropic/claude-sonnet-4",
-      exactThinkingLevel: "high",
-      routingMode: "override",
-      routingReason: "explicit --model and --thinking override",
-    },
-    extraInstruction: "",
-  });
+  const modelAndThinkingResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4 --thinking high");
+  assert.equal(modelAndThinkingResult.target, "73 --model anthropic/claude-sonnet-4 --thinking high");
 
   assert.deepEqual(parseWorkonArgs("73, 74 --repo pesap/agents"), {
     target: "73, 74",

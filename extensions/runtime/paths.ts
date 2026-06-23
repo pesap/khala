@@ -19,4 +19,5 @@ export const RUNTIME_PATHS = {
   packageSkillsPath: path.join(PACKAGE_ROOT, "skills"),
   profileConfigPath: path.join(RUNTIME_DIR, "profile.yaml"),
   firstPrinciplesConfigPath: path.join(RUNTIME_DIR, "compliance", "first-principles-gate.yaml"),
+  workflowModelConfigPath: path.join(homedir(), ".pi", LEARNING_STORE_DIRNAME, "workflow-model.yaml"),
 } as const;

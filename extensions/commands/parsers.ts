@@ -409,29 +409,6 @@ export function parseWorkonArgs(args: string): {
   rest = heartbeatResult.value;
   const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
 
-  const modelResult = removeFlag(rest, /(^|\s)--model\s+(\S+)(\s|$)/);
-  rest = modelResult.value;
-  const exactModel = normalizeWhitespace(modelResult.match?.[2] ?? "");
-
-  const thinkingResult = removeFlag(rest, /(^|\s)--thinking\s+(\S+)(\s|$)/);
-  rest = thinkingResult.value;
-  const exactThinkingLevel = parseAllowedInboxValue(
-    thinkingResult.match?.[2],
-    WORKON_DEFAULT_THINKING_LEVEL,
-    WORKON_THINKING_LEVELS,
-  );
-
-  const modelSelection: WorkonModelSelection = exactModel
-    ? {
-        exactModel,
-        exactThinkingLevel,
-        routingMode: "override",
-        routingReason: thinkingResult.match
-          ? "explicit --model and --thinking override"
-          : "explicit --model override with default workon thinking",
-      }
-    : DEFAULT_WORKON_MODEL_SELECTION;
-
   const targets = parseWorkonIssueTargets(rest);
 
   return {
@@ -442,7 +419,7 @@ export function parseWorkonArgs(args: string): {
     mode,
     heartbeat,
     dryRun,
-    modelSelection,
+    modelSelection: DEFAULT_WORKON_MODEL_SELECTION,
     extraInstruction: "",
   };
 }
