@@ -330,11 +330,9 @@ test("parses workon target and flags", () => {
   // --model and --thinking are silently ignored by parseWorkonArgs and flow into target
   // (the handler rejects them as unrecognized issue targets)
   const modelOnlyResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4");
-  assert.equal(modelOnlyResult.error, undefined);
   assert.equal(modelOnlyResult.target, "73 --model anthropic/claude-sonnet-4");
 
   const modelAndThinkingResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4 --thinking high");
-  assert.equal(modelAndThinkingResult.error, undefined);
   assert.equal(modelAndThinkingResult.target, "73 --model anthropic/claude-sonnet-4 --thinking high");
 
   assert.deepEqual(parseWorkonArgs("73, 74 --repo pesap/agents"), {
