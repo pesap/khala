@@ -996,8 +996,8 @@ async function ensureGithubAuth(
   evidence: WorkonBootstrapEvidence,
   host?: string,
 ): Promise<boolean> {
-  const normalizedHost = normalizeForgeHost(host);
-  const hostArgs = normalizedHost && normalizedHost !== "github.com" ? ["--hostname", normalizedHost] : [];
+  const normalizedHost = normalizeForgeHost(host) ?? stateForgeHost(request);
+  const hostArgs = normalizedHost ? ["--hostname", normalizedHost] : [];
   const auth = await runGh(runner, request.cwd, evidence.commands, ["auth", "status", ...hostArgs]);
   const label = normalizedHost && normalizedHost !== "github.com"
     ? `GitHub authentication for ${normalizedHost}`

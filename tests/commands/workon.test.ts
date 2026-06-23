@@ -164,7 +164,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
           stderr: "",
         };
       }
-      const stdout = outputs[key];
+      const stdout = outputs[key] ?? (key === "auth status --hostname github.com" ? outputs["auth status"] : undefined);
       return stdout === undefined
         ? { ok: false, stdout: "", stderr: `missing fake output for ${key}` }
         : { ok: true, stdout, stderr: "" };
@@ -379,7 +379,7 @@ test("stores workon state under the resolved forge host", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-forge-host-test-"));
   try {
     const { runner } = fakeGhRunner({
-      "auth status": "",
+      "auth status --hostname github.enterprise.example": "",
       "issue view 63 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
         63,
         "feat(inbox): render deterministic maintainer queue locally",
@@ -736,7 +736,7 @@ test("uses current GitHub issue context without a separate repo lookup", async (
     const rendered = sections.join("\n");
 
     assert.deepEqual(calls.slice(0, 2), [
-      "auth status",
+      "auth status --hostname github.com",
       "issue view 63 --json number,title,url,body,state,author,labels,assignees",
     ]);
     assert.equal(calls.some((call) => call.startsWith("repo view")), false);
