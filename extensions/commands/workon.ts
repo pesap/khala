@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
+import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
 import {
   IMPROVE_LABEL,
   WORKON_READY_PACKET_NORMALIZED_HEADINGS,
@@ -166,14 +166,20 @@ export interface WorkonBootstrapRequest {
 export const WORKON_DEFAULT_THINKING_LEVEL: WorkonThinkingLevel = "medium";
 
 function defaultWorkonModelSelection(): WorkonModelSelection {
-  const profile = resolveKhalaProfile("development");
+  const route = resolveWorkflowRoute("workon");
+  const profile = route.profile;
+  const routeSource = route.source === "flag"
+    ? `workflow flag ${route.description}`
+    : route.source === "route"
+      ? `workflow route config ${route.description}`
+      : `builtin ${route.description}`;
   return {
     exactModel: profile.model ?? "",
     exactThinkingLevel: profile.thinkingLevel,
     routingMode: "default",
     routingReason: profile.model
-      ? `Khala/workon development profile (${profile.source})`
-      : `Khala/workon development profile unresolved: ${profile.reason ?? "unknown reason"}. Run /khala status for setup guidance or pass --model <id>.`,
+      ? `Khala/workon ${route.profileName} profile (${profile.source}; ${routeSource})`
+      : `Khala/workon ${route.profileName} profile unresolved via ${routeSource}: ${profile.reason ?? "unknown reason"}. Run /khala status for setup guidance or pass --model <id>.`,
   };
 }
 

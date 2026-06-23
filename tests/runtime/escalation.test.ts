@@ -8380,6 +8380,20 @@ test("requires memory search for substantial tool-backed work", () => {
   assert.equal(
     memorySearchNeedReason({
       messages: [
+        textMessage("user", "Fix the runtime."),
+        assistantToolCall("read", { path: "a.ts" }),
+        {
+          role: "toolResult",
+          content: "Skill audit: full-read=yes native-path-confirmed=yes",
+        },
+      ],
+      userText: "Fix the runtime.",
+    }),
+    "user requested non-trivial tool-backed work",
+  );
+  assert.equal(
+    memorySearchNeedReason({
+      messages: [
         textMessage("user", "Inspect files."),
         assistantToolCall("read", { path: "a.ts" }),
         assistantToolCall("read", { path: "b.ts" }),
@@ -10172,6 +10186,17 @@ test("does not count zero-failure test summaries as tool failures", () => {
 });
 
 test("counts common nonzero status and system error results as tool failures", () => {
+  assert.equal(
+    countToolFailures([
+      textMessage("user", "Run the check."),
+      {
+        role: "toolResult",
+        content: "Error: message.content.flatMap is not a function",
+      },
+    ]),
+    1,
+  );
+
   assert.equal(
     countToolFailures([
       textMessage("user", "Run the checks."),

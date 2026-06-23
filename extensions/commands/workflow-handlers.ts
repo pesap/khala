@@ -21,7 +21,7 @@ import {
   type WorkonMode,
   type WorkonModelSelection,
 } from "./workon.ts";
-import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
+import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
 import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
 import type { PendingWorkflow } from "../workflows/engine.ts";
 import { buildPlanReviewerTwoSections } from "./plan-review.ts";
@@ -595,8 +595,14 @@ export function createWorkflowCommandHandlers(params: {
     },
 
     plan: async (args, ctx) => {
-      const planningProfile = resolveKhalaProfile("planning");
-      const routingReason = `Khala planning profile (${planningProfile.source})`;
+      const planningRoute = resolveWorkflowRoute("plan");
+      const planningProfile = planningRoute.profile;
+      const routeSource = planningRoute.source === "flag"
+        ? `workflow flag ${planningRoute.description}`
+        : planningRoute.source === "route"
+          ? `workflow route config ${planningRoute.description}`
+          : `builtin ${planningRoute.description}`;
+      const routingReason = `Khala planning profile ${planningRoute.profileName} (${planningProfile.source}; ${routeSource})`;
       const parsed = parsePlanArgs(args ?? "");
       if ("error" in parsed) {
         notify(ctx, parsed.error, "error");

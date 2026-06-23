@@ -6,13 +6,16 @@ import path from "node:path";
 
 import {
   getActiveWorkflowRoute,
+  formatWorkflowRouteStatus,
   getMergedProfiles,
   getMergedRoutes,
+  getWorkflowModelConfigStatus,
   resetActiveWorkflowRouteForTests,
   resolveWorkflowRoute,
   setActiveWorkflowRoute,
   setWorkflowModelConfig,
 } from "../../extensions/runtime/workflow-model-router.ts";
+import { loadWorkflowModelConfig } from "../../extensions/runtime/workflow-model-config.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
 
 async function withFakePi(script: string, fn: () => void | Promise<void>): Promise<void> {
@@ -170,6 +173,83 @@ printf 'github-copilot gpt-5.4 400K 128K yes yes\n'
       assert.equal(resolved.profile.status, "unresolved");
     },
   );
+});
+
+test("resolveWorkflowRoute uses exact workflow-model.yaml profile overrides", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workflow-model-router-config-"));
+  const configPath = path.join(tempDir, "workflow-model.yaml");
+  try {
+    await writeFile(
+      configPath,
+      [
+        "profiles:",
+        '  planning: "openai-codex/gpt-5.5:high"',
+        '  development: "openai-codex/gpt-5.4-mini:low"',
+        "routes:",
+        '  workon: "development"',
+        '  plan: "planning"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const loaded = await loadWorkflowModelConfig(configPath);
+    resetActiveWorkflowRouteForTests();
+    setWorkflowModelConfig(loaded.config, {
+      path: loaded.path,
+      found: loaded.found,
+      explicitProfiles: loaded.explicitProfiles,
+      explicitRoutes: loaded.explicitRoutes,
+    });
+
+    const development = resolveWorkflowRoute("workon");
+    assert.equal(development.profileName, "development");
+    assert.equal(development.profile.model, "openai-codex/gpt-5.4-mini");
+    assert.equal(development.profile.thinkingLevel, "low");
+    assert.equal(development.profile.source, "workflow-model-config");
+
+    const planning = resolveWorkflowRoute("plan");
+    assert.equal(planning.profileName, "planning");
+    assert.equal(planning.profile.model, "openai-codex/gpt-5.5");
+    assert.equal(planning.profile.thinkingLevel, "high");
+    assert.equal(planning.profile.source, "workflow-model-config");
+  } finally {
+    resetActiveWorkflowRouteForTests();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("formatWorkflowRouteStatus reports config state and avoids not-set wording", () => {
+  resetActiveWorkflowRouteForTests();
+  try {
+    setWorkflowModelConfig(
+      {
+        routes: { workon: "development" },
+        profiles: { development: "openai-codex/gpt-5.4-mini:low" },
+      },
+      {
+        path: "/tmp/khala/workflow-model.yaml",
+        found: true,
+        explicitProfiles: ["development"],
+        explicitRoutes: ["workon"],
+      },
+    );
+
+    const status = formatWorkflowRouteStatus();
+    assert.match(status, /workflow config: found at \/tmp\/khala\/workflow-model\.yaml/);
+    assert.match(status, /workflow profile flag: none \(CLI override not set; workflow config still applies\)/);
+    assert.match(status, /workflow task flag: none \(CLI override not set; command routes still apply\)/);
+    assert.match(status, /active profiles: .*development=openai-codex\/gpt-5\.4-mini:low/);
+    assert.match(status, /active routes: .*workon->development/);
+    assert.doesNotMatch(status, /workflow profile flag: \(not set\)/);
+    assert.doesNotMatch(status, /workflow task flag: \(not set\)/);
+
+    const configStatus = getWorkflowModelConfigStatus();
+    assert.deepEqual(configStatus.explicitProfiles, ["development"]);
+    assert.equal(configStatus.found, true);
+  } finally {
+    resetActiveWorkflowRouteForTests();
+  }
 });
 
 test("resolveWorkflowRoute uses config-overridden routes", async () => {

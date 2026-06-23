@@ -16,6 +16,10 @@ import {
 } from "../../extensions/commands/parsers.ts";
 import { DEFAULT_WORKON_MODEL_SELECTION } from "../../extensions/commands/workon.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
+import {
+  resetActiveWorkflowRouteForTests,
+  setWorkflowModelConfig,
+} from "../../extensions/runtime/workflow-model-router.ts";
 
 let defaultPiPathDir: string | null = null;
 let previousPath: string | undefined;
@@ -35,10 +39,12 @@ fi
     { mode: 0o755 },
   );
   process.env.PATH = `${defaultPiPathDir}${path.delimiter}${previousPath ?? ""}`;
+  resetActiveWorkflowRouteForTests();
   resetKhalaProfileDiscoveryForTests();
 });
 
 after(async () => {
+  resetActiveWorkflowRouteForTests();
   resetKhalaProfileDiscoveryForTests();
   if (previousPath === undefined) delete process.env.PATH;
   else process.env.PATH = previousPath;
@@ -96,7 +102,7 @@ test("parses plan review flags with bounded defaults", () => {
       loops: 1,
       context: "fresh",
       routingMode: "default",
-      routingReason: "Reviewer Two development profile (pi-model-discovery)",
+      routingReason: "Reviewer Two development profile (pi-model-discovery; builtin route review -> development)",
     },
   });
 
@@ -125,6 +131,33 @@ test("parses plan review flags with bounded defaults", () => {
       routingReason: "explicit --review-model override",
     },
   });
+});
+
+test("plan review defaults use workflow review route overrides", () => {
+  resetActiveWorkflowRouteForTests();
+  try {
+    setWorkflowModelConfig({
+      routes: { review: "agents" },
+      profiles: { agents: "openai-codex/gpt-5.4-mini:low" },
+    });
+
+    const parsed = parsePlanArgs("shape reviewer two");
+    assert.ok(!("error" in parsed));
+    assert.equal(parsed.review.model, "openai-codex/gpt-5.4-mini");
+    assert.equal(parsed.review.thinkingLevel, "low");
+    assert.equal(parsed.review.routingMode, "default");
+    assert.match(parsed.review.routingReason, /Reviewer Two agents profile/);
+    assert.match(parsed.review.routingReason, /workflow route config route review -> agents/);
+
+    const explicit = parsePlanArgs("shape reviewer two --review-model anthropic/claude-sonnet-4");
+    assert.ok(!("error" in explicit));
+    assert.equal(explicit.review.model, "anthropic/claude-sonnet-4");
+    assert.equal(explicit.review.thinkingLevel, "low");
+    assert.equal(explicit.review.routingMode, "override");
+    assert.equal(explicit.review.routingReason, "explicit --review-model override");
+  } finally {
+    resetActiveWorkflowRouteForTests();
+  }
 });
 
 test("rejects invalid plan review flags", () => {

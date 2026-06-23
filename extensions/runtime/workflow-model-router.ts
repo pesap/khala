@@ -10,7 +10,12 @@
  *   5. builtin default
  */
 
-import { resolveKhalaProfile, type KhalaModelProfile, type KhalaProfileName } from "./khala-profiles.ts";
+import {
+  resolveKhalaProfile,
+  setKhalaWorkflowProfilesForRuntime,
+  type KhalaModelProfile,
+  type KhalaProfileName,
+} from "./khala-profiles.ts";
 
 // ── Task-to-profile routing ──────────────────────────────────────
 
@@ -41,16 +46,54 @@ let mergedRoutes: Record<string, string> = { ...BUILTIN_ROUTES };
 /** Merged profiles (builtin + config). */
 let mergedProfiles: Record<string, string> = { ...BUILTIN_PROFILES };
 
+export interface WorkflowModelConfigStatus {
+  path?: string;
+  found: boolean;
+  explicitProfiles: string[];
+  explicitRoutes: string[];
+}
+
+let workflowModelConfigStatus: WorkflowModelConfigStatus = {
+  found: false,
+  explicitProfiles: [],
+  explicitRoutes: [],
+};
+
+export interface WorkflowModelConfigSetOptions {
+  path?: string;
+  found?: boolean;
+  explicitProfiles?: Iterable<string>;
+  explicitRoutes?: Iterable<string>;
+}
+
 /**
  * Set the merged routes and profiles from durable config.
  * Builtin defaults remain as fallback for any keys not in config.
  */
-export function setWorkflowModelConfig(config: {
-  routes: Record<string, string>;
-  profiles: Record<string, string>;
-}): void {
+export function setWorkflowModelConfig(
+  config: {
+    routes: Record<string, string>;
+    profiles: Record<string, string>;
+  },
+  options: WorkflowModelConfigSetOptions = {},
+): void {
   mergedRoutes = { ...BUILTIN_ROUTES, ...config.routes };
   mergedProfiles = { ...BUILTIN_PROFILES, ...config.profiles };
+
+  const explicitProfiles = Array.from(
+    new Set(options.explicitProfiles ?? Object.keys(config.profiles)),
+  ).sort();
+  const explicitRoutes = Array.from(
+    new Set(options.explicitRoutes ?? Object.keys(config.routes)),
+  ).sort();
+
+  workflowModelConfigStatus = {
+    path: options.path,
+    found: options.found ?? false,
+    explicitProfiles,
+    explicitRoutes,
+  };
+  setKhalaWorkflowProfilesForRuntime(mergedProfiles, explicitProfiles);
 }
 
 /**
@@ -67,12 +110,26 @@ export function getMergedProfiles(): Record<string, string> {
   return { ...mergedProfiles };
 }
 
+export function getWorkflowModelConfigStatus(): WorkflowModelConfigStatus {
+  return {
+    ...workflowModelConfigStatus,
+    explicitProfiles: [...workflowModelConfigStatus.explicitProfiles],
+    explicitRoutes: [...workflowModelConfigStatus.explicitRoutes],
+  };
+}
+
 /**
  * Reset config to builtin defaults (for tests).
  */
 export function resetWorkflowModelConfigForTests(): void {
   mergedRoutes = { ...BUILTIN_ROUTES };
   mergedProfiles = { ...BUILTIN_PROFILES };
+  workflowModelConfigStatus = {
+    found: false,
+    explicitProfiles: [],
+    explicitRoutes: [],
+  };
+  setKhalaWorkflowProfilesForRuntime(mergedProfiles, []);
 }
 
 // ── Active state (set from flags / config) ───────────────────────
@@ -162,10 +219,13 @@ export function resolveWorkflowRoute(task: WorkflowTask): WorkflowRouteResolutio
   const routeProfile = mergedRoutes[task];
   if (routeProfile) {
     const profile = resolveKhalaProfile(routeProfile as WorkflowProfileName);
+    const source = workflowModelConfigStatus.explicitRoutes.includes(task)
+      ? "route"
+      : "builtin";
     return {
       profileName: routeProfile as WorkflowProfileName,
       profile,
-      source: "builtin",
+      source,
       description: `route ${task} -> ${routeProfile}`,
     };
   }
@@ -183,18 +243,48 @@ export function resolveWorkflowRoute(task: WorkflowTask): WorkflowRouteResolutio
 /**
  * Format a human-readable description of the active workflow route state.
  */
+function formatEntries(entries: Record<string, string>, separator: string): string {
+  return Object.entries(entries)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}${separator}${value}`)
+    .join(", ");
+}
+
+/**
+ * Format a human-readable description of the active workflow route state.
+ */
 export function formatWorkflowRouteStatus(): string {
   const lines: string[] = [];
+  const configPath = workflowModelConfigStatus.path;
+  const configState = workflowModelConfigStatus.found
+    ? `found at ${configPath ?? "(path unavailable)"}`
+    : configPath
+      ? `not found at ${configPath}; using builtin defaults`
+      : "not found; using builtin defaults";
+
+  lines.push(`- workflow config: ${configState}`);
+  if (workflowModelConfigStatus.explicitProfiles.length > 0) {
+    lines.push(
+      `- workflow config profiles: ${workflowModelConfigStatus.explicitProfiles.join(", ")}`,
+    );
+  }
+  if (workflowModelConfigStatus.explicitRoutes.length > 0) {
+    lines.push(
+      `- workflow config routes: ${workflowModelConfigStatus.explicitRoutes.join(", ")}`,
+    );
+  }
   if (activeWorkflowRoute.profileFlag) {
     lines.push(`- workflow profile flag: ${activeWorkflowRoute.profileFlag}`);
   } else {
-    lines.push("- workflow profile flag: (not set)");
+    lines.push("- workflow profile flag: none (CLI override not set; workflow config still applies)");
   }
   if (activeWorkflowRoute.taskFlag) {
     lines.push(`- workflow task flag: ${activeWorkflowRoute.taskFlag}`);
   } else {
-    lines.push("- workflow task flag: (not set)");
+    lines.push("- workflow task flag: none (CLI override not set; command routes still apply)");
   }
+  lines.push(`- active profiles: ${formatEntries(mergedProfiles, "=")}`);
+  lines.push(`- active routes: ${formatEntries(mergedRoutes, "->")}`);
   lines.push(
     "- note: Pi --model affects this session; --khala-* affects Khala workflow launches only.",
   );

@@ -7,6 +7,10 @@ import path from "node:path";
 import { createKhalaCommandHandlers, formatKhalaHealthStatus } from "../../extensions/commands/khala.ts";
 import type { RuntimeState } from "../../extensions/state/runtime.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
+import {
+  resetActiveWorkflowRouteForTests,
+  setWorkflowModelConfig,
+} from "../../extensions/runtime/workflow-model-router.ts";
 
 let fakePiDir: string | null = null;
 let previousPath: string | undefined;
@@ -124,6 +128,45 @@ test("/khala-health is read-only and reports health status", async () => {
   assert.match(harness.messages[0], /OK planning/);
   assert.equal(harness.agentStateEntries.length, 0);
   assert.deepEqual(harness.compliancePresets, []);
+});
+
+test("/khala status reports durable workflow config without not-set wording", async () => {
+  resetActiveWorkflowRouteForTests();
+  try {
+    setWorkflowModelConfig(
+      {
+        routes: { workon: "development", plan: "planning" },
+        profiles: {
+          planning: "openai-codex/gpt-5.5:high",
+          development: "openai-codex/gpt-5.4-mini:low",
+        },
+      },
+      {
+        path: "/tmp/khala/workflow-model.yaml",
+        found: true,
+        explicitProfiles: ["planning", "development"],
+        explicitRoutes: ["workon", "plan"],
+      },
+    );
+    const harness = makeHarness({
+      agentEnabled: true,
+      memoryToolCallLimit: 21,
+    });
+
+    await harness.handlers.khala("status", harness.ctx);
+
+    assert.equal(harness.messages.length, 1);
+    assert.match(harness.messages[0], /workflow config: found at \/tmp\/khala\/workflow-model\.yaml/);
+    assert.match(harness.messages[0], /workflow profile flag: none \(CLI override not set; workflow config still applies\)/);
+    assert.match(harness.messages[0], /active profiles: .*planning=openai-codex\/gpt-5\.5:high/);
+    assert.match(harness.messages[0], /active profiles: .*development=openai-codex\/gpt-5\.4-mini:low/);
+    assert.match(harness.messages[0], /model: openai-codex\/gpt-5\.5/);
+    assert.match(harness.messages[0], /model: openai-codex\/gpt-5\.4-mini/);
+    assert.doesNotMatch(harness.messages[0], /workflow profile flag: \(not set\)/);
+    assert.doesNotMatch(harness.messages[0], /workflow task flag: \(not set\)/);
+  } finally {
+    resetActiveWorkflowRouteForTests();
+  }
 });
 
 test("/khala status remains a compatibility alias for /khala-health", async () => {

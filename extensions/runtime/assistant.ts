@@ -10,10 +10,12 @@ export type WorkflowOutcome = "success" | "partial" | "failed";
 
 type AgentEndEventMessage = {
   role: "assistant" | "user" | "toolResult" | "system" | string;
-  content: AssistantMessage["content"];
+  content: unknown;
   stopReason?: string;
   toolName?: string;
 };
+
+type MessageContentItem = AssistantMessage["content"][number] | TextContent;
 
 interface PendingMemoryGateRecovery {
   blockedToolName: string;
@@ -75,10 +77,26 @@ function isWorkflowOutcome(value: unknown): value is WorkflowOutcome {
   return value === "success" || value === "partial" || value === "failed";
 }
 
-function extractTextFromMessageContent(
-  content: AssistantMessage["content"],
-): string {
-  const parts = content
+function isMessageContentItem(value: unknown): value is MessageContentItem {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { type?: unknown }).type === "string"
+  );
+}
+
+function messageContentItems(content: unknown): MessageContentItem[] {
+  if (Array.isArray(content)) {
+    return content.filter(isMessageContentItem);
+  }
+  if (typeof content === "string") {
+    return content.length > 0 ? [{ type: "text", text: content }] : [];
+  }
+  return isMessageContentItem(content) ? [content] : [];
+}
+
+function extractTextFromMessageContent(content: unknown): string {
+  const parts = messageContentItems(content)
     .filter((item): item is TextContent => item.type === "text")
     .map((item) => item.text);
   return parts.join("\n").trim();
@@ -133,7 +151,7 @@ export function isEmptyTerminalAssistantResponse(
   if (!lastAssistant || lastAssistant.stopReason !== "stop") return false;
   if (assistantTurnHasToolCallSinceLatestUser(messages)) return false;
 
-  return !lastAssistant.content.some((item) => {
+  return !messageContentItems(lastAssistant.content).some((item) => {
     if (item.type === "toolCall") return true;
     if (item.type === "text") return item.text.trim().length > 0;
     return false;
@@ -143,7 +161,11 @@ export function isEmptyTerminalAssistantResponse(
 export function assistantMessageHasToolCall(
   message: AgentEndEventMessage | null,
 ): boolean {
-  return Boolean(message?.content.some((item) => item.type === "toolCall"));
+  return Boolean(
+    message
+      ? messageContentItems(message.content).some((item) => item.type === "toolCall")
+      : false,
+  );
 }
 
 export function assistantTurnHasToolCallSinceLatestUser(
@@ -154,7 +176,7 @@ export function assistantTurnHasToolCallSinceLatestUser(
     if (message.role === "user") return false;
     if (
       message.role === "assistant" &&
-      message.content.some((item) => item.type === "toolCall")
+      messageContentItems(message.content).some((item) => item.type === "toolCall")
     ) {
       return true;
     }
@@ -331,7 +353,7 @@ function extractToolCalls(message: AgentEndEventMessage): Array<{
   toolName: string;
   input: unknown;
 }> {
-  return message.content.flatMap((item) => {
+  return messageContentItems(message.content).flatMap((item) => {
     if (item.type !== "toolCall") return [];
     return typeof item.name === "string"
       ? [{ toolName: item.name, input: item.arguments }]

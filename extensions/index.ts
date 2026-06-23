@@ -2025,10 +2025,17 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
     // Load workflow model config
     const trustAwareCtx = ctx as typeof ctx & { isProjectTrusted?: () => boolean };
-    const workflowModelConfig = await loadWorkflowModelConfig(
-      await resolveWorkflowModelConfigPath(ctx.cwd, trustAwareCtx.isProjectTrusted?.() ?? false),
+    const workflowModelConfigPath = await resolveWorkflowModelConfigPath(
+      ctx.cwd,
+      trustAwareCtx.isProjectTrusted?.() ?? false,
     );
-    setWorkflowModelConfig(workflowModelConfig.config);
+    const workflowModelConfig = await loadWorkflowModelConfig(workflowModelConfigPath);
+    setWorkflowModelConfig(workflowModelConfig.config, {
+      path: workflowModelConfig.path ?? workflowModelConfigPath,
+      found: workflowModelConfig.found,
+      explicitProfiles: workflowModelConfig.explicitProfiles,
+      explicitRoutes: workflowModelConfig.explicitRoutes,
+    });
 
     const [hookConfig, profileLoad] = await Promise.all([
       loadHooksConfig(RUNTIME_PATHS.hooksConfigPath, DEFAULT_HOOK_CONFIG),

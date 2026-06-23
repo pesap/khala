@@ -21,14 +21,15 @@ long-running maintenance work, and recoverable agent sessions.
 
 ## Quick Start
 
-Run the setup helper with `npx`:
+Run the setup helper directly from GitHub with `npm exec`:
 
 ```bash
-npx khala
+npm exec --yes --package "github:pesap/agents#main" -- khala
 ```
 
 The helper asks whether to install globally or into the current project, then
-asks which workflow models to write into Khala's workflow config.
+asks which workflow models to write into Khala's workflow config. This path does
+not require a local checkout or a published npm package.
 
 If the package is already installed, run the helper directly:
 

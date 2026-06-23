@@ -60,6 +60,33 @@ test("workflow footer requires Bias Check plus result and confidence", () => {
   );
 });
 
+test("handles string message content from harness events", () => {
+  assert.equal(
+    isAssistantClarification({
+      role: "assistant",
+      content: "Should I proceed?",
+    }),
+    true,
+  );
+  assert.equal(
+    assistantMessageHasToolCall({
+      role: "assistant",
+      content: "No tool call here.",
+    }),
+    false,
+  );
+  assert.equal(
+    isEmptyTerminalAssistantResponse([
+      {
+        role: "assistant",
+        stopReason: "stop",
+        content: "Done.",
+      },
+    ]),
+    false,
+  );
+});
+
 test("detects incomplete same-turn recovery after khala_read_memory", () => {
   const messages: Parameters<typeof findPendingMemoryGateRecovery>[0] = [
     assistantToolCall("write"),

@@ -176,6 +176,10 @@ function parseYamlConfig(raw: string): {
 export interface WorkflowModelConfigLoadResult {
   config: WorkflowModelConfig;
   warnings: string[];
+  path?: string;
+  found: boolean;
+  explicitProfiles: string[];
+  explicitRoutes: string[];
 }
 
 /**
@@ -192,6 +196,9 @@ export async function loadWorkflowModelConfig(
         routes: { ...BUILTIN_WORKFLOW_ROUTES },
       },
       warnings: ["No workflow model config path provided; using builtin defaults."],
+      found: false,
+      explicitProfiles: [],
+      explicitRoutes: [],
     };
   }
 
@@ -204,6 +211,10 @@ export async function loadWorkflowModelConfig(
       warnings: [
         `Workflow model config not found at ${configPath}; using builtin defaults.`,
       ],
+      path: configPath,
+      found: false,
+      explicitProfiles: [],
+      explicitRoutes: [],
     };
   }
 
@@ -219,6 +230,10 @@ export async function loadWorkflowModelConfig(
       warnings: [
         `Failed to read workflow model config: ${error instanceof Error ? error.message : String(error)}; using builtin defaults.`,
       ],
+      path: configPath,
+      found: true,
+      explicitProfiles: [],
+      explicitRoutes: [],
     };
   }
 
@@ -261,12 +276,23 @@ export async function loadWorkflowModelConfig(
     warnings.push(...parsed.warnings);
   }
 
+  const explicitProfiles = Object.keys(parsed.profiles)
+    .filter((name) => mergedProfiles[name] === parsed.profiles[name])
+    .sort();
+  const explicitRoutes = Object.keys(parsed.routes)
+    .filter((task) => mergedRoutes[task] === parsed.routes[task])
+    .sort();
+
   return {
     config: {
       profiles: mergedProfiles,
       routes: mergedRoutes,
     },
     warnings,
+    path: configPath,
+    found: true,
+    explicitProfiles,
+    explicitRoutes,
   };
 }
 

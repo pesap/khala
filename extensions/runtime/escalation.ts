@@ -31,12 +31,10 @@ import {
 
 type AgentEndEventMessage = {
   role: "assistant" | "user" | "toolResult" | "system" | string;
-  content: AssistantMessage["content"];
+  content: unknown;
 };
-type ToolCallContent = Extract<
-  AssistantMessage["content"][number],
-  { type: "toolCall" }
->;
+type MessageContentItem = AssistantMessage["content"][number];
+type ToolCallContent = Extract<MessageContentItem, { type: "toolCall" }>;
 
 interface ModelEscalationDecision {
   required: boolean;
@@ -547,8 +545,28 @@ function stringifyToolArguments(value: unknown): string {
   }
 }
 
-function extractMessageText(content: AssistantMessage["content"]): string {
-  return content
+function isMessageContentItem(value: unknown): value is MessageContentItem {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { type?: unknown }).type === "string"
+  );
+}
+
+function messageContentItems(content: unknown): MessageContentItem[] {
+  if (Array.isArray(content)) {
+    return content.filter(isMessageContentItem);
+  }
+  if (typeof content === "string") {
+    return content.length > 0
+      ? ([{ type: "text", text: content }] as MessageContentItem[])
+      : [];
+  }
+  return isMessageContentItem(content) ? [content] : [];
+}
+
+function extractMessageText(content: unknown): string {
+  return messageContentItems(content)
     .flatMap((item) => {
       if (item.type !== "text") return [];
       return typeof item.text === "string" ? [item.text] : [];
@@ -2623,7 +2641,7 @@ function matchingToolCallArguments(
   message: AgentEndEventMessage,
   predicate: (name: string, args: string) => boolean,
 ): string | null {
-  for (const item of message.content) {
+  for (const item of messageContentItems(message.content)) {
     if (item.type !== "toolCall") continue;
     if (typeof item.name !== "string") continue;
     const args = stringifyToolArguments(item.arguments);
@@ -2745,7 +2763,7 @@ export function modelEscalationRequestQuality(args: string): {
 
 function scopedToolCallNames(messages: AgentEndEventMessage[]): string[] {
   return scopedMessagesAfterLatestUser(messages).flatMap((message) =>
-    message.content.flatMap((item) => {
+    messageContentItems(message.content).flatMap((item) => {
       if (item.type !== "toolCall") return [];
       return typeof item.name === "string" ? [item.name] : [];
     }),
@@ -2849,7 +2867,7 @@ function conversationHasCitationUrlEvidence(
   let latestMatchingAttemptSucceeded: boolean | null = null;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       if (
@@ -3447,7 +3465,7 @@ export function conversationHasEvidenceTool(
   let latestMatchingAttemptSucceeded: boolean | null = null;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -3639,7 +3657,7 @@ function conversationHasExternalEvidenceTool(
   let latestMatchingAttemptSucceeded: boolean | null = null;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -3677,7 +3695,7 @@ export function conversationHasLocalEvidenceTarget(
   let latestMatchingAttemptSucceeded: boolean | null = null;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       if (!toolCallIsLocalEvidence(item.name, item.arguments)) continue;
@@ -3714,7 +3732,7 @@ export function conversationHasCommandEvidence(
   let latestGenericVerificationSucceeded: boolean | null = null;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       if (!toolCallIsCommandEvidence(item.name, item.arguments)) continue;
@@ -3761,7 +3779,7 @@ export function conversationHasMutationEvidence(
   const scopedMessages = scopedMessagesAfterLatestUser(messages);
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       if (!toolCallIsMutationEvidence(item.name, item.arguments)) continue;
@@ -3805,7 +3823,7 @@ export function conversationHasSkillRead(
   let latestGenericSkillAttemptSucceeded: boolean | null = null;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       const succeeded = toolResultHasSubstantiveEvidence(
@@ -3877,7 +3895,7 @@ export function conversationHasMemorySearch(
   let nonMemoryToolCallsAfterLatestSearch = 0;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (!isMemorySearchToolName(item.name)) {
         if (!isMemoryRefreshToolName(item.name)) {
@@ -3914,7 +3932,7 @@ export function conversationHasMemorySearchBeforeFirstMutation(
   let nonMemoryToolCallsAfterLatestSearch = 0;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -3956,7 +3974,7 @@ export function conversationHasLearningCapture(
   let latestLearningAttemptSucceeded: boolean | null = null;
 
   for (const [index, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (!isMemoryPersistenceToolName(item.name)) continue;
       latestLearningAttemptSucceeded =
@@ -3987,7 +4005,7 @@ function workflowContractText(params: {
 
 function conversationHasToolCall(messages: AgentEndEventMessage[]): boolean {
   return scopedMessagesAfterLatestUser(messages).some((message) =>
-    message.content.some(
+    messageContentItems(message.content).some(
       (item) => item.type === "toolCall" && typeof item.name === "string",
     ),
   );
@@ -4000,7 +4018,7 @@ function conversationStartedMutationBeforeWorkflowContext(
   const scopedMessages = scopedMessagesAfterLatestUser(messages);
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -4024,7 +4042,7 @@ function conversationHasGuideLoad(messages: AgentEndEventMessage[]): boolean {
   const scopedMessages = scopedMessagesAfterLatestUser(messages);
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -4172,7 +4190,7 @@ export function memorySearchNeedReason(params: {
   const performedMemorySearchRequiredMutation = scopedMessagesAfterLatestUser(
     params.messages,
   ).some((message) =>
-    message.content.some(
+    messageContentItems(message.content).some(
       (item) =>
         item.type === "toolCall" &&
         toolCallRequiresMemorySearchBeforeMutation(item),
@@ -4220,7 +4238,7 @@ export function findRedundantEvidenceToolCall(
   const seenExternalOpenTargets = new Map<string, string>();
 
   for (const message of scopedMessages) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -4318,7 +4336,7 @@ function findRedundantLearningCaptureCall(
   const storedLearningPayloads = new Set<string>();
 
   for (const [index, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (!isMemoryPersistenceToolName(item.name)) continue;
       if (!learningCaptureArgumentsAreConcrete(item.arguments)) continue;
@@ -4343,7 +4361,7 @@ export function findInefficientShellEvidenceCall(
   const scopedMessages = scopedMessagesAfterLatestUser(messages);
 
   for (const message of scopedMessages) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       if (!toolCallIsCommandEvidence(item.name, item.arguments)) continue;
@@ -4364,7 +4382,7 @@ export function findShellQuotingRepairLoop(
   let quotingFailureAttempts = 0;
 
   for (const [index, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       if (!toolCallIsCommandEvidence(item.name, item.arguments)) continue;
@@ -4395,7 +4413,7 @@ export function findFullSessionArtifactRead(
   const scopedMessages = scopedMessagesAfterLatestUser(messages);
 
   for (const message of scopedMessages) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -4423,7 +4441,7 @@ export function findBroadEvidenceQueryCall(
   const scopedMessages = scopedMessagesAfterLatestUser(messages);
 
   for (const message of scopedMessages) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
 
@@ -4888,7 +4906,7 @@ export function evaluateHarnessTurnMetrics(params: {
   ].filter(Boolean).length;
 
   for (const [messageIndex, message] of scopedMessages.entries()) {
-    for (const item of message.content) {
+    for (const item of messageContentItems(message.content)) {
       if (item.type !== "toolCall") continue;
       if (typeof item.name !== "string") continue;
       metrics.toolCallCount += 1;

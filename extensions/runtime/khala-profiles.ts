@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process";
+import { parseProfileEntry } from "./workflow-model-config.ts";
 
-export type KhalaProfileName = "planning" | "development" | "agents";
+export type KhalaProfileName = "planning" | "development" | "agents" | (string & {});
 export type KhalaThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-export type KhalaProfileSource = "builtin" | "pi-model-discovery";
+export type KhalaProfileSource = "builtin" | "pi-model-discovery" | "workflow-model-config";
 export type KhalaProfileStatus = "ok" | "unresolved";
 
 export interface KhalaModelProfile {
-  name: "planning" | "development";
+  name: string;
   model: string | null;
   thinkingLevel: KhalaThinkingLevel;
   source: KhalaProfileSource;
@@ -29,6 +30,16 @@ const DEVELOPMENT_PROVIDER_PREFERENCE = [DEVELOPMENT_PROVIDER, "openai-codex"];
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
 let copilotMiniDiscoveryCache: DevelopmentModelDiscovery | null = null;
+let configuredProfileEntries: Record<string, string> = {};
+let explicitConfiguredProfileNames = new Set<string>();
+
+export function setKhalaWorkflowProfilesForRuntime(
+  profiles: Record<string, string>,
+  explicitProfileNames: Iterable<string> = Object.keys(profiles),
+): void {
+  configuredProfileEntries = { ...profiles };
+  explicitConfiguredProfileNames = new Set(explicitProfileNames);
+}
 
 function setupHint(reason: string): string {
   return [
@@ -103,7 +114,37 @@ export function discoverCopilotMiniId(): DevelopmentModelDiscovery {
   return copilotMiniDiscoveryCache;
 }
 
+function resolveConfiguredProfile(name: KhalaProfileName): KhalaModelProfile | null {
+  if (!explicitConfiguredProfileNames.has(name)) return null;
+
+  const entry = configuredProfileEntries[name];
+  const parsed = entry ? parseProfileEntry(entry) : null;
+  if (!parsed) {
+    const reason = `Invalid workflow model profile entry for '${name}'. Expected format: provider/model:thinking.`;
+    return {
+      name,
+      model: null,
+      thinkingLevel: "medium",
+      source: "workflow-model-config",
+      status: "unresolved",
+      reason,
+      setupHint: `Edit Khala workflow model config and run /khala status again. ${reason}`,
+    };
+  }
+
+  return {
+    name,
+    model: parsed.modelId,
+    thinkingLevel: parsed.thinkingLevel,
+    source: "workflow-model-config",
+    status: "ok",
+  };
+}
+
 export function resolveKhalaProfile(name: KhalaProfileName): KhalaModelProfile {
+  const configured = resolveConfiguredProfile(name);
+  if (configured) return configured;
+
   if (name === "planning") {
     return {
       name: "planning",
@@ -141,4 +182,6 @@ export function formatKhalaModelProfilesStatus(): string {
 
 export function resetKhalaProfileDiscoveryForTests(): void {
   copilotMiniDiscoveryCache = null;
+  configuredProfileEntries = {};
+  explicitConfiguredProfileNames = new Set<string>();
 }

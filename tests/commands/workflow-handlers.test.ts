@@ -7,6 +7,10 @@ import {
 } from "../../extensions/commands/workflow-handlers.ts";
 import { parseWorkonArgs } from "../../extensions/commands/parsers.ts";
 import type { WorkonBootstrapRequest } from "../../extensions/commands/workon.ts";
+import {
+  resetActiveWorkflowRouteForTests,
+  setWorkflowModelConfig,
+} from "../../extensions/runtime/workflow-model-router.ts";
 
 // /workon now fails fast when no active Zellij session is detected. Default to
 // a sentinel value so existing handler tests continue to exercise the launch
@@ -142,6 +146,57 @@ test("plan handler tags planning and Reviewer Two routing", async () => {
   assert.match(rendered, /Reviewer prompt contract: do not implement edits/);
   assert.match(rendered, /same review workflow contract used by \/review/);
   assert.match(rendered, /Stop rules: use one fresh-context Reviewer Two pass by default/);
+});
+
+test("plan handler uses workflow route overrides for planning model flags and sections", async () => {
+  resetActiveWorkflowRouteForTests();
+  try {
+    setWorkflowModelConfig({
+      routes: { plan: "agents" },
+      profiles: { agents: "openai-codex/gpt-5.4-mini:low" },
+    });
+    const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+    const handlers = createHandlers(captured);
+
+    await handlers.plan("shape routed planning", { cwd: process.cwd() } as never);
+
+    const rendered = captured.sections?.join("\n") ?? "";
+    assert.equal(captured.input, "shape routed planning");
+    assert.equal(captured.flags?.model, "openai-codex/gpt-5.4-mini");
+    assert.equal(captured.flags?.thinkingLevel, "low");
+    assert.equal(captured.flags?.modelRoutingMode, "default");
+    assert.match(String(captured.flags?.modelRoutingReason), /workflow route config route plan -> agents/);
+    assert.match(rendered, /Model routing: default \(Khala planning profile agents/);
+    assert.match(rendered, /Exact model: openai-codex\/gpt-5\.4-mini/);
+    assert.match(rendered, /Exact thinking level: low/);
+  } finally {
+    resetActiveWorkflowRouteForTests();
+  }
+});
+
+test("workon handler uses workflow route overrides for default model selection", async () => {
+  resetActiveWorkflowRouteForTests();
+  try {
+    setWorkflowModelConfig({
+      routes: { workon: "agents" },
+      profiles: { agents: "openai-codex/gpt-5.4-mini:high" },
+    });
+    const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+    const handlers = createHandlers(captured);
+
+    await handlers.workon("73 --repo pesap/agents --forge gitlab", { cwd: process.cwd() } as never);
+
+    const rendered = captured.sections?.join("\n") ?? "";
+    assert.equal(captured.flags?.model, "openai-codex/gpt-5.4-mini");
+    assert.equal(captured.flags?.thinkingLevel, "high");
+    assert.equal(captured.flags?.modelRoutingMode, "default");
+    assert.match(String(captured.flags?.modelRoutingReason), /workflow route config route workon -> agents/);
+    assert.match(rendered, /Exact model: openai-codex\/gpt-5\.4-mini/);
+    assert.match(rendered, /Exact thinking level: high/);
+    assert.match(rendered, /Model routing reason: .*workflow route config route workon -> agents/);
+  } finally {
+    resetActiveWorkflowRouteForTests();
+  }
 });
 
 test("triage handler asks for /workon-ready packet contract headings", async () => {

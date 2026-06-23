@@ -38,6 +38,29 @@ jobs:
       - name: Test
         run: npm run test:node
 
+  github-package-smoke:
+    name: GitHub package smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      KHALA_PACKAGE_REPO: >-
+        ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+      KHALA_PACKAGE_REF: >-
+        ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Smoke setup helper from GitHub package ref
+        run: |
+          set -euo pipefail
+          package="github:${KHALA_PACKAGE_REPO}#${KHALA_PACKAGE_REF}"
+          npm exec --yes --package "$package" -- khala --help
+          npm exec --yes --package "$package" -- khala --global --dry-run --yes
+
   prek:
     name: prek checks
     runs-on: ubuntu-latest
