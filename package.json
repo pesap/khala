@@ -18,7 +18,7 @@
     "khala": "./bin/khala.js"
   },
   "scripts": {
-    "smoke": "npm run lint && npm run test",
+    "smoke": "npm run lint:all && npm run test",
     "test": "npm run typecheck && npm run test:node",
     "test:node": "node --test --experimental-strip-types tests/**/*.test.ts",
     "test:pi": "bash scripts/test-pi-khala-memory.sh",

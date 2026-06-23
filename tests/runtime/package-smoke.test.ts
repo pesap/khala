@@ -35,7 +35,6 @@ const forbiddenPackageFiles = [
   ".codex/settings.json",
   "runtime/memory/log.jsonl",
   "examples/basic.md",
-  "extensions/package-lock.json",
 ];
 
 type PackageEntry = {

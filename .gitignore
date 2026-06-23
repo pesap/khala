@@ -9,6 +9,7 @@ dist/
 auth.json
 .tmp/
 .pi/
+agent/
 
 # Python
 __pycache__/

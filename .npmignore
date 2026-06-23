@@ -19,7 +19,6 @@ tests/
 biome.json
 tsconfig*.json
 *.tsbuildinfo
-extensions/package-lock.json
 
 # Transient language/runtime artifacts
 dist/
