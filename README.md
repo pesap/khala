@@ -113,82 +113,13 @@ Use `/inbox` from a non-repository directory for a global side-terminal
 dashboard. Inside a repository it defaults to repo scope; pass `--global` or
 `--scope global` for the global view.
 
-## Model Selection
+Workflow model routing for `/workon`, `/plan`, and other child sessions
+is configured through Khala workflow profiles, not command flags.
+See [docs/workflow-model-routing.md](docs/workflow-model-routing.md)
+for flags, durable YAML config, precedence, and builtin defaults.
 
-Pi has two independent model-configuration scopes:
-
-### Pi session model
-
-Flags and commands that affect the **current interactive Pi session**:
-
-```bash
-pi --model provider/model --thinking high
-```
-or at runtime:
-```text
-/model provider/model
-```
-
-These change the model used for your current conversation. They do **not** affect
-Khala-launched workflow sessions.
-
-### Khala workflow model routing
-
-Flags and config that affect **Khala workflow launches** (child Pi sessions spawned
-by `/workon`, `/plan`, `/triage`, etc.):
-
-```bash
-pi --khala-workflow-profile development --khala-workflow-task workon
-```
-
-- `--khala-workflow-profile <name>` — override the profile used for all spawned
-  workflow sessions (e.g. `development`, `planning`).
-- `--khala-workflow-task <task>` — resolve a workflow route by task name
-  (e.g. `workon` -> `development`, `plan` -> `planning`).
-
-These flags are read at session start and stored for the lifetime of the session.
-They never change the current Pi session model.
-
-#### Durable workflow model config
-
-Instead of passing flags each time, create `~/.pi/khala/workflow-model.yaml`:
-
-```yaml
-profiles:
-  planning: "github-copilot/gpt-5.5:xhigh"
-  development: "github-copilot/gpt-5.4-mini:medium"
-  review: "github-copilot/gpt-5.5:high"
-
-routes:
-  plan: "planning"
-  debug: "planning"
-  triage: "planning"
-  workon: "development"
-  review: "review"
-```
-
-Profiles are keyed by name with `"provider/model:thinking"` format. Routes map
-workflow task names to profile names. Builtin defaults remain as fallback for any
-key not present in the config file.
-
-#### Precedence
-
-```text
-explicit workflow override > --khala-workflow-* flag >
-  route config > profile config > builtin default
-```
-
-When no flags or config are provided, Khala uses builtin defaults:
-
-| Task | Resolved profile | Model | Thinking |
-| --- | --- | --- | --- |
-| `/workon` | development | `github-copilot/gpt-5.4-mini` (Pi-discovered) | `medium` |
-| `/plan`, `/triage`, `/debug` | planning | `github-copilot/gpt-5.5` | `xhigh` |
-| `/review`, `/audit` | development | `github-copilot/gpt-5.4-mini` (Pi-discovered) | `medium` |
-
-> **Pi native flags vs Khala flags**: `pi --model` changes your current session.
-> `--khala-workflow-*` flags configure Khala workflow launches. They are
-> independent — you can use both at once without conflict.
+Run `/khala-health` to inspect the current Pi session model and
+Khala workflow model routing side by side.
 
 ### Run Ledger Commands
 
@@ -262,21 +193,9 @@ Rule examples:
 
 ## Model Profiles
 
-Khala routes workflows through named model profiles instead of scattering model
-choices through prompts. Profiles are configured via the durable workflow model
-config (`~/.pi/khala/workflow-model.yaml`) or builtin defaults.
-
-| Profile | Default | Thinking | Used by |
-| --- | --- | --- | --- |
-| `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan`, `/triage`, `/debug` |
-| `development` (`agents`) | Pi-discovered `github-copilot/gpt-5.4-mini` | `medium` | `/workon`, `/review`, `/audit` |
-| `review` | (custom, config-only) | configurable | `/review` (if configured) |
-
-Run `/khala-health` to see whether profiles resolve in the current Pi
-environment, with `OK`/`WARNING`/`ERROR` status per profile, used-by routes,
-problem details, and fix steps. If the development profile is unavailable,
-`/workon` stops before handoff and tells you how to override or configure the
-model via `~/.pi/khala/workflow-model.yaml` or `--khala-workflow-*` flags.
+Khala routes workflow child sessions through named model profiles.
+Profiles and routes are configurable via `~/.pi/khala/workflow-model.yaml`.
+See [docs/workflow-model-routing.md](docs/workflow-model-routing.md) for details.
 
 ## Runtime Behavior
 
