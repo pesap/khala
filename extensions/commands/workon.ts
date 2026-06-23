@@ -4,6 +4,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveKhalaProfile } from "../runtime/khala-profiles.ts";
+import {
+  IMPROVE_LABEL,
+  WORKON_READY_PACKET_NORMALIZED_HEADINGS,
+  normalizeWorkonPacketHeading,
+} from "./workon-ready-packet.ts";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -1048,9 +1053,19 @@ function bodyMentions(body: string | undefined, pattern: RegExp): boolean {
   return Boolean(body && pattern.test(body));
 }
 
+function issueHasLabel(issue: GithubIssueMetadata, labelName: string): boolean {
+  return (issue.labels ?? []).some((label) => label.name?.toLowerCase() === labelName.toLowerCase());
+}
+
 function issueLooksLikeBug(issue: GithubIssueMetadata): boolean {
   const labels = issue.labels?.map((label) => label.name ?? "").join(" ") ?? "";
   return /\b(bug|fix|broken|fail|failure|error|regression|incorrect|wrong|invalid)\b/i.test(`${issue.title} ${labels}`);
+}
+
+function missingCanonicalWorkonHeadings(body: string | undefined): string[] {
+  if (!body) return [...WORKON_READY_PACKET_NORMALIZED_HEADINGS];
+  const present = new Set(parseMarkdownSections(body).map((section) => section.normalizedHeading));
+  return WORKON_READY_PACKET_NORMALIZED_HEADINGS.filter((heading) => !present.has(heading));
 }
 
 function validationItemsFromBody(body: string | undefined): string[] {
@@ -1171,16 +1186,7 @@ function hasUnresolvedScopeDeferral(body: string | undefined): boolean {
   return SCOPE_DEFERRAL_PHRASES.some((pattern) => pattern.test(text));
 }
 
-function normalizeHeading(heading: string): string {
-  return heading
-    .toLowerCase()
-    .replace(/[`*_]/g, "")
-    .replace(/[–—-]/g, " ")
-    .replace(/\s*\/\s*/g, "/")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/:$/, "");
-}
+const normalizeHeading = normalizeWorkonPacketHeading;
 
 function normalizeText(text: string): string {
   return text
@@ -1297,6 +1303,13 @@ function evaluateWorkonReadiness(issue: GithubIssueMetadata): string[] {
   const acceptance = acceptanceCriteriaFromBody(body);
   const validation = validationItemsFromBody(body);
   const actionItems: string[] = [];
+
+  if (issueHasLabel(issue, IMPROVE_LABEL)) {
+    const missingHeadings = missingCanonicalWorkonHeadings(body);
+    if (missingHeadings.length > 0) {
+      actionItems.push(`Add canonical /workon-ready headings required for improve issues: ${missingHeadings.join(", ")}.`);
+    }
+  }
 
   if (acceptance.length === 0) {
     actionItems.push("Add narrow, testable acceptance criteria to the issue/work packet.");

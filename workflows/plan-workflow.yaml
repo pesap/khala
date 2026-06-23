@@ -1,39 +1,55 @@
 name: plan-workflow
-version: 2
-objective: Shape maintainer planned changes or codebase improvement ideas into approved issue/work packets
+version: 3
+objective: Discover, scope, review, revise, and publish only /workon-ready issue packets
 version_control:
   local_tool: git
   setup_check: git status --short
-  write_operations: ask approval before issue creation or file/doc mutations
+  write_operations: ask approval before issue creation; do not write local plan or decision docs
+contracts:
+  loop_states:
+    - candidate
+    - audited
+    - draft
+    - needs-revision
+    - blocked
+    - workon-ready
+    - published
+  canonical_issue_packet: /workon-ready work packet
+  source_of_truth:
+    runtime_contract: extensions/commands/plan-loop.ts
+    packet_contract: extensions/commands/workon-ready-packet.ts
+    reviewer_contract: extensions/commands/plan-review.ts
+  publish_gate: only publish drafts that pass /workon readiness
+  durable_artifact: GitHub or GitLab issue only
 steps:
   - id: intake
-    action: capture_maintainer_idea_scope_and_success_signal
-  - id: discover
-    action: locate_context_docs_relevant_code_repo_guidelines_and_existing_issues
-  - id: question-loop
-    action: ask_only_blocking_questions_after_inspecting_available_context
-  - id: reconcile
-    action: resolve_terminology_conflicts_code_contradictions_and_scope_boundaries
-  - id: update-context
-    action: update_context_docs_inline_as_terms_resolve_when_needed
-  - id: adr
-    action: propose_or_write_adrs_only_when_criteria_met
-  - id: packet
-    action: draft_single_work_packet_by_default
-  - id: slice-table
-    action: produce_exact_vertical_slice_table_before_issue_creation_when_multiple_slices_are_justified
-    parameters:
-      soft_cap: 3
-      review_size_target_changed_loc: 500
-      include:
-        - title
-        - outcome
-        - acceptance_criteria
-        - dependencies
-        - validation
-        - afk_or_hitl
-        - review_size_risk
+    action: capture_topic_or_improvement_area
+  - id: audit
+    action: discover_relevant_findings_or_context_from_live_code_and_existing_issues
+  - id: draft
+    action: create_in_memory_work_packet_with_exact_scope_acceptance_criteria_validation_and_risks
+  - id: reviewer-two
+    action: run_review_style_read_only_packet_review
+    verdicts:
+      - pass
+      - revise
+      - blocked
+  - id: revise
+    action: apply_must_fix_reviewer_feedback_within_loop_budget
+  - id: readiness
+    action: verify_workon_ready_packet_contract_before_publish
+    checks:
+      - evidence_verified_against_live_code
+      - exact_in_scope_and_out_of_scope_paths
+      - narrow_acceptance_criteria
+      - concrete_validation_commands
+      - afk_or_hitl_status
+      - bounded_review_size_targeting_under_500_changed_loc
+      - drift_check_when_plan_is_commit_sensitive
+      - no_unresolved_tbd_or_deferred_scope_decisions
   - id: approval
-    action: ask_approval_on_exact_issue_or_slice_table_before_creating_or_updating_issues
+    action: ask_approval_on_exact_ready_issue_packet_before_creating_or_updating_issues
+  - id: publish
+    action: create_or_update_issue_only_after_readiness_passes
   - id: learn
-    action: persist_learnings
+    action: persist_reusable_non_sensitive_rejections_blockers_and_loop_outcomes

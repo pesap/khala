@@ -129,7 +129,10 @@ test("plan handler tags planning and Reviewer Two routing", async () => {
   assert.match(rendered, /Reviewer Two loop budget: 2/);
   assert.match(rendered, /Reviewer Two model: github-copilot\/gpt-5\.5/);
   assert.match(rendered, /Reviewer Two thinking level: high/);
+  assert.match(rendered, /Plan loop states: candidate -> audited -> draft/);
+  assert.match(rendered, /Issue labels on published packets: improve, workon-ready/);
   assert.match(rendered, /Reviewer prompt contract: do not implement edits/);
+  assert.match(rendered, /same review workflow contract used by \/review/);
   assert.match(rendered, /Stop rules: use one fresh-context Reviewer Two pass by default/);
 });
 
@@ -156,7 +159,7 @@ test("debug handler asks proposed issues to satisfy /workon packet contract", as
   await handlers.debug("unreported failure", { cwd: process.cwd() } as never);
 
   const rendered = captured.sections?.join("\n") ?? "";
-  assert.match(rendered, /Any proposed issue must be a \/workon-ready work packet/);
+  assert.match(rendered, /Produce the proposed issue as a \/workon-ready work packet/);
   assert.match(rendered, /Current behavior/);
   assert.match(rendered, /Desired behavior/);
   assert.match(rendered, /Acceptance criteria/);

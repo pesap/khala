@@ -2096,6 +2096,74 @@ test("does not self-block readiness on quoted review-size keywords in diagnostic
   }
 });
 
+test("improve-labeled issues must use canonical workon-ready headings", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-improve-canonical-headings-test-"));
+  try {
+    const body = [
+      "## Acceptance criteria",
+      "",
+      "- Add focused regression tests.",
+      "",
+      "## Validation plan",
+      "",
+      "- Run npm run test:node -- tests/commands/workon.test.ts",
+      "",
+      "## Non-goals",
+      "",
+      "- Do not widen scope.",
+      "",
+      "## Breaking-change risk",
+      "",
+      "Low. No public contract change expected.",
+      "",
+      "## Review-size risk",
+      "",
+      "Low and bounded.",
+      "",
+      "## /workon readiness notes",
+      "",
+      "Ready except missing the canonical Current behavior and Desired behavior headings required for improve issues.",
+    ].join("\n");
+    const { calls, runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 162 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": JSON.stringify({
+        number: 162,
+        title: "fix: enforce improve packet headings",
+        url: "https://github.com/pesap/agents/issues/162",
+        state: "OPEN",
+        body,
+        labels: [{ name: "improve" }, { name: "workon-ready" }],
+        assignees: [{ login: "pesap" }],
+        author: { login: "pesap" },
+      }),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "162",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        launchInZellij: false,
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.equal(calls.some((call) => call.startsWith("wt ")), false);
+    assert.match(rendered, /Autonomous readiness: not ready/);
+    assert.match(rendered, /canonical \/workon-ready headings required for improve issues/);
+    assert.match(rendered, /current behavior/);
+    assert.match(rendered, /desired behavior or goal/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("recognizes bold-label Agent Brief sections during readiness checks", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-agent-brief-ready-test-"));
   try {

@@ -58,6 +58,7 @@ test("builds a Reviewer Two prompt contract with bounded stop rules", () => {
   });
 
   const rendered = sections.join("\n");
+  assert.match(rendered, /reuses the \/review posture/);
   assert.match(rendered, /Reviewer Two is advisory only/);
   assert.match(rendered, /decision, blockers, importantRevisions/);
   assert.match(rendered, /decision vocabulary: pass, revise, blocked/);

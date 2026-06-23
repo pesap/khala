@@ -24,6 +24,8 @@ import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts"
 import type { PendingWorkflow } from "../workflows/engine.ts";
 import { buildPlanReviewerTwoSections } from "./plan-review.ts";
 import type { ReviewerTwoReviewSettings } from "./plan-review.ts";
+import { buildPlanLoopRuntimeSections } from "./plan-loop.ts";
+import { workonReadyPacketContractInstruction } from "./workon-ready-packet.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
 type CommandHandler = (
@@ -490,7 +492,7 @@ export function createWorkflowCommandHandlers(params: {
           "Apply fix: no",
           "",
           "Instruction: Build a reproduction or observable feedback loop first, investigate hypotheses rigorously, and converge on the highest-confidence root cause or candidate. Draft a new GitHub issue only when evidence justifies it, ask explicit approval before creating it, and do not apply code changes.",
-          "Instruction: Any proposed issue must be a /workon-ready work packet using canonical headings that /workon parses exactly: Current behavior, Desired behavior or Goal, Acceptance criteria (plain markdown bullets, not task-list checkboxes), Validation plan, Non-goals, Breaking-change risk, Review-size risk, and /workon readiness notes. State low/absent/resolved risks explicitly instead of omitting them.",
+          `Instruction: ${workonReadyPacketContractInstruction({ subject: "proposed issue", action: "produce" })}`,
         ],
         flags: () => ({ fix: false, createIssueBrief: true }),
         entry: (problem) => ({
@@ -580,22 +582,12 @@ export function createWorkflowCommandHandlers(params: {
         usage: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]",
         sections: (plan) => [
           `Plan/topic: ${plan}`,
-          `Model routing: default (${routingReason})`,
-          `Exact model: ${planningProfile.model ?? "(unresolved)"}`,
-          `Exact thinking level: ${planningProfile.thinkingLevel}`,
-          `Reviewer Two routing: ${parsed.review.enabled ? "enabled" : "disabled"}`,
-          `Reviewer Two default context: ${parsed.review.context}`,
-          `Reviewer Two loop budget: ${parsed.review.loops}`,
-          `Reviewer Two model: ${parsed.review.model || "(unresolved)"}`,
-          `Reviewer Two thinking level: ${parsed.review.thinkingLevel}`,
-          `Reviewer Two routing reason: ${parsed.review.routingMode} (${parsed.review.routingReason})`,
-          "Instruction: Ask only blocking questions, one at a time; if enough evidence exists, produce the plan without waiting.",
-          "Instruction: If a question can be answered from code/docs, inspect first and do not ask it.",
-          "Instruction: Capture edge cases and trade-offs, then update CONTEXT.md/ADR docs lazily when terms/decisions are resolved.",
-          "Instruction: Produce a slice table before any issue creation, using one issue by default and at most three slices unless the user explicitly approves more.",
-          "Instruction: Each proposed slice must be independently reviewable, list dependencies and AFK/HITL status, and target less than about 500 lines of code change per PR.",
-          "Instruction: Ask approval on the exact slice table before creating or updating issues.",
-          "Instruction: Before any issue creation, run the internal Reviewer Two pass over a normalized draft work packet, synthesize findings as must-fix, optional/deferred, or rejected with rationale, and keep Reviewer Two advisory only.",
+          ...buildPlanLoopRuntimeSections({
+            planningModel: planningProfile.model,
+            planningThinkingLevel: planningProfile.thinkingLevel,
+            planningRoutingReason: routingReason,
+            reviewerTwo: parsed.review,
+          }),
           ...reviewSections,
           "Instruction: Detect issue tracker platform first and use matching skill: github for GitHub, gitlab for GitLab.",
         ],
@@ -839,7 +831,7 @@ export function createWorkflowCommandHandlers(params: {
           `Triage target: ${target}`,
           "Instruction: Treat this as user-posted issue/request intake. Gather issue context, comments, labels, reporter activity, relevant code/docs, repo guidelines, and prior out-of-scope decisions when available.",
           "Instruction: Default to one cleaned-up issue/work packet. Propose a split table only when the issue is clearly too broad or likely to exceed reviewable PR size.",
-          "Instruction: Produce or update the durable issue body/comment with a /workon-ready work packet using canonical headings that /workon parses exactly: Current behavior, Desired behavior or Goal, Acceptance criteria (plain markdown bullets, not task-list checkboxes), Validation plan, Non-goals, Breaking-change risk, Review-size risk, and /workon readiness notes. State low/absent/resolved risks explicitly instead of omitting them.",
+          `Instruction: ${workonReadyPacketContractInstruction({ subject: "issue body", action: "produce or update" })}`,
           "Instruction: Ask explicit approval before creating or updating any GitHub issue, labels, or comments.",
         ],
         entry: (target) => ({ target }),

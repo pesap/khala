@@ -1,6 +1,15 @@
 import { normalizeWhitespace } from "../lib/text.ts";
 import type { WorkonThinkingLevel } from "./workon.ts";
 
+export const REVIEWER_TWO_REVIEW_CONTRACT = [
+  "Reviewer Two reuses the /review posture: scoped, skeptical, evidence-backed, read-only review.",
+  "Reviewer Two is advisory only. The parent /plan workflow remains the decision-maker before any issue creation.",
+  "Reviewer prompt contract: do not implement edits, do not launch Worktrunk/Zellij/Pi, do not create issues, do not create PRs, and do not mutate forge state.",
+  "Reviewer output contract: decision, blockers, importantRevisions, optionalSuggestions, missingAcceptanceCriteria, validationGaps, scopeConcerns, recommendation.",
+  "Reviewer must explicitly decide whether the packet is /workon-ready: observable outcome, narrow acceptance criteria, concrete validation commands, AFK/HITL status, review-size risk, drift check, and STOP conditions.",
+  "Reviewer decision vocabulary: pass, revise, blocked.",
+] as const;
+
 export type ReviewerTwoDecision = "pass" | "revise" | "blocked";
 
 export interface NormalizedPlanWorkPacket {
@@ -73,7 +82,7 @@ export function buildPlanReviewerTwoSections(
 ): string[] {
   const packet = normalizePlanWorkPacket(input);
   const sections = [
-    "Reviewer Two is advisory only. The parent /plan workflow remains the decision-maker before any issue creation.",
+    ...REVIEWER_TWO_REVIEW_CONTRACT,
     `Reviewer Two settings: enabled=${settings.enabled ? "yes" : "no"}, model=${settings.model || "(unresolved)"}, thinking=${settings.thinkingLevel}, loops=${settings.loops}, context=${settings.context}, routing=${settings.routingMode} (${settings.routingReason})`,
     `Normalized draft work packet: goal=${packet.goal || "(unspecified)"}; why/user impact=${packet.why || "(unspecified)"}`,
     `In scope: ${renderList(packet.inScope)}`,
@@ -81,10 +90,7 @@ export function buildPlanReviewerTwoSections(
     `Acceptance criteria: ${renderList(packet.acceptanceCriteria)}`,
     `Validation plan: ${renderList(packet.validationPlan)}`,
     `Risks/open questions: ${renderList([...packet.risks, ...packet.openQuestions])}`,
-    `Canonical refs/context: ${renderList(packet.canonicalRefs)}`,
-    "Reviewer prompt contract: do not implement edits, do not launch Worktrunk/Zellij/Pi, do not create issues, do not create PRs, and do not mutate forge state.",
-    "Reviewer output contract: decision, blockers, importantRevisions, optionalSuggestions, missingAcceptanceCriteria, validationGaps, scopeConcerns, recommendation.",
-    "Reviewer decision vocabulary: pass, revise, blocked.",
+    `Evidence refs: ${renderList(packet.canonicalRefs)}`,
     "Parent synthesis contract: classify Reviewer Two findings as must-fix before issue creation, optional/deferred, or rejected with rationale before any issue creation.",
     "Stop rules: use one fresh-context Reviewer Two pass by default, keep the maximum review loop budget bounded at 2, and ask one concrete human decision question if Reviewer Two is blocked or the parent disagrees on a blocker.",
   ];

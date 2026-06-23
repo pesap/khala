@@ -28,6 +28,7 @@ Requirements:
   - breaking-change risk is absent or explicitly resolved
   - scope is likely reviewable, targeting <500 LOC changed per PR
   - the work is worth doing now rather than deferring
+  - if the issue has an `improve` plan body, its drift check is runnable and its `Workon readiness` section says `Ready for /workon: yes`
 - If the readiness rubric fails, do not create a worktree, Pi session, heartbeat, or GitHub comment. Return only concrete action items needed to make the issue `/workon`-ready.
 - Use deterministic bootstrap evidence attached by the command handler when it resolves a GitHub issue, derives a branch name, writes a global Pi capsule, and in start mode runs Worktrunk first, waits for the Worktrunk-created Zellij tab, launches Pi in that tab, and starts the forge feedback heartbeat when Zellij is available. Do not spend model/tool tokens recreating issue, branch, capsule, Zellij, or heartbeat evidence the handler already supplied.
 - Use Worktrunk when available to prepare or start the worktree. If Worktrunk is unavailable or hooks need trust approval, stop with exact operator guidance; do not bypass approvals.

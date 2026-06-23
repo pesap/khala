@@ -19,10 +19,13 @@ Before doing any implementation:
 - Read the local agent/repo instructions.
 - Inspect the relevant code, docs, tests, recent commits, and linked issue state.
 - Decide whether this task is still real, already solved, stale, over-scoped, or better handled differently.
+- If the issue has an `improve` plan body, run its `Drift check` command before editing. If in-scope files changed, compare the issue's Current state excerpts against live code. If they do not match, stop before implementation, report the drift, and recommend `/plan` refresh the issue.
+- If the issue has a `Workon readiness` section, verify it says `Ready for /workon: yes` and contains no unresolved `no`, `unknown`, `TBD`, or `to be confirmed` fields. If it fails, stop before implementation and report the exact readiness gaps.
+- Honor any `STOP conditions` in the issue body. If one is true before or during work, stop and report instead of improvising.
 - Call out stale assumptions, hidden risks, and anything that should stop the work.
 
 Task:
-- If your independent review supports it, implement the smallest vertical slice for {{repo}}#{{issue_number}}.
+- If your independent review supports it and the issue is `/workon` ready, implement the smallest vertical slice for {{repo}}#{{issue_number}}.
 - Keep changes scoped to the issue and branch.
 - Do not widen scope beyond the issue without creating or recommending a follow-up.
 
@@ -50,6 +53,7 @@ Validation:
 
 Output:
 - Start with review findings and recommendation.
+- If blocked before implementation, report the drift/readiness/STOP condition that blocked work and the exact `/plan` refresh needed.
 - Then provide the plan or patch summary.
 - If you edit code, report exact proof run.
 - Include draft PR URL/status when created, plus latest heartbeat check result.
