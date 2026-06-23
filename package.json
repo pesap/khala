@@ -52,9 +52,9 @@
     "typebox": "*"
   },
   "dependencies": {
-    "@ff-labs/pi-fff": "^0.9.1",
-    "js-yaml": "^4.1.1",
-    "pi-subagents": "^0.24.2"
+    "@ff-labs/pi-fff": "^0.9.6",
+    "js-yaml": "^5.1.0",
+    "pi-subagents": "^0.30.0"
   },
   "bundledDependencies": [
     "@ff-labs/pi-fff",
