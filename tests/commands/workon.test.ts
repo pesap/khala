@@ -954,7 +954,7 @@ test("blocks source issue reads when gh issue view command fails", async () => {
           rawStdout: "",
         };
       }
-      return runner(command, args);
+      return runner(command, args, { cwd: process.cwd() });
     };
 
     const sections = await prepareWorkonBootstrap(
@@ -1031,7 +1031,7 @@ test("preserves parseability when stdout is redacted into invalid JSON but raw s
           rawStdout,
         };
       }
-      return runner(command, args);
+      return runner(command, args, { cwd: process.cwd() });
     };
 
     const sections = await prepareWorkonBootstrap(
