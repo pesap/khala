@@ -116,11 +116,12 @@ test("/khala-health is read-only and reports health status", async () => {
   await harness.handlers.khalaHealth(undefined, harness.ctx);
 
   assert.equal(harness.messages.length, 1);
-  assert.match(harness.messages[0], /Khala health \(read-only\):/);
-  assert.match(harness.messages[0], /enabled \(session\): no/);
+  assert.match(harness.messages[0], /Khala health:/);
+  assert.match(harness.messages[0], /enabled: no/);
   assert.match(harness.messages[0], /memory_tool_limit: 17/);
-  assert.match(harness.messages[0], /Compliance modes \(session\): preflight=warn, postflight=warn, response=warn\./);
-  assert.match(harness.messages[0], /Model profiles:/);
+  assert.match(harness.messages[0], /compliance: preflight=warn, postflight=warn, response=warn/);
+  assert.match(harness.messages[0], /Model profiles ~/);
+  assert.match(harness.messages[0], /OK planning/);
   assert.equal(harness.agentStateEntries.length, 0);
   assert.deepEqual(harness.compliancePresets, []);
 });
@@ -187,8 +188,8 @@ test("/khala-mode with no arguments reports compliance status without mutating s
   await harness.handlers.khalaMode(undefined, harness.ctx);
 
   assert.equal(harness.messages.length, 1);
-  assert.match(harness.messages[0], /Khala health \(read-only\):/);
-  assert.match(harness.messages[0], /Compliance modes \(session\): preflight=warn, postflight=warn, response=warn\./);
+  assert.match(harness.messages[0], /Khala health:/);
+  assert.match(harness.messages[0], /compliance: preflight=warn, postflight=warn, response=warn/);
   assert.equal(harness.runtimeState.agentEnabled, false);
   assert.equal(harness.agentStateEntries.length, 0);
   assert.deepEqual(harness.compliancePresets, []);
@@ -248,7 +249,7 @@ for (const [args, expectedPreset, expectedConfig] of [
 
     if (expectedPreset === "status") {
       assert.equal(harness.messages.length, 1);
-      assert.match(harness.messages[0], /Khala health \(read-only\):/);
+      assert.match(harness.messages[0], /Khala health:/);
       assert.deepEqual(harness.compliancePresets, []);
       assert.equal(harness.runtimeState.agentEnabled, false);
       assert.equal(harness.agentStateEntries.length, 0);
@@ -312,9 +313,11 @@ test("formatKhalaHealthStatus includes session state and model profiles", () => 
     },
   });
 
-  assert.match(rendered, /Khala health \(read-only\):/);
-  assert.match(rendered, /enabled \(session\): yes/);
+  assert.match(rendered, /Khala health:/);
+  assert.match(rendered, /enabled: yes/);
   assert.match(rendered, /memory_tool_limit: 9/);
   assert.match(rendered, /preflight=warn, postflight=enforce, response=monitor/);
-  assert.match(rendered, /Model profiles:/);
+  assert.match(rendered, /Model profiles ~/);
+  assert.match(rendered, /OK planning/);
+  assert.match(rendered, /used by:/);
 });
