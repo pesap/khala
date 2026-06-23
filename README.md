@@ -41,6 +41,19 @@ directory, and shows LiteLLM-compatible aliases when they already exist. Khala
 does not prompt for raw API keys, call Pi `/login`, or manage a separate secret
 store. This path does not require a local checkout or a published npm package.
 
+For LiteLLM-compatible provider setup, use:
+
+```bash
+khala litellm --project \
+  --provider team-litellm \
+  --base-url https://lite.example/v1 \
+  --key-env LITELLM_API_KEY \
+  --model gpt-5.4-mini
+```
+
+Khala writes a non-secret key reference such as `$LITELLM_API_KEY`; it never
+asks for or stores the raw API key.
+
 If the package is already installed, run the helper directly:
 
 ```bash

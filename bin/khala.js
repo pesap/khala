@@ -1,11 +1,21 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { emitKeypressEvents } from "node:readline";
-import { parseProfileEntry } from "./khala-setup-lib.js";
+import { createInterface, emitKeypressEvents } from "node:readline";
+import {
+  LITELLM_PROVIDER_API,
+  mergeLiteLLMModelsJson,
+  mergeLiteLLMProjectSettings,
+  normalizeLiteLLMBaseUrl,
+  normalizeLiteLLMModelPattern,
+  parseProfileEntry,
+  readJsonObjectFile,
+  validateLiteLLMKeyEnv,
+  validateLiteLLMProviderId,
+} from "./khala-setup-lib.js";
 
 const PACKAGE_SPEC = "npm:khala";
 const WORKFLOW_CONFIG_FILE = "workflow-model.yaml";
@@ -35,6 +45,7 @@ function usage() {
 
 Usage:
   khala [--global | --project] [--yes] [--dry-run]
+  khala litellm --help
   khala --help
   khala --version
 
@@ -277,12 +288,11 @@ async function askChoice(title, choices, fallback) {
 }
 
 /** Single-keypress Y/n confirm. No readline needed. */
-async function confirmInstall(options) {
-  if (options.yes)   return true;
-  if (!canPrompt())  return false;
+async function askConfirmation(promptText) {
+  if (!canPrompt()) return false;
 
   return new Promise((resolve, reject) => {
-    process.stdout.write(`${bold("Install now?")} ${dim("[Y/n]")} `);
+    process.stdout.write(`${bold(promptText)} ${dim("[Y/n]")} `);
     let onKey;
 
     const settle = (accepted, echo) => {
@@ -308,6 +318,210 @@ async function confirmInstall(options) {
     process.stdin.on("keypress", onKey);
     process.stdin.resume();
   });
+}
+
+async function confirmInstall(options) {
+  if (options.yes) return true;
+  return askConfirmation("Install now?");
+}
+
+function litellmUsage() {
+  return `khala litellm - configure a LiteLLM-compatible Pi provider
+
+Usage:
+  khala litellm --project --provider <provider> --base-url <url> --key-env <ENV_VAR> --model <model>
+  khala litellm --help
+  khala litellm --version
+
+Options:
+  --project     Configure the current project .pi/settings.json and Pi models.json provider reference
+  --provider    LiteLLM provider id (required; examples: team-litellm, nlr)
+  --base-url    LiteLLM base URL such as https://lite.example/v1 (required)
+  --key-env     Environment variable name used as the Pi apiKey reference (required)
+  --model       Model id or bare glob to register and enable (required)
+  --yes         Skip the write confirmation prompt
+  --dry-run     Print the planned config changes without writing files
+
+raw API keys are never requested or stored. Khala writes non-secret key references only.`;
+}
+
+function parseLitellmArgs(args) {
+  const options = { baseUrl: "", dryRun: false, global: false, help: false, keyEnv: "", model: "", project: false, provider: "", version: false, yes: false };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--global") options.global = true;
+    else if (arg === "--help" || arg === "-h") options.help = true;
+    else if (arg === "--project" || arg === "-l") options.project = true;
+    else if (arg === "--version" || arg === "-v") options.version = true;
+    else if (arg === "--yes" || arg === "-y") options.yes = true;
+    else if (arg.startsWith("--provider=")) options.provider = arg.slice("--provider=".length);
+    else if (arg === "--provider") options.provider = args[++i] ?? "";
+    else if (arg.startsWith("--base-url=")) options.baseUrl = arg.slice("--base-url=".length);
+    else if (arg === "--base-url") options.baseUrl = args[++i] ?? "";
+    else if (arg.startsWith("--key-env=")) options.keyEnv = arg.slice("--key-env=".length);
+    else if (arg === "--key-env") options.keyEnv = args[++i] ?? "";
+    else if (arg.startsWith("--model=")) options.model = arg.slice("--model=".length);
+    else if (arg === "--model") options.model = args[++i] ?? "";
+    else throw new Error(`Unknown option: ${arg}`);
+  }
+
+  if (options.global) throw new Error("khala litellm only supports project setup; use --project.");
+  if (!options.project) options.project = true;
+  return options;
+}
+
+function promptLine(question) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve, reject) => {
+    const onSigint = () => {
+      rl.off("SIGINT", onSigint);
+      rl.close();
+      reject(makeAbortError());
+    };
+
+    rl.once("SIGINT", onSigint);
+    rl.question(question, (answer) => {
+      rl.off("SIGINT", onSigint);
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+async function promptValidated(question, normalizer) {
+  while (true) {
+    const answer = String(await promptLine(question)).trim();
+    try {
+      return normalizer(answer);
+    } catch (error) {
+      console.log(warn(`  ${error.message}`));
+    }
+  }
+}
+
+function writeJsonFile(filePath, value) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : null;
+  if (existing === content) return false;
+  writeFileSync(filePath, content, { mode: 0o600 });
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    // ignore chmod failures on non-POSIX filesystems
+  }
+  return true;
+}
+
+async function mainLiteLLM(argv) {
+  let options;
+  try {
+    options = parseLitellmArgs(argv);
+  } catch (error) {
+    console.error(error.message);
+    console.error("Run `khala litellm --help` for usage.");
+    process.exitCode = 2;
+    return;
+  }
+
+  if (options.help) { console.log(litellmUsage()); return; }
+  if (options.version) { console.log(version()); return; }
+
+  try {
+    const promptAvailable = canPrompt();
+    const missing = [];
+    let provider = options.provider;
+    let baseUrl = options.baseUrl;
+    let keyEnv = options.keyEnv;
+    let model = options.model;
+
+    if (!provider) {
+      if (!promptAvailable) missing.push("--provider");
+      else provider = await promptValidated("LiteLLM provider id: ", validateLiteLLMProviderId);
+    } else {
+      provider = validateLiteLLMProviderId(provider);
+    }
+
+    if (!baseUrl) {
+      if (!promptAvailable) missing.push("--base-url");
+      else baseUrl = await promptValidated("LiteLLM base URL: ", normalizeLiteLLMBaseUrl);
+    } else {
+      baseUrl = normalizeLiteLLMBaseUrl(baseUrl);
+    }
+
+    if (!keyEnv) {
+      if (!promptAvailable) missing.push("--key-env");
+      else keyEnv = await promptValidated("LiteLLM key env var: ", validateLiteLLMKeyEnv);
+    } else {
+      keyEnv = validateLiteLLMKeyEnv(keyEnv);
+    }
+
+    if (!model) {
+      if (!promptAvailable) missing.push("--model");
+      else model = await promptValidated("LiteLLM model: ", normalizeLiteLLMModelPattern);
+    } else {
+      model = normalizeLiteLLMModelPattern(model);
+    }
+
+    if (missing.length) {
+      throw new Error(`Missing required LiteLLM options: ${missing.join(", ")}. Run in a TTY to answer prompts, or pass all required flags explicitly.`);
+    }
+
+    const targetModelsPath = modelsJsonPath();
+    const targetSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
+    const currentModels = readJsonObjectFile(targetModelsPath);
+    const currentSettings = readJsonObjectFile(targetSettingsPath);
+    const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelId: model });
+    const mergedSettings = mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelId: model });
+
+    console.log("");
+    console.log(`${bold("LiteLLM setup")}  ${dim(`v${version()}`)}`);
+    console.log(dim("─".repeat(27)));
+    console.log(`  ${dim("provider")}   ${provider}`);
+    console.log(`  ${dim("base-url")}   ${baseUrl}`);
+    console.log(`  ${dim("api")}        ${LITELLM_PROVIDER_API}`);
+    console.log(`  ${dim("apiKey")}     $${keyEnv}`);
+    console.log(`  ${dim("model")}      ${model}`);
+    console.log(`  ${dim("models")}     ${targetModelsPath}`);
+    console.log(`  ${dim("settings")}   ${targetSettingsPath}`);
+    console.log(`  ${dim("secret")}     raw API keys are never requested or stored`);
+    console.log(`  ${dim("hint")}       export ${bold(keyEnv)} or configure your secret manager to provide it`);
+    if (mergedModels.conflict) {
+      console.log(`  ${warn("!")} existing provider config differs and will be updated only if you confirm`);
+    }
+
+    if (options.dryRun) return;
+
+    if (!options.yes) {
+      if (!canPrompt()) {
+        throw new Error("LiteLLM setup writes require --yes in non-interactive mode.");
+      }
+      const confirmed = await askConfirmation(mergedModels.conflict ? "Overwrite the existing LiteLLM provider config now?" : "Write LiteLLM provider config now?");
+      if (!confirmed) {
+        console.log(`${dim("Skipped.")}  No files were written.`);
+        return;
+      }
+    }
+
+    writeJsonFile(targetModelsPath, mergedModels.value);
+    writeJsonFile(targetSettingsPath, mergedSettings);
+
+    console.log("");
+    console.log(`${check("✓")} Wrote ${targetModelsPath}`);
+    console.log(`${check("✓")} Wrote ${targetSettingsPath}`);
+    console.log(`  ${dim("boundary")} Khala stored a key reference, not a secret value.`);
+  } catch (error) {
+    if (isAbortError(error)) {
+      console.log("Cancelled.");
+      process.exitCode = 130;
+      return;
+    }
+    console.error(error.message);
+    process.exitCode = 2;
+    return;
+  }
 }
 
 // ── Scope + model prompts ───────────────────────────────────────────────────
@@ -416,9 +630,15 @@ function discoverySection(_options, models) {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
+  const argv = process.argv.slice(2);
+  if (argv[0] === "litellm") {
+    await mainLiteLLM(argv.slice(1));
+    return;
+  }
+
   let options;
   try {
-    options = parseArgs(process.argv.slice(2));
+    options = parseArgs(argv);
   } catch (error) {
     console.error(error.message);
     console.error("Run `khala --help` for usage.");
