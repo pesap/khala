@@ -6,11 +6,12 @@ import path from "node:path";
 
 import {
   getActiveWorkflowRoute,
-  getBuiltinProfileTable,
-  getBuiltinRouteTable,
+  getMergedProfiles,
+  getMergedRoutes,
   resetActiveWorkflowRouteForTests,
   resolveWorkflowRoute,
   setActiveWorkflowRoute,
+  setWorkflowModelConfig,
 } from "../../extensions/runtime/workflow-model-router.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
 
@@ -48,8 +49,8 @@ test("setActiveWorkflowRoute stores and retrieves flags", () => {
   assert.equal(route.taskFlag, "workon");
 });
 
-test("getBuiltinRouteTable returns known routes", () => {
-  const routes = getBuiltinRouteTable();
+test("getMergedRoutes returns known builtin routes", () => {
+  const routes = getMergedRoutes();
   assert.equal(routes.workon, "development");
   assert.equal(routes.plan, "planning");
   assert.equal(routes.triage, "planning");
@@ -57,8 +58,8 @@ test("getBuiltinRouteTable returns known routes", () => {
   assert.equal(routes.review, "development");
 });
 
-test("getBuiltinProfileTable returns known profiles", () => {
-  const profiles = getBuiltinProfileTable();
+test("getMergedProfiles returns known builtin profiles", () => {
+  const profiles = getMergedProfiles();
   assert.ok(profiles.planning.includes("gpt-5.5"));
   assert.ok(profiles.development.includes("gpt-5.4-mini"));
 });
@@ -169,4 +170,63 @@ printf 'github-copilot gpt-5.4 400K 128K yes yes\n'
       assert.equal(resolved.profile.status, "unresolved");
     },
   );
+});
+
+test("resolveWorkflowRoute uses config-overridden routes", async () => {
+  await withFakePi(
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf 'provider model context max-out thinking images\n'
+printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
+`,
+    () => {
+      setActiveWorkflowRoute({ profileFlag: "", taskFlag: "" });
+      setWorkflowModelConfig({
+        routes: { workon: "planning" },
+        profiles: {},
+      });
+      const resolved = resolveWorkflowRoute("workon");
+      assert.equal(resolved.profileName, "planning");
+      assert.equal(resolved.profile.model, "github-copilot/gpt-5.5");
+      assert.equal(resolved.profile.thinkingLevel, "xhigh");
+    },
+  );
+});
+
+test("getMergedRoutes reflects config overrides", () => {
+  resetActiveWorkflowRouteForTests();
+  setWorkflowModelConfig({
+    routes: { workon: "planning" },
+    profiles: {},
+  });
+  const merged = getMergedRoutes();
+  assert.equal(merged.workon, "planning");
+  // Builtin preserved
+  assert.equal(merged.plan, "planning");
+  assert.equal(merged.triage, "planning");
+});
+
+test("setWorkflowModelConfig preserves builtin defaults for non-overridden keys", () => {
+  resetActiveWorkflowRouteForTests();
+  setWorkflowModelConfig({
+    routes: {},
+    profiles: {},
+  });
+  const routes = getMergedRoutes();
+  const profiles = getMergedProfiles();
+  assert.equal(routes.workon, "development");
+  assert.equal(routes.plan, "planning");
+  assert.ok(profiles.planning.includes("gpt-5.5"));
+  assert.ok(profiles.development.includes("gpt-5.4-mini"));
+});
+
+test("resetWorkflowModelConfigForTests restores builtin defaults", () => {
+  resetActiveWorkflowRouteForTests();
+  setWorkflowModelConfig({
+    routes: { workon: "planning" },
+    profiles: {},
+  });
+  assert.equal(getMergedRoutes().workon, "planning");
+  resetActiveWorkflowRouteForTests();
+  assert.equal(getMergedRoutes().workon, "development");
 });

@@ -215,7 +215,9 @@ import { RUNTIME_PATHS } from "./runtime/paths.ts";
 import {
   resetActiveWorkflowRouteForTests,
   setActiveWorkflowRoute,
+  setWorkflowModelConfig,
 } from "./runtime/workflow-model-router.ts";
+import { loadWorkflowModelConfig } from "./runtime/workflow-model-config.ts";
 import {
   cloneRuntimeProfile,
   DEFAULT_RUNTIME_PROFILE,
@@ -2015,6 +2017,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       profileFlag: (pi.getFlag("khala-workflow-profile") as string) ?? "",
       taskFlag: (pi.getFlag("khala-workflow-task") as string) ?? "",
     });
+
+    // Load workflow model config
+    const workflowModelConfig = await loadWorkflowModelConfig(
+      RUNTIME_PATHS.workflowModelConfigPath,
+    );
+    setWorkflowModelConfig(workflowModelConfig.config);
 
     const [hookConfig, profileLoad] = await Promise.all([
       loadHooksConfig(RUNTIME_PATHS.hooksConfigPath, DEFAULT_HOOK_CONFIG),

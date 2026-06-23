@@ -11,6 +11,7 @@
  */
 
 import { resolveKhalaProfile, type KhalaModelProfile, type KhalaProfileName } from "./khala-profiles.ts";
+import { parseProfileEntry } from "./workflow-model-config.ts";
 
 // ── Task-to-profile routing ──────────────────────────────────────
 
@@ -30,7 +31,50 @@ const BUILTIN_ROUTES: Record<string, WorkflowProfileName> = {
 const BUILTIN_PROFILES: Record<WorkflowProfileName, string> = {
   planning: "github-copilot/gpt-5.5:xhigh",
   development: "github-copilot/gpt-5.4-mini:medium",
+  agents: "github-copilot/gpt-5.4-mini:medium",
 };
+
+// ── Durable config overrides ────────────────────────────────────
+
+/** Merged routes (builtin + config). */
+let mergedRoutes: Record<string, string> = { ...BUILTIN_ROUTES };
+
+/** Merged profiles (builtin + config). */
+let mergedProfiles: Record<string, string> = { ...BUILTIN_PROFILES };
+
+/**
+ * Set the merged routes and profiles from durable config.
+ * Builtin defaults remain as fallback for any keys not in config.
+ */
+export function setWorkflowModelConfig(config: {
+  routes: Record<string, string>;
+  profiles: Record<string, string>;
+}): void {
+  mergedRoutes = { ...BUILTIN_ROUTES, ...config.routes };
+  mergedProfiles = { ...BUILTIN_PROFILES, ...config.profiles };
+}
+
+/**
+ * Get the current merged routes.
+ */
+export function getMergedRoutes(): Record<string, string> {
+  return { ...mergedRoutes };
+}
+
+/**
+ * Get the current merged profiles.
+ */
+export function getMergedProfiles(): Record<string, string> {
+  return { ...mergedProfiles };
+}
+
+/**
+ * Reset config to builtin defaults (for tests).
+ */
+export function resetWorkflowModelConfigForTests(): void {
+  mergedRoutes = { ...BUILTIN_ROUTES };
+  mergedProfiles = { ...BUILTIN_PROFILES };
+}
 
 // ── Active state (set from flags / config) ───────────────────────
 
@@ -59,6 +103,7 @@ export function setActiveWorkflowRoute(route: ActiveWorkflowRoute): void {
  */
 export function resetActiveWorkflowRouteForTests(): void {
   activeWorkflowRoute = { profileFlag: "", taskFlag: "" };
+  resetWorkflowModelConfigForTests();
 }
 
 /**
@@ -100,13 +145,13 @@ export function resolveWorkflowRoute(task: WorkflowTask): WorkflowRouteResolutio
     };
   }
 
-  // 2. Check if --khala-workflow-task flag is set, then look up route
+  // 2. Check if --khala-workflow-task flag is set, then look up merged route
   if (activeWorkflowRoute.taskFlag) {
-    const routeProfile = BUILTIN_ROUTES[activeWorkflowRoute.taskFlag];
+    const routeProfile = mergedRoutes[activeWorkflowRoute.taskFlag];
     if (routeProfile) {
-      const profile = resolveKhalaProfile(routeProfile);
+      const profile = resolveKhalaProfile(routeProfile as WorkflowProfileName);
       return {
-        profileName: routeProfile,
+        profileName: routeProfile as WorkflowProfileName,
         profile,
         source: "route",
         description: `route ${activeWorkflowRoute.taskFlag} -> ${routeProfile}`,
@@ -114,15 +159,15 @@ export function resolveWorkflowRoute(task: WorkflowTask): WorkflowRouteResolutio
     }
   }
 
-  // 3. Fallback to builtin route for the requested task
-  const fallbackProfile = BUILTIN_ROUTES[task];
-  if (fallbackProfile) {
-    const profile = resolveKhalaProfile(fallbackProfile);
+  // 3. Look up merged route for the requested task
+  const routeProfile = mergedRoutes[task];
+  if (routeProfile) {
+    const profile = resolveKhalaProfile(routeProfile as WorkflowProfileName);
     return {
-      profileName: fallbackProfile,
+      profileName: routeProfile as WorkflowProfileName,
       profile,
       source: "builtin",
-      description: `builtin route ${task} -> ${fallbackProfile}`,
+      description: `route ${task} -> ${routeProfile}`,
     };
   }
 
@@ -134,20 +179,6 @@ export function resolveWorkflowRoute(task: WorkflowTask): WorkflowRouteResolutio
     source: "builtin",
     description: `fallback direct profile ${task}`,
   };
-}
-
-/**
- * Get the known builtin routes for display purposes.
- */
-export function getBuiltinRouteTable(): Record<string, WorkflowProfileName> {
-  return { ...BUILTIN_ROUTES };
-}
-
-/**
- * Get the known builtin profiles for display purposes.
- */
-export function getBuiltinProfileTable(): Record<WorkflowProfileName, string> {
-  return { ...BUILTIN_PROFILES };
 }
 
 /**
