@@ -17,6 +17,7 @@ import path from "node:path";
 import registerSubagentExtension from "pi-subagents/src/extension/index.ts";
 import { createComplianceCommandHandlers } from "./commands/compliance.ts";
 import { createKhalaCommandHandlers } from "./commands/khala.ts";
+import { createKhalaHubCommandHandlers } from "./commands/khala-hub.ts";
 import { createCuratorCommandHandlers } from "./commands/curator.ts";
 import { createLearnedWorkflowCommandHandlers } from "./commands/learned-workflows.ts";
 import { createRunLedgerCommandHandlers } from "./commands/run-ledger.ts";
@@ -2693,6 +2694,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     nowIso,
     runCompliancePreset: (preset, ctx) => complianceHandlers.compliance(preset, ctx),
   });
+  const khalaHubHandlers = createKhalaHubCommandHandlers({
+    pi,
+    homeDir: homedir(),
+    packageSkillsPath: RUNTIME_PATHS.packageSkillsPath,
+    notify,
+  });
 
   const { compliance: _unusedComplianceHandler, ...complianceGateHandlers } =
     complianceHandlers;
@@ -2707,6 +2714,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       ...runLedgerHandlers,
       ...ruleHandlers,
       ...khalaHandlers,
+      ...khalaHubHandlers,
     },
     completions: {
       learnedSkills: (prefix) =>

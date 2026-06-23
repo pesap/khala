@@ -10,6 +10,7 @@ import {
   chooseAvailableSkillName,
   parseDebugArgs,
   parseInboxArgs,
+  parseKhalaHubArgs,
   parsePlanArgs,
   parseReviewArgs,
   parseWorkonArgs,
@@ -177,6 +178,27 @@ test("rejects invalid plan review flags", () => {
 test("parses debug input as an issue-evidence brief and strips legacy fix flag", () => {
   assert.deepEqual(parseDebugArgs("handoff heartbeat is ignored --fix"), {
     problem: "handoff heartbeat is ignored",
+  });
+});
+
+test("parses khala-hub flags with path and subdir", () => {
+  assert.deepEqual(parseKhalaHubArgs(""), {});
+  assert.deepEqual(parseKhalaHubArgs("--path owner/repo"), { path: "owner/repo" });
+  assert.deepEqual(parseKhalaHubArgs("--path https://github.com/owner/repo --subdir wiki"), {
+    path: "https://github.com/owner/repo",
+    subdir: "wiki",
+  });
+});
+
+test("rejects invalid khala-hub flag combinations", () => {
+  assert.deepEqual(parseKhalaHubArgs("--subdir wiki"), {
+    error: "Usage: /khala-hub [--path <path|git-ref> [--subdir <relative-path>]]",
+  });
+  assert.deepEqual(parseKhalaHubArgs("--path"), {
+    error: "Usage: /khala-hub [--path <path|git-ref> [--subdir <relative-path>]]",
+  });
+  assert.deepEqual(parseKhalaHubArgs("--path owner/repo --unknown"), {
+    error: "Usage: /khala-hub [--path <path|git-ref> [--subdir <relative-path>]]",
   });
 });
 
