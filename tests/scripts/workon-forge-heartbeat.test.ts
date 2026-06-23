@@ -134,6 +134,93 @@ async function runHeartbeat(env: NodeJS.ProcessEnv, stateFile: string, multiplex
   return stdout;
 }
 
+test("forge heartbeat uses host-aware gh calls for GitHub Enterprise repos", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-forge-heartbeat-enterprise-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+    const stateFile = path.join(tempDir, "state", "heartbeat.json");
+    const ghLog = path.join(tempDir, "gh.log");
+    const fixtureDir = path.join(fixturesRoot, "answered-review-thread");
+    const enterpriseBranch = "feat/91-implement-sienna-z2n-mapping";
+
+    await writeExecutable(
+      path.join(binDir, "gh"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> ${JSON.stringify(ghLog)}
+fixture_dir=${JSON.stringify(fixtureDir)}
+if [[ "$*" == "api --hostname github.enterprise.example user --jq .login" ]]; then
+  printf 'pesap\n'
+  exit 0
+fi
+if [[ "$*" == "pr list --repo github.enterprise.example/PCM/nodal-allocation --state open --head ${enterpriseBranch} --json number,title,url --jq .[0] // empty" ]]; then
+  printf '{"number":91,"title":"enterprise heartbeat","url":"https://github.enterprise.example/PCM/nodal-allocation/pull/91"}\n'
+  exit 0
+fi
+if [[ "$*" == "api --hostname github.enterprise.example repos/PCM/nodal-allocation/issues/91/comments --paginate" ]]; then
+  cat "$fixture_dir/issue-comments.json"
+  exit 0
+fi
+if [[ "$*" == "api --hostname github.enterprise.example repos/PCM/nodal-allocation/pulls/91/comments --paginate" ]]; then
+  cat "$fixture_dir/review-comments.json"
+  exit 0
+fi
+if [[ "$*" == "api --hostname github.enterprise.example repos/PCM/nodal-allocation/pulls/91/reviews --paginate" ]]; then
+  cat "$fixture_dir/reviews.json"
+  exit 0
+fi
+if [[ "\${1:-} \${2:-} \${3:-} \${4:-}" == "api graphql --hostname github.enterprise.example" ]]; then
+  cat "$fixture_dir/review-threads.json"
+  exit 0
+fi
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const { stdout } = await execFileAsync(
+      "bash",
+      [
+        scriptPath,
+        "--repo",
+        "github.enterprise.example/PCM/nodal-allocation",
+        "--branch",
+        enterpriseBranch,
+        "--interval",
+        "1.0",
+        "--author",
+        "@me",
+        "--state-file",
+        stateFile,
+        "--once",
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+
+    assert.match(stdout, /https:\/\/github\.enterprise\.example\/PCM\/nodal-allocation\/pull\/91/);
+    const ghCalls = await readFile(ghLog, "utf8");
+    assert.match(ghCalls, /api --hostname github\.enterprise\.example user --jq \.login/);
+    assert.match(ghCalls, /pr list --repo github\.enterprise\.example\/PCM\/nodal-allocation/);
+    assert.match(ghCalls, /api --hostname github\.enterprise\.example repos\/PCM\/nodal-allocation\/issues\/91\/comments --paginate/);
+    assert.match(ghCalls, /api --hostname github\.enterprise\.example repos\/PCM\/nodal-allocation\/pulls\/91\/comments --paginate/);
+    assert.match(ghCalls, /api --hostname github\.enterprise\.example repos\/PCM\/nodal-allocation\/pulls\/91\/reviews --paginate/);
+    assert.match(ghCalls, /api graphql --hostname github\.enterprise\.example/);
+    assert.match(ghCalls, /-f owner=PCM/);
+    assert.match(ghCalls, /-f name=nodal-allocation/);
+    assert.doesNotMatch(ghCalls, /pr list --repo PCM\/nodal-allocation/);
+    assert.doesNotMatch(ghCalls, /repos\/github\.enterprise\.example\/PCM/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 function parseJsonLines(stdout: string): Record<string, unknown>[] {
   return stdout
     .trim()

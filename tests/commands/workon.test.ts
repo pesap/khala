@@ -469,6 +469,49 @@ test("prepares GitHub Enterprise issue URL with host-aware gh repo and state pat
   }
 });
 
+test("passes GitHub Enterprise host to launched heartbeat handoff", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-enterprise-start-test-"));
+  try {
+    const { calls, runner } = fakeGhRunner({
+      "auth status --hostname github.nrel.gov": "",
+      "issue view 123 --repo github.nrel.gov/org/repo --json number,title,url,body,state,author,labels,assignees": enterpriseIssueViewOutput(
+        123,
+        "fix(workon): preserve Enterprise host in heartbeat",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "https://github.nrel.gov/org/repo/issues/123",
+        repo: "",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+    const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-multiplexer-handoff.sh"));
+
+    assert.ok(scriptCall);
+    assert.match(scriptCall, /--repo github\.nrel\.gov\/org\/repo/);
+    assert.doesNotMatch(scriptCall, /--repo org\/repo/);
+    assert.match(rendered, /Forge heartbeat command: .*--repo github\.nrel\.gov\/org\/repo/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Forge heartbeat command: .*--repo github\.nrel\.gov\/org\/repo/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("groups multiple GitHub Enterprise issues from one host and repo", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-enterprise-multi-test-"));
   try {

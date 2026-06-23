@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-zellij-handoff.sh --repo OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL] [--thinking LEVEL] [--ledger PATH]
+Usage: workon-zellij-handoff.sh --repo [HOST/]OWNER/REPO --branch BRANCH --capsule PATH --prompt TEXT [--heartbeat HOURS] [--model MODEL] [--thinking LEVEL] [--ledger PATH]
 
 Create/switch the Worktrunk worktree, wait for its Zellij tab, and launch Pi in
 that tab with a clean prompt. The capsule path is passed as text in the prompt;

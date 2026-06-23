@@ -602,8 +602,9 @@ function buildHandoffRecoveryInstructions(params: {
   const modelArg = modelSelection.exactModel ? ` --model ${shellQuote(modelSelection.exactModel)}` : "";
   const thinkingArg = ` --thinking ${shellQuote(modelSelection.exactThinkingLevel)}`;
   const multiplexer = params.request.resolvedMultiplexer === "none" ? "zellij" : params.request.resolvedMultiplexer;
+  const handoffRepo = heartbeatRepoSelector(params.request, params.repo);
   return [
-    `Retry multiplexer handoff (${multiplexer}) from an active ${multiplexer} pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(handoffScript)} --multiplexer ${shellQuote(multiplexer)} --repo ${shellQuote(params.repo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}${modelArg}${thinkingArg} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
+    `Retry multiplexer handoff (${multiplexer}) from an active ${multiplexer} pane: cd ${shellQuote(params.request.cwd)} && bash ${shellQuote(handoffScript)} --multiplexer ${shellQuote(multiplexer)} --repo ${shellQuote(handoffRepo)} --branch ${shellQuote(params.branchName)} --capsule ${shellQuote(params.capsulePath)} --prompt '<handoff prompt from capsule>' --heartbeat ${shellQuote(params.request.heartbeat)}${modelArg}${thinkingArg} --ledger ${shellQuote(handoffLedgerPath(params.request, params.repo))}`,
   ];
 }
 
@@ -623,6 +624,11 @@ function defaultForgeHost(forge: WorkonForge): string {
 
 function stateForgeHost(request: Pick<WorkonBootstrapRequest, "forge" | "forgeHost" | "target">): string {
   return normalizeForgeHost(request.forgeHost) ?? forgeHostFromTarget(request.target) ?? defaultForgeHost(request.forge);
+}
+
+function heartbeatRepoSelector(request: Pick<WorkonBootstrapRequest, "forge" | "forgeHost" | "target">, repo: string): string {
+  const forgeHost = stateForgeHost(request);
+  return forgeHost !== "github.com" ? `${forgeHost}/${repo}` : repo;
 }
 
 function repoStateDir(root: string, forgeHost: string, repo: string): string {
@@ -1841,12 +1847,13 @@ async function startWorktreeIfRequested(
 
   if (request.resolvedMultiplexer !== "none") {
     const scriptPath = path.join(PACKAGE_ROOT, "scripts", "workon-multiplexer-handoff.sh");
+    const handoffRepo = heartbeatRepoSelector(request, params.repo);
     const handoffArgs = [
       scriptPath,
       "--multiplexer",
       request.resolvedMultiplexer,
       "--repo",
-      params.repo,
+      handoffRepo,
       "--branch",
       params.branchName,
       "--capsule",

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-forge-heartbeat.sh --repo OWNER/REPO --branch BRANCH --interval HOURS [--multiplexer zellij|tmux] [--author LOGIN|@me] [--trusted-author LOGIN] [--notify-pane PANE_ID] [--state-file PATH] [--once]
+Usage: workon-forge-heartbeat.sh --repo [HOST/]OWNER/REPO --branch BRANCH --interval HOURS [--multiplexer zellij|tmux] [--author LOGIN|@me] [--trusted-author LOGIN] [--notify-pane PANE_ID] [--state-file PATH] [--once]
 
 Poll the forge CLI for feedback from the selected author on the open PR for a
 branch. Numeric intervals are decimal hours: 0.25 means 15 minutes, and 2.0
@@ -13,6 +13,12 @@ USAGE
 }
 
 repo=""
+repo_host=""
+repo_owner=""
+repo_name=""
+repo_path=""
+repo_selector=""
+gh_hostname_args=()
 branch=""
 interval="1.0"
 author="@me"
@@ -78,10 +84,38 @@ if [[ -z "${repo}" || -z "${branch}" ]]; then
   exit 2
 fi
 
-if [[ "${repo}" != */* ]]; then
-  printf 'invalid repo: %s (expected OWNER/REPO)\n' "${repo}" >&2
-  exit 2
-fi
+parse_repo_selector() {
+  local value="${1:?repo required}"
+  local first=""
+  local second=""
+  local third=""
+  local rest=""
+
+  IFS=/ read -r first second third rest <<<"${value}"
+  if [[ -n "${first}" && -n "${second}" && -z "${third}" && -z "${rest}" ]]; then
+    repo_host=""
+    repo_owner="${first}"
+    repo_name="${second}"
+  elif [[ -n "${first}" && -n "${second}" && -n "${third}" && -z "${rest}" ]]; then
+    repo_host="${first}"
+    repo_owner="${second}"
+    repo_name="${third}"
+  else
+    printf 'invalid repo: %s (expected [HOST/]OWNER/REPO)\n' "${value}" >&2
+    return 1
+  fi
+
+  repo_path="${repo_owner}/${repo_name}"
+  if [[ -n "${repo_host}" ]]; then
+    repo_selector="${repo_host}/${repo_path}"
+    gh_hostname_args=(--hostname "${repo_host}")
+  else
+    repo_selector="${repo_path}"
+    gh_hostname_args=()
+  fi
+}
+
+parse_repo_selector "${repo}" || exit 2
 
 require_command() {
   local command_name="${1:?command name required}"
@@ -188,7 +222,7 @@ resolve_feedback_author() {
   local resolved_author=""
 
   if [[ "${requested_author}" == "@me" ]]; then
-    resolved_author="$(gh api user --jq .login)"
+    resolved_author="$(gh api "${gh_hostname_args[@]}" user --jq .login)"
   else
     resolved_author="${requested_author}"
   fi
@@ -205,12 +239,12 @@ resolve_feedback_author() {
 
 fetch_review_threads() {
   local pr_number="${1:?pr number required}"
-  local owner="${repo%%/*}"
-  local name="${repo#*/}"
+  local owner="${repo_owner}"
+  local name="${repo_name}"
 
   # GraphQL variable names must remain literal for gh to bind -f/-F values.
   # shellcheck disable=SC2016
-  gh api graphql \
+  gh api graphql "${gh_hostname_args[@]}" \
     -f owner="${owner}" \
     -f name="${name}" \
     -F number="${pr_number}" \
@@ -250,15 +284,15 @@ print_feedback_records() {
   local reviews_json=""
   local feedback_filter_path="${script_dir}/workon-forge-heartbeat-feedback.jq"
 
-  if ! issue_comments_json="$(gh api "repos/${repo}/issues/${pr_number}/comments" --paginate 2>&1)"; then
+  if ! issue_comments_json="$(gh api "${gh_hostname_args[@]}" "repos/${repo_path}/issues/${pr_number}/comments" --paginate 2>&1)"; then
     printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
-      "$(json_string "repos/${repo}/issues/${pr_number}/comments")" \
+      "$(json_string "repos/${repo_path}/issues/${pr_number}/comments")" \
       "$(json_string "${issue_comments_json}")"
     return 1
   fi
-  if ! review_comments_json="$(gh api "repos/${repo}/pulls/${pr_number}/comments" --paginate 2>&1)"; then
+  if ! review_comments_json="$(gh api "${gh_hostname_args[@]}" "repos/${repo_path}/pulls/${pr_number}/comments" --paginate 2>&1)"; then
     printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
-      "$(json_string "repos/${repo}/pulls/${pr_number}/comments")" \
+      "$(json_string "repos/${repo_path}/pulls/${pr_number}/comments")" \
       "$(json_string "${review_comments_json}")"
     return 1
   fi
@@ -268,9 +302,9 @@ print_feedback_records() {
       "$(json_string "${review_threads_json}")"
     return 1
   fi
-  if ! reviews_json="$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --paginate 2>&1)"; then
+  if ! reviews_json="$(gh api "${gh_hostname_args[@]}" "repos/${repo_path}/pulls/${pr_number}/reviews" --paginate 2>&1)"; then
     printf '{"status":"poll-error","phase":"comments","endpoint":%s,"message":%s}\n' \
-      "$(json_string "repos/${repo}/pulls/${pr_number}/reviews")" \
+      "$(json_string "repos/${repo_path}/pulls/${pr_number}/reviews")" \
       "$(json_string "${reviews_json}")"
     return 1
   fi
@@ -345,17 +379,17 @@ init_state_file "${state_file}"
 while true; do
   checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   poll_failed=false
-  if ! pr_json="$(gh pr list --repo "${repo}" --state open --head "${branch}" --json number,title,url --jq '.[0] // empty' 2>&1)"; then
+  if ! pr_json="$(gh pr list --repo "${repo_selector}" --state open --head "${branch}" --json number,title,url --jq '.[0] // empty' 2>&1)"; then
     printf '{"status":"poll-error","phase":"pr-list","checkedAt":%s,"repo":%s,"branch":%s,"message":%s}\n' \
       "$(json_string "${checked_at}")" \
-      "$(json_string "${repo}")" \
+      "$(json_string "${repo_selector}")" \
       "$(json_string "${branch}")" \
       "$(json_string "${pr_json}")"
     poll_failed=true
   elif [[ -z "${pr_json}" ]]; then
     printf '{"status":"no-open-pr","checkedAt":%s,"repo":%s,"branch":%s,"author":%s}\n' \
       "$(json_string "${checked_at}")" \
-      "$(json_string "${repo}")" \
+      "$(json_string "${repo_selector}")" \
       "$(json_string "${branch}")" \
       "$(json_string "${author}")"
   else

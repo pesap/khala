@@ -428,6 +428,101 @@ exit 2
   }
 });
 
+test("workon zellij handoff passes host-qualified repo to heartbeat pane", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-enterprise-heartbeat-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const paneLog = path.join(tempDir, "panes.log");
+    const worktreePath = path.join(tempDir, "worktree");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    const repo = "github.enterprise.example/PCM/nodal-allocation";
+    const branch = "feat/91-implement-sienna-z2n-mapping";
+    const tabName = "nodal-allocation/feat-91-implement-sienna-z2n-mapping";
+
+    await mkdir(worktreePath);
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '{"action":"switched","path":"${worktreePath}"}\n'
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "zellij"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "action list-tabs --json" ]]; then
+  printf '[{"name":"${tabName}","tab_id":12}]\n'
+  exit 0
+fi
+if [[ "$*" == "action list-panes --json" ]]; then
+  printf '[{"name":"pi","pane_id":"terminal_42","tab_id":12}]\n'
+  exit 0
+fi
+if [[ "$*" == "action go-to-tab-name ${tabName}" ]]; then
+  exit 0
+fi
+if [[ "$1 $2" == "action new-pane" ]]; then
+  printf '%s\n' "$*" >> "${paneLog}"
+  printf 'terminal_100\n'
+  exit 0
+fi
+printf 'unexpected zellij args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    await writeExecutable(path.join(binDir, "pi"), "#!/usr/bin/env bash\nexit 0\n");
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    const { stdout } = await execFileAsync(
+      "bash",
+      [
+        scriptPath,
+        "--repo",
+        repo,
+        "--branch",
+        branch,
+        "--capsule",
+        capsulePath,
+        "--prompt",
+        "handoff prompt",
+        "--heartbeat",
+        "1.0",
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          ZELLIJ_TAB_WAIT_SECONDS: "0.01",
+        },
+      },
+    );
+
+    const resultLine = stdout
+      .trim()
+      .split(/\r?\n/)
+      .findLast((line) => line.startsWith("{"));
+    assert.ok(resultLine);
+    const result = JSON.parse(resultLine);
+    assert.equal(result.heartbeatAction, "started");
+    assert.match(result.heartbeatCommand, /--repo github\.enterprise\.example\/PCM\/nodal-allocation/);
+
+    const panes = await readFile(paneLog, "utf8");
+    assert.match(panes, /--name forge-heartbeat/);
+    assert.match(panes, /--repo github\.enterprise\.example\/PCM\/nodal-allocation/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff starts target-tab panes when another tab has matching pane names", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-cross-tab-panes-test-"));
   try {

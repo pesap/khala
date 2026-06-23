@@ -159,6 +159,97 @@ esac
   }
 });
 
+test("workon tmux handoff passes host-qualified repo to heartbeat window", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-tmux-enterprise-heartbeat-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    const logPath = path.join(tempDir, "tmux.log");
+    const worktreePath = path.join(tempDir, "worktree");
+    await mkdir(binDir);
+    await mkdir(worktreePath);
+    await writeFakeJq(binDir);
+    await writeExecutable(path.join(binDir, "tr"), "#!/bin/sh\nexec /usr/bin/tr \"$@\"\n");
+    await writeExecutable(path.join(binDir, "sed"), "#!/bin/sh\nexec /usr/bin/sed \"$@\"\n");
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '{"action":"created","path":"%s"}\n' "\${WORKTREE_PATH}"
+`,
+    );
+    await writeExecutable(path.join(binDir, "pi"), "#!/usr/bin/env bash\nexit 0\n");
+    await writeExecutable(
+      path.join(binDir, "tmux"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"\${TMUX_LOG}"
+case "$1" in
+  has-session)
+    exit 1
+    ;;
+  new-session)
+    printf '$khala-session\n'
+    ;;
+  list-windows)
+    exit 0
+    ;;
+  display-message)
+    printf '$khala-session\n'
+    ;;
+  new-window)
+    if [[ "$*" == *" -n pi "* ]]; then
+      printf '%%1\n'
+    else
+      printf '%%2\n'
+    fi
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+    );
+
+    const capsulePath = path.join(tempDir, "capsule.md");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-multiplexer-handoff.sh");
+    const { stdout } = await execFileAsync("bash", [
+      scriptPath,
+      "--multiplexer",
+      "tmux",
+      "--repo",
+      "github.enterprise.example/PCM/nodal-allocation",
+      "--branch",
+      "feat/91-implement-sienna-z2n-mapping",
+      "--capsule",
+      capsulePath,
+      "--prompt",
+      "handoff prompt",
+      "--heartbeat",
+      "1.0",
+    ], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        WORKTREE_PATH: worktreePath,
+        TMUX_LOG: logPath,
+      },
+    });
+
+    const result = JSON.parse(stdout.trim());
+    assert.equal(result.status, "launched");
+    assert.match(result.heartbeatCommand, /--repo github\.enterprise\.example\/PCM\/nodal-allocation/);
+
+    const tmuxLog = await readFile(logPath, "utf8");
+    assert.match(tmuxLog, /new-window .* -n forge-heartbeat /);
+    assert.match(tmuxLog, /--repo github\.enterprise\.example\/PCM\/nodal-allocation/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon multiplexer dispatcher rejects unsupported providers with structured JSON", async () => {
   const repoRoot = path.resolve(import.meta.dirname, "..", "..");
   const scriptPath = path.join(repoRoot, "scripts", "workon-multiplexer-handoff.sh");
