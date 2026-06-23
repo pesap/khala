@@ -988,12 +988,15 @@ async function readGithubIssue(
   const label = `GitHub issue ${target.repo}#${target.number}`;
   const result = await runGh(runner, request.cwd, evidence.commands, args);
   const parseInput = result.rawStdout ?? result.stdout;
-  if (!result.ok) {
+  const markSourceReadBlocked = (parseError?: string): null => {
     evidence.route = "blocked";
     evidence.handoffOperatorAction = `Fix the GitHub issue read failure for ${sourceReadSelector(target)}, then rerun /workon.`;
-    evidence.failureSummary = sourceReadFailureSummary(target, result);
-    evidence.gaps.push(sourceReadFailureGap({ label, target, result, parseInput }));
+    evidence.failureSummary = sourceReadFailureSummary(target, result, parseError);
+    evidence.gaps.push(sourceReadFailureGap({ label, target, result, parseInput, parseError }));
     return null;
+  };
+  if (!result.ok) {
+    return markSourceReadBlocked();
   }
 
   try {
@@ -1002,18 +1005,10 @@ async function readGithubIssue(
       return parsed as GithubIssueMetadata;
     }
     const parseError = `expected a JSON object but received ${Array.isArray(parsed) ? "an array" : typeof parsed}`;
-    evidence.route = "blocked";
-    evidence.handoffOperatorAction = `Fix the GitHub issue read failure for ${sourceReadSelector(target)}, then rerun /workon.`;
-    evidence.failureSummary = sourceReadFailureSummary(target, result, parseError);
-    evidence.gaps.push(sourceReadFailureGap({ label, target, result, parseInput, parseError }));
-    return null;
+    return markSourceReadBlocked(parseError);
   } catch (error) {
     const parseError = error instanceof Error ? error.message : String(error);
-    evidence.route = "blocked";
-    evidence.handoffOperatorAction = `Fix the GitHub issue read failure for ${sourceReadSelector(target)}, then rerun /workon.`;
-    evidence.failureSummary = sourceReadFailureSummary(target, result, parseError);
-    evidence.gaps.push(sourceReadFailureGap({ label, target, result, parseInput, parseError }));
-    return null;
+    return markSourceReadBlocked(parseError);
   }
 }
 
