@@ -59,22 +59,22 @@ test("getMergedRoutes returns known builtin routes", () => {
   assert.equal(routes.triage, "planning");
   assert.equal(routes.debug, "planning");
   assert.equal(routes.review, "development");
-  assert.equal(routes["reviewer-two"], "peer-review");
+  assert.equal(routes["peer-review"], "peer-review");
 });
 
 test("getMergedProfiles returns known builtin profiles", () => {
   const profiles = getMergedProfiles();
   assert.ok(profiles.planning.includes("gpt-5.5"));
   assert.ok(profiles.development.includes("gpt-5.4-mini"));
-  assert.ok(profiles["peer-review"].includes("opus4.7"));
+  assert.ok(profiles["peer-review"].includes("claude-opus-4.7"));
 });
 
-test("resolveWorkflowRoute uses peer-review profile for reviewer two by default", () => {
+test("resolveWorkflowRoute uses peer-review profile for peer review by default", () => {
   resetActiveWorkflowRouteForTests();
-  const resolved = resolveWorkflowRoute("reviewer-two");
+  const resolved = resolveWorkflowRoute("peer-review");
   assert.equal(resolved.source, "builtin");
   assert.equal(resolved.profileName, "peer-review");
-  assert.equal(resolved.profile.model, "github-copilot/opus4.7");
+  assert.equal(resolved.profile.model, "github-copilot/claude-opus-4.7");
   assert.equal(resolved.profile.thinkingLevel, "high");
 });
 

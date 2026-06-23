@@ -338,6 +338,62 @@ store_preflight_cache() {
   } 2>/dev/null || true
 }
 
+preflight_command_timeout_seconds() {
+  local timeout="${WORKON_PI_PREFLIGHT_TIMEOUT_SECONDS:-10}"
+
+  if [[ "${timeout}" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s' "${timeout}"
+  else
+    printf '10'
+  fi
+}
+
+preflight_output=""
+preflight_status=0
+run_preflight_command() {
+  local timeout_reason="${1:?timeout reason required}"
+  local timeout_detail="${2:?timeout detail required}"
+  shift 2
+
+  local timeout=""
+  local output_file=""
+  local pid=""
+  local elapsed=0
+
+  timeout="$(preflight_command_timeout_seconds)"
+  output_file="$(mktemp "${TMPDIR:-/tmp}/workon-pi-preflight.XXXXXX")"
+  preflight_output=""
+  preflight_status=0
+
+  ("$@" >"${output_file}" 2>&1) &
+  pid=$!
+
+  while kill -0 "${pid}" 2>/dev/null; do
+    if ((elapsed >= timeout)); then
+      kill "${pid}" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "${pid}" 2>/dev/null || true
+      wait "${pid}" 2>/dev/null || true
+      preflight_output="$(cat "${output_file}" 2>/dev/null || true)"
+      rm -f "${output_file}"
+      if [[ -n "${preflight_output}" ]]; then
+        fail_blocked "${timeout_reason}" "${timeout_detail} timed out after ${timeout}s. Output:
+${preflight_output}" 124
+      fi
+      fail_blocked "${timeout_reason}" "${timeout_detail} timed out after ${timeout}s" 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  set +e
+  wait "${pid}"
+  preflight_status=$?
+  set -e
+  preflight_output="$(cat "${output_file}" 2>/dev/null || true)"
+  rm -f "${output_file}"
+}
+
 preflight_selected_model() {
   local selected_model="${1:?model required}"
   local selected_thinking="${2:-}"
@@ -361,7 +417,12 @@ preflight_selected_model() {
     return 0
   fi
 
-  models_output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" --list-models "${name}" 2>&1)" || model_status=$?
+  run_preflight_command \
+    "pi-model-lookup-timeout" \
+    "Pi model lookup preflight for ${selected_model}" \
+    env "PI_CODING_AGENT_DIR=${pi_agent_dir}" "${pi_command}" --list-models "${name}"
+  models_output="${preflight_output}"
+  model_status="${preflight_status}"
   if ((model_status != 0)); then
     if pi_preflight_lock_failure "${models_output}"; then
       return 0
@@ -385,7 +446,12 @@ ${models_output}" "${model_status}"
   fi
   auth_args+=(-p "Return exactly: ok")
 
-  auth_output="$(PI_CODING_AGENT_DIR="${pi_agent_dir}" "${pi_command}" "${auth_args[@]}" 2>&1)" || auth_status=$?
+  run_preflight_command \
+    "pi-auth-preflight-timeout" \
+    "Pi model auth preflight for ${selected_model}" \
+    env "PI_CODING_AGENT_DIR=${pi_agent_dir}" "${pi_command}" "${auth_args[@]}"
+  auth_output="${preflight_output}"
+  auth_status="${preflight_status}"
   if ((auth_status != 0)); then
     fail_blocked "pi-auth-preflight-failed" "Pi model auth preflight failed for ${selected_model}. Output:
 ${auth_output}" "${auth_status}"

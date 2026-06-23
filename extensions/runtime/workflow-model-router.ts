@@ -29,14 +29,14 @@ const BUILTIN_ROUTES: Record<string, WorkflowProfileName> = {
   triage: "planning",
   debug: "planning",
   review: "development",
-  "reviewer-two": "peer-review",
+  "peer-review": "peer-review",
 };
 
 /** Built-in default profile map: profile name -> model id:thinking suffix. */
 const BUILTIN_PROFILES: Record<WorkflowProfileName, string> = {
   planning: "github-copilot/gpt-5.5:xhigh",
   development: "github-copilot/gpt-5.4-mini:medium",
-  "peer-review": "github-copilot/opus4.7:high",
+  "peer-review": "github-copilot/claude-opus-4.7:high",
   agents: "github-copilot/gpt-5.4-mini:medium",
 };
 

@@ -19,10 +19,14 @@ const MODEL_PRESETS = {
     "github-copilot/gpt-5.4-mini:medium",
     "openrouter/openai/gpt-5.4-mini:medium",
   ],
+  peerReview: [
+    "github-copilot/claude-opus-4.7:high",
+  ],
 };
 const DEFAULT_MODELS = {
   planning: MODEL_PRESETS.planning[0],
   development: MODEL_PRESETS.development[0],
+  peerReview: MODEL_PRESETS.peerReview[0],
 };
 
 function usage() {
@@ -96,6 +100,7 @@ function workflowConfig(models) {
     "profiles:",
     `  planning: "${models.planning}"`,
     `  development: "${models.development}"`,
+    `  peer-review: "${models.peerReview}"`,
     "",
     "routes:",
     "  plan: \"planning\"",
@@ -103,6 +108,7 @@ function workflowConfig(models) {
     "  triage: \"planning\"",
     "  workon: \"development\"",
     "  review: \"development\"",
+    "  peer-review: \"peer-review\"",
     "",
   ].join("\n");
 }
@@ -169,6 +175,12 @@ async function askModels(rl, options) {
       MODEL_PRESETS.development,
       DEFAULT_MODELS.development,
     ),
+    peerReview: await askChoice(
+      rl,
+      "Which model should the peer-review profile use inside /plan?",
+      MODEL_PRESETS.peerReview,
+      DEFAULT_MODELS.peerReview,
+    ),
   };
 }
 
@@ -216,6 +228,7 @@ async function main() {
     console.log(`Workflow config: ${targetConfigPath}`);
     console.log(`Planning workflows: ${models.planning}`);
     console.log(`Development workflows: ${models.development}`);
+    console.log(`Peer-review workflows: ${models.peerReview}`);
 
     if (options.dryRun) return;
 

@@ -17,6 +17,7 @@ test("khala CLI prints setup guidance without running pi in dry-run mode", async
   assert.match(stdout, /Workflow config: .*\.pi\/khala\/workflow-model\.yaml/);
   assert.match(stdout, /Planning workflows: github-copilot\/gpt-5\.5:xhigh/);
   assert.match(stdout, /Development workflows: openai-codex\/gpt-5\.4-mini:medium/);
+  assert.match(stdout, /Peer-review workflows: github-copilot\/claude-opus-4\.7:high/);
 });
 
 test("khala CLI exposes help", async () => {
@@ -62,6 +63,8 @@ test("khala CLI writes project workflow config after successful install", async 
     assert.match(stdout, /Wrote .*\.pi\/khala\/workflow-model\.yaml/);
     assert.match(config, /planning: "github-copilot\/gpt-5\.5:xhigh"/);
     assert.match(config, /development: "openai-codex\/gpt-5\.4-mini:medium"/);
+    assert.match(config, /peer-review: "github-copilot\/claude-opus-4\.7:high"/);
+    assert.match(config, /peer-review: "peer-review"/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -23,7 +23,7 @@ interface DevelopmentModelDiscovery {
 }
 
 const PLANNING_MODEL = "github-copilot/gpt-5.5";
-const PEER_REVIEW_MODEL = "github-copilot/opus4.7";
+const PEER_REVIEW_MODEL = "github-copilot/claude-opus-4.7";
 const DEVELOPMENT_PROVIDER = "github-copilot";
 const DEVELOPMENT_MODEL = "gpt-5.4-mini";
 const DEVELOPMENT_MODEL_ID = `${DEVELOPMENT_PROVIDER}/${DEVELOPMENT_MODEL}`;

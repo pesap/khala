@@ -97,7 +97,7 @@ printf 'github-copilot gpt-5.4 400K 128K yes yes\n'
       assert.match(status, /Model profiles:/);
       assert.match(status, /planning: model=github-copilot\/gpt-5\.5, thinking=xhigh/);
       assert.match(status, /development: model=unresolved, thinking=medium/);
-      assert.match(status, /peer-review: model=github-copilot\/opus4\.7, thinking=high/);
+      assert.match(status, /peer-review: model=github-copilot\/claude-opus-4\.7, thinking=high/);
       assert.match(status, /unresolved/);
     },
   );

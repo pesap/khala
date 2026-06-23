@@ -36,7 +36,7 @@ export type PlanLoopEvent =
   | { type: "candidate_created"; topic: string }
   | { type: "audit_completed"; findingCount: number; categories: string[] }
   | { type: "draft_created"; title: string }
-  | { type: "review_passed"; reviewer: "reviewer-two" }
+  | { type: "review_passed"; reviewer: "peer-review" }
   | { type: "review_requested_revision"; blockers: string[] }
   | { type: "draft_blocked"; reason: string }
   | { type: "workon_ready"; title: string }

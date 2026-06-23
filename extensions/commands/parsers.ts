@@ -186,7 +186,7 @@ function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute
 }
 
 function defaultPlanReviewSettings(): ReviewerTwoReviewSettings {
-  const reviewRoute = resolveWorkflowRoute("reviewer-two");
+  const reviewRoute = resolveWorkflowRoute("peer-review");
   const reviewProfile = reviewRoute.profile;
   const fallbackRoute = resolveWorkflowRoute("plan");
   const fallbackProfile = fallbackRoute.profile;

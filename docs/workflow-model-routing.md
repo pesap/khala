@@ -46,7 +46,7 @@ Example:
 profiles:
   planning: "github-copilot/gpt-5.5:xhigh"
   development: "github-copilot/gpt-5.4-mini:medium"
-  peer-review: "github-copilot/opus4.7:high"
+  peer-review: "github-copilot/claude-opus-4.7:high"
 
 routes:
   plan: "planning"
@@ -54,7 +54,7 @@ routes:
   triage: "planning"
   workon: "development"
   review: "development"
-  reviewer-two: "peer-review"
+  peer-review: "peer-review"
 ```
 
 Profiles use `"provider/model:thinking"` format. Routes map workflow tasks to
@@ -75,14 +75,14 @@ When no flags or config are provided:
 |------|-----------------|-------|----------|
 | `/workon` | development | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
 | `/plan`, `/triage`, `/debug` | planning | `github-copilot/gpt-5.5` | `xhigh` |
-| Reviewer Two (`/plan`) | peer-review | `github-copilot/opus4.7` | `high` |
+| Reviewer Two (`/plan`) | peer-review | `github-copilot/claude-opus-4.7` | `high` |
 | `/review`, `/audit` | development | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
 
 | Profile | Default | Thinking | Used by |
 |---------|---------|----------|---------|
 | `planning` | `github-copilot/gpt-5.5` | `xhigh` | `/plan`, `/triage`, `/debug` |
 | `development` | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` | `/workon`, `/review`, `/audit` |
-| `peer-review` | `github-copilot/opus4.7` | `high` | Reviewer Two in `/plan` |
+| `peer-review` | `github-copilot/claude-opus-4.7` | `high` | Reviewer Two in `/plan` |
 
 ## Health
 

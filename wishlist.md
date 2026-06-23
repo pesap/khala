@@ -5,7 +5,7 @@
 - [x] Color-code health/profile status lines so `OK` and `ERROR` are visible at
   a glance.
 - [x] Add the built-in `peer-review` model profile using
-  `github-copilot/opus4.7:high`.
+  `github-copilot/claude-opus-4.7:high`.
 - [x] Route the in-loop Reviewer Two pass through `peer-review`.
 - [x] Show `peer-review` in model profiles with its routed usage.
 - [x] Simplify `/khala-mode` to `enforce`, `warn`, and `ignore`.
@@ -37,7 +37,7 @@ Model profiles
   - used by: /workon, /review
 
 - OK peer-review
-  - model: github-copilot/opus4.7
+  - model: github-copilot/claude-opus-4.7
   - thinking: high
-  - used by: /reviewer-two
+  - used by: peer-review
 ```
