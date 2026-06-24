@@ -240,29 +240,81 @@ function rawMode(on) {
  *   the caller surfaces the choice in its own summary.
  * - Non-TTY / empty choices: returns fallback immediately.
  */
+/**
+ * Inline arrow-key selector with viewport scrolling and type-to-filter.
+ *
+ * - Shows a window of up to PICKER_WINDOW rows so 50+ choices stay usable.
+ * - Type to filter (case-insensitive substring); Backspace removes, Esc clears.
+ * - Up/Down moves within the filtered list; selection is preserved across
+ *   filter changes whenever the previously-hovered choice still matches.
+ * - On Enter or Ctrl+C: clears the entire picker so no residual line is left;
+ *   the caller surfaces the choice in its own summary.
+ * - Non-TTY / empty choices: returns fallback immediately.
+ */
+const PICKER_WINDOW = 10;
+
 async function askChoice(title, choices, fallback) {
   if (!canPrompt() || !choices.length) return fallback;
 
-  const buildLines = (selIdx) => {
-    const lines = [bold(title), dim("  \u2191 \u2193  Enter  Ctrl+C")];
-    for (let i = 0; i < choices.length; i++) {
-      const sel = i === selIdx;
-      lines.push(`  ${sel ? "\u25c9" : muted("\u25ef")} ${sel ? bold(choices[i]) : dim(choices[i])}`);
+  let query = "";
+  let filtered = choices;
+  let selIdx = Math.max(0, choices.indexOf(fallback));
+  let hovered = filtered[selIdx];
+
+  const applyFilter = () => {
+    if (!query) {
+      filtered = choices;
+    } else {
+      const q = query.toLowerCase();
+      filtered = choices.filter((c) => c.toLowerCase().includes(q));
     }
+    const next = hovered ? filtered.indexOf(hovered) : -1;
+    selIdx = next >= 0 ? next : 0;
+    hovered = filtered[selIdx] ?? null;
+  };
+
+  const viewport = () => {
+    const total = filtered.length;
+    if (total <= PICKER_WINDOW) return { start: 0, end: total };
+    let start = Math.max(0, selIdx - Math.floor(PICKER_WINDOW / 2));
+    const end   = Math.min(total, start + PICKER_WINDOW);
+    start = Math.max(0, end - PICKER_WINDOW);
+    return { start, end };
+  };
+
+  const buildLines = () => {
+    const lines = [];
+    const count = filtered.length === choices.length
+      ? `${choices.length}`
+      : `${filtered.length}/${choices.length}`;
+    lines.push(`${bold(title)}  ${dim(`(${count})`)}`);
+    lines.push(`${dim("›")} ${query || dim("type to filter…")}`);
+    lines.push(dim("  ↑ ↓ select  Enter accept  Esc clear  Ctrl+C cancel"));
+    if (!filtered.length) {
+      lines.push(dim("  no matches"));
+      return lines;
+    }
+    const { start, end } = viewport();
+    if (start > 0) lines.push(dim(`  ↑ ${start} more`));
+    for (let i = start; i < end; i++) {
+      const sel = i === selIdx;
+      lines.push(`  ${sel ? "◉" : muted("◯")} ${sel ? bold(filtered[i]) : dim(filtered[i])}`);
+    }
+    if (end < filtered.length) lines.push(dim(`  ↓ ${filtered.length - end} more`));
     return lines;
   };
 
-  let selIdx = Math.max(0, choices.indexOf(fallback));
   let drawnLines = 0;
 
-  const paint = (idx) => {
-    const lines = buildLines(idx);
+  const paint = () => {
+    const lines = buildLines();
     if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
     process.stdout.write(`${lines.join("\n")}\n`);
     drawnLines = lines.length;
   };
 
-  paint(selIdx);
+  process.stdout.write("\x1b[?25l"); // hide cursor while drawing the picker
+  paint();
 
   return new Promise((resolve, reject) => {
     let onKey;
@@ -272,14 +324,50 @@ async function askChoice(title, choices, fallback) {
       rawMode(false);
       process.stdin.pause();
       if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
+      process.stdout.write("\x1b[?25h");
     };
 
-    onKey = (_str, key) => {
+    onKey = (str, key) => {
       if (!key) return;
       if (key.ctrl && key.name === "c") { settle(); reject(makeAbortError()); return; }
-      if (key.name === "up")     { selIdx = (selIdx - 1 + choices.length) % choices.length; paint(selIdx); return; }
-      if (key.name === "down")   { selIdx = (selIdx + 1) % choices.length; paint(selIdx); return; }
-      if (key.name === "return") { const chosen = choices[selIdx] ?? fallback; settle(); resolve(chosen); }
+      if (key.name === "up") {
+        if (!filtered.length) return;
+        selIdx = (selIdx - 1 + filtered.length) % filtered.length;
+        hovered = filtered[selIdx];
+        paint();
+        return;
+      }
+      if (key.name === "down") {
+        if (!filtered.length) return;
+        selIdx = (selIdx + 1) % filtered.length;
+        hovered = filtered[selIdx];
+        paint();
+        return;
+      }
+      if (key.name === "return") {
+        if (!filtered.length) return;
+        const chosen = filtered[selIdx] ?? fallback;
+        settle();
+        resolve(chosen);
+        return;
+      }
+      if (key.name === "escape") {
+        if (query) { query = ""; applyFilter(); paint(); }
+        return;
+      }
+      if (key.name === "backspace") {
+        if (query) { query = query.slice(0, -1); applyFilter(); paint(); }
+        return;
+      }
+      // Printable ASCII appends to the filter query.
+      if (typeof str === "string" && str.length === 1 && !key.ctrl && !key.meta) {
+        const code = str.charCodeAt(0);
+        if (code >= 32 && code < 127) {
+          query += str;
+          applyFilter();
+          paint();
+        }
+      }
     };
     emitKeypressEvents(process.stdin);
     rawMode(true);
