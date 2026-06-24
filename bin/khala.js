@@ -14,6 +14,7 @@ import {
   modelSupportsThinking,
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
+  parseLiteLLMModelInfoResponse,
   readJsonObjectFile,
   stringifyModelsJson,
   validateLiteLLMKeyEnv,
@@ -811,6 +812,45 @@ async function pickLiteLLMModels() {
   }
 }
 
+// LiteLLM mounts /model/info at the proxy root; the /v1 segment of the
+// base URL is only for the OpenAI-compatible chat/completions/embeddings
+// surface. Strip a trailing /v1 (case-insensitive) before appending.
+function liteLLMModelInfoUrl(baseUrl) {
+  return `${baseUrl.replace(/\/+$/, "").replace(/\/v1$/i, "")}/model/info`;
+}
+
+/**
+ * Best-effort fetch of LiteLLM `/model/info` for the given proxy. The API
+ * key is taken from the caller (read from `process.env[keyEnv]` upstream)
+ * and is never logged or persisted. Throws a short, key-free Error on
+ * timeout / non-2xx / parse failure so the CLI can degrade gracefully.
+ */
+async function fetchLiteLLMModelInfo(baseUrl, apiKey, { timeoutMs = 10_000 } = {}) {
+  const url = liteLLMModelInfoUrl(baseUrl);
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const reason = error?.name === "TimeoutError" || error?.name === "AbortError"
+      ? `timed out after ${timeoutMs}ms`
+      : (error?.message ?? "network error");
+    throw new Error(`${url}: ${reason}`);
+  }
+  if (!response.ok) {
+    throw new Error(`${url}: HTTP ${response.status}`);
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (error) {
+    throw new Error(`${url}: invalid JSON body (${error.message})`);
+  }
+  return parseLiteLLMModelInfoResponse(body);
+}
+
 function writeJsonFile(filePath, value, { compactModelEntries = false } = {}) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const content = `${compactModelEntries ? stringifyModelsJson(value) : JSON.stringify(value, null, 2)}\n`;
@@ -887,9 +927,31 @@ async function mainLiteLLM(argv) {
 
     const targetModelsPath = modelsJsonPath();
     const targetSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
+
+    // Attempt to fetch rich model metadata from LiteLLM's /model/info so we
+    // can write entries with contextWindow/cost/reasoning fields instead of
+    // bare { id }. Best-effort: skipped if the env var isn't exported, and
+    // a fetch failure degrades to bare entries with a single-line warning.
+    // We never persist the key value — it's used for this HTTP call and
+    // dropped.
+    const apiKeyValue = process.env[keyEnv];
+    let infoMap = new Map();
+    let metadataStatus;
+    if (apiKeyValue) {
+      try {
+        infoMap = await fetchLiteLLMModelInfo(baseUrl, apiKeyValue);
+        const matched = modelIds.filter((id) => infoMap.has(id)).length;
+        metadataStatus = `${matched}/${modelIds.length} enriched from /model/info`;
+      } catch (error) {
+        metadataStatus = `fetch failed (${error.message}); writing bare entries`;
+      }
+    } else {
+      metadataStatus = `skipped ($${keyEnv} is not set; bare entries will be written)`;
+    }
+
     const currentModels = readJsonObjectFile(targetModelsPath);
     const currentSettings = readJsonObjectFile(targetSettingsPath);
-    const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelIds });
+    const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelIds, infoMap });
     const mergedSettings = mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelIds });
 
     // Summary
@@ -899,7 +961,12 @@ async function mainLiteLLM(argv) {
     console.log(`${bold("Khala LiteLLM")}${modeTag}${dim(":")}`);
     console.log(`${dim("models".padEnd(labelWidth))}${targetModelsPath}`);
     console.log(`${dim("settings".padEnd(labelWidth))}${targetSettingsPath}`);
-    console.log(`${dim("provider".padEnd(labelWidth))}${provider}`);
+    // Provider row gets a short qualifier so the user can see at a glance
+    // whether this is a fresh registration or an in-place update.
+    const providerTag = mergedModels.isUpdate
+      ? dim(`  (updating${mergedModels.previousModelCount ? `, was ${mergedModels.previousModelCount} model${mergedModels.previousModelCount === 1 ? "" : "s"}` : ""})`)
+      : dim("  (new)");
+    console.log(`${dim("provider".padEnd(labelWidth))}${provider}${providerTag}`);
     console.log(`${dim("base-url".padEnd(labelWidth))}${baseUrl}`);
     console.log(`${dim("api".padEnd(labelWidth))}${LITELLM_PROVIDER_API}`);
     console.log(`${dim("apiKey".padEnd(labelWidth))}$${keyEnv}`);
@@ -909,6 +976,7 @@ async function mainLiteLLM(argv) {
     const extra = modelIds.length - 1;
     const moreSuffix = extra > 0 ? `  ${dim(`+${extra} more`)}` : "";
     console.log(`${dim("model".padEnd(labelWidth))}${modelIds[0]}${moreSuffix}`);
+    if (metadataStatus) console.log(`${dim("metadata".padEnd(labelWidth))}${metadataStatus}`);
     if (mergedModels.conflict) {
       console.log(`${warn("!")} existing provider config differs and will be updated only if you confirm`);
     }

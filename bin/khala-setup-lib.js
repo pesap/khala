@@ -177,19 +177,110 @@ function normalizeExistingBaseUrl(raw) {
   }
 }
 
-function mergeModelEntries(existingModels, modelId) {
-  const models = Array.isArray(existingModels)
-    ? existingModels.filter(isPlainObject).map((model) => ({ ...model }))
-    : [];
+// Thinking level map written verbatim into every enriched reasoning-capable
+// entry. Mirrors pi's six internal levels and the strings the upstream
+// OpenAI-style reasoning APIs accept. LiteLLM doesn't surface this mapping,
+// so we provide a sane default that the user can hand-edit if a specific
+// model needs a different shape.
+export const DEFAULT_THINKING_LEVEL_MAP = Object.freeze({
+  off: "none",
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "high",
+});
 
-  const index = models.findIndex((model) => trimOrEmpty(model.id) === modelId);
-  if (index >= 0) {
-    models[index] = { ...models[index], id: modelId };
-    return models;
+function costPerMillion(perToken) {
+  if (typeof perToken !== "number" || !Number.isFinite(perToken)) return null;
+  // Round to 6 decimal places. JS floating-point makes 0.0000025 * 1_000_000
+  // come back as 2.4999999999999996 without rounding, which would write ugly
+  // long tails into models.json.
+  return Math.round(perToken * 1e12) / 1e6;
+}
+
+/**
+ * Parse a LiteLLM `/model/info` response body into a Map keyed by model_name
+ * whose values are pi-shaped enriched entries (id, name, reasoning,
+ * thinkingLevelMap, input, contextWindow, maxTokens, cost).
+ *
+ * Returns an empty Map on a missing or malformed response — never throws on
+ * shape mismatch, so callers don't have to wrap every call in try/catch.
+ * Network and HTTP-status errors are the caller's responsibility.
+ */
+export function parseLiteLLMModelInfoResponse(json) {
+  const map = new Map();
+  if (!isPlainObject(json) || !Array.isArray(json.data)) return map;
+  for (const item of json.data) {
+    if (!isPlainObject(item)) continue;
+    const modelName = trimOrEmpty(item.model_name);
+    if (!modelName) continue;
+    const info = isPlainObject(item.model_info) ? item.model_info : {};
+    const entry = { id: modelName, name: modelName };
+
+    if (info.supports_reasoning === true) {
+      entry.reasoning = true;
+      entry.thinkingLevelMap = { ...DEFAULT_THINKING_LEVEL_MAP };
+    }
+
+    const inputs = ["text"];
+    if (info.supports_vision === true) inputs.push("image");
+    if (info.supports_audio_input === true) inputs.push("audio");
+    entry.input = inputs;
+
+    if (Number.isFinite(info.max_input_tokens)) entry.contextWindow = info.max_input_tokens;
+    if (Number.isFinite(info.max_output_tokens)) entry.maxTokens = info.max_output_tokens;
+
+    const cost = {};
+    const input = costPerMillion(info.input_cost_per_token);
+    const output = costPerMillion(info.output_cost_per_token);
+    const cacheRead = costPerMillion(info.cache_read_input_token_cost);
+    const cacheWrite = costPerMillion(info.cache_creation_input_token_cost);
+    if (input != null) cost.input = input;
+    if (output != null) cost.output = output;
+    if (cacheRead != null) cost.cacheRead = cacheRead;
+    if (cacheWrite != null) cost.cacheWrite = cacheWrite;
+    if (Object.keys(cost).length > 0) entry.cost = cost;
+
+    map.set(modelName, entry);
   }
+  return map;
+}
 
-  models.push({ id: modelId });
-  return models;
+/**
+ * Build the per-id model entry list for a provider, in canonical `modelIds`
+ * order. For each id, prefer (in order):
+ *   1. Freshly-fetched data from `infoMap` (richest, most up-to-date).
+ *   2. Existing models.json entry with the same id (preserves fields the
+ *      user hand-edited and survives a transient /model/info outage).
+ *   3. A bare `{ id, name }` stub.
+ *
+ * Fresh fields win on overlap; the existing entry only carries forward
+ * fields LiteLLM didn't return.
+ */
+export function buildEnrichedModelEntries(modelIds, infoMap, existingModels) {
+  const existingById = new Map();
+  if (Array.isArray(existingModels)) {
+    for (const entry of existingModels) {
+      if (!isPlainObject(entry)) continue;
+      const id = trimOrEmpty(entry.id);
+      if (id) existingById.set(id, entry);
+    }
+  }
+  return modelIds.map((id) => {
+    const fetched = infoMap?.get?.(id);
+    const existing = existingById.get(id);
+    if (fetched && existing) return { ...existing, ...fetched };
+    if (fetched) return { ...fetched };
+    if (existing) return { ...existing };
+    return { id };
+  });
+}
+
+export function liteLLMProviderExists(current, providerId) {
+  if (!isPlainObject(current)) return false;
+  if (!isPlainObject(current.providers)) return false;
+  return isPlainObject(current.providers[providerId]);
 }
 
 function mergeEnabledModels(existingEnabledModels, modelId) {
@@ -284,18 +375,29 @@ export function mergeLiteLLMModelsJson(current, options) {
 
   const root = isPlainObject(current) ? { ...current } : {};
   const providers = isPlainObject(root.providers) ? { ...root.providers } : {};
-  const existingProvider = isPlainObject(providers[providerId]) ? { ...providers[providerId] } : {};
+  const isUpdate = isPlainObject(providers[providerId]);
+  const existingProvider = isUpdate ? { ...providers[providerId] } : {};
   const existingApi = trimOrEmpty(existingProvider.api);
   const existingBaseUrl = typeof existingProvider.baseUrl === "string" ? existingProvider.baseUrl.trim() : "";
   const normalizedExistingBaseUrl = existingBaseUrl ? normalizeExistingBaseUrl(existingBaseUrl) : null;
+  const previousModelCount = Array.isArray(existingProvider.models) ? existingProvider.models.length : 0;
 
   const conflict = Boolean(
     (existingApi && !LITELLM_PROVIDER_APIS.has(existingApi)) ||
     (normalizedExistingBaseUrl && normalizedExistingBaseUrl !== baseUrl),
   );
 
-  let mergedModelEntries = existingProvider.models;
-  for (const id of modelIds) mergedModelEntries = mergeModelEntries(mergedModelEntries, id);
+  // REPLACE semantics: the new list IS the source of truth. The picker
+  // shows every currently-registered model pre-selected; whatever the user
+  // submits is what gets written, so deselected models must be dropped
+  // rather than silently preserved. Rich fields are pulled from `infoMap`
+  // first (freshest), then from the existing entry (so /model/info outages
+  // don't strip hand-edited fields), then fall back to a bare stub.
+  const mergedModelEntries = buildEnrichedModelEntries(
+    modelIds,
+    options.infoMap ?? null,
+    existingProvider.models,
+  );
 
   providers[providerId] = {
     ...existingProvider,
@@ -306,7 +408,7 @@ export function mergeLiteLLMModelsJson(current, options) {
   };
 
   root.providers = providers;
-  return { value: root, conflict };
+  return { value: root, conflict, isUpdate, previousModelCount };
 }
 
 export function mergeLiteLLMProjectSettings(current, options) {

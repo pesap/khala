@@ -1,22 +1,28 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
 import {
+  DEFAULT_THINKING_LEVEL_MAP,
   LITELLM_PROVIDER_API,
   MALFORMED_PROFILE_MESSAGE,
   buildProfileChoices,
   filterValidLiteLLMModelNames,
+  buildEnrichedModelEntries,
+  liteLLMProviderExists,
   mergeLiteLLMModelsJson,
   mergeLiteLLMProjectSettings,
   modelSupportsThinking,
   normalizeCustomProfileEntry,
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
+  parseLiteLLMModelInfoResponse,
   parseProfileEntry,
   stringifyModelsJson,
   validateLiteLLMKeyEnv,
@@ -344,6 +350,170 @@ test("khala setup helper stringifyModelsJson collapses { id } entries to one lin
   assert.match(out, /"providers": \{\n\s+"nlr": \{/);
 });
 
+test("khala setup helper parseLiteLLMModelInfoResponse maps LiteLLM fields to pi shape", () => {
+  const map = parseLiteLLMModelInfoResponse({
+    data: [
+      {
+        model_name: "gpt-5.3-codex",
+        model_info: {
+          max_input_tokens: 1_050_000,
+          max_output_tokens: 128_000,
+          input_cost_per_token: 0.0000025,
+          output_cost_per_token: 0.000015,
+          cache_read_input_token_cost: 0,
+          cache_creation_input_token_cost: 0,
+          supports_reasoning: true,
+          supports_vision: true,
+        },
+      },
+      {
+        model_name: "text-embedding-3-small",
+        model_info: {
+          max_input_tokens: 8192,
+          input_cost_per_token: 0.00000002,
+          // No supports_vision / supports_reasoning at all.
+        },
+      },
+      { model_name: "   " },                                  // blank: dropped
+      { not_a_model: true },                                   // shape mismatch: dropped
+    ],
+  });
+
+  assert.equal(map.size, 2);
+
+  const codex = map.get("gpt-5.3-codex");
+  assert.deepEqual(codex, {
+    id: "gpt-5.3-codex",
+    name: "gpt-5.3-codex",
+    reasoning: true,
+    thinkingLevelMap: { ...DEFAULT_THINKING_LEVEL_MAP },
+    input: ["text", "image"],
+    contextWindow: 1_050_000,
+    maxTokens: 128_000,
+    cost: { input: 2.5, output: 15, cacheRead: 0, cacheWrite: 0 },
+  });
+
+  const embed = map.get("text-embedding-3-small");
+  // No reasoning => no thinkingLevelMap. No vision => input is text-only.
+  // No max_output_tokens / cache costs => those fields are absent.
+  assert.deepEqual(embed, {
+    id: "text-embedding-3-small",
+    name: "text-embedding-3-small",
+    input: ["text"],
+    contextWindow: 8192,
+    cost: { input: 0.02 },
+  });
+
+  // Malformed responses must never throw — just return an empty map.
+  assert.equal(parseLiteLLMModelInfoResponse(null).size, 0);
+  assert.equal(parseLiteLLMModelInfoResponse({}).size, 0);
+  assert.equal(parseLiteLLMModelInfoResponse({ data: "nope" }).size, 0);
+});
+
+test("khala setup helper buildEnrichedModelEntries prefers fetched, then existing, then bare", () => {
+  const fetched = new Map([
+    ["gpt-5.4-mini", { id: "gpt-5.4-mini", name: "gpt-5.4-mini", contextWindow: 200_000 }],
+  ]);
+  const existing = [
+    { id: "gpt-5.4-mini", contextWindow: 999_999, custom: "keep-me" },  // overridden by fresh
+    { id: "claude-opus-4-7", reasoning: true, customField: "preserved" }, // no fetched data
+    { id: "stale-model", contextWindow: 0 },                              // not in modelIds: dropped
+  ];
+
+  const entries = buildEnrichedModelEntries(
+    ["gpt-5.4-mini", "claude-opus-4-7", "brand-new-model"],
+    fetched,
+    existing,
+  );
+
+  assert.deepEqual(entries, [
+    // Fetched data wins on overlap, existing fields not in fetched are preserved.
+    { id: "gpt-5.4-mini", name: "gpt-5.4-mini", contextWindow: 200_000, custom: "keep-me" },
+    // No fetched data: existing entry kept verbatim.
+    { id: "claude-opus-4-7", reasoning: true, customField: "preserved" },
+    // No fetched data, no existing: bare { id } only (no name=id duplication).
+    { id: "brand-new-model" },
+  ]);
+});
+
+test("khala setup helper liteLLMProviderExists detects existing provider entries", () => {
+  const models = { providers: { foo: { baseUrl: "https://example.com" } } };
+  assert.equal(liteLLMProviderExists(models, "foo"), true);
+  assert.equal(liteLLMProviderExists(models, "missing"), false);
+  assert.equal(liteLLMProviderExists(null, "foo"), false);
+  assert.equal(liteLLMProviderExists({}, "foo"), false);
+  assert.equal(liteLLMProviderExists({ providers: null }, "foo"), false);
+  assert.equal(liteLLMProviderExists({ providers: { foo: null } }, "foo"), false);
+});
+
+test("khala setup helper merge uses REPLACE semantics and reports isUpdate/previousModelCount", () => {
+  const existing = {
+    providers: {
+      "team-litellm": {
+        baseUrl: "https://lite.example/v1",
+        api: LITELLM_PROVIDER_API,
+        apiKey: "$OLD_KEY",
+        models: [
+          { id: "gpt-4o", contextWindow: 128000, customField: "preserved" },
+          { id: "gpt-5.4-mini" },
+          { id: "deselected-model" },
+        ],
+      },
+      "unrelated-anthropic": {
+        baseUrl: "https://api.anthropic.com",
+        api: "anthropic-messages",
+        models: [{ id: "claude-opus-4.7" }],
+      },
+    },
+  };
+
+  const fresh = new Map([
+    ["gpt-4o", { id: "gpt-4o", name: "gpt-4o", contextWindow: 256000, cost: { input: 2.5 } }],
+  ]);
+
+  const result = mergeLiteLLMModelsJson(existing, {
+    providerId: "team-litellm",
+    baseUrl: "https://lite.example/v1",
+    keyEnv: "LITELLM_API_KEY",
+    modelIds: ["gpt-4o", "gpt-5.4-mini"],   // user deselected `deselected-model`
+    infoMap: fresh,
+  });
+
+  assert.equal(result.isUpdate, true, "detects existing provider");
+  assert.equal(result.previousModelCount, 3, "reports previous count for the summary block");
+
+  const newModels = result.value.providers["team-litellm"].models;
+  // REPLACE: deselected-model dropped, order is modelIds order (not old order).
+  assert.deepEqual(newModels.map((m: { id: string }) => m.id), ["gpt-4o", "gpt-5.4-mini"]);
+  // Fresh data wins on overlap (contextWindow), existing-only fields kept (customField).
+  assert.deepEqual(newModels[0], {
+    id: "gpt-4o",
+    name: "gpt-4o",
+    contextWindow: 256000,
+    cost: { input: 2.5 },
+    customField: "preserved",
+  });
+  // gpt-5.4-mini was in existing without fetched data: kept as-is (bare).
+  assert.deepEqual(newModels[1], { id: "gpt-5.4-mini" });
+  // Unrelated provider untouched.
+  assert.equal(result.value.providers["unrelated-anthropic"].api, "anthropic-messages");
+  // apiKey reference is refreshed from keyEnv.
+  assert.equal(result.value.providers["team-litellm"].apiKey, "$LITELLM_API_KEY");
+});
+
+test("khala setup helper merge reports isUpdate=false for a brand-new provider", () => {
+  const result = mergeLiteLLMModelsJson(
+    { providers: { other: { baseUrl: "https://x", api: "anthropic-messages", models: [] } } },
+    { providerId: "brand-new", baseUrl: "https://new.example/v1", keyEnv: "K", modelIds: ["m1"] },
+  );
+  assert.equal(result.isUpdate, false);
+  assert.equal(result.previousModelCount, 0);
+  assert.deepEqual(
+    result.value.providers["brand-new"].models.map((m: { id: string }) => m.id),
+    ["m1"],
+  );
+});
+
 test("khala setup helper reads thinking support from discovery rows and assumes yes when unknown", () => {
   const rows = [
     { provider: "github-copilot", model: "gpt-5.5", thinking: true },
@@ -387,7 +557,7 @@ test("khala setup helper merges LiteLLM provider and project settings without cl
   assert.equal(mergedModels.value.providers["team-litellm"].baseUrl, "https://lite.example/v1");
   assert.equal(mergedModels.value.providers["team-litellm"].api, LITELLM_PROVIDER_API);
   assert.equal(mergedModels.value.providers["team-litellm"].apiKey, "$LITELLM_API_KEY");
-  assert.deepEqual(mergedModels.value.providers["team-litellm"].models.map((model) => model.id), ["gpt-4o", "gpt-5.4-mini"]);
+  assert.deepEqual(mergedModels.value.providers["team-litellm"].models.map((model) => model.id), ["gpt-5.4-mini"]);
   assert.equal(mergedModels.value.providers["other-provider"].api, "anthropic-messages");
 
   const mergedSettings = mergeLiteLLMProjectSettings(
@@ -416,7 +586,7 @@ test("khala setup helper merges multiple LiteLLM models in a single pass with th
   assert.equal(mergedModels.conflict, false);
   assert.deepEqual(
     mergedModels.value.providers["team-litellm"].models.map((m) => m.id),
-    ["gpt-4o", "gpt-5.4-mini", "claude-opus-4.7"],
+    ["gpt-5.4-mini", "claude-opus-4.7"],
   );
 
   const mergedSettings = mergeLiteLLMProjectSettings(
@@ -592,7 +762,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     assert.equal(provider.baseUrl, "https://lite.example/v1");
     assert.equal(provider.api, LITELLM_PROVIDER_API);
     assert.equal(provider.apiKey, "$LITELLM_API_KEY");
-    assert.deepEqual(provider.models.map((model) => model.id), ["gpt-4o", "gpt-5.4-mini"]);
+    assert.deepEqual(provider.models.map((model) => model.id), ["gpt-5.4-mini"]);
     assert.equal(mergedModels.providers["other-provider"].api, "anthropic-messages");
 
     const mergedSettings = JSON.parse(await readFile(settingsPath, "utf8"));
@@ -627,7 +797,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     assert.equal(second.code, 0);
     const rerunModels = JSON.parse(await readFile(modelsPath, "utf8"));
     const rerunSettings = JSON.parse(await readFile(settingsPath, "utf8"));
-    assert.deepEqual(rerunModels.providers["team-litellm"].models.map((model) => model.id), ["gpt-4o", "gpt-5.4-mini"]);
+    assert.deepEqual(rerunModels.providers["team-litellm"].models.map((model) => model.id), ["gpt-5.4-mini"]);
     assert.deepEqual(rerunSettings.enabledModels, ["claude-*", "gpt-5.4-mini"]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -683,6 +853,126 @@ test("khala litellm registers multiple models in one pass via --model a,b,c", as
     assert.equal(settings.defaultProvider, "team-litellm");
     assert.equal(settings.defaultModel, "gpt-5.4-mini");
     assert.deepEqual(settings.enabledModels, ["gpt-5.4-mini", "gpt-4o", "claude-opus-4.7"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm enriches model entries from a LiteLLM /model/info endpoint", async () => {
+  // Stand up a fake LiteLLM proxy that serves /model/info. The fixture is
+  // intentionally minimal: enough surface to verify that field mapping,
+  // /v1-stripping, and the replace-semantics merge all work end-to-end.
+  const requests: Array<{ url: string; auth: string | undefined }> = [];
+  const server: Server = createServer((req, res) => {
+    requests.push({ url: req.url ?? "", auth: req.headers.authorization });
+    if (req.url === "/model/info") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        data: [
+          {
+            model_name: "gpt-5.3-codex",
+            model_info: {
+              max_input_tokens: 1_050_000,
+              max_output_tokens: 128_000,
+              input_cost_per_token: 0.0000025,
+              output_cost_per_token: 0.000015,
+              cache_read_input_token_cost: 0,
+              cache_creation_input_token_cost: 0,
+              supports_reasoning: true,
+              supports_vision: true,
+            },
+          },
+        ],
+      }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-enrich-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  const modelsPath = path.join(piAgentDir, "models.json");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "nlr",
+        "--base-url", baseUrl,
+        "--key-env", "FAKE_LITELLM_KEY",
+        "--model", "gpt-5.3-codex",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir, FAKE_LITELLM_KEY: "sk-fake-not-real" },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    // Summary surfaces the metadata fetch result and the "new provider" tag.
+    assert.match(result.stdout, /provider\s+nlr\s+\(new\)/);
+    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    // Secret never echoed back into stdout/stderr.
+    assert.doesNotMatch(result.stdout + result.stderr, /sk-fake-not-real/);
+
+    // Server received the request at the root /model/info (not /v1/model/info)
+    // and got a Bearer auth header carrying the env-var value.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/model/info");
+    assert.equal(requests[0].auth, "Bearer sk-fake-not-real");
+
+    // models.json carries the full enriched entry, not just { id }.
+    const merged = JSON.parse(await readFile(modelsPath, "utf8"));
+    assert.deepEqual(merged.providers.nlr.models, [
+      {
+        id: "gpt-5.3-codex",
+        name: "gpt-5.3-codex",
+        reasoning: true,
+        thinkingLevelMap: { ...DEFAULT_THINKING_LEVEL_MAP },
+        input: ["text", "image"],
+        contextWindow: 1_050_000,
+        maxTokens: 128_000,
+        cost: { input: 2.5, output: 15, cacheRead: 0, cacheWrite: 0 },
+      },
+    ]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm degrades to bare entries when /model/info is unreachable", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-noenrich-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+
+    // Port 1 is reserved/unbound; the connection refuses fast on every OS.
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "unreachable",
+        "--base-url", "http://127.0.0.1:1/v1",
+        "--key-env", "FAKE_KEY",
+        "--model", "gpt-4o",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir, FAKE_KEY: "sk-fake" },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /metadata\s+fetch failed/);
+    assert.match(result.stdout, /writing bare entries/);
+
+    // Bare entries get the compact one-line treatment.
+    const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
+    assert.match(raw, /\{ "id": "gpt-4o" \}/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
