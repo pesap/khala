@@ -59,16 +59,271 @@ async function runKhala(args: string[], env: NodeJS.ProcessEnv = {}, cwd?: strin
   }
 }
 
+async function runKhalaLiteLLMPtyTranscript(cwd: string, piAgentDir: string): Promise<string> {
+  const script = String.raw`
+import os
+import pty
+import select
+import subprocess
+import sys
+import time
+
+master, slave = pty.openpty()
+env = os.environ.copy()
+env["NO_COLOR"] = "1"
+env["PI_CODING_AGENT_DIR"] = os.environ["KH_AGENT_DIR"]
+proc = subprocess.Popen(
+    [os.environ["KH_NODE"], os.environ["KH_BIN"], "litellm"],
+    cwd=os.environ["KH_CWD"],
+    env=env,
+    stdin=slave,
+    stdout=slave,
+    stderr=slave,
+    close_fds=True,
+)
+os.close(slave)
+
+out = ""
+state = 0
+deadline = time.time() + 8
+while time.time() < deadline:
+    readable, _, _ = select.select([master], [], [], 0.1)
+    if readable:
+        try:
+            data = os.read(master, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        out += data.decode(errors="replace")
+
+    if state == 0 and "Provider id:" in out:
+        os.write(master, b"bad id\n")
+        state = 1
+    elif state == 1 and out.count("Provider id:") >= 2:
+        os.write(master, b"nlr\n")
+        state = 2
+    elif state == 2 and "Base URL:" in out:
+        os.write(master, b"\x03")
+        state = 3
+
+    if state >= 3 and proc.poll() is not None:
+        break
+
+if proc.poll() is None:
+    try:
+        os.write(master, b"\x03")
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+sys.stdout.write(out)
+sys.exit(0 if state >= 3 else 1)
+`;
+  const result = await execFileAsync("python3", ["-c", script], {
+    env: {
+      ...process.env,
+      KH_AGENT_DIR: piAgentDir,
+      KH_BIN: path.resolve("bin/khala.js"),
+      KH_CWD: cwd,
+      KH_NODE: process.execPath,
+    },
+    encoding: "utf8",
+    timeout: 12_000,
+  });
+  return result.stdout;
+}
+
+async function runKhalaLiteLLMModelCatalogPtyTranscript(cwd: string, piAgentDir: string, baseUrl: string): Promise<string> {
+  const script = String.raw`
+import os
+import pty
+import select
+import subprocess
+import sys
+import time
+
+master, slave = pty.openpty()
+env = os.environ.copy()
+env["NO_COLOR"] = "1"
+env["PI_CODING_AGENT_DIR"] = os.environ["KH_AGENT_DIR"]
+proc = subprocess.Popen(
+    [os.environ["KH_NODE"], os.environ["KH_BIN"], "litellm"],
+    cwd=os.environ["KH_CWD"],
+    env=env,
+    stdin=slave,
+    stdout=slave,
+    stderr=slave,
+    close_fds=True,
+)
+os.close(slave)
+
+out = ""
+state = 0
+deadline = time.time() + 10
+while time.time() < deadline:
+    readable, _, _ = select.select([master], [], [], 0.1)
+    if readable:
+        try:
+            data = os.read(master, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        out += data.decode(errors="replace")
+
+    if state == 0 and "Provider id:" in out:
+        os.write(master, b"nlr\n")
+        state = 1
+    elif state == 1 and "Base URL:" in out:
+        os.write(master, os.environ["KH_BASE_URL"].encode() + b"\n")
+        state = 2
+    elif state == 2 and "Project key label:" in out:
+        os.write(master, b"reeds-maint\n")
+        state = 3
+    elif state == 3 and "API key:" in out:
+        os.write(master, b"sk-catalog-test\n")
+        state = 4
+    elif state == 4 and "LiteLLM models" in out and "gpt-4.1-mini" in out and "Space toggle" in out:
+        os.write(master, b" ")
+        state = 5
+    elif state == 5 and "1/2 selected" in out:
+        os.write(master, b"\r")
+        state = 6
+    elif state == 6 and "Set this project's Pi defaults" in out:
+        os.write(master, b"\x03")
+        state = 7
+        break
+
+    if state >= 7 and proc.poll() is not None:
+        break
+
+if proc.poll() is None:
+    try:
+        os.write(master, b"\x03")
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+sys.stdout.write(out)
+sys.exit(0 if state >= 7 else 1)
+`;
+  const result = await execFileAsync("python3", ["-c", script], {
+    env: {
+      ...process.env,
+      KH_AGENT_DIR: piAgentDir,
+      KH_BASE_URL: baseUrl,
+      KH_BIN: path.resolve("bin/khala.js"),
+      KH_CWD: cwd,
+      KH_NODE: process.execPath,
+    },
+    encoding: "utf8",
+    timeout: 12_000,
+  });
+  return result.stdout;
+}
+
+async function runKhalaLiteLLMRememberedBaseUrlPtyTranscript(cwd: string, piAgentDir: string): Promise<string> {
+  const script = String.raw`
+import os
+import pty
+import select
+import subprocess
+import sys
+import time
+
+master, slave = pty.openpty()
+env = os.environ.copy()
+env["NO_COLOR"] = "1"
+env["PI_CODING_AGENT_DIR"] = os.environ["KH_AGENT_DIR"]
+proc = subprocess.Popen(
+    [
+        os.environ["KH_NODE"],
+        os.environ["KH_BIN"],
+        "litellm",
+        "--model", "gpt-4o",
+        "--auth-mode", "skip",
+        "--yes",
+    ],
+    cwd=os.environ["KH_CWD"],
+    env=env,
+    stdin=slave,
+    stdout=slave,
+    stderr=slave,
+    close_fds=True,
+)
+os.close(slave)
+
+out = ""
+state = 0
+deadline = time.time() + 8
+while time.time() < deadline:
+    readable, _, _ = select.select([master], [], [], 0.1)
+    if readable:
+        try:
+            data = os.read(master, 4096)
+        except OSError:
+            break
+        if not data:
+            break
+        out += data.decode(errors="replace")
+
+    if state == 0 and "Provider id:" in out:
+        os.write(master, b"nlr\n")
+        state = 1
+    elif state == 1 and "Base URL [https://litellm.nlr.gov/v1]:" in out:
+        os.write(master, b"\r")
+        state = 2
+    elif state == 2 and "Project key label:" in out:
+        os.write(master, b"reeds-maint\n")
+        state = 3
+    elif state == 3 and "Done." in out:
+        state = 4
+        break
+
+    if state >= 4 and proc.poll() is not None:
+        break
+
+if proc.poll() is None:
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+sys.stdout.write(out)
+sys.exit(0 if state >= 4 else 1)
+`;
+  const result = await execFileAsync("python3", ["-c", script], {
+    env: {
+      ...process.env,
+      KH_AGENT_DIR: piAgentDir,
+      KH_BIN: path.resolve("bin/khala.js"),
+      KH_CWD: cwd,
+      KH_NODE: process.execPath,
+    },
+    encoding: "utf8",
+    timeout: 12_000,
+  });
+  return result.stdout;
+}
+
 test("khala CLI prints setup guidance without running pi in dry-run mode", async () => {
   const { stdout } = await execFileAsync("node", ["bin/khala.js", "--project", "--dry-run"]);
 
   assert.match(stdout, /Khala configuration \[dry-run\]:/);
-  assert.match(stdout, /scope\s+.*\.pi\/settings\.json/);
-  assert.match(stdout, /config\s+.*\.pi\/khala\/workflow-model\.yaml/);
+  assert.match(stdout, /install khala package in project Pi settings .*\.pi\/settings\.json/);
+  assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
   assert.doesNotMatch(stdout, /^\s*command\b/m);
   assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
   assert.match(stdout, /development\s+openai-codex\/gpt-5\.4-mini:medium/);
   assert.match(stdout, /peer-review\s+github-copilot\/claude-opus-4\.7:high/);
+  assert.match(stdout, /Run without --dry-run when you are ready to install/);
 });
 
 test("khala CLI exposes help with commands, flags, examples, and environment sections", async () => {
@@ -97,15 +352,15 @@ test("khala CLI accepts --no-input as an alias for --yes", async () => {
   ]);
 
   assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
-  assert.match(stdout, /config\s+.*\.pi\/khala\/workflow-model\.yaml/);
+  assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
   assert.doesNotMatch(stdout, /^\s*command\b/m);
 });
 
 test("khala CLI defaults to global scope in non-interactive dry-run mode", async () => {
   const { stdout } = await execFileAsync("node", ["bin/khala.js", "--dry-run"]);
 
-  assert.match(stdout, /scope\s+.*\.pi\/agent\/settings\.json/);
-  assert.match(stdout, /config\s+.*workflow-model\.yaml/);
+  assert.match(stdout, /install khala package in global Pi settings .*\.pi\/agent\/settings\.json/);
+  assert.match(stdout, /write workflow model config .*workflow-model\.yaml/);
   assert.doesNotMatch(stdout, /^\s*command\b/m);
 });
 
@@ -133,13 +388,38 @@ test("khala CLI writes project workflow config after successful install", async 
 
     const config = await readFile(path.join(tempDir, ".pi", "khala", "workflow-model.yaml"), "utf8");
     assert.equal(await readFile(piLog, "utf8"), "install -l npm:khala\n");
-    assert.match(stdout, /Installed\.\s+Config written to.*\.pi\/khala\/workflow-model\.yaml/);
+    assert.match(stdout, /Done\. Khala is installed\./);
+    assert.match(stdout, /Wrote workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+    assert.match(stdout, /Start Pi and run \/khala then \/khala-health to verify/);
     assert.match(config, /planning: "github-copilot\/gpt-5\.5:xhigh"/);
     assert.match(config, /development: "openai-codex\/gpt-5\.4-mini:medium"/);
     assert.match(config, /peer-review: "github-copilot\/claude-opus-4\.7:high"/);
     assert.match(config, /peer-review: "peer-review"/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala CLI full setup prompt uses section hints and confirmation lines", async () => {
+  const source = await readFile(path.resolve("bin/khala.js"), "utf8");
+  const start = source.indexOf("async function askScope(options)");
+  assert.notEqual(start, -1);
+  const flow = source.slice(start, source.indexOf("// ── Main", start));
+  const markers = [
+    'stepHeading("Install scope")',
+    "Choose where Pi should load the khala package",
+    'askChoice("Scope"',
+    'bold("Install scope")',
+    'stepHeading("Workflow models")',
+    "Defaults are recommended",
+    'stepHeading(label)',
+    "Pick the model Pi should use for this workflow role",
+    "model`, choices",
+    "thinking`, THINKING_CHOICES",
+    "bold(label)",
+  ];
+  for (const marker of markers) {
+    assert.notEqual(flow.indexOf(marker), -1, `missing full setup prompt marker: ${marker}`);
   }
 });
 
@@ -751,7 +1031,194 @@ test("khala litellm --help documents the LiteLLM setup mode and key-storage opti
   assert.match(stdout, /0600 perms/);
 });
 
-test("khala litellm dry-run prints config paths without writing files or calling pi", async () => {
+test("khala litellm setup prompt order collects key and models before project defaults", async () => {
+  const source = await readFile(path.resolve("bin/khala.js"), "utf8");
+  const start = source.indexOf("async function mainLiteLLM(argv)");
+  assert.notEqual(start, -1);
+  const flow = source.slice(start);
+  const markers = [
+    "LiteLLM provider setup",
+    'stepHeading("Provider")',
+    "short id for Pi config",
+    "Provider id: ",
+    'stepHeading("Base URL")',
+    "OpenAI-compatible LiteLLM endpoint",
+    'stepHeading("Project key")',
+    "Project key label: ",
+    "API key: ",
+    "Fetching model catalog...",
+    "promptLiteLLMModelIds(",
+    "Set this project's Pi defaults to these models?",
+    "Ready to write",
+    "Write changes?",
+  ];
+  const positions = markers.map((marker) => {
+    const index = flow.indexOf(marker);
+    assert.notEqual(index, -1, `missing prompt marker: ${marker}`);
+    return index;
+  });
+
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+  assert.match(
+    flow,
+    /askConfirmation\(`.*Set this project's Pi defaults to these models\?`, \{ defaultYes: false \}\)/,
+  );
+  assert.match(source, /bold\("Models"\)/);
+  assert.match(source, /askMultiChoice\("LiteLLM models"/);
+  assert.match(source, /Use the model ids from your LiteLLM admin catalog/);
+  assert.match(source, /promptLine\(`.*Model ids: `\)/);
+});
+
+test("khala litellm interactive retry transcript avoids bare labels and regex internals", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-pty-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    const transcript = await runKhalaLiteLLMPtyTranscript(tempDir, piAgentDir);
+
+    assert.match(transcript, /LiteLLM provider setup/);
+    assert.match(transcript, /Provider id:/);
+    assert.match(transcript, /Use a short id with letters, numbers, dots, underscores, or hyphens/);
+    assert.match(transcript, /Base URL:/);
+    assert.doesNotMatch(transcript, /^\s*id\s*$/m);
+    assert.doesNotMatch(transcript, /Provider id must match \^/);
+    assert.doesNotMatch(transcript, /A-Za-z0-9/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm suggests a remembered base URL and accepts Enter to reuse it", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-remember-url-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  const modelsPath = path.join(piAgentDir, "models.json");
+
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await writeFile(
+      modelsPath,
+      `${JSON.stringify({
+        providers: {
+          nlr: {
+            baseUrl: "https://litellm.nlr.gov/v1",
+            api: LITELLM_PROVIDER_API,
+            apiKey: buildLiteLLMApiKeyCommand("nlr"),
+            models: [{ id: "gpt-5-mini" }],
+          },
+        },
+      }, null, 2)}\n`,
+    );
+
+    const transcript = await runKhalaLiteLLMRememberedBaseUrlPtyTranscript(tempDir, piAgentDir);
+
+    assert.match(transcript, /Press Enter to reuse the remembered URL/);
+    assert.match(transcript, /Base URL \[https:\/\/litellm\.nlr\.gov\/v1\]:/);
+    const models = JSON.parse(await readFile(modelsPath, "utf8"));
+    assert.equal(models.providers.nlr.baseUrl, "https://litellm.nlr.gov/v1");
+    assert.deepEqual(models.providers.nlr.models.map((model: { id: string }) => model.id), ["gpt-4o"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm interactive setup uses /v1/models as the multi-select catalog", async () => {
+  const requests: Array<{ url: string; auth: string | undefined }> = [];
+  const server: Server = createServer((req, res) => {
+    requests.push({ url: req.url ?? "", auth: req.headers.authorization });
+    if (req.url === "/v1/models") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        data: [
+          { id: "gpt-4.1" },
+          { id: "gpt-4.1-mini" },
+        ],
+      }));
+      return;
+    }
+    if (req.url === "/model/info") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [] }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-catalog-pty-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    const transcript = await runKhalaLiteLLMModelCatalogPtyTranscript(tempDir, piAgentDir, baseUrl);
+
+    assert.match(transcript, /API key:/);
+    assert.match(transcript, /Fetching model catalog/);
+    assert.match(transcript, /LiteLLM models/);
+    assert.match(transcript, /Space toggle/);
+    assert.match(transcript, /gpt-4\.1/);
+    assert.match(transcript, /gpt-4\.1-mini/);
+    assert.doesNotMatch(transcript, /showing \d+-\d+ of \d+/);
+    assert.doesNotMatch(transcript, /[↑↓] \d+ more/);
+    assert.doesNotMatch(transcript, /Model ids:/);
+    assert.match(transcript, /Set this project's Pi defaults/);
+    assert.equal(requests[0]?.url, "/v1/models");
+    assert.equal(requests[0]?.auth, "Bearer sk-catalog-test");
+    assert.doesNotMatch(transcript, /sk-catalog-test/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm keeps /v1/models catalog when /model/info rejects the key", async () => {
+  const requests: Array<{ url: string; auth: string | undefined }> = [];
+  const server: Server = createServer((req, res) => {
+    requests.push({ url: req.url ?? "", auth: req.headers.authorization });
+    if (req.url === "/model/info") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "model info requires admin" } }));
+      return;
+    }
+    if (req.url === "/v1/models") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        data: [
+          { id: "gpt-4.1" },
+          { id: "gpt-4.1-mini" },
+        ],
+      }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-models-fallback-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    const transcript = await runKhalaLiteLLMModelCatalogPtyTranscript(tempDir, piAgentDir, baseUrl);
+
+    assert.deepEqual(requests.map((request) => request.url), ["/v1/models", "/model/info"]);
+    assert.equal(requests[0]?.auth, "Bearer sk-catalog-test");
+    assert.equal(requests[1]?.auth, "Bearer sk-catalog-test");
+    assert.match(transcript, /Fetched model list\. Detailed metadata unavailable: HTTP 401\./);
+    assert.match(transcript, /LiteLLM models/);
+    assert.match(transcript, /gpt-4\.1-mini/);
+    assert.match(transcript, /Set this project's Pi defaults/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm dry-run previews human labels without writing files or calling pi", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-dry-run-"));
   const binDir = path.join(tempDir, "bin");
   const piAgentDir = path.join(tempDir, "pi-agent");
@@ -782,17 +1249,14 @@ test("khala litellm dry-run prints config paths without writing files or calling
     );
 
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /Khala LiteLLM \[dry-run\]:/);
-    assert.match(result.stdout, /models\s+.*models\.json/);
-    assert.match(result.stdout, /settings\s+skipped .*--project-settings.*\.pi\/settings\.json/);
-    assert.match(result.stdout, /provider\s+team-litellm/);
-    assert.match(result.stdout, /api\s+openai-completions/);
-    assert.match(result.stdout, /apiKey\s+!khala litellm print-key --provider team-litellm/);
-    // Row label is `key` (portal-label-anchored). When the user typed a
-    // valid POSIX identifier (LITELLM_API_KEY), derive() is a no-op so we
-    // show the bare `$NAME` form with no parenthetical.
-    assert.match(result.stdout, /key\s+\$LITELLM_API_KEY/);
-    assert.match(result.stdout, /model\s+gpt-5\.4-mini/);
+    assert.match(result.stdout, /Ready to write \[dry-run\]:/);
+    assert.match(result.stdout, /add global model registry provider team-litellm with 1 model/);
+    assert.match(result.stdout, /save project key label LITELLM_API_KEY in project LiteLLM config/);
+    assert.match(result.stdout, /leave global auth store unchanged/);
+    assert.match(result.stdout, /leave project Pi defaults unchanged/);
+    assert.match(result.stdout, /Run without --dry-run when you are ready to write/);
+    assert.doesNotMatch(result.stdout, /models\.json|litellm\.json|auth\.json|\.pi\/settings\.json/);
+    assert.doesNotMatch(result.stdout, /!khala litellm print-key/);
     assert.doesNotMatch(result.stdout, /team-litellm\/\*/);
     // Forbid actual secret-shaped leaks (KEY=<real-value>). The pre-flight
     // banner legitimately includes the placeholder `export KEY=<your-key>`
@@ -804,6 +1268,64 @@ test("khala litellm dry-run prints config paths without writing files or calling
     await assert.rejects(readFile(path.join(piAgentDir, "models.json"), "utf8"));
     await assert.rejects(readFile(path.join(tempDir, ".pi", "settings.json"), "utf8"));
     await assert.rejects(readFile(path.join(tempDir, ".pi", "khala", "litellm.json"), "utf8"));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm --verbose shows paths and implementation details", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-verbose-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+
+  try {
+    const result = await runKhala(
+      [
+        "litellm",
+        "--project",
+        "--provider", "team-litellm",
+        "--base-url", "https://lite.example/v1",
+        "--key-env", "LITELLM_API_KEY",
+        "--model", "gpt-5.4-mini",
+        "--dry-run",
+        "--verbose",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /global model registry \([^)]*models\.json\)/);
+    assert.match(result.stdout, /project LiteLLM config \([^)]*\.pi\/khala\/litellm\.json\)/);
+    assert.match(result.stdout, /global auth store \([^)]*auth\.json\)/);
+    assert.match(result.stdout, /project Pi defaults \([^)]*\.pi\/settings\.json\)/);
+    assert.match(result.stdout, /provider apiKey command !khala litellm print-key --provider team-litellm/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm rejects suspiciously short model ids in non-interactive mode", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-short-model-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+
+  try {
+    const result = await runKhala(
+      [
+        "litellm",
+        "--project",
+        "--provider", "team-litellm",
+        "--base-url", "https://lite.example/v1",
+        "--key-env", "LITELLM_API_KEY",
+        "--model", "l",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /model id 'l' is very short/);
+    await assert.rejects(readFile(path.join(piAgentDir, "models.json"), "utf8"));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -896,7 +1418,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     );
 
     assert.equal(first.code, 0);
-    assert.match(first.stdout, /Khala LiteLLM:/);
+    assert.match(first.stdout, /Ready to write:/);
     assert.match(first.stdout, /existing provider config differs/);
     assert.doesNotMatch(first.stdout, /other-secret|OLD_KEY/);
     await assert.rejects(readFile(piLog, "utf8"));
@@ -986,7 +1508,7 @@ test("khala litellm leaves project Pi settings untouched unless explicitly reque
     );
 
     assert.equal(result.code, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /settings\s+Skipped project defaults\./);
+    assert.match(result.stdout, /Left project Pi defaults unchanged\./);
     assert.equal(await readFile(settingsPath, "utf8"), originalSettings);
     const models = JSON.parse(await readFile(path.join(piAgentDir, "models.json"), "utf8"));
     assert.equal(models.providers["team-litellm"].api, LITELLM_PROVIDER_API);
@@ -1121,13 +1643,13 @@ test("khala litellm accepts a LiteLLM portal label and resolves $DERIVED env var
     assert.equal(result.code, 0, result.stderr || result.stdout);
     // (a) Summary key row anchors on the portal label and discloses the
     //     derived shell name in a parenthetical.
-    assert.match(result.stdout, /key\s+reeds-maint\s+\(exports as \$REEDS_MAINT\)/);
-    // (b) Auth row references the derived form (the one you'd actually
+    assert.match(result.stdout, /save project key label reeds-maint in project LiteLLM config/);
+    // (b) Auth preview references the derived form (the one you'd actually
     //     `export`), not the portal label.
-    assert.match(result.stdout, /auth\s+\$REEDS_MAINT from shell/);
+    assert.match(result.stdout, /use API key from \$REEDS_MAINT; do not write global auth store/);
     // (c) Enrichment fired with the shell-resolved value.
     assert.equal(requests[0]?.auth, "Bearer sk-from-shell");
-    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    assert.match(result.stdout, /^1\/1 enriched from \/model\/info/m);
     // (d) Project config persists the portal label verbatim — the user's
     //     mental anchor is preserved across reruns, and print-key resolves
     //     via lookupKeyValueByName().
@@ -1168,9 +1690,8 @@ test("khala litellm registers multiple models in one pass via --model a,b,c", as
     // Summary collapses the model list to one labeled row with a +N more
     // suffix, matching the one-row-per-concept aesthetic of the main khala
     // configuration block. The full list is verifiable in models.json.
-    assert.match(result.stdout, /model\s+gpt-5\.4-mini\s+\+2 more/);
-    assert.doesNotMatch(result.stdout, /\n\s{8,}gpt-4o\b/, "no model continuation rows");
-    assert.doesNotMatch(result.stdout, /\n\s{8,}claude-opus-4\.7\b/, "no model continuation rows");
+    assert.match(result.stdout, /provider team-litellm with 3 models/);
+    assert.match(result.stdout, /set project Pi defaults to 3 models \(gpt-5\.4-mini, gpt-4o, claude-opus-4\.7\)/);
 
     const rawModels = await readFile(modelsPath, "utf8");
     // Compact format: each `{ "id": "..." }` entry is rendered on one line.
@@ -1250,8 +1771,8 @@ test("khala litellm enriches model entries from a LiteLLM /model/info endpoint",
 
     assert.equal(result.code, 0, result.stderr || result.stdout);
     // Summary surfaces the metadata fetch result and the "new provider" tag.
-    assert.match(result.stdout, /provider\s+nlr\s+\(new\)/);
-    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    assert.match(result.stdout, /add global model registry provider nlr with 1 model/);
+    assert.match(result.stdout, /^1\/1 enriched from \/model\/info/m);
     // Secret never echoed back into stdout/stderr.
     assert.doesNotMatch(result.stdout + result.stderr, /sk-fake-not-real/);
 
@@ -1281,11 +1802,9 @@ test("khala litellm enriches model entries from a LiteLLM /model/info endpoint",
   }
 });
 
-test("khala litellm surfaces a no-key-source state in the summary block", async () => {
-  // With auth-mode landing, the pre-flight banner is gone — the same signal
-  // is delivered by the `auth` and `metadata` rows in the summary block,
-  // which the user sees right before the confirmation prompt. This test
-  // pins both rows so a future refactor can't silently drop the warning.
+test("khala litellm previews an unchanged auth store when no key source is available", async () => {
+  // The setup should stay calm: explain that metadata could not be fetched,
+  // preview that auth stays unchanged, and still write bare model entries.
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-noexport-"));
   const piAgentDir = path.join(tempDir, "pi-agent");
   try {
@@ -1308,11 +1827,8 @@ test("khala litellm surfaces a no-key-source state in the summary block", async 
     );
 
     assert.equal(result.code, 0);
-    // The `auth` row names the missing env var AND the missing auth.json
-    // entry — both halves of pi's resolution chain are accounted for.
-    assert.match(result.stdout, /auth\s+.*none — \$DEFINITELY_UNSET_KEY unset and no auth\.json entry/);
-    // The `metadata` row says NOT FETCHED loudly (yellow) and explains why.
-    assert.match(result.stdout, /metadata\s+.*NOT FETCHED — \$DEFINITELY_UNSET_KEY is not exported and auth\.json has no entry/);
+    assert.match(result.stdout, /leave global auth store unchanged/);
+    assert.match(result.stdout, /Could not fetch model metadata: no API key was available/);
     // The fallback write still proceeds with bare { id } entries.
     const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
     assert.match(raw, /\{ "id": "gpt-4o" \}/);
@@ -1345,8 +1861,7 @@ test("khala litellm degrades to bare entries when /model/info is unreachable", a
     );
 
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /metadata\s+fetch failed/);
-    assert.match(result.stdout, /writing bare entries/);
+    assert.match(result.stdout, /Could not fetch model metadata: request failed\. Models will still work if the ids are correct\./);
 
     // Bare entries get the compact one-line treatment.
     const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
@@ -1356,11 +1871,10 @@ test("khala litellm degrades to bare entries when /model/info is unreachable", a
   }
 });
 
-test("khala litellm surfaces the LiteLLM proxy's body and an RBAC hint on a 403 from /model/info", async () => {
+test("khala litellm uses calm metadata failure wording on a 403 from /model/info", async () => {
   // Reproduces the real-world failure observed against an internal LiteLLM
-  // proxy: the key is valid for inference but doesn't have admin permission
-  // on /model/info. We want the diagnostic line to actually say WHY — the
-  // raw 'HTTP 403' was useless on its own.
+  // proxy: the key is valid for inference but doesn't have admin permission.
+  // Normal output should keep only the status and the consequence.
   const server: Server = createServer((req, res) => {
     if (req.url === "/model/info") {
       res.writeHead(403, { "content-type": "application/json" });
@@ -1395,13 +1909,9 @@ test("khala litellm surfaces the LiteLLM proxy's body and an RBAC hint on a 403 
 
     // Setup itself succeeds; metadata enrichment is the only thing skipped.
     assert.equal(result.code, 0);
-    // The metadata row carries:
-    //   - the HTTP status code
-    //   - the proxy's own error message (proves we parsed the body)
-    //   - an actionable hint distinguishing 'no permission' from 'broken'
-    assert.match(result.stdout, /metadata\s+.*HTTP 403/);
-    assert.match(result.stdout, /Only proxy admin can view \/model\/info/);
-    assert.match(result.stdout, /key may not have admin access.*provider itself will still work/);
+    assert.match(result.stdout, /Could not fetch model metadata: HTTP 403\. Models will still work if the ids are correct\./);
+    assert.doesNotMatch(result.stdout, /Only proxy admin can view \/model\/info/);
+    assert.doesNotMatch(result.stdout, /admin access/);
     // And the bare write happens — the user's setup isn't blocked.
     const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
     assert.match(raw, /\{ "id": "gpt-4o" \}/);
@@ -1411,10 +1921,9 @@ test("khala litellm surfaces the LiteLLM proxy's body and an RBAC hint on a 403 
   }
 });
 
-test("khala litellm surfaces a non-JSON proxy error body (e.g. nginx HTML page) without truncating into garbage", async () => {
-  // Some proxies/load-balancers return text/html on errors. We should still
-  // include a short snippet of the body so the user knows it isn't a JSON
-  // shape we recognize — typically that points at a misrouted host.
+test("khala litellm hides non-JSON proxy error bodies in normal output", async () => {
+  // Some proxies/load-balancers return text/html on errors. Normal output
+  // should not dump that body; --verbose is the path for implementation detail.
   const server: Server = createServer((req, res) => {
     if (req.url === "/model/info") {
       res.writeHead(502, { "content-type": "text/html" });
@@ -1445,10 +1954,8 @@ test("khala litellm surfaces a non-JSON proxy error body (e.g. nginx HTML page) 
       tempDir,
     );
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /metadata\s+.*HTTP 502/);
-    // We surfaced the body, not a JSON parse error.
-    assert.match(result.stdout, /502 Bad Gateway/);
-    // 5xx doesn't get the RBAC hint — only 401/403 do.
+    assert.match(result.stdout, /Could not fetch model metadata: HTTP 502\. Models will still work if the ids are correct\./);
+    assert.doesNotMatch(result.stdout, /502 Bad Gateway/);
     assert.doesNotMatch(result.stdout, /admin access/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1504,11 +2011,11 @@ test("khala litellm --auth-mode=literal writes auth.json with 0600 perms and use
 
     assert.equal(result.code, 0, result.stderr || result.stdout);
     // (a) The auth row in the summary points at auth.json with 0600.
-    assert.match(result.stdout, /auth\s+store value in .*auth\.json/);
+    assert.match(result.stdout, /store API key in global auth store/);
     assert.match(result.stdout, /\(0600\)/);
-    assert.match(result.stdout, /✓ Wrote .*auth\.json/);
+    assert.match(result.stdout, /Wrote global auth store/);
     // (b) Enrichment kicked in because the literal was used for the fetch.
-    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    assert.match(result.stdout, /^1\/1 enriched from \/model\/info/m);
     // (c) Server saw a Bearer header carrying the literal value.
     assert.equal(requests.length, 1);
     assert.equal(requests[0].auth, `Bearer ${secretValue}`);
@@ -1525,8 +2032,7 @@ test("khala litellm --auth-mode=literal writes auth.json with 0600 perms and use
     const { mode } = await import("node:fs/promises").then((m) => m.stat(authPath));
     // Lower 9 bits == permission bits; 0o600 == 0o400 (user-read) | 0o200 (user-write).
     assert.equal(mode & 0o777, 0o600, `auth.json must be 0600, was 0${(mode & 0o777).toString(8)}`);
-    // (f) Boundary line updated for literal storage.
-    assert.match(result.stdout, /boundary\s+Khala stored your API key in .*auth\.json/);
+    assert.match(result.stdout, /Khala stored your API key in global auth store/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(tempDir, { recursive: true, force: true });
@@ -1573,9 +2079,9 @@ test("khala litellm --auth-mode=command stores a !command and exec's it for /mod
     );
 
     assert.equal(result.code, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /auth\s+store command in .*auth\.json/);
+    assert.match(result.stdout, /store API key command in global auth store/);
     // Enrichment worked because the command's stdout was used as the bearer.
-    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    assert.match(result.stdout, /^1\/1 enriched from \/model\/info/m);
     assert.equal(requests[0].auth, "Bearer sk-from-shell-command");
     // auth.json stores the !command verbatim, not the resolved value.
     const auth = JSON.parse(await readFile(path.join(piAgentDir, "auth.json"), "utf8"));
@@ -1608,12 +2114,12 @@ test("khala litellm --auth-mode=skip leaves auth.json untouched", async () => {
     );
 
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /auth\s+\$NLR_KEY from shell/);
+    assert.match(result.stdout, /use API key from \$NLR_KEY; do not write global auth store/);
     // No ✓ Wrote line for auth.json, and no auth.json file on disk.
-    assert.doesNotMatch(result.stdout, /✓ Wrote .*auth\.json/);
+    assert.doesNotMatch(result.stdout, /Wrote global auth store/);
     await assert.rejects(readFile(path.join(piAgentDir, "auth.json"), "utf8"));
     // Boundary tagline stays in "reference, not value" mode.
-    assert.match(result.stdout, /boundary\s+Khala stored a key reference, not a secret value/);
+    assert.doesNotMatch(result.stdout, /Khala stored a key reference, not a secret value/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

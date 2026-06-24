@@ -9,7 +9,6 @@ import {
   LITELLM_PROVIDER_API,
   buildLiteLLMApiKeyCommand,
   buildProfileChoices,
-  filterValidLiteLLMModelNames,
   mergeAuthJsonApiKey,
   mergeLiteLLMModelsJson,
   mergeLiteLLMProjectKeyConfig,
@@ -48,6 +47,93 @@ const bold   = (s) => COLOR ? `\x1b[1m${s}\x1b[0m`  : s;
 const muted  = (s) => COLOR ? `\x1b[90m${s}\x1b[0m` : s;
 const check  = (s) => COLOR ? `\x1b[32m${s}\x1b[0m` : s;
 const warn   = (s) => COLOR ? `\x1b[33m${s}\x1b[0m` : s;
+const cyan   = (s) => COLOR ? `\x1b[36m${s}\x1b[0m` : s;
+const green  = (s) => COLOR ? `\x1b[32m${s}\x1b[0m` : s;
+
+// Glyphs degrade to ASCII when color (and thus a capable terminal) is absent,
+// keeping plain/redirected output clean and grep-friendly.
+const GLYPH = COLOR
+  ? { tick: "\u2713", dot: "\u2022", arrow: "\u203a", plus: "+", swap: "\u21ba", dash: "\u2014" }
+  : { tick: "[ok]", dot: "-", arrow: ">", plus: "+", swap: "~", dash: "-" };
+
+// A section header: a bold accent title with a small leading marker to break
+// the wizard into scannable sections.
+function stepHeading(title) {
+  return `\n${cyan(GLYPH.dot)} ${bold(title)}`;
+}
+
+// Dim helper text shown under a heading or prompt.
+const hint = (s) => dim(s);
+
+function titleLine(title, { dryRun = false } = {}) {
+  return bold(`${title}${dryRun ? " [dry-run]" : ""}:`);
+}
+
+function planRow(kind, message) {
+  if (kind === "add") return `  ${green(GLYPH.plus)} ${message}`;
+  if (kind === "swap") return `  ${warn(GLYPH.swap)} ${message}`;
+  return `  ${dim(GLYPH.dash)} ${dim(message)}`;
+}
+
+const rowAdd  = (message) => planRow("add", message);
+const rowSwap = (message) => planRow("swap", message);
+const rowKeep = (message) => planRow("keep", message);
+
+function wroteLine(message) {
+  return `${check(GLYPH.tick)} ${check("Wrote")} ${message}`;
+}
+
+function nextStep(message) {
+  return `${dim(GLYPH.arrow)} ${message}`;
+}
+
+// Whether the wizard may collapse a finished prompt section in place.
+const CAN_COLLAPSE = COLOR && process.stdout.isTTY;
+
+// Run an interactive prompt "section" (heading + hints + the prompt and its
+// echoed input/retries), then collapse everything it printed into a single
+// confirmed line: "✓ <title>  <value>".
+//
+// On a capable TTY we tally the physical rows the section painted — wrapping
+// included — by intercepting stdout writes, then move the cursor up and erase
+// before printing the summary. On non-TTY (or NO_COLOR) we skip all of that:
+// the section prints linearly and we append the confirmation line, which keeps
+// redirected/CI output (and the test transcripts) grep-friendly.
+async function collapseSection(title, run, { redactValue = false, formatValue = null } = {}) {
+  if (!CAN_COLLAPSE) {
+    const value = await run();
+    return value;
+  }
+  const realWrite = process.stdout.write.bind(process.stdout);
+  let rows = 0;
+  let pending = "";
+  // Count newline-terminated physical rows (accounting for wrap) as bytes are
+  // written. Partial trailing text (the prompt line awaiting input) is counted
+  // when we collapse.
+  process.stdout.write = (chunk, ...rest) => {
+    pending += typeof chunk === "string" ? chunk : String(chunk);
+    let nl = pending.indexOf("\n");
+    while (nl !== -1) {
+      rows += paintedRowCount([pending.slice(0, nl)]);
+      pending = pending.slice(nl + 1);
+      nl = pending.indexOf("\n");
+    }
+    return realWrite(chunk, ...rest);
+  };
+  let value;
+  try {
+    value = await run();
+  } finally {
+    if (pending.length) rows += paintedRowCount([pending]);
+    process.stdout.write = realWrite;
+  }
+  if (rows > 0) realWrite(`\x1b[${rows}A\x1b[0J`);
+  const shown = typeof formatValue === "function"
+    ? formatValue(value)
+    : (redactValue ? dim("••••••••") : dim(String(value)));
+  realWrite(`${check(GLYPH.tick)} ${bold(title)}  ${shown}\n`);
+  return value;
+}
 
 // ── CLI boilerplate ─────────────────────────────────────────────────────────
 function usage() {
@@ -199,7 +285,6 @@ async function promptSecret(question) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("Secret prompts require a TTY. Pass --auth-key=<value> for non-interactive runs.");
   }
-  process.stdout.write(question);
   return new Promise((resolve, reject) => {
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw === true;
@@ -229,13 +314,20 @@ async function promptSecret(question) {
           return;
         }
         if (code === 0x7f || code === 0x08) { // Backspace / Delete
-          buf = buf.slice(0, -1);
+          if (buf.length > 0) {
+            buf = buf.slice(0, -1);
+            process.stdout.write("\b \b");
+          }
           continue;
         }
-        if (code >= 0x20) buf += ch;          // ignore non-printable controls
+        if (code >= 0x20) {                   // ignore non-printable controls
+          buf += ch;
+          process.stdout.write("*");
+        }
       }
     };
     stdin.on("data", onData);
+    process.stdout.write(question);
   });
 }
 
@@ -334,6 +426,15 @@ function liteLLMProvidersFromModelsJson() {
   return providers;
 }
 
+function rememberedLiteLLMBaseUrl(providerId) {
+  const providers = liteLLMProvidersFromModelsJson();
+  const exact = providers.find((provider) => provider.name === providerId);
+  if (exact?.baseUrl) return exact.baseUrl;
+
+  const uniqueBaseUrls = [...new Set(providers.map((provider) => provider.baseUrl).filter(Boolean))];
+  return uniqueBaseUrls.length === 1 ? uniqueBaseUrls[0] : "";
+}
+
 // ── Inline interactive prompts ──────────────────────────────────────────────
 function makeAbortError() {
   const err = new Error("Aborted with Ctrl+C");
@@ -398,7 +499,9 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
 
   const choices = [...initialChoices];
   const choiceSet = new Set(choices);
-  const selected = multi ? new Set(choices) : null;
+  const selected = multi
+    ? new Set(Array.isArray(options.defaultSelected) ? options.defaultSelected.filter((choice) => choiceSet.has(choice)) : choices)
+    : null;
   let query = "";
   let filtered = [...choices];
 
@@ -428,19 +531,21 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
   const buildLines = () => {
     const lines = [];
     const count = multi
-      ? `${selected.size}/${choices.length} selected${filtered.length === choices.length ? "" : `, ${filtered.length} match`}`
+      ? `${selected.size}/${choices.length} selected`
       : (filtered.length === choices.length ? `${choices.length}` : `${filtered.length}/${choices.length}`);
     lines.push(`${bold(title)}  ${dim(`(${count})`)}`);
     lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
-    lines.push(dim(multi
-      ? "  ↑ ↓ move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"
-      : "  ↑ ↓ select  Enter accept  Esc clear  Ctrl+C cancel"));
     if (!items.length) {
+      lines.push(dim(multi
+        ? "  Up/Down move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"
+        : "  Up/Down select  Enter accept  Esc clear  Ctrl+C cancel"));
       lines.push(dim("  no matches"));
       return lines;
     }
     const { start, end } = pickerViewport(items.length, selIdx);
-    if (start > 0) lines.push(dim(`  ↑ ${start} more`));
+    lines.push(dim(multi
+      ? "  Up/Down move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"
+      : "  Up/Down select  Enter accept  Esc clear  Ctrl+C cancel"));
     for (let i = start; i < end; i++) {
       const sel = i === selIdx;
       const item = items[i];
@@ -460,7 +565,6 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
         }
       }
     }
-    if (end < items.length) lines.push(dim(`  ↓ ${items.length - end} more`));
     return lines;
   };
 
@@ -574,12 +678,12 @@ function askMultiChoice(title, choices, options = {}) {
   return askFilteredPicker(title, choices, { ...options, multi: true });
 }
 
-/** Single-keypress Y/n confirm. No readline needed. */
-async function askConfirmation(promptText) {
+/** Single-keypress confirmation. No readline needed. */
+async function askConfirmation(promptText, { defaultYes = true } = {}) {
   if (!canPrompt()) return false;
 
   return new Promise((resolve, reject) => {
-    process.stdout.write(`${bold(promptText)} ${dim("[Y/n]")} `);
+    process.stdout.write(`${bold(promptText)} ${dim(defaultYes ? "[Y/n]" : "[y/N]")} `);
     let onKey;
 
     const settle = (accepted, echo) => {
@@ -594,7 +698,7 @@ async function askConfirmation(promptText) {
     onKey = (_str, key) => {
       if (!key) return;
       if (key.ctrl && key.name === "c") { settle(null, "");  return; }
-      if (key.name === "return")        { settle(true,  "y"); return; }
+      if (key.name === "return")        { settle(defaultYes, defaultYes ? "y" : "n"); return; }
       const ch = (_str ?? "").toLowerCase();
       if (ch === "y") { settle(true,  "y"); return; }
       if (ch === "n") { settle(false, "n"); return; }
@@ -609,7 +713,7 @@ async function askConfirmation(promptText) {
 
 async function confirmInstall(options) {
   if (options.yes) return true;
-  return askConfirmation("Install now?");
+  return askConfirmation(`${GLYPH.arrow} Install now?`);
 }
 
 function litellmUsage() {
@@ -636,6 +740,7 @@ Flags:
   -y, --yes                  Skip the write confirmation
       --no-input             Alias for --yes (use in scripts and CI)
       --dry-run              Print the planned config changes without writing files
+      --verbose              Show full file paths and implementation details
   -h, --help                 Show help
   -v, --version              Show version
 
@@ -676,12 +781,13 @@ Environment:
 }
 
 function parseLitellmArgs(args) {
-  const options = { baseUrl: "", dryRun: false, global: false, help: false, keyEnv: "", model: "", project: false, projectSettings: null, provider: "", version: false, yes: false };
+  const options = { baseUrl: "", dryRun: false, global: false, help: false, keyEnv: "", model: "", project: false, projectSettings: null, provider: "", verbose: false, version: false, yes: false };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--global") options.global = true;
+    else if (arg === "--verbose") options.verbose = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--project" || arg === "-l") options.project = true;
     else if (arg === "--version" || arg === "-v") options.version = true;
@@ -725,7 +831,47 @@ function parseLitellmPrintKeyArgs(args) {
   return options;
 }
 
-function promptLine(question) {
+function describeLocation(label, filePath, verbose) {
+  return verbose ? `${label} (${filePath})` : label;
+}
+
+function httpStatusFromMessage(message) {
+  const match = String(message ?? "").match(/\bHTTP\s+(\d{3})\b/);
+  return match ? `HTTP ${match[1]}` : null;
+}
+
+function formatMetadataFailure(error, verbose) {
+  if (verbose) return `Could not fetch model metadata: ${error.message}. Models will still work if the ids are correct.`;
+  const status = httpStatusFromMessage(error.message);
+  const reason = status ?? "request failed";
+  return `Could not fetch model metadata: ${reason}. Models will still work if the ids are correct.`;
+}
+
+function formatCatalogFailure(error, verbose) {
+  if (verbose) return `Could not fetch model list: ${error.message}. Enter model ids manually.`;
+  const status = httpStatusFromMessage(error.message);
+  const reason = status ?? "request failed";
+  return `Could not fetch model list: ${reason}. Enter model ids manually.`;
+}
+
+function modelSummary(modelIds) {
+  if (modelIds.length === 1) return modelIds[0];
+  // Cap the inline preview so a large catalog doesn't flood the summary; the
+  // exact set is always recoverable from the written settings file.
+  const PREVIEW = 3;
+  if (modelIds.length <= PREVIEW + 1) return `${modelIds.length} models (${modelIds.join(", ")})`;
+  const shown = modelIds.slice(0, PREVIEW).join(", ");
+  return `${modelIds.length} models (${shown}, +${modelIds.length - PREVIEW} more)`;
+}
+
+function validateNonInteractiveLiteLLMModelIds(modelIds) {
+  const suspicious = modelIds.find(isSuspiciousLiteLLMModelId);
+  if (suspicious) {
+    throw new Error(`${suspiciousModelMessage(suspicious)} Re-run in a TTY to confirm it, or pass a longer model id.`);
+  }
+}
+
+function promptLine(question, { defaultValue = "" } = {}) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve, reject) => {
     const onSigint = () => {
@@ -738,18 +884,114 @@ function promptLine(question) {
     rl.question(question, (answer) => {
       rl.off("SIGINT", onSigint);
       rl.close();
-      resolve(answer);
+      resolve(String(answer).trim() ? answer : defaultValue);
     });
   });
 }
 
-async function promptValidated(question, normalizer) {
+async function promptValidated(question, normalizer, formatError = null, promptOptions = {}) {
   while (true) {
-    const answer = String(await promptLine(question)).trim();
+    const answer = String(await promptLine(question, promptOptions)).trim();
     try {
       return normalizer(answer);
     } catch (error) {
-      console.log(warn(`  ${error.message}`));
+      const message = typeof formatError === "function" ? formatError(error) : error.message;
+      console.log(warn(`  ${message}`));
+    }
+  }
+}
+
+function liteLLMPromptError(kind) {
+  return (error) => {
+    if (kind === "provider") {
+      return "Use a short id with letters, numbers, dots, underscores, or hyphens. Start with a letter or number.";
+    }
+    if (kind === "baseUrl") {
+      return "Enter the LiteLLM proxy URL, including http:// or https:// and no query string.";
+    }
+    if (kind === "keyLabel") {
+      return "Use the project key label from LiteLLM. It may contain letters, numbers, dots, underscores, or hyphens.";
+    }
+    if (kind === "model") {
+      return "Use bare LiteLLM model ids only. Do not include provider prefixes, slashes, or thinking suffixes.";
+    }
+    return error.message;
+  };
+}
+
+function isSuspiciousLiteLLMModelId(modelId) {
+  return typeof modelId === "string" && modelId.trim().length < 2;
+}
+
+function suspiciousModelMessage(modelId) {
+  return `LiteLLM model id '${modelId}' is very short. Enter the full model id from your LiteLLM catalog.`;
+}
+
+function liteLLMModelCatalogEntries(infoMap) {
+  if (!(infoMap instanceof Map) || infoMap.size === 0) return [];
+  return [...infoMap.keys()].sort((a, b) => a.localeCompare(b));
+}
+
+async function confirmModelIdIfSuspicious(modelId) {
+  if (!isSuspiciousLiteLLMModelId(modelId)) return true;
+  console.log(warn(`  ${suspiciousModelMessage(modelId)}`));
+  return askConfirmation("Use this model id anyway?", { defaultYes: false });
+}
+
+async function promptLiteLLMModelIds(modelNames = []) {
+  if (modelNames.length) {
+    // The picker draws its own title, selection count, and keybinding hints,
+    // and clears them on exit. Printing a separate static header here would
+    // be left stranded above the next prompt after the picker erases itself.
+    console.log("");
+    while (true) {
+      const picked = await askMultiChoice("LiteLLM models", modelNames, { allowCustom: true, defaultSelected: [] });
+      if (!picked.length) {
+        console.log(warn("  Select at least one model, or type a custom model id and press Space."));
+        continue;
+      }
+      try {
+        const modelIds = picked.map(normalizeLiteLLMModelPattern);
+        const suspicious = modelIds.filter(isSuspiciousLiteLLMModelId);
+        if (suspicious.length) {
+          let accepted = true;
+          for (const modelId of suspicious) {
+            accepted = await confirmModelIdIfSuspicious(modelId);
+            if (!accepted) break;
+          }
+          if (!accepted) continue;
+        }
+        return modelIds;
+      } catch (error) {
+        console.log(warn(`  ${liteLLMPromptError("model")(error)}`));
+      }
+    }
+  }
+
+  console.log(`\n${bold("Models")}`);
+  console.log(hint("  Use the model ids from your LiteLLM admin catalog."));
+  console.log(hint("  Separate multiple ids with commas. Example: gpt-4.1, gpt-4.1-mini"));
+  while (true) {
+    const answer = String(await promptLine(`  ${GLYPH.arrow} Model ids: `)).trim();
+    const raw = answer.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!raw.length) {
+      console.log(warn("  Enter at least one model id. Use commas if you have more than one."));
+      continue;
+    }
+    try {
+      const modelIds = raw.map(normalizeLiteLLMModelPattern);
+      const suspicious = modelIds.filter(isSuspiciousLiteLLMModelId);
+      if (suspicious.length) {
+        let accepted = true;
+        for (const modelId of suspicious) {
+          accepted = await confirmModelIdIfSuspicious(modelId);
+          if (!accepted) break;
+        }
+        if (!accepted) continue;
+      }
+      return modelIds;
+    } catch (error) {
+      console.log(warn(`  ${liteLLMPromptError("model")(error)}`));
     }
   }
 }
@@ -772,90 +1014,10 @@ function lookupKeyValueByName(keyName) {
   return undefined;
 }
 
-/**
- * Build the bare model-name choices for the LiteLLM model picker.
- *
- * Sourced only from LiteLLM providers already in models.json — those are
- * the names we have actual evidence are valid on a user's LiteLLM proxy.
- * We deliberately do NOT seed from `pi --list-models`: pi's known-model
- * registry covers vendor catalogs (openai, anthropic, …) that almost
- * always extend well beyond what any given LiteLLM hub actually proxies,
- * so surfacing those choices is misleading. On a fresh setup with no
- * existing LiteLLM providers, pickLiteLLMModels falls back to a free-text
- * line prompt so the user can simply type the model id their hub serves.
- */
-function liteLLMModelChoices() {
-  const raw = [];
-  for (const provider of liteLLMProvidersFromModelsJson()) {
-    for (const m of provider.models) raw.push(m);
-  }
-  return filterValidLiteLLMModelNames(raw);
-}
-
-// Throw away any buffered stdin bytes so a stray \n from a previous
-// readline prompt can't immediately resolve the next picker with its default.
-function drainStdin() {
-  if (!process.stdin.isTTY) return;
-  while (process.stdin.read() !== null) {
-    // discard
-  }
-}
-
 const AUTH_MODES = new Set(["skip", "literal", "command"]);
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * Three-choice picker for how the API key should be stored. The labels are
- * deliberately verbose because this is a one-time decision per provider and
- * users need to understand the tradeoff (paste vs. command vs. env-var).
- * `fallbackMode` picks the default-highlighted entry based on whether a
- * working key source already exists.
- */
-async function askAuthMode({ providerId, keyEnv, hasExistingAuth, fallbackMode }) {
-  // The skip label needs the *shell-canonical* form because that's what
-  // the user would type into `export`. keyEnv may be a portal label like
-  // `reeds-maint` that the shell can't parse on the LHS of `=`.
-  const envVar = deriveEnvVarFromKeyName(keyEnv) ?? keyEnv;
-  const LITERAL = `Paste the key value once  ${dim("— stored in ~/.pi/agent/auth.json (0600)")}`;
-  const COMMAND = `Use a shell command       ${dim("— !op read / !security …, stored in auth.json (0600)")}`;
-  const SKIP    = `Skip                      ${dim(`— keep using $${envVar} from the shell${hasExistingAuth ? " (auth.json entry already exists)" : ""}`)}`;
-  const labelByMode = { literal: LITERAL, command: COMMAND, skip: SKIP };
-  const choices = [LITERAL, COMMAND, SKIP];
-  const fallbackLabel = labelByMode[fallbackMode] ?? SKIP;
-  const picked = await askChoice(
-    `How should pi resolve the API key for ${bold(providerId)}?`,
-    choices,
-    fallbackLabel,
-  );
-  if (picked === LITERAL) return "literal";
-  if (picked === COMMAND) return "command";
-  return "skip";
-}
-
-async function pickLiteLLMModels() {
-  const choices = liteLLMModelChoices();
-  if (!choices.length) {
-    // First-time setup: no prior LiteLLM models to multi-select from. Use a
-    // single line prompt; users who want to register many models at once
-    // can pass `--model "a,b,c"` on the command line.
-    return [await promptValidated("LiteLLM model: ", normalizeLiteLLMModelPattern)];
-  }
-  drainStdin();
-  while (true) {
-    const picked = await askMultiChoice("LiteLLM models", choices, { allowCustom: true });
-    if (!picked.length) {
-      console.log(warn("  Select at least one model (press Space to toggle)."));
-      continue;
-    }
-    try {
-      return picked.map(normalizeLiteLLMModelPattern);
-    } catch (error) {
-      console.log(warn(`  ${error.message}`));
-    }
-  }
 }
 
 // LiteLLM mounts /model/info at the proxy root; the /v1 segment of the
@@ -865,14 +1027,25 @@ function liteLLMModelInfoUrl(baseUrl) {
   return `${baseUrl.replace(/\/+$/, "").replace(/\/v1$/i, "")}/model/info`;
 }
 
-/**
- * Best-effort fetch of LiteLLM `/model/info` for the given proxy. The API
- * key is taken from the caller (read from `process.env[keyEnv]` upstream)
- * and is never logged or persisted. Throws a short, key-free Error on
- * timeout / non-2xx / parse failure so the CLI can degrade gracefully.
- */
-async function fetchLiteLLMModelInfo(baseUrl, apiKey, { timeoutMs = 10_000 } = {}) {
-  const url = liteLLMModelInfoUrl(baseUrl);
+function liteLLMModelsUrl(baseUrl) {
+  return `${baseUrl.replace(/\/+$/, "")}/models`;
+}
+
+function parseLiteLLMModelsResponse(json) {
+  if (!isPlainObject(json) || !Array.isArray(json.data)) return [];
+  const names = [];
+  for (const item of json.data) {
+    const rawName = typeof item === "string" ? item : item?.id;
+    if (typeof rawName !== "string") continue;
+    try {
+      names.push(normalizeLiteLLMModelPattern(rawName));
+    } catch {
+    }
+  }
+  return [...new Set(names)];
+}
+
+async function fetchJsonWithBearer(url, apiKey, { timeoutMs = 10_000, metadataEndpoint = false } = {}) {
   let response;
   try {
     response = await fetch(url, {
@@ -886,20 +1059,12 @@ async function fetchLiteLLMModelInfo(baseUrl, apiKey, { timeoutMs = 10_000 } = {
     throw new Error(`${url}: ${reason}`);
   }
   if (!response.ok) {
-    // The proxy rejected an authenticated request. Almost always the body
-    // carries the actionable reason — RBAC scope, expired key, model-access
-    // policy. Without it the user sees a bare 'HTTP 403' and has no idea
-    // whether to ask their LiteLLM admin for permission or rotate the key.
     let detail = "";
     try {
-      // Cap to ~512B so a misconfigured proxy returning a 30KB HTML error
-      // page doesn't flood the summary block.
       const raw = (await response.text()).slice(0, 512).trim();
       if (raw) {
         try {
           const j = JSON.parse(raw);
-          // LiteLLM uses several shapes: {error:{message}}, {detail:"…"},
-          // {detail:{error:"…"}}, {message:"…"}. Walk them in order.
           detail =
             j?.error?.message ??
             (typeof j?.detail === "string" ? j.detail : null) ??
@@ -908,27 +1073,62 @@ async function fetchLiteLLMModelInfo(baseUrl, apiKey, { timeoutMs = 10_000 } = {
             j?.message ??
             raw;
         } catch {
-          detail = raw; // not JSON — surface the literal body, truncated
+          detail = raw;
         }
       }
     } catch {
       // body read failed; fall through with no detail
     }
-    // 401/403 specifically: tell the user the consequence so they don't
-    // think the whole provider is broken.
     const hint =
-      response.status === 401 || response.status === 403
+      metadataEndpoint && (response.status === 401 || response.status === 403)
         ? " — your LiteLLM key may not have admin access to /model/info; this only disables auto-enrichment, the provider itself will still work"
         : "";
     throw new Error(`${url}: HTTP ${response.status}${detail ? `: ${detail}` : ""}${hint}`);
   }
-  let body;
   try {
-    body = await response.json();
+    return await response.json();
   } catch (error) {
     throw new Error(`${url}: invalid JSON body (${error.message})`);
   }
+}
+
+/**
+ * Best-effort fetch of LiteLLM `/model/info` for the given proxy. The API
+ * key is taken from the caller (read from `process.env[keyEnv]` upstream)
+ * and is never logged or persisted. Throws a short, key-free Error on
+ * timeout / non-2xx / parse failure so the CLI can degrade gracefully.
+ */
+async function fetchLiteLLMModelInfo(baseUrl, apiKey, { timeoutMs = 10_000 } = {}) {
+  const body = await fetchJsonWithBearer(liteLLMModelInfoUrl(baseUrl), apiKey, { timeoutMs, metadataEndpoint: true });
   return parseLiteLLMModelInfoResponse(body);
+}
+
+async function fetchLiteLLMModels(baseUrl, apiKey, { timeoutMs = 10_000 } = {}) {
+  const body = await fetchJsonWithBearer(liteLLMModelsUrl(baseUrl), apiKey, { timeoutMs });
+  return parseLiteLLMModelsResponse(body);
+}
+
+async function fetchLiteLLMCatalog(baseUrl, apiKey) {
+  let modelNames = [];
+  let modelListError = null;
+  try {
+    modelNames = await fetchLiteLLMModels(baseUrl, apiKey);
+  } catch (error) {
+    modelListError = error;
+  }
+
+  let metadataError = null;
+  let infoMap = new Map();
+  try {
+    infoMap = await fetchLiteLLMModelInfo(baseUrl, apiKey);
+    if (!modelNames.length) {
+      modelNames = liteLLMModelCatalogEntries(infoMap);
+    }
+  } catch (error) {
+    metadataError = error;
+  }
+
+  return { infoMap, modelNames, metadataError, modelListError };
 }
 
 function writeJsonFile(filePath, value, { compactModelEntries = false } = {}) {
@@ -1018,26 +1218,54 @@ async function mainLiteLLM(argv) {
     let baseUrl = options.baseUrl;
     let keyEnv = options.keyEnv;
 
+    if (promptAvailable && !options.yes && !options.dryRun) {
+      console.log(cyan(bold("Khala")) + dim(" · LiteLLM provider setup"));
+      console.log(hint("Connect Pi to a LiteLLM-compatible proxy. Press Ctrl-C any time to cancel."));
+    }
+
     if (!provider) {
       if (!promptAvailable) missing.push("--provider");
-      else provider = await promptValidated("LiteLLM provider id: ", validateLiteLLMProviderId);
+      else {
+        provider = await collapseSection("Provider", async () => {
+          console.log(stepHeading("Provider"));
+          console.log(hint("  The LiteLLM proxy Pi will call. Use a short id for Pi config, e.g. NLR."));
+          return promptValidated(`  ${GLYPH.arrow} Provider id: `, validateLiteLLMProviderId, liteLLMPromptError("provider"));
+        });
+      }
     } else {
       provider = validateLiteLLMProviderId(provider);
     }
 
     if (!baseUrl) {
       if (!promptAvailable) missing.push("--base-url");
-      else baseUrl = await promptValidated("LiteLLM base URL: ", normalizeLiteLLMBaseUrl);
+      else {
+        baseUrl = await collapseSection("Base URL", async () => {
+          console.log(stepHeading("Base URL"));
+          const defaultBaseUrl = rememberedLiteLLMBaseUrl(provider);
+          console.log(hint(defaultBaseUrl
+            ? "  OpenAI-compatible LiteLLM endpoint. Press Enter to reuse the remembered URL."
+            : "  OpenAI-compatible LiteLLM endpoint, usually ending in /v1."));
+          return promptValidated(
+            `  ${GLYPH.arrow} Base URL${defaultBaseUrl ? ` [${defaultBaseUrl}]` : ""}: `,
+            normalizeLiteLLMBaseUrl,
+            liteLLMPromptError("baseUrl"),
+            { defaultValue: defaultBaseUrl },
+          );
+        });
+      }
     } else {
       baseUrl = normalizeLiteLLMBaseUrl(baseUrl);
     }
 
     if (!keyEnv) {
       if (!promptAvailable) missing.push("--key-env");
-      else keyEnv = await promptValidated(
-        "LiteLLM key name (matches your LiteLLM portal label, e.g. reeds-maint): ",
-        validateLiteLLMKeyEnv,
-      );
+      else {
+        keyEnv = await collapseSection("Project key", async () => {
+          console.log(stepHeading("Project key"));
+          console.log(hint("  Label for this project's LiteLLM key. Examples: reeds-maint, team.litellm.prod"));
+          return promptValidated(`  ${GLYPH.arrow} Project key label: `, validateLiteLLMKeyEnv, liteLLMPromptError("keyLabel"));
+        });
+      }
     } else {
       keyEnv = validateLiteLLMKeyEnv(keyEnv);
     }
@@ -1047,81 +1275,70 @@ async function mainLiteLLM(argv) {
     // lookup for /model/info. When the user typed a clean identifier this
     // equals keyEnv and nothing visible changes.
     const envVar = deriveEnvVarFromKeyName(keyEnv) ?? keyEnv;
-
-    // Pre-flight env-var check. Run this BEFORE the (potentially long)
-    // picker step so a user who forgot to `export` gets an immediate,
-    // The actual API key value, if we have it. Filled below by the
-    // auth-mode flow; the env-var fallback is consulted last so users with
-    // an existing exported $KEY keep getting auto-enrichment for free.
-    let resolvedKey = lookupKeyValueByName(keyEnv);
-
-
-    let modelIds = [];
-    const rawModels = (typeof options.model === "string" ? options.model : "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (rawModels.length) {
-      // --model accepts a single bare name or a comma-separated list.
-      modelIds = rawModels.map(normalizeLiteLLMModelPattern);
-    } else if (!promptAvailable) {
-      missing.push("--model");
-    } else {
-      modelIds = await pickLiteLLMModels();
-    }
-
-    if (missing.length) {
-      throw new Error(`Missing required LiteLLM options: ${missing.join(", ")}. Run in a TTY to answer prompts, or pass all required flags explicitly.`);
-    }
-
     const targetModelsPath = modelsJsonPath();
     const targetSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
     const targetKeyConfigPath = litellmProjectConfigPath();
     const targetAuthPath = authJsonPath();
 
-    let writeProjectSettings = options.projectSettings === true;
-    if (options.projectSettings === null && promptAvailable && !options.yes && !options.dryRun) {
-      console.log("");
-      writeProjectSettings = await askConfirmation("Use these LiteLLM models as this project's Pi defaults now?");
-    }
-
-    // ── Auth-mode resolution ──────────────────────────────────────────────
-    // Three storage modes, all pi-canonical (~/.pi/agent/auth.json schema):
-    //   skip    — write nothing to auth.json; rely on the env var the user
-    //             exports in their shell. Current default behavior.
-    //   literal — paste-once secret value, stored at auth.json[<id>].key as
-    //             a literal string. 0600 file perms.
-    //   command — shell command (e.g. !op read ...) stored verbatim; pi
-    //             exec's it on demand and uses stdout as the key.
-    // The mode comes from --auth-mode if given, else a three-choice picker
-    // in TTY, else "skip" in non-interactive runs.
     const currentAuth = readJsonObjectFile(targetAuthPath);
     const existingAuthEntry = isPlainObject(currentAuth) && isPlainObject(currentAuth[provider]) ? currentAuth[provider] : null;
     const hasExistingAuth = Boolean(existingAuthEntry && existingAuthEntry.type === "api_key" && typeof existingAuthEntry.key === "string" && existingAuthEntry.key.length > 0);
+    let resolvedKey = lookupKeyValueByName(keyEnv);
 
+    // ── Auth-mode resolution ──────────────────────────────────────────────
+    // Interactive setup asks for the key before model selection, so the user
+    // has a complete mental model before we fetch metadata or preview writes.
+    // Flag-driven runs keep the existing explicit --auth-mode contract.
     let authMode = (options.authMode ?? "").trim().toLowerCase();
     if (authMode && !AUTH_MODES.has(authMode)) {
       throw new Error(`Unknown --auth-mode '${authMode}'. Expected one of: ${[...AUTH_MODES].join(", ")}.`);
     }
     if (!authMode && options.authKey) authMode = "literal";
     if (!authMode && options.authCommand) authMode = "command";
+    // The interactive API-key flow (replace-prompt + masked entry) renders
+    // inside one collapsible section so it folds to a single "✓ API key" line.
+    // `capturedLiteralKey` carries the value the section already read so the
+    // literal-mode block below doesn't prompt again.
+    let capturedLiteralKey;
     if (!authMode && promptAvailable && !options.yes && !options.dryRun) {
-      // Default cursor: if the user already has a working key source (env var
-      // exported OR auth.json already has an entry for this provider), assume
-      // "skip" so a no-op re-run is one Enter away. Otherwise default to
-      // "literal" since that's the path that actually enables /model/info
-      // enrichment for first-time setup.
-      const fallbackMode = (resolvedKey || hasExistingAuth) ? "skip" : "literal";
-      authMode = await askAuthMode({ providerId: provider, keyEnv, hasExistingAuth, fallbackMode });
+      const result = await collapseSection("API key", async () => {
+        console.log(stepHeading("API key"));
+        let mode = "literal";
+        if (hasExistingAuth) {
+          console.log(hint(`  A stored API key already exists for provider ${bold(provider)} in the global auth store.`));
+          const replace = await askConfirmation(`  ${GLYPH.arrow} Replace the stored key?`, { defaultYes: false });
+          mode = replace ? "literal" : "skip";
+        }
+        let key;
+        if (mode === "literal") {
+          console.log(hint("  Paste the key value. Input is masked and the raw key is never printed."));
+          while (!key) {
+            try {
+              key = validateAuthLiteral(await promptSecret(`  ${GLYPH.arrow} API key: `));
+            } catch (error) {
+              console.log(warn(`  ${error.message}`));
+            }
+          }
+        }
+        return { mode, key };
+      }, { formatValue: (r) => r.mode === "literal" ? dim("••••••••") : dim("kept existing key") });
+      authMode = result.mode;
+      capturedLiteralKey = result.key;
     }
     if (!authMode) authMode = "skip";
 
-    // Capture the literal/command payload for non-skip modes. Never stored
-    // in a variable that gets logged or echoed; resolvedKey replaces the
-    // env-var fallback once we have it.
     let authPayload = null;
     if (authMode === "literal") {
-      let value = options.authKey;
+      let value = options.authKey ?? capturedLiteralKey;
+      while (!value && promptAvailable && !options.yes && !options.dryRun) {
+        try {
+          console.log(stepHeading("API key"));
+          console.log(hint("  Paste the key value. Input is masked and the raw key is never printed."));
+          value = validateAuthLiteral(await promptSecret(`  ${GLYPH.arrow} API key: `));
+        } catch (error) {
+          console.log(warn(`  ${error.message}`));
+        }
+      }
       if (!value) {
         if (!canPrompt()) {
           throw new Error("--auth-mode=literal needs --auth-key=<value> in non-interactive mode.");
@@ -1142,42 +1359,130 @@ async function mainLiteLLM(argv) {
         );
       }
       authPayload = { mode: "command", key: validateAuthCommand(cmd) };
-      // Resolve the command immediately so we can fetch /model/info now.
-      // If exec fails, leave resolvedKey unset; the metadata row will warn
-      // and we'll fall back to bare entries, but the auth.json write still
-      // proceeds (the user can fix their keychain entry separately).
       const fromCmd = resolveKeyForFetch(authPayload.key);
-      if (fromCmd) resolvedKey = fromCmd;
-      else resolvedKey = undefined;
+      resolvedKey = fromCmd || undefined;
     } else if (hasExistingAuth) {
-      // Skip mode, but auth.json already has an api_key — use its value
-      // for the enrichment fetch (pi will do the same at runtime).
       const fromAuth = resolveKeyForFetch(existingAuthEntry.key);
       if (fromAuth) resolvedKey = fromAuth;
     }
 
-    // Attempt to fetch rich model metadata from LiteLLM's /model/info. The
-    // key source is whichever of {auth.json, --auth-key, --auth-command,
-    // env var} resolved above. We never persist the value beyond this call
-    // unless the user explicitly chose literal/command mode.
+    const rawModels = (typeof options.model === "string" ? options.model : "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const shouldFetchCatalogBeforePrompt = promptAvailable && !options.yes && !options.dryRun && !rawModels.length;
+    const shouldStartCatalogFetch = Boolean(resolvedKey);
+    const catalogFetchPromise = shouldStartCatalogFetch
+      ? (shouldFetchCatalogBeforePrompt
+        ? fetchLiteLLMCatalog(baseUrl, resolvedKey)
+        : fetchLiteLLMModelInfo(baseUrl, resolvedKey).then((infoMap) => ({
+          infoMap,
+          modelNames: [],
+          metadataError: null,
+          modelListError: null,
+        })))
+        .catch((error) => ({ error }))
+      : null;
+
     let infoMap = new Map();
+    let catalogModelNames = [];
     let metadataStatus;
     let metadataIsWarning = false;
-    if (resolvedKey) {
-      try {
-        infoMap = await fetchLiteLLMModelInfo(baseUrl, resolvedKey);
+    let metadataPrinted = false;
+    if (shouldFetchCatalogBeforePrompt) {
+      console.log(`\n${dim(GLYPH.dot)} ${dim("Fetching model catalog...")}`);
+      if (catalogFetchPromise) {
+        const result = await catalogFetchPromise;
+        if (result.error) {
+          metadataStatus = formatMetadataFailure(result.error, options.verbose);
+          metadataIsWarning = true;
+          console.log(warn(metadataStatus));
+          metadataPrinted = true;
+        } else {
+          infoMap = result.infoMap;
+          catalogModelNames = result.modelNames;
+          if (result.modelListError && !result.modelNames.length) {
+            metadataStatus = formatCatalogFailure(result.modelListError, options.verbose);
+            metadataIsWarning = true;
+            console.log(warn(metadataStatus));
+            metadataPrinted = true;
+          } else if (result.metadataError) {
+            metadataStatus = result.modelNames.length
+              ? `Fetched model list. Detailed metadata unavailable: ${httpStatusFromMessage(result.metadataError.message) ?? "request failed"}.`
+              : formatMetadataFailure(result.metadataError, options.verbose);
+            metadataIsWarning = true;
+            console.log(warn(metadataStatus));
+            metadataPrinted = true;
+          }
+        }
+      } else if (authMode === "command") {
+        metadataStatus = "Could not fetch model metadata: auth command produced no output. Models will still work if the ids are correct.";
+        metadataIsWarning = true;
+        console.log(warn(metadataStatus));
+        metadataPrinted = true;
+      } else if (authMode === "skip") {
+        metadataStatus = `Could not fetch model metadata: no API key was available. Export $${envVar} or store a key to enable metadata. Models will still work if the ids are correct.`;
+        metadataIsWarning = true;
+        console.log(warn(metadataStatus));
+        metadataPrinted = true;
+      }
+    }
+
+    let modelIds = [];
+    if (rawModels.length) {
+      // --model accepts a single bare name or a comma-separated list.
+      modelIds = rawModels.map(normalizeLiteLLMModelPattern);
+      validateNonInteractiveLiteLLMModelIds(modelIds);
+    } else if (!promptAvailable) {
+      missing.push("--model");
+    } else {
+      modelIds = await promptLiteLLMModelIds(catalogModelNames);
+    }
+
+    if (missing.length) {
+      throw new Error(`Missing required LiteLLM options: ${missing.join(", ")}. Run in a TTY to answer prompts, or pass all required flags explicitly.`);
+    }
+
+    let writeProjectSettings = options.projectSettings === true;
+    if (options.projectSettings === null && promptAvailable && !options.yes && !options.dryRun) {
+      console.log("");
+      writeProjectSettings = await askConfirmation(`  ${GLYPH.arrow} Set this project's Pi defaults to these models?`, { defaultYes: false });
+    }
+
+    // Attempt to fetch rich model metadata from LiteLLM's /model/info. In
+    // the wizard path this may already have happened before model entry so
+    // catalog failures appear at the point where they matter.
+    if (shouldFetchCatalogBeforePrompt && infoMap.size > 0) {
+      const matched = modelIds.filter((id) => infoMap.has(id)).length;
+      metadataStatus = `${matched}/${modelIds.length} enriched from /model/info`;
+      metadataIsWarning = matched < modelIds.length;
+    } else if (!shouldFetchCatalogBeforePrompt && catalogFetchPromise) {
+      const result = await catalogFetchPromise;
+      if (!result.error) {
+        infoMap = result.infoMap;
         const matched = modelIds.filter((id) => infoMap.has(id)).length;
-        metadataStatus = `${matched}/${modelIds.length} enriched from /model/info`;
-        metadataIsWarning = matched < modelIds.length;
-      } catch (error) {
-        metadataStatus = `fetch failed (${error.message}); writing bare entries`;
+        if (infoMap.size > 0) {
+          metadataStatus = `${matched}/${modelIds.length} enriched from /model/info`;
+          metadataIsWarning = matched < modelIds.length;
+        } else if (result.modelListError && !result.modelNames.length) {
+          metadataStatus = formatCatalogFailure(result.modelListError, options.verbose);
+          metadataIsWarning = true;
+        } else if (result.metadataError) {
+          metadataStatus = result.modelNames.length
+            ? `Fetched model list. Detailed metadata unavailable: ${httpStatusFromMessage(result.metadataError.message) ?? "request failed"}.`
+            : formatMetadataFailure(result.metadataError, options.verbose);
+          metadataIsWarning = true;
+        }
+      } else {
+        const { error } = result;
+        metadataStatus = formatMetadataFailure(error, options.verbose);
         metadataIsWarning = true;
       }
-    } else if (authMode === "command") {
-      metadataStatus = `NOT FETCHED — auth command produced no output; writing bare entries`;
+    } else if (!shouldFetchCatalogBeforePrompt && authMode === "command") {
+      metadataStatus = "Could not fetch model metadata: auth command produced no output. Models will still work if the ids are correct.";
       metadataIsWarning = true;
-    } else if (authMode === "skip") {
-      metadataStatus = `NOT FETCHED — $${envVar} is not exported and auth.json has no entry; writing bare entries`;
+    } else if (!shouldFetchCatalogBeforePrompt && authMode === "skip") {
+      metadataStatus = `Could not fetch model metadata: no API key was available. Export $${envVar} or store a key to enable metadata. Models will still work if the ids are correct.`;
       metadataIsWarning = true;
     }
 
@@ -1188,67 +1493,55 @@ async function mainLiteLLM(argv) {
     const mergedSettings = writeProjectSettings ? mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelIds }) : null;
     const mergedKeyConfig = mergeLiteLLMProjectKeyConfig(currentKeyConfig, { providerId: provider, keyEnv });
 
-    // Summary
-    const modeTag = options.dryRun ? dim(" [dry-run]") : "";
-    const labelWidth = 12;
+    if (metadataStatus && !metadataPrinted) console.log(metadataIsWarning ? warn(metadataStatus) : metadataStatus);
+
+    const modelCount = `${modelIds.length} model${modelIds.length === 1 ? "" : "s"}`;
+    const providerVerb = mergedModels.isUpdate ? "update" : "add";
+    const providerLocation = describeLocation("global model registry", targetModelsPath, options.verbose);
+    const projectKeyLocation = describeLocation("project LiteLLM config", targetKeyConfigPath, options.verbose);
+    const authLocation = describeLocation("global auth store", targetAuthPath, options.verbose);
+    const settingsLocation = describeLocation("project Pi defaults", targetSettingsPath, options.verbose);
     console.log("");
-    console.log(`${bold("Khala LiteLLM")}${modeTag}${dim(":")}`);
-    console.log(`${dim("models".padEnd(labelWidth))}${targetModelsPath}`);
-    console.log(`${dim("settings".padEnd(labelWidth))}${writeProjectSettings ? targetSettingsPath : `${dim("skipped")} ${dim(`(pass --project-settings to update ${targetSettingsPath})`)}`}`);
-    console.log(`${dim("keys".padEnd(labelWidth))}${targetKeyConfigPath}`);
-    // Provider row gets a short qualifier so the user can see at a glance
-    // whether this is a fresh registration or an in-place update.
-    const providerTag = mergedModels.isUpdate
-      ? dim(`  (updating${mergedModels.previousModelCount ? `, was ${mergedModels.previousModelCount} model${mergedModels.previousModelCount === 1 ? "" : "s"}` : ""})`)
-      : dim("  (new)");
-    console.log(`${dim("provider".padEnd(labelWidth))}${provider}${providerTag}`);
-    console.log(`${dim("base-url".padEnd(labelWidth))}${baseUrl}`);
-    console.log(`${dim("api".padEnd(labelWidth))}${LITELLM_PROVIDER_API}`);
-    console.log(`${dim("apiKey".padEnd(labelWidth))}${buildLiteLLMApiKeyCommand(provider)}`);
-    // Key row: show the portal label as the primary, and the derived shell
-    // env var name as a parenthetical when they differ. Users typed the
-    // portal label, so it should anchor the row; the derived form tells
-    // them what to put after `export`. When the user typed an identifier
-    // directly (legacy path), the two match and we drop the parenthetical.
-    const keyRow = (envVar && envVar !== keyEnv)
-      ? `${keyEnv}  ${dim(`(exports as $${envVar})`)}`
-      : `$${keyEnv}`;
-    console.log(`${dim("key".padEnd(labelWidth))}${keyRow}`);
-    // Auth row: explain exactly where pi will read the key from at runtime.
-    // Three shapes match the three resolved modes; the warn() colorization
-    // is reserved for the "no working source" case the metadata row catches.
-    let authRow;
+    console.log(titleLine("Ready to write", { dryRun: options.dryRun }));
+    const rowProvider = mergedModels.isUpdate ? rowSwap : rowAdd;
+    console.log(rowProvider(`${providerVerb} ${providerLocation} provider ${provider} with ${modelCount}`));
+    console.log(rowAdd(`save project key label ${keyEnv} in ${projectKeyLocation}`));
     if (authMode === "literal") {
-      authRow = `store value in ${targetAuthPath} ${dim("(0600)")}${hasExistingAuth ? dim("  (updating)") : dim("  (new)")}`;
+      console.log((hasExistingAuth ? rowSwap : rowAdd)(`store API key in ${authLocation}${hasExistingAuth ? " (replace existing key)" : ""}`));
     } else if (authMode === "command") {
-      authRow = `store command in ${targetAuthPath} ${dim("(0600)")}${hasExistingAuth ? dim("  (updating)") : dim("  (new)")}`;
+      console.log((hasExistingAuth ? rowSwap : rowAdd)(`store API key command in ${authLocation}${hasExistingAuth ? " (replace existing key)" : ""}`));
     } else if (hasExistingAuth) {
-      authRow = `${dim(`(existing entry in ${targetAuthPath})`)}`;
+      console.log(rowKeep(`keep existing API key in ${authLocation}`));
     } else if (resolvedKey) {
-      authRow = `$${envVar} from shell ${dim("(no auth.json entry)")}`;
+      console.log(rowKeep(`use API key from $${envVar}; do not write ${authLocation}`));
     } else {
-      authRow = warn(`none — $${envVar} unset and no auth.json entry`);
+      console.log(rowKeep(`leave ${authLocation} unchanged`));
     }
-    console.log(`${dim("auth".padEnd(labelWidth))}${authRow}`);
-    // Collapse the selected-model list to a single row to match the one-row-
-    // per-concept aesthetic of the main Khala configuration block. The full
-    // list is verifiable in models.json after writing.
-    const extra = modelIds.length - 1;
-    const moreSuffix = extra > 0 ? `  ${dim(`+${extra} more`)}` : "";
-    console.log(`${dim("model".padEnd(labelWidth))}${modelIds[0]}${moreSuffix}`);
-    if (metadataStatus) console.log(`${dim("metadata".padEnd(labelWidth))}${metadataIsWarning ? warn(metadataStatus) : metadataStatus}`);
+    if (writeProjectSettings) {
+      console.log(rowAdd(`set ${settingsLocation} to ${modelSummary(modelIds)}`));
+    } else {
+      console.log(rowKeep(`leave ${settingsLocation} unchanged`));
+    }
+    if (options.verbose) {
+      console.log(dim(`  provider apiKey command ${buildLiteLLMApiKeyCommand(provider)}`));
+      console.log(dim(`  api ${LITELLM_PROVIDER_API}`));
+      console.log(dim(`  base URL ${baseUrl}`));
+    }
     if (mergedModels.conflict) {
-      console.log(`${warn("!")} existing provider config differs and will be updated only if you confirm`);
+      console.log(warn("  existing provider config differs and will be updated only if you confirm"));
     }
 
-    if (options.dryRun) return;
+    if (options.dryRun) {
+      console.log(nextStep(`Run without ${bold("--dry-run")} when you are ready to write.`));
+      return;
+    }
 
     if (!options.yes) {
       if (!canPrompt()) {
         throw new Error("LiteLLM setup writes require --yes in non-interactive mode.");
       }
       console.log("");
-      const confirmed = await askConfirmation(mergedModels.conflict ? "Overwrite the existing LiteLLM provider/key config now?" : "Write LiteLLM provider/key config now?");
+      const confirmed = await askConfirmation(`${GLYPH.arrow} Write changes?`);
       if (!confirmed) {
         console.log(`${dim("Skipped.")}  No files were written.`);
         return;
@@ -1271,19 +1564,22 @@ async function mainLiteLLM(argv) {
     }
 
     console.log("");
-    console.log(`${check("✓")} Wrote ${targetModelsPath}`);
+    console.log(green(bold("Done.")) + dim(" LiteLLM provider is configured."));
+    console.log(wroteLine(describeLocation("global model registry", targetModelsPath, options.verbose)));
     if (writeProjectSettings) {
-      console.log(`${check("✓")} Wrote ${targetSettingsPath}`);
+      console.log(wroteLine(describeLocation("project Pi defaults", targetSettingsPath, options.verbose)));
     } else {
-      console.log(`${dim("settings".padEnd(12))}Skipped project defaults.`);
+      console.log(`${dim(GLYPH.dash)} ${dim("Left project Pi defaults unchanged.")}`);
     }
-    console.log(`${check("✓")} Wrote ${targetKeyConfigPath}`);
+    console.log(wroteLine(describeLocation("project LiteLLM config", targetKeyConfigPath, options.verbose)));
     if (authWritten) {
-      console.log(`${check("✓")} Wrote ${targetAuthPath} ${dim("(0600)")}`);
+      console.log(wroteLine(`${describeLocation("global auth store", targetAuthPath, options.verbose)} ${dim("(0600)")}`));
     }
-    console.log(`${dim("boundary".padEnd(12))}${authWritten
-      ? `Khala stored your API key in ${targetAuthPath} ${dim("(0600, user-only)")}`
-      : `Khala stored a key reference, not a secret value.`}`);
+    if (options.verbose || authWritten) {
+      console.log(authWritten
+        ? `Khala stored your API key in ${describeLocation("global auth store", targetAuthPath, options.verbose)} ${dim("(0600, user-only)")}`
+        : "Khala stored a key reference, not a secret value.");
+    }
   } catch (error) {
     if (isAbortError(error)) {
       console.log("Cancelled.");
@@ -1301,11 +1597,15 @@ async function askScope(options) {
   if (options.project) return "project";
   if (options.global || options.yes || !canPrompt()) return defaultScope(options);
 
-  const result = await askChoice("Install scope", [
+  console.log(stepHeading("Install scope"));
+  console.log(hint("  Choose where Pi should load the khala package and workflow defaults."));
+  const result = await askChoice("Scope", [
     "global  — ~/.pi/agent/settings.json",
     "project — .pi/settings.json",
   ], "global  — ~/.pi/agent/settings.json");
-  return result.startsWith("project") ? "project" : "global";
+  const scope = result.startsWith("project") ? "project" : "global";
+  console.log(`${check(GLYPH.tick)} ${bold("Install scope")}  ${dim(scope)}`);
+  return scope;
 }
 
 const THINKING_CHOICES = ["xhigh", "high", "medium", "low", "minimal", "off"];
@@ -1315,14 +1615,20 @@ async function askProfile(label, defaultThinking, providers, discoveryRows, fall
   const fallbackId = fallbackPresets[0]?.split(":")[0] ?? choices[0];
   const defaultId = choices.includes(fallbackId) ? fallbackId : choices[0];
 
-  const modelId = await askChoice(label, choices, defaultId);
+  console.log(stepHeading(label));
+  console.log(hint("  Pick the model Pi should use for this workflow role."));
+  const modelId = await askChoice(`${label} model`, choices, defaultId);
   const [provider, model] = modelId.split("/");
   if (!modelSupportsThinking(discoveryRows, provider, model)) {
-    return `${modelId}:off`;
+    const profile = `${modelId}:off`;
+    console.log(`${check(GLYPH.tick)} ${bold(label)}  ${dim(profile)}`);
+    return profile;
   }
 
   const thinking = await askChoice(`${label} thinking`, THINKING_CHOICES, defaultThinking);
-  return `${modelId}:${thinking}`;
+  const profile = `${modelId}:${thinking}`;
+  console.log(`${check(GLYPH.tick)} ${bold(label)}  ${dim(profile)}`);
+  return profile;
 }
 
 async function askModels(options) {
@@ -1331,9 +1637,12 @@ async function askModels(options) {
   const providers = liteLLMProvidersFromModelsJson();
   const rows      = piDiscoveryRows();
 
+  console.log(stepHeading("Workflow models"));
+  console.log(hint("  Defaults are recommended. Use filtering if you already know the provider/model id."));
+
   const planning    = await askProfile("Planning",    "xhigh",  providers, rows, MODEL_PRESETS.planning);
   const development = await askProfile("Development", "medium", providers, rows, MODEL_PRESETS.development);
-  const peerReview  = await askProfile("Peer-review", "high",   providers, rows, MODEL_PRESETS.peerReview);
+  const peerReview  = await askProfile("Peer review", "high",   providers, rows, MODEL_PRESETS.peerReview);
 
   return { planning, development, peerReview };
 }
@@ -1356,7 +1665,9 @@ async function main() {
     const PI_LABEL = "Set up pi for this project (install + planning/dev/review models)";
     const LITELLM_LABEL = "Only add a LiteLLM provider (skip pi install)";
     try {
-      const mode = await askChoice("What would you like to do?", [PI_LABEL, LITELLM_LABEL], PI_LABEL);
+      console.log(cyan(bold("Khala")) + dim(" · setup"));
+      console.log(hint("Choose the full Pi install or only add a LiteLLM provider. Press Ctrl-C any time to cancel."));
+      const mode = await askChoice("Setup path", [PI_LABEL, LITELLM_LABEL], PI_LABEL);
       if (mode === LITELLM_LABEL) {
         await mainLiteLLM([]);
         return;
@@ -1384,11 +1695,6 @@ async function main() {
   if (options.help)    { console.log(usage());   return; }
   if (options.version) { console.log(version()); return; }
 
-  // Welcome
-  const modeTag = options.dryRun ? dim(" [dry-run]") : "";
-  console.log("");
-  console.log(`${bold("Khala configuration")}${modeTag}${dim(":")}`);
-
   try {
     const scope  = await askScope(options);
     const models = await askModels(options);
@@ -1397,20 +1703,26 @@ async function main() {
     const targetConfigPath = configPath(scope);
     const targetSettingsPath = settingsPath(scope);
     const labelWidth = 12;
+    const scopeLabel = scope === "project" ? "project" : "global";
 
-    console.log(`${dim("scope".padEnd(labelWidth))}${targetSettingsPath}`);
-    console.log(`${dim("config".padEnd(labelWidth))}${targetConfigPath}`);
-    console.log(`${dim("planning".padEnd(labelWidth))}${models.planning}`);
-    console.log(`${dim("development".padEnd(labelWidth))}${models.development}`);
-    console.log(`${dim("peer-review".padEnd(labelWidth))}${models.peerReview}`);
+    console.log("");
+    console.log(titleLine("Khala configuration", { dryRun: options.dryRun }));
+    console.log(rowAdd(`install khala package in ${scopeLabel} Pi settings (${targetSettingsPath})`));
+    console.log(rowAdd(`write workflow model config ${targetConfigPath}`));
+    console.log(rowKeep(`${"planning".padEnd(labelWidth)}${models.planning}`));
+    console.log(rowKeep(`${"development".padEnd(labelWidth)}${models.development}`));
+    console.log(rowKeep(`${"peer-review".padEnd(labelWidth)}${models.peerReview}`));
 
-    if (options.dryRun) return;
+    if (options.dryRun) {
+      console.log(nextStep(`Run without ${bold("--dry-run")} when you are ready to install.`));
+      return;
+    }
 
     // Install
     console.log("");
     const confirmed = await confirmInstall(options);
     if (!confirmed) {
-      console.log(`${dim("Skipped.")}  Run ${bold(`pi ${args.join(" ")}`)} when you're ready.`);
+      console.log(`${dim("Skipped.")}  Run ${bold(`pi ${args.join(" ")}`)} when you are ready.`);
       return;
     }
 
@@ -1424,8 +1736,9 @@ async function main() {
     if (process.exitCode === 0) {
       writeWorkflowConfig(targetConfigPath, models);
       console.log("");
-      console.log(`${check("✓")} Installed.  Config written to ${targetConfigPath}`);
-      console.log(`  Start Pi and run ${bold("/khala")} then ${bold("/khala-health")} to verify.`);
+      console.log(green(bold("Done.")) + dim(" Khala is installed."));
+      console.log(wroteLine(`workflow model config ${targetConfigPath}`));
+      console.log(nextStep(`Start Pi and run ${bold("/khala")} then ${bold("/khala-health")} to verify.`));
     }
   } catch (error) {
     if (isAbortError(error)) {
