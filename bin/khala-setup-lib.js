@@ -283,15 +283,16 @@ export function liteLLMProviderExists(current, providerId) {
   return isPlainObject(current.providers[providerId]);
 }
 
-function mergeEnabledModels(existingEnabledModels, modelId) {
+function mergeEnabledModelList(existingEnabledModels, modelIds) {
   const enabledModels = Array.isArray(existingEnabledModels)
     ? existingEnabledModels.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
     : [];
-
-  if (!enabledModels.includes(modelId)) {
-    enabledModels.push(modelId);
+  const seen = new Set(enabledModels);
+  for (const id of modelIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    enabledModels.push(id);
   }
-
   return enabledModels;
 }
 
@@ -418,9 +419,7 @@ export function mergeLiteLLMProjectSettings(current, options) {
   const root = isPlainObject(current) ? { ...current } : {};
   root.defaultProvider = providerId;
   root.defaultModel = modelIds[0];
-  let mergedEnabled = root.enabledModels;
-  for (const id of modelIds) mergedEnabled = mergeEnabledModels(mergedEnabled, id);
-  root.enabledModels = mergedEnabled;
+  root.enabledModels = mergeEnabledModelList(root.enabledModels, modelIds);
 
   return root;
 }
