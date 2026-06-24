@@ -233,6 +233,28 @@ function rawMode(on) {
   }
 }
 
+// Visible (printable) width of a string after stripping CSI SGR color/style
+// escapes. The picker's buildLines() output only uses SGR escapes, so this
+// regex is sufficient.
+const ANSI_SGR_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "g");
+function visibleWidth(s) {
+  return s.replace(ANSI_SGR_RE, "").length;
+}
+
+// Number of *physical* terminal rows that `lines` will occupy after auto-wrap
+// at the current terminal width. Each logical line wraps to ceil(width / cols)
+// rows, minimum 1. When stdout has no known column count we fall back to the
+// logical line count (best effort; matches old behavior).
+function paintedRowCount(lines) {
+  const cols = process.stdout.columns || 0;
+  if (!cols) return lines.length;
+  let total = 0;
+  for (const line of lines) {
+    total += Math.max(1, Math.ceil(visibleWidth(line) / cols));
+  }
+  return total;
+}
+
 /**
  * Inline arrow-key selector with viewport scrolling and type-to-filter.
  *
@@ -337,7 +359,7 @@ async function askChoice(title, choices, fallback, options = {}) {
     const lines = buildLines();
     if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
     process.stdout.write(`${lines.join("\n")}\n`);
-    drawnLines = lines.length;
+    drawnLines = paintedRowCount(lines);
   };
 
   process.stdout.write("\x1b[?25l"); // hide cursor while drawing the picker
@@ -497,7 +519,7 @@ async function askMultiChoice(title, initialChoices, options = {}) {
     const lines = buildLines();
     if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
     process.stdout.write(`${lines.join("\n")}\n`);
-    drawnLines = lines.length;
+    drawnLines = paintedRowCount(lines);
   };
 
   process.stdout.write("\x1b[?25l");
