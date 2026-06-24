@@ -110,27 +110,20 @@ test("khala CLI discovers Pi availability and LiteLLM aliases without printing s
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-discovery-"));
   const binDir = path.join(tempDir, "bin");
   const piAgentDir = path.join(tempDir, "pi-agent");
+  const piLog = path.join(tempDir, "pi.log");
 
   try {
     await writeFakePi(
       binDir,
-      `if [[ "$*" == "--list-models gpt-5.5" ]]; then
-  printf 'provider model\n'
-  printf 'github-copilot gpt-5.5\n'
-  exit 0
-fi
-if [[ "$*" == "--list-models gpt-5.4-mini" ]]; then
-  printf 'provider model\n'
-  printf 'openai-codex gpt-5.4-mini\n'
-  exit 0
-fi
-if [[ "$*" == "--list-models claude-opus-4.7" ]]; then
-  printf 'provider model\n'
-  printf 'github-copilot claude-opus-4.7\n'
-  exit 0
+      `printf '%s\n' "$*" >> ${JSON.stringify(piLog)}
+if [[ "$*" != "--list-models" ]]; then
+  printf 'unexpected pi args: %s\n' "$*" >&2
+  exit 2
 fi
 printf 'provider model\n'
-exit 0
+printf 'github-copilot gpt-5.5\n'
+printf 'openai-codex gpt-5.4-mini\n'
+printf 'github-copilot claude-opus-4.7\n'
 `,
     );
     await mkdir(piAgentDir, { recursive: true });
@@ -189,6 +182,7 @@ exit 0
     assert.match(stdout, /✓ development\s+openai-codex\/gpt-5\.4-mini/);
     assert.match(stdout, /openai-codex.*litellm-team-a|litellm-team-a.*openai-codex/);
     assert.doesNotMatch(stdout, /team-a-secret|team-b-secret|anthropic-secret/);
+    assert.equal(await readFile(piLog, "utf8"), "--list-models\n");
     assert.equal(stderr, "");
   } finally {
     await rm(tempDir, { recursive: true, force: true });

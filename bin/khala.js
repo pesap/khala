@@ -145,25 +145,36 @@ function readJsonFile(filePath) {
 
 function modelsJsonPath() { return path.join(piAgentDir(), "models.json"); }
 
-// Cache pi --list-models results for the process lifetime so askModels and
-// discoverySection share results rather than spawning pi twice per query.
-const _piModelCache = new Map();
+// Cache the full pi --list-models result for the process lifetime so one Khala
+// setup run pays Pi's model-list startup cost only once.
+let _piModelListCache = null;
+
+function piModelList() {
+  if (_piModelListCache !== null) return _piModelListCache;
+
+  const result = spawnSync("pi", ["--list-models"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    _piModelListCache = { skipped: true, reason: result.error?.message ?? `exit ${result.status ?? 1}`, rows: [] };
+  } else {
+    _piModelListCache = { skipped: false, rows: parseModelListOutput(result.stdout ?? "") };
+  }
+
+  return _piModelListCache;
+}
 
 function discoverPiModels(modelQuery, selectedModelId) {
-  if (!_piModelCache.has(modelQuery)) {
-    const result = spawnSync("pi", ["--list-models", modelQuery], { encoding: "utf8" });
-    if (result.error || result.status !== 0) {
-      _piModelCache.set(modelQuery, { skipped: true, reason: result.error?.message ?? `exit ${result.status ?? 1}`, rows: [] });
-    } else {
-      _piModelCache.set(modelQuery, { skipped: false, rows: parseModelListOutput(result.stdout ?? "") });
-    }
-  }
-  const cached = _piModelCache.get(modelQuery);
+  const cached = piModelList();
   if (cached.skipped) return { available: false, skipped: true, reason: cached.reason, rows: [] };
+
+  const query = modelQuery.toLowerCase();
+  const rows = cached.rows.filter((r) =>
+    r.model.toLowerCase().includes(query) || `${r.provider}/${r.model}` === selectedModelId,
+  );
+
   return {
-    available: cached.rows.some((r) => r.model === modelQuery || `${r.provider}/${r.model}` === selectedModelId),
+    available: rows.some((r) => r.model === modelQuery || `${r.provider}/${r.model}` === selectedModelId),
     skipped: false,
-    rows: cached.rows,
+    rows,
   };
 }
 
