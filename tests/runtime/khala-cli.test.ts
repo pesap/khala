@@ -12,11 +12,14 @@ import {
   DEFAULT_THINKING_LEVEL_MAP,
   LITELLM_PROVIDER_API,
   MALFORMED_PROFILE_MESSAGE,
+  buildLiteLLMApiKeyCommand,
   buildProfileChoices,
   filterValidLiteLLMModelNames,
   buildEnrichedModelEntries,
   liteLLMProviderExists,
+  mergeAuthJsonApiKey,
   mergeLiteLLMModelsJson,
+  mergeLiteLLMProjectKeyConfig,
   mergeLiteLLMProjectSettings,
   modelSupportsThinking,
   normalizeCustomProfileEntry,
@@ -25,6 +28,8 @@ import {
   parseLiteLLMModelInfoResponse,
   parseProfileEntry,
   stringifyModelsJson,
+  validateAuthCommand,
+  validateAuthLiteral,
   validateLiteLLMKeyEnv,
   validateLiteLLMProviderId,
 } from "../../bin/khala-setup-lib.js";
@@ -497,8 +502,22 @@ test("khala setup helper merge uses REPLACE semantics and reports isUpdate/previ
   assert.deepEqual(newModels[1], { id: "gpt-5.4-mini" });
   // Unrelated provider untouched.
   assert.equal(result.value.providers["unrelated-anthropic"].api, "anthropic-messages");
-  // apiKey reference is refreshed from keyEnv.
-  assert.equal(result.value.providers["team-litellm"].apiKey, "$LITELLM_API_KEY");
+  // apiKey is stable per provider; project-local key config selects the env var.
+  assert.equal(result.value.providers["team-litellm"].apiKey, buildLiteLLMApiKeyCommand("team-litellm"));
+});
+
+test("khala setup helper merges project LiteLLM key references per provider", () => {
+  const result = mergeLiteLLMProjectKeyConfig(
+    { providers: { other: { keyEnv: "OTHER_KEY" }, "team-litellm": { note: "keep" } } },
+    { providerId: "team-litellm", keyEnv: "PROJECT_A_KEY" },
+  );
+
+  assert.deepEqual(result, {
+    providers: {
+      other: { keyEnv: "OTHER_KEY" },
+      "team-litellm": { note: "keep", keyEnv: "PROJECT_A_KEY" },
+    },
+  });
 });
 
 test("khala setup helper merge reports isUpdate=false for a brand-new provider", () => {
@@ -512,6 +531,73 @@ test("khala setup helper merge reports isUpdate=false for a brand-new provider",
     result.value.providers["brand-new"].models.map((m: { id: string }) => m.id),
     ["m1"],
   );
+});
+
+test("khala setup helper validateAuthLiteral accepts single-line keys and rejects blank/multiline", () => {
+  assert.equal(validateAuthLiteral("sk-abc123"), "sk-abc123");
+  assert.equal(validateAuthLiteral(" sk-leading-space"), " sk-leading-space");  // trim is the user's job
+  assert.throws(() => validateAuthLiteral(""), /non-empty/);
+  assert.throws(() => validateAuthLiteral("   "), /non-empty/);
+  assert.throws(() => validateAuthLiteral("line1\nline2"), /single line/);
+  assert.throws(() => validateAuthLiteral("line1\r\nline2"), /single line/);
+  assert.throws(() => validateAuthLiteral(undefined as unknown as string), /non-empty/);
+});
+
+test("khala setup helper validateAuthCommand requires a leading '!' followed by a command", () => {
+  assert.equal(
+    validateAuthCommand("!op read 'op://Personal/team/credential'"),
+    "!op read 'op://Personal/team/credential'",
+  );
+  assert.equal(validateAuthCommand("  !security find-generic-password -ws nlr  "), "!security find-generic-password -ws nlr");
+  assert.throws(() => validateAuthCommand(""), /must start with '!'/);
+  assert.throws(() => validateAuthCommand("!"), /must start with '!'/);
+  assert.throws(() => validateAuthCommand("security find ..."), /must start with '!'/);
+  assert.throws(() => validateAuthCommand("$ENV_VAR"), /must start with '!'/);
+});
+
+test("khala setup helper mergeAuthJsonApiKey preserves unrelated providers and reports conflicts", () => {
+  const existing = {
+    "openai": { type: "api_key", key: "sk-other-keep-me" },
+    "github-copilot": { type: "oauth", refresh: "r", access: "a", expires: 9_999_999_999_000 },
+    "cloudflare-ai-gateway": { type: "api_key", key: "$CF_KEY", env: { CLOUDFLARE_ACCOUNT_ID: "abc" } },
+  };
+
+  // Brand-new provider: isUpdate=false, no conflict.
+  const fresh = mergeAuthJsonApiKey(existing, "team-litellm", "sk-team-new");
+  assert.equal(fresh.isUpdate, false);
+  assert.equal(fresh.conflict, false);
+  assert.deepEqual(fresh.value["team-litellm"], { type: "api_key", key: "sk-team-new" });
+  // Every other entry survives bit-for-bit.
+  assert.deepEqual(fresh.value.openai, existing.openai);
+  assert.deepEqual(fresh.value["github-copilot"], existing["github-copilot"]);
+  assert.deepEqual(fresh.value["cloudflare-ai-gateway"], existing["cloudflare-ai-gateway"]);
+
+  // Same provider, SAME key: update, no conflict.
+  const sameAgain = mergeAuthJsonApiKey(fresh.value, "team-litellm", "sk-team-new");
+  assert.equal(sameAgain.isUpdate, true);
+  assert.equal(sameAgain.conflict, false);
+
+  // Same provider, DIFFERENT key: update with conflict.
+  const replaced = mergeAuthJsonApiKey(fresh.value, "team-litellm", "sk-team-rotated");
+  assert.equal(replaced.isUpdate, true);
+  assert.equal(replaced.conflict, true);
+  assert.equal(replaced.value["team-litellm"].key, "sk-team-rotated");
+
+  // Overwriting an OAuth entry with api_key: conflict=true (the caller must
+  // require explicit confirmation before nuking refresh tokens).
+  const overrideOAuth = mergeAuthJsonApiKey(existing, "github-copilot", "sk-not-oauth");
+  assert.equal(overrideOAuth.conflict, true);
+  assert.equal(overrideOAuth.value["github-copilot"].type, "api_key");
+  assert.equal(overrideOAuth.value["github-copilot"].key, "sk-not-oauth");
+
+  // Existing provider-scoped env block is preserved on a key-only update.
+  const preserveEnv = mergeAuthJsonApiKey(existing, "cloudflare-ai-gateway", "$NEW_CF_KEY");
+  assert.deepEqual(preserveEnv.value["cloudflare-ai-gateway"].env, { CLOUDFLARE_ACCOUNT_ID: "abc" });
+  assert.equal(preserveEnv.value["cloudflare-ai-gateway"].key, "$NEW_CF_KEY");
+
+  // Defensive: bad inputs throw with actionable messages.
+  assert.throws(() => mergeAuthJsonApiKey(existing, "", "sk"), /providerId is required/);
+  assert.throws(() => mergeAuthJsonApiKey(existing, "team", ""), /key value is required/);
 });
 
 test("khala setup helper reads thinking support from discovery rows and assumes yes when unknown", () => {
@@ -556,7 +642,7 @@ test("khala setup helper merges LiteLLM provider and project settings without cl
   assert.equal(mergedModels.conflict, false);
   assert.equal(mergedModels.value.providers["team-litellm"].baseUrl, "https://lite.example/v1");
   assert.equal(mergedModels.value.providers["team-litellm"].api, LITELLM_PROVIDER_API);
-  assert.equal(mergedModels.value.providers["team-litellm"].apiKey, "$LITELLM_API_KEY");
+  assert.equal(mergedModels.value.providers["team-litellm"].apiKey, buildLiteLLMApiKeyCommand("team-litellm"));
   assert.deepEqual(mergedModels.value.providers["team-litellm"].models.map((model) => model.id), ["gpt-5.4-mini"]);
   assert.equal(mergedModels.value.providers["other-provider"].api, "anthropic-messages");
 
@@ -598,7 +684,7 @@ test("khala setup helper merges multiple LiteLLM models in a single pass with th
   assert.deepEqual(mergedSettings.enabledModels, ["claude-*", "gpt-5.4-mini", "claude-opus-4.7"]);
 });
 
-test("khala litellm --help documents the LiteLLM setup mode and secret boundary", async () => {
+test("khala litellm --help documents the LiteLLM setup mode and key-storage options", async () => {
   const { stdout } = await runKhala(["litellm", "--help"]);
 
   assert.equal(stdout.includes("khala litellm - configure a LiteLLM-compatible Pi provider"), true);
@@ -614,7 +700,15 @@ test("khala litellm --help documents the LiteLLM setup mode and secret boundary"
   assert.match(stdout, /--no-input/);
   assert.match(stdout, /--dry-run/);
   assert.match(stdout, /PI_CODING_AGENT_DIR/);
-  assert.match(stdout, /raw API keys are never requested or stored/);
+  // The three new auth flags must all be documented.
+  assert.match(stdout, /--auth-mode <mode>\s+How to store the key: skip \| literal \| command/);
+  assert.match(stdout, /--auth-key <value>/);
+  assert.match(stdout, /--auth-command <!cmd>/);
+  // The runtime-resolution section explains pi's chain so users understand
+  // why auth.json is the canonical place to put the key.
+  assert.match(stdout, /Key resolution at runtime:/);
+  assert.match(stdout, /auth\.json\[<id>\] > env var/);
+  assert.match(stdout, /0600 perms/);
 });
 
 test("khala litellm dry-run prints config paths without writing files or calling pi", async () => {
@@ -653,7 +747,8 @@ test("khala litellm dry-run prints config paths without writing files or calling
     assert.match(result.stdout, /settings\s+.*\.pi\/settings\.json/);
     assert.match(result.stdout, /provider\s+team-litellm/);
     assert.match(result.stdout, /api\s+openai-completions/);
-    assert.match(result.stdout, /apiKey\s+\$LITELLM_API_KEY/);
+    assert.match(result.stdout, /apiKey\s+!khala litellm print-key --provider team-litellm/);
+    assert.match(result.stdout, /key-env\s+\$LITELLM_API_KEY/);
     assert.match(result.stdout, /model\s+gpt-5\.4-mini/);
     assert.doesNotMatch(result.stdout, /team-litellm\/\*/);
     // Forbid actual secret-shaped leaks (KEY=<real-value>). The pre-flight
@@ -665,6 +760,7 @@ test("khala litellm dry-run prints config paths without writing files or calling
     await assert.rejects(readFile(piLog, "utf8"));
     await assert.rejects(readFile(path.join(piAgentDir, "models.json"), "utf8"));
     await assert.rejects(readFile(path.join(tempDir, ".pi", "settings.json"), "utf8"));
+    await assert.rejects(readFile(path.join(tempDir, ".pi", "khala", "litellm.json"), "utf8"));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -694,6 +790,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
   const piLog = path.join(tempDir, "pi.log");
   const modelsPath = path.join(piAgentDir, "models.json");
   const settingsPath = path.join(tempDir, ".pi", "settings.json");
+  const keyConfigPath = path.join(tempDir, ".pi", "khala", "litellm.json");
   const authPath = path.join(piAgentDir, "auth.json");
   const projectAuthPath = path.join(tempDir, ".pi", "auth.json");
 
@@ -764,7 +861,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     const provider = mergedModels.providers["team-litellm"];
     assert.equal(provider.baseUrl, "https://lite.example/v1");
     assert.equal(provider.api, LITELLM_PROVIDER_API);
-    assert.equal(provider.apiKey, "$LITELLM_API_KEY");
+    assert.equal(provider.apiKey, buildLiteLLMApiKeyCommand("team-litellm"));
     assert.deepEqual(provider.models.map((model) => model.id), ["gpt-5.4-mini"]);
     assert.equal(mergedModels.providers["other-provider"].api, "anthropic-messages");
 
@@ -775,6 +872,9 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     assert.equal(mergedSettings.theme, "dark");
     assert.equal(mergedSettings.warnings.foo, true);
     assert.doesNotMatch(JSON.stringify(mergedSettings), /team-litellm\/\*/);
+
+    const keyConfig = JSON.parse(await readFile(keyConfigPath, "utf8"));
+    assert.equal(keyConfig.providers["team-litellm"].keyEnv, "LITELLM_API_KEY");
 
     await assert.rejects(readFile(authPath, "utf8"));
     await assert.rejects(readFile(projectAuthPath, "utf8"));
@@ -788,7 +888,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
         "--base-url",
         "https://lite.example/v1",
         "--key-env",
-        "LITELLM_API_KEY",
+        "PROJECT_B_LITELLM_API_KEY",
         "--model",
         "gpt-5.4-mini",
         "--yes",
@@ -800,8 +900,84 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     assert.equal(second.code, 0);
     const rerunModels = JSON.parse(await readFile(modelsPath, "utf8"));
     const rerunSettings = JSON.parse(await readFile(settingsPath, "utf8"));
+    const rerunKeyConfig = JSON.parse(await readFile(keyConfigPath, "utf8"));
+    assert.equal(rerunModels.providers["team-litellm"].apiKey, buildLiteLLMApiKeyCommand("team-litellm"));
     assert.deepEqual(rerunModels.providers["team-litellm"].models.map((model) => model.id), ["gpt-5.4-mini"]);
     assert.deepEqual(rerunSettings.enabledModels, ["claude-*", "gpt-5.4-mini"]);
+    assert.equal(rerunKeyConfig.providers["team-litellm"].keyEnv, "PROJECT_B_LITELLM_API_KEY");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm print-key resolves the nearest project key env without using models.json", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-print-key-"));
+  const nestedDir = path.join(tempDir, "src", "nested");
+  const keyConfigPath = path.join(tempDir, ".pi", "khala", "litellm.json");
+
+  try {
+    await mkdir(path.dirname(keyConfigPath), { recursive: true });
+    await mkdir(nestedDir, { recursive: true });
+    await writeFile(
+      keyConfigPath,
+      JSON.stringify({ providers: { "team-litellm": { keyEnv: "PROJECT_LITELLM_KEY" } } }, null, 2),
+      "utf8",
+    );
+
+    const result = await runKhala(
+      ["litellm", "print-key", "--provider", "team-litellm"],
+      { PROJECT_LITELLM_KEY: "sk-project-secret" },
+      nestedDir,
+    );
+
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "sk-project-secret");
+    assert.equal(result.stderr, "");
+
+    const missing = await runKhala(["litellm", "print-key", "--provider", "team-litellm"], {}, nestedDir);
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /\$PROJECT_LITELLM_KEY is not exported/);
+    assert.doesNotMatch(missing.stderr, /sk-project-secret/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm keeps one provider entry while different projects choose different key envs", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-project-keys-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  const projectA = path.join(tempDir, "project-a");
+  const projectB = path.join(tempDir, "project-b");
+  const modelsPath = path.join(piAgentDir, "models.json");
+
+  try {
+    await mkdir(projectA, { recursive: true });
+    await mkdir(projectB, { recursive: true });
+
+    for (const [projectDir, keyEnv] of [[projectA, "PROJECT_A_KEY"], [projectB, "PROJECT_B_KEY"]] as const) {
+      const result = await runKhala(
+        [
+          "litellm", "--project",
+          "--provider", "team-litellm",
+          "--base-url", "https://lite.example/v1",
+          "--key-env", keyEnv,
+          "--model", "gpt-5.4-mini",
+          "--yes",
+        ],
+        { PI_CODING_AGENT_DIR: piAgentDir },
+        projectDir,
+      );
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+    }
+
+    const models = JSON.parse(await readFile(modelsPath, "utf8"));
+    assert.deepEqual(Object.keys(models.providers), ["team-litellm"]);
+    assert.equal(models.providers["team-litellm"].apiKey, buildLiteLLMApiKeyCommand("team-litellm"));
+
+    const projectAKeys = JSON.parse(await readFile(path.join(projectA, ".pi", "khala", "litellm.json"), "utf8"));
+    const projectBKeys = JSON.parse(await readFile(path.join(projectB, ".pi", "khala", "litellm.json"), "utf8"));
+    assert.equal(projectAKeys.providers["team-litellm"].keyEnv, "PROJECT_A_KEY");
+    assert.equal(projectBKeys.providers["team-litellm"].keyEnv, "PROJECT_B_KEY");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -850,7 +1026,7 @@ test("khala litellm registers multiple models in one pass via --model a,b,c", as
       merged.providers["team-litellm"].models.map((m: { id: string }) => m.id),
       ["gpt-5.4-mini", "gpt-4o", "claude-opus-4.7"],
     );
-    assert.equal(merged.providers["team-litellm"].apiKey, "$LITELLM_API_KEY");
+    assert.equal(merged.providers["team-litellm"].apiKey, buildLiteLLMApiKeyCommand("team-litellm"));
 
     const settings = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(settings.defaultProvider, "team-litellm");
@@ -948,15 +1124,19 @@ test("khala litellm enriches model entries from a LiteLLM /model/info endpoint",
   }
 });
 
-test("khala litellm prints a loud pre-flight warning when the key env var is not exported", async () => {
+test("khala litellm surfaces a no-key-source state in the summary block", async () => {
+  // With auth-mode landing, the pre-flight banner is gone — the same signal
+  // is delivered by the `auth` and `metadata` rows in the summary block,
+  // which the user sees right before the confirmation prompt. This test
+  // pins both rows so a future refactor can't silently drop the warning.
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-noexport-"));
   const piAgentDir = path.join(tempDir, "pi-agent");
   try {
     await mkdir(piAgentDir, { recursive: true });
     await mkdir(path.join(tempDir, ".pi"), { recursive: true });
 
-    // Note: NO `DEFINITELY_UNSET_KEY` in the spawn env. We're testing the
-    // pre-flight detection path: enrichment must not silently degrade.
+    // Note: NO `DEFINITELY_UNSET_KEY` in the spawn env and no --auth-mode
+    // flag — we want to exercise the "silent fallback to skip" path.
     const result = await runKhala(
       [
         "litellm", "--project",
@@ -971,16 +1151,16 @@ test("khala litellm prints a loud pre-flight warning when the key env var is not
     );
 
     assert.equal(result.code, 0);
-    // (1) Pre-flight banner above the summary — unmissable, multi-line,
-    //     and tells the user exactly how to fix it.
-    assert.match(result.stdout, /! \$DEFINITELY_UNSET_KEY is not exported in this shell\./);
-    assert.match(result.stdout, /Models will be written as bare/);
-    assert.match(result.stdout, /export DEFINITELY_UNSET_KEY=<your-key>/);
-    // (2) Summary's metadata row says NOT FETCHED loudly, not a meek "skipped".
-    assert.match(result.stdout, /metadata\s+.*NOT FETCHED — \$DEFINITELY_UNSET_KEY is not exported/);
-    // (3) The fallback write still proceeds with bare { id } entries.
+    // The `auth` row names the missing env var AND the missing auth.json
+    // entry — both halves of pi's resolution chain are accounted for.
+    assert.match(result.stdout, /auth\s+.*none — \$DEFINITELY_UNSET_KEY unset and no auth\.json entry/);
+    // The `metadata` row says NOT FETCHED loudly (yellow) and explains why.
+    assert.match(result.stdout, /metadata\s+.*NOT FETCHED — \$DEFINITELY_UNSET_KEY is not exported and auth\.json has no entry/);
+    // The fallback write still proceeds with bare { id } entries.
     const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
     assert.match(raw, /\{ "id": "gpt-4o" \}/);
+    // And no auth.json is created when the user picked skip (the default).
+    await assert.rejects(readFile(path.join(piAgentDir, "auth.json"), "utf8"));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -1014,6 +1194,201 @@ test("khala litellm degrades to bare entries when /model/info is unreachable", a
     // Bare entries get the compact one-line treatment.
     const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
     assert.match(raw, /\{ "id": "gpt-4o" \}/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm --auth-mode=literal writes auth.json with 0600 perms and uses the key for /model/info", async () => {
+  const requests: Array<{ url: string; auth: string | undefined }> = [];
+  const server: Server = createServer((req, res) => {
+    requests.push({ url: req.url ?? "", auth: req.headers.authorization });
+    if (req.url === "/model/info") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        data: [{
+          model_name: "gpt-5.4-mini",
+          model_info: { max_input_tokens: 200_000, max_output_tokens: 8192, input_cost_per_token: 0.00000015, output_cost_per_token: 0.0000006 },
+        }],
+      }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-auth-literal-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+    // Pre-seed auth.json with an unrelated entry that MUST survive the merge.
+    await writeFile(path.join(piAgentDir, "auth.json"), JSON.stringify({
+      "openai": { type: "api_key", key: "sk-keep-me" },
+    }, null, 2), "utf8");
+
+    const secretValue = "sk-fake-literal-token-paste";
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "team-litellm",
+        "--base-url", baseUrl,
+        "--key-env", "LITELLM_API_KEY",
+        "--model", "gpt-5.4-mini",
+        "--auth-mode=literal", `--auth-key=${secretValue}`,
+        "--yes",
+      ],
+      // NO LITELLM_API_KEY in env: prove the literal alone enables enrichment.
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    // (a) The auth row in the summary points at auth.json with 0600.
+    assert.match(result.stdout, /auth\s+store value in .*auth\.json/);
+    assert.match(result.stdout, /\(0600\)/);
+    assert.match(result.stdout, /✓ Wrote .*auth\.json/);
+    // (b) Enrichment kicked in because the literal was used for the fetch.
+    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    // (c) Server saw a Bearer header carrying the literal value.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].auth, `Bearer ${secretValue}`);
+    // (d) The literal NEVER appears in stdout/stderr — only the path to the
+    //     file. This is the core safety guarantee of the masked prompt.
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(secretValue));
+    // (e) auth.json on disk has the literal, the unrelated provider survived,
+    //     and the file is 0600 (read+write for user only).
+    const authPath = path.join(piAgentDir, "auth.json");
+    const authRaw = await readFile(authPath, "utf8");
+    const authParsed = JSON.parse(authRaw);
+    assert.deepEqual(authParsed["team-litellm"], { type: "api_key", key: secretValue });
+    assert.deepEqual(authParsed.openai, { type: "api_key", key: "sk-keep-me" });
+    const { mode } = await import("node:fs/promises").then((m) => m.stat(authPath));
+    // Lower 9 bits == permission bits; 0o600 == 0o400 (user-read) | 0o200 (user-write).
+    assert.equal(mode & 0o777, 0o600, `auth.json must be 0600, was 0${(mode & 0o777).toString(8)}`);
+    // (f) Boundary line updated for literal storage.
+    assert.match(result.stdout, /boundary\s+Khala stored your API key in .*auth\.json/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm --auth-mode=command stores a !command and exec's it for /model/info", async () => {
+  const requests: Array<{ auth: string | undefined }> = [];
+  const server: Server = createServer((req, res) => {
+    requests.push({ auth: req.headers.authorization });
+    if (req.url === "/model/info") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ model_name: "gpt-4o", model_info: { max_input_tokens: 128000 } }] }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-auth-command-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+
+    // The command prints a fake key on stdout. khala must exec it once for
+    // the immediate /model/info fetch, AND store the command (NOT its output)
+    // in auth.json so pi re-execs at runtime.
+    const command = "!printf 'sk-from-shell-command'";
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "cmd-provider",
+        "--base-url", baseUrl,
+        "--key-env", "CMD_PROVIDER_KEY",
+        "--model", "gpt-4o",
+        "--auth-mode=command", `--auth-command=${command}`,
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /auth\s+store command in .*auth\.json/);
+    // Enrichment worked because the command's stdout was used as the bearer.
+    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    assert.equal(requests[0].auth, "Bearer sk-from-shell-command");
+    // auth.json stores the !command verbatim, not the resolved value.
+    const auth = JSON.parse(await readFile(path.join(piAgentDir, "auth.json"), "utf8"));
+    assert.deepEqual(auth["cmd-provider"], { type: "api_key", key: command });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm --auth-mode=skip leaves auth.json untouched", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-auth-skip-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "nlr",
+        "--base-url", "https://example.com/v1",
+        "--key-env", "NLR_KEY",
+        "--model", "gpt-4o",
+        "--auth-mode=skip",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir, NLR_KEY: "sk-from-shell" },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /auth\s+\$NLR_KEY from shell/);
+    // No ✓ Wrote line for auth.json, and no auth.json file on disk.
+    assert.doesNotMatch(result.stdout, /✓ Wrote .*auth\.json/);
+    await assert.rejects(readFile(path.join(piAgentDir, "auth.json"), "utf8"));
+    // Boundary tagline stays in "reference, not value" mode.
+    assert.match(result.stdout, /boundary\s+Khala stored a key reference, not a secret value/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm fails closed on malformed auth.json", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-bad-auth-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+    await writeFile(path.join(piAgentDir, "auth.json"), "{ not-json", "utf8");
+
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "nlr",
+        "--base-url", "https://example.com/v1",
+        "--key-env", "NLR_KEY",
+        "--model", "gpt-4o",
+        "--auth-mode=literal", "--auth-key=sk-fake",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    // Same fail-closed contract as models.json / settings.json: exit 2 with
+    // a clear message naming the bad file. Better than silently clobbering
+    // a file that might be salvageable by hand.
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /auth\.json/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

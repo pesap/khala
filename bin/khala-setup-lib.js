@@ -15,6 +15,11 @@ export const MALFORMED_PROFILE_MESSAGE =
 export const LITELLM_PROVIDER_API = "openai-completions";
 export const LITELLM_PROVIDER_APIS = new Set(["openai-completions", "openai-responses"]);
 
+export function buildLiteLLMApiKeyCommand(providerId) {
+  const provider = validateLiteLLMProviderId(providerId);
+  return `!khala litellm print-key --provider ${provider}`;
+}
+
 /**
  * Build the picker choices for one workflow profile.
  *
@@ -283,6 +288,80 @@ export function liteLLMProviderExists(current, providerId) {
   return isPlainObject(current.providers[providerId]);
 }
 
+// ── auth.json (pi-canonical key storage) ────────────────────────────────────
+//
+// Pi's own ~/.pi/agent/auth.json schema, replicated for custom providers like
+// LiteLLM. Each entry is one of:
+//   { type: "api_key", key: "<literal | $ENV | !command>", env?: {...} }
+//   { type: "oauth",   refresh, access, expires }
+// Pi's getApiKey(providerId) chain is: --api-key flag > auth.json > env var.
+// Writing here means a provider that uses `apiKey: "$NLR_KEY"` in models.json
+// can resolve without the env var ever being exported at runtime.
+
+const AUTH_COMMAND_PREFIX = "!";
+
+export function validateAuthCommand(value) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed.startsWith(AUTH_COMMAND_PREFIX) || trimmed.length < 2) {
+    throw new Error(
+      "Auth command must start with '!' followed by a shell command, e.g.\n" +
+      "  !security find-generic-password -ws nlr\n" +
+      "  !op read 'op://Personal/NLR/credential'\n" +
+      "Pi executes the value after the leading '!' and uses stdout as the key.",
+    );
+  }
+  return trimmed;
+}
+
+export function validateAuthLiteral(value) {
+  if (typeof value !== "string") {
+    throw new Error("Auth key value must be a non-empty string.");
+  }
+  // Don't .trim() here — a leading/trailing space in a pasted secret is the
+  // user's problem and silently fixing it can mask paste errors. We only
+  // reject the all-whitespace case so the prompt doesn't store "".
+  if (value.length === 0 || value.trim().length === 0) {
+    throw new Error("Auth key value must be a non-empty string.");
+  }
+  // Defense-in-depth: reject obviously corrupted clipboard content like a
+  // pasted multi-line block. Real API keys are single-line.
+  if (/[\r\n]/.test(value)) {
+    throw new Error("Auth key value must be a single line (no embedded newlines). Paste only the key.");
+  }
+  return value;
+}
+
+/**
+ * Merge an api_key entry for `providerId` into existing auth.json data.
+ * Other providers (api_key OR oauth) are preserved verbatim — only the
+ * matching entry is replaced. Returns:
+ *   value:    the new root object to write
+ *   conflict: true when an existing entry has a different shape (an oauth
+ *             entry, or an api_key whose stored key string differs from
+ *             the new one) — the caller should require explicit confirm.
+ *   isUpdate: true when an entry already existed under that id.
+ */
+export function mergeAuthJsonApiKey(current, providerId, keyValue) {
+  if (typeof providerId !== "string" || !providerId.trim()) {
+    throw new Error("providerId is required for auth.json merge");
+  }
+  if (typeof keyValue !== "string" || !keyValue) {
+    throw new Error("key value is required for auth.json merge");
+  }
+  const id = providerId.trim();
+  const root = isPlainObject(current) ? { ...current } : {};
+  const existing = isPlainObject(root[id]) ? root[id] : null;
+  const conflict = Boolean(
+    existing && (existing.type !== "api_key" || (typeof existing.key === "string" && existing.key !== keyValue)),
+  );
+  // Preserve a pre-existing `env` block if the user set one (e.g. for
+  // Cloudflare-style provider-scoped env values); only the `key` field is
+  // authoritative from our flow.
+  const preserved = existing && existing.type === "api_key" && isPlainObject(existing.env) ? { env: { ...existing.env } } : {};
+  root[id] = { type: "api_key", key: keyValue, ...preserved };
+  return { value: root, conflict, isUpdate: Boolean(existing) };
+}
+
 function mergeEnabledModelList(existingEnabledModels, modelIds) {
   const enabledModels = Array.isArray(existingEnabledModels)
     ? existingEnabledModels.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
@@ -371,7 +450,6 @@ function normalizeModelIdList(options) {
 export function mergeLiteLLMModelsJson(current, options) {
   const providerId = validateLiteLLMProviderId(options.providerId);
   const baseUrl = normalizeLiteLLMBaseUrl(options.baseUrl);
-  const keyEnv = validateLiteLLMKeyEnv(options.keyEnv);
   const modelIds = normalizeModelIdList(options);
 
   const root = isPlainObject(current) ? { ...current } : {};
@@ -404,7 +482,7 @@ export function mergeLiteLLMModelsJson(current, options) {
     ...existingProvider,
     baseUrl,
     api: LITELLM_PROVIDER_API,
-    apiKey: `$${keyEnv}`,
+    apiKey: buildLiteLLMApiKeyCommand(providerId),
     models: mergedModelEntries,
   };
 
@@ -421,5 +499,21 @@ export function mergeLiteLLMProjectSettings(current, options) {
   root.defaultModel = modelIds[0];
   root.enabledModels = mergeEnabledModelList(root.enabledModels, modelIds);
 
+  return root;
+}
+
+export function mergeLiteLLMProjectKeyConfig(current, options) {
+  const providerId = validateLiteLLMProviderId(options.providerId);
+  const keyEnv = validateLiteLLMKeyEnv(options.keyEnv);
+
+  const root = isPlainObject(current) ? { ...current } : {};
+  const providers = isPlainObject(root.providers) ? { ...root.providers } : {};
+  const existingProvider = isPlainObject(providers[providerId]) ? { ...providers[providerId] } : {};
+
+  providers[providerId] = {
+    ...existingProvider,
+    keyEnv,
+  };
+  root.providers = providers;
   return root;
 }

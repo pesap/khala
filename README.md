@@ -52,7 +52,9 @@ khala litellm --project \
 ```
 
 Khala writes a non-secret key reference such as `$LITELLM_API_KEY`; it never
-asks for or stores the raw API key.
+asks for or stores the raw API key. The Pi provider entry uses one stable
+Khala key resolver per provider, while each project records its own selected
+key environment variable under `.pi/khala/litellm.json`.
 
 If the package is already installed, run the helper directly:
 

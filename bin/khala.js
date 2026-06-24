@@ -7,9 +7,12 @@ import process from "node:process";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import {
   LITELLM_PROVIDER_API,
+  buildLiteLLMApiKeyCommand,
   buildProfileChoices,
   filterValidLiteLLMModelNames,
+  mergeAuthJsonApiKey,
   mergeLiteLLMModelsJson,
+  mergeLiteLLMProjectKeyConfig,
   mergeLiteLLMProjectSettings,
   modelSupportsThinking,
   normalizeLiteLLMBaseUrl,
@@ -17,6 +20,8 @@ import {
   parseLiteLLMModelInfoResponse,
   readJsonObjectFile,
   stringifyModelsJson,
+  validateAuthCommand,
+  validateAuthLiteral,
   validateLiteLLMKeyEnv,
   validateLiteLLMProviderId,
 } from "./khala-setup-lib.js";
@@ -114,6 +119,10 @@ function settingsPath(scope) {
   return path.join(base, "settings.json");
 }
 
+function litellmProjectConfigPath(dir = process.cwd()) {
+  return path.join(dir, ".pi", "khala", "litellm.json");
+}
+
 function workflowConfig(models) {
   return [
     "# Khala workflow model config",
@@ -174,6 +183,112 @@ function readJsonFile(filePath) {
 }
 
 function modelsJsonPath() { return path.join(piAgentDir(), "models.json"); }
+function authJsonPath()   { return path.join(piAgentDir(), "auth.json"); }
+
+// ── secret prompt + key resolution ─────────────────────────────────────────
+//
+// Pi stores api keys in ~/.pi/agent/auth.json with `{ type, key, env }` and
+// resolves the `key` field using literal / $ENV / !command syntax. We need:
+//   1. A masked prompt to capture literal values without echoing.
+//   2. A one-shot resolver that turns the user's choice into an actual
+//      string we can pass as `Authorization: Bearer ...` to /model/info.
+// The resolver never logs or returns the key in error messages.
+
+async function promptSecret(question) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("Secret prompts require a TTY. Pass --auth-key=<value> for non-interactive runs.");
+  }
+  process.stdout.write(question);
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw === true;
+    if (typeof stdin.setRawMode === "function") stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    let buf = "";
+    const cleanup = () => {
+      stdin.removeListener("data", onData);
+      if (typeof stdin.setRawMode === "function") stdin.setRawMode(wasRaw);
+      stdin.pause();
+      process.stdout.write("\n");
+    };
+    const onData = (chunk) => {
+      for (const ch of chunk) {
+        const code = ch.charCodeAt(0);
+        if (code === 0x03) {                  // Ctrl+C
+          cleanup();
+          const err = new Error("aborted");
+          err.code = "ABORT_ERR";
+          reject(err);
+          return;
+        }
+        if (code === 0x0d || code === 0x0a) { // Enter
+          cleanup();
+          resolve(buf);
+          return;
+        }
+        if (code === 0x7f || code === 0x08) { // Backspace / Delete
+          buf = buf.slice(0, -1);
+          continue;
+        }
+        if (code >= 0x20) buf += ch;          // ignore non-printable controls
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+/**
+ * Resolve a key reference (literal, `$ENV`, or `!command`) into the actual
+ * string to send as a bearer token for /model/info enrichment. Mirrors the
+ * surface of pi's resolveConfigValue but only handles the three top-level
+ * forms we need; anything more exotic (e.g. interpolated `${VAR}_suffix`)
+ * is left to pi at runtime.
+ *
+ * Returns the resolved string on success or `undefined` if the source is
+ * empty / a `!command` exits non-zero. Never logs or returns the value in
+ * an Error message — callers handle their own user-facing messaging.
+ */
+function resolveKeyForFetch(rawValue) {
+  if (typeof rawValue !== "string" || rawValue.length === 0) return undefined;
+  if (rawValue.startsWith("!")) {
+    const cmd = rawValue.slice(1).trim();
+    if (!cmd) return undefined;
+    const result = spawnSync(cmd, { shell: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    if (result.status !== 0) return undefined;
+    const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
+    return stdout || undefined;
+  }
+  if (rawValue.startsWith("$")) {
+    if (rawValue.startsWith("$$")) return rawValue.slice(1);
+    const m = rawValue.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/);
+    if (!m) return rawValue;
+    return process.env[m[1]] || undefined;
+  }
+  return rawValue;
+}
+
+/**
+ * Write JSON with 0600 file mode (owner read/write only). Used for auth.json
+ * so a pasted API key isn't world-readable. writeFileSync's `mode` only
+ * applies when creating, so chmod explicitly after to cover the update case.
+ */
+function writeSecureJsonFile(filePath, value) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(filePath, 0o600);
+}
+
+function findLiteLLMProjectConfigPath(startDir = process.cwd()) {
+  let dir = path.resolve(startDir);
+  while (true) {
+    const candidate = litellmProjectConfigPath(dir);
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
 
 // Cache the full pi --list-models result for the process lifetime so one Khala
 // setup run pays Pi's model-list startup cost only once.
@@ -501,13 +616,18 @@ function litellmUsage() {
 
 Usage:
   khala litellm --provider <id> --base-url <url> --key-env <env-var> --model <patterns> [flags]
+  khala litellm print-key --provider <id>
   khala litellm --help
 
 Flags:
       --provider <id>        LiteLLM provider id  (e.g. team-litellm)
       --base-url <url>       LiteLLM base URL     (e.g. https://lite.example/v1)
-      --key-env <env-var>    Env var name used as the Pi apiKey reference
+      --key-env <env-var>    Env var that print-key reads for runtime resolution
       --model <patterns>     One bare model name or comma-separated list to register and enable
+      --auth-mode <mode>     How to store the key: skip | literal | command
+                             (TTY default: ask; non-interactive default: skip)
+      --auth-key <value>     Literal key value for --auth-mode=literal
+      --auth-command <!cmd>  Shell command for --auth-mode=command (must start with '!')
   -l, --project              Write to .pi/settings.json in the current project (default)
   -y, --yes                  Skip the write confirmation
       --no-input             Alias for --yes (use in scripts and CI)
@@ -516,14 +636,23 @@ Flags:
   -v, --version              Show version
 
 Examples:
-  khala litellm --project --provider team-litellm --base-url https://lite.example/v1 \\
-    --key-env LITELLM_API_KEY --model gpt-5.4-mini,gpt-4o,claude-opus-4.7 --dry-run
-  khala litellm --project --provider team-litellm --base-url https://lite.example/v1 \\
-    --key-env LITELLM_API_KEY --model gpt-5.4-mini --yes
+  # Interactive: picker asks how to store the key, fetches /model/info, writes everything.
+  khala litellm --provider team-litellm --base-url https://lite.example/v1 --key-env LITELLM_API_KEY
 
-Secret boundary:
-  Khala writes only the key reference, e.g. "$LITELLM_API_KEY".
-  raw API keys are never requested or stored.
+  # Store the key directly in auth.json (paste once, kept at 0600):
+  khala litellm --provider team-litellm --base-url https://lite.example/v1 \\
+    --key-env LITELLM_API_KEY --model gpt-5.4-mini --auth-mode=literal --auth-key="$KEY" --yes
+
+  # Store a keychain/1Password lookup instead of a literal:
+  khala litellm --provider team-litellm --base-url https://lite.example/v1 \\
+    --key-env LITELLM_API_KEY --model gpt-5.4-mini \\
+    --auth-mode=command --auth-command="!op read 'op://Personal/team-litellm/credential'" --yes
+
+Key resolution at runtime:
+  Pi resolves provider keys in this order: --api-key flag > auth.json[<id>] > env var.
+  Storing in auth.json (literal or command) means the key works without an exported
+  env var, and pi can fetch /model/info on a fresh shell. The file is created with
+  0600 perms; unrelated providers are preserved on merge.
 
 Environment:
   PI_CODING_AGENT_DIR  Override the Pi agent directory (default: ~/.pi/agent)
@@ -550,11 +679,32 @@ function parseLitellmArgs(args) {
     else if (arg === "--key-env") options.keyEnv = args[++i] ?? "";
     else if (arg.startsWith("--model=")) options.model = arg.slice("--model=".length);
     else if (arg === "--model") options.model = args[++i] ?? "";
+    else if (arg.startsWith("--auth-mode=")) options.authMode = arg.slice("--auth-mode=".length);
+    else if (arg === "--auth-mode") options.authMode = args[++i] ?? "";
+    else if (arg.startsWith("--auth-key=")) options.authKey = arg.slice("--auth-key=".length);
+    else if (arg === "--auth-key") options.authKey = args[++i] ?? "";
+    else if (arg.startsWith("--auth-command=")) options.authCommand = arg.slice("--auth-command=".length);
+    else if (arg === "--auth-command") options.authCommand = args[++i] ?? "";
     else throw new Error(`Unknown option: ${arg}`);
   }
 
   if (options.global) throw new Error("khala litellm only supports project setup; use --project.");
   if (!options.project) options.project = true;
+  return options;
+}
+
+function parseLitellmPrintKeyArgs(args) {
+  const options = { help: false, provider: "", version: false };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") options.help = true;
+    else if (arg === "--version" || arg === "-v") options.version = true;
+    else if (arg.startsWith("--provider=")) options.provider = arg.slice("--provider=".length);
+    else if (arg === "--provider") options.provider = args[++i] ?? "";
+    else throw new Error(`Unknown option: ${arg}`);
+  }
+
   return options;
 }
 
@@ -614,6 +764,36 @@ function drainStdin() {
   while (process.stdin.read() !== null) {
     // discard
   }
+}
+
+const AUTH_MODES = new Set(["skip", "literal", "command"]);
+
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Three-choice picker for how the API key should be stored. The labels are
+ * deliberately verbose because this is a one-time decision per provider and
+ * users need to understand the tradeoff (paste vs. command vs. env-var).
+ * `fallbackMode` picks the default-highlighted entry based on whether a
+ * working key source already exists.
+ */
+async function askAuthMode({ providerId, keyEnv, hasExistingAuth, fallbackMode }) {
+  const LITERAL = `Paste the key value once  ${dim("— stored in ~/.pi/agent/auth.json (0600)")}`;
+  const COMMAND = `Use a shell command       ${dim("— !op read / !security …, stored in auth.json (0600)")}`;
+  const SKIP    = `Skip                      ${dim(`— keep using $${keyEnv} from the shell${hasExistingAuth ? " (auth.json entry already exists)" : ""}`)}`;
+  const labelByMode = { literal: LITERAL, command: COMMAND, skip: SKIP };
+  const choices = [LITERAL, COMMAND, SKIP];
+  const fallbackLabel = labelByMode[fallbackMode] ?? SKIP;
+  const picked = await askChoice(
+    `How should pi resolve the API key for ${bold(providerId)}?`,
+    choices,
+    fallbackLabel,
+  );
+  if (picked === LITERAL) return "literal";
+  if (picked === COMMAND) return "command";
+  return "skip";
 }
 
 async function pickLiteLLMModels() {
@@ -692,7 +872,55 @@ function writeJsonFile(filePath, value, { compactModelEntries = false } = {}) {
   return true;
 }
 
+async function mainLiteLLMPrintKey(argv) {
+  let options;
+  try {
+    options = parseLitellmPrintKeyArgs(argv);
+  } catch (error) {
+    console.error(error.message);
+    console.error("Run `khala litellm --help` for usage.");
+    process.exitCode = 2;
+    return;
+  }
+
+  if (options.help) {
+    console.log("Usage: khala litellm print-key --provider <id>");
+    return;
+  }
+  if (options.version) { console.log(version()); return; }
+
+  try {
+    if (!options.provider) {
+      throw new Error("Missing required LiteLLM option: --provider.");
+    }
+    const provider = validateLiteLLMProviderId(options.provider);
+    const configPath = findLiteLLMProjectConfigPath();
+    if (!configPath) {
+      throw new Error(`No project LiteLLM key config found for provider '${provider}'. Run khala litellm --project first.`);
+    }
+    const config = readJsonObjectFile(configPath);
+    const providerConfig = config?.providers?.[provider];
+    if (!providerConfig || typeof providerConfig.keyEnv !== "string") {
+      throw new Error(`No project LiteLLM key env is configured for provider '${provider}'. Run khala litellm --project --provider ${provider} --key-env <env-var>.`);
+    }
+    const keyEnv = validateLiteLLMKeyEnv(providerConfig.keyEnv);
+    const value = process.env[keyEnv];
+    if (!value) {
+      throw new Error(`Project LiteLLM key env var $${keyEnv} is not exported.`);
+    }
+    process.stdout.write(value);
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 2;
+  }
+}
+
 async function mainLiteLLM(argv) {
+  if (argv[0] === "print-key") {
+    await mainLiteLLMPrintKey(argv.slice(1));
+    return;
+  }
+
   let options;
   try {
     options = parseLitellmArgs(argv);
@@ -736,18 +964,11 @@ async function mainLiteLLM(argv) {
 
     // Pre-flight env-var check. Run this BEFORE the (potentially long)
     // picker step so a user who forgot to `export` gets an immediate,
-    // unmissable signal that rich enrichment won't happen — not a single
-    // dim line buried in the summary block after they've answered every
-    // prompt. We never read the value itself here; just whether it's set.
-    const apiKeyValue = keyEnv ? process.env[keyEnv] : undefined;
-    if (keyEnv && !apiKeyValue) {
-      console.log("");
-      console.log(warn(`! $${keyEnv} is not exported in this shell.`));
-      console.log(`  Models will be written as bare ${dim('{ "id": "..." }')} entries — without`);
-      console.log(`  rich metadata (contextWindow, cost, reasoning, input modalities).`);
-      console.log(`  To enrich, ${bold(`export ${keyEnv}=<your-key>`)} and re-run.`);
-      console.log("");
-    }
+    // The actual API key value, if we have it. Filled below by the
+    // auth-mode flow; the env-var fallback is consulted last so users with
+    // an existing exported $KEY keep getting auto-enrichment for free.
+    let resolvedKey = keyEnv ? process.env[keyEnv] : undefined;
+
 
     let modelIds = [];
     const rawModels = (typeof options.model === "string" ? options.model : "")
@@ -769,38 +990,111 @@ async function mainLiteLLM(argv) {
 
     const targetModelsPath = modelsJsonPath();
     const targetSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
+    const targetKeyConfigPath = litellmProjectConfigPath();
+    const targetAuthPath = authJsonPath();
 
-    // Attempt to fetch rich model metadata from LiteLLM's /model/info so we
-    // can write entries with contextWindow/cost/reasoning fields instead of
-    // bare { id }. Best-effort: skipped if the env var isn't exported, and
-    // a fetch failure degrades to bare entries with a single-line warning.
-    // We never persist the key value — it's used for this HTTP call and
-    // dropped.
+    // ── Auth-mode resolution ──────────────────────────────────────────────
+    // Three storage modes, all pi-canonical (~/.pi/agent/auth.json schema):
+    //   skip    — write nothing to auth.json; rely on the env var the user
+    //             exports in their shell. Current default behavior.
+    //   literal — paste-once secret value, stored at auth.json[<id>].key as
+    //             a literal string. 0600 file perms.
+    //   command — shell command (e.g. !op read ...) stored verbatim; pi
+    //             exec's it on demand and uses stdout as the key.
+    // The mode comes from --auth-mode if given, else a three-choice picker
+    // in TTY, else "skip" in non-interactive runs.
+    const currentAuth = readJsonObjectFile(targetAuthPath);
+    const existingAuthEntry = isPlainObject(currentAuth) && isPlainObject(currentAuth[provider]) ? currentAuth[provider] : null;
+    const hasExistingAuth = Boolean(existingAuthEntry && existingAuthEntry.type === "api_key" && typeof existingAuthEntry.key === "string" && existingAuthEntry.key.length > 0);
+
+    let authMode = (options.authMode ?? "").trim().toLowerCase();
+    if (authMode && !AUTH_MODES.has(authMode)) {
+      throw new Error(`Unknown --auth-mode '${authMode}'. Expected one of: ${[...AUTH_MODES].join(", ")}.`);
+    }
+    if (!authMode && options.authKey) authMode = "literal";
+    if (!authMode && options.authCommand) authMode = "command";
+    if (!authMode && promptAvailable && !options.yes && !options.dryRun) {
+      // Default cursor: if the user already has a working key source (env var
+      // exported OR auth.json already has an entry for this provider), assume
+      // "skip" so a no-op re-run is one Enter away. Otherwise default to
+      // "literal" since that's the path that actually enables /model/info
+      // enrichment for first-time setup.
+      const fallbackMode = (resolvedKey || hasExistingAuth) ? "skip" : "literal";
+      authMode = await askAuthMode({ providerId: provider, keyEnv, hasExistingAuth, fallbackMode });
+    }
+    if (!authMode) authMode = "skip";
+
+    // Capture the literal/command payload for non-skip modes. Never stored
+    // in a variable that gets logged or echoed; resolvedKey replaces the
+    // env-var fallback once we have it.
+    let authPayload = null;
+    if (authMode === "literal") {
+      let value = options.authKey;
+      if (!value) {
+        if (!canPrompt()) {
+          throw new Error("--auth-mode=literal needs --auth-key=<value> in non-interactive mode.");
+        }
+        value = await promptSecret(`API key value for ${bold(provider)} ${dim("(input is masked; will be stored in auth.json with 0600 perms)")}\n${dim("›")} `);
+      }
+      authPayload = { mode: "literal", key: validateAuthLiteral(value) };
+      resolvedKey = authPayload.key;
+    } else if (authMode === "command") {
+      let cmd = options.authCommand;
+      if (!cmd) {
+        if (!canPrompt()) {
+          throw new Error("--auth-mode=command needs --auth-command=<!cmd> in non-interactive mode.");
+        }
+        cmd = await promptValidated(
+          `Shell command for the key ${dim(`(must start with '!', e.g. "!op read 'op://Personal/${provider}/credential'")`)}\n${dim("›")} `,
+          validateAuthCommand,
+        );
+      }
+      authPayload = { mode: "command", key: validateAuthCommand(cmd) };
+      // Resolve the command immediately so we can fetch /model/info now.
+      // If exec fails, leave resolvedKey unset; the metadata row will warn
+      // and we'll fall back to bare entries, but the auth.json write still
+      // proceeds (the user can fix their keychain entry separately).
+      const fromCmd = resolveKeyForFetch(authPayload.key);
+      if (fromCmd) resolvedKey = fromCmd;
+      else resolvedKey = undefined;
+    } else if (hasExistingAuth) {
+      // Skip mode, but auth.json already has an api_key — use its value
+      // for the enrichment fetch (pi will do the same at runtime).
+      const fromAuth = resolveKeyForFetch(existingAuthEntry.key);
+      if (fromAuth) resolvedKey = fromAuth;
+    }
+
+    // Attempt to fetch rich model metadata from LiteLLM's /model/info. The
+    // key source is whichever of {auth.json, --auth-key, --auth-command,
+    // env var} resolved above. We never persist the value beyond this call
+    // unless the user explicitly chose literal/command mode.
     let infoMap = new Map();
     let metadataStatus;
     let metadataIsWarning = false;
-    if (apiKeyValue) {
+    if (resolvedKey) {
       try {
-        infoMap = await fetchLiteLLMModelInfo(baseUrl, apiKeyValue);
+        infoMap = await fetchLiteLLMModelInfo(baseUrl, resolvedKey);
         const matched = modelIds.filter((id) => infoMap.has(id)).length;
         metadataStatus = `${matched}/${modelIds.length} enriched from /model/info`;
-        // If we got some rich data but not for every selected model, that's
-        // still a partial-success worth flagging in yellow so the user can
-        // double-check before writing.
         metadataIsWarning = matched < modelIds.length;
       } catch (error) {
         metadataStatus = `fetch failed (${error.message}); writing bare entries`;
         metadataIsWarning = true;
       }
-    } else {
-      metadataStatus = `NOT FETCHED — $${keyEnv} is not exported; writing bare entries`;
+    } else if (authMode === "command") {
+      metadataStatus = `NOT FETCHED — auth command produced no output; writing bare entries`;
+      metadataIsWarning = true;
+    } else if (authMode === "skip") {
+      metadataStatus = `NOT FETCHED — $${keyEnv} is not exported and auth.json has no entry; writing bare entries`;
       metadataIsWarning = true;
     }
 
     const currentModels = readJsonObjectFile(targetModelsPath);
     const currentSettings = readJsonObjectFile(targetSettingsPath);
+    const currentKeyConfig = readJsonObjectFile(targetKeyConfigPath);
     const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelIds, infoMap });
     const mergedSettings = mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelIds });
+    const mergedKeyConfig = mergeLiteLLMProjectKeyConfig(currentKeyConfig, { providerId: provider, keyEnv });
 
     // Summary
     const modeTag = options.dryRun ? dim(" [dry-run]") : "";
@@ -809,6 +1103,7 @@ async function mainLiteLLM(argv) {
     console.log(`${bold("Khala LiteLLM")}${modeTag}${dim(":")}`);
     console.log(`${dim("models".padEnd(labelWidth))}${targetModelsPath}`);
     console.log(`${dim("settings".padEnd(labelWidth))}${targetSettingsPath}`);
+    console.log(`${dim("keys".padEnd(labelWidth))}${targetKeyConfigPath}`);
     // Provider row gets a short qualifier so the user can see at a glance
     // whether this is a fresh registration or an in-place update.
     const providerTag = mergedModels.isUpdate
@@ -817,7 +1112,24 @@ async function mainLiteLLM(argv) {
     console.log(`${dim("provider".padEnd(labelWidth))}${provider}${providerTag}`);
     console.log(`${dim("base-url".padEnd(labelWidth))}${baseUrl}`);
     console.log(`${dim("api".padEnd(labelWidth))}${LITELLM_PROVIDER_API}`);
-    console.log(`${dim("apiKey".padEnd(labelWidth))}$${keyEnv}`);
+    console.log(`${dim("apiKey".padEnd(labelWidth))}${buildLiteLLMApiKeyCommand(provider)}`);
+    console.log(`${dim("key-env".padEnd(labelWidth))}$${keyEnv}`);
+    // Auth row: explain exactly where pi will read the key from at runtime.
+    // Three shapes match the three resolved modes; the warn() colorization
+    // is reserved for the "no working source" case the metadata row catches.
+    let authRow;
+    if (authMode === "literal") {
+      authRow = `store value in ${targetAuthPath} ${dim("(0600)")}${hasExistingAuth ? dim("  (updating)") : dim("  (new)")}`;
+    } else if (authMode === "command") {
+      authRow = `store command in ${targetAuthPath} ${dim("(0600)")}${hasExistingAuth ? dim("  (updating)") : dim("  (new)")}`;
+    } else if (hasExistingAuth) {
+      authRow = `${dim(`(existing entry in ${targetAuthPath})`)}`;
+    } else if (resolvedKey) {
+      authRow = `$${keyEnv} from shell ${dim("(no auth.json entry)")}`;
+    } else {
+      authRow = warn(`none — $${keyEnv} unset and no auth.json entry`);
+    }
+    console.log(`${dim("auth".padEnd(labelWidth))}${authRow}`);
     // Collapse the selected-model list to a single row to match the one-row-
     // per-concept aesthetic of the main Khala configuration block. The full
     // list is verifiable in models.json after writing.
@@ -845,11 +1157,29 @@ async function mainLiteLLM(argv) {
 
     writeJsonFile(targetModelsPath, mergedModels.value, { compactModelEntries: true });
     writeJsonFile(targetSettingsPath, mergedSettings);
+    writeJsonFile(targetKeyConfigPath, mergedKeyConfig);
+
+    // auth.json is written ONLY when the user picked literal/command. The
+    // file gets 0600 perms (writeSecureJsonFile chmods explicitly after
+    // write to cover both create and update). Unrelated providers in the
+    // existing auth.json are preserved by mergeAuthJsonApiKey.
+    let authWritten = false;
+    if (authPayload && (authPayload.mode === "literal" || authPayload.mode === "command")) {
+      const mergedAuth = mergeAuthJsonApiKey(currentAuth, provider, authPayload.key);
+      writeSecureJsonFile(targetAuthPath, mergedAuth.value);
+      authWritten = true;
+    }
 
     console.log("");
     console.log(`${check("✓")} Wrote ${targetModelsPath}`);
     console.log(`${check("✓")} Wrote ${targetSettingsPath}`);
-    console.log(`${dim("boundary".padEnd(12))}Khala stored a key reference, not a secret value.`);
+    console.log(`${check("✓")} Wrote ${targetKeyConfigPath}`);
+    if (authWritten) {
+      console.log(`${check("✓")} Wrote ${targetAuthPath} ${dim("(0600)")}`);
+    }
+    console.log(`${dim("boundary".padEnd(12))}${authWritten
+      ? `Khala stored your API key in ${targetAuthPath} ${dim("(0600, user-only)")}`
+      : `Khala stored a key reference, not a secret value.`}`);
   } catch (error) {
     if (isAbortError(error)) {
       console.log("Cancelled.");
