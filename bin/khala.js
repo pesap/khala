@@ -15,6 +15,7 @@ import {
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
   readJsonObjectFile,
+  stringifyModelsJson,
   validateLiteLLMKeyEnv,
   validateLiteLLMProviderId,
 } from "./khala-setup-lib.js";
@@ -430,7 +431,9 @@ async function askChoice(title, choices, fallback, options = {}) {
  * askChoice. Differences:
  *
  *   - Returns an array of values in original-choices order.
- *   - All entries are selected by default; Space toggles the current item.
+ *   - All entries are selected by default; Tab toggles the current item.
+ *     (Space is intentionally NOT a toggle so that filter queries and custom
+ *     entries can contain whitespace, e.g. "HALO Gemma 4".)
  *   - Ctrl+A toggles every entry currently visible in the filter window
  *     (select-all-of-filtered when any are unselected, else deselect-all).
  *   - Space on a synthetic `+ add "<query>"` entry (when allowCustom is on
@@ -488,7 +491,7 @@ async function askMultiChoice(title, initialChoices, options = {}) {
     const filterTag = filtered.length === choices.length ? "" : `, ${filtered.length} match`;
     lines.push(`${bold(title)}  ${dim(`(${selected.size}/${choices.length} selected${filterTag})`)}`);
     lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
-    lines.push(dim("  ↑ ↓ move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"));
+    lines.push(dim("  ↑ ↓ move  Tab toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"));
     if (!items.length) {
       lines.push(dim("  no matches"));
       return lines;
@@ -577,7 +580,7 @@ async function askMultiChoice(title, initialChoices, options = {}) {
         if (query) { query = query.slice(0, -1); applyFilter(); paint(); }
         return;
       }
-      if (key.name === "space") {
+      if (key.name === "tab") {
         if (!items.length) return;
         const item = items[selIdx];
         if (!item) return;
@@ -595,11 +598,11 @@ async function askMultiChoice(title, initialChoices, options = {}) {
         paint();
         return;
       }
-      // Printable ASCII (excluding the literal space character, which is the
-      // toggle key) appends to the filter query.
+      // Printable ASCII (including the literal space character) appends to the
+      // filter query. Tab is the toggle key, so space is free for text input.
       if (typeof str === "string" && str.length === 1 && !key.ctrl && !key.meta) {
         const code = str.charCodeAt(0);
-        if (code > 32 && code < 127) {
+        if (code >= 32 && code < 127) {
           query += str;
           applyFilter();
           paint();
@@ -806,9 +809,9 @@ async function pickLiteLLMModels() {
   }
 }
 
-function writeJsonFile(filePath, value) {
+function writeJsonFile(filePath, value, { compactModelEntries = false } = {}) {
   mkdirSync(path.dirname(filePath), { recursive: true });
-  const content = `${JSON.stringify(value, null, 2)}\n`;
+  const content = `${compactModelEntries ? stringifyModelsJson(value) : JSON.stringify(value, null, 2)}\n`;
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : null;
   if (existing === content) return false;
   writeFileSync(filePath, content, { mode: 0o600 });
@@ -898,10 +901,12 @@ async function mainLiteLLM(argv) {
     console.log(`${dim("base-url".padEnd(labelWidth))}${baseUrl}`);
     console.log(`${dim("api".padEnd(labelWidth))}${LITELLM_PROVIDER_API}`);
     console.log(`${dim("apiKey".padEnd(labelWidth))}$${keyEnv}`);
-    console.log(`${dim("model".padEnd(labelWidth))}${modelIds[0]}`);
-    for (let i = 1; i < modelIds.length; i++) {
-      console.log(`${"".padEnd(labelWidth)}${modelIds[i]}`);
-    }
+    // Collapse the selected-model list to a single row to match the one-row-
+    // per-concept aesthetic of the main Khala configuration block. The full
+    // list is verifiable in models.json after writing.
+    const extra = modelIds.length - 1;
+    const moreSuffix = extra > 0 ? `  ${dim(`+${extra} more`)}` : "";
+    console.log(`${dim("model".padEnd(labelWidth))}${modelIds[0]}${moreSuffix}`);
     if (mergedModels.conflict) {
       console.log(`${warn("!")} existing provider config differs and will be updated only if you confirm`);
     }
@@ -920,7 +925,7 @@ async function mainLiteLLM(argv) {
       }
     }
 
-    writeJsonFile(targetModelsPath, mergedModels.value);
+    writeJsonFile(targetModelsPath, mergedModels.value, { compactModelEntries: true });
     writeJsonFile(targetSettingsPath, mergedSettings);
 
     console.log("");

@@ -204,6 +204,29 @@ function mergeEnabledModels(existingEnabledModels, modelId) {
   return enabledModels;
 }
 
+/**
+ * Compact-but-readable JSON serializer for models.json. Identical to
+ * `JSON.stringify(value, null, 2)` for top-level structure, except each
+ * `{ "id": "..." }` single-field object in a `models: [...]` array is
+ * collapsed onto a single line. Pi parses JSON, so whitespace is
+ * insignificant, but the file is human-edited often enough that a 23-entry
+ * provider being 69 lines instead of 23 is a meaningful UX regression.
+ *
+ * Model entries with extra fields (e.g. `displayName`, `thinking`) keep the
+ * default multi-line shape because the regex only matches single-`id`
+ * objects.
+ */
+export function stringifyModelsJson(value) {
+  const pretty = JSON.stringify(value, null, 2);
+  // Match `{ \n <indent> "id": "..." \n <indent> }` and collapse to one line.
+  // The id-string capture handles backslash-escaped characters so model names
+  // with embedded quotes round-trip unchanged.
+  return pretty.replace(
+    /\{\n\s*"id":\s*("(?:[^"\\]|\\.)*")\n\s*\}/g,
+    '{ "id": $1 }',
+  );
+}
+
 export function readJsonObjectFile(filePath) {
   if (!existsSync(filePath)) return null;
 

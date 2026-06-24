@@ -18,6 +18,7 @@ import {
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
   parseProfileEntry,
+  stringifyModelsJson,
   validateLiteLLMKeyEnv,
   validateLiteLLMProviderId,
 } from "../../bin/khala-setup-lib.js";
@@ -309,6 +310,38 @@ test("khala setup helper filters LiteLLM model picker choices to bare names that
   ]);
 
   assert.deepEqual(filtered, ["gpt-4o-mini", "claude-opus-4.7", "HALO Gemma 4", "gpt-5.5"]);
+});
+
+test("khala setup helper stringifyModelsJson collapses { id } entries to one line", () => {
+  const out = stringifyModelsJson({
+    providers: {
+      nlr: {
+        baseUrl: "https://litellm.nlr.gov",
+        api: "openai-responses",
+        apiKey: "$NLR_KEY",
+        models: [
+          { id: "claude-sonnet-4-6" },
+          { id: "HALO Gemma 4" },
+          { id: "text-embedding-3-large", displayName: "big-embed" }, // extra fields preserved on multiple lines
+        ],
+      },
+    },
+  });
+
+  // JSON.parse round-trip must be lossless.
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.providers.nlr.models.length, 3);
+  assert.equal(parsed.providers.nlr.models[0].id, "claude-sonnet-4-6");
+  assert.equal(parsed.providers.nlr.models[1].id, "HALO Gemma 4");
+  assert.equal(parsed.providers.nlr.models[2].displayName, "big-embed");
+
+  // Single-`id` entries are collapsed.
+  assert.match(out, /\{ "id": "claude-sonnet-4-6" \}/);
+  assert.match(out, /\{ "id": "HALO Gemma 4" \}/);
+  // Multi-field entries keep the default pretty-printed shape.
+  assert.match(out, /\{\n\s+"id": "text-embedding-3-large",\n\s+"displayName": "big-embed"\n\s+\}/);
+  // Top-level structure stays pretty-printed.
+  assert.match(out, /"providers": \{\n\s+"nlr": \{/);
 });
 
 test("khala setup helper reads thinking support from discovery rows and assumes yes when unknown", () => {
@@ -626,12 +659,20 @@ test("khala litellm registers multiple models in one pass via --model a,b,c", as
     );
 
     assert.equal(result.code, 0);
-    // Summary shows the first model on the labeled row, then continuation rows.
-    assert.match(result.stdout, /model\s+gpt-5\.4-mini/);
-    assert.match(result.stdout, /\n\s+gpt-4o\n/);
-    assert.match(result.stdout, /\n\s+claude-opus-4\.7/);
+    // Summary collapses the model list to one labeled row with a +N more
+    // suffix, matching the one-row-per-concept aesthetic of the main khala
+    // configuration block. The full list is verifiable in models.json.
+    assert.match(result.stdout, /model\s+gpt-5\.4-mini\s+\+2 more/);
+    assert.doesNotMatch(result.stdout, /\n\s{8,}gpt-4o\b/, "no model continuation rows");
+    assert.doesNotMatch(result.stdout, /\n\s{8,}claude-opus-4\.7\b/, "no model continuation rows");
 
-    const merged = JSON.parse(await readFile(modelsPath, "utf8"));
+    const rawModels = await readFile(modelsPath, "utf8");
+    // Compact format: each `{ "id": "..." }` entry is rendered on one line.
+    assert.match(rawModels, /\{ "id": "gpt-5\.4-mini" \}/);
+    assert.match(rawModels, /\{ "id": "gpt-4o" \}/);
+    assert.doesNotMatch(rawModels, /\{\n\s+"id": "gpt-4o"\n\s+\}/, "models entries must not sprawl");
+
+    const merged = JSON.parse(rawModels);
     assert.deepEqual(
       merged.providers["team-litellm"].models.map((m: { id: string }) => m.id),
       ["gpt-5.4-mini", "gpt-4o", "claude-opus-4.7"],
