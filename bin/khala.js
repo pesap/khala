@@ -233,14 +233,6 @@ function rawMode(on) {
 }
 
 /**
- * Inline arrow-key selector.
- *
- * - Draws the list in-place (cursor-up + clear-to-end, not screen-clear).
- * - On Enter or Ctrl+C: clears the entire picker so no residual line is left;
- *   the caller surfaces the choice in its own summary.
- * - Non-TTY / empty choices: returns fallback immediately.
- */
-/**
  * Inline arrow-key selector with viewport scrolling and type-to-filter.
  *
  * - Shows a window of up to PICKER_WINDOW rows so 50+ choices stay usable.
@@ -252,6 +244,12 @@ function rawMode(on) {
  * - Non-TTY / empty choices: returns fallback immediately.
  */
 const PICKER_WINDOW = 10;
+
+// Safety net: always restore the terminal cursor on process exit so a crashed
+// or signaled picker can't leave the cursor hidden. No-op on non-TTY stdout.
+if (process.stdout.isTTY) {
+  process.on("exit", () => process.stdout.write("\x1b[?25h"));
+}
 
 async function askChoice(title, choices, fallback) {
   if (!canPrompt() || !choices.length) return fallback;
@@ -717,7 +715,7 @@ async function main() {
     console.log("");
     const confirmed = await confirmInstall(options);
     if (!confirmed) {
-      console.log(`${dim("Skipped.")}  Run the command above when ready.`);
+      console.log(`${dim("Skipped.")}  Run ${bold(`pi ${args.join(" ")}`)} when you're ready.`);
       return;
     }
 
