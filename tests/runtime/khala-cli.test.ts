@@ -656,9 +656,12 @@ test("khala litellm dry-run prints config paths without writing files or calling
     assert.match(result.stdout, /apiKey\s+\$LITELLM_API_KEY/);
     assert.match(result.stdout, /model\s+gpt-5\.4-mini/);
     assert.doesNotMatch(result.stdout, /team-litellm\/\*/);
-    assert.doesNotMatch(result.stdout, /LITELLM_API_KEY=/);
+    // Forbid actual secret-shaped leaks (KEY=<real-value>). The pre-flight
+    // banner legitimately includes the placeholder `export KEY=<your-key>`
+    // as a how-to-fix hint when the env var isn't exported — that's
+    // documentation, not a leak.
+    assert.doesNotMatch(result.stdout, /LITELLM_API_KEY=(?!<)\S/);
     assert.doesNotMatch(result.stdout, /raw API keys are never requested or stored/);
-    assert.doesNotMatch(result.stdout, /export LITELLM_API_KEY/);
     await assert.rejects(readFile(piLog, "utf8"));
     await assert.rejects(readFile(path.join(piAgentDir, "models.json"), "utf8"));
     await assert.rejects(readFile(path.join(tempDir, ".pi", "settings.json"), "utf8"));
@@ -941,6 +944,44 @@ test("khala litellm enriches model entries from a LiteLLM /model/info endpoint",
     ]);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm prints a loud pre-flight warning when the key env var is not exported", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-noexport-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+
+    // Note: NO `DEFINITELY_UNSET_KEY` in the spawn env. We're testing the
+    // pre-flight detection path: enrichment must not silently degrade.
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "nlr",
+        "--base-url", "https://example.com/v1",
+        "--key-env", "DEFINITELY_UNSET_KEY",
+        "--model", "gpt-4o",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0);
+    // (1) Pre-flight banner above the summary — unmissable, multi-line,
+    //     and tells the user exactly how to fix it.
+    assert.match(result.stdout, /! \$DEFINITELY_UNSET_KEY is not exported in this shell\./);
+    assert.match(result.stdout, /Models will be written as bare/);
+    assert.match(result.stdout, /export DEFINITELY_UNSET_KEY=<your-key>/);
+    // (2) Summary's metadata row says NOT FETCHED loudly, not a meek "skipped".
+    assert.match(result.stdout, /metadata\s+.*NOT FETCHED — \$DEFINITELY_UNSET_KEY is not exported/);
+    // (3) The fallback write still proceeds with bare { id } entries.
+    const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
+    assert.match(raw, /\{ "id": "gpt-4o" \}/);
+  } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });

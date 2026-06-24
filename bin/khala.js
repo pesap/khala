@@ -257,23 +257,6 @@ function paintedRowCount(lines) {
   return total;
 }
 
-/**
- * Inline arrow-key selector with viewport scrolling and type-to-filter.
- *
- * - Shows a window of up to PICKER_WINDOW rows so 50+ choices stay usable.
- * - Type to filter (case-insensitive substring); Backspace removes, Esc clears.
- * - Up/Down moves within the filtered list; selection is preserved across
- *   filter changes whenever the previously-hovered choice still matches.
- * - On Enter or Ctrl+C: clears the entire picker so no residual line is left;
- *   the caller surfaces the choice in its own summary.
- * - Non-TTY / empty choices: returns fallback immediately.
- *
- * Options:
- *   allowCustom: when true and the user types a query that doesn't match an
- *     existing choice exactly, a synthetic `use "<query>"` entry appears at
- *     the top. Selecting it returns the typed query verbatim so the caller
- *     can accept new values that weren't in the discovery list.
- */
 const PICKER_WINDOW = 10;
 
 // Safety net: always restore the terminal cursor on process exit so a crashed
@@ -282,62 +265,65 @@ if (process.stdout.isTTY) {
   process.on("exit", () => process.stdout.write("\x1b[?25h"));
 }
 
-async function askChoice(title, choices, fallback, options = {}) {
-  if (!canPrompt() || !choices.length) return fallback;
+function pickerViewport(total, selIdx) {
+  if (total <= PICKER_WINDOW) return { start: 0, end: total };
+  let start = Math.max(0, selIdx - Math.floor(PICKER_WINDOW / 2));
+  const end = Math.min(total, start + PICKER_WINDOW);
+  start = Math.max(0, end - PICKER_WINDOW);
+  return { start, end };
+}
 
+async function askFilteredPicker(title, initialChoices, options = {}) {
+  const multi = options.multi === true;
   const allowCustom = options.allowCustom === true;
+  if (!canPrompt() || (!initialChoices.length && !(multi && allowCustom))) {
+    return multi ? [...initialChoices] : options.fallback;
+  }
+
+  const choices = [...initialChoices];
+  const choiceSet = new Set(choices);
+  const selected = multi ? new Set(choices) : null;
   let query = "";
-  let filtered = choices;
+  let filtered = [...choices];
 
   const buildItems = () => {
     const items = filtered.map((c) => ({ value: c, display: c, custom: false }));
     const trimmed = query.trim();
-    if (allowCustom && trimmed && !choices.includes(trimmed)) {
+    if (allowCustom && trimmed && !choiceSet.has(trimmed)) {
       items.unshift({ value: trimmed, display: trimmed, custom: true });
     }
     return items;
   };
 
   let items = buildItems();
-  const fallbackIdx = items.findIndex((it) => it.value === fallback);
-  let selIdx = fallbackIdx >= 0 ? fallbackIdx : 0;
+  const fallbackIdx = items.findIndex((it) => it.value === options.fallback);
+  let selIdx = multi || fallbackIdx < 0 ? 0 : fallbackIdx;
   let hovered = items[selIdx]?.value ?? null;
 
   const applyFilter = () => {
     const q = query.trim().toLowerCase();
-    if (!q) {
-      filtered = choices;
-    } else {
-      filtered = choices.filter((c) => c.toLowerCase().includes(q));
-    }
+    filtered = q ? choices.filter((c) => c.toLowerCase().includes(q)) : [...choices];
     items = buildItems();
     const next = hovered ? items.findIndex((it) => it.value === hovered) : -1;
     selIdx = next >= 0 ? next : 0;
     hovered = items[selIdx]?.value ?? null;
   };
 
-  const viewport = () => {
-    const total = items.length;
-    if (total <= PICKER_WINDOW) return { start: 0, end: total };
-    let start = Math.max(0, selIdx - Math.floor(PICKER_WINDOW / 2));
-    const end   = Math.min(total, start + PICKER_WINDOW);
-    start = Math.max(0, end - PICKER_WINDOW);
-    return { start, end };
-  };
-
   const buildLines = () => {
     const lines = [];
-    const count = filtered.length === choices.length
-      ? `${choices.length}`
-      : `${filtered.length}/${choices.length}`;
+    const count = multi
+      ? `${selected.size}/${choices.length} selected${filtered.length === choices.length ? "" : `, ${filtered.length} match`}`
+      : (filtered.length === choices.length ? `${choices.length}` : `${filtered.length}/${choices.length}`);
     lines.push(`${bold(title)}  ${dim(`(${count})`)}`);
     lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
-    lines.push(dim("  ↑ ↓ select  Enter accept  Esc clear  Ctrl+C cancel"));
+    lines.push(dim(multi
+      ? "  ↑ ↓ move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"
+      : "  ↑ ↓ select  Enter accept  Esc clear  Ctrl+C cancel"));
     if (!items.length) {
       lines.push(dim("  no matches"));
       return lines;
     }
-    const { start, end } = viewport();
+    const { start, end } = pickerViewport(items.length, selIdx);
     if (start > 0) lines.push(dim(`  ↑ ${start} more`));
     for (let i = start; i < end; i++) {
       const sel = i === selIdx;
@@ -348,7 +334,14 @@ async function askChoice(title, choices, fallback, options = {}) {
         lines.push(`  ${sel ? check("+") : "+"} ${text}`);
       } else {
         const text = sel ? bold(item.display) : dim(item.display);
-        lines.push(`  ${sel ? "◉" : muted("◯")} ${text}`);
+        if (multi) {
+          const checked = selected.has(item.value);
+          const box = checked ? "[x]" : "[ ]";
+          const glyph = sel ? bold(box) : (checked ? box : muted(box));
+          lines.push(`  ${glyph} ${text}`);
+        } else {
+          lines.push(`  ${sel ? "◉" : muted("◯")} ${text}`);
+        }
       }
     }
     if (end < items.length) lines.push(dim(`  ↓ ${items.length - end} more`));
@@ -381,171 +374,7 @@ async function askChoice(title, choices, fallback, options = {}) {
     onKey = (str, key) => {
       if (!key) return;
       if (key.ctrl && key.name === "c") { settle(); reject(makeAbortError()); return; }
-      if (key.name === "up") {
-        if (!items.length) return;
-        selIdx = (selIdx - 1 + items.length) % items.length;
-        hovered = items[selIdx]?.value ?? null;
-        paint();
-        return;
-      }
-      if (key.name === "down") {
-        if (!items.length) return;
-        selIdx = (selIdx + 1) % items.length;
-        hovered = items[selIdx]?.value ?? null;
-        paint();
-        return;
-      }
-      if (key.name === "return") {
-        if (!items.length) return;
-        const chosen = items[selIdx]?.value ?? fallback;
-        settle();
-        resolve(chosen);
-        return;
-      }
-      if (key.name === "escape") {
-        if (query) { query = ""; applyFilter(); paint(); }
-        return;
-      }
-      if (key.name === "backspace") {
-        if (query) { query = query.slice(0, -1); applyFilter(); paint(); }
-        return;
-      }
-      // Printable ASCII appends to the filter query.
-      if (typeof str === "string" && str.length === 1 && !key.ctrl && !key.meta) {
-        const code = str.charCodeAt(0);
-        if (code >= 32 && code < 127) {
-          query += str;
-          applyFilter();
-          paint();
-        }
-      }
-    };
-    emitKeypressEvents(process.stdin);
-    rawMode(true);
-    process.stdin.on("keypress", onKey);
-    process.stdin.resume();
-  });
-}
-
-/**
- * Multi-select picker built on the same viewport/filter scaffolding as
- * askChoice. Differences:
- *
- *   - Returns an array of values in original-choices order.
- *   - All entries are selected by default; Space toggles the current item.
- *   - Ctrl+A toggles every entry currently visible in the filter window
- *     (select-all-of-filtered when any are unselected, else deselect-all).
- *   - Space on a synthetic `+ add "<query>"` entry (when allowCustom is on
- *     and the typed query doesn't match any existing choice) appends the
- *     typed value to the choices list, selects it, and clears the query so
- *     the new item is visible in the main list.
- *   - Non-TTY: returns initialChoices unchanged so non-interactive callers
- *     stay deterministic. With an empty list and no allowCustom, returns [].
- */
-async function askMultiChoice(title, initialChoices, options = {}) {
-  if (!canPrompt() || (initialChoices.length === 0 && options.allowCustom !== true)) {
-    return [...initialChoices];
-  }
-
-  const allowCustom = options.allowCustom === true;
-  const choices = [...initialChoices];
-  const selected = new Set(choices);
-  let query = "";
-  let filtered = [...choices];
-
-  const buildItems = () => {
-    const items = filtered.map((c) => ({ value: c, display: c, custom: false }));
-    const trimmed = query.trim();
-    if (allowCustom && trimmed && !choices.includes(trimmed)) {
-      items.unshift({ value: trimmed, display: trimmed, custom: true });
-    }
-    return items;
-  };
-
-  let items = buildItems();
-  let selIdx = 0;
-  let hovered = items[selIdx]?.value ?? null;
-
-  const applyFilter = () => {
-    const q = query.trim().toLowerCase();
-    if (!q) filtered = [...choices];
-    else filtered = choices.filter((c) => c.toLowerCase().includes(q));
-    items = buildItems();
-    const next = hovered ? items.findIndex((it) => it.value === hovered) : -1;
-    selIdx = next >= 0 ? next : 0;
-    hovered = items[selIdx]?.value ?? null;
-  };
-
-  const viewport = () => {
-    const total = items.length;
-    if (total <= PICKER_WINDOW) return { start: 0, end: total };
-    let start = Math.max(0, selIdx - Math.floor(PICKER_WINDOW / 2));
-    const end   = Math.min(total, start + PICKER_WINDOW);
-    start = Math.max(0, end - PICKER_WINDOW);
-    return { start, end };
-  };
-
-  const buildLines = () => {
-    const lines = [];
-    const filterTag = filtered.length === choices.length ? "" : `, ${filtered.length} match`;
-    lines.push(`${bold(title)}  ${dim(`(${selected.size}/${choices.length} selected${filterTag})`)}`);
-    lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
-    lines.push(dim("  ↑ ↓ move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"));
-    if (!items.length) {
-      lines.push(dim("  no matches"));
-      return lines;
-    }
-    const { start, end } = viewport();
-    if (start > 0) lines.push(dim(`  ↑ ${start} more`));
-    for (let i = start; i < end; i++) {
-      const sel = i === selIdx;
-      const item = items[i];
-      if (item.custom) {
-        const label = `add "${item.value}"`;
-        const text = sel ? bold(label) : dim(label);
-        lines.push(`  ${sel ? check("+") : "+"} ${text}`);
-      } else {
-        const checked = selected.has(item.value);
-        // ASCII `[x]` / `[ ]` instead of ☑ / ☐: the Unicode checkbox pair
-        // is East-Asian-Width Neutral but most monospaced fonts render the
-        // checked variant a half-cell wider than the empty one, which makes
-        // adjacent rows wobble. ASCII is bulletproof across every font.
-        const box = checked ? "[x]" : "[ ]";
-        const glyph = sel ? bold(box) : (checked ? box : muted(box));
-        const text = sel ? bold(item.display) : dim(item.display);
-        lines.push(`  ${glyph} ${text}`);
-      }
-    }
-    if (end < items.length) lines.push(dim(`  ↓ ${items.length - end} more`));
-    return lines;
-  };
-
-  let drawnLines = 0;
-  const paint = () => {
-    const lines = buildLines();
-    if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
-    process.stdout.write(`${lines.join("\n")}\n`);
-    drawnLines = paintedRowCount(lines);
-  };
-
-  process.stdout.write("\x1b[?25l");
-  paint();
-
-  return new Promise((resolve, reject) => {
-    let onKey;
-
-    const settle = () => {
-      process.stdin.off("keypress", onKey);
-      rawMode(false);
-      process.stdin.pause();
-      if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
-      process.stdout.write("\x1b[?25h");
-    };
-
-    onKey = (str, key) => {
-      if (!key) return;
-      if (key.ctrl && key.name === "c") { settle(); reject(makeAbortError()); return; }
-      if (key.ctrl && key.name === "a") {
+      if (multi && key.ctrl && key.name === "a") {
         if (!filtered.length) return;
         const anyUnselected = filtered.some((c) => !selected.has(c));
         for (const c of filtered) {
@@ -570,9 +399,12 @@ async function askMultiChoice(title, initialChoices, options = {}) {
         return;
       }
       if (key.name === "return") {
-        const result = choices.filter((c) => selected.has(c));
+        if (!multi && !items.length) return;
+        const chosen = multi
+          ? choices.filter((c) => selected.has(c))
+          : (items[selIdx]?.value ?? options.fallback);
         settle();
-        resolve(result);
+        resolve(chosen);
         return;
       }
       if (key.name === "escape") {
@@ -583,41 +415,47 @@ async function askMultiChoice(title, initialChoices, options = {}) {
         if (query) { query = query.slice(0, -1); applyFilter(); paint(); }
         return;
       }
-      if (key.name === "space") {
+      if (multi && key.name === "space") {
         if (!items.length) return;
         const item = items[selIdx];
         if (!item) return;
         if (item.custom) {
           choices.push(item.value);
+          choiceSet.add(item.value);
           selected.add(item.value);
+          hovered = item.value;
           query = "";
           applyFilter();
-          const newIdx = items.findIndex((it) => it.value === item.value);
-          if (newIdx >= 0) { selIdx = newIdx; hovered = item.value; }
+        } else if (selected.has(item.value)) {
+          selected.delete(item.value);
         } else {
-          if (selected.has(item.value)) selected.delete(item.value);
-          else selected.add(item.value);
+          selected.add(item.value);
         }
         paint();
         return;
       }
-      // Printable ASCII (excluding the literal space character, which is the
-      // toggle key) appends to the filter query.
       if (typeof str === "string" && str.length === 1 && !key.ctrl && !key.meta) {
         const code = str.charCodeAt(0);
-        if (code > 32 && code < 127) {
+        if ((multi ? code > 32 : code >= 32) && code < 127) {
           query += str;
           applyFilter();
           paint();
         }
       }
     };
-
     emitKeypressEvents(process.stdin);
     rawMode(true);
     process.stdin.on("keypress", onKey);
     process.stdin.resume();
   });
+}
+
+function askChoice(title, choices, fallback, options = {}) {
+  return askFilteredPicker(title, choices, { ...options, fallback });
+}
+
+function askMultiChoice(title, choices, options = {}) {
+  return askFilteredPicker(title, choices, { ...options, multi: true });
 }
 
 /** Single-keypress Y/n confirm. No readline needed. */
@@ -752,24 +590,13 @@ async function promptValidated(question, normalizer) {
 /**
  * Build the bare model-name choices for the LiteLLM model picker.
  *
- * Seeds choices from pi --list-models and any explicit models already on a
- * LiteLLM provider in models.json, dedup'd by bare model name (LiteLLM's
- * model field is the bare name without a provider prefix). Names that
- * couldn't be registered as a LiteLLM model (whitespace, slash, or colon)
- * are skipped so the user can't pick a value that would fail validation.
- * The picker is opened in allowCustom mode so users can still type a brand
- * new model id that isn't in the discovery list.
- */
-/**
- * Build the bare model-name choices for the LiteLLM model picker.
- *
  * Sourced only from LiteLLM providers already in models.json — those are
  * the names we have actual evidence are valid on a user's LiteLLM proxy.
  * We deliberately do NOT seed from `pi --list-models`: pi's known-model
  * registry covers vendor catalogs (openai, anthropic, …) that almost
  * always extend well beyond what any given LiteLLM hub actually proxies,
  * so surfacing those choices is misleading. On a fresh setup with no
- * existing LiteLLM providers, pickLiteLLMModel falls back to a free-text
+ * existing LiteLLM providers, pickLiteLLMModels falls back to a free-text
  * line prompt so the user can simply type the model id their hub serves.
  */
 function liteLLMModelChoices() {
@@ -907,6 +734,21 @@ async function mainLiteLLM(argv) {
       keyEnv = validateLiteLLMKeyEnv(keyEnv);
     }
 
+    // Pre-flight env-var check. Run this BEFORE the (potentially long)
+    // picker step so a user who forgot to `export` gets an immediate,
+    // unmissable signal that rich enrichment won't happen — not a single
+    // dim line buried in the summary block after they've answered every
+    // prompt. We never read the value itself here; just whether it's set.
+    const apiKeyValue = keyEnv ? process.env[keyEnv] : undefined;
+    if (keyEnv && !apiKeyValue) {
+      console.log("");
+      console.log(warn(`! $${keyEnv} is not exported in this shell.`));
+      console.log(`  Models will be written as bare ${dim('{ "id": "..." }')} entries — without`);
+      console.log(`  rich metadata (contextWindow, cost, reasoning, input modalities).`);
+      console.log(`  To enrich, ${bold(`export ${keyEnv}=<your-key>`)} and re-run.`);
+      console.log("");
+    }
+
     let modelIds = [];
     const rawModels = (typeof options.model === "string" ? options.model : "")
       .split(",")
@@ -934,19 +776,25 @@ async function mainLiteLLM(argv) {
     // a fetch failure degrades to bare entries with a single-line warning.
     // We never persist the key value — it's used for this HTTP call and
     // dropped.
-    const apiKeyValue = process.env[keyEnv];
     let infoMap = new Map();
     let metadataStatus;
+    let metadataIsWarning = false;
     if (apiKeyValue) {
       try {
         infoMap = await fetchLiteLLMModelInfo(baseUrl, apiKeyValue);
         const matched = modelIds.filter((id) => infoMap.has(id)).length;
         metadataStatus = `${matched}/${modelIds.length} enriched from /model/info`;
+        // If we got some rich data but not for every selected model, that's
+        // still a partial-success worth flagging in yellow so the user can
+        // double-check before writing.
+        metadataIsWarning = matched < modelIds.length;
       } catch (error) {
         metadataStatus = `fetch failed (${error.message}); writing bare entries`;
+        metadataIsWarning = true;
       }
     } else {
-      metadataStatus = `skipped ($${keyEnv} is not set; bare entries will be written)`;
+      metadataStatus = `NOT FETCHED — $${keyEnv} is not exported; writing bare entries`;
+      metadataIsWarning = true;
     }
 
     const currentModels = readJsonObjectFile(targetModelsPath);
@@ -976,7 +824,7 @@ async function mainLiteLLM(argv) {
     const extra = modelIds.length - 1;
     const moreSuffix = extra > 0 ? `  ${dim(`+${extra} more`)}` : "";
     console.log(`${dim("model".padEnd(labelWidth))}${modelIds[0]}${moreSuffix}`);
-    if (metadataStatus) console.log(`${dim("metadata".padEnd(labelWidth))}${metadataStatus}`);
+    if (metadataStatus) console.log(`${dim("metadata".padEnd(labelWidth))}${metadataIsWarning ? warn(metadataStatus) : metadataStatus}`);
     if (mergedModels.conflict) {
       console.log(`${warn("!")} existing provider config differs and will be updated only if you confirm`);
     }
@@ -1062,6 +910,31 @@ async function main() {
   if (argv[0] === "litellm") {
     await mainLiteLLM(argv.slice(1));
     return;
+  }
+
+  // Top-level mode prompt. The full pi setup is the default destination,
+  // but a meaningful share of users land here only to point pi at an
+  // existing LiteLLM proxy — they don't need to know the `litellm`
+  // subcommand exists for that to be a one-arrow-key choice. We only
+  // prompt when the user gave us no signal: any flag (including --help,
+  // --version, --global, --dry-run) means they've already chosen a path.
+  if (argv.length === 0 && canPrompt()) {
+    const PI_LABEL = "Set up pi for this project (install + planning/dev/review models)";
+    const LITELLM_LABEL = "Only add a LiteLLM provider (skip pi install)";
+    try {
+      const mode = await askChoice("What would you like to do?", [PI_LABEL, LITELLM_LABEL], PI_LABEL);
+      if (mode === LITELLM_LABEL) {
+        await mainLiteLLM([]);
+        return;
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        console.log("Cancelled.");
+        process.exitCode = 130;
+        return;
+      }
+      throw error;
+    }
   }
 
   let options;
