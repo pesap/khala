@@ -78,6 +78,16 @@ test("resolveWorkflowRoute uses peer-review profile for peer review by default",
   assert.equal(resolved.profile.thinkingLevel, "high");
 });
 
+test("resolveWorkflowRoute can ignore active implementation workflow flags for peer review defaults", () => {
+  resetActiveWorkflowRouteForTests();
+  setActiveWorkflowRoute({ profileFlag: "development", taskFlag: "workon" });
+  const resolved = resolveWorkflowRoute("peer-review", { ignoreActiveWorkflowFlags: true });
+  assert.equal(resolved.source, "builtin");
+  assert.equal(resolved.profileName, "peer-review");
+  assert.equal(resolved.profile.model, "github-copilot/claude-opus-4.7");
+  assert.equal(resolved.profile.thinkingLevel, "high");
+});
+
 test("resolveWorkflowRoute uses --khala-workflow-profile flag when set", async () => {
   await withFakePi(
     `#!/usr/bin/env bash

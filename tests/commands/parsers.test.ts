@@ -19,6 +19,7 @@ import { DEFAULT_WORKON_MODEL_SELECTION } from "../../extensions/commands/workon
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
 import {
   resetActiveWorkflowRouteForTests,
+  setActiveWorkflowRoute,
   setWorkflowModelConfig,
 } from "../../extensions/runtime/workflow-model-router.ts";
 
@@ -156,6 +157,29 @@ test("plan review defaults use workflow peer-review route overrides", () => {
     assert.equal(explicit.review.thinkingLevel, "low");
     assert.equal(explicit.review.routingMode, "override");
     assert.equal(explicit.review.routingReason, "explicit --review-model override");
+  } finally {
+    resetActiveWorkflowRouteForTests();
+  }
+});
+
+test("Reviewer Two defaults ignore active implementation workflow flags", () => {
+  resetActiveWorkflowRouteForTests();
+  try {
+    setActiveWorkflowRoute({ profileFlag: "development", taskFlag: "workon" });
+
+    const plan = parsePlanArgs("shape reviewer two");
+    assert.ok(!("error" in plan));
+    assert.equal(plan.review.model, "github-copilot/claude-opus-4.7");
+    assert.equal(plan.review.thinkingLevel, "high");
+    assert.equal(plan.review.routingMode, "default");
+    assert.match(plan.review.routingReason, /Reviewer Two peer-review profile/);
+
+    const workon = parseWorkonArgs("73");
+    assert.ok(!("error" in workon));
+    assert.equal(workon.review.model, "github-copilot/claude-opus-4.7");
+    assert.equal(workon.review.thinkingLevel, "high");
+    assert.equal(workon.review.routingMode, "default");
+    assert.match(workon.review.routingReason, /Reviewer Two peer-review profile/);
   } finally {
     resetActiveWorkflowRouteForTests();
   }

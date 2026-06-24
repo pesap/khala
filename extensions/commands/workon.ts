@@ -4,7 +4,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
-import type { ReviewerTwoReviewSettings } from "./plan-review.ts";
+import {
+  formatReviewerTwoLaunchContract,
+  resolveReviewerTwoReviewSettings,
+  type ReviewerTwoReviewSettings,
+} from "./plan-review.ts";
 import {
   IMPROVE_LABEL,
   WORKON_READY_PACKET_NORMALIZED_HEADINGS,
@@ -207,37 +211,8 @@ function workonModelSelection(request: WorkonBootstrapRequest): WorkonModelSelec
   return request.modelSelection ?? defaultWorkonModelSelection();
 }
 
-function defaultWorkonReviewSettings(): ReviewerTwoReviewSettings {
-  const reviewRoute = resolveWorkflowRoute("peer-review");
-  const reviewProfile = reviewRoute.profile;
-  const fallbackRoute = resolveWorkflowRoute("plan");
-  const fallbackProfile = fallbackRoute.profile;
-  const model = reviewProfile.model ?? fallbackProfile.model ?? "";
-  const routingReason = reviewProfile.model
-    ? `Reviewer Two ${reviewRoute.profileName} profile (${reviewProfile.source}; ${workflowRouteSourceReason(reviewRoute)})`
-    : `Reviewer Two fallback to ${fallbackRoute.profileName} profile via ${workflowRouteSourceReason(fallbackRoute)}: ${reviewProfile.reason ?? `unresolved ${reviewRoute.profileName} profile via ${workflowRouteSourceReason(reviewRoute)}`}`;
-
-  return {
-    enabled: true,
-    model,
-    thinkingLevel: reviewProfile.thinkingLevel,
-    loops: 1,
-    context: "fresh",
-    routingMode: "default",
-    routingReason,
-  };
-}
-
-function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute>): string {
-  return route.source === "flag"
-    ? `workflow flag ${route.description}`
-    : route.source === "route"
-      ? `workflow route config ${route.description}`
-      : `builtin ${route.description}`;
-}
-
 function workonReviewSettings(request: WorkonBootstrapRequest): ReviewerTwoReviewSettings {
-  return request.reviewSettings ?? defaultWorkonReviewSettings();
+  return request.reviewSettings ?? resolveReviewerTwoReviewSettings();
 }
 
 interface GithubIssueTarget {
@@ -1693,12 +1668,16 @@ function reviewerTwoHandoffSection(settings: ReviewerTwoReviewSettings): string 
     `- Routing mode: ${settings.routingMode}`,
     `- Routing reason: ${settings.routingReason}`,
     `- Default context: ${settings.context}`,
+    `- Launch contract: ${formatReviewerTwoLaunchContract(settings)}`,
     settings.enabled
       ? "- Run an independent fresh-context Reviewer Two pass after implementation edits, focused validation, /simplify, and post-simplify validation, but before final commit and draft PR readiness."
       : "- Reviewer Two is disabled for this run; skip the review pass and do not self-review.",
     settings.enabled
       ? "- Use the recorded peer-review model and thinking level when available; if you cannot run an independent Reviewer Two pass without self-reviewing, stop and report the blocker instead."
       : "- If any later step would require an independent Reviewer Two pass, stop and report the blocker instead of self-reviewing.",
+    settings.model
+      ? "- Do not rely on builtin reviewer model inheritance; the launch contract above must carry the peer-review model and thinking level explicitly."
+      : "- If Reviewer Two is enabled but the peer-review model is unresolved, stop and report the blocker instead of launching an inherited-model reviewer.",
     "- Reviewer Two output contract: decision, blockers, importantRevisions, optionalSuggestions, missingAcceptanceCriteria, validationGaps, scopeConcerns, recommendation.",
     "- Classify findings as must-fix, optional/deferred, or rejected with rationale.",
     "- For must-fix findings, make the changes and rerun focused validation before continuing.",
@@ -2087,7 +2066,7 @@ async function startWorktreeIfRequested(
 export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence): string[] {
   const issue = evidence.issue;
   const route = evidence.route ?? evidence.ledger?.route ?? routeFromWorktreeStatus(evidence.worktreeStatus ?? "not-started");
-  const reviewSettings = evidence.reviewSettings ?? evidence.ledger?.reviewSettings ?? defaultWorkonReviewSettings();
+  const reviewSettings = evidence.reviewSettings ?? evidence.ledger?.reviewSettings ?? resolveReviewerTwoReviewSettings();
   const lines = [
     routeInstructionBlock({
       route,

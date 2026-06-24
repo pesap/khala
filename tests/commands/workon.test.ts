@@ -8,6 +8,7 @@ import {
   buildWorkonBranchName,
   createExecFileRunner,
   DEFAULT_WORKON_MODEL_SELECTION,
+  formatWorkonBootstrapEvidence,
   isActiveZellijEnv,
   prepareWorkonBootstrap,
   resolveWorkonMultiplexer,
@@ -309,6 +310,22 @@ test("createExecFileRunner honors explicit timeout options", async () => {
   assert.equal(result.signal, "SIGTERM");
   assert.equal(result.killed, true);
   assert.ok(elapsedMs < 1500, `expected timeout before 1500ms, got ${elapsedMs}ms`);
+});
+
+test("formatWorkonBootstrapEvidence falls back to resolved Reviewer Two defaults", () => {
+  const lines = formatWorkonBootstrapEvidence({
+    commands: [],
+    gaps: [],
+    issue: { number: 1, title: "fix(workon): reviewer defaults", url: "https://github.com/pesap/khala/issues/1" },
+    repo: "pesap/khala",
+    branchName: "fix/1-reviewer-defaults",
+    worktreeCommand: "wt switch --create fix/1-reviewer-defaults --format json",
+  });
+  const rendered = lines.join("\n");
+
+  assert.match(rendered, /Reviewer Two model: github-copilot\/claude-opus-4\.7/);
+  assert.match(rendered, /Reviewer Two thinking level: high/);
+  assert.match(rendered, /Reviewer Two routing reason: Reviewer Two peer-review profile/);
 });
 
 test("prepares GitHub issue workon capsule in global repo path", async () => {
@@ -1223,8 +1240,10 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
     assert.match(capsule, /- Routing mode: default/);
     assert.match(capsule, /- Routing reason: Reviewer Two peer-review profile/);
     assert.match(capsule, /- Default context: fresh/);
+    assert.match(capsule, /- Launch contract: Reviewer Two launch contract: \/run reviewer\[model=github-copilot\/claude-opus-4\.7:high\] "<review task>"/);
     assert.match(capsule, /- Run an independent fresh-context Reviewer Two pass after implementation edits, focused validation, \/simplify, and post-simplify validation, but before final commit and draft PR readiness\./);
     assert.match(capsule, /- Use the recorded peer-review model and thinking level when available; if you cannot run an independent Reviewer Two pass without self-reviewing, stop and report the blocker instead\./);
+    assert.match(capsule, /- Do not rely on builtin reviewer model inheritance; the launch contract above must carry the peer-review model and thinking level explicitly\./);
     assert.match(capsule, /- Reviewer Two output contract: decision, blockers, importantRevisions, optionalSuggestions, missingAcceptanceCriteria, validationGaps, scopeConcerns, recommendation\./);
     assert.match(capsule, /- Classify findings as must-fix, optional\/deferred, or rejected with rationale\./);
     assert.match(capsule, /- For must-fix findings, make the changes and rerun focused validation before continuing\./);
@@ -1525,6 +1544,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Reviewer Two thinking level: high/);
     assert.match(capsule, /Reviewer Two routing mode: default/);
     assert.match(capsule, /Reviewer Two routing reason: Reviewer Two peer-review profile/);
+    assert.match(capsule, /Launch contract: Reviewer Two launch contract: \/run reviewer\[model=github-copilot\/claude-opus-4\.7:high\] "<review task>"/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "launched");

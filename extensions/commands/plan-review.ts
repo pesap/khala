@@ -1,4 +1,5 @@
 import { normalizeWhitespace } from "../lib/text.ts";
+import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
 import type { WorkonThinkingLevel } from "./workon.ts";
 
 export const REVIEWER_TWO_REVIEW_CONTRACT = [
@@ -76,6 +77,46 @@ export function normalizePlanWorkPacket(
   };
 }
 
+export function resolveReviewerTwoReviewSettings(): ReviewerTwoReviewSettings {
+  const reviewRoute = resolveWorkflowRoute("peer-review", {
+    ignoreActiveWorkflowFlags: true,
+  });
+  const reviewProfile = reviewRoute.profile;
+  const routingReason = reviewProfile.model
+    ? `Reviewer Two ${reviewRoute.profileName} profile (${reviewProfile.source}; ${workflowRouteSourceReason(reviewRoute)})`
+    : `Reviewer Two ${reviewRoute.profileName} profile unresolved via ${workflowRouteSourceReason(reviewRoute)}: ${reviewProfile.reason ?? "unknown reason"}`;
+
+  return {
+    enabled: true,
+    model: reviewProfile.model ?? "",
+    thinkingLevel: reviewProfile.thinkingLevel,
+    loops: 1,
+    context: "fresh",
+    routingMode: "default",
+    routingReason,
+  };
+}
+
+export function formatReviewerTwoLaunchContract(settings: ReviewerTwoReviewSettings): string {
+  if (!settings.enabled) {
+    return "Reviewer Two launch contract: disabled; do not launch reviewer.";
+  }
+
+  if (!settings.model) {
+    return "Reviewer Two launch contract: blocked until the Reviewer Two model is resolved; do not launch an inherited-model reviewer.";
+  }
+
+  return `Reviewer Two launch contract: /run reviewer[model=${settings.model}:${settings.thinkingLevel}] "<review task>"`;
+}
+
+function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute>): string {
+  return route.source === "flag"
+    ? `workflow flag ${route.description}`
+    : route.source === "route"
+      ? `workflow route config ${route.description}`
+      : `builtin ${route.description}`;
+}
+
 export function buildPlanReviewerTwoSections(
   input: string | Partial<NormalizedPlanWorkPacket>,
   settings: ReviewerTwoReviewSettings,
@@ -84,6 +125,7 @@ export function buildPlanReviewerTwoSections(
   const sections = [
     ...REVIEWER_TWO_REVIEW_CONTRACT,
     `Reviewer Two settings: enabled=${settings.enabled ? "yes" : "no"}, model=${settings.model || "(unresolved)"}, thinking=${settings.thinkingLevel}, loops=${settings.loops}, context=${settings.context}, routing=${settings.routingMode} (${settings.routingReason})`,
+    formatReviewerTwoLaunchContract(settings),
     `Normalized draft work packet: goal=${packet.goal || "(unspecified)"}; why/user impact=${packet.why || "(unspecified)"}`,
     `In scope: ${renderList(packet.inScope)}`,
     `Out of scope: ${renderList(packet.outOfScope)}`,

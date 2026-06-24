@@ -184,36 +184,50 @@ export interface WorkflowRouteResolution {
   description: string;
 }
 
+export interface ResolveWorkflowRouteOptions {
+  /**
+   * Ignore the active implementation workflow flags and resolve only durable
+   * route/config state. Use for nested peer-review defaults that must not
+   * inherit the caller's implementation profile.
+   */
+  ignoreActiveWorkflowFlags?: boolean;
+}
+
 /**
  * Resolve the workflow route for a given workflow name.
  *
  * @param task - The workflow task name (e.g. "workon", "plan", "triage").
  * @returns A route resolution with the resolved profile and model.
  */
-export function resolveWorkflowRoute(task: WorkflowTask): WorkflowRouteResolution {
-  // 1. Check if --khala-workflow-profile flag is set (highest precedence)
-  if (activeWorkflowRoute.profileFlag) {
-    const profileName = activeWorkflowRoute.profileFlag as WorkflowProfileName;
-    const profile = resolveKhalaProfile(profileName);
-    return {
-      profileName,
-      profile,
-      source: "flag",
-      description: `--khala-workflow-profile=${profileName}`,
-    };
-  }
-
-  // 2. Check if --khala-workflow-task flag is set, then look up merged route
-  if (activeWorkflowRoute.taskFlag) {
-    const routeProfile = mergedRoutes[activeWorkflowRoute.taskFlag];
-    if (routeProfile) {
-      const profile = resolveKhalaProfile(routeProfile as WorkflowProfileName);
+export function resolveWorkflowRoute(
+  task: WorkflowTask,
+  options: ResolveWorkflowRouteOptions = {},
+): WorkflowRouteResolution {
+  if (!options.ignoreActiveWorkflowFlags) {
+    // 1. Check if --khala-workflow-profile flag is set (highest precedence)
+    if (activeWorkflowRoute.profileFlag) {
+      const profileName = activeWorkflowRoute.profileFlag as WorkflowProfileName;
+      const profile = resolveKhalaProfile(profileName);
       return {
-        profileName: routeProfile as WorkflowProfileName,
+        profileName,
         profile,
-        source: "route",
-        description: `route ${activeWorkflowRoute.taskFlag} -> ${routeProfile}`,
+        source: "flag",
+        description: `--khala-workflow-profile=${profileName}`,
       };
+    }
+
+    // 2. Check if --khala-workflow-task flag is set, then look up merged route
+    if (activeWorkflowRoute.taskFlag) {
+      const routeProfile = mergedRoutes[activeWorkflowRoute.taskFlag];
+      if (routeProfile) {
+        const profile = resolveKhalaProfile(routeProfile as WorkflowProfileName);
+        return {
+          profileName: routeProfile as WorkflowProfileName,
+          profile,
+          source: "route",
+          description: `route ${activeWorkflowRoute.taskFlag} -> ${routeProfile}`,
+        };
+      }
     }
   }
 
