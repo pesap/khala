@@ -55,14 +55,33 @@ test("khala CLI prints setup guidance without running pi in dry-run mode", async
   assert.match(stdout, /peer-review\s+github-copilot\/claude-opus-4\.7:high/);
 });
 
-test("khala CLI exposes help", async () => {
+test("khala CLI exposes help with commands, flags, examples, and environment sections", async () => {
   const { stdout } = await execFileAsync("node", ["bin/khala.js", "--help"]);
 
   assert.match(stdout, /Usage:/);
+  assert.match(stdout, /Commands:/);
+  assert.match(stdout, /Flags:/);
+  assert.match(stdout, /Examples:/);
+  assert.match(stdout, /Environment:/);
   assert.match(stdout, /--global/);
   assert.match(stdout, /--project/);
   assert.match(stdout, /--yes/);
+  assert.match(stdout, /--no-input/);
+  assert.match(stdout, /PI_CODING_AGENT_DIR/);
+  assert.match(stdout, /NO_COLOR/);
   assert.match(stdout, /khala litellm --help/);
+});
+
+test("khala CLI accepts --no-input as an alias for --yes", async () => {
+  const { stdout } = await execFileAsync("node", [
+    "bin/khala.js",
+    "--project",
+    "--no-input",
+    "--dry-run",
+  ]);
+
+  assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
+  assert.match(stdout, /command\s+pi install -l npm:khala/);
 });
 
 test("khala CLI defaults to global scope in non-interactive dry-run mode", async () => {
@@ -248,12 +267,18 @@ test("khala litellm --help documents the LiteLLM setup mode and secret boundary"
   const { stdout } = await runKhala(["litellm", "--help"]);
 
   assert.equal(stdout.includes("khala litellm - configure a LiteLLM-compatible Pi provider"), true);
+  assert.match(stdout, /Usage:/);
+  assert.match(stdout, /Flags:/);
+  assert.match(stdout, /Examples:/);
+  assert.match(stdout, /Environment:/);
   assert.match(stdout, /--provider/);
   assert.match(stdout, /--base-url/);
   assert.match(stdout, /--key-env/);
   assert.match(stdout, /--project/);
   assert.match(stdout, /--yes/);
+  assert.match(stdout, /--no-input/);
   assert.match(stdout, /--dry-run/);
+  assert.match(stdout, /PI_CODING_AGENT_DIR/);
   assert.match(stdout, /raw API keys are never requested or stored/);
 });
 

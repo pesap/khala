@@ -40,19 +40,35 @@ const warn   = (s) => COLOR ? `\x1b[33m${s}\x1b[0m` : s;
 
 // ── CLI boilerplate ─────────────────────────────────────────────────────────
 function usage() {
-  return `khala - setup helper for the Khala Pi package
+  return `khala - configure workflow models for Pi
 
 Usage:
-  khala [--global | --project] [--yes] [--dry-run]
-  khala litellm --help
-  khala --help
-  khala --version
+  khala [flags]
+  khala <command> [flags]
 
-Options:
-  --global    Install Khala into ~/.pi/agent/settings.json
-  --project   Install Khala into .pi/settings.json for the current project
-  --yes       Skip prompts and use recommended workflow models
-  --dry-run   Print the pi install command and workflow config path without writing
+Commands:
+  litellm     Configure a LiteLLM-compatible Pi provider
+
+Flags:
+  -l, --project       Write to .pi/settings.json in the current project
+      --global        Write to ~/.pi/agent/settings.json (default)
+  -y, --yes           Use recommended models and skip prompts
+      --no-input      Alias for --yes (use in scripts and CI)
+      --dry-run       Print decisions without writing or running pi
+  -h, --help          Show help
+  -v, --version       Show version
+
+Examples:
+  khala --project                    Interactive setup for the current project
+  khala --global --yes               Headless setup with recommended models
+  khala litellm --help               LiteLLM provider setup options
+
+Environment:
+  PI_CODING_AGENT_DIR  Override the Pi agent directory (default: ~/.pi/agent)
+  NO_COLOR             Disable ANSI color in output
+
+Learn more:
+  https://github.com/pesap/khala
 `;
 }
 
@@ -66,7 +82,7 @@ function parseArgs(args) {
     else if (arg === "--help"   || arg === "-h") options.help = true;
     else if (arg === "--project"|| arg === "-l") options.project = true;
     else if (arg === "--version"|| arg === "-v") options.version = true;
-    else if (arg === "--yes"    || arg === "-y") options.yes  = true;
+    else if (arg === "--yes"    || arg === "-y" || arg === "--no-input") options.yes  = true;
     else throw new Error(`Unknown option: ${arg}`);
   }
   if (options.global && options.project) throw new Error("Choose either --global or --project, not both.");
@@ -129,8 +145,13 @@ function parseModelListOutput(stdout) {
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || /^provider\s+model\b/i.test(trimmed) || /^no models/i.test(trimmed)) continue;
-    const match = trimmed.match(/^(\S+)\s+(\S+)/);
-    if (match) rows.push({ provider: match[1], model: match[2] });
+    // columns: provider model context max-out thinking images
+    const match = trimmed.match(/^(\S+)\s+(\S+)(?:\s+\S+\s+\S+\s+(\S+))?/);
+    if (!match) continue;
+    const [, provider, model, thinkingField] = match;
+    const thinking =
+      thinkingField === undefined ? undefined : thinkingField.toLowerCase() === "yes";
+    rows.push({ provider, model, thinking });
   }
   return rows;
 }
@@ -198,23 +219,33 @@ function liteLLMProvidersFromModelsJson() {
   return providers;
 }
 
-function buildProfileChoices(modelQuery, thinkingLevel, providers, discoveryRows, fallbackChoices) {
+function buildProfileChoices(modelQuery, providers, discoveryRows, fallbackChoices) {
   const seen = new Set();
   const choices = [];
   const normId = (s) => s.toLowerCase().replace(/[._-]/g, "-");
   const normQuery = normId(modelQuery);
   for (const row of discoveryRows) {
-    const c = `${row.provider}/${row.model}:${thinkingLevel}`;
-    if (!seen.has(c)) { seen.add(c); choices.push(c); }
+    const id = `${row.provider}/${row.model}`;
+    if (!seen.has(id)) { seen.add(id); choices.push(id); }
   }
   for (const provider of providers) {
     if (provider.models.length && !provider.models.some((m) => normId(m) === normQuery)) continue;
     for (const model of provider.models.length ? provider.models : [modelQuery]) {
-      const c = `${provider.name}/${model}:${thinkingLevel}`;
-      if (!seen.has(c)) { seen.add(c); choices.push(c); }
+      const id = `${provider.name}/${model}`;
+      if (!seen.has(id)) { seen.add(id); choices.push(id); }
     }
   }
-  return choices.length ? choices : fallbackChoices;
+  if (choices.length) return choices;
+  // Strip any thinking suffix from preset fallbacks; thinking is asked separately.
+  return fallbackChoices.map((c) => c.split(":")[0]);
+}
+
+function modelSupportsThinking(discoveryRows, provider, model) {
+  const match = discoveryRows.find((r) => r.provider === provider && r.model === model);
+  // Unknown (no row, or row without a thinking column) defaults to true so the
+  // user keeps control; pi will validate at install time.
+  if (!match || match.thinking === undefined) return true;
+  return match.thinking === true;
 }
 
 // ── Inline interactive prompts ──────────────────────────────────────────────
@@ -238,9 +269,8 @@ function rawMode(on) {
  * Inline arrow-key selector.
  *
  * - Draws the list in-place (cursor-up + clear-to-end, not screen-clear).
- * - Groups choices by provider when the string looks like "provider/…".
- * - On Enter: collapses the whole menu to a single dim summary line.
- * - On Ctrl+C: collapses to nothing and rejects with ABORT_ERR.
+ * - On Enter or Ctrl+C: clears the entire picker so no residual line is left;
+ *   the caller surfaces the choice in its own summary.
  * - Non-TTY / empty choices: returns fallback immediately.
  */
 async function askChoice(title, choices, fallback) {
@@ -255,7 +285,7 @@ async function askChoice(title, choices, fallback) {
     return lines;
   };
 
-  let selIdx = 0;
+  let selIdx = Math.max(0, choices.indexOf(fallback));
   let drawnLines = 0;
 
   const paint = (idx) => {
@@ -270,25 +300,19 @@ async function askChoice(title, choices, fallback) {
   return new Promise((resolve, reject) => {
     let onKey;
 
-    const settle = (chosen) => {
+    const settle = () => {
       process.stdin.off("keypress", onKey);
       rawMode(false);
       process.stdin.pause();
       if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
-      if (chosen === null) {
-        // leave a blank line so the next output starts cleanly
-        process.stdout.write("\n");
-      } else {
-        process.stdout.write(`${title}  ${dim(chosen)}\n`);
-      }
     };
 
     onKey = (_str, key) => {
       if (!key) return;
-      if (key.ctrl && key.name === "c") { settle(null); reject(makeAbortError()); return; }
+      if (key.ctrl && key.name === "c") { settle(); reject(makeAbortError()); return; }
       if (key.name === "up")     { selIdx = (selIdx - 1 + choices.length) % choices.length; paint(selIdx); return; }
       if (key.name === "down")   { selIdx = (selIdx + 1) % choices.length; paint(selIdx); return; }
-      if (key.name === "return") { const chosen = choices[selIdx] ?? fallback; settle(chosen); resolve(chosen); }
+      if (key.name === "return") { const chosen = choices[selIdx] ?? fallback; settle(); resolve(chosen); }
     };
     emitKeypressEvents(process.stdin);
     rawMode(true);
@@ -339,20 +363,35 @@ function litellmUsage() {
   return `khala litellm - configure a LiteLLM-compatible Pi provider
 
 Usage:
-  khala litellm --project --provider <provider> --base-url <url> --key-env <ENV_VAR> --model <model>
+  khala litellm --provider <id> --base-url <url> --key-env <env-var> --model <pattern> [flags]
   khala litellm --help
-  khala litellm --version
 
-Options:
-  --project     Configure the current project .pi/settings.json and Pi models.json provider reference
-  --provider    LiteLLM provider id (required; examples: team-litellm, nlr)
-  --base-url    LiteLLM base URL such as https://lite.example/v1 (required)
-  --key-env     Environment variable name used as the Pi apiKey reference (required)
-  --model       Model id or bare glob to register and enable (required)
-  --yes         Skip the write confirmation prompt
-  --dry-run     Print the planned config changes without writing files
+Flags:
+      --provider <id>        LiteLLM provider id  (e.g. team-litellm)
+      --base-url <url>       LiteLLM base URL     (e.g. https://lite.example/v1)
+      --key-env <env-var>    Env var name used as the Pi apiKey reference
+      --model <pattern>      Model id or bare glob to register and enable
+  -l, --project              Write to .pi/settings.json in the current project (default)
+  -y, --yes                  Skip the write confirmation
+      --no-input             Alias for --yes (use in scripts and CI)
+      --dry-run              Print the planned config changes without writing files
+  -h, --help                 Show help
+  -v, --version              Show version
 
-raw API keys are never requested or stored. Khala writes non-secret key references only.`;
+Examples:
+  khala litellm --project --provider team-litellm --base-url https://lite.example/v1 \\
+    --key-env LITELLM_API_KEY --model gpt-5.4-mini --dry-run
+  khala litellm --project --provider team-litellm --base-url https://lite.example/v1 \\
+    --key-env LITELLM_API_KEY --model gpt-5.4-mini --yes
+
+Secret boundary:
+  Khala writes only the key reference, e.g. "$LITELLM_API_KEY".
+  raw API keys are never requested or stored.
+
+Environment:
+  PI_CODING_AGENT_DIR  Override the Pi agent directory (default: ~/.pi/agent)
+  NO_COLOR             Disable ANSI color in output
+`;
 }
 
 function parseLitellmArgs(args) {
@@ -365,7 +404,7 @@ function parseLitellmArgs(args) {
     else if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--project" || arg === "-l") options.project = true;
     else if (arg === "--version" || arg === "-v") options.version = true;
-    else if (arg === "--yes" || arg === "-y") options.yes = true;
+    else if (arg === "--yes" || arg === "-y" || arg === "--no-input") options.yes = true;
     else if (arg.startsWith("--provider=")) options.provider = arg.slice("--provider=".length);
     else if (arg === "--provider") options.provider = args[++i] ?? "";
     else if (arg.startsWith("--base-url=")) options.baseUrl = arg.slice("--base-url=".length);
@@ -539,12 +578,28 @@ async function askScope(options) {
   if (options.project) return "project";
   if (options.global || options.yes || !canPrompt()) return defaultScope(options);
 
-  console.log(dim("  Global installs across all projects. Project installs here only."));
   const result = await askChoice("Install scope", [
     "global  — ~/.pi/agent/settings.json",
     "project — .pi/settings.json",
   ], "global  — ~/.pi/agent/settings.json");
   return result.startsWith("project") ? "project" : "global";
+}
+
+const THINKING_CHOICES = ["xhigh", "high", "medium", "low", "minimal", "off"];
+
+async function askProfile(label, modelQuery, defaultThinking, providers, discoveryRows, fallbackPresets) {
+  const choices = buildProfileChoices(modelQuery, providers, discoveryRows, fallbackPresets);
+  const fallbackId = fallbackPresets[0]?.split(":")[0] ?? choices[0];
+  const defaultId = choices.includes(fallbackId) ? fallbackId : choices[0];
+
+  const modelId = await askChoice(label, choices, defaultId);
+  const [provider, model] = modelId.split("/");
+  if (!modelSupportsThinking(discoveryRows, provider, model)) {
+    return `${modelId}:off`;
+  }
+
+  const thinking = await askChoice(`${label} thinking`, THINKING_CHOICES, defaultThinking);
+  return `${modelId}:${thinking}`;
 }
 
 async function askModels(options) {
@@ -555,23 +610,9 @@ async function askModels(options) {
   const devRows    = discoverPiModels("gpt-5.4-mini",   DEFAULT_MODELS.development).rows ?? [];
   const reviewRows = discoverPiModels("claude-opus-4.7", DEFAULT_MODELS.peerReview).rows  ?? [];
 
-  const planning = await askChoice(
-    "Planning",
-    buildProfileChoices("gpt-5.5",        "xhigh",  providers, planRows,   MODEL_PRESETS.planning),
-    DEFAULT_MODELS.planning,
-  );
-
-  const development = await askChoice(
-    "Development",
-    buildProfileChoices("gpt-5.4-mini",   "medium", providers, devRows,    MODEL_PRESETS.development),
-    DEFAULT_MODELS.development,
-  );
-
-  const peerReview = await askChoice(
-    "Peer-review",
-    buildProfileChoices("claude-opus-4.7", "high",   providers, reviewRows, MODEL_PRESETS.peerReview),
-    DEFAULT_MODELS.peerReview,
-  );
+  const planning    = await askProfile("Planning",    "gpt-5.5",         "xhigh",  providers, planRows,   MODEL_PRESETS.planning);
+  const development = await askProfile("Development", "gpt-5.4-mini",    "medium", providers, devRows,    MODEL_PRESETS.development);
+  const peerReview  = await askProfile("Peer-review", "claude-opus-4.7", "high",   providers, reviewRows, MODEL_PRESETS.peerReview);
 
   return { planning, development, peerReview };
 }
@@ -616,14 +657,11 @@ async function main() {
     // Summary
     console.log("");
     console.log(dim("─".repeat(50)));
-    if (options.yes || !canPrompt()) {
-      // --yes and non-TTY skip the inline pickers, so print decisions here
-      console.log(`  ${dim("scope")}       ${scope === "project" ? ".pi/settings.json" : "~/.pi/agent/settings.json"}`);
-      console.log(`  ${dim("planning")}    ${models.planning}`);
-      console.log(`  ${dim("development")} ${models.development}`);
-      console.log(`  ${dim("peer-review")} ${models.peerReview}`);
-      console.log("");
-    }
+    console.log(`  ${dim("scope")}       ${scope === "project" ? ".pi/settings.json" : "~/.pi/agent/settings.json"}`);
+    console.log(`  ${dim("planning")}    ${models.planning}`);
+    console.log(`  ${dim("development")} ${models.development}`);
+    console.log(`  ${dim("peer-review")} ${models.peerReview}`);
+    console.log("");
     console.log(`  ${dim("command")}  ${command}`);
     console.log(`  ${dim("config")}   ${targetConfigPath}`);
 
