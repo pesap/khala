@@ -163,11 +163,11 @@ test("plan review defaults use workflow peer-review route overrides", () => {
 
 test("rejects invalid plan review flags", () => {
   assert.deepEqual(parsePlanArgs("shape reviewer two --review-model invalid"), {
-    error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]",
+    error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]",
   });
 
   assert.deepEqual(parsePlanArgs("shape reviewer two --review-thinking weird"), {
-    error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]",
+    error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]",
   });
 
   assert.deepEqual(parsePlanArgs("shape reviewer two --review-loops 3"), {
@@ -277,6 +277,9 @@ test("parses inbox flags with safe defaults", () => {
 
 test("parses workon target and flags", () => {
   const defaultModelSelection = DEFAULT_WORKON_MODEL_SELECTION;
+  const planParsed = parsePlanArgs("shape reviewer two");
+  assert.ok(!("error" in planParsed));
+  const defaultReview = planParsed.review;
 
   assert.equal(defaultModelSelection.exactModel, "github-copilot/gpt-5.4-mini");
   assert.equal(defaultModelSelection.exactThinkingLevel, "medium");
@@ -291,6 +294,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
@@ -308,6 +312,7 @@ test("parses workon target and flags", () => {
       heartbeat: "1.0",
       dryRun: false,
       modelSelection: defaultModelSelection,
+      review: defaultReview,
       extraInstruction: "",
     },
   );
@@ -322,6 +327,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
@@ -335,6 +341,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
@@ -348,6 +355,7 @@ test("parses workon target and flags", () => {
     heartbeat: "0.25",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
@@ -361,10 +369,13 @@ test("parses workon target and flags", () => {
     heartbeat: "0.01",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
-  assert.equal(parseWorkonArgs("73 --multiplexer tmux").multiplexer, "tmux");
+  const tmuxResult = parseWorkonArgs("73 --multiplexer tmux");
+  assert.ok(!("error" in tmuxResult));
+  assert.equal(tmuxResult.multiplexer, "tmux");
 
   assert.deepEqual(parseWorkonArgs("73 --heartbeat nope"), {
     target: "73",
@@ -376,6 +387,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
@@ -389,18 +401,23 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: true,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
   const modelOnlyResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4");
+  assert.ok(!("error" in modelOnlyResult));
   assert.equal(modelOnlyResult.target, "73");
   assert.equal(modelOnlyResult.modelSelection.exactModel, "anthropic/claude-sonnet-4");
   assert.equal(modelOnlyResult.modelSelection.routingMode, "override");
+  assert.deepEqual(modelOnlyResult.review, defaultReview);
 
   const modelAndThinkingResult = parseWorkonArgs("73 --model anthropic/claude-sonnet-4 --thinking high");
+  assert.ok(!("error" in modelAndThinkingResult));
   assert.equal(modelAndThinkingResult.target, "73 --thinking high");
   assert.equal(modelAndThinkingResult.modelSelection.exactModel, "anthropic/claude-sonnet-4");
   assert.equal(modelAndThinkingResult.modelSelection.exactThinkingLevel, "medium");
+  assert.deepEqual(modelAndThinkingResult.review, defaultReview);
 
   assert.deepEqual(parseWorkonArgs("73, 74 --repo pesap/agents"), {
     target: "73, 74",
@@ -412,6 +429,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
@@ -425,6 +443,7 @@ test("parses workon target and flags", () => {
     heartbeat: "1.0",
     dryRun: false,
     modelSelection: defaultModelSelection,
+    review: defaultReview,
     extraInstruction: "",
   });
 
@@ -445,9 +464,48 @@ test("parses workon target and flags", () => {
       heartbeat: "1.0",
       dryRun: false,
       modelSelection: defaultModelSelection,
+      review: defaultReview,
       extraInstruction: "",
     },
   );
+});
+
+test("parses workon review flags with bounded defaults", () => {
+  const parsed = parseWorkonArgs("73 --review-loops 2 --review-model anthropic/claude-sonnet-4 --review-thinking high");
+  assert.ok(!("error" in parsed));
+  assert.equal(parsed.review.enabled, true);
+  assert.equal(parsed.review.loops, 2);
+  assert.equal(parsed.review.model, "anthropic/claude-sonnet-4");
+  assert.equal(parsed.review.thinkingLevel, "high");
+  assert.equal(parsed.review.routingMode, "override");
+  assert.equal(parsed.review.routingReason, "explicit --review-model override");
+});
+
+test("parses workon review opt-out", () => {
+  const parsed = parseWorkonArgs("73 --no-review");
+  assert.ok(!("error" in parsed));
+  assert.equal(parsed.review.enabled, false);
+  assert.equal(parsed.review.loops, 0);
+  assert.equal(parsed.review.routingMode, "override");
+  assert.equal(parsed.review.routingReason, "explicit --no-review override");
+});
+
+test("rejects invalid workon review flags", () => {
+  assert.deepEqual(parseWorkonArgs("73 --review-loops 0"), {
+    error: "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
+  });
+  assert.deepEqual(parseWorkonArgs("73 --review-loops 3"), {
+    error: "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
+  });
+  assert.deepEqual(parseWorkonArgs("73 --review-loops nope"), {
+    error: "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
+  });
+  assert.deepEqual(parseWorkonArgs("73 --review-model invalid"), {
+    error: "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
+  });
+  assert.deepEqual(parseWorkonArgs("73 --review-thinking weird"), {
+    error: "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
+  });
 });
 
 test("buildSkillTemplate quotes YAML frontmatter values with colons", () => {

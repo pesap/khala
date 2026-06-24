@@ -2624,7 +2624,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     parseTriageArgs,
     parseAddressOpenIssuesArgs,
     parseInboxArgs,
-    parseWorkonArgs,
+    parseWorkonArgs: parseWorkonArgs as never,
     parseLearnSkillArgs,
     ensureLearningStore: (cwd) => ensureLearningStore(cwd, learningPathCache),
     ensureLearnedSkillLayout: async (cwd, skillName, sourceRunId) => {

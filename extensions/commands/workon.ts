@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
+import type { ReviewerTwoReviewSettings } from "./plan-review.ts";
 import {
   IMPROVE_LABEL,
   WORKON_READY_PACKET_NORMALIZED_HEADINGS,
@@ -72,6 +73,7 @@ interface WorkonHandoffLedger {
   dryRun: boolean;
   route: WorkonRoute;
   modelSelection: WorkonModelSelection;
+  reviewSettings: ReviewerTwoReviewSettings;
   worktree: {
     command: string | null;
     status: WorkonLedgerWorktreeStatus;
@@ -163,6 +165,7 @@ export interface WorkonBootstrapRequest {
   resolvedMultiplexer: ResolvedWorkonMultiplexer;
   heartbeat: string;
   modelSelection?: WorkonModelSelection;
+  reviewSettings?: ReviewerTwoReviewSettings;
 }
 
 export const WORKON_DEFAULT_THINKING_LEVEL: WorkonThinkingLevel = "medium";
@@ -202,6 +205,39 @@ export const DEFAULT_WORKON_MODEL_SELECTION: WorkonModelSelection = {
 
 function workonModelSelection(request: WorkonBootstrapRequest): WorkonModelSelection {
   return request.modelSelection ?? defaultWorkonModelSelection();
+}
+
+function defaultWorkonReviewSettings(): ReviewerTwoReviewSettings {
+  const reviewRoute = resolveWorkflowRoute("peer-review");
+  const reviewProfile = reviewRoute.profile;
+  const fallbackRoute = resolveWorkflowRoute("plan");
+  const fallbackProfile = fallbackRoute.profile;
+  const model = reviewProfile.model ?? fallbackProfile.model ?? "";
+  const routingReason = reviewProfile.model
+    ? `Reviewer Two ${reviewRoute.profileName} profile (${reviewProfile.source}; ${workflowRouteSourceReason(reviewRoute)})`
+    : `Reviewer Two fallback to ${fallbackRoute.profileName} profile via ${workflowRouteSourceReason(fallbackRoute)}: ${reviewProfile.reason ?? `unresolved ${reviewRoute.profileName} profile via ${workflowRouteSourceReason(reviewRoute)}`}`;
+
+  return {
+    enabled: true,
+    model,
+    thinkingLevel: reviewProfile.thinkingLevel,
+    loops: 1,
+    context: "fresh",
+    routingMode: "default",
+    routingReason,
+  };
+}
+
+function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute>): string {
+  return route.source === "flag"
+    ? `workflow flag ${route.description}`
+    : route.source === "route"
+      ? `workflow route config ${route.description}`
+      : `builtin ${route.description}`;
+}
+
+function workonReviewSettings(request: WorkonBootstrapRequest): ReviewerTwoReviewSettings {
+  return request.reviewSettings ?? defaultWorkonReviewSettings();
 }
 
 interface GithubIssueTarget {
@@ -247,6 +283,7 @@ interface WorkonBootstrapEvidence {
   handoffFailureSummary?: string;
   failureSummary?: string;
   modelSelection?: WorkonModelSelection;
+  reviewSettings?: ReviewerTwoReviewSettings;
   readinessActionItems?: string[];
   readinessActionItemsByIssue?: Array<{
     issue: GithubIssueMetadata;
@@ -872,6 +909,7 @@ function buildHandoffLedger(params: {
     dryRun: Boolean(params.request.dryRun),
     route,
     modelSelection: workonModelSelection(params.request),
+    reviewSettings: workonReviewSettings(params.request),
     worktree: {
       command: params.worktreeCommand ?? null,
       status: params.worktreeStatus,
@@ -1545,6 +1583,7 @@ function capsuleMarkdown(params: {
   const combinedWorkScopeSection = combinedWorkScope ? `\n${combinedWorkScope}\n` : "";
   const ledgerPath = handoffLedgerPath(params.request, params.repo);
   const modelSelection = workonModelSelection(params.request);
+  const reviewSettings = workonReviewSettings(params.request);
 
   return `# Workon session capsule
 
@@ -1574,6 +1613,12 @@ Exact model: ${modelSelection.exactModel}
 Exact thinking level: ${modelSelection.exactThinkingLevel}
 Model routing mode: ${modelSelection.routingMode}
 Model routing reason: ${modelSelection.routingReason}
+Reviewer Two enabled: ${reviewSettings.enabled ? "yes" : "no"}
+Reviewer Two loop budget: ${reviewSettings.loops}
+Reviewer Two model: ${reviewSettings.model || "(unresolved)"}
+Reviewer Two thinking level: ${reviewSettings.thinkingLevel}
+Reviewer Two routing mode: ${reviewSettings.routingMode}
+Reviewer Two routing reason: ${reviewSettings.routingReason}
 Created: ${params.request.nowIso}
 
 ## Problem
@@ -1638,6 +1683,30 @@ function heartbeatLabel(value: string): string {
   return `${value} hours`;
 }
 
+function reviewerTwoHandoffSection(settings: ReviewerTwoReviewSettings): string {
+  const lines = [
+    "Reviewer Two review loop:",
+    `- Enabled: ${settings.enabled ? "yes" : "no"}`,
+    `- Loop budget: ${settings.loops}`,
+    `- Model: ${settings.model || "(unresolved)"}`,
+    `- Thinking level: ${settings.thinkingLevel}`,
+    `- Routing mode: ${settings.routingMode}`,
+    `- Routing reason: ${settings.routingReason}`,
+    `- Default context: ${settings.context}`,
+    settings.enabled
+      ? "- Run an independent fresh-context Reviewer Two pass after implementation edits, focused validation, /simplify, and post-simplify validation, but before final commit and draft PR readiness."
+      : "- Reviewer Two is disabled for this run; skip the review pass and do not self-review.",
+    settings.enabled
+      ? "- Use the recorded peer-review model and thinking level when available; if you cannot run an independent Reviewer Two pass without self-reviewing, stop and report the blocker instead."
+      : "- If any later step would require an independent Reviewer Two pass, stop and report the blocker instead of self-reviewing.",
+    "- Reviewer Two output contract: decision, blockers, importantRevisions, optionalSuggestions, missingAcceptanceCriteria, validationGaps, scopeConcerns, recommendation.",
+    "- Classify findings as must-fix, optional/deferred, or rejected with rationale.",
+    "- For must-fix findings, make the changes and rerun focused validation before continuing.",
+    "- Stop on pass, blocked, exhausted loop budget, or an unapproved product/scope decision.",
+  ];
+  return lines.join("\n");
+}
+
 function buildMultiIssueHandoffPrompt(params: {
   issue: GithubIssueMetadata;
   sourceIssues: GithubIssueMetadata[];
@@ -1645,6 +1714,7 @@ function buildMultiIssueHandoffPrompt(params: {
   branchName: string;
   heartbeat: string;
   modelSelection: WorkonModelSelection;
+  reviewSettings: ReviewerTwoReviewSettings;
   ledgerPath: string;
   route: WorkonRoute;
   recoveryCommand?: string;
@@ -1706,6 +1776,15 @@ Pre-commit simplify pass:
 - Rerun the focused validation after simplification and before committing.
 - Commit only the final implementation plus simplify result; do not require a separate simplify commit.
 
+Validation:
+- Run focused tests for the touched code.
+- Validate every source issue expectation, not just #${params.issue.number}:
+${validation}
+- Run the relevant repo quality gate when the change affects public workflow behavior.
+- Include exact commands and results in your summary.
+
+${reviewerTwoHandoffSection(params.reviewSettings)}
+
 Draft PR and feedback heartbeat:
 - Once there is a coherent implementation commit, create or update a draft PR for this branch on the forge.
 - Link the draft PR back to all source issues:
@@ -1717,13 +1796,6 @@ ${sourceIssueReferences}
 - For unmet criteria, keep the checkbox unchecked and include a concise reason/follow-up under the item or in Deviations.
 - After opening the draft PR, check the PR/issue forge for human feedback every ${heartbeatLabel(params.heartbeat)} while you are still working.
 - Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.
-
-Validation:
-- Run focused tests for the touched code.
-- Validate every source issue expectation, not just #${params.issue.number}:
-${validation}
-- Run the relevant repo quality gate when the change affects public workflow behavior.
-- Include exact commands and results in your summary.
 
 Output:
 - Start with review findings and recommendation.
@@ -1741,6 +1813,7 @@ async function buildHandoffPrompt(params: {
   branchName: string;
   heartbeat: string;
   modelSelection: WorkonModelSelection;
+  reviewSettings: ReviewerTwoReviewSettings;
   ledgerPath: string;
   route: WorkonRoute;
   recoveryCommand?: string;
@@ -1762,6 +1835,7 @@ async function buildHandoffPrompt(params: {
       operatorAction: params.operatorAction,
       failureSummary: params.failureSummary,
     }),
+    reviewer_two_review_loop: reviewerTwoHandoffSection(params.reviewSettings),
     ack_command: buildHandoffAcknowledgementCommand(params.ledgerPath),
     resolved_model: params.modelSelection.exactModel,
     resolved_thinking_level: params.modelSelection.exactThinkingLevel,
@@ -1778,6 +1852,7 @@ async function buildHandoffPrompt(params: {
     branchName: params.branchName,
     heartbeat: params.heartbeat,
     modelSelection: params.modelSelection,
+    reviewSettings: params.reviewSettings,
     ledgerPath: params.ledgerPath,
     route: params.route,
     recoveryCommand: params.recoveryCommand,
@@ -2012,6 +2087,7 @@ async function startWorktreeIfRequested(
 export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence): string[] {
   const issue = evidence.issue;
   const route = evidence.route ?? evidence.ledger?.route ?? routeFromWorktreeStatus(evidence.worktreeStatus ?? "not-started");
+  const reviewSettings = evidence.reviewSettings ?? evidence.ledger?.reviewSettings ?? defaultWorkonReviewSettings();
   const lines = [
     routeInstructionBlock({
       route,
@@ -2033,6 +2109,12 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
           : []),
         "Autonomous readiness: not-ready",
         "Worktree status: not-started",
+        `Reviewer Two enabled: ${reviewSettings.enabled ? "yes" : "no"}`,
+        `Reviewer Two loop budget: ${reviewSettings.loops}`,
+        `Reviewer Two model: ${reviewSettings.model || "(unresolved)"}`,
+        `Reviewer Two thinking level: ${reviewSettings.thinkingLevel}`,
+        `Reviewer Two routing mode: ${reviewSettings.routingMode}`,
+        `Reviewer Two routing reason: ${reviewSettings.routingReason}`,
         "Session capsule: not written",
         `Handoff ledger: ${evidence.ledgerPath ?? "not written"}`,
       ].join("\n"),
@@ -2071,6 +2153,12 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         `Exact thinking level: ${evidence.modelSelection?.exactThinkingLevel ?? DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
         `Model routing reason: ${evidence.modelSelection?.routingReason ?? DEFAULT_WORKON_MODEL_SELECTION.routingReason}`,
+        `Reviewer Two enabled: ${reviewSettings.enabled ? "yes" : "no"}`,
+        `Reviewer Two loop budget: ${reviewSettings.loops}`,
+        `Reviewer Two model: ${reviewSettings.model || "(unresolved)"}`,
+        `Reviewer Two thinking level: ${reviewSettings.thinkingLevel}`,
+        `Reviewer Two routing mode: ${reviewSettings.routingMode}`,
+        `Reviewer Two routing reason: ${reviewSettings.routingReason}`,
         `Session capsule: ${evidence.capsulePath ?? "not written"}`,
         `Handoff ledger: ${evidence.ledgerPath ?? "not written"}`,
         ...(evidence.handoffRecoveryInstructions?.length
@@ -2105,6 +2193,7 @@ export async function prepareWorkonBootstrap(
     commands: [],
     gaps: [],
   };
+  evidence.reviewSettings = workonReviewSettings(request);
 
   if (request.forge !== "auto" && request.forge !== "github" && request.forge !== "all") {
     evidence.gaps.push(`GitHub workon bootstrap skipped for forge=${request.forge}`);
@@ -2252,6 +2341,7 @@ export async function prepareWorkonBootstrap(
     branchName,
     heartbeat: resolvedRequest.heartbeat,
     modelSelection: workonModelSelection(resolvedRequest),
+    reviewSettings: workonReviewSettings(resolvedRequest),
     ledgerPath: handoffLedgerPath(resolvedRequest, repo),
     route: initialRoute,
   });
@@ -2282,6 +2372,7 @@ export async function prepareWorkonBootstrap(
     branchName,
     heartbeat: resolvedRequest.heartbeat,
     modelSelection: workonModelSelection(resolvedRequest),
+    reviewSettings: workonReviewSettings(resolvedRequest),
     ledgerPath: handoffLedgerPath(resolvedRequest, repo),
     route: worktree.status,
     recoveryCommand: worktree.handoffRecoveryInstructions?.[0],
