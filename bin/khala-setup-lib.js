@@ -221,10 +221,41 @@ export function parseProfileEntry(entry) {
   const modelId = lastColonIndex > 0 ? trimmed.slice(0, lastColonIndex).trim() : trimmed;
   const thinkingLevel = lastColonIndex > 0 ? trimmed.slice(lastColonIndex + 1).trim() : "medium";
 
-  if (!modelId || !/^\S+\/\S+$/.test(modelId)) return null;
+  const slashIndex = modelId.indexOf("/");
+  if (slashIndex <= 0 || slashIndex === modelId.length - 1) return null;
+
+  const provider = modelId.slice(0, slashIndex).trim();
+  const model = modelId.slice(slashIndex + 1).trim();
+  if (!provider || !model) return null;
+  if (!PROVIDER_ID_RE.test(provider)) return null;
+  if (/[/:]/.test(model)) return null;
   if (!THINKING_LEVELS.has(thinkingLevel)) return null;
 
-  return { modelId, thinkingLevel };
+  return { modelId: `${provider}/${model}`, thinkingLevel };
+}
+
+export function parsePiModelListOutput(stdout) {
+  const rows = [];
+  for (const line of String(stdout ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || /^provider\s+model\b/i.test(trimmed) || /^no models/i.test(trimmed)) continue;
+
+    const columns = trimmed.split(/\s+/);
+    if (columns.length < 5) continue;
+
+    const provider = columns[0];
+    if (!provider) continue;
+
+    const hasImagesColumn = columns.length >= 6;
+    const modelColumns = hasImagesColumn ? columns.slice(1, -4) : columns.slice(1, -3);
+    const thinkingField = hasImagesColumn ? columns[columns.length - 2] : columns[columns.length - 1];
+    const model = modelColumns.join(" ").trim();
+    if (!model) continue;
+
+    const thinking = thinkingField?.toLowerCase() === "yes";
+    rows.push({ provider, model, thinking });
+  }
+  return rows;
 }
 
 export function normalizeCustomProfileEntry(entry, fallback) {

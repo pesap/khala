@@ -2039,6 +2039,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       found: workflowModelConfig.found,
       explicitProfiles: workflowModelConfig.explicitProfiles,
       explicitRoutes: workflowModelConfig.explicitRoutes,
+      warnings: workflowModelConfig.warnings,
     });
 
     const [hookConfig, profileLoad] = await Promise.all([

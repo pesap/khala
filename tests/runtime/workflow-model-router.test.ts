@@ -243,11 +243,13 @@ test("formatWorkflowRouteStatus reports config state and avoids not-set wording"
         found: true,
         explicitProfiles: ["development"],
         explicitRoutes: ["workon"],
+        warnings: ["Ignoring invalid profile entry for 'development': \"bad/model\". Expected format: \"provider/model:thinking\"."],
       },
     );
 
     const status = formatWorkflowRouteStatus();
     assert.match(status, /workflow config: found at \/tmp\/khala\/workflow-model\.yaml/);
+    assert.match(status, /workflow config warnings: Ignoring invalid profile entry for 'development': \"bad\/model\"\. Expected format: \"provider\/model:thinking\"\./);
     assert.match(status, /workflow profile flag: none \(CLI override not set; workflow config still applies\)/);
     assert.match(status, /workflow task flag: none \(CLI override not set; command routes still apply\)/);
     assert.match(status, /active profiles: .*development=openai-codex\/gpt-5\.4-mini:low/);
@@ -258,6 +260,7 @@ test("formatWorkflowRouteStatus reports config state and avoids not-set wording"
     const configStatus = getWorkflowModelConfigStatus();
     assert.deepEqual(configStatus.explicitProfiles, ["development"]);
     assert.equal(configStatus.found, true);
+    assert.deepEqual(configStatus.warnings, ["Ignoring invalid profile entry for 'development': \"bad/model\". Expected format: \"provider/model:thinking\"."]);
   } finally {
     resetActiveWorkflowRouteForTests();
   }

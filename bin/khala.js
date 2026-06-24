@@ -28,6 +28,7 @@ import {
   validateLiteLLMKeyEnv,
   deriveEnvVarFromKeyName,
   validateLiteLLMProviderId,
+  parsePiModelListOutput,
   PI_CLI_REQUIRED_MESSAGE,
 } from "./khala-setup-lib.js";
 
@@ -276,19 +277,7 @@ function canPrompt() { return process.stdin.isTTY && process.stdout.isTTY; }
 
 // ── Discovery helpers ───────────────────────────────────────────────────────
 function parseModelListOutput(stdout) {
-  const rows = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || /^provider\s+model\b/i.test(trimmed) || /^no models/i.test(trimmed)) continue;
-    // columns: provider model context max-out thinking images
-    const match = trimmed.match(/^(\S+)\s+(\S+)(?:\s+\S+\s+\S+\s+(\S+))?/);
-    if (!match) continue;
-    const [, provider, model, thinkingField] = match;
-    const thinking =
-      thinkingField === undefined ? undefined : thinkingField.toLowerCase() === "yes";
-    rows.push({ provider, model, thinking });
-  }
-  return rows;
+  return parsePiModelListOutput(stdout);
 }
 
 function readJsonFile(filePath) {
