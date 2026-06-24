@@ -36,6 +36,13 @@ Pre-commit simplify pass:
 - Rerun the focused validation after simplification and before committing.
 - Commit only the final implementation plus simplify result; do not require a separate simplify commit.
 
+Validation:
+- Run focused tests for the touched code.
+- Run the relevant repo quality gate when the change affects public workflow behavior.
+- Include exact commands and results in your summary.
+
+{{reviewer_two_review_loop}}
+
 Draft PR and feedback heartbeat:
 - Once there is a coherent implementation commit, create or update a draft PR for this branch on the forge.
 - Link the draft PR back to {{issue_url}} and make clear it is not ready to merge until validation and review are complete.
@@ -46,14 +53,8 @@ Draft PR and feedback heartbeat:
 - After opening the draft PR, check the PR/issue forge for human feedback every {{heartbeat_interval}} while you are still working.
 - Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.
 
-Validation:
-- Run focused tests for the touched code.
-- Run the relevant repo quality gate when the change affects public workflow behavior.
-- Include exact commands and results in your summary.
-
 Output:
 - Start with review findings and recommendation.
-- If blocked before implementation, report the drift/readiness/STOP condition that blocked work and the exact `/plan` refresh needed.
 - Then provide the plan or patch summary.
 - If you edit code, report exact proof run.
 - Include draft PR URL/status when created, plus latest heartbeat check result.

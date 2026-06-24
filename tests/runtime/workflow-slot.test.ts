@@ -83,7 +83,11 @@ function createHandlers(state: {
       details: false,
       extraInstruction: "",
     }),
-    parseWorkonArgs,
+    parseWorkonArgs: ((args: string) => {
+      const parsed = parseWorkonArgs(args);
+      if ("error" in parsed) throw new Error(parsed.error);
+      return parsed;
+    }) as never,
     parseLearnSkillArgs: () => ({ topic: "", dryRun: false }),
     ensureLearningStore: async () => ({ root: "", skillsDir: "" }),
     ensureLearnedSkillLayout: async () => ({

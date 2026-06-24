@@ -1215,6 +1215,20 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
     assert.match(capsule, /implement the smallest vertical slice for this combined source-issue set/);
     assert.doesNotMatch(capsule, /implement the smallest vertical slice for pesap\/agents#104\./);
     assert.match(capsule, /Create a separate focused commit for each source issue where practical/);
+    assert.match(capsule, /Reviewer Two review loop:/);
+    assert.match(capsule, /- Enabled: yes/);
+    assert.match(capsule, /- Loop budget: 1/);
+    assert.match(capsule, /- Model: github-copilot\/claude-opus-4\.7/);
+    assert.match(capsule, /- Thinking level: high/);
+    assert.match(capsule, /- Routing mode: default/);
+    assert.match(capsule, /- Routing reason: Reviewer Two peer-review profile/);
+    assert.match(capsule, /- Default context: fresh/);
+    assert.match(capsule, /- Run an independent fresh-context Reviewer Two pass after implementation edits, focused validation, \/simplify, and post-simplify validation, but before final commit and draft PR readiness\./);
+    assert.match(capsule, /- Use the recorded peer-review model and thinking level when available; if you cannot run an independent Reviewer Two pass without self-reviewing, stop and report the blocker instead\./);
+    assert.match(capsule, /- Reviewer Two output contract: decision, blockers, importantRevisions, optionalSuggestions, missingAcceptanceCriteria, validationGaps, scopeConcerns, recommendation\./);
+    assert.match(capsule, /- Classify findings as must-fix, optional\/deferred, or rejected with rationale\./);
+    assert.match(capsule, /- For must-fix findings, make the changes and rerun focused validation before continuing\./);
+    assert.match(capsule, /- Stop on pass, blocked, exhausted loop budget, or an unapproved product\/scope decision\./);
     assert.match(capsule, /Link the draft PR back to all source issues:/);
     assert.match(capsule, /Validate every source issue expectation, not just #104:/);
     assert.match(capsule, /#104: Run first focused test/);
@@ -1278,6 +1292,66 @@ test("dry-run prepares capsule and branch suggestion without starting Worktrunk"
     assert.equal((ledger.pi as { status: string }).status, "not-launched");
     assert.equal((ledger.heartbeat as { status: string }).status, "not-launched");
     assert.equal((ledger.phases as Record<string, string>).capsule, "written");
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("disables Reviewer Two in capsule and handoff metadata when --no-review is used", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-no-review-test-"));
+  try {
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        65,
+        "feat(inbox): detect local worktrees and stale sessions",
+      ),
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "65",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "prepare",
+        dryRun: true,
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        requestedMultiplexer: "zellij",
+        resolvedMultiplexer: "zellij",
+        heartbeat: "1.0",
+        reviewSettings: {
+          enabled: false,
+          model: "github-copilot/claude-opus-4.7",
+          thinkingLevel: "high",
+          loops: 0,
+          context: "fresh",
+          routingMode: "override",
+          routingReason: "explicit --no-review override",
+        },
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Reviewer Two enabled: no/);
+    assert.match(rendered, /Reviewer Two loop budget: 0/);
+    assert.match(rendered, /Reviewer Two routing mode: override/);
+    assert.match(rendered, /Reviewer Two routing reason: explicit --no-review override/);
+
+    const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
+    assert.ok(capsulePath);
+    const capsule = await readFile(capsulePath, "utf8");
+    assert.match(capsule, /Reviewer Two enabled: no/);
+    assert.match(capsule, /Reviewer Two loop budget: 0/);
+    assert.match(capsule, /Reviewer Two routing mode: override/);
+    assert.match(capsule, /Reviewer Two routing reason: explicit --no-review override/);
+
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.reviewSettings as { enabled: boolean }).enabled, false);
+    assert.equal((ledger.reviewSettings as { loops: number }).loops, 0);
+    assert.equal((ledger.reviewSettings as { routingMode: string }).routingMode, "override");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
@@ -1445,6 +1519,12 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, new RegExp(`Exact thinking level: ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(capsule, /Model routing mode: override/);
     assert.match(capsule, /Model routing reason: explicit --model override with default workon thinking/);
+    assert.match(capsule, /Reviewer Two enabled: yes/);
+    assert.match(capsule, /Reviewer Two loop budget: 1/);
+    assert.match(capsule, /Reviewer Two model: github-copilot\/claude-opus-4\.7/);
+    assert.match(capsule, /Reviewer Two thinking level: high/);
+    assert.match(capsule, /Reviewer Two routing mode: default/);
+    assert.match(capsule, /Reviewer Two routing reason: Reviewer Two peer-review profile/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "launched");
@@ -1452,6 +1532,9 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.equal((ledger.zellij as { status: string; tabId: number }).tabId, 12);
     assert.equal((ledger.pi as { status: string }).status, "pi-process-started");
     assert.equal((ledger.heartbeat as { status: string }).status, "started");
+    assert.equal((ledger.reviewSettings as { enabled: boolean }).enabled, true);
+    assert.equal((ledger.reviewSettings as { loops: number }).loops, 1);
+    assert.equal((ledger.reviewSettings as { routingMode: string }).routingMode, "default");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

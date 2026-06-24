@@ -21,6 +21,7 @@ import {
   type WorkonMode,
   type WorkonModelSelection,
 } from "./workon.ts";
+import type { ParsedWorkonArgs } from "./parsers.ts";
 import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
 import type { WorkflowCommandConfig, WorkflowType } from "../runtime/profile.ts";
 import type { PendingWorkflow } from "../workflows/engine.ts";
@@ -209,19 +210,7 @@ export function createWorkflowCommandHandlers(params: {
     details: boolean;
     extraInstruction: string;
   };
-  parseWorkonArgs: (args: string) => {
-    target: string;
-    targets?: string[];
-    repo: string;
-    forge: WorkonForge;
-    mode: WorkonMode;
-    multiplexer: WorkonMultiplexer;
-    heartbeat: string;
-    dryRun: boolean;
-    modelSelection: WorkonModelSelection;
-    error?: string;
-    extraInstruction: string;
-  };
+  parseWorkonArgs: (args: string) => ParsedWorkonArgs | { error: string };
   parseLearnSkillArgs: (args: string) => {
     topic: string;
     fromFile?: string;
@@ -762,14 +751,14 @@ export function createWorkflowCommandHandlers(params: {
 
     workon: async (args, ctx) => {
       const parsed = parseWorkonArgs(args ?? "");
-      if (parsed.error) {
+      if ("error" in parsed) {
         notify(ctx, parsed.error, "error");
         return;
       }
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level.",
+          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
           "error",
         );
         return;
@@ -816,6 +805,7 @@ export function createWorkflowCommandHandlers(params: {
         resolvedMultiplexer,
         heartbeat: parsed.heartbeat,
         modelSelection: parsed.modelSelection,
+        reviewSettings: parsed.review,
       });
       const localContext = workonLocalContextFlags(workonBootstrapSections);
 
@@ -837,6 +827,13 @@ export function createWorkflowCommandHandlers(params: {
           thinkingLevel: parsed.modelSelection.exactThinkingLevel,
           modelRoutingMode: parsed.modelSelection.routingMode,
           modelRoutingReason: parsed.modelSelection.routingReason,
+          review_enabled: parsed.review.enabled,
+          review_context: parsed.review.context,
+          review_loops: parsed.review.loops,
+          review_model: parsed.review.model,
+          review_thinking_level: parsed.review.thinkingLevel,
+          review_routing_mode: parsed.review.routingMode,
+          review_routing_reason: parsed.review.routingReason,
           targets,
           ...localContext,
           extraInstruction: parsed.extraInstruction || null,
@@ -854,6 +851,12 @@ export function createWorkflowCommandHandlers(params: {
           `Exact thinking level: ${parsed.modelSelection.exactThinkingLevel}`,
           `Model routing mode: ${parsed.modelSelection.routingMode}`,
           `Model routing reason: ${parsed.modelSelection.routingReason}`,
+          `Reviewer Two enabled: ${parsed.review.enabled ? "yes" : "no"}`,
+          `Reviewer Two loop budget: ${parsed.review.loops}`,
+          `Reviewer Two model: ${parsed.review.model}`,
+          `Reviewer Two thinking level: ${parsed.review.thinkingLevel}`,
+          `Reviewer Two routing mode: ${parsed.review.routingMode}`,
+          `Reviewer Two routing reason: ${parsed.review.routingReason}`,
           ...workonBootstrapSections,
           "Instruction: Treat the deterministic /workon route above as the source of truth. Do not reinterpret readiness, branch, capsule, multiplexer, Pi, heartbeat, or recovery state from free-form reasoning.",
           "Instruction: Resolve the durable source issue before branch/worktree work only when the route permits branch/worktree work.",

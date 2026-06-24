@@ -172,6 +172,20 @@ export interface ParsedPlanArgs {
   review: ReviewerTwoReviewSettings;
 }
 
+export interface ParsedWorkonArgs {
+  target: string;
+  targets: string[];
+  repo: string;
+  forge: InboxForge;
+  mode: WorkonMode;
+  multiplexer: WorkonMultiplexer;
+  heartbeat: string;
+  dryRun: boolean;
+  modelSelection: WorkonModelSelection;
+  review: ReviewerTwoReviewSettings;
+  extraInstruction: string;
+}
+
 const SUPPORTED_REVIEW_THINKING_LEVELS: readonly WorkonThinkingLevel[] = [
   "off",
   "minimal",
@@ -181,7 +195,7 @@ const SUPPORTED_REVIEW_THINKING_LEVELS: readonly WorkonThinkingLevel[] = [
   "xhigh",
 ];
 
-const PLAN_REVIEW_MAX_LOOPS = 2;
+const REVIEWER_TWO_MAX_LOOPS = 2;
 
 function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute>): string {
   return route.source === "flag"
@@ -191,7 +205,7 @@ function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute
       : `builtin ${route.description}`;
 }
 
-function defaultPlanReviewSettings(): ReviewerTwoReviewSettings {
+function defaultReviewerTwoReviewSettings(): ReviewerTwoReviewSettings {
   const reviewRoute = resolveWorkflowRoute("peer-review");
   const reviewProfile = reviewRoute.profile;
   const fallbackRoute = resolveWorkflowRoute("plan");
@@ -212,9 +226,11 @@ function defaultPlanReviewSettings(): ReviewerTwoReviewSettings {
   };
 }
 
-export const parsePlanArgs = (args: string): ParsedPlanArgs | { error: string } => {
+function parseReviewerTwoReviewSettings(args: string, usageError: string):
+  | { rest: string; review: ReviewerTwoReviewSettings }
+  | { error: string } {
   let rest = normalizeWhitespace(args);
-  const review = defaultPlanReviewSettings();
+  const review = defaultReviewerTwoReviewSettings();
 
   const noReviewResult = removeFlag(rest, /(^|\s)--no-review(\s|$)/);
   rest = noReviewResult.value;
@@ -230,7 +246,7 @@ export const parsePlanArgs = (args: string): ParsedPlanArgs | { error: string } 
   const explicitReviewModel = normalizeWhitespace(reviewModelResult.match?.[2] ?? "");
   if (explicitReviewModel) {
     if (!/^\S+\/\S+$/.test(explicitReviewModel)) {
-      return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]" };
+      return { error: usageError };
     }
     review.model = explicitReviewModel;
     review.routingMode = "override";
@@ -242,7 +258,7 @@ export const parsePlanArgs = (args: string): ParsedPlanArgs | { error: string } 
   const explicitReviewThinking = normalizeWhitespace(reviewThinkingResult.match?.[2] ?? "");
   if (explicitReviewThinking) {
     if (!SUPPORTED_REVIEW_THINKING_LEVELS.includes(explicitReviewThinking as WorkonThinkingLevel)) {
-      return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops N] [--no-review]" };
+      return { error: usageError };
     }
     review.thinkingLevel = explicitReviewThinking as WorkonThinkingLevel;
     if (!reviewModelResult.match) {
@@ -256,19 +272,27 @@ export const parsePlanArgs = (args: string): ParsedPlanArgs | { error: string } 
   const explicitReviewLoops = normalizeWhitespace(reviewLoopsResult.match?.[2] ?? "");
   if (explicitReviewLoops) {
     const loopCount = Number(explicitReviewLoops);
-    if (!Number.isInteger(loopCount) || loopCount < 1 || loopCount > PLAN_REVIEW_MAX_LOOPS) {
-      return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]" };
+    if (!Number.isInteger(loopCount) || loopCount < 1 || loopCount > REVIEWER_TWO_MAX_LOOPS) {
+      return { error: usageError };
     }
     review.loops = loopCount;
   }
 
   if (/--review-(?:model|thinking|loops)\b/.test(rest) || /(^|\s)--no-review(\s|$)/.test(rest)) {
-    return { error: "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]" };
+    return { error: usageError };
   }
 
+  return { rest, review };
+}
+
+export const parsePlanArgs = (args: string): ParsedPlanArgs | { error: string } => {
+  const usage = "Usage: /plan <plan_or_topic> [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]";
+  const parsedReview = parseReviewerTwoReviewSettings(args, usage);
+  if ("error" in parsedReview) return { error: parsedReview.error };
+
   return {
-    plan: rest,
-    review,
+    plan: parsedReview.rest,
+    review: parsedReview.review,
   };
 };
 export function parseKhalaHubArgs(args: string): ParsedKhalaHubArgs {
@@ -408,19 +432,15 @@ function parseWorkonIssueTargets(target: string): string[] {
     : [];
 }
 
-export function parseWorkonArgs(args: string): {
-  target: string;
-  targets: string[];
-  repo: string;
-  forge: InboxForge;
-  mode: WorkonMode;
-  multiplexer: WorkonMultiplexer;
-  heartbeat: string;
-  dryRun: boolean;
-  modelSelection: WorkonModelSelection;
-  extraInstruction: string;
-} {
+export function parseWorkonArgs(args: string): ParsedWorkonArgs | { error: string } {
   let rest = normalizeWhitespace(args);
+
+  const reviewResult = parseReviewerTwoReviewSettings(
+    rest,
+    "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
+  );
+  if ("error" in reviewResult) return { error: reviewResult.error };
+  rest = reviewResult.rest;
 
   const repoResult = removeFlag(rest, /(^|\s)--repo\s+(\S+)(\s|$)/);
   rest = repoResult.value;
@@ -483,6 +503,7 @@ export function parseWorkonArgs(args: string): {
     heartbeat,
     dryRun,
     modelSelection,
+    review: reviewResult.review,
     extraInstruction: "",
   };
 }
