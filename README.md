@@ -51,21 +51,21 @@ khala litellm --project \
   --model gpt-5.4-mini
 ```
 
-`--key-env` accepts a portal-style label (the same name you assigned the key
-on your LiteLLM admin portal) so you can correlate Pi providers with portal
-keys at a glance. Khala derives the shell-canonical env var name from it —
-`reeds-maint` → `$REEDS_MAINT` — and tells you exactly what to `export` if you
-choose env-var resolution. If you typed a valid identifier like
-`LITELLM_API_KEY` directly, derivation is a no-op.
+`--key-env` accepts a portal-style label (the same name you assigned the key on
+your LiteLLM admin portal) so you can correlate Pi providers with portal keys at
+a glance. Khala derives the shell-canonical env var name from it — `reeds-maint`
+→ `$REEDS_MAINT` — and tells you exactly what to `export` if you choose env-var
+resolution. If you typed a valid identifier like `LITELLM_API_KEY` directly,
+derivation is a no-op.
 
 In interactive mode Khala asks how Pi should resolve the API key for this
-provider. Three options match Pi's own `auth.json` schema, so the resulting
-file is indistinguishable from one written by `/login`:
+provider. Three options match Pi's own `auth.json` schema, so the resulting file
+is indistinguishable from one written by `/login`:
 
-- **Paste the key value once** — stored at `~/.pi/agent/auth.json[<provider>].key`
-  as a literal string. The file is created with `0600` permissions; the value is
-  never echoed to stdout or stderr. Pi reads it directly at runtime; no shell
-  env var needed.
+- **Paste the key value once** — stored at
+  `~/.pi/agent/auth.json[<provider>].key` as a literal string. The file is
+  created with `0600` permissions; the value is never echoed to stdout or
+  stderr. Pi reads it directly at runtime; no shell env var needed.
 - **Use a shell command** (e.g. `!op read 'op://Personal/team/credential'` or
   `!security find-generic-password -ws team`) — stored verbatim. Pi exec's the
   command on demand and uses stdout as the key. The actual secret stays in your
@@ -78,12 +78,13 @@ For scripting, the same modes are available as flags:
 `--auth-mode={skip,literal,command}` with `--auth-key=<value>` or
 `--auth-command='!cmd'`. Run `khala litellm --help` for the full surface.
 
-In all three modes, `models.json` keeps a stable `!khala litellm print-key
---provider <id>` resolver entry, and each project records its own selected
-key environment variable under `.pi/khala/litellm.json`. The picker also
-fetches LiteLLM's `/model/info` endpoint when a key source is available, so
-the selected models get rich metadata (context window, costs, reasoning,
-input modalities) instead of bare `{ id }` entries.
+In all three modes, `models.json` keeps a stable
+`!khala litellm print-key --provider <id>` resolver entry, and each project
+records its own selected key environment variable under
+`.pi/khala/litellm.json`. The picker also fetches LiteLLM's `/model/info`
+endpoint when a key source is available, so the selected models get rich
+metadata (context window, costs, reasoning, input modalities) instead of bare
+`{ id }` entries.
 
 Khala asks before changing `.pi/settings.json` in interactive runs. In scripts,
 pass `--project-settings` only when you want the selected models to become this
