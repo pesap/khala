@@ -8,6 +8,7 @@ import { createInterface, emitKeypressEvents } from "node:readline";
 import {
   LITELLM_PROVIDER_API,
   buildProfileChoices,
+  filterValidLiteLLMModelNames,
   mergeLiteLLMModelsJson,
   mergeLiteLLMProjectSettings,
   modelSupportsThinking,
@@ -317,8 +318,9 @@ async function askChoice(title, choices, fallback, options = {}) {
       const sel = i === selIdx;
       const item = items[i];
       if (item.custom) {
-        const text = sel ? bold(`use "${item.value}"`) : dim(`use "${item.value}"`);
-        lines.push(`  ${sel ? "+" : muted("+")} ${text}`);
+        const label = `add "${item.value}"`;
+        const text = sel ? bold(label) : dim(label);
+        lines.push(`  ${sel ? check("+") : "+"} ${text}`);
       } else {
         const text = sel ? bold(item.display) : dim(item.display);
         lines.push(`  ${sel ? "◉" : muted("◯")} ${text}`);
@@ -534,22 +536,28 @@ async function promptValidated(question, normalizer) {
  *
  * Seeds choices from pi --list-models and any explicit models already on a
  * LiteLLM provider in models.json, dedup'd by bare model name (LiteLLM's
- * model field is the bare name without a provider prefix). The picker is
- * opened in allowCustom mode so users can still type a new model id that
- * isn't in the discovery list.
+ * model field is the bare name without a provider prefix). Names that
+ * couldn't be registered as a LiteLLM model (whitespace, slash, or colon)
+ * are skipped so the user can't pick a value that would fail validation.
+ * The picker is opened in allowCustom mode so users can still type a brand
+ * new model id that isn't in the discovery list.
  */
 function liteLLMModelChoices() {
-  const seen = new Set();
-  const choices = [];
-  for (const row of piDiscoveryRows()) {
-    if (!seen.has(row.model)) { seen.add(row.model); choices.push(row.model); }
-  }
+  const raw = [];
+  for (const row of piDiscoveryRows()) raw.push(row.model);
   for (const provider of liteLLMProvidersFromModelsJson()) {
-    for (const m of provider.models) {
-      if (!seen.has(m)) { seen.add(m); choices.push(m); }
-    }
+    for (const m of provider.models) raw.push(m);
   }
-  return choices;
+  return filterValidLiteLLMModelNames(raw);
+}
+
+// Throw away any buffered stdin bytes so a stray \n from a previous
+// readline prompt can't immediately resolve the next picker with its default.
+function drainStdin() {
+  if (!process.stdin.isTTY) return;
+  while (process.stdin.read() !== null) {
+    // discard
+  }
 }
 
 async function pickLiteLLMModel() {
@@ -557,6 +565,7 @@ async function pickLiteLLMModel() {
   if (!choices.length) {
     return promptValidated("LiteLLM model: ", normalizeLiteLLMModelPattern);
   }
+  drainStdin();
   while (true) {
     const picked = await askChoice("LiteLLM model", choices, choices[0], { allowCustom: true });
     try {

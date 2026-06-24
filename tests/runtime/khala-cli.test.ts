@@ -10,6 +10,7 @@ import {
   LITELLM_PROVIDER_API,
   MALFORMED_PROFILE_MESSAGE,
   buildProfileChoices,
+  filterValidLiteLLMModelNames,
   mergeLiteLLMModelsJson,
   mergeLiteLLMProjectSettings,
   modelSupportsThinking,
@@ -285,6 +286,24 @@ test("khala setup helper skips LiteLLM providers with no explicit model list", (
   assert.equal(choices.some((c) => c.startsWith("sparse/")), false);
   assert.equal(choices.includes("nlr/gpt-5.5"), true);
   assert.equal(choices.includes("github-copilot/gpt-5.5"), true);
+});
+
+test("khala setup helper filters LiteLLM model picker choices to bare names that pass validation", () => {
+  const filtered = filterValidLiteLLMModelNames([
+    "gpt-4o-mini",
+    "claude-opus-4.7",
+    "gpt-4o-mini",                    // duplicate: dropped
+    "text-embed:v1",                  // colon: dropped
+    "vendor/model",                   // slash: dropped
+    "two words",                      // whitespace: dropped
+    "",                                // empty: dropped
+    null,                              // non-string: dropped
+    undefined,                         // non-string: dropped
+    "  gpt-5.5  ",                    // trimmed and accepted
+    "gpt-5.5",                        // duplicate of trimmed: dropped
+  ]);
+
+  assert.deepEqual(filtered, ["gpt-4o-mini", "claude-opus-4.7", "gpt-5.5"]);
 });
 
 test("khala setup helper reads thinking support from discovery rows and assumes yes when unknown", () => {

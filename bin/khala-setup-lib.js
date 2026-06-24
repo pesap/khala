@@ -144,6 +144,26 @@ export function normalizeLiteLLMModelPattern(raw) {
   return value;
 }
 
+/**
+ * Reduce a list of raw model-name strings to the valid, dedup'd bare names
+ * that can safely be offered in the LiteLLM model picker. Anything that fails
+ * normalizeLiteLLMModelPattern (whitespace, slash, colon, empty, non-string)
+ * is silently dropped so the picker can't surface a value that would later
+ * fail validation when the user tried to pick it.
+ */
+export function filterValidLiteLLMModelNames(names) {
+  const seen = new Set();
+  const result = [];
+  for (const name of names) {
+    let valid;
+    try { valid = normalizeLiteLLMModelPattern(name); } catch { continue; }
+    if (seen.has(valid)) continue;
+    seen.add(valid);
+    result.push(valid);
+  }
+  return result;
+}
+
 function normalizeExistingBaseUrl(raw) {
   try {
     return normalizeLiteLLMBaseUrl(raw);
