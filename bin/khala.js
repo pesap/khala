@@ -431,9 +431,7 @@ async function askChoice(title, choices, fallback, options = {}) {
  * askChoice. Differences:
  *
  *   - Returns an array of values in original-choices order.
- *   - All entries are selected by default; Tab toggles the current item.
- *     (Space is intentionally NOT a toggle so that filter queries and custom
- *     entries can contain whitespace, e.g. "HALO Gemma 4".)
+ *   - All entries are selected by default; Space toggles the current item.
  *   - Ctrl+A toggles every entry currently visible in the filter window
  *     (select-all-of-filtered when any are unselected, else deselect-all).
  *   - Space on a synthetic `+ add "<query>"` entry (when allowCustom is on
@@ -491,7 +489,7 @@ async function askMultiChoice(title, initialChoices, options = {}) {
     const filterTag = filtered.length === choices.length ? "" : `, ${filtered.length} match`;
     lines.push(`${bold(title)}  ${dim(`(${selected.size}/${choices.length} selected${filterTag})`)}`);
     lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
-    lines.push(dim("  ↑ ↓ move  Tab toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"));
+    lines.push(dim("  ↑ ↓ move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"));
     if (!items.length) {
       lines.push(dim("  no matches"));
       return lines;
@@ -507,7 +505,11 @@ async function askMultiChoice(title, initialChoices, options = {}) {
         lines.push(`  ${sel ? check("+") : "+"} ${text}`);
       } else {
         const checked = selected.has(item.value);
-        const box = checked ? "☑" : "☐";
+        // ASCII `[x]` / `[ ]` instead of ☑ / ☐: the Unicode checkbox pair
+        // is East-Asian-Width Neutral but most monospaced fonts render the
+        // checked variant a half-cell wider than the empty one, which makes
+        // adjacent rows wobble. ASCII is bulletproof across every font.
+        const box = checked ? "[x]" : "[ ]";
         const glyph = sel ? bold(box) : (checked ? box : muted(box));
         const text = sel ? bold(item.display) : dim(item.display);
         lines.push(`  ${glyph} ${text}`);
@@ -580,7 +582,7 @@ async function askMultiChoice(title, initialChoices, options = {}) {
         if (query) { query = query.slice(0, -1); applyFilter(); paint(); }
         return;
       }
-      if (key.name === "tab") {
+      if (key.name === "space") {
         if (!items.length) return;
         const item = items[selIdx];
         if (!item) return;
@@ -598,11 +600,11 @@ async function askMultiChoice(title, initialChoices, options = {}) {
         paint();
         return;
       }
-      // Printable ASCII (including the literal space character) appends to the
-      // filter query. Tab is the toggle key, so space is free for text input.
+      // Printable ASCII (excluding the literal space character, which is the
+      // toggle key) appends to the filter query.
       if (typeof str === "string" && str.length === 1 && !key.ctrl && !key.meta) {
         const code = str.charCodeAt(0);
-        if (code >= 32 && code < 127) {
+        if (code > 32 && code < 127) {
           query += str;
           applyFilter();
           paint();
