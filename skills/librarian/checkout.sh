@@ -83,9 +83,26 @@ fi
 trim_repo_input() {
 	local s="$1"
 	# Trim leading/trailing whitespace.
-	s="${s#${s%%[![:space:]]*}}"
-	s="${s%${s##*[![:space:]]}}"
+	s="${s#"${s%%[![:space:]]*}"}"
+	s="${s%"${s##*[![:space:]]}"}"
 	printf '%s' "$s"
+}
+
+is_unsafe_path_segment() {
+	local segment="$1"
+	[[ -z "$segment" || "$segment" == "." || "$segment" == ".." ]]
+}
+
+validate_repo_parts() {
+	local path="$1"
+	shift
+	local part
+	for part in "$@"; do
+		if is_unsafe_path_segment "$part"; then
+			echo "error: repository path contains unsafe segment: $path" >&2
+			return 1
+		fi
+	done
 }
 
 parse_repo() {
@@ -133,8 +150,14 @@ parse_repo() {
 	path="${path#/}"
 	path="${path%/}"
 
+	if is_unsafe_path_segment "$host"; then
+		echo "error: repository host contains unsafe segment: $host" >&2
+		return 1
+	fi
+
 	# For GitHub-like deep links, use owner/repo only.
 	IFS='/' read -r -a parts <<<"$path"
+	validate_repo_parts "$path" "${parts[@]}" || return 1
 	if [[ ${#parts[@]} -ge 3 ]]; then
 		case "${parts[2]}" in
 		tree | blob | pull | issues | commit | actions | releases | compare | wiki)
@@ -151,6 +174,7 @@ parse_repo() {
 		echo "error: repository path must contain at least org/repo: $path" >&2
 		return 1
 	fi
+	validate_repo_parts "$path" "${parts[@]}" || return 1
 
 	local last_index=$((${#parts[@]} - 1))
 	local repo="${parts[$last_index]}"
@@ -169,10 +193,35 @@ parse_repo() {
 	printf '%s\n%s\n%s\n' "$host" "$org" "$repo"
 }
 
+ensure_checkout_parent() {
+	local root="$1"
+	shift
+	local current="$root"
+	local segment
+	for segment in "$@"; do
+		current="$current/$segment"
+		if [[ -L "$current" ]]; then
+			echo "error: checkout parent contains symlink: $current" >&2
+			return 1
+		fi
+		if [[ -e "$current" && ! -d "$current" ]]; then
+			echo "error: checkout parent is not a directory: $current" >&2
+			return 1
+		fi
+		mkdir -p "$current"
+		if [[ -L "$current" ]]; then
+			echo "error: checkout parent contains symlink: $current" >&2
+			return 1
+		fi
+	done
+	printf '%s\n' "$current"
+}
+
 parsed_host=""
 parsed_org=""
 parsed_repo=""
 parsed_index=0
+parsed_repo_output="$(parse_repo "$repo_input")"
 while IFS= read -r line; do
 	case "$parsed_index" in
 	0) parsed_host="$line" ;;
@@ -180,17 +229,36 @@ while IFS= read -r line; do
 	2) parsed_repo="$line" ;;
 	esac
 	parsed_index=$((parsed_index + 1))
-done < <(parse_repo "$repo_input")
+done <<<"$parsed_repo_output"
 
 host="$parsed_host"
 org="$parsed_org"
 repo="$parsed_repo"
 
 cache_root="${LIBRARIAN_CACHE_ROOT:-$HOME/.cache/checkouts}"
-checkout_path="$cache_root/$host/$org/$repo"
 origin_url="https://$host/$org/$repo.git"
 
-mkdir -p "$(dirname "$checkout_path")"
+mkdir -p "$cache_root"
+cache_root="$(cd "$cache_root" && pwd -P)"
+IFS='/' read -r -a org_parts <<<"$org"
+checkout_parent="$(ensure_checkout_parent "$cache_root" "$host" "${org_parts[@]}")"
+checkout_parent="$(cd "$checkout_parent" && pwd -P)"
+case "$checkout_parent/" in
+"$cache_root"/*) ;;
+*)
+	echo "error: checkout path escapes cache root: $checkout_parent" >&2
+	exit 2
+	;;
+esac
+checkout_path="$checkout_parent/$repo"
+if [[ -L "$checkout_path" ]]; then
+	echo "error: checkout path is a symlink: $checkout_path" >&2
+	exit 2
+fi
+if [[ -e "$checkout_path" && ! -d "$checkout_path" ]]; then
+	echo "error: checkout path is not a directory: $checkout_path" >&2
+	exit 2
+fi
 
 if [[ ! -d "$checkout_path/.git" ]]; then
 	git clone --filter=blob:none "$origin_url" "$checkout_path" >/dev/null

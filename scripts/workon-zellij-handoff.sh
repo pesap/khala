@@ -535,9 +535,12 @@ write_pi_bootstrap() {
 
   slug="$(slugify "${branch}")"
   mkdir -p "${state_dir}/handoff"
+  chmod 700 "${state_dir}" "${state_dir}/handoff" 2>/dev/null || true
   prompt_path="${state_dir}/handoff/${slug}-prompt.txt"
   script_path="${state_dir}/handoff/${slug}-pi.sh"
+  umask 077
   printf '%s\n' "${prompt_content}" >"${prompt_path}"
+  chmod 600 "${prompt_path}" 2>/dev/null || true
   cat >"${script_path}" <<SCRIPT
 #!/usr/bin/env bash
 set -uo pipefail

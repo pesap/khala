@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -214,6 +214,21 @@ exit 2
     assert.match(panes, /-- bash .+\/handoff\/work-93-work-when-our-handoff-pi-session-finish-it-does-not-receive-the-feedback-pi\.sh/);
     assert.doesNotMatch(panes, /forge-heartbeat/);
     assert.match(result.piHandoffCommand, new RegExp(`launches: env PI_CODING_AGENT_DIR=\\S+ pi -a --name ${branch} <clean-prompt>`));
+
+    if (process.platform !== "win32") {
+      const handoffDir = path.join(tempDir, "handoff");
+      const promptPath = path.join(
+        handoffDir,
+        "work-93-work-when-our-handoff-pi-session-finish-it-does-not-receive-the-feedback-prompt.txt",
+      );
+      const piScriptPath = path.join(
+        handoffDir,
+        "work-93-work-when-our-handoff-pi-session-finish-it-does-not-receive-the-feedback-pi.sh",
+      );
+      assert.equal((await stat(handoffDir)).mode & 0o777, 0o700);
+      assert.equal((await stat(promptPath)).mode & 0o777, 0o600);
+      assert.equal((await stat(piScriptPath)).mode & 0o777, 0o700);
+    }
 
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
     assert.equal(ledger.pi.status, "pi-process-started");

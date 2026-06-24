@@ -6,6 +6,7 @@ import {
   mkdir,
   readFile,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -433,5 +434,33 @@ test("/khala-hub rejects unsupported subdir combinations and escape attempts", a
     await rm(cwd, { recursive: true, force: true });
     await rm(packageSkillsPath, { recursive: true, force: true });
     await rm(cacheRoot, { recursive: true, force: true });
+  }
+});
+
+test("checkout script rejects repository path traversal before creating cache escapes", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-hub-checkout-traversal-"));
+  const cacheRoot = path.join(tempDir, "cache");
+  const escapedRoot = path.join(tempDir, "escape");
+  const scriptPath = path.join(process.cwd(), "skills", "librarian", "checkout.sh");
+
+  try {
+    for (const repoRef of [
+      "evil.example/org/../../../escape/repo",
+      "../escape/org/repo",
+    ]) {
+      const result = spawnSync("bash", [scriptPath, repoRef, "--path-only"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          LIBRARIAN_CACHE_ROOT: cacheRoot,
+        },
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /unsafe segment/);
+      assert.equal(await stat(escapedRoot).then(() => true, () => false), false);
+    }
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
   }
 });

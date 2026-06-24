@@ -13,6 +13,8 @@ import {
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 // Keep this aligned with scripts/workon-zellij-handoff.sh defaults so the parent
 // /workon timeout stays above the script's normal tab-wait + pane-launch window.
 const ZELLIJ_TAB_WAIT_ATTEMPTS = 150;
@@ -644,6 +646,22 @@ function handoffLedgerPath(request: WorkonBootstrapRequest, repo: string): strin
   return path.join(repoStateDir(request.capsuleRoot, stateForgeHost(request), repo), "handoff-ledger.json");
 }
 
+async function chmodPrivate(filePath: string, mode: number): Promise<void> {
+  if (process.platform === "win32") return;
+  await fs.chmod(filePath, mode);
+}
+
+async function ensurePrivateDir(dir: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmodPrivate(dir, PRIVATE_DIR_MODE);
+}
+
+async function writePrivateFile(filePath: string, content: string): Promise<void> {
+  await ensurePrivateDir(path.dirname(filePath));
+  await fs.writeFile(filePath, content, { encoding: "utf8", mode: PRIVATE_FILE_MODE });
+  await chmodPrivate(filePath, PRIVATE_FILE_MODE);
+}
+
 function ledgerIssue(issue: GithubIssueMetadata): WorkonLedgerIssue {
   return {
     number: issue.number,
@@ -937,8 +955,7 @@ function buildHandoffLedger(params: {
 }
 
 async function writeHandoffLedger(ledger: WorkonHandoffLedger): Promise<string> {
-  await fs.mkdir(path.dirname(ledger.ledgerPath), { recursive: true });
-  await fs.writeFile(ledger.ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+  await writePrivateFile(ledger.ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
   return ledger.ledgerPath;
 }
 
@@ -1788,8 +1805,7 @@ async function writeCapsule(params: {
   handoffFailureSummary?: string;
 }): Promise<string> {
   const filePath = capsulePath(params.request, params.repo);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, capsuleMarkdown(params), "utf8");
+  await writePrivateFile(filePath, capsuleMarkdown(params));
   return filePath;
 }
 

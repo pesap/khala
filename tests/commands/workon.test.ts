@@ -1,6 +1,6 @@
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -356,6 +356,11 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
       capsulePath,
       path.join(tempDir, "github.com", "pesap", "agents", "capsule.md"),
     );
+    const ledgerPath = rendered.match(/Handoff ledger: (.+)/)?.[1]?.trim();
+    assert.equal(
+      ledgerPath,
+      path.join(tempDir, "github.com", "pesap", "agents", "handoff-ledger.json"),
+    );
     const capsule = await readFile(capsulePath, "utf8");
     assert.match(capsule, /Issue number: #63/);
     assert.match(capsule, /Branch: feat\/63-render-deterministic-maintainer-queue/);
@@ -370,6 +375,12 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     assert.match(capsule, /check the PR\/issue forge for human feedback every 1\.0/);
     assert.match(capsule, /implement the smallest vertical slice for pesap\/agents#63/);
     assert.doesNotMatch(capsule, /combined source issue set/);
+
+    if (process.platform !== "win32") {
+      assert.equal((await stat(path.dirname(capsulePath))).mode & 0o777, 0o700);
+      assert.equal((await stat(capsulePath)).mode & 0o777, 0o600);
+      assert.equal((await stat(ledgerPath)).mode & 0o777, 0o600);
+    }
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

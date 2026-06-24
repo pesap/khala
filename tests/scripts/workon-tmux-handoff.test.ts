@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -149,6 +149,15 @@ esac
     assert.match(result.piHandoffCommand, /tmux new-window .* -n pi /);
     assert.match(result.heartbeatCommand, /--multiplexer tmux/);
     assert.match(result.heartbeatCommand, /--notify-pane %1/);
+
+    if (process.platform !== "win32") {
+      const handoffDir = path.join(tempDir, "handoff");
+      const promptPath = path.join(handoffDir, "feat-211-tmux-provider-prompt.txt");
+      const piScriptPath = path.join(handoffDir, "feat-211-tmux-provider-pi.sh");
+      assert.equal((await stat(handoffDir)).mode & 0o777, 0o700);
+      assert.equal((await stat(promptPath)).mode & 0o777, 0o600);
+      assert.equal((await stat(piScriptPath)).mode & 0o777, 0o700);
+    }
 
     const tmuxLog = await readFile(logPath, "utf8");
     assert.match(tmuxLog, /new-session .* -s khala-agents-feat-211-tmux-provider .* -n khala /);
