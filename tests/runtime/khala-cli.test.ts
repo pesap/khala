@@ -106,8 +106,8 @@ test("khala CLI writes project workflow config after successful install", async 
   }
 });
 
-test("khala CLI discovers Pi availability and LiteLLM aliases without printing secrets", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-discovery-"));
+test("khala CLI summary omits provider/availability noise and never prints model.json secrets", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-summary-"));
   const binDir = path.join(tempDir, "bin");
   const piAgentDir = path.join(tempDir, "pi-agent");
   const piLog = path.join(tempDir, "pi.log");
@@ -116,14 +116,8 @@ test("khala CLI discovers Pi availability and LiteLLM aliases without printing s
     await writeFakePi(
       binDir,
       `printf '%s\n' "$*" >> ${JSON.stringify(piLog)}
-if [[ "$*" != "--list-models" ]]; then
-  printf 'unexpected pi args: %s\n' "$*" >&2
-  exit 2
-fi
-printf 'provider model\n'
-printf 'github-copilot gpt-5.5\n'
-printf 'openai-codex gpt-5.4-mini\n'
-printf 'github-copilot claude-opus-4.7\n'
+printf 'unexpected pi invocation: %s\n' "$*" >&2
+exit 99
 `,
     );
     await mkdir(piAgentDir, { recursive: true });
@@ -136,12 +130,6 @@ printf 'github-copilot claude-opus-4.7\n'
               baseUrl: "https://lite.example/v1",
               api: "openai-completions",
               apiKey: "team-a-secret",
-              models: [{ id: "gpt-5.4-mini" }],
-            },
-            "litellm-team-b": {
-              baseUrl: "https://lite.example/v1",
-              api: "openai-responses",
-              apiKey: "team-b-secret",
               models: [{ id: "gpt-5.4-mini" }],
             },
             "anthropic-cloud": {
@@ -172,47 +160,17 @@ printf 'github-copilot claude-opus-4.7\n'
     );
 
     assert.match(stdout, /Khala configuration\s+v\d/);
+    assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
     assert.match(stdout, /development\s+openai-codex\/gpt-5\.4-mini:medium/);
     assert.match(stdout, /peer-review\s+github-copilot\/claude-opus-4\.7:high/);
-    assert.match(stdout, /providers/);
-    assert.match(stdout, /◦ litellm-team-a/);
-    assert.match(stdout, /openai-completions/);
-    assert.match(stdout, /◦ litellm-team-b/);
-    assert.match(stdout, /openai-responses/);
-    assert.match(stdout, /✓ development\s+openai-codex\/gpt-5\.4-mini/);
-    assert.match(stdout, /openai-codex.*litellm-team-a|litellm-team-a.*openai-codex/);
-    assert.doesNotMatch(stdout, /team-a-secret|team-b-secret|anthropic-secret/);
-    assert.equal(await readFile(piLog, "utf8"), "--list-models\n");
+    assert.doesNotMatch(stdout, /^\s*providers\b/m);
+    assert.doesNotMatch(stdout, /availability/);
+    assert.doesNotMatch(stdout, /openai-completions|anthropic-messages|openai-responses/);
+    assert.doesNotMatch(stdout, /team-a-secret|anthropic-secret/);
     assert.equal(stderr, "");
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-});
 
-test("khala CLI reports provider discovery skipped when pi is unavailable", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-skip-"));
-  const piAgentDir = path.join(tempDir, "pi-agent");
-
-  try {
-    const { stdout, stderr } = await execFileAsync(
-      process.execPath,
-      [path.resolve("bin/khala.js"), "--project", "--dry-run"],
-      {
-        cwd: tempDir,
-        env: {
-          ...process.env,
-          PATH: tempDir,
-          PI_CODING_AGENT_DIR: piAgentDir,
-        },
-      },
-    );
-
-    assert.match(stdout, /availability/);
-    assert.match(stdout, /\? planning\s+github-copilot\/gpt-5\.5/);
-    assert.match(stdout, /\? development\s+openai-codex\/gpt-5\.4-mini/);
-    assert.match(stdout, /\? peer-review\s+github-copilot\/claude-opus-4\.7/);
-    assert.match(stdout, /discovery skipped/);
-    assert.equal(stderr, "");
+    const piInvocations = await readFile(piLog, "utf8").catch(() => "");
+    assert.equal(piInvocations, "", "pi should not be invoked in non-interactive --dry-run");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

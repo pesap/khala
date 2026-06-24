@@ -11,7 +11,6 @@ import {
   mergeLiteLLMProjectSettings,
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
-  parseProfileEntry,
   readJsonObjectFile,
   validateLiteLLMKeyEnv,
   validateLiteLLMProviderId,
@@ -577,68 +576,6 @@ async function askModels(options) {
   return { planning, development, peerReview };
 }
 
-// ── Discovery summary (sync, printed after selection) ──────────────────────
-function modelBase(modelEntry) {
-  const parsed = parseProfileEntry(modelEntry);
-  if (!parsed) return null;
-  const id = parsed.modelId;
-  return id.includes("/") ? id.split("/").at(-1) ?? id : id;
-}
-
-function discoverySection(_options, models) {
-  const lines = [];
-  const providers = liteLLMProvidersFromModelsJson();
-  const profiles  = Object.entries(models).map(([k, v]) => [k === "peerReview" ? "peer-review" : k, v]);
-  const normId    = (s) => s.toLowerCase().replace(/[._-]/g, "-");
-  const baseNames = profiles.map(([lbl, v]) => [lbl, modelBase(v)]).filter(([, n]) => n);
-
-  // Providers block
-  if (providers.length) {
-    lines.push("");
-    lines.push(dim("  providers"));
-    const nameW = Math.max(...providers.map((p) => p.name.length));
-    for (const p of providers) {
-      const matched = baseNames
-        .filter(([, n]) => !p.models.length || p.models.some((m) => normId(m) === normId(n)))
-        .map(([lbl]) => lbl);
-      lines.push(`    ${dim("◦")} ${p.name.padEnd(nameW)}  ${muted(p.api)}  ${matched.length ? matched.join(", ") : muted("—")}`);
-    }
-  }
-
-  // Availability block — one aligned line per profile
-  lines.push("");
-  lines.push(dim("  availability"));
-  const labelW = Math.max(...profiles.map(([lbl]) => lbl.length));
-  const modelW = Math.max(
-    ...profiles.map(([, v]) => (parseProfileEntry(v)?.modelId ?? v).length),
-  );
-  for (const [lbl, entry] of profiles) {
-    const parsed = parseProfileEntry(entry);
-    if (!parsed) {
-      lines.push(`    ${warn("?")} ${lbl.padEnd(labelW)}  ${dim("invalid entry")}`);
-      continue;
-    }
-    const base  = modelBase(entry) ?? parsed.modelId;
-    const disc  = discoverPiModels(base, parsed.modelId);
-    const alias = providers.find((p) => !p.models.length || p.models.some((m) => normId(m) === normId(base)))?.name ?? null;
-    const aliasStr = alias ? `  ${dim("·")} ${alias}` : "";
-
-    if (disc.skipped) {
-      lines.push(`    ${muted("?")} ${lbl.padEnd(labelW)}  ${dim(parsed.modelId.padEnd(modelW))}  ${muted("discovery skipped")}`);
-    } else if (disc.available) {
-      const via = (disc.rows
-        .filter((r) => r.model === base || `${r.provider}/${r.model}` === parsed.modelId)
-        .map((r) => r.provider));
-      const viaStr = (via.length ? via : disc.rows.map((r) => r.provider)).join(", ");
-      lines.push(`    ${check("✓")} ${lbl.padEnd(labelW)}  ${dim(parsed.modelId.padEnd(modelW))}  ${muted(viaStr)}${aliasStr}`);
-    } else {
-      lines.push(`    ${warn("!")} ${lbl.padEnd(labelW)}  ${dim(parsed.modelId.padEnd(modelW))}  ${warn("not found")}  ${muted(`pi --list-models ${base}`)}`);
-    }
-  }
-
-  return lines;
-}
-
 // ── Main ────────────────────────────────────────────────────────────────────
 async function main() {
   const argv = process.argv.slice(2);
@@ -689,8 +626,6 @@ async function main() {
     }
     console.log(`  ${dim("command")}  ${command}`);
     console.log(`  ${dim("config")}   ${targetConfigPath}`);
-
-    for (const line of discoverySection(options, models)) console.log(line);
 
     if (options.dryRun) return;
 
