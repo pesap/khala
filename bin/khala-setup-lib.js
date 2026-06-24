@@ -240,12 +240,19 @@ export function parsePiModelListOutput(stdout) {
     const trimmed = line.trim();
     if (!trimmed || /^provider\s+model\b/i.test(trimmed) || /^no models/i.test(trimmed)) continue;
 
-    const match = trimmed.match(/^(\S+)\s+(.+?)\s+\S+\s+\S+\s+(\S+)(?:\s+\S+)?$/);
-    if (!match) continue;
+    const columns = trimmed.split(/\s+/);
+    if (columns.length < 5) continue;
 
-    const [, provider, model, thinkingField] = match;
-    const thinking =
-      thinkingField === undefined ? undefined : thinkingField.toLowerCase() === "yes";
+    const provider = columns[0];
+    if (!provider) continue;
+
+    const hasImagesColumn = columns.length >= 6;
+    const modelColumns = hasImagesColumn ? columns.slice(1, -4) : columns.slice(1, -3);
+    const thinkingField = hasImagesColumn ? columns[columns.length - 2] : columns[columns.length - 1];
+    const model = modelColumns.join(" ").trim();
+    if (!model) continue;
+
+    const thinking = thinkingField?.toLowerCase() === "yes";
     rows.push({ provider, model, thinking });
   }
   return rows;
