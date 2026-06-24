@@ -10,6 +10,7 @@ import {
   LITELLM_RESOLVER_OVERRIDE_ENV,
   buildLiteLLMApiKeyCommand,
   buildProfileChoices,
+  buildPiCommandInvocation,
   isLiteLLMApiKeyCommand,
   mergeAuthJsonApiKey,
   mergeLiteLLMModelsJson,
@@ -27,6 +28,7 @@ import {
   validateLiteLLMKeyEnv,
   deriveEnvVarFromKeyName,
   validateLiteLLMProviderId,
+  PI_CLI_REQUIRED_MESSAGE,
 } from "./khala-setup-lib.js";
 
 const PACKAGE_SPEC = "npm:khala";
@@ -415,11 +417,18 @@ let _piModelListCache = null;
 function piModelList() {
   if (_piModelListCache !== null) return _piModelListCache;
 
-  const result = spawnSync("pi", ["--list-models"], { encoding: "utf8" });
-  if (result.error || result.status !== 0) {
-    _piModelListCache = { skipped: true, reason: result.error?.message ?? `exit ${result.status ?? 1}`, rows: [] };
+  const invocation = buildPiCommandInvocation(["--list-models"], {
+    spawnOptions: { encoding: "utf8" },
+  });
+  if (!invocation) {
+    _piModelListCache = { skipped: true, reason: PI_CLI_REQUIRED_MESSAGE, rows: [] };
   } else {
-    _piModelListCache = { skipped: false, rows: parseModelListOutput(result.stdout ?? "") };
+    const result = spawnSync(invocation.command, invocation.args, invocation.spawnOptions);
+    if (result.error || result.status !== 0) {
+      _piModelListCache = { skipped: true, reason: result.error?.message ?? `exit ${result.status ?? 1}`, rows: [] };
+    } else {
+      _piModelListCache = { skipped: false, rows: parseModelListOutput(result.stdout ?? "") };
+    }
   }
 
   return _piModelListCache;
@@ -2165,7 +2174,14 @@ async function main() {
       return;
     }
 
-    const result = spawnSync("pi", args, { stdio: "inherit" });
+    const invocation = buildPiCommandInvocation(args, { spawnOptions: { stdio: "inherit" } });
+    if (!invocation) {
+      console.error(PI_CLI_REQUIRED_MESSAGE);
+      process.exitCode = 1;
+      return;
+    }
+
+    const result = spawnSync(invocation.command, invocation.args, invocation.spawnOptions);
     if (result.error) {
       console.error(`Failed to run pi: ${result.error.message}`);
       process.exitCode = 1;

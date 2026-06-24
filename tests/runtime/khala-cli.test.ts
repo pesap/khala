@@ -14,6 +14,7 @@ import {
   MALFORMED_PROFILE_MESSAGE,
   buildLiteLLMApiKeyCommand,
   buildProfileChoices,
+  buildPiCommandInvocation,
   filterValidLiteLLMModelNames,
   buildEnrichedModelEntries,
   isLiteLLMApiKeyCommand,
@@ -51,7 +52,7 @@ async function writeFakePi(binDir: string, body: string): Promise<void> {
 
 async function runKhala(args: string[], env: NodeJS.ProcessEnv = {}, cwd?: string) {
   try {
-    const result = await execFileAsync("node", [path.resolve("bin/khala.js"), ...args], {
+    const result = await execFileAsync(process.execPath, [path.resolve("bin/khala.js"), ...args], {
       cwd,
       env: { ...process.env, ...env },
       encoding: "utf8",
@@ -710,7 +711,7 @@ test("khala CLI writes project workflow config after successful install", async 
     );
 
     const { stdout } = await execFileAsync(
-      "node",
+      process.execPath,
       [path.resolve("bin/khala.js"), "--project", "--yes"],
       {
         cwd: tempDir,
@@ -730,6 +731,71 @@ test("khala CLI writes project workflow config after successful install", async 
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("khala CLI reports a clear error when pi is not on PATH", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-missing-pi-"));
+
+  try {
+    const result = await runKhala(["--project", "--yes"], { PATH: "/usr/bin:/bin" }, tempDir);
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Pi CLI is required for Khala setup\./);
+    assert.match(result.stderr, /Verify that Pi is installed and on your PATH, then retry\./);
+    assert.doesNotMatch(result.stderr, /spawnSync pi ENOENT/);
+    await assert.rejects(
+      readFile(path.join(tempDir, ".pi", "khala", "workflow-model.yaml"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala CLI propagates nonzero pi install exits without writing config", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-pi-failure-"));
+  const binDir = path.join(tempDir, "bin");
+  const piLog = path.join(tempDir, "pi.log");
+
+  try {
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      path.join(binDir, "pi"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" > ${JSON.stringify(piLog)}\nexit 17\n`,
+      { mode: 0o755 },
+    );
+
+    const result = await runKhala(["--project", "--yes"], {
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    }, tempDir);
+
+    assert.equal(result.code, 17);
+    assert.equal(await readFile(piLog, "utf8"), "install -l npm:khala\n");
+    assert.doesNotMatch(result.stderr, /Pi CLI is required/);
+    await assert.rejects(
+      readFile(path.join(tempDir, ".pi", "khala", "workflow-model.yaml"), "utf8"),
+      { code: "ENOENT" },
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala setup helper preserves pi install arguments on Windows shims", () => {
+  const invocation = buildPiCommandInvocation(["install", "-l", "npm:khala"], {
+    platform: "win32",
+    command: "pi.cmd",
+    spawnOptions: { stdio: "inherit" },
+  });
+
+  assert.deepEqual(invocation, {
+    command: "pi.cmd",
+    args: ["install", "-l", "npm:khala"],
+    spawnOptions: {
+      shell: true,
+      stdio: "inherit",
+    },
+  });
 });
 
 test("khala CLI full setup prompt uses section hints and confirmation lines", async () => {

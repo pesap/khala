@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
@@ -27,6 +27,87 @@ export function shellQuoteCommandArg(value) {
   const text = String(value);
   if (/^[A-Za-z0-9_/:=.,+-]+$/.test(text)) return text;
   return `'${text.replace(/'/g, "'\\''")}'`;
+}
+
+export const PI_CLI_REQUIRED_MESSAGE =
+  "Pi CLI is required for Khala setup. Verify that Pi is installed and on your PATH, then retry.";
+
+function pathModuleFor(platform = process.platform) {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function executablePathExists(filePath, platform = process.platform) {
+  if (!existsSync(filePath)) return false;
+  if (platform === "win32") return true;
+  try {
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function pathExtensionsFor(platform = process.platform, env = process.env) {
+  if (platform !== "win32") return [];
+  const raw = trimOrEmpty(env.PATHEXT);
+  const extensions = (raw ? raw.split(";") : [".COM", ".EXE", ".BAT", ".CMD"])
+    .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`))
+    .filter(Boolean);
+  const seen = new Set();
+  const result = [];
+  for (const ext of extensions) {
+    const upper = ext.toUpperCase();
+    if (seen.has(upper)) continue;
+    seen.add(upper);
+    result.push(ext);
+  }
+  return result;
+}
+
+export function resolveCommandOnPath(command, options = {}) {
+  const trimmed = trimOrEmpty(command);
+  if (!trimmed) return null;
+
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const pathModule = pathModuleFor(platform);
+
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    const resolved = pathModule.resolve(trimmed);
+    return executablePathExists(resolved, platform) ? resolved : null;
+  }
+
+  const pathValue = trimOrEmpty(env.PATH);
+  if (!pathValue) return null;
+
+  const dirs = pathValue.split(platform === "win32" ? path.win32.delimiter : path.posix.delimiter).filter(Boolean);
+  const candidates = platform === "win32" && !pathModule.extname(trimmed)
+    ? [...pathExtensionsFor(platform, env).map((ext) => `${trimmed}${ext}`), trimmed]
+    : [trimmed];
+
+  for (const dir of dirs) {
+    for (const candidate of candidates) {
+      const resolved = pathModule.join(dir, candidate);
+      if (executablePathExists(resolved, platform)) return resolved;
+    }
+  }
+
+  return null;
+}
+
+export function buildPiCommandInvocation(args, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const command = trimOrEmpty(options.command) || resolveCommandOnPath("pi", options);
+  if (!command) return null;
+
+  return {
+    command,
+    args: Array.isArray(args) ? [...args] : [],
+    spawnOptions: {
+      shell: platform === "win32",
+      ...(options.spawnOptions ?? {}),
+    },
+  };
 }
 
 function npxResolverCommand(npmPackage) {
