@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 
 import {
   buildPlanReviewerTwoSections,
+  formatReviewerTwoLaunchContract,
   normalizePlanWorkPacket,
   normalizeReviewerTwoReviewResult,
+  resolveReviewerTwoReviewSettings,
 } from "../../extensions/commands/plan-review.ts";
 
 test("normalizes draft work packets from plain text and structured input", () => {
@@ -62,8 +64,31 @@ test("builds a Reviewer Two prompt contract with bounded stop rules", () => {
   assert.match(rendered, /Reviewer Two is advisory only/);
   assert.match(rendered, /decision, blockers, importantRevisions/);
   assert.match(rendered, /decision vocabulary: pass, revise, blocked/);
+  assert.match(rendered, /Reviewer Two launch contract: \/run reviewer\[model=github-copilot\/gpt-5\.4-mini:medium\] "<review task>"/);
   assert.match(rendered, /maximum review loop budget bounded at 2/);
   assert.match(rendered, /do not create issues, do not create PRs/);
+});
+
+test("formats a blocked Reviewer Two launch contract when model is unresolved", () => {
+  const contract = formatReviewerTwoLaunchContract({
+    enabled: true,
+    model: "",
+    thinkingLevel: "high",
+    loops: 1,
+    context: "fresh",
+    routingMode: "default",
+    routingReason: "Reviewer Two peer-review profile unresolved via builtin route peer-review -> peer-review: unknown reason",
+  });
+
+  assert.match(contract, /blocked until the Reviewer Two model is resolved/);
+  assert.doesNotMatch(contract, /\[model=/);
+});
+
+test("resolves reviewer two defaults without implementation workflow flags", () => {
+  const settings = resolveReviewerTwoReviewSettings();
+  assert.equal(settings.model, "github-copilot/claude-opus-4.7");
+  assert.equal(settings.thinkingLevel, "high");
+  assert.equal(settings.routingMode, "default");
 });
 
 test("normalizes structured Reviewer Two output from JSON text", () => {

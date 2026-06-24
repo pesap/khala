@@ -16,8 +16,10 @@ import {
   type WorkonModelSelection,
   type WorkonThinkingLevel,
 } from "./workon.ts";
-import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
-import type { ReviewerTwoReviewSettings } from "./plan-review.ts";
+import {
+  resolveReviewerTwoReviewSettings,
+  type ReviewerTwoReviewSettings,
+} from "./plan-review.ts";
 import { RISK_APPROVAL_TTL_MINUTES } from "../lib/constants.ts";
 import { removeFlag } from "../lib/flags.ts";
 import { normalizeWhitespace } from "../lib/text.ts";
@@ -197,40 +199,11 @@ const SUPPORTED_REVIEW_THINKING_LEVELS: readonly WorkonThinkingLevel[] = [
 
 const REVIEWER_TWO_MAX_LOOPS = 2;
 
-function workflowRouteSourceReason(route: ReturnType<typeof resolveWorkflowRoute>): string {
-  return route.source === "flag"
-    ? `workflow flag ${route.description}`
-    : route.source === "route"
-      ? `workflow route config ${route.description}`
-      : `builtin ${route.description}`;
-}
-
-function defaultReviewerTwoReviewSettings(): ReviewerTwoReviewSettings {
-  const reviewRoute = resolveWorkflowRoute("peer-review");
-  const reviewProfile = reviewRoute.profile;
-  const fallbackRoute = resolveWorkflowRoute("plan");
-  const fallbackProfile = fallbackRoute.profile;
-  const model = reviewProfile.model ?? fallbackProfile.model ?? "";
-  const routingReason = reviewProfile.model
-    ? `Reviewer Two ${reviewRoute.profileName} profile (${reviewProfile.source}; ${workflowRouteSourceReason(reviewRoute)})`
-    : `Reviewer Two fallback to ${fallbackRoute.profileName} profile via ${workflowRouteSourceReason(fallbackRoute)}: ${reviewProfile.reason ?? `unresolved ${reviewRoute.profileName} profile via ${workflowRouteSourceReason(reviewRoute)}`}`;
-
-  return {
-    enabled: true,
-    model,
-    thinkingLevel: reviewProfile.thinkingLevel,
-    loops: 1,
-    context: "fresh",
-    routingMode: "default",
-    routingReason,
-  };
-}
-
 function parseReviewerTwoReviewSettings(args: string, usageError: string):
   | { rest: string; review: ReviewerTwoReviewSettings }
   | { error: string } {
   let rest = normalizeWhitespace(args);
-  const review = defaultReviewerTwoReviewSettings();
+  const review = resolveReviewerTwoReviewSettings();
 
   const noReviewResult = removeFlag(rest, /(^|\s)--no-review(\s|$)/);
   rest = noReviewResult.value;
