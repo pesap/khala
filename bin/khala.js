@@ -7,8 +7,10 @@ import process from "node:process";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import {
   LITELLM_PROVIDER_API,
+  buildProfileChoices,
   mergeLiteLLMModelsJson,
   mergeLiteLLMProjectSettings,
+  modelSupportsThinking,
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
   readJsonObjectFile,
@@ -104,6 +106,11 @@ function configPath(scope) {
   return path.join(base, "khala", WORKFLOW_CONFIG_FILE);
 }
 
+function settingsPath(scope) {
+  const base = scope === "project" ? path.join(process.cwd(), ".pi") : piAgentDir();
+  return path.join(base, "settings.json");
+}
+
 function workflowConfig(models) {
   return [
     "# Khala workflow model config",
@@ -182,20 +189,9 @@ function piModelList() {
   return _piModelListCache;
 }
 
-function discoverPiModels(modelQuery, selectedModelId) {
+function piDiscoveryRows() {
   const cached = piModelList();
-  if (cached.skipped) return { available: false, skipped: true, reason: cached.reason, rows: [] };
-
-  const query = modelQuery.toLowerCase();
-  const rows = cached.rows.filter((r) =>
-    r.model.toLowerCase().includes(query) || `${r.provider}/${r.model}` === selectedModelId,
-  );
-
-  return {
-    available: rows.some((r) => r.model === modelQuery || `${r.provider}/${r.model}` === selectedModelId),
-    skipped: false,
-    rows,
-  };
+  return cached.skipped ? [] : cached.rows;
 }
 
 // Cache provider list for the process lifetime (reads models.json once).
@@ -217,35 +213,6 @@ function liteLLMProvidersFromModelsJson() {
   }
   _providersCache = providers;
   return providers;
-}
-
-function buildProfileChoices(modelQuery, providers, discoveryRows, fallbackChoices) {
-  const seen = new Set();
-  const choices = [];
-  const normId = (s) => s.toLowerCase().replace(/[._-]/g, "-");
-  const normQuery = normId(modelQuery);
-  for (const row of discoveryRows) {
-    const id = `${row.provider}/${row.model}`;
-    if (!seen.has(id)) { seen.add(id); choices.push(id); }
-  }
-  for (const provider of providers) {
-    if (provider.models.length && !provider.models.some((m) => normId(m) === normQuery)) continue;
-    for (const model of provider.models.length ? provider.models : [modelQuery]) {
-      const id = `${provider.name}/${model}`;
-      if (!seen.has(id)) { seen.add(id); choices.push(id); }
-    }
-  }
-  if (choices.length) return choices;
-  // Strip any thinking suffix from preset fallbacks; thinking is asked separately.
-  return fallbackChoices.map((c) => c.split(":")[0]);
-}
-
-function modelSupportsThinking(discoveryRows, provider, model) {
-  const match = discoveryRows.find((r) => r.provider === provider && r.model === model);
-  // Unknown (no row, or row without a thinking column) defaults to true so the
-  // user keeps control; pi will validate at install time.
-  if (!match || match.thinking === undefined) return true;
-  return match.thinking === true;
 }
 
 // ── Inline interactive prompts ──────────────────────────────────────────────
@@ -587,8 +554,8 @@ async function askScope(options) {
 
 const THINKING_CHOICES = ["xhigh", "high", "medium", "low", "minimal", "off"];
 
-async function askProfile(label, modelQuery, defaultThinking, providers, discoveryRows, fallbackPresets) {
-  const choices = buildProfileChoices(modelQuery, providers, discoveryRows, fallbackPresets);
+async function askProfile(label, defaultThinking, providers, discoveryRows, fallbackPresets) {
+  const choices = buildProfileChoices(providers, discoveryRows, fallbackPresets);
   const fallbackId = fallbackPresets[0]?.split(":")[0] ?? choices[0];
   const defaultId = choices.includes(fallbackId) ? fallbackId : choices[0];
 
@@ -606,13 +573,11 @@ async function askModels(options) {
   if (options.yes || !canPrompt()) return DEFAULT_MODELS;
 
   const providers = liteLLMProvidersFromModelsJson();
-  const planRows   = discoverPiModels("gpt-5.5",        DEFAULT_MODELS.planning).rows    ?? [];
-  const devRows    = discoverPiModels("gpt-5.4-mini",   DEFAULT_MODELS.development).rows ?? [];
-  const reviewRows = discoverPiModels("claude-opus-4.7", DEFAULT_MODELS.peerReview).rows  ?? [];
+  const rows      = piDiscoveryRows();
 
-  const planning    = await askProfile("Planning",    "gpt-5.5",         "xhigh",  providers, planRows,   MODEL_PRESETS.planning);
-  const development = await askProfile("Development", "gpt-5.4-mini",    "medium", providers, devRows,    MODEL_PRESETS.development);
-  const peerReview  = await askProfile("Peer-review", "claude-opus-4.7", "high",   providers, reviewRows, MODEL_PRESETS.peerReview);
+  const planning    = await askProfile("Planning",    "xhigh",  providers, rows, MODEL_PRESETS.planning);
+  const development = await askProfile("Development", "medium", providers, rows, MODEL_PRESETS.development);
+  const peerReview  = await askProfile("Peer-review", "high",   providers, rows, MODEL_PRESETS.peerReview);
 
   return { planning, development, peerReview };
 }
@@ -639,31 +604,24 @@ async function main() {
   if (options.version) { console.log(version()); return; }
 
   // Welcome
+  const modeTag = options.dryRun ? dim(" [dry-run]") : "";
   console.log("");
-  console.log(`${bold("Khala configuration")}  ${dim(`v${version()}`)}`);
-  console.log(dim("─".repeat(27)));
-  console.log("Workflow commands, safety gates, and model routing for Pi.");
-  if (options.yes)    console.log(dim("  using defaults  (--yes)"));
-  if (options.dryRun) console.log(dim("  no files will be written  (--dry-run)"));
+  console.log(`${bold("Khala configuration")}${modeTag}${dim(":")}`);
 
   try {
     const scope  = await askScope(options);
     const models = await askModels(options);
 
     const args             = installArgs(scope);
-    const command          = `pi ${args.join(" ")}`;
     const targetConfigPath = configPath(scope);
+    const targetSettingsPath = settingsPath(scope);
+    const labelWidth = 12;
 
-    // Summary
-    console.log("");
-    console.log(dim("─".repeat(50)));
-    console.log(`  ${dim("scope")}       ${scope === "project" ? ".pi/settings.json" : "~/.pi/agent/settings.json"}`);
-    console.log(`  ${dim("planning")}    ${models.planning}`);
-    console.log(`  ${dim("development")} ${models.development}`);
-    console.log(`  ${dim("peer-review")} ${models.peerReview}`);
-    console.log("");
-    console.log(`  ${dim("command")}  ${command}`);
-    console.log(`  ${dim("config")}   ${targetConfigPath}`);
+    console.log(`${dim("scope".padEnd(labelWidth))}${targetSettingsPath}`);
+    console.log(`${dim("config".padEnd(labelWidth))}${targetConfigPath}`);
+    console.log(`${dim("planning".padEnd(labelWidth))}${models.planning}`);
+    console.log(`${dim("development".padEnd(labelWidth))}${models.development}`);
+    console.log(`${dim("peer-review".padEnd(labelWidth))}${models.peerReview}`);
 
     if (options.dryRun) return;
 

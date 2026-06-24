@@ -10,6 +10,55 @@ export const MALFORMED_PROFILE_MESSAGE =
 export const LITELLM_PROVIDER_API = "openai-completions";
 export const LITELLM_PROVIDER_APIS = new Set(["openai-completions", "openai-responses"]);
 
+/**
+ * Build the picker choices for one workflow profile.
+ *
+ * Returns every `provider/model` we know about, in a stable order:
+ *   1. Everything pi reported via `pi --list-models`.
+ *   2. Every explicitly-listed model on every LiteLLM provider in models.json.
+ *   3. Preset fallback ids (without their thinking suffix) so the user can
+ *      still pick recommended models when pi is unavailable.
+ *
+ * The picker no longer filters by profile, because the caller wants full
+ * model freedom; the default highlighted entry is the responsibility of the
+ * caller (see askProfile).
+ */
+export function buildProfileChoices(providers, discoveryRows, fallbackChoices) {
+  const seen = new Set();
+  const choices = [];
+
+  for (const row of discoveryRows) {
+    const id = `${row.provider}/${row.model}`;
+    if (!seen.has(id)) { seen.add(id); choices.push(id); }
+  }
+
+  for (const provider of providers) {
+    if (!provider.models.length) continue;
+    for (const model of provider.models) {
+      const id = `${provider.name}/${model}`;
+      if (!seen.has(id)) { seen.add(id); choices.push(id); }
+    }
+  }
+
+  for (const preset of fallbackChoices) {
+    const id = preset.split(":")[0];
+    if (!seen.has(id)) { seen.add(id); choices.push(id); }
+  }
+
+  return choices;
+}
+
+/**
+ * Return whether pi's discovery rows say `provider/model` supports thinking.
+ * Unknown rows (missing / no thinking column) default to true so the user
+ * keeps control and pi validates at install time.
+ */
+export function modelSupportsThinking(discoveryRows, provider, model) {
+  const match = discoveryRows.find((r) => r.provider === provider && r.model === model);
+  if (!match || match.thinking === undefined) return true;
+  return match.thinking === true;
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

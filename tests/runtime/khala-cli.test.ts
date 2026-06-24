@@ -9,8 +9,10 @@ import test from "node:test";
 import {
   LITELLM_PROVIDER_API,
   MALFORMED_PROFILE_MESSAGE,
+  buildProfileChoices,
   mergeLiteLLMModelsJson,
   mergeLiteLLMProjectSettings,
+  modelSupportsThinking,
   normalizeCustomProfileEntry,
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
@@ -46,10 +48,10 @@ async function runKhala(args: string[], env: NodeJS.ProcessEnv = {}, cwd?: strin
 test("khala CLI prints setup guidance without running pi in dry-run mode", async () => {
   const { stdout } = await execFileAsync("node", ["bin/khala.js", "--project", "--dry-run"]);
 
-  assert.match(stdout, /Khala configuration\s+v\d/);
-  assert.match(stdout, /\.pi\/settings\.json/);
-  assert.match(stdout, /command\s+pi install -l npm:khala/);
+  assert.match(stdout, /Khala configuration \[dry-run\]:/);
+  assert.match(stdout, /scope\s+.*\.pi\/settings\.json/);
   assert.match(stdout, /config\s+.*\.pi\/khala\/workflow-model\.yaml/);
+  assert.doesNotMatch(stdout, /^\s*command\b/m);
   assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
   assert.match(stdout, /development\s+openai-codex\/gpt-5\.4-mini:medium/);
   assert.match(stdout, /peer-review\s+github-copilot\/claude-opus-4\.7:high/);
@@ -81,14 +83,16 @@ test("khala CLI accepts --no-input as an alias for --yes", async () => {
   ]);
 
   assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
-  assert.match(stdout, /command\s+pi install -l npm:khala/);
+  assert.match(stdout, /config\s+.*\.pi\/khala\/workflow-model\.yaml/);
+  assert.doesNotMatch(stdout, /^\s*command\b/m);
 });
 
 test("khala CLI defaults to global scope in non-interactive dry-run mode", async () => {
   const { stdout } = await execFileAsync("node", ["bin/khala.js", "--dry-run"]);
 
-  assert.match(stdout, /~\/\.pi\/agent\/settings\.json/);
-  assert.match(stdout, /command\s+pi install npm:khala/);
+  assert.match(stdout, /scope\s+.*\.pi\/agent\/settings\.json/);
+  assert.match(stdout, /config\s+.*workflow-model\.yaml/);
+  assert.doesNotMatch(stdout, /^\s*command\b/m);
 });
 
 test("khala CLI writes project workflow config after successful install", async () => {
@@ -178,7 +182,7 @@ exit 99
       },
     );
 
-    assert.match(stdout, /Khala configuration\s+v\d/);
+    assert.match(stdout, /Khala configuration/);
     assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
     assert.match(stdout, /development\s+openai-codex\/gpt-5\.4-mini:medium/);
     assert.match(stdout, /peer-review\s+github-copilot\/claude-opus-4\.7:high/);
@@ -216,6 +220,84 @@ test("khala setup helper validates LiteLLM provider, base URL, env, and model in
   assert.throws(() => normalizeLiteLLMBaseUrl("https://lite.example/v1?x=1"), /query string/);
   assert.throws(() => normalizeLiteLLMBaseUrl("ftp://lite.example/v1"), /must start with http:\/\//);
   assert.throws(() => normalizeLiteLLMModelPattern("team-litellm/*"), /slashes/);
+});
+
+test("khala setup helper builds profile picker choices from all discovery rows and LiteLLM models", () => {
+  const providers = [
+    {
+      name: "nlr",
+      baseUrl: "https://nlr.example/v1",
+      api: "openai-completions",
+      models: ["gpt-5.5", "gpt-5.4-mini", "text-embedding-3-large"],
+    },
+    {
+      name: "mlx-community",
+      baseUrl: "https://mlx.example/v1",
+      api: "openai-completions",
+      models: ["claude-opus-4.7"],
+    },
+  ];
+  const rows = [
+    { provider: "github-copilot", model: "gpt-5.5", thinking: true },
+    { provider: "azure-openai-responses", model: "gpt-5.5-pro", thinking: true },
+    { provider: "openai-codex", model: "text-embedding-3-large", thinking: false },
+  ];
+
+  const choices = buildProfileChoices(providers, rows, [
+    "github-copilot/gpt-5.5:xhigh",
+  ]);
+
+  // Every discovery row is offered.
+  assert.equal(choices.includes("github-copilot/gpt-5.5"), true);
+  assert.equal(choices.includes("azure-openai-responses/gpt-5.5-pro"), true);
+  assert.equal(choices.includes("openai-codex/text-embedding-3-large"), true);
+
+  // Every explicitly-listed LiteLLM provider model is offered.
+  assert.equal(choices.includes("nlr/gpt-5.5"), true);
+  assert.equal(choices.includes("nlr/gpt-5.4-mini"), true);
+  assert.equal(choices.includes("nlr/text-embedding-3-large"), true);
+  assert.equal(choices.includes("mlx-community/claude-opus-4.7"), true);
+
+  // No duplicates even when discovery and fallback overlap.
+  assert.equal(new Set(choices).size, choices.length);
+});
+
+test("khala setup helper falls back to preset model ids without thinking suffix when discovery and providers are empty", () => {
+  const choices = buildProfileChoices([], [], [
+    "openai-codex/gpt-5.4-mini:medium",
+    "github-copilot/gpt-5.4-mini:medium",
+  ]);
+
+  assert.deepEqual(choices, [
+    "openai-codex/gpt-5.4-mini",
+    "github-copilot/gpt-5.4-mini",
+  ]);
+});
+
+test("khala setup helper skips LiteLLM providers with no explicit model list", () => {
+  const providers = [
+    { name: "sparse", baseUrl: "https://sparse.example/v1", api: "openai-completions", models: [] },
+    { name: "nlr", baseUrl: "https://nlr.example/v1", api: "openai-completions", models: ["gpt-5.5"] },
+  ];
+
+  const choices = buildProfileChoices(providers, [], ["github-copilot/gpt-5.5:xhigh"]);
+
+  assert.equal(choices.some((c) => c.startsWith("sparse/")), false);
+  assert.equal(choices.includes("nlr/gpt-5.5"), true);
+  assert.equal(choices.includes("github-copilot/gpt-5.5"), true);
+});
+
+test("khala setup helper reads thinking support from discovery rows and assumes yes when unknown", () => {
+  const rows = [
+    { provider: "github-copilot", model: "gpt-5.5", thinking: true },
+    { provider: "azure-openai-responses", model: "gpt-4", thinking: false },
+    { provider: "two-col-only", model: "some-model", thinking: undefined },
+  ];
+
+  assert.equal(modelSupportsThinking(rows, "github-copilot", "gpt-5.5"), true);
+  assert.equal(modelSupportsThinking(rows, "azure-openai-responses", "gpt-4"), false);
+  assert.equal(modelSupportsThinking(rows, "two-col-only", "some-model"), true);
+  assert.equal(modelSupportsThinking(rows, "unknown-provider", "unknown-model"), true);
 });
 
 test("khala setup helper merges LiteLLM provider and project settings without clobbering unrelated entries", () => {
