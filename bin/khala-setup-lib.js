@@ -224,14 +224,13 @@ export function parseProfileEntry(entry) {
   const slashIndex = modelId.indexOf("/");
   if (slashIndex <= 0 || slashIndex === modelId.length - 1) return null;
 
-  const provider = modelId.slice(0, slashIndex).trim();
-  const model = modelId.slice(slashIndex + 1).trim();
-  if (!provider || !model) return null;
-  if (!PROVIDER_ID_RE.test(provider)) return null;
-  if (/[/:]/.test(model)) return null;
+  const providerId = modelId.slice(0, slashIndex).trim();
+  const modelName = modelId.slice(slashIndex + 1).trim();
+  if (!PROVIDER_ID_RE.test(providerId)) return null;
+  if (!MODEL_PATTERN_RE.test(modelName)) return null;
   if (!THINKING_LEVELS.has(thinkingLevel)) return null;
 
-  return { modelId: `${provider}/${model}`, thinkingLevel };
+  return { modelId: `${providerId}/${modelName}`, thinkingLevel };
 }
 
 export function parsePiModelListOutput(stdout) {

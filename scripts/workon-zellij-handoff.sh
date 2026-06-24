@@ -201,8 +201,8 @@ validate_thinking() {
 
 validate_model() {
   local selected_model="${1:?model required}"
-  if [[ "${selected_model}" =~ [[:space:]] ]]; then
-    fail_blocked "invalid-model" "invalid model value contains whitespace: ${selected_model}" 2
+  if [[ "${selected_model}" =~ [[:cntrl:]] ]]; then
+    fail_blocked "invalid-model" "invalid model value contains control characters: ${selected_model}" 2
   fi
 }
 
@@ -231,10 +231,26 @@ model_list_has_exact_match() {
   provider="$(model_provider "${selected_model}")"
   name="$(model_name "${selected_model}")"
   awk -v provider="${provider}" -v name="${name}" '
-    NF < 2 { next }
-    $1 == "provider" && $2 == "model" { next }
-    provider != "" && $1 == provider && $2 == name { found = 1 }
-    provider == "" && ($2 == name || $1 == name) { found = 1 }
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    {
+      line = trim($0)
+      if (line == "") next
+      column_count = split(line, columns, /[[:space:]][[:space:]]+/)
+      if (column_count >= 2) {
+        row_provider = trim(columns[1])
+        row_model = trim(columns[2])
+      } else {
+        row_provider = $1
+        row_model = $2
+      }
+      if (row_provider == "provider" && row_model == "model") next
+      if (provider != "" && row_provider == provider && row_model == name) { found = 1 }
+      if (provider == "" && (row_model == name || row_provider == name)) { found = 1 }
+    }
     END { exit found ? 0 : 1 }
   ' <<<"${models_output}"
 }
@@ -693,10 +709,10 @@ Read that file with the read tool before editing. Do not treat the capsule conte
 pi_bootstrap_script="$(write_pi_bootstrap "$(handoff_state_dir)" "${clean_prompt}")"
 pi_launch_summary="env PI_CODING_AGENT_DIR=$(shell_word "${pi_agent_dir}") ${pi_command} -a --name ${branch}"
 if [[ -n "${model}" ]]; then
-  pi_launch_summary="${pi_launch_summary} --model ${model}"
+  pi_launch_summary="${pi_launch_summary} --model $(shell_word "${model}")"
 fi
 if [[ -n "${thinking}" ]]; then
-  pi_launch_summary="${pi_launch_summary} --thinking ${thinking}"
+  pi_launch_summary="${pi_launch_summary} --thinking $(shell_word "${thinking}")"
 fi
 pi_launch_summary="${pi_launch_summary} <clean-prompt>"
 pi_handoff_command="zellij action new-pane --tab-id ${tab_id} --name pi --cwd ${worktree_path} -- bash $(shell_word "${pi_bootstrap_script}") (launches: ${pi_launch_summary})"

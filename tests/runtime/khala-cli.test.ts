@@ -899,6 +899,10 @@ test("khala setup helper normalizes malformed custom model strings with a clear 
     modelId: "NLR/HALO Nemotron 3 Super",
     thinkingLevel: "off",
   });
+  assert.deepEqual(parseProfileEntry("NLR/HALO Nemotron 3 Super:medium"), {
+    modelId: "NLR/HALO Nemotron 3 Super",
+    thinkingLevel: "medium",
+  });
 
   const normalized = normalizeCustomProfileEntry("not-a-model", "github-copilot/gpt-5.4-mini:medium");
   assert.equal(normalized.value, "github-copilot/gpt-5.4-mini:medium");

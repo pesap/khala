@@ -102,6 +102,120 @@ test("workon zellij handoff emits structured blocked JSON when jq is missing", a
   }
 });
 
+test("workon zellij handoff accepts model ids with internal spaces", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-space-model-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+
+    const paneLog = path.join(tempDir, "panes.log");
+    const piLog = path.join(tempDir, "pi.log");
+    const worktreePath = path.join(tempDir, "worktree");
+    const capsulePath = path.join(tempDir, "capsule.md");
+    const branch = "work/251-enable-installed-khala-by";
+    const tabName = "khala/work-251-enable-installed-khala-by";
+
+    await mkdir(worktreePath);
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    await writeExecutable(
+      path.join(binDir, "wt"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "switch" ]]; then
+  printf '{"action":"created","path":"${worktreePath}"}\\n'
+  exit 0
+fi
+printf 'unexpected wt args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "pi"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"${piLog}"
+if [[ "$1" == "--list-models" && "\${2:-}" == "HALO Nemotron 3 Super" ]]; then
+  printf 'provider  model                  context  max-out  thinking  images\\n'
+  printf 'NLR       HALO Nemotron 3 Super  400K     128K     yes       no\\n'
+  exit 0
+fi
+printf 'unexpected pi args: %s\\n' "$*" >&2
+exit 1
+`,
+    );
+
+    await writeExecutable(
+      path.join(binDir, "zellij"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "action list-tabs --json" ]]; then
+  printf '[{"name":"${tabName}","tab_id":12}]\\n'
+  exit 0
+fi
+if [[ "$*" == "action list-panes --json" ]]; then
+  printf '[]\\n'
+  exit 0
+fi
+if [[ "$*" == "action go-to-tab-name ${tabName}" ]]; then
+  exit 0
+fi
+if [[ "$1 $2" == "action new-pane" ]]; then
+  printf '%s\\n' "$*" >>"${paneLog}"
+  printf 'terminal_99\\n'
+  exit 0
+fi
+printf 'unexpected zellij args: %s\\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts", "workon-zellij-handoff.sh");
+    const { stdout } = await execFileAsync(
+      "bash",
+      [
+        scriptPath,
+        "--repo",
+        "pesap/khala",
+        "--branch",
+        branch,
+        "--capsule",
+        capsulePath,
+        "--prompt",
+        "handoff prompt",
+        "--heartbeat",
+        "0",
+        "--model",
+        "NLR/HALO Nemotron 3 Super",
+        "--thinking",
+        "medium",
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          HOME: tempDir,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+
+    const resultLine = stdout
+      .trim()
+      .split(/\r?\n/)
+      .findLast((line) => line.startsWith("{"));
+    assert.ok(resultLine);
+    const result = JSON.parse(resultLine);
+    assert.equal(result.status, "launched");
+    assert.match(result.piHandoffCommand, /--model NLR\/HALO\\ Nemotron\\ 3\\ Super/);
+    assert.match(await readFile(piLog, "utf8"), /--list-models HALO Nemotron 3 Super/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("workon zellij handoff waits long enough for delayed Worktrunk tab", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-zellij-handoff-test-"));
   try {

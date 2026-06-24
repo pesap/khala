@@ -32,6 +32,12 @@ test("parseProfileEntry parses valid model:thinking strings", () => {
     modelId: "NLR/HALO Nemotron 3 Super",
     thinkingLevel: "off",
   });
+
+  const result4 = parseProfileEntry("NLR/HALO Nemotron 3 Super:medium");
+  assert.deepEqual(result4, {
+    modelId: "NLR/HALO Nemotron 3 Super",
+    thinkingLevel: "medium",
+  });
 });
 
 test("parseProfileEntry defaults to medium thinking when suffix is missing or invalid", () => {

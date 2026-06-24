@@ -82,26 +82,25 @@ export function parseProfileEntry(entry: string): ParsedProfileEntry | null {
   const trimmed = entry.trim();
   if (!trimmed) return null;
 
-  // Format: provider/model:thinking OR provider/model
+  // Format: provider/model:thinking OR provider/model. The provider prefix is
+  // structured, but LiteLLM model ids may contain internal spaces.
   const colonIdx = trimmed.lastIndexOf(":");
   const thinkingLevel = trimmed.slice(colonIdx + 1).trim();
   const modelId = colonIdx > 0 ? trimmed.slice(0, colonIdx).trim() : trimmed.trim();
-
   const slashIdx = modelId.indexOf("/");
   if (slashIdx <= 0 || slashIdx === modelId.length - 1) return null;
 
-  const provider = modelId.slice(0, slashIdx).trim();
-  const model = modelId.slice(slashIdx + 1).trim();
-  if (!provider || !model) return null;
-  if (!/^[a-z0-9._-]+$/i.test(provider)) return null;
-  if (/[/:]/.test(model)) return null;
+  const providerId = modelId.slice(0, slashIdx).trim();
+  const modelName = modelId.slice(slashIdx + 1).trim();
+  if (!/^[a-z0-9._-]+$/i.test(providerId)) return null;
+  if (!modelName || /[/:]/.test(modelName)) return null;
 
   const validThinking = THINKING_LEVELS.includes(
     thinkingLevel as (typeof THINKING_LEVELS)[number],
   );
   const level = validThinking ? (thinkingLevel as KhalaThinkingLevel) : "medium";
 
-  return { modelId: `${provider}/${model}`, thinkingLevel: level };
+  return { modelId: `${providerId}/${modelName}`, thinkingLevel: level };
 }
 
 /**
