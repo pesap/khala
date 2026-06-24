@@ -18,6 +18,8 @@
     "impls",
     "infrasys",
     "khala",
+    "litellm",
+    "maint",
     "markdownlint",
     "overfit",
     "pesap",
