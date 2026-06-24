@@ -61,6 +61,7 @@ export function formatKhalaHealthStatus(state: KhalaHealthState): string {
     if (profile.status !== "ok") errorCount += 1;
   }
   if (!configStatus.found) errorCount += 1;
+  if (configStatus.found && configStatus.warnings.length > 0) errorCount += configStatus.warnings.length;
 
   const healthLine = errorCount > 0
     ? colorStatusLine("ERROR", `Khala health: ${errorCount} error${errorCount === 1 ? "" : "s"}`)
@@ -84,6 +85,9 @@ export function formatKhalaHealthStatus(state: KhalaHealthState): string {
     ? `- OK found at ${configStatus.path ?? "(path unavailable)"}`
     : `- ERROR workflow-model.yaml not found${configStatus.path ? ` at ${configStatus.path}` : ""}`;
   lines.push(colorStatusLine(configStatus.found ? "OK" : "ERROR", configLine));
+  for (const warning of configStatus.warnings) {
+    lines.push(`- workflow config warning: ${warning}`);
+  }
 
   for (const profile of profiles) {
     const status = profileStatusLabel(profile.status);

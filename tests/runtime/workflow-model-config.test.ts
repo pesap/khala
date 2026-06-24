@@ -26,6 +26,12 @@ test("parseProfileEntry parses valid model:thinking strings", () => {
     modelId: "github-copilot/gpt-5.4-mini",
     thinkingLevel: "medium",
   });
+
+  const result3 = parseProfileEntry("NLR/HALO Nemotron 3 Super:off");
+  assert.deepEqual(result3, {
+    modelId: "NLR/HALO Nemotron 3 Super",
+    thinkingLevel: "off",
+  });
 });
 
 test("parseProfileEntry defaults to medium thinking when suffix is missing or invalid", () => {
@@ -133,6 +139,30 @@ test("loadWorkflowModelConfig validates profile entries and rejects invalid ones
     assert.equal(result.config.profiles.development, BUILTIN_WORKFLOW_PROFILES.development);
     // There should be warnings about invalid entries
     assert.ok(result.warnings.some((w) => w.includes("invalid_profile")));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("loadWorkflowModelConfig accepts workflow profiles whose model ids contain internal spaces", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workflow-model-config-"));
+  const configPath = path.join(tempDir, "workflow-model.yaml");
+  try {
+    await writeFile(
+      configPath,
+      [
+        "profiles:",
+        '  development: "NLR/HALO Nemotron 3 Super:off"',
+        "routes:",
+        '  workon: "development"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await loadWorkflowModelConfig(configPath);
+    assert.equal(result.config.profiles.development, "NLR/HALO Nemotron 3 Super:off");
+    assert.equal(result.warnings.length, 0);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

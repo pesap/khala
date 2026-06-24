@@ -28,6 +28,7 @@ import {
   normalizeLiteLLMBaseUrl,
   normalizeLiteLLMModelPattern,
   parseLiteLLMModelInfoResponse,
+  parsePiModelListOutput,
   parseProfileEntry,
   resolveLiteLLMApiKeyResolverCommand,
   shellQuoteCommandArg,
@@ -894,6 +895,10 @@ exit 99
 test("khala setup helper normalizes malformed custom model strings with a clear message", () => {
   assert.equal(parseProfileEntry("not-a-model"), null);
   assert.equal(parseProfileEntry("github-copilot/gpt-5.4-mini:made-up"), null);
+  assert.deepEqual(parseProfileEntry("NLR/HALO Nemotron 3 Super:off"), {
+    modelId: "NLR/HALO Nemotron 3 Super",
+    thinkingLevel: "off",
+  });
 
   const normalized = normalizeCustomProfileEntry("not-a-model", "github-copilot/gpt-5.4-mini:medium");
   assert.equal(normalized.value, "github-copilot/gpt-5.4-mini:medium");
@@ -1350,12 +1355,27 @@ test("khala setup helper reads thinking support from discovery rows and assumes 
     { provider: "github-copilot", model: "gpt-5.5", thinking: true },
     { provider: "azure-openai-responses", model: "gpt-4", thinking: false },
     { provider: "two-col-only", model: "some-model", thinking: undefined },
+    { provider: "NLR", model: "HALO Nemotron 3 Super", thinking: false },
   ];
 
   assert.equal(modelSupportsThinking(rows, "github-copilot", "gpt-5.5"), true);
   assert.equal(modelSupportsThinking(rows, "azure-openai-responses", "gpt-4"), false);
   assert.equal(modelSupportsThinking(rows, "two-col-only", "some-model"), true);
+  assert.equal(modelSupportsThinking(rows, "NLR", "HALO Nemotron 3 Super"), false);
   assert.equal(modelSupportsThinking(rows, "unknown-provider", "unknown-model"), true);
+});
+
+test("khala setup helper parses Pi discovery rows with internal spaces in model ids", () => {
+  const rows = parsePiModelListOutput([
+    "provider model context max-out thinking images",
+    "NLR HALO Nemotron 3 Super 400K 128K no yes",
+    "github-copilot gpt-5.4-mini 400K 128K yes yes",
+  ].join("\n"));
+
+  assert.deepEqual(rows, [
+    { provider: "NLR", model: "HALO Nemotron 3 Super", thinking: false },
+    { provider: "github-copilot", model: "gpt-5.4-mini", thinking: true },
+  ]);
 });
 
 test("khala setup helper merges LiteLLM provider and project settings without clobbering unrelated entries", () => {

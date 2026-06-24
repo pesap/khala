@@ -11,6 +11,7 @@ import {
   resetActiveWorkflowRouteForTests,
   setWorkflowModelConfig,
 } from "../../extensions/runtime/workflow-model-router.ts";
+import { loadWorkflowModelConfig } from "../../extensions/runtime/workflow-model-config.ts";
 
 let fakePiDir: string | null = null;
 let previousPath: string | undefined;
@@ -164,6 +165,80 @@ test("/khala-health reports compact durable workflow config and profiles", async
     assert.match(harness.messages[0], /model: openai-codex\/gpt-5\.4-mini/);
     assert.doesNotMatch(harness.messages[0], /workflow profile flag/);
     assert.doesNotMatch(harness.messages[0], /workflow task flag/);
+  } finally {
+    resetActiveWorkflowRouteForTests();
+  }
+});
+
+test("/khala-health surfaces workflow config warnings for invalid configured profiles", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-health-workflow-config-"));
+  const configPath = path.join(tempDir, "workflow-model.yaml");
+  try {
+    await writeFile(
+      configPath,
+      [
+        "profiles:",
+        '  development: "bad/model/extra:medium"',
+        "routes:",
+        '  workon: "development"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const loaded = await loadWorkflowModelConfig(configPath);
+    resetActiveWorkflowRouteForTests();
+    setWorkflowModelConfig(loaded.config, {
+      path: loaded.path,
+      found: loaded.found,
+      explicitProfiles: loaded.explicitProfiles,
+      explicitRoutes: loaded.explicitRoutes,
+      warnings: loaded.warnings,
+    });
+
+    const harness = makeHarness({
+      agentEnabled: false,
+      memoryToolCallLimit: 17,
+    });
+
+    await harness.handlers.khalaHealth(undefined, harness.ctx);
+
+    assert.equal(harness.messages.length, 1);
+    assert.match(harness.messages[0], /Khala health: 1 error/);
+    assert.match(harness.messages[0], /workflow config warning: Ignoring invalid profile entry for 'development': "bad\/model\/extra:medium"\. Expected format: "provider\/model:thinking"\./);
+    assert.match(harness.messages[0], /OK found at .*workflow-model\.yaml/);
+    assert.match(harness.messages[0], /OK development/);
+    assert.match(harness.messages[0], /model: github-copilot\/gpt-5\.4-mini/);
+    assert.doesNotMatch(harness.messages[0], /Khala health: OK/);
+  } finally {
+    resetActiveWorkflowRouteForTests();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("/khala-health does not double-count missing workflow config warnings", async () => {
+  resetActiveWorkflowRouteForTests();
+  try {
+    const loaded = await loadWorkflowModelConfig("/nonexistent/workflow-model.yaml");
+    setWorkflowModelConfig(loaded.config, {
+      path: loaded.path,
+      found: loaded.found,
+      explicitProfiles: loaded.explicitProfiles,
+      explicitRoutes: loaded.explicitRoutes,
+      warnings: loaded.warnings,
+    });
+
+    const harness = makeHarness({
+      agentEnabled: false,
+      memoryToolCallLimit: 17,
+    });
+
+    await harness.handlers.khalaHealth(undefined, harness.ctx);
+
+    assert.equal(harness.messages.length, 1);
+    assert.match(harness.messages[0], /Khala health: 1 error/);
+    assert.match(harness.messages[0], /workflow-model\.yaml not found/);
+    assert.match(harness.messages[0], /Workflow model config not found at \/nonexistent\/workflow-model\.yaml; using builtin defaults\./);
   } finally {
     resetActiveWorkflowRouteForTests();
   }

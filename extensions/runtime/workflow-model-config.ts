@@ -87,15 +87,21 @@ export function parseProfileEntry(entry: string): ParsedProfileEntry | null {
   const thinkingLevel = trimmed.slice(colonIdx + 1).trim();
   const modelId = colonIdx > 0 ? trimmed.slice(0, colonIdx).trim() : trimmed.trim();
 
-  if (!modelId) return null;
-  if (!/^[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(modelId)) return null;
+  const slashIdx = modelId.indexOf("/");
+  if (slashIdx <= 0 || slashIdx === modelId.length - 1) return null;
+
+  const provider = modelId.slice(0, slashIdx).trim();
+  const model = modelId.slice(slashIdx + 1).trim();
+  if (!provider || !model) return null;
+  if (!/^[a-z0-9._-]+$/i.test(provider)) return null;
+  if (/[/:]/.test(model)) return null;
 
   const validThinking = THINKING_LEVELS.includes(
     thinkingLevel as (typeof THINKING_LEVELS)[number],
   );
   const level = validThinking ? (thinkingLevel as KhalaThinkingLevel) : "medium";
 
-  return { modelId, thinkingLevel: level };
+  return { modelId: `${provider}/${model}`, thinkingLevel: level };
 }
 
 /**

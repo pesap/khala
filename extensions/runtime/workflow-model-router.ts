@@ -53,12 +53,14 @@ export interface WorkflowModelConfigStatus {
   found: boolean;
   explicitProfiles: string[];
   explicitRoutes: string[];
+  warnings: string[];
 }
 
 let workflowModelConfigStatus: WorkflowModelConfigStatus = {
   found: false,
   explicitProfiles: [],
   explicitRoutes: [],
+  warnings: [],
 };
 
 export interface WorkflowModelConfigSetOptions {
@@ -66,6 +68,7 @@ export interface WorkflowModelConfigSetOptions {
   found?: boolean;
   explicitProfiles?: Iterable<string>;
   explicitRoutes?: Iterable<string>;
+  warnings?: Iterable<string>;
 }
 
 /**
@@ -88,12 +91,14 @@ export function setWorkflowModelConfig(
   const explicitRoutes = Array.from(
     new Set(options.explicitRoutes ?? Object.keys(config.routes)),
   ).sort();
+  const warnings = Array.from(new Set(options.warnings ?? []));
 
   workflowModelConfigStatus = {
     path: options.path,
     found: options.found ?? false,
     explicitProfiles,
     explicitRoutes,
+    warnings,
   };
   setKhalaWorkflowProfilesForRuntime(mergedProfiles, explicitProfiles);
 }
@@ -117,6 +122,7 @@ export function getWorkflowModelConfigStatus(): WorkflowModelConfigStatus {
     ...workflowModelConfigStatus,
     explicitProfiles: [...workflowModelConfigStatus.explicitProfiles],
     explicitRoutes: [...workflowModelConfigStatus.explicitRoutes],
+    warnings: [...workflowModelConfigStatus.warnings],
   };
 }
 
@@ -130,6 +136,7 @@ export function resetWorkflowModelConfigForTests(): void {
     found: false,
     explicitProfiles: [],
     explicitRoutes: [],
+    warnings: [],
   };
   setKhalaWorkflowProfilesForRuntime(mergedProfiles, []);
 }
@@ -274,6 +281,9 @@ export function formatWorkflowRouteStatus(): string {
     lines.push(
       `- workflow config routes: ${workflowModelConfigStatus.explicitRoutes.join(", ")}`,
     );
+  }
+  if (workflowModelConfigStatus.warnings.length > 0) {
+    lines.push(`- workflow config warnings: ${workflowModelConfigStatus.warnings.join("; ")}`);
   }
   if (activeWorkflowRoute.profileFlag) {
     lines.push(`- workflow profile flag: ${activeWorkflowRoute.profileFlag}`);
