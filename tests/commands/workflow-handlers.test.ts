@@ -11,6 +11,7 @@ import {
   resetActiveWorkflowRouteForTests,
   setWorkflowModelConfig,
 } from "../../extensions/runtime/workflow-model-router.ts";
+import { REQUIRED_WORKFLOW_FOOTER_INSTRUCTION } from "../../extensions/lib/constants.ts";
 
 // /workon now fails fast when no active Zellij session is detected. Default to
 // a sentinel value so existing handler tests continue to exercise the launch
@@ -99,7 +100,7 @@ function createHandlers(
     buildSimplifyTarget: () => ({ summary: "", instruction: "", flags: {} }),
     constants: {
       POSTFLIGHT_INSTRUCTION: "postflight",
-      REQUIRED_WORKFLOW_FOOTER_INSTRUCTION: "footer",
+      REQUIRED_WORKFLOW_FOOTER_INSTRUCTION,
       REVIEW_COMMAND_SOURCE: "review",
       GIT_REVIEW_COMMAND_SOURCE: "git-review",
       SIMPLIFY_COMMAND_SOURCE: "simplify",
@@ -146,6 +147,9 @@ test("plan handler tags planning and Reviewer Two routing", async () => {
   assert.match(rendered, /Reviewer prompt contract: do not implement edits/);
   assert.match(rendered, /same review workflow contract used by \/review/);
   assert.match(rendered, /Stop rules: use one fresh-context Reviewer Two pass by default/);
+  assert.match(rendered, /Bias Check \(Tier 1\)/);
+  assert.match(rendered, /Result: success\|partial\|failed/);
+  assert.match(rendered, /Confidence: <0\.\.1>/);
 });
 
 test("plan handler uses workflow route overrides for planning model flags and sections", async () => {
