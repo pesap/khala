@@ -47,9 +47,16 @@ For LiteLLM-compatible provider setup, use:
 khala litellm --project \
   --provider team-litellm \
   --base-url https://lite.example/v1 \
-  --key-env LITELLM_API_KEY \
+  --key-env reeds-maint \
   --model gpt-5.4-mini
 ```
+
+`--key-env` accepts a portal-style label (the same name you assigned the key
+on your LiteLLM admin portal) so you can correlate Pi providers with portal
+keys at a glance. Khala derives the shell-canonical env var name from it —
+`reeds-maint` → `$REEDS_MAINT` — and tells you exactly what to `export` if you
+choose env-var resolution. If you typed a valid identifier like
+`LITELLM_API_KEY` directly, derivation is a no-op.
 
 In interactive mode Khala asks how Pi should resolve the API key for this
 provider. Three options match Pi's own `auth.json` schema, so the resulting
@@ -64,7 +71,8 @@ file is indistinguishable from one written by `/login`:
   command on demand and uses stdout as the key. The actual secret stays in your
   password manager / keychain.
 - **Skip** — nothing is written to `auth.json`. Pi falls back to reading the
-  env var named by `--key-env` from the shell, matching the original behavior.
+  derived env var (e.g. `$REEDS_MAINT`) from the shell, matching the original
+  behavior.
 
 For scripting, the same modes are available as flags:
 `--auth-mode={skip,literal,command}` with `--auth-key=<value>` or
@@ -76,6 +84,10 @@ key environment variable under `.pi/khala/litellm.json`. The picker also
 fetches LiteLLM's `/model/info` endpoint when a key source is available, so
 the selected models get rich metadata (context window, costs, reasoning,
 input modalities) instead of bare `{ id }` entries.
+
+Khala asks before changing `.pi/settings.json` in interactive runs. In scripts,
+pass `--project-settings` only when you want the selected models to become this
+project's Pi defaults.
 
 If the package is already installed, run the helper directly:
 

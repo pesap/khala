@@ -23,6 +23,7 @@ import {
   validateAuthCommand,
   validateAuthLiteral,
   validateLiteLLMKeyEnv,
+  deriveEnvVarFromKeyName,
   validateLiteLLMProviderId,
 } from "./khala-setup-lib.js";
 
@@ -615,20 +616,23 @@ function litellmUsage() {
   return `khala litellm - configure a LiteLLM-compatible Pi provider
 
 Usage:
-  khala litellm --provider <id> --base-url <url> --key-env <env-var> --model <patterns> [flags]
+  khala litellm --provider <id> --base-url <url> --key-env <name> --model <patterns> [flags]
   khala litellm print-key --provider <id>
   khala litellm --help
 
 Flags:
       --provider <id>        LiteLLM provider id  (e.g. team-litellm)
       --base-url <url>       LiteLLM base URL     (e.g. https://lite.example/v1)
-      --key-env <env-var>    Env var that print-key reads for runtime resolution
+      --key-env <name>       LiteLLM key name (matches your portal label, e.g. reeds-maint).
+                             Shell env var is derived: 'reeds-maint' → $REEDS_MAINT.
       --model <patterns>     One bare model name or comma-separated list to register and enable
       --auth-mode <mode>     How to store the key: skip | literal | command
                              (TTY default: ask; non-interactive default: skip)
       --auth-key <value>     Literal key value for --auth-mode=literal
       --auth-command <!cmd>  Shell command for --auth-mode=command (must start with '!')
-  -l, --project              Write to .pi/settings.json in the current project (default)
+      --project-settings     Also update .pi/settings.json default/enabled models
+      --no-project-settings  Do not update .pi/settings.json (non-interactive default)
+  -l, --project              Configure the current project (default)
   -y, --yes                  Skip the write confirmation
       --no-input             Alias for --yes (use in scripts and CI)
       --dry-run              Print the planned config changes without writing files
@@ -637,16 +641,27 @@ Flags:
 
 Examples:
   # Interactive: picker asks how to store the key, fetches /model/info, writes everything.
-  khala litellm --provider team-litellm --base-url https://lite.example/v1 --key-env LITELLM_API_KEY
+  khala litellm --provider team-litellm --base-url https://lite.example/v1 --key-env reeds-maint
 
   # Store the key directly in auth.json (paste once, kept at 0600):
   khala litellm --provider team-litellm --base-url https://lite.example/v1 \\
-    --key-env LITELLM_API_KEY --model gpt-5.4-mini --auth-mode=literal --auth-key="$KEY" --yes
+    --key-env reeds-maint --model gpt-5.4-mini --auth-mode=literal --auth-key="$KEY" --yes
 
   # Store a keychain/1Password lookup instead of a literal:
   khala litellm --provider team-litellm --base-url https://lite.example/v1 \\
-    --key-env LITELLM_API_KEY --model gpt-5.4-mini \\
+    --key-env reeds-maint --model gpt-5.4-mini \\
     --auth-mode=command --auth-command="!op read 'op://Personal/team-litellm/credential'" --yes
+
+  # Non-interactive project defaults are explicit:
+  khala litellm --provider team-litellm --base-url https://lite.example/v1 \\
+    --key-env reeds-maint --model gpt-5.4-mini --project-settings --yes
+
+Key name vs. shell env var:
+  --key-env stores a friendly label (often the name you assigned the key in the
+  LiteLLM portal). When pi falls back to env-var resolution, it reads the
+  *derived* shell name: portal label 'reeds-maint' → 'export REEDS_MAINT=...'.
+  If you typed a valid shell identifier directly (e.g. 'LITELLM_API_KEY'),
+  derivation is a no-op and the export name is identical.
 
 Key resolution at runtime:
   Pi resolves provider keys in this order: --api-key flag > auth.json[<id>] > env var.
@@ -661,7 +676,7 @@ Environment:
 }
 
 function parseLitellmArgs(args) {
-  const options = { baseUrl: "", dryRun: false, global: false, help: false, keyEnv: "", model: "", project: false, provider: "", version: false, yes: false };
+  const options = { baseUrl: "", dryRun: false, global: false, help: false, keyEnv: "", model: "", project: false, projectSettings: null, provider: "", version: false, yes: false };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -685,6 +700,8 @@ function parseLitellmArgs(args) {
     else if (arg === "--auth-key") options.authKey = args[++i] ?? "";
     else if (arg.startsWith("--auth-command=")) options.authCommand = arg.slice("--auth-command=".length);
     else if (arg === "--auth-command") options.authCommand = args[++i] ?? "";
+    else if (arg === "--project-settings" || arg === "--configure-project-settings") options.projectSettings = true;
+    else if (arg === "--no-project-settings") options.projectSettings = false;
     else throw new Error(`Unknown option: ${arg}`);
   }
 
@@ -738,6 +755,24 @@ async function promptValidated(question, normalizer) {
 }
 
 /**
+ * Resolve a runtime API key from a portal-style key name.
+ *
+ * Users may have actually exported the env var under either the literal
+ * name they typed (`reeds-maint` — via `env reeds-maint=val node …`) or
+ * the shell-canonical derived form (`REEDS_MAINT` — via `export
+ * REEDS_MAINT=val`). The shell-canonical case is overwhelmingly more
+ * common but we don't want to break the rare-but-legitimate exotic case.
+ * Derived wins on tie because that's what we tell users to export.
+ */
+function lookupKeyValueByName(keyName) {
+  if (!keyName) return undefined;
+  const derived = deriveEnvVarFromKeyName(keyName);
+  if (derived && process.env[derived] !== undefined) return process.env[derived];
+  if (process.env[keyName] !== undefined) return process.env[keyName];
+  return undefined;
+}
+
+/**
  * Build the bare model-name choices for the LiteLLM model picker.
  *
  * Sourced only from LiteLLM providers already in models.json — those are
@@ -780,9 +815,13 @@ function isPlainObject(value) {
  * working key source already exists.
  */
 async function askAuthMode({ providerId, keyEnv, hasExistingAuth, fallbackMode }) {
+  // The skip label needs the *shell-canonical* form because that's what
+  // the user would type into `export`. keyEnv may be a portal label like
+  // `reeds-maint` that the shell can't parse on the LHS of `=`.
+  const envVar = deriveEnvVarFromKeyName(keyEnv) ?? keyEnv;
   const LITERAL = `Paste the key value once  ${dim("— stored in ~/.pi/agent/auth.json (0600)")}`;
   const COMMAND = `Use a shell command       ${dim("— !op read / !security …, stored in auth.json (0600)")}`;
-  const SKIP    = `Skip                      ${dim(`— keep using $${keyEnv} from the shell${hasExistingAuth ? " (auth.json entry already exists)" : ""}`)}`;
+  const SKIP    = `Skip                      ${dim(`— keep using $${envVar} from the shell${hasExistingAuth ? " (auth.json entry already exists)" : ""}`)}`;
   const labelByMode = { literal: LITERAL, command: COMMAND, skip: SKIP };
   const choices = [LITERAL, COMMAND, SKIP];
   const fallbackLabel = labelByMode[fallbackMode] ?? SKIP;
@@ -904,9 +943,13 @@ async function mainLiteLLMPrintKey(argv) {
       throw new Error(`No project LiteLLM key env is configured for provider '${provider}'. Run khala litellm --project --provider ${provider} --key-env <env-var>.`);
     }
     const keyEnv = validateLiteLLMKeyEnv(providerConfig.keyEnv);
-    const value = process.env[keyEnv];
+    const value = lookupKeyValueByName(keyEnv);
     if (!value) {
-      throw new Error(`Project LiteLLM key env var $${keyEnv} is not exported.`);
+      // Tell the user which env var to actually export. With portal-style
+      // labels (e.g. `reeds-maint`) the literal isn't a valid shell ident,
+      // so we name the derived form they'd type into `export`.
+      const envVar = deriveEnvVarFromKeyName(keyEnv) ?? keyEnv;
+      throw new Error(`Project LiteLLM key '${keyEnv}' has no exported value (expected $${envVar}).`);
     }
     process.stdout.write(value);
   } catch (error) {
@@ -957,17 +1000,26 @@ async function mainLiteLLM(argv) {
 
     if (!keyEnv) {
       if (!promptAvailable) missing.push("--key-env");
-      else keyEnv = await promptValidated("LiteLLM key env var: ", validateLiteLLMKeyEnv);
+      else keyEnv = await promptValidated(
+        "LiteLLM key name (matches your LiteLLM portal label, e.g. reeds-maint): ",
+        validateLiteLLMKeyEnv,
+      );
     } else {
       keyEnv = validateLiteLLMKeyEnv(keyEnv);
     }
+    // Shell-canonical derived form. Used at every shell-touching surface:
+    // $env interpolation in summary/error rows, the export instruction we
+    // emit on auth-skip mode, and (with literal fallback) process.env
+    // lookup for /model/info. When the user typed a clean identifier this
+    // equals keyEnv and nothing visible changes.
+    const envVar = deriveEnvVarFromKeyName(keyEnv) ?? keyEnv;
 
     // Pre-flight env-var check. Run this BEFORE the (potentially long)
     // picker step so a user who forgot to `export` gets an immediate,
     // The actual API key value, if we have it. Filled below by the
     // auth-mode flow; the env-var fallback is consulted last so users with
     // an existing exported $KEY keep getting auto-enrichment for free.
-    let resolvedKey = keyEnv ? process.env[keyEnv] : undefined;
+    let resolvedKey = lookupKeyValueByName(keyEnv);
 
 
     let modelIds = [];
@@ -992,6 +1044,12 @@ async function mainLiteLLM(argv) {
     const targetSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
     const targetKeyConfigPath = litellmProjectConfigPath();
     const targetAuthPath = authJsonPath();
+
+    let writeProjectSettings = options.projectSettings === true;
+    if (options.projectSettings === null && promptAvailable && !options.yes && !options.dryRun) {
+      console.log("");
+      writeProjectSettings = await askConfirmation("Use these LiteLLM models as this project's Pi defaults now?");
+    }
 
     // ── Auth-mode resolution ──────────────────────────────────────────────
     // Three storage modes, all pi-canonical (~/.pi/agent/auth.json schema):
@@ -1085,15 +1143,15 @@ async function mainLiteLLM(argv) {
       metadataStatus = `NOT FETCHED — auth command produced no output; writing bare entries`;
       metadataIsWarning = true;
     } else if (authMode === "skip") {
-      metadataStatus = `NOT FETCHED — $${keyEnv} is not exported and auth.json has no entry; writing bare entries`;
+      metadataStatus = `NOT FETCHED — $${envVar} is not exported and auth.json has no entry; writing bare entries`;
       metadataIsWarning = true;
     }
 
     const currentModels = readJsonObjectFile(targetModelsPath);
-    const currentSettings = readJsonObjectFile(targetSettingsPath);
+    const currentSettings = writeProjectSettings ? readJsonObjectFile(targetSettingsPath) : null;
     const currentKeyConfig = readJsonObjectFile(targetKeyConfigPath);
     const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelIds, infoMap });
-    const mergedSettings = mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelIds });
+    const mergedSettings = writeProjectSettings ? mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelIds }) : null;
     const mergedKeyConfig = mergeLiteLLMProjectKeyConfig(currentKeyConfig, { providerId: provider, keyEnv });
 
     // Summary
@@ -1102,7 +1160,7 @@ async function mainLiteLLM(argv) {
     console.log("");
     console.log(`${bold("Khala LiteLLM")}${modeTag}${dim(":")}`);
     console.log(`${dim("models".padEnd(labelWidth))}${targetModelsPath}`);
-    console.log(`${dim("settings".padEnd(labelWidth))}${targetSettingsPath}`);
+    console.log(`${dim("settings".padEnd(labelWidth))}${writeProjectSettings ? targetSettingsPath : `${dim("skipped")} ${dim(`(pass --project-settings to update ${targetSettingsPath})`)}`}`);
     console.log(`${dim("keys".padEnd(labelWidth))}${targetKeyConfigPath}`);
     // Provider row gets a short qualifier so the user can see at a glance
     // whether this is a fresh registration or an in-place update.
@@ -1113,7 +1171,15 @@ async function mainLiteLLM(argv) {
     console.log(`${dim("base-url".padEnd(labelWidth))}${baseUrl}`);
     console.log(`${dim("api".padEnd(labelWidth))}${LITELLM_PROVIDER_API}`);
     console.log(`${dim("apiKey".padEnd(labelWidth))}${buildLiteLLMApiKeyCommand(provider)}`);
-    console.log(`${dim("key-env".padEnd(labelWidth))}$${keyEnv}`);
+    // Key row: show the portal label as the primary, and the derived shell
+    // env var name as a parenthetical when they differ. Users typed the
+    // portal label, so it should anchor the row; the derived form tells
+    // them what to put after `export`. When the user typed an identifier
+    // directly (legacy path), the two match and we drop the parenthetical.
+    const keyRow = (envVar && envVar !== keyEnv)
+      ? `${keyEnv}  ${dim(`(exports as $${envVar})`)}`
+      : `$${keyEnv}`;
+    console.log(`${dim("key".padEnd(labelWidth))}${keyRow}`);
     // Auth row: explain exactly where pi will read the key from at runtime.
     // Three shapes match the three resolved modes; the warn() colorization
     // is reserved for the "no working source" case the metadata row catches.
@@ -1125,9 +1191,9 @@ async function mainLiteLLM(argv) {
     } else if (hasExistingAuth) {
       authRow = `${dim(`(existing entry in ${targetAuthPath})`)}`;
     } else if (resolvedKey) {
-      authRow = `$${keyEnv} from shell ${dim("(no auth.json entry)")}`;
+      authRow = `$${envVar} from shell ${dim("(no auth.json entry)")}`;
     } else {
-      authRow = warn(`none — $${keyEnv} unset and no auth.json entry`);
+      authRow = warn(`none — $${envVar} unset and no auth.json entry`);
     }
     console.log(`${dim("auth".padEnd(labelWidth))}${authRow}`);
     // Collapse the selected-model list to a single row to match the one-row-
@@ -1148,7 +1214,7 @@ async function mainLiteLLM(argv) {
         throw new Error("LiteLLM setup writes require --yes in non-interactive mode.");
       }
       console.log("");
-      const confirmed = await askConfirmation(mergedModels.conflict ? "Overwrite the existing LiteLLM provider config now?" : "Write LiteLLM provider config now?");
+      const confirmed = await askConfirmation(mergedModels.conflict ? "Overwrite the existing LiteLLM provider/key config now?" : "Write LiteLLM provider/key config now?");
       if (!confirmed) {
         console.log(`${dim("Skipped.")}  No files were written.`);
         return;
@@ -1156,7 +1222,7 @@ async function mainLiteLLM(argv) {
     }
 
     writeJsonFile(targetModelsPath, mergedModels.value, { compactModelEntries: true });
-    writeJsonFile(targetSettingsPath, mergedSettings);
+    if (writeProjectSettings) writeJsonFile(targetSettingsPath, mergedSettings);
     writeJsonFile(targetKeyConfigPath, mergedKeyConfig);
 
     // auth.json is written ONLY when the user picked literal/command. The
@@ -1172,7 +1238,11 @@ async function mainLiteLLM(argv) {
 
     console.log("");
     console.log(`${check("✓")} Wrote ${targetModelsPath}`);
-    console.log(`${check("✓")} Wrote ${targetSettingsPath}`);
+    if (writeProjectSettings) {
+      console.log(`${check("✓")} Wrote ${targetSettingsPath}`);
+    } else {
+      console.log(`${dim("settings".padEnd(12))}Skipped project defaults.`);
+    }
     console.log(`${check("✓")} Wrote ${targetKeyConfigPath}`);
     if (authWritten) {
       console.log(`${check("✓")} Wrote ${targetAuthPath} ${dim("(0600)")}`);

@@ -31,6 +31,7 @@ import {
   validateAuthCommand,
   validateAuthLiteral,
   validateLiteLLMKeyEnv,
+  deriveEnvVarFromKeyName,
   validateLiteLLMProviderId,
 } from "../../bin/khala-setup-lib.js";
 
@@ -229,7 +230,6 @@ test("khala setup helper validates LiteLLM provider, base URL, env, and model in
   assert.equal(normalizeLiteLLMModelPattern(" gpt-5.4-mini "), "gpt-5.4-mini");
 
   assert.throws(() => validateLiteLLMProviderId("team litellm"), /Provider id must match/);
-  assert.throws(() => validateLiteLLMKeyEnv("1BAD"), /Key environment variable must match/);
   assert.throws(() => normalizeLiteLLMBaseUrl("https://lite.example/v1?x=1"), /query string/);
   assert.throws(() => normalizeLiteLLMBaseUrl("ftp://lite.example/v1"), /must start with http:\/\//);
   assert.throws(() => normalizeLiteLLMModelPattern("team-litellm/*"), /'\/' or ':'/);
@@ -237,6 +237,44 @@ test("khala setup helper validates LiteLLM provider, base URL, env, and model in
   // Real LiteLLM hubs publish model ids with internal whitespace; only / and :
   // are structurally reserved, so spaces must round-trip unchanged.
   assert.equal(normalizeLiteLLMModelPattern(" HALO Gemma 4 "), "HALO Gemma 4");
+});
+
+test("khala setup helper validateLiteLLMKeyEnv accepts LiteLLM portal labels, not just shell idents", () => {
+  // Whole point of the renamed concept: a user typing the same name they
+  // assigned the key on the LiteLLM admin portal should round-trip without
+  // a regex error. Dashes and dots are the common offenders.
+  assert.equal(validateLiteLLMKeyEnv(" reeds-maint "), "reeds-maint");
+  assert.equal(validateLiteLLMKeyEnv("team.litellm.prod"), "team.litellm.prod");
+  assert.equal(validateLiteLLMKeyEnv("alice_dev"), "alice_dev");
+  assert.equal(validateLiteLLMKeyEnv("k1"), "k1");
+  // Still reject shapes we can't safely round-trip through the filesystem,
+  // shell pipelines, or stable schema validation — whitespace, slashes,
+  // leading dash/dot.
+  assert.throws(() => validateLiteLLMKeyEnv("reeds maint"), /must start with a letter, digit, or '_'/);
+  assert.throws(() => validateLiteLLMKeyEnv("team/litellm"), /must start with a letter, digit, or '_'/);
+  assert.throws(() => validateLiteLLMKeyEnv("-leading-dash"), /must start with a letter, digit, or '_'/);
+  assert.throws(() => validateLiteLLMKeyEnv(""), /got empty input/);
+});
+
+test("khala setup helper deriveEnvVarFromKeyName turns portal labels into shell-canonical names", () => {
+  // Headline case from #235: the user types the LiteLLM portal label, and we
+  // mechanically produce the env var they'd type into `export`.
+  assert.equal(deriveEnvVarFromKeyName("reeds-maint"), "REEDS_MAINT");
+  assert.equal(deriveEnvVarFromKeyName("team.litellm.prod"), "TEAM_LITELLM_PROD");
+  // Idempotent: typing a valid identifier should round-trip case-preserved.
+  // (We don't aggressively uppercase a name that's already a legal shell
+  // var, because doing so would change semantics for users who deliberately
+  // chose a lowercase name.)
+  assert.equal(deriveEnvVarFromKeyName("LITELLM_API_KEY"), "LITELLM_API_KEY");
+  assert.equal(deriveEnvVarFromKeyName("my_lowercase_var"), "my_lowercase_var");
+  // Defensive normalizations: leading digits dropped (identifiers can't
+  // start with one), runs of separators collapsed, leading/trailing _
+  // stripped, edge case of all-punctuation returns null.
+  assert.equal(deriveEnvVarFromKeyName("3-team-prod"), "TEAM_PROD");
+  assert.equal(deriveEnvVarFromKeyName("team..prod--key"), "TEAM_PROD_KEY");
+  assert.equal(deriveEnvVarFromKeyName(" --__-- "), null);
+  assert.equal(deriveEnvVarFromKeyName(""), null);
+  assert.equal(deriveEnvVarFromKeyName("!!!"), null);
 });
 
 test("khala setup helper builds profile picker choices from all discovery rows and LiteLLM models", () => {
@@ -704,6 +742,8 @@ test("khala litellm --help documents the LiteLLM setup mode and key-storage opti
   assert.match(stdout, /--auth-mode <mode>\s+How to store the key: skip \| literal \| command/);
   assert.match(stdout, /--auth-key <value>/);
   assert.match(stdout, /--auth-command <!cmd>/);
+  assert.match(stdout, /--project-settings/);
+  assert.match(stdout, /--no-project-settings/);
   // The runtime-resolution section explains pi's chain so users understand
   // why auth.json is the canonical place to put the key.
   assert.match(stdout, /Key resolution at runtime:/);
@@ -744,11 +784,14 @@ test("khala litellm dry-run prints config paths without writing files or calling
     assert.equal(result.code, 0);
     assert.match(result.stdout, /Khala LiteLLM \[dry-run\]:/);
     assert.match(result.stdout, /models\s+.*models\.json/);
-    assert.match(result.stdout, /settings\s+.*\.pi\/settings\.json/);
+    assert.match(result.stdout, /settings\s+skipped .*--project-settings.*\.pi\/settings\.json/);
     assert.match(result.stdout, /provider\s+team-litellm/);
     assert.match(result.stdout, /api\s+openai-completions/);
     assert.match(result.stdout, /apiKey\s+!khala litellm print-key --provider team-litellm/);
-    assert.match(result.stdout, /key-env\s+\$LITELLM_API_KEY/);
+    // Row label is `key` (portal-label-anchored). When the user typed a
+    // valid POSIX identifier (LITELLM_API_KEY), derive() is a no-op so we
+    // show the bare `$NAME` form with no parenthetical.
+    assert.match(result.stdout, /key\s+\$LITELLM_API_KEY/);
     assert.match(result.stdout, /model\s+gpt-5\.4-mini/);
     assert.doesNotMatch(result.stdout, /team-litellm\/\*/);
     // Forbid actual secret-shaped leaks (KEY=<real-value>). The pre-flight
@@ -845,6 +888,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
         "LITELLM_API_KEY",
         "--model",
         "gpt-5.4-mini",
+        "--project-settings",
         "--yes",
       ],
       env,
@@ -891,6 +935,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
         "PROJECT_B_LITELLM_API_KEY",
         "--model",
         "gpt-5.4-mini",
+        "--project-settings",
         "--yes",
       ],
       env,
@@ -905,6 +950,48 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     assert.deepEqual(rerunModels.providers["team-litellm"].models.map((model) => model.id), ["gpt-5.4-mini"]);
     assert.deepEqual(rerunSettings.enabledModels, ["claude-*", "gpt-5.4-mini"]);
     assert.equal(rerunKeyConfig.providers["team-litellm"].keyEnv, "PROJECT_B_LITELLM_API_KEY");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm leaves project Pi settings untouched unless explicitly requested", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-settings-skip-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  const settingsPath = path.join(tempDir, ".pi", "settings.json");
+  const originalSettings = JSON.stringify({
+    defaultProvider: "github-copilot",
+    defaultModel: "gpt-5.5",
+    enabledModels: ["gpt-5.5"],
+    theme: "dark",
+  }, null, 2);
+
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+    await writeFile(settingsPath, originalSettings, "utf8");
+
+    const result = await runKhala(
+      [
+        "litellm",
+        "--project",
+        "--provider", "team-litellm",
+        "--base-url", "https://lite.example/v1",
+        "--key-env", "LITELLM_API_KEY",
+        "--model", "gpt-5.4-mini",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /settings\s+Skipped project defaults\./);
+    assert.equal(await readFile(settingsPath, "utf8"), originalSettings);
+    const models = JSON.parse(await readFile(path.join(piAgentDir, "models.json"), "utf8"));
+    assert.equal(models.providers["team-litellm"].api, LITELLM_PROVIDER_API);
+    const keyConfig = JSON.parse(await readFile(path.join(tempDir, ".pi", "khala", "litellm.json"), "utf8"));
+    assert.equal(keyConfig.providers["team-litellm"].keyEnv, "LITELLM_API_KEY");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -936,7 +1023,7 @@ test("khala litellm print-key resolves the nearest project key env without using
 
     const missing = await runKhala(["litellm", "print-key", "--provider", "team-litellm"], {}, nestedDir);
     assert.equal(missing.code, 2);
-    assert.match(missing.stderr, /\$PROJECT_LITELLM_KEY is not exported/);
+    assert.match(missing.stderr, /key 'PROJECT_LITELLM_KEY' has no exported value \(expected \$PROJECT_LITELLM_KEY\)/);
     assert.doesNotMatch(missing.stderr, /sk-project-secret/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -983,6 +1070,75 @@ test("khala litellm keeps one provider entry while different projects choose dif
   }
 });
 
+test("khala litellm accepts a LiteLLM portal label and resolves $DERIVED env var for enrichment", async () => {
+  // The whole point of the #235 follow-up: typing the same name as your
+  // LiteLLM portal key (e.g. `reeds-maint`) must work end-to-end. We type
+  // the portal label, export the *derived* shell name (REEDS_MAINT) the
+  // way we actually told the user to in the auth row, and assert that
+  // /model/info enrichment fires using that value.
+  const requests: Array<{ url: string; auth: string | undefined }> = [];
+  const server: Server = createServer((req, res) => {
+    requests.push({ url: req.url ?? "", auth: req.headers.authorization });
+    if (req.url === "/model/info") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        data: [{
+          model_name: "gpt-4o",
+          model_info: { max_input_tokens: 128000, input_cost_per_token: 0.0000025, output_cost_per_token: 0.00001 },
+        }],
+      }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-portal-label-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "nlr",
+        "--base-url", baseUrl,
+        // Portal label with a dash — used to be a fatal validation error.
+        "--key-env", "reeds-maint",
+        "--model", "gpt-4o",
+        "--yes",
+      ],
+      // The shell-canonical derived name is what we tell users to export.
+      // The lookup helper must find the value under REEDS_MAINT even though
+      // models.json/.pi config store the literal `reeds-maint`.
+      { PI_CODING_AGENT_DIR: piAgentDir, REEDS_MAINT: "sk-from-shell" },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    // (a) Summary key row anchors on the portal label and discloses the
+    //     derived shell name in a parenthetical.
+    assert.match(result.stdout, /key\s+reeds-maint\s+\(exports as \$REEDS_MAINT\)/);
+    // (b) Auth row references the derived form (the one you'd actually
+    //     `export`), not the portal label.
+    assert.match(result.stdout, /auth\s+\$REEDS_MAINT from shell/);
+    // (c) Enrichment fired with the shell-resolved value.
+    assert.equal(requests[0]?.auth, "Bearer sk-from-shell");
+    assert.match(result.stdout, /metadata\s+1\/1 enriched from \/model\/info/);
+    // (d) Project config persists the portal label verbatim — the user's
+    //     mental anchor is preserved across reruns, and print-key resolves
+    //     via lookupKeyValueByName().
+    const cfg = JSON.parse(await readFile(path.join(tempDir, ".pi/khala/litellm.json"), "utf8"));
+    assert.equal(cfg.providers.nlr.keyEnv, "reeds-maint");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("khala litellm registers multiple models in one pass via --model a,b,c", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-multi-"));
   const piAgentDir = path.join(tempDir, "pi-agent");
@@ -1001,6 +1157,7 @@ test("khala litellm registers multiple models in one pass via --model a,b,c", as
         "--base-url", "https://lite.example/v1",
         "--key-env", "LITELLM_API_KEY",
         "--model", "gpt-5.4-mini, gpt-4o ,claude-opus-4.7",  // whitespace + duplicates resilience
+        "--project-settings",
         "--yes",
       ],
       { PI_CODING_AGENT_DIR: piAgentDir },
@@ -1416,6 +1573,7 @@ test("khala litellm fails closed on malformed models.json", async () => {
         "LITELLM_API_KEY",
         "--model",
         "gpt-5.4-mini",
+        "--project-settings",
         "--dry-run",
       ],
       { PI_CODING_AGENT_DIR: piAgentDir },
@@ -1454,6 +1612,7 @@ test("khala litellm fails closed on malformed .pi/settings.json", async () => {
         "LITELLM_API_KEY",
         "--model",
         "gpt-5.4-mini",
+        "--project-settings",
         "--dry-run",
       ],
       { PI_CODING_AGENT_DIR: piAgentDir },

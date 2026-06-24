@@ -3,6 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ENV_VAR_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// LiteLLM portal key labels are user-facing and often include dashes or dots
+// (e.g. `reeds-maint`, `team.litellm.prod`). Allow the same shape we accept
+// for provider ids — leading alnum or underscore, then alnum/[._-]. The shell
+// env var name is *derived* from this; users don't have to invent two names.
+const KEY_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 // Permits any non-empty trimmed string except slashes (reserved for the
 // `<provider>/<model>` prefix used by the workflow profile picker) and
 // colons (reserved for the `:thinking` suffix). Whitespace is allowed inside
@@ -114,12 +119,46 @@ export function validateLiteLLMProviderId(raw) {
 
 export function validateLiteLLMKeyEnv(raw) {
   const value = trimOrEmpty(raw);
-  if (!ENV_VAR_RE.test(value)) {
-    throw new Error(
-      "Key environment variable must match ^[A-Za-z_][A-Za-z0-9_]*$.",
-    );
-  }
-  return value;
+  if (KEY_NAME_RE.test(value)) return value;
+  // Historical name kept for module-level imports; this validates a key
+  // *name* (portal label), not a shell identifier. The actual shell env
+  // var is derived from this via deriveEnvVarFromKeyName(). Reject only
+  // shapes we can't safely round-trip — empty, whitespace, slashes, etc.
+  const detail = !value
+    ? "got empty input"
+    : `'${value}' must start with a letter, digit, or '_' and use only [A-Za-z0-9._-]`;
+  throw new Error(
+    `Key name is invalid: ${detail}. It will be derived to a shell env var (e.g. 'reeds-maint' → $REEDS_MAINT).`,
+  );
+}
+
+/**
+ * Derive a POSIX shell env var name from a LiteLLM portal key label.
+ *
+ * Users name keys on the LiteLLM admin portal with friendly labels like
+ * `reeds-maint` or `team.litellm.prod`. Forcing them to invent a separate
+ * shell-identifier name (REEDS_MAINT) and remember the mapping is the UX
+ * regression #235 surfaced. Instead, we accept the portal label verbatim,
+ * and at every shell-touching point (export instructions, process.env
+ * lookups in print-key) we derive the env name from it deterministically:
+ * non-identifier runs collapse to '_', leading digits are dropped, then
+ * uppercase. The derivation is idempotent on already-valid identifiers,
+ * so users who type `LITELLM_API_KEY` get exactly that back.
+ *
+ * Returns null only when the input normalizes to empty (e.g. `'!!!'`).
+ */
+export function deriveEnvVarFromKeyName(raw) {
+  const value = trimOrEmpty(raw);
+  if (!value) return null;
+  if (ENV_VAR_RE.test(value)) return value; // already a valid identifier; preserve case
+  const cleaned = value
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^[0-9]+/, "")  // identifiers can't start with a digit; strip first
+    .replace(/^_+|_+$/g, "") // then strip any underscore the digit-strip exposed
+    .toUpperCase();
+  if (!cleaned || !ENV_VAR_RE.test(cleaned)) return null;
+  return cleaned;
 }
 
 export function normalizeLiteLLMBaseUrl(raw) {
