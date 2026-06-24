@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { createInterface, emitKeypressEvents } from "node:readline";
 import {
   LITELLM_PROVIDER_API,
+  LITELLM_RESOLVER_OVERRIDE_ENV,
   buildLiteLLMApiKeyCommand,
   buildProfileChoices,
+  isLiteLLMApiKeyCommand,
   mergeAuthJsonApiKey,
   mergeLiteLLMModelsJson,
   mergeLiteLLMProjectKeyConfig,
@@ -18,6 +20,7 @@ import {
   normalizeLiteLLMModelPattern,
   parseLiteLLMModelInfoResponse,
   readJsonObjectFile,
+  resolveLiteLLMApiKeyResolverCommand,
   stringifyModelsJson,
   validateAuthCommand,
   validateAuthLiteral,
@@ -210,6 +213,10 @@ function litellmProjectConfigPath(dir = process.cwd()) {
   return path.join(dir, ".pi", "khala", "litellm.json");
 }
 
+function litellmKeyRegistryPath() {
+  return path.join(piAgentDir(), "khala", "litellm-keys.json");
+}
+
 function workflowConfig(models) {
   return [
     "# Khala workflow model config",
@@ -235,6 +242,26 @@ function workflowConfig(models) {
 function writeWorkflowConfig(targetPath, models) {
   mkdirSync(path.dirname(targetPath), { recursive: true });
   writeFileSync(targetPath, workflowConfig(models), "utf8");
+}
+
+function khalaResolverCommand() {
+  const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
+  let resolvedPath = invokedPath;
+  if (invokedPath) {
+    try {
+      resolvedPath = realpathSync(invokedPath);
+    } catch {
+      resolvedPath = invokedPath;
+    }
+  }
+  return resolveLiteLLMApiKeyResolverCommand({
+    overrideCommand: process.env[LITELLM_RESOLVER_OVERRIDE_ENV],
+    npmCommand: process.env.npm_command,
+    npmPackage: process.env.npm_config_package,
+    execPath: process.execPath,
+    invokedPath,
+    resolvedInvokedPath: resolvedPath,
+  });
 }
 
 function defaultScope(options) {
@@ -303,9 +330,7 @@ async function promptSecret(question) {
         const code = ch.charCodeAt(0);
         if (code === 0x03) {                  // Ctrl+C
           cleanup();
-          const err = new Error("aborted");
-          err.code = "ABORT_ERR";
-          reject(err);
+          reject(makeAbortError());
           return;
         }
         if (code === 0x0d || code === 0x0a) { // Enter
@@ -416,7 +441,7 @@ function liteLLMProvidersFromModelsJson() {
     if (!config || typeof config !== "object") continue;
     const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl.trim() : "";
     const api     = typeof config.api     === "string" ? config.api.trim()     : "";
-    if (!baseUrl || !LITELLM_APIS.has(api)) continue;
+    if (!baseUrl || !LITELLM_APIS.has(api) || !isKhalaLiteLLMProviderConfig(name, config)) continue;
     const models = Array.isArray(config.models)
       ? config.models.map((m) => (m && typeof m.id === "string" ? m.id.trim() : "")).filter(Boolean)
       : [];
@@ -426,6 +451,11 @@ function liteLLMProvidersFromModelsJson() {
   return providers;
 }
 
+function isKhalaLiteLLMProviderConfig(providerId, config) {
+  const apiKey = typeof config?.apiKey === "string" ? config.apiKey.trim() : "";
+  return isLiteLLMApiKeyCommand(providerId, apiKey);
+}
+
 function rememberedLiteLLMBaseUrl(providerId) {
   const providers = liteLLMProvidersFromModelsJson();
   const exact = providers.find((provider) => provider.name === providerId);
@@ -433,6 +463,150 @@ function rememberedLiteLLMBaseUrl(providerId) {
 
   const uniqueBaseUrls = [...new Set(providers.map((provider) => provider.baseUrl).filter(Boolean))];
   return uniqueBaseUrls.length === 1 ? uniqueBaseUrls[0] : "";
+}
+
+function reusableLiteLLMKeyCandidates() {
+  const providers = liteLLMProvidersFromModelsJson();
+  const providerByName = new Map(providers.map((provider) => [provider.name, provider]));
+  const auth = readJsonObjectFile(authJsonPath());
+  const projectConfigPath = findLiteLLMProjectConfigPath();
+  const projectConfig = projectConfigPath ? readJsonObjectFile(projectConfigPath) : null;
+  const projectProviders = isPlainObject(projectConfig?.providers) ? projectConfig.providers : {};
+
+  const seeded = [];
+  for (const entry of registryLiteLLMKeyCandidates()) seeded.push({ ...entry, source: "label" });
+  if (isPlainObject(auth)) {
+    for (const [authId, authEntry] of Object.entries(auth)) {
+      if (!isStoredLiteLLMAuthEntry(authEntry)) continue;
+      const parts = liteLLMKeyAuthParts(authId);
+      if (!parts || !providerByName.has(parts.provider)) continue;
+      const provider = providerByName.get(parts.provider);
+      seeded.push({
+        provider: parts.provider,
+        baseUrl: provider.baseUrl,
+        keyEnv: parts.keyEnv,
+        modelIds: [...provider.models],
+        source: "label",
+      });
+    }
+  }
+  for (const provider of providers) {
+    const projectEntry = isPlainObject(projectProviders[provider.name]) ? projectProviders[provider.name] : null;
+    const projectKeyEnv = typeof projectEntry?.keyEnv === "string" && projectEntry.keyEnv.trim()
+      ? validateLiteLLMKeyEnv(projectEntry.keyEnv)
+      : "";
+    seeded.push({
+      provider: provider.name,
+      baseUrl: provider.baseUrl,
+      keyEnv: projectKeyEnv || provider.name,
+      modelIds: [...provider.models],
+      source: projectKeyEnv ? "label" : "provider-fallback",
+    });
+  }
+
+  const seen = new Set();
+  return seeded
+    .map((entry) => {
+      const provider = providerByName.get(entry.provider);
+      const baseUrl = entry.baseUrl || provider?.baseUrl || "";
+      const modelIds = entry.modelIds.length ? entry.modelIds : [...(provider?.models ?? [])];
+      const keySpecificAuth = isPlainObject(auth) && isPlainObject(auth[liteLLMKeyAuthId(entry.provider, entry.keyEnv)]) ? auth[liteLLMKeyAuthId(entry.provider, entry.keyEnv)] : null;
+      const providerAuth = isPlainObject(auth) && isPlainObject(auth[entry.provider]) ? auth[entry.provider] : null;
+      const hasStoredAuth = isStoredLiteLLMAuthEntry(keySpecificAuth) || isStoredLiteLLMAuthEntry(providerAuth);
+      return {
+        provider: entry.provider,
+        baseUrl,
+        keyEnv: entry.keyEnv,
+        modelIds,
+        hasStoredAuth,
+        needsKeyLabel: entry.source === "provider-fallback",
+      };
+    })
+    .filter((candidate) => candidate.baseUrl && candidate.modelIds.length > 0)
+    .filter((candidate) => {
+      const key = `${candidate.provider}\0${candidate.keyEnv}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => `${a.provider}\0${a.keyEnv}`.localeCompare(`${b.provider}\0${b.keyEnv}`));
+}
+
+function isStoredLiteLLMAuthEntry(entry) {
+  return isPlainObject(entry) && entry.type === "api_key" && typeof entry.key === "string" && entry.key.length > 0;
+}
+
+function liteLLMKeyAuthParts(authId) {
+  if (typeof authId !== "string") return null;
+  const separator = authId.indexOf(":");
+  if (separator <= 0 || separator === authId.length - 1) return null;
+  try {
+    const provider = validateLiteLLMProviderId(authId.slice(0, separator));
+    const keyEnv = validateLiteLLMKeyEnv(authId.slice(separator + 1));
+    return provider && keyEnv ? { provider, keyEnv } : null;
+  } catch {
+    return null;
+  }
+}
+
+function reusableLiteLLMKeyLabelChoice(candidate) {
+  const keySource = candidate.hasStoredAuth ? "stored key" : `env $${deriveEnvVarFromKeyName(candidate.keyEnv) ?? candidate.keyEnv}`;
+  const modelSummaryText = modelSummary(candidate.modelIds);
+  return `${candidate.keyEnv} (${keySource}; ${modelSummaryText})`;
+}
+
+function providerModelIdsFromConfig(config) {
+  if (!Array.isArray(config?.models)) return [];
+  const seen = new Set();
+  const modelIds = [];
+  for (const model of config.models) {
+    const raw = typeof model === "string" ? model : model?.id;
+    if (typeof raw !== "string") continue;
+    const id = raw.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    modelIds.push(id);
+  }
+  return modelIds;
+}
+
+function liteLLMKeyAuthId(provider, keyEnv) {
+  return `${provider}:${keyEnv}`;
+}
+
+function readLiteLLMKeyRegistry() {
+  return readJsonObjectFile(litellmKeyRegistryPath()) ?? { keys: [] };
+}
+
+function normalizeLiteLLMKeyRegistryEntry(entry) {
+  if (!isPlainObject(entry)) return null;
+  const provider = typeof entry.provider === "string" ? validateLiteLLMProviderId(entry.provider) : "";
+  const keyEnv = typeof entry.keyEnv === "string" ? validateLiteLLMKeyEnv(entry.keyEnv) : "";
+  if (!provider || !keyEnv) return null;
+  const baseUrl = typeof entry.baseUrl === "string" && entry.baseUrl.trim()
+    ? normalizeLiteLLMBaseUrl(entry.baseUrl)
+    : "";
+  const modelIds = providerModelIdsFromConfig({ models: entry.modelIds });
+  return { provider, keyEnv, baseUrl, modelIds };
+}
+
+function mergeLiteLLMKeyRegistry(current, entry) {
+  const normalized = normalizeLiteLLMKeyRegistryEntry(entry);
+  if (!normalized) {
+    throw new Error("LiteLLM key registry entry needs provider and keyEnv.");
+  }
+  const root = isPlainObject(current) ? { ...current } : {};
+  const existing = Array.isArray(root.keys) ? root.keys.map(normalizeLiteLLMKeyRegistryEntry).filter(Boolean) : [];
+  const filtered = existing.filter((item) => !(item.provider === normalized.provider && item.keyEnv === normalized.keyEnv));
+  root.keys = [...filtered, normalized].sort((a, b) => `${a.provider}\0${a.keyEnv}`.localeCompare(`${b.provider}\0${b.keyEnv}`));
+  return root;
+}
+
+function registryLiteLLMKeyCandidates() {
+  const registry = readLiteLLMKeyRegistry();
+  return (Array.isArray(registry.keys) ? registry.keys : [])
+    .map(normalizeLiteLLMKeyRegistryEntry)
+    .filter(Boolean);
 }
 
 // ── Inline interactive prompts ──────────────────────────────────────────────
@@ -475,6 +649,8 @@ function paintedRowCount(lines) {
 }
 
 const PICKER_WINDOW = 10;
+const PICKER_LABEL_GAP = "  ";
+const PICKER_FILTER_THRESHOLD = 7;
 
 // Safety net: always restore the terminal cursor on process exit so a crashed
 // or signaled picker can't leave the cursor hidden. No-op on non-TTY stdout.
@@ -499,6 +675,8 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
 
   const choices = [...initialChoices];
   const choiceSet = new Set(choices);
+  const filterEnabled = choices.length > PICKER_FILTER_THRESHOLD;
+  const queryEnabled = filterEnabled || allowCustom;
   const selected = multi
     ? new Set(Array.isArray(options.defaultSelected) ? options.defaultSelected.filter((choice) => choiceSet.has(choice)) : choices)
     : null;
@@ -521,11 +699,24 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
 
   const applyFilter = () => {
     const q = query.trim().toLowerCase();
-    filtered = q ? choices.filter((c) => c.toLowerCase().includes(q)) : [...choices];
+    filtered = filterEnabled && q ? choices.filter((c) => c.toLowerCase().includes(q)) : [...choices];
     items = buildItems();
     const next = hovered ? items.findIndex((it) => it.value === hovered) : -1;
     selIdx = next >= 0 ? next : 0;
     hovered = items[selIdx]?.value ?? null;
+  };
+
+  const queryPlaceholder = () => {
+    if (allowCustom && filterEnabled) return "type to filter or add…";
+    if (allowCustom) return "type to add…";
+    return "type to filter…";
+  };
+
+  const controlHint = () => {
+    const clearHint = queryEnabled ? "  Esc clear" : "";
+    return multi
+      ? `  Up/Down move  Space toggle  Ctrl+A all/none  Enter accept${clearHint}  Ctrl+C cancel`
+      : `  Up/Down select  Enter accept${clearHint}  Ctrl+C cancel`;
   };
 
   const buildLines = () => {
@@ -534,34 +725,32 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
       ? `${selected.size}/${choices.length} selected`
       : (filtered.length === choices.length ? `${choices.length}` : `${filtered.length}/${choices.length}`);
     lines.push(`${bold(title)}  ${dim(`(${count})`)}`);
-    lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
+    if (queryEnabled) {
+      lines.push(`${dim("›")} ${query.trim() ? query : dim(queryPlaceholder())}`);
+    }
     if (!items.length) {
-      lines.push(dim(multi
-        ? "  Up/Down move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"
-        : "  Up/Down select  Enter accept  Esc clear  Ctrl+C cancel"));
+      lines.push(dim(controlHint()));
       lines.push(dim("  no matches"));
       return lines;
     }
     const { start, end } = pickerViewport(items.length, selIdx);
-    lines.push(dim(multi
-      ? "  Up/Down move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"
-      : "  Up/Down select  Enter accept  Esc clear  Ctrl+C cancel"));
+    lines.push(dim(controlHint()));
     for (let i = start; i < end; i++) {
       const sel = i === selIdx;
       const item = items[i];
       if (item.custom) {
         const label = `add "${item.value}"`;
         const text = sel ? bold(label) : dim(label);
-        lines.push(`  ${sel ? check("+") : "+"} ${text}`);
+        lines.push(`  ${sel ? check("+") : "+"}${PICKER_LABEL_GAP}${text}`);
       } else {
         const text = sel ? bold(item.display) : dim(item.display);
         if (multi) {
           const checked = selected.has(item.value);
           const box = checked ? "[x]" : "[ ]";
           const glyph = sel ? bold(box) : (checked ? box : muted(box));
-          lines.push(`  ${glyph} ${text}`);
+          lines.push(`  ${glyph}${PICKER_LABEL_GAP}${text}`);
         } else {
-          lines.push(`  ${sel ? "◉" : muted("◯")} ${text}`);
+          lines.push(`  ${sel ? "◉" : muted("◯")}${PICKER_LABEL_GAP}${text}`);
         }
       }
     }
@@ -628,10 +817,12 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
         return;
       }
       if (key.name === "escape") {
+        if (!queryEnabled) return;
         if (query) { query = ""; applyFilter(); paint(); }
         return;
       }
       if (key.name === "backspace") {
+        if (!queryEnabled) return;
         if (query) { query = query.slice(0, -1); applyFilter(); paint(); }
         return;
       }
@@ -655,6 +846,7 @@ async function askFilteredPicker(title, initialChoices, options = {}) {
         return;
       }
       if (typeof str === "string" && str.length === 1 && !key.ctrl && !key.meta) {
+        if (!queryEnabled) return;
         const code = str.charCodeAt(0);
         if ((multi ? code > 32 : code >= 32) && code < 127) {
           query += str;
@@ -720,9 +912,13 @@ function litellmUsage() {
   return `khala litellm - configure a LiteLLM-compatible Pi provider
 
 Usage:
+  khala litellm
   khala litellm --provider <id> --base-url <url> --key-env <name> --model <patterns> [flags]
   khala litellm print-key --provider <id>
   khala litellm --help
+
+Commands:
+  print-key                 Print the selected LiteLLM API key for Pi's provider resolver
 
 Flags:
       --provider <id>        LiteLLM provider id  (e.g. team-litellm)
@@ -745,7 +941,10 @@ Flags:
   -v, --version              Show version
 
 Examples:
-  # Interactive: picker asks how to store the key, fetches /model/info, writes everything.
+  # Interactive: add a provider/key, add a key to an existing provider, or reuse a key.
+  khala litellm
+
+  # Fully specified new-key setup:
   khala litellm --provider team-litellm --base-url https://lite.example/v1 --key-env reeds-maint
 
   # Store the key directly in auth.json (paste once, kept at 0600):
@@ -761,6 +960,14 @@ Examples:
   khala litellm --provider team-litellm --base-url https://lite.example/v1 \\
     --key-env reeds-maint --model gpt-5.4-mini --project-settings --yes
 
+Project model scope:
+  --project-settings writes this project's .pi/settings.json defaultProvider,
+  defaultModel, and enabledModels from the selected --model list. enabledModels
+  is written as provider-qualified entries like team-litellm/gpt-5.4-mini so Pi
+  does not resolve a same-named model from another provider. Pi's --list-models
+  command still lists the global registry from models.json; it is not a
+  project-scoped view.
+
 Key name vs. shell env var:
   --key-env stores a friendly label (often the name you assigned the key in the
   LiteLLM portal). When pi falls back to env-var resolution, it reads the
@@ -769,19 +976,28 @@ Key name vs. shell env var:
   derivation is a no-op and the export name is identical.
 
 Key resolution at runtime:
-  Pi resolves provider keys in this order: --api-key flag > auth.json[<id>] > env var.
-  Storing in auth.json (literal or command) means the key works without an exported
-  env var, and pi can fetch /model/info on a fresh shell. The file is created with
-  0600 perms; unrelated providers are preserved on merge.
+  models.json calls !khala litellm print-key --provider <id>. Khala reads this
+  project's selected key label, then checks env vars, key-specific auth entries
+  (<provider>:<key-label>), and legacy provider auth entries. New literal/command
+  keys are recorded in key-specific auth entries. New providers also get a
+  provider-compatible auth entry; adding another key to an existing provider
+  preserves that provider-compatible entry for older projects. That flow shows
+  the exact project .pi config path and asks before configuring the current
+  project; answering no only saves the reusable key.
+  If the provider/key-label pair already has a stored key, Khala asks before
+  overwriting it.
+  Khala also keeps a non-secret global key-label registry so the reuse picker can
+  list multiple labels for the same LiteLLM provider.
 
 Environment:
-  PI_CODING_AGENT_DIR  Override the Pi agent directory (default: ~/.pi/agent)
-  NO_COLOR             Disable ANSI color in output
+  PI_CODING_AGENT_DIR              Override the Pi agent directory (default: ~/.pi/agent)
+  KHALA_LITELLM_RESOLVER_COMMAND   Override the command written into models.json for key lookup
+  NO_COLOR                         Disable ANSI color in output
 `;
 }
 
 function parseLitellmArgs(args) {
-  const options = { baseUrl: "", dryRun: false, global: false, help: false, keyEnv: "", model: "", project: false, projectSettings: null, provider: "", verbose: false, version: false, yes: false };
+  const options = { baseUrl: "", dryRun: false, global: false, help: false, keyEnv: "", model: "", noInput: false, project: false, projectSettings: null, provider: "", verbose: false, version: false, yes: false };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -791,7 +1007,8 @@ function parseLitellmArgs(args) {
     else if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--project" || arg === "-l") options.project = true;
     else if (arg === "--version" || arg === "-v") options.version = true;
-    else if (arg === "--yes" || arg === "-y" || arg === "--no-input") options.yes = true;
+    else if (arg === "--yes" || arg === "-y") options.yes = true;
+    else if (arg === "--no-input") { options.yes = true; options.noInput = true; }
     else if (arg.startsWith("--provider=")) options.provider = arg.slice("--provider=".length);
     else if (arg === "--provider") options.provider = args[++i] ?? "";
     else if (arg.startsWith("--base-url=")) options.baseUrl = arg.slice("--base-url=".length);
@@ -814,6 +1031,24 @@ function parseLitellmArgs(args) {
   if (options.global) throw new Error("khala litellm only supports project setup; use --project.");
   if (!options.project) options.project = true;
   return options;
+}
+
+function litellmPrintKeyUsage() {
+  return `khala litellm print-key - print the selected LiteLLM API key for Pi
+
+Usage:
+  khala litellm print-key --provider <id>
+  khala litellm print-key --help
+
+Flags:
+      --provider <id>  LiteLLM provider id to resolve from the nearest project config
+  -h, --help           Show help
+  -v, --version        Show version
+
+Output:
+  On success, writes only the resolved key value to stdout. Diagnostics and
+  errors are written to stderr.
+`;
 }
 
 function parseLitellmPrintKeyArgs(args) {
@@ -1157,7 +1392,7 @@ async function mainLiteLLMPrintKey(argv) {
   }
 
   if (options.help) {
-    console.log("Usage: khala litellm print-key --provider <id>");
+    console.log(litellmPrintKeyUsage());
     return;
   }
   if (options.version) { console.log(version()); return; }
@@ -1179,11 +1414,30 @@ async function mainLiteLLMPrintKey(argv) {
     const keyEnv = validateLiteLLMKeyEnv(providerConfig.keyEnv);
     const value = lookupKeyValueByName(keyEnv);
     if (!value) {
+      const auth = readJsonObjectFile(authJsonPath());
+      const keyAuthId = liteLLMKeyAuthId(provider, keyEnv);
+      const authEntry = isPlainObject(auth) && isPlainObject(auth[keyAuthId]) ? auth[keyAuthId] : null;
+      const providerAuthEntry = isPlainObject(auth) && isPlainObject(auth[provider]) ? auth[provider] : null;
+      if (authEntry?.type === "api_key" && typeof authEntry.key === "string") {
+        const authValue = resolveKeyForFetch(authEntry.key);
+        if (authValue) {
+          process.stdout.write(authValue);
+          return;
+        }
+      }
+      if (providerAuthEntry?.type === "api_key" && typeof providerAuthEntry.key === "string") {
+        const authValue = resolveKeyForFetch(providerAuthEntry.key);
+        if (authValue) {
+          process.stdout.write(authValue);
+          return;
+        }
+      }
       // Tell the user which env var to actually export. With portal-style
       // labels (e.g. `reeds-maint`) the literal isn't a valid shell ident,
       // so we name the derived form they'd type into `export`.
       const envVar = deriveEnvVarFromKeyName(keyEnv) ?? keyEnv;
-      throw new Error(`Project LiteLLM key '${keyEnv}' has no exported value (expected $${envVar}).`);
+      const authHint = authEntry || providerAuthEntry ? ` Stored auth.json entry for provider '${provider}' could not be resolved either.` : "";
+      throw new Error(`Project LiteLLM key '${keyEnv}' has no exported value (expected $${envVar}).${authHint}`);
     }
     process.stdout.write(value);
   } catch (error) {
@@ -1195,6 +1449,12 @@ async function mainLiteLLMPrintKey(argv) {
 async function mainLiteLLM(argv) {
   if (argv[0] === "print-key") {
     await mainLiteLLMPrintKey(argv.slice(1));
+    return;
+  }
+  if (argv[0] && !argv[0].startsWith("-")) {
+    console.error(`Unknown command: ${argv[0]}`);
+    console.error("Run `khala litellm --help` for usage.");
+    process.exitCode = 2;
     return;
   }
 
@@ -1213,18 +1473,96 @@ async function mainLiteLLM(argv) {
 
   try {
     const promptAvailable = canPrompt();
+    const inputAvailable = promptAvailable && !options.noInput;
     const missing = [];
     let provider = options.provider;
     let baseUrl = options.baseUrl;
     let keyEnv = options.keyEnv;
+    let reusedKeyDefaults = null;
+    let newKeyProviderDefaults = null;
 
-    if (promptAvailable && !options.yes && !options.dryRun) {
+    if (inputAvailable && !options.yes && !options.dryRun) {
       console.log(cyan(bold("Khala")) + dim(" · LiteLLM provider setup"));
       console.log(hint("Connect Pi to a LiteLLM-compatible proxy. Press Ctrl-C any time to cancel."));
     }
 
+    const hasExplicitLiteLLMSetupInput = Boolean(provider || baseUrl || keyEnv || options.model || options.authMode || options.authKey || options.authCommand);
+    if (inputAvailable && !options.yes && !options.dryRun && !hasExplicitLiteLLMSetupInput) {
+      const ADD_KEY = "New provider and key";
+      const ADD_KEY_TO_EXISTING_PROVIDER = "New key for existing provider";
+      const REUSE_KEY = "Reuse existing key";
+      const existingProviders = liteLLMProvidersFromModelsJson();
+      const setupChoices = existingProviders.length
+        ? [ADD_KEY, ADD_KEY_TO_EXISTING_PROVIDER, REUSE_KEY]
+        : [ADD_KEY, REUSE_KEY];
+      const setupMode = await collapseSection("Key setup", async () => {
+        console.log(stepHeading("Key setup"));
+        console.log(hint("  Create a provider, add a key label, or reuse one from another project."));
+        return askChoice("LiteLLM key setup", setupChoices, ADD_KEY);
+      }, {
+        formatValue: (value) => {
+          if (value === REUSE_KEY) return dim("reuse existing key");
+          if (value === ADD_KEY_TO_EXISTING_PROVIDER) return dim("add key to existing provider");
+          return dim("add provider and key");
+        },
+      });
+
+      if (setupMode === ADD_KEY_TO_EXISTING_PROVIDER) {
+        if (!existingProviders.length) {
+          throw new Error("No existing Khala LiteLLM providers found. Add a provider first, then rerun khala litellm to add another key.");
+        }
+        const providerChoices = existingProviders.map((candidate) => candidate.name);
+        const selectedProvider = await collapseSection("Existing provider", async () => {
+          console.log(stepHeading("Existing provider"));
+          console.log(hint("  Choose the LiteLLM provider that should receive another key label."));
+          return askChoice("LiteLLM provider", providerChoices, providerChoices[0]);
+        }, { formatValue: (value) => dim(value) });
+        newKeyProviderDefaults = existingProviders.find((candidate) => candidate.name === selectedProvider) ?? existingProviders[0];
+        provider = newKeyProviderDefaults.name;
+        baseUrl = newKeyProviderDefaults.baseUrl;
+      } else if (setupMode === REUSE_KEY) {
+        const candidates = reusableLiteLLMKeyCandidates();
+        if (!candidates.length) {
+          throw new Error("No reusable LiteLLM keys found. Add a new key first, then rerun khala litellm in another project to reuse it.");
+        }
+        const providerChoices = [...new Set(candidates.map((candidate) => candidate.provider))];
+        const selectedProvider = await collapseSection("Reuse provider", async () => {
+          console.log(stepHeading("Reuse provider"));
+          console.log(hint("  Choose the LiteLLM provider this project should use."));
+          return askChoice("LiteLLM provider", providerChoices, providerChoices[0]);
+        }, { formatValue: (value) => dim(value) });
+        const providerCandidates = candidates.filter((candidate) => candidate.provider === selectedProvider);
+        const labeledCandidates = providerCandidates.filter((candidate) => !candidate.needsKeyLabel);
+        if (labeledCandidates.length > 0) {
+          const keyChoices = labeledCandidates.map(reusableLiteLLMKeyLabelChoice);
+          const selectedKey = await collapseSection("Key name", async () => {
+            console.log(stepHeading("Key name"));
+            console.log(hint("  Choose the key label to reuse for this provider."));
+            return askChoice("Key name", keyChoices, keyChoices[0]);
+          }, { formatValue: (value) => dim(value) });
+          const pickedIndex = keyChoices.indexOf(selectedKey);
+          reusedKeyDefaults = labeledCandidates[pickedIndex] ?? labeledCandidates[0];
+        } else {
+          const providerFallback = providerCandidates[0];
+          const selectedKeyEnv = await collapseSection("Key name", async () => {
+            console.log(stepHeading("Key name"));
+            console.log(hint("  This provider has stored auth but no saved key label yet. Name it once so future projects can select it."));
+            return promptValidated(`  ${GLYPH.arrow} Key label: `, validateLiteLLMKeyEnv, liteLLMPromptError("keyLabel"));
+          });
+          reusedKeyDefaults = { ...providerFallback, keyEnv: selectedKeyEnv, needsKeyLabel: true };
+        }
+        provider = reusedKeyDefaults.provider;
+        baseUrl = reusedKeyDefaults.baseUrl;
+        keyEnv = reusedKeyDefaults.keyEnv;
+        options.model = reusedKeyDefaults.modelIds.join(",");
+        if (!options.authMode && !options.authKey && !options.authCommand) {
+          options.authMode = "skip";
+        }
+      }
+    }
+
     if (!provider) {
-      if (!promptAvailable) missing.push("--provider");
+      if (!inputAvailable) missing.push("--provider");
       else {
         provider = await collapseSection("Provider", async () => {
           console.log(stepHeading("Provider"));
@@ -1237,7 +1575,7 @@ async function mainLiteLLM(argv) {
     }
 
     if (!baseUrl) {
-      if (!promptAvailable) missing.push("--base-url");
+      if (!inputAvailable) missing.push("--base-url");
       else {
         baseUrl = await collapseSection("Base URL", async () => {
           console.log(stepHeading("Base URL"));
@@ -1258,7 +1596,7 @@ async function mainLiteLLM(argv) {
     }
 
     if (!keyEnv) {
-      if (!promptAvailable) missing.push("--key-env");
+      if (!inputAvailable) missing.push("--key-env");
       else {
         keyEnv = await collapseSection("Project key", async () => {
           console.log(stepHeading("Project key"));
@@ -1278,11 +1616,20 @@ async function mainLiteLLM(argv) {
     const targetModelsPath = modelsJsonPath();
     const targetSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
     const targetKeyConfigPath = litellmProjectConfigPath();
+    const targetKeyRegistryPath = litellmKeyRegistryPath();
     const targetAuthPath = authJsonPath();
 
     const currentAuth = readJsonObjectFile(targetAuthPath);
+    const keyAuthId = liteLLMKeyAuthId(provider, keyEnv);
+    const existingKeyAuthEntry = isPlainObject(currentAuth) && isPlainObject(currentAuth[keyAuthId]) ? currentAuth[keyAuthId] : null;
+    const hasExistingKeyAuth = isStoredLiteLLMAuthEntry(existingKeyAuthEntry);
     const existingAuthEntry = isPlainObject(currentAuth) && isPlainObject(currentAuth[provider]) ? currentAuth[provider] : null;
     const hasExistingAuth = Boolean(existingAuthEntry && existingAuthEntry.type === "api_key" && typeof existingAuthEntry.key === "string" && existingAuthEntry.key.length > 0);
+    const existingProviderKeyRegistration = Boolean(newKeyProviderDefaults);
+    const reusedProviderKeyRegistration = Boolean(reusedKeyDefaults);
+    const registeredProviderKeyFlow = existingProviderKeyRegistration || reusedProviderKeyRegistration;
+    const preserveProviderAuth = Boolean(newKeyProviderDefaults && hasExistingAuth);
+    let writeProjectKeyConfig = !registeredProviderKeyFlow;
     let resolvedKey = lookupKeyValueByName(keyEnv);
 
     // ── Auth-mode resolution ──────────────────────────────────────────────
@@ -1300,11 +1647,17 @@ async function mainLiteLLM(argv) {
     // `capturedLiteralKey` carries the value the section already read so the
     // literal-mode block below doesn't prompt again.
     let capturedLiteralKey;
-    if (!authMode && promptAvailable && !options.yes && !options.dryRun) {
+    if (!authMode && inputAvailable && !options.yes && !options.dryRun) {
       const result = await collapseSection("API key", async () => {
         console.log(stepHeading("API key"));
         let mode = "literal";
-        if (hasExistingAuth) {
+        if (hasExistingKeyAuth) {
+          console.log(hint(`  A stored API key already exists for provider ${bold(provider)} with key label ${bold(keyEnv)}.`));
+          const replace = await askConfirmation(`  ${GLYPH.arrow} Overwrite the stored key for ${keyEnv}?`, { defaultYes: false });
+          mode = replace ? "literal" : "skip";
+        } else if (preserveProviderAuth) {
+          console.log(hint(`  A provider-level API key already exists for ${bold(provider)}. This new key will be stored under label ${bold(keyEnv)} without replacing it.`));
+        } else if (hasExistingAuth) {
           console.log(hint(`  A stored API key already exists for provider ${bold(provider)} in the global auth store.`));
           const replace = await askConfirmation(`  ${GLYPH.arrow} Replace the stored key?`, { defaultYes: false });
           mode = replace ? "literal" : "skip";
@@ -1316,6 +1669,7 @@ async function mainLiteLLM(argv) {
             try {
               key = validateAuthLiteral(await promptSecret(`  ${GLYPH.arrow} API key: `));
             } catch (error) {
+              if (isAbortError(error)) throw error;
               console.log(warn(`  ${error.message}`));
             }
           }
@@ -1330,17 +1684,18 @@ async function mainLiteLLM(argv) {
     let authPayload = null;
     if (authMode === "literal") {
       let value = options.authKey ?? capturedLiteralKey;
-      while (!value && promptAvailable && !options.yes && !options.dryRun) {
+      while (!value && inputAvailable && !options.yes && !options.dryRun) {
         try {
           console.log(stepHeading("API key"));
           console.log(hint("  Paste the key value. Input is masked and the raw key is never printed."));
           value = validateAuthLiteral(await promptSecret(`  ${GLYPH.arrow} API key: `));
         } catch (error) {
+          if (isAbortError(error)) throw error;
           console.log(warn(`  ${error.message}`));
         }
       }
       if (!value) {
-        if (!canPrompt()) {
+        if (!inputAvailable) {
           throw new Error("--auth-mode=literal needs --auth-key=<value> in non-interactive mode.");
         }
         value = await promptSecret(`API key value for ${bold(provider)} ${dim("(input is masked; will be stored in auth.json with 0600 perms)")}\n${dim("›")} `);
@@ -1350,7 +1705,7 @@ async function mainLiteLLM(argv) {
     } else if (authMode === "command") {
       let cmd = options.authCommand;
       if (!cmd) {
-        if (!canPrompt()) {
+        if (!inputAvailable) {
           throw new Error("--auth-mode=command needs --auth-command=<!cmd> in non-interactive mode.");
         }
         cmd = await promptValidated(
@@ -1361,17 +1716,34 @@ async function mainLiteLLM(argv) {
       authPayload = { mode: "command", key: validateAuthCommand(cmd) };
       const fromCmd = resolveKeyForFetch(authPayload.key);
       resolvedKey = fromCmd || undefined;
+    } else if (hasExistingKeyAuth) {
+      const fromAuth = resolveKeyForFetch(existingKeyAuthEntry.key);
+      if (fromAuth) resolvedKey = fromAuth;
     } else if (hasExistingAuth) {
       const fromAuth = resolveKeyForFetch(existingAuthEntry.key);
       if (fromAuth) resolvedKey = fromAuth;
+    }
+
+    if (registeredProviderKeyFlow && inputAvailable && !options.yes && !options.dryRun) {
+      writeProjectKeyConfig = await collapseSection("Project config", async () => {
+        console.log(stepHeading("Project config"));
+        console.log(hint(`  Optionally configure this project to use the ${reusedProviderKeyRegistration ? "selected" : "new"} key label now.`));
+        console.log(hint(`  Writes: ${targetKeyConfigPath}`));
+        return askConfirmation(`  ${GLYPH.arrow} Configure this project to use ${keyEnv}?`, { defaultYes: false });
+      }, { formatValue: (value) => dim(value ? targetKeyConfigPath : "skip local project config") });
+    }
+
+    if (reusedProviderKeyRegistration && !writeProjectKeyConfig && inputAvailable && !options.yes && !options.dryRun) {
+      console.log(`${dim("Skipped.")}  No files were written.`);
+      return;
     }
 
     const rawModels = (typeof options.model === "string" ? options.model : "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    const shouldFetchCatalogBeforePrompt = promptAvailable && !options.yes && !options.dryRun && !rawModels.length;
-    const shouldStartCatalogFetch = Boolean(resolvedKey);
+    const shouldFetchCatalogBeforePrompt = !registeredProviderKeyFlow && inputAvailable && !options.yes && !options.dryRun && !rawModels.length;
+    const shouldStartCatalogFetch = !registeredProviderKeyFlow && Boolean(resolvedKey);
     const catalogFetchPromise = shouldStartCatalogFetch
       ? (shouldFetchCatalogBeforePrompt
         ? fetchLiteLLMCatalog(baseUrl, resolvedKey)
@@ -1429,11 +1801,14 @@ async function mainLiteLLM(argv) {
     }
 
     let modelIds = [];
-    if (rawModels.length) {
+    if (registeredProviderKeyFlow) {
+      modelIds = [...(newKeyProviderDefaults?.models ?? [])];
+      if (reusedProviderKeyRegistration) modelIds = [...(reusedKeyDefaults?.modelIds ?? [])];
+    } else if (rawModels.length) {
       // --model accepts a single bare name or a comma-separated list.
       modelIds = rawModels.map(normalizeLiteLLMModelPattern);
       validateNonInteractiveLiteLLMModelIds(modelIds);
-    } else if (!promptAvailable) {
+    } else if (!inputAvailable) {
       missing.push("--model");
     } else {
       modelIds = await promptLiteLLMModelIds(catalogModelNames);
@@ -1444,7 +1819,7 @@ async function mainLiteLLM(argv) {
     }
 
     let writeProjectSettings = options.projectSettings === true;
-    if (options.projectSettings === null && promptAvailable && !options.yes && !options.dryRun) {
+    if (!existingProviderKeyRegistration && writeProjectKeyConfig && options.projectSettings === null && inputAvailable && !options.yes && !options.dryRun) {
       console.log("");
       writeProjectSettings = await askConfirmation(`  ${GLYPH.arrow} Set this project's Pi defaults to these models?`, { defaultYes: false });
     }
@@ -1478,38 +1853,72 @@ async function mainLiteLLM(argv) {
         metadataStatus = formatMetadataFailure(error, options.verbose);
         metadataIsWarning = true;
       }
-    } else if (!shouldFetchCatalogBeforePrompt && authMode === "command") {
+    } else if (!registeredProviderKeyFlow && !shouldFetchCatalogBeforePrompt && authMode === "command") {
       metadataStatus = "Could not fetch model metadata: auth command produced no output. Models will still work if the ids are correct.";
       metadataIsWarning = true;
-    } else if (!shouldFetchCatalogBeforePrompt && authMode === "skip") {
+    } else if (!registeredProviderKeyFlow && !shouldFetchCatalogBeforePrompt && authMode === "skip") {
       metadataStatus = `Could not fetch model metadata: no API key was available. Export $${envVar} or store a key to enable metadata. Models will still work if the ids are correct.`;
       metadataIsWarning = true;
     }
 
-    const currentModels = readJsonObjectFile(targetModelsPath);
+    const currentModels = registeredProviderKeyFlow ? null : readJsonObjectFile(targetModelsPath);
     const currentSettings = writeProjectSettings ? readJsonObjectFile(targetSettingsPath) : null;
-    const currentKeyConfig = readJsonObjectFile(targetKeyConfigPath);
-    const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelIds, infoMap });
+    const currentKeyConfig = writeProjectKeyConfig ? readJsonObjectFile(targetKeyConfigPath) : null;
+    const currentKeyRegistry = readLiteLLMKeyRegistry();
+    const apiKeyResolverCommand = khalaResolverCommand();
+    const mergedModels = registeredProviderKeyFlow ? null : mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelIds, infoMap, apiKeyResolverCommand });
     const mergedSettings = writeProjectSettings ? mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelIds }) : null;
-    const mergedKeyConfig = mergeLiteLLMProjectKeyConfig(currentKeyConfig, { providerId: provider, keyEnv });
+    const mergedKeyConfig = writeProjectKeyConfig ? mergeLiteLLMProjectKeyConfig(currentKeyConfig, { providerId: provider, keyEnv }) : null;
+    const writeKeyRegistry = !reusedProviderKeyRegistration || Boolean(reusedKeyDefaults?.needsKeyLabel);
+    const mergedKeyRegistry = writeKeyRegistry ? mergeLiteLLMKeyRegistry(currentKeyRegistry, { provider, keyEnv, baseUrl, modelIds }) : null;
 
     if (metadataStatus && !metadataPrinted) console.log(metadataIsWarning ? warn(metadataStatus) : metadataStatus);
 
     const modelCount = `${modelIds.length} model${modelIds.length === 1 ? "" : "s"}`;
-    const providerVerb = mergedModels.isUpdate ? "update" : "add";
+    const providerVerb = mergedModels?.isUpdate ? "update" : "add";
     const providerLocation = describeLocation("global model registry", targetModelsPath, options.verbose);
     const projectKeyLocation = describeLocation("project LiteLLM config", targetKeyConfigPath, options.verbose);
+    const keyRegistryLocation = describeLocation("global LiteLLM key registry", targetKeyRegistryPath, options.verbose);
     const authLocation = describeLocation("global auth store", targetAuthPath, options.verbose);
     const settingsLocation = describeLocation("project Pi defaults", targetSettingsPath, options.verbose);
     console.log("");
     console.log(titleLine("Ready to write", { dryRun: options.dryRun }));
-    const rowProvider = mergedModels.isUpdate ? rowSwap : rowAdd;
-    console.log(rowProvider(`${providerVerb} ${providerLocation} provider ${provider} with ${modelCount}`));
-    console.log(rowAdd(`save project key label ${keyEnv} in ${projectKeyLocation}`));
+    if (reusedKeyDefaults) {
+      console.log(rowKeep(`reuse LiteLLM provider ${reusedKeyDefaults.provider} with key label ${reusedKeyDefaults.keyEnv}`));
+    } else if (newKeyProviderDefaults) {
+      console.log(rowKeep(`add key label ${keyEnv} to existing LiteLLM provider ${newKeyProviderDefaults.name}`));
+    }
+    if (registeredProviderKeyFlow) {
+      console.log(rowKeep(`leave ${providerLocation} provider ${provider} unchanged`));
+      if (writeProjectKeyConfig) {
+        console.log(rowAdd(`save project key label ${keyEnv} in ${projectKeyLocation}`));
+      } else {
+        console.log(rowKeep(`leave ${projectKeyLocation} unchanged`));
+      }
+    } else {
+      const rowProvider = mergedModels.isUpdate ? rowSwap : rowAdd;
+      console.log(rowProvider(`${providerVerb} ${providerLocation} provider ${provider} with ${modelCount}`));
+      console.log(rowAdd(`save project key label ${keyEnv} in ${projectKeyLocation}`));
+    }
+    if (writeKeyRegistry) {
+      console.log(rowAdd(`remember key label ${keyEnv} for provider ${provider} in ${keyRegistryLocation}`));
+    } else {
+      console.log(rowKeep(`leave ${keyRegistryLocation} unchanged`));
+    }
     if (authMode === "literal") {
-      console.log((hasExistingAuth ? rowSwap : rowAdd)(`store API key in ${authLocation}${hasExistingAuth ? " (replace existing key)" : ""}`));
+      if (preserveProviderAuth) {
+        console.log(rowAdd(`store API key for label ${keyEnv} in ${authLocation} and keep existing provider key`));
+      } else {
+        console.log((hasExistingAuth ? rowSwap : rowAdd)(`store API key in ${authLocation}${hasExistingAuth ? " (replace existing key)" : ""}`));
+      }
     } else if (authMode === "command") {
-      console.log((hasExistingAuth ? rowSwap : rowAdd)(`store API key command in ${authLocation}${hasExistingAuth ? " (replace existing key)" : ""}`));
+      if (preserveProviderAuth) {
+        console.log(rowAdd(`store API key command for label ${keyEnv} in ${authLocation} and keep existing provider key`));
+      } else {
+        console.log((hasExistingAuth ? rowSwap : rowAdd)(`store API key command in ${authLocation}${hasExistingAuth ? " (replace existing key)" : ""}`));
+      }
+    } else if (hasExistingKeyAuth) {
+      console.log(rowKeep(`keep existing API key for label ${keyEnv} in ${authLocation}`));
     } else if (hasExistingAuth) {
       console.log(rowKeep(`keep existing API key in ${authLocation}`));
     } else if (resolvedKey) {
@@ -1523,11 +1932,11 @@ async function mainLiteLLM(argv) {
       console.log(rowKeep(`leave ${settingsLocation} unchanged`));
     }
     if (options.verbose) {
-      console.log(dim(`  provider apiKey command ${buildLiteLLMApiKeyCommand(provider)}`));
+      console.log(dim(`  provider apiKey command ${buildLiteLLMApiKeyCommand(provider, apiKeyResolverCommand)}`));
       console.log(dim(`  api ${LITELLM_PROVIDER_API}`));
       console.log(dim(`  base URL ${baseUrl}`));
     }
-    if (mergedModels.conflict) {
+    if (mergedModels?.conflict) {
       console.log(warn("  existing provider config differs and will be updated only if you confirm"));
     }
 
@@ -1548,9 +1957,10 @@ async function mainLiteLLM(argv) {
       }
     }
 
-    writeJsonFile(targetModelsPath, mergedModels.value, { compactModelEntries: true });
+    if (!registeredProviderKeyFlow) writeJsonFile(targetModelsPath, mergedModels.value, { compactModelEntries: true });
     if (writeProjectSettings) writeJsonFile(targetSettingsPath, mergedSettings);
-    writeJsonFile(targetKeyConfigPath, mergedKeyConfig);
+    if (writeProjectKeyConfig) writeJsonFile(targetKeyConfigPath, mergedKeyConfig);
+    if (writeKeyRegistry) writeJsonFile(targetKeyRegistryPath, mergedKeyRegistry);
 
     // auth.json is written ONLY when the user picked literal/command. The
     // file gets 0600 perms (writeSecureJsonFile chmods explicitly after
@@ -1558,20 +1968,43 @@ async function mainLiteLLM(argv) {
     // existing auth.json are preserved by mergeAuthJsonApiKey.
     let authWritten = false;
     if (authPayload && (authPayload.mode === "literal" || authPayload.mode === "command")) {
-      const mergedAuth = mergeAuthJsonApiKey(currentAuth, provider, authPayload.key);
+      const mergedAuth = preserveProviderAuth
+        ? { value: isPlainObject(currentAuth) ? { ...currentAuth } : {} }
+        : mergeAuthJsonApiKey(currentAuth, provider, authPayload.key);
+      if (!preserveProviderAuth && !isStoredLiteLLMAuthEntry(mergedAuth.value[provider])) {
+        mergedAuth.value[provider] = { type: "api_key", key: authPayload.key };
+      }
+      mergedAuth.value[keyAuthId] = { type: "api_key", key: authPayload.key };
       writeSecureJsonFile(targetAuthPath, mergedAuth.value);
       authWritten = true;
     }
 
     console.log("");
-    console.log(green(bold("Done.")) + dim(" LiteLLM provider is configured."));
-    console.log(wroteLine(describeLocation("global model registry", targetModelsPath, options.verbose)));
+    const doneMessage = existingProviderKeyRegistration
+      ? " LiteLLM key is registered."
+      : (reusedProviderKeyRegistration ? " LiteLLM project is configured." : " LiteLLM provider is configured.");
+    console.log(green(bold("Done.")) + dim(doneMessage));
+    if (registeredProviderKeyFlow) {
+      console.log(`${dim(GLYPH.dash)} ${dim("Left global model registry unchanged.")}`);
+    } else {
+      console.log(wroteLine(describeLocation("global model registry", targetModelsPath, options.verbose)));
+    }
     if (writeProjectSettings) {
       console.log(wroteLine(describeLocation("project Pi defaults", targetSettingsPath, options.verbose)));
+      console.log(`${dim(GLYPH.dash)} ${dim("pi --list-models is global; project model defaults live in .pi/settings.json.")}`);
     } else {
       console.log(`${dim(GLYPH.dash)} ${dim("Left project Pi defaults unchanged.")}`);
     }
-    console.log(wroteLine(describeLocation("project LiteLLM config", targetKeyConfigPath, options.verbose)));
+    if (!writeProjectKeyConfig) {
+      console.log(`${dim(GLYPH.dash)} ${dim("Left project LiteLLM config unchanged.")}`);
+    } else {
+      console.log(wroteLine(describeLocation("project LiteLLM config", targetKeyConfigPath, options.verbose)));
+    }
+    if (writeKeyRegistry) {
+      console.log(wroteLine(describeLocation("global LiteLLM key registry", targetKeyRegistryPath, options.verbose)));
+    } else {
+      console.log(`${dim(GLYPH.dash)} ${dim("Left global LiteLLM key registry unchanged.")}`);
+    }
     if (authWritten) {
       console.log(wroteLine(`${describeLocation("global auth store", targetAuthPath, options.verbose)} ${dim("(0600)")}`));
     }
@@ -1652,6 +2085,12 @@ async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === "litellm") {
     await mainLiteLLM(argv.slice(1));
+    return;
+  }
+  if (argv[0] && !argv[0].startsWith("-")) {
+    console.error(`Unknown command: ${argv[0]}`);
+    console.error("Run `khala --help` for usage.");
+    process.exitCode = 2;
     return;
   }
 

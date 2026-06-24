@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -19,10 +20,57 @@ export const MALFORMED_PROFILE_MESSAGE =
   "Expected format: provider/model:thinking (example: github-copilot/gpt-5.4-mini:medium)";
 export const LITELLM_PROVIDER_API = "openai-completions";
 export const LITELLM_PROVIDER_APIS = new Set(["openai-completions", "openai-responses"]);
+export const DEFAULT_LITELLM_RESOLVER_COMMAND = "khala";
+export const LITELLM_RESOLVER_OVERRIDE_ENV = "KHALA_LITELLM_RESOLVER_COMMAND";
 
-export function buildLiteLLMApiKeyCommand(providerId) {
+export function shellQuoteCommandArg(value) {
+  const text = String(value);
+  if (/^[A-Za-z0-9_/:=.,+-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, "'\\''")}'`;
+}
+
+function npxResolverCommand(npmPackage) {
+  const packageSpec = trimOrEmpty(npmPackage);
+  return packageSpec ? `npx --yes ${shellQuoteCommandArg(packageSpec)}` : "";
+}
+
+function nodeScriptResolverCommand(execPath, scriptPath) {
+  const node = trimOrEmpty(execPath);
+  const script = trimOrEmpty(scriptPath);
+  return node && script ? `${shellQuoteCommandArg(node)} ${shellQuoteCommandArg(script)}` : "";
+}
+
+export function resolveLiteLLMApiKeyResolverCommand(context = {}) {
+  const override = trimOrEmpty(context.overrideCommand);
+  if (override) return override;
+
+  if (context.npmCommand === "exec") {
+    const npx = npxResolverCommand(context.npmPackage);
+    if (npx) return npx;
+  }
+
+  const invokedPath = trimOrEmpty(context.resolvedInvokedPath) || trimOrEmpty(context.invokedPath);
+  if (invokedPath && path.basename(invokedPath) === "khala.js") {
+    const nodeScript = nodeScriptResolverCommand(context.execPath, invokedPath);
+    if (nodeScript) return nodeScript;
+  }
+
+  return DEFAULT_LITELLM_RESOLVER_COMMAND;
+}
+
+export function buildLiteLLMApiKeyCommand(providerId, resolverCommand = DEFAULT_LITELLM_RESOLVER_COMMAND) {
   const provider = validateLiteLLMProviderId(providerId);
-  return `!khala litellm print-key --provider ${provider}`;
+  const resolver = trimOrEmpty(resolverCommand);
+  if (!resolver) {
+    throw new Error("LiteLLM API key resolver command is required.");
+  }
+  return `!${resolver} litellm print-key --provider ${provider}`;
+}
+
+export function isLiteLLMApiKeyCommand(providerId, raw) {
+  const provider = validateLiteLLMProviderId(providerId);
+  const value = trimOrEmpty(raw);
+  return value.startsWith("!") && value.endsWith(` litellm print-key --provider ${provider}`);
 }
 
 /**
@@ -401,19 +449,6 @@ export function mergeAuthJsonApiKey(current, providerId, keyValue) {
   return { value: root, conflict, isUpdate: Boolean(existing) };
 }
 
-function mergeEnabledModelList(existingEnabledModels, modelIds) {
-  const enabledModels = Array.isArray(existingEnabledModels)
-    ? existingEnabledModels.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
-    : [];
-  const seen = new Set(enabledModels);
-  for (const id of modelIds) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    enabledModels.push(id);
-  }
-  return enabledModels;
-}
-
 /**
  * Compact-but-readable JSON serializer for models.json. Identical to
  * `JSON.stringify(value, null, 2)` for top-level structure, except each
@@ -521,7 +556,7 @@ export function mergeLiteLLMModelsJson(current, options) {
     ...existingProvider,
     baseUrl,
     api: LITELLM_PROVIDER_API,
-    apiKey: buildLiteLLMApiKeyCommand(providerId),
+    apiKey: buildLiteLLMApiKeyCommand(providerId, options.apiKeyResolverCommand),
     models: mergedModelEntries,
   };
 
@@ -532,11 +567,12 @@ export function mergeLiteLLMModelsJson(current, options) {
 export function mergeLiteLLMProjectSettings(current, options) {
   const providerId = validateLiteLLMProviderId(options.providerId);
   const modelIds = normalizeModelIdList(options);
+  const enabledModels = modelIds.map((id) => `${providerId}/${id}`);
 
   const root = isPlainObject(current) ? { ...current } : {};
   root.defaultProvider = providerId;
   root.defaultModel = modelIds[0];
-  root.enabledModels = mergeEnabledModelList(root.enabledModels, modelIds);
+  root.enabledModels = enabledModels;
 
   return root;
 }
