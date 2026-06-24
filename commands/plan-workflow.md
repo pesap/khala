@@ -61,4 +61,4 @@ If the packet is blocked, ask one blocking question or discard it. If the packet
 - Drafts blocked or discarded, with reasons
 - Published issue URLs, only for packets that passed `/workon` readiness
 - Remaining blocking questions
-- `Result: success|partial|failed` and `Confidence: 0..1`
+- End with a `Bias Check (Tier 1)` section plus `Result: success|partial|failed` and `Confidence: 0..1`.
