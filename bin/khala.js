@@ -242,6 +242,12 @@ function rawMode(on) {
  * - On Enter or Ctrl+C: clears the entire picker so no residual line is left;
  *   the caller surfaces the choice in its own summary.
  * - Non-TTY / empty choices: returns fallback immediately.
+ *
+ * Options:
+ *   allowCustom: when true and the user types a query that doesn't match an
+ *     existing choice exactly, a synthetic `use "<query>"` entry appears at
+ *     the top. Selecting it returns the typed query verbatim so the caller
+ *     can accept new values that weren't in the discovery list.
  */
 const PICKER_WINDOW = 10;
 
@@ -251,13 +257,25 @@ if (process.stdout.isTTY) {
   process.on("exit", () => process.stdout.write("\x1b[?25h"));
 }
 
-async function askChoice(title, choices, fallback) {
+async function askChoice(title, choices, fallback, options = {}) {
   if (!canPrompt() || !choices.length) return fallback;
 
+  const allowCustom = options.allowCustom === true;
   let query = "";
   let filtered = choices;
-  let selIdx = Math.max(0, choices.indexOf(fallback));
-  let hovered = filtered[selIdx];
+
+  const buildItems = () => {
+    const items = filtered.map((c) => ({ value: c, display: c, custom: false }));
+    if (allowCustom && query && !filtered.includes(query)) {
+      items.unshift({ value: query, display: query, custom: true });
+    }
+    return items;
+  };
+
+  let items = buildItems();
+  const fallbackIdx = items.findIndex((it) => it.value === fallback);
+  let selIdx = fallbackIdx >= 0 ? fallbackIdx : 0;
+  let hovered = items[selIdx]?.value ?? null;
 
   const applyFilter = () => {
     if (!query) {
@@ -266,13 +284,14 @@ async function askChoice(title, choices, fallback) {
       const q = query.toLowerCase();
       filtered = choices.filter((c) => c.toLowerCase().includes(q));
     }
-    const next = hovered ? filtered.indexOf(hovered) : -1;
+    items = buildItems();
+    const next = hovered ? items.findIndex((it) => it.value === hovered) : -1;
     selIdx = next >= 0 ? next : 0;
-    hovered = filtered[selIdx] ?? null;
+    hovered = items[selIdx]?.value ?? null;
   };
 
   const viewport = () => {
-    const total = filtered.length;
+    const total = items.length;
     if (total <= PICKER_WINDOW) return { start: 0, end: total };
     let start = Math.max(0, selIdx - Math.floor(PICKER_WINDOW / 2));
     const end   = Math.min(total, start + PICKER_WINDOW);
@@ -288,7 +307,7 @@ async function askChoice(title, choices, fallback) {
     lines.push(`${bold(title)}  ${dim(`(${count})`)}`);
     lines.push(`${dim("›")} ${query || dim("type to filter…")}`);
     lines.push(dim("  ↑ ↓ select  Enter accept  Esc clear  Ctrl+C cancel"));
-    if (!filtered.length) {
+    if (!items.length) {
       lines.push(dim("  no matches"));
       return lines;
     }
@@ -296,9 +315,16 @@ async function askChoice(title, choices, fallback) {
     if (start > 0) lines.push(dim(`  ↑ ${start} more`));
     for (let i = start; i < end; i++) {
       const sel = i === selIdx;
-      lines.push(`  ${sel ? "◉" : muted("◯")} ${sel ? bold(filtered[i]) : dim(filtered[i])}`);
+      const item = items[i];
+      if (item.custom) {
+        const text = sel ? bold(`use "${item.value}"`) : dim(`use "${item.value}"`);
+        lines.push(`  ${sel ? "+" : muted("+")} ${text}`);
+      } else {
+        const text = sel ? bold(item.display) : dim(item.display);
+        lines.push(`  ${sel ? "◉" : muted("◯")} ${text}`);
+      }
     }
-    if (end < filtered.length) lines.push(dim(`  ↓ ${filtered.length - end} more`));
+    if (end < items.length) lines.push(dim(`  ↓ ${items.length - end} more`));
     return lines;
   };
 
@@ -329,22 +355,22 @@ async function askChoice(title, choices, fallback) {
       if (!key) return;
       if (key.ctrl && key.name === "c") { settle(); reject(makeAbortError()); return; }
       if (key.name === "up") {
-        if (!filtered.length) return;
-        selIdx = (selIdx - 1 + filtered.length) % filtered.length;
-        hovered = filtered[selIdx];
+        if (!items.length) return;
+        selIdx = (selIdx - 1 + items.length) % items.length;
+        hovered = items[selIdx]?.value ?? null;
         paint();
         return;
       }
       if (key.name === "down") {
-        if (!filtered.length) return;
-        selIdx = (selIdx + 1) % filtered.length;
-        hovered = filtered[selIdx];
+        if (!items.length) return;
+        selIdx = (selIdx + 1) % items.length;
+        hovered = items[selIdx]?.value ?? null;
         paint();
         return;
       }
       if (key.name === "return") {
-        if (!filtered.length) return;
-        const chosen = filtered[selIdx] ?? fallback;
+        if (!items.length) return;
+        const chosen = items[selIdx]?.value ?? fallback;
         settle();
         resolve(chosen);
         return;
@@ -503,6 +529,44 @@ async function promptValidated(question, normalizer) {
   }
 }
 
+/**
+ * Build the bare model-name choices for the LiteLLM model picker.
+ *
+ * Seeds choices from pi --list-models and any explicit models already on a
+ * LiteLLM provider in models.json, dedup'd by bare model name (LiteLLM's
+ * model field is the bare name without a provider prefix). The picker is
+ * opened in allowCustom mode so users can still type a new model id that
+ * isn't in the discovery list.
+ */
+function liteLLMModelChoices() {
+  const seen = new Set();
+  const choices = [];
+  for (const row of piDiscoveryRows()) {
+    if (!seen.has(row.model)) { seen.add(row.model); choices.push(row.model); }
+  }
+  for (const provider of liteLLMProvidersFromModelsJson()) {
+    for (const m of provider.models) {
+      if (!seen.has(m)) { seen.add(m); choices.push(m); }
+    }
+  }
+  return choices;
+}
+
+async function pickLiteLLMModel() {
+  const choices = liteLLMModelChoices();
+  if (!choices.length) {
+    return promptValidated("LiteLLM model: ", normalizeLiteLLMModelPattern);
+  }
+  while (true) {
+    const picked = await askChoice("LiteLLM model", choices, choices[0], { allowCustom: true });
+    try {
+      return normalizeLiteLLMModelPattern(picked);
+    } catch (error) {
+      console.log(warn(`  ${error.message}`));
+    }
+  }
+}
+
 function writeJsonFile(filePath, value) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const content = `${JSON.stringify(value, null, 2)}\n`;
@@ -562,7 +626,7 @@ async function mainLiteLLM(argv) {
 
     if (!model) {
       if (!promptAvailable) missing.push("--model");
-      else model = await promptValidated("LiteLLM model: ", normalizeLiteLLMModelPattern);
+      else model = await pickLiteLLMModel();
     } else {
       model = normalizeLiteLLMModelPattern(model);
     }
@@ -578,20 +642,20 @@ async function mainLiteLLM(argv) {
     const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelId: model });
     const mergedSettings = mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelId: model });
 
+    // Summary
+    const modeTag = options.dryRun ? dim(" [dry-run]") : "";
+    const labelWidth = 12;
     console.log("");
-    console.log(`${bold("LiteLLM setup")}  ${dim(`v${version()}`)}`);
-    console.log(dim("─".repeat(27)));
-    console.log(`  ${dim("provider")}   ${provider}`);
-    console.log(`  ${dim("base-url")}   ${baseUrl}`);
-    console.log(`  ${dim("api")}        ${LITELLM_PROVIDER_API}`);
-    console.log(`  ${dim("apiKey")}     $${keyEnv}`);
-    console.log(`  ${dim("model")}      ${model}`);
-    console.log(`  ${dim("models")}     ${targetModelsPath}`);
-    console.log(`  ${dim("settings")}   ${targetSettingsPath}`);
-    console.log(`  ${dim("secret")}     raw API keys are never requested or stored`);
-    console.log(`  ${dim("hint")}       export ${bold(keyEnv)} or configure your secret manager to provide it`);
+    console.log(`${bold("Khala LiteLLM")}${modeTag}${dim(":")}`);
+    console.log(`${dim("models".padEnd(labelWidth))}${targetModelsPath}`);
+    console.log(`${dim("settings".padEnd(labelWidth))}${targetSettingsPath}`);
+    console.log(`${dim("provider".padEnd(labelWidth))}${provider}`);
+    console.log(`${dim("base-url".padEnd(labelWidth))}${baseUrl}`);
+    console.log(`${dim("api".padEnd(labelWidth))}${LITELLM_PROVIDER_API}`);
+    console.log(`${dim("apiKey".padEnd(labelWidth))}$${keyEnv}`);
+    console.log(`${dim("model".padEnd(labelWidth))}${model}`);
     if (mergedModels.conflict) {
-      console.log(`  ${warn("!")} existing provider config differs and will be updated only if you confirm`);
+      console.log(`${warn("!")} existing provider config differs and will be updated only if you confirm`);
     }
 
     if (options.dryRun) return;
@@ -600,6 +664,7 @@ async function mainLiteLLM(argv) {
       if (!canPrompt()) {
         throw new Error("LiteLLM setup writes require --yes in non-interactive mode.");
       }
+      console.log("");
       const confirmed = await askConfirmation(mergedModels.conflict ? "Overwrite the existing LiteLLM provider config now?" : "Write LiteLLM provider config now?");
       if (!confirmed) {
         console.log(`${dim("Skipped.")}  No files were written.`);
@@ -613,7 +678,7 @@ async function mainLiteLLM(argv) {
     console.log("");
     console.log(`${check("✓")} Wrote ${targetModelsPath}`);
     console.log(`${check("✓")} Wrote ${targetSettingsPath}`);
-    console.log(`  ${dim("boundary")} Khala stored a key reference, not a secret value.`);
+    console.log(`${dim("boundary".padEnd(12))}Khala stored a key reference, not a secret value.`);
   } catch (error) {
     if (isAbortError(error)) {
       console.log("Cancelled.");

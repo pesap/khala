@@ -395,12 +395,17 @@ test("khala litellm dry-run prints config paths without writing files or calling
     );
 
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /LiteLLM setup/);
-    assert.match(result.stdout, /models\.json/);
-    assert.match(result.stdout, /\.pi\/settings\.json/);
+    assert.match(result.stdout, /Khala LiteLLM \[dry-run\]:/);
+    assert.match(result.stdout, /models\s+.*models\.json/);
+    assert.match(result.stdout, /settings\s+.*\.pi\/settings\.json/);
+    assert.match(result.stdout, /provider\s+team-litellm/);
+    assert.match(result.stdout, /api\s+openai-completions/);
     assert.match(result.stdout, /apiKey\s+\$LITELLM_API_KEY/);
+    assert.match(result.stdout, /model\s+gpt-5\.4-mini/);
     assert.doesNotMatch(result.stdout, /team-litellm\/\*/);
     assert.doesNotMatch(result.stdout, /LITELLM_API_KEY=/);
+    assert.doesNotMatch(result.stdout, /raw API keys are never requested or stored/);
+    assert.doesNotMatch(result.stdout, /export LITELLM_API_KEY/);
     await assert.rejects(readFile(piLog, "utf8"));
     await assert.rejects(readFile(path.join(piAgentDir, "models.json"), "utf8"));
     await assert.rejects(readFile(path.join(tempDir, ".pi", "settings.json"), "utf8"));
@@ -494,7 +499,7 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     );
 
     assert.equal(first.code, 0);
-    assert.match(first.stdout, /LiteLLM setup/);
+    assert.match(first.stdout, /Khala LiteLLM:/);
     assert.match(first.stdout, /existing provider config differs/);
     assert.doesNotMatch(first.stdout, /other-secret|OLD_KEY/);
     await assert.rejects(readFile(piLog, "utf8"));
