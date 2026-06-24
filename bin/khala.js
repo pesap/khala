@@ -31,7 +31,7 @@ import {
   PI_CLI_REQUIRED_MESSAGE,
 } from "./khala-setup-lib.js";
 
-const PACKAGE_SPEC = "npm:khala";
+const PI_PACKAGE_SPEC = "https://github.com/pesap/khala";
 const WORKFLOW_CONFIG_FILE = "workflow-model.yaml";
 const LITELLM_APIS = new Set(["openai-completions", "openai-responses"]);
 const MODEL_PRESETS = {
@@ -192,7 +192,7 @@ function parseArgs(args) {
 }
 
 function installArgs(scope) {
-  return scope === "project" ? ["install", "-l", PACKAGE_SPEC] : ["install", PACKAGE_SPEC];
+  return scope === "project" ? ["install", "-l", PI_PACKAGE_SPEC] : ["install", PI_PACKAGE_SPEC];
 }
 
 function piAgentDir() {

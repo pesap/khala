@@ -720,7 +720,7 @@ test("khala CLI writes project workflow config after successful install", async 
     );
 
     const config = await readFile(path.join(tempDir, ".pi", "khala", "workflow-model.yaml"), "utf8");
-    assert.equal(await readFile(piLog, "utf8"), "install -l npm:khala\n");
+    assert.equal(await readFile(piLog, "utf8"), "install -l https://github.com/pesap/khala\n");
     assert.match(stdout, /Done\. Khala is installed\./);
     assert.match(stdout, /Wrote workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
     assert.match(stdout, /Start Pi and run \/khala then \/khala-health to verify/);
@@ -770,7 +770,7 @@ test("khala CLI propagates nonzero pi install exits without writing config", asy
     }, tempDir);
 
     assert.equal(result.code, 17);
-    assert.equal(await readFile(piLog, "utf8"), "install -l npm:khala\n");
+    assert.equal(await readFile(piLog, "utf8"), "install -l https://github.com/pesap/khala\n");
     assert.doesNotMatch(result.stderr, /Pi CLI is required/);
     await assert.rejects(
       readFile(path.join(tempDir, ".pi", "khala", "workflow-model.yaml"), "utf8"),
@@ -782,7 +782,7 @@ test("khala CLI propagates nonzero pi install exits without writing config", asy
 });
 
 test("khala setup helper preserves pi install arguments on Windows shims", () => {
-  const invocation = buildPiCommandInvocation(["install", "-l", "npm:khala"], {
+  const invocation = buildPiCommandInvocation(["install", "-l", "https://github.com/pesap/khala"], {
     platform: "win32",
     command: "pi.cmd",
     spawnOptions: { stdio: "inherit" },
@@ -790,7 +790,7 @@ test("khala setup helper preserves pi install arguments on Windows shims", () =>
 
   assert.deepEqual(invocation, {
     command: "pi.cmd",
-    args: ["install", "-l", "npm:khala"],
+    args: ["install", "-l", "https://github.com/pesap/khala"],
     spawnOptions: {
       shell: true,
       stdio: "inherit",
