@@ -130,8 +130,8 @@ khala
 Or configure Pi directly:
 
 ```bash
-pi install npm:khala              # writes ~/.pi/agent/settings.json
-pi install -l npm:khala           # writes .pi/settings.json for this project
+pi install https://github.com/pesap/khala              # writes ~/.pi/agent/settings.json
+pi install -l https://github.com/pesap/khala           # writes .pi/settings.json for this project
 ```
 
 Start Pi and initialize Khala:
@@ -339,19 +339,19 @@ runtime/hooks/hooks.yaml
 
 Khala keeps package code and mutable state separate.
 
-| Location                    | Purpose                                                                            |
-| --------------------------- | ---------------------------------------------------------------------------------- |
-| `runtime/`                  | Packaged defaults, compliance config, hook docs, and bootstrap instructions.       |
-| `commands/`                 | User-facing workflow prompts.                                                      |
-| `workflows/`                | Workflow specs queued into Pi messages.                                            |
-| `skills/`                   | Packaged reusable skills.                                                          |
-| `extensions/`               | Pi extension implementation.                                                       |
-| `scripts/`                  | Lightweight guard and regression checks.                                           |
-| `~/.pi/agent/settings.json` | Global Pi package configuration; `pi install npm:khala` writes here.               |
-| `.pi/settings.json`         | Project-local Pi package configuration; `pi install -l npm:khala` writes here.     |
-| `.pi/khala/`                | Project-local Khala configuration files such as `workflow-model.yaml`.             |
-| `~/.pi/agent/khala/`        | Global Khala configuration files such as `workflow-model.yaml`.                    |
-| `~/.pi/khala/`              | Mutable Khala state: memory, learned skills, rules, run ledgers, and runtime logs. |
+| Location                    | Purpose                                                                                             |
+| --------------------------- | --------------------------------------------------------------------------------------------------- |
+| `runtime/`                  | Packaged defaults, compliance config, hook docs, and bootstrap instructions.                        |
+| `commands/`                 | User-facing workflow prompts.                                                                       |
+| `workflows/`                | Workflow specs queued into Pi messages.                                                             |
+| `skills/`                   | Packaged reusable skills.                                                                           |
+| `extensions/`               | Pi extension implementation.                                                                        |
+| `scripts/`                  | Lightweight guard and regression checks.                                                            |
+| `~/.pi/agent/settings.json` | Global Pi package configuration; `pi install https://github.com/pesap/khala` writes here.           |
+| `.pi/settings.json`         | Project-local Pi package configuration; `pi install -l https://github.com/pesap/khala` writes here. |
+| `.pi/khala/`                | Project-local Khala configuration files such as `workflow-model.yaml`.                              |
+| `~/.pi/agent/khala/`        | Global Khala configuration files such as `workflow-model.yaml`.                                     |
+| `~/.pi/khala/`              | Mutable Khala state: memory, learned skills, rules, run ledgers, and runtime logs.                  |
 
 The repository intentionally ignores `.pi/`. Project-local Pi settings and
 runtime artifacts are local state, not source code.
