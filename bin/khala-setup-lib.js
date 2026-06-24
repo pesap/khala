@@ -220,11 +220,39 @@ export function readJsonObjectFile(filePath) {
   }
 }
 
+/**
+ * Normalize a list of LiteLLM model ids from caller options.
+ *
+ * Accepts either modelIds (array, preferred) or the legacy modelId (single
+ * string). Returns at least one normalized bare model name; throws if no
+ * valid id was supplied. Dedups while preserving the original order so the
+ * first selected model remains the default in mergeLiteLLMProjectSettings.
+ */
+function normalizeModelIdList(options) {
+  let raw;
+  if (Array.isArray(options.modelIds)) raw = options.modelIds;
+  else if (typeof options.modelId === "string") raw = [options.modelId];
+  else raw = [];
+
+  const seen = new Set();
+  const result = [];
+  for (const candidate of raw) {
+    const normalized = normalizeLiteLLMModelPattern(candidate);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  if (!result.length) {
+    throw new Error("LiteLLM merge requires at least one model id.");
+  }
+  return result;
+}
+
 export function mergeLiteLLMModelsJson(current, options) {
   const providerId = validateLiteLLMProviderId(options.providerId);
   const baseUrl = normalizeLiteLLMBaseUrl(options.baseUrl);
   const keyEnv = validateLiteLLMKeyEnv(options.keyEnv);
-  const modelId = normalizeLiteLLMModelPattern(options.modelId);
+  const modelIds = normalizeModelIdList(options);
 
   const root = isPlainObject(current) ? { ...current } : {};
   const providers = isPlainObject(root.providers) ? { ...root.providers } : {};
@@ -238,12 +266,15 @@ export function mergeLiteLLMModelsJson(current, options) {
     (normalizedExistingBaseUrl && normalizedExistingBaseUrl !== baseUrl),
   );
 
+  let mergedModelEntries = existingProvider.models;
+  for (const id of modelIds) mergedModelEntries = mergeModelEntries(mergedModelEntries, id);
+
   providers[providerId] = {
     ...existingProvider,
     baseUrl,
     api: LITELLM_PROVIDER_API,
     apiKey: `$${keyEnv}`,
-    models: mergeModelEntries(existingProvider.models, modelId),
+    models: mergedModelEntries,
   };
 
   root.providers = providers;
@@ -252,12 +283,14 @@ export function mergeLiteLLMModelsJson(current, options) {
 
 export function mergeLiteLLMProjectSettings(current, options) {
   const providerId = validateLiteLLMProviderId(options.providerId);
-  const modelId = normalizeLiteLLMModelPattern(options.modelId);
+  const modelIds = normalizeModelIdList(options);
 
   const root = isPlainObject(current) ? { ...current } : {};
   root.defaultProvider = providerId;
-  root.defaultModel = modelId;
-  root.enabledModels = mergeEnabledModels(root.enabledModels, modelId);
+  root.defaultModel = modelIds[0];
+  let mergedEnabled = root.enabledModels;
+  for (const id of modelIds) mergedEnabled = mergeEnabledModels(mergedEnabled, id);
+  root.enabledModels = mergedEnabled;
 
   return root;
 }

@@ -267,8 +267,9 @@ async function askChoice(title, choices, fallback, options = {}) {
 
   const buildItems = () => {
     const items = filtered.map((c) => ({ value: c, display: c, custom: false }));
-    if (allowCustom && query && !filtered.includes(query)) {
-      items.unshift({ value: query, display: query, custom: true });
+    const trimmed = query.trim();
+    if (allowCustom && trimmed && !choices.includes(trimmed)) {
+      items.unshift({ value: trimmed, display: trimmed, custom: true });
     }
     return items;
   };
@@ -279,10 +280,10 @@ async function askChoice(title, choices, fallback, options = {}) {
   let hovered = items[selIdx]?.value ?? null;
 
   const applyFilter = () => {
-    if (!query) {
+    const q = query.trim().toLowerCase();
+    if (!q) {
       filtered = choices;
     } else {
-      const q = query.toLowerCase();
       filtered = choices.filter((c) => c.toLowerCase().includes(q));
     }
     items = buildItems();
@@ -306,7 +307,7 @@ async function askChoice(title, choices, fallback, options = {}) {
       ? `${choices.length}`
       : `${filtered.length}/${choices.length}`;
     lines.push(`${bold(title)}  ${dim(`(${count})`)}`);
-    lines.push(`${dim("›")} ${query || dim("type to filter…")}`);
+    lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
     lines.push(dim("  ↑ ↓ select  Enter accept  Esc clear  Ctrl+C cancel"));
     if (!items.length) {
       lines.push(dim("  no matches"));
@@ -402,6 +403,195 @@ async function askChoice(title, choices, fallback, options = {}) {
   });
 }
 
+/**
+ * Multi-select picker built on the same viewport/filter scaffolding as
+ * askChoice. Differences:
+ *
+ *   - Returns an array of values in original-choices order.
+ *   - All entries are selected by default; Space toggles the current item.
+ *   - Ctrl+A toggles every entry currently visible in the filter window
+ *     (select-all-of-filtered when any are unselected, else deselect-all).
+ *   - Space on a synthetic `+ add "<query>"` entry (when allowCustom is on
+ *     and the typed query doesn't match any existing choice) appends the
+ *     typed value to the choices list, selects it, and clears the query so
+ *     the new item is visible in the main list.
+ *   - Non-TTY: returns initialChoices unchanged so non-interactive callers
+ *     stay deterministic. With an empty list and no allowCustom, returns [].
+ */
+async function askMultiChoice(title, initialChoices, options = {}) {
+  if (!canPrompt() || (initialChoices.length === 0 && options.allowCustom !== true)) {
+    return [...initialChoices];
+  }
+
+  const allowCustom = options.allowCustom === true;
+  const choices = [...initialChoices];
+  const selected = new Set(choices);
+  let query = "";
+  let filtered = [...choices];
+
+  const buildItems = () => {
+    const items = filtered.map((c) => ({ value: c, display: c, custom: false }));
+    const trimmed = query.trim();
+    if (allowCustom && trimmed && !choices.includes(trimmed)) {
+      items.unshift({ value: trimmed, display: trimmed, custom: true });
+    }
+    return items;
+  };
+
+  let items = buildItems();
+  let selIdx = 0;
+  let hovered = items[selIdx]?.value ?? null;
+
+  const applyFilter = () => {
+    const q = query.trim().toLowerCase();
+    if (!q) filtered = [...choices];
+    else filtered = choices.filter((c) => c.toLowerCase().includes(q));
+    items = buildItems();
+    const next = hovered ? items.findIndex((it) => it.value === hovered) : -1;
+    selIdx = next >= 0 ? next : 0;
+    hovered = items[selIdx]?.value ?? null;
+  };
+
+  const viewport = () => {
+    const total = items.length;
+    if (total <= PICKER_WINDOW) return { start: 0, end: total };
+    let start = Math.max(0, selIdx - Math.floor(PICKER_WINDOW / 2));
+    const end   = Math.min(total, start + PICKER_WINDOW);
+    start = Math.max(0, end - PICKER_WINDOW);
+    return { start, end };
+  };
+
+  const buildLines = () => {
+    const lines = [];
+    const filterTag = filtered.length === choices.length ? "" : `, ${filtered.length} match`;
+    lines.push(`${bold(title)}  ${dim(`(${selected.size}/${choices.length} selected${filterTag})`)}`);
+    lines.push(`${dim("›")} ${query.trim() ? query : dim("type to filter…")}`);
+    lines.push(dim("  ↑ ↓ move  Space toggle  Ctrl+A all/none  Enter accept  Esc clear  Ctrl+C cancel"));
+    if (!items.length) {
+      lines.push(dim("  no matches"));
+      return lines;
+    }
+    const { start, end } = viewport();
+    if (start > 0) lines.push(dim(`  ↑ ${start} more`));
+    for (let i = start; i < end; i++) {
+      const sel = i === selIdx;
+      const item = items[i];
+      if (item.custom) {
+        const label = `add "${item.value}"`;
+        const text = sel ? bold(label) : dim(label);
+        lines.push(`  ${sel ? check("+") : "+"} ${text}`);
+      } else {
+        const checked = selected.has(item.value);
+        const box = checked ? "☑" : "☐";
+        const glyph = sel ? bold(box) : (checked ? box : muted(box));
+        const text = sel ? bold(item.display) : dim(item.display);
+        lines.push(`  ${glyph} ${text}`);
+      }
+    }
+    if (end < items.length) lines.push(dim(`  ↓ ${items.length - end} more`));
+    return lines;
+  };
+
+  let drawnLines = 0;
+  const paint = () => {
+    const lines = buildLines();
+    if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
+    process.stdout.write(`${lines.join("\n")}\n`);
+    drawnLines = lines.length;
+  };
+
+  process.stdout.write("\x1b[?25l");
+  paint();
+
+  return new Promise((resolve, reject) => {
+    let onKey;
+
+    const settle = () => {
+      process.stdin.off("keypress", onKey);
+      rawMode(false);
+      process.stdin.pause();
+      if (drawnLines > 0) process.stdout.write(`\x1b[${drawnLines}A\x1b[0J`);
+      process.stdout.write("\x1b[?25h");
+    };
+
+    onKey = (str, key) => {
+      if (!key) return;
+      if (key.ctrl && key.name === "c") { settle(); reject(makeAbortError()); return; }
+      if (key.ctrl && key.name === "a") {
+        if (!filtered.length) return;
+        const anyUnselected = filtered.some((c) => !selected.has(c));
+        for (const c of filtered) {
+          if (anyUnselected) selected.add(c);
+          else selected.delete(c);
+        }
+        paint();
+        return;
+      }
+      if (key.name === "up") {
+        if (!items.length) return;
+        selIdx = (selIdx - 1 + items.length) % items.length;
+        hovered = items[selIdx]?.value ?? null;
+        paint();
+        return;
+      }
+      if (key.name === "down") {
+        if (!items.length) return;
+        selIdx = (selIdx + 1) % items.length;
+        hovered = items[selIdx]?.value ?? null;
+        paint();
+        return;
+      }
+      if (key.name === "return") {
+        const result = choices.filter((c) => selected.has(c));
+        settle();
+        resolve(result);
+        return;
+      }
+      if (key.name === "escape") {
+        if (query) { query = ""; applyFilter(); paint(); }
+        return;
+      }
+      if (key.name === "backspace") {
+        if (query) { query = query.slice(0, -1); applyFilter(); paint(); }
+        return;
+      }
+      if (key.name === "space") {
+        if (!items.length) return;
+        const item = items[selIdx];
+        if (!item) return;
+        if (item.custom) {
+          choices.push(item.value);
+          selected.add(item.value);
+          query = "";
+          applyFilter();
+          const newIdx = items.findIndex((it) => it.value === item.value);
+          if (newIdx >= 0) { selIdx = newIdx; hovered = item.value; }
+        } else {
+          if (selected.has(item.value)) selected.delete(item.value);
+          else selected.add(item.value);
+        }
+        paint();
+        return;
+      }
+      // Printable ASCII (excluding the literal space character, which is the
+      // toggle key) appends to the filter query.
+      if (typeof str === "string" && str.length === 1 && !key.ctrl && !key.meta) {
+        const code = str.charCodeAt(0);
+        if (code > 32 && code < 127) {
+          query += str;
+          applyFilter();
+          paint();
+        }
+      }
+    };
+
+    emitKeypressEvents(process.stdin);
+    rawMode(true);
+    process.stdin.on("keypress", onKey);
+    process.stdin.resume();
+  });
+}
+
 /** Single-keypress Y/n confirm. No readline needed. */
 async function askConfirmation(promptText) {
   if (!canPrompt()) return false;
@@ -444,14 +634,14 @@ function litellmUsage() {
   return `khala litellm - configure a LiteLLM-compatible Pi provider
 
 Usage:
-  khala litellm --provider <id> --base-url <url> --key-env <env-var> --model <pattern> [flags]
+  khala litellm --provider <id> --base-url <url> --key-env <env-var> --model <patterns> [flags]
   khala litellm --help
 
 Flags:
       --provider <id>        LiteLLM provider id  (e.g. team-litellm)
       --base-url <url>       LiteLLM base URL     (e.g. https://lite.example/v1)
       --key-env <env-var>    Env var name used as the Pi apiKey reference
-      --model <pattern>      Model id or bare glob to register and enable
+      --model <patterns>     One bare model name or comma-separated list to register and enable
   -l, --project              Write to .pi/settings.json in the current project (default)
   -y, --yes                  Skip the write confirmation
       --no-input             Alias for --yes (use in scripts and CI)
@@ -461,7 +651,7 @@ Flags:
 
 Examples:
   khala litellm --project --provider team-litellm --base-url https://lite.example/v1 \\
-    --key-env LITELLM_API_KEY --model gpt-5.4-mini --dry-run
+    --key-env LITELLM_API_KEY --model gpt-5.4-mini,gpt-4o,claude-opus-4.7 --dry-run
   khala litellm --project --provider team-litellm --base-url https://lite.example/v1 \\
     --key-env LITELLM_API_KEY --model gpt-5.4-mini --yes
 
@@ -571,16 +761,23 @@ function drainStdin() {
   }
 }
 
-async function pickLiteLLMModel() {
+async function pickLiteLLMModels() {
   const choices = liteLLMModelChoices();
   if (!choices.length) {
-    return promptValidated("LiteLLM model: ", normalizeLiteLLMModelPattern);
+    // First-time setup: no prior LiteLLM models to multi-select from. Use a
+    // single line prompt; users who want to register many models at once
+    // can pass `--model "a,b,c"` on the command line.
+    return [await promptValidated("LiteLLM model: ", normalizeLiteLLMModelPattern)];
   }
   drainStdin();
   while (true) {
-    const picked = await askChoice("LiteLLM model", choices, choices[0], { allowCustom: true });
+    const picked = await askMultiChoice("LiteLLM models", choices, { allowCustom: true });
+    if (!picked.length) {
+      console.log(warn("  Select at least one model (press Space to toggle)."));
+      continue;
+    }
     try {
-      return normalizeLiteLLMModelPattern(picked);
+      return picked.map(normalizeLiteLLMModelPattern);
     } catch (error) {
       console.log(warn(`  ${error.message}`));
     }
@@ -621,7 +818,6 @@ async function mainLiteLLM(argv) {
     let provider = options.provider;
     let baseUrl = options.baseUrl;
     let keyEnv = options.keyEnv;
-    let model = options.model;
 
     if (!provider) {
       if (!promptAvailable) missing.push("--provider");
@@ -644,11 +840,18 @@ async function mainLiteLLM(argv) {
       keyEnv = validateLiteLLMKeyEnv(keyEnv);
     }
 
-    if (!model) {
-      if (!promptAvailable) missing.push("--model");
-      else model = await pickLiteLLMModel();
+    let modelIds = [];
+    const rawModels = (typeof options.model === "string" ? options.model : "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (rawModels.length) {
+      // --model accepts a single bare name or a comma-separated list.
+      modelIds = rawModels.map(normalizeLiteLLMModelPattern);
+    } else if (!promptAvailable) {
+      missing.push("--model");
     } else {
-      model = normalizeLiteLLMModelPattern(model);
+      modelIds = await pickLiteLLMModels();
     }
 
     if (missing.length) {
@@ -659,8 +862,8 @@ async function mainLiteLLM(argv) {
     const targetSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
     const currentModels = readJsonObjectFile(targetModelsPath);
     const currentSettings = readJsonObjectFile(targetSettingsPath);
-    const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelId: model });
-    const mergedSettings = mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelId: model });
+    const mergedModels = mergeLiteLLMModelsJson(currentModels, { providerId: provider, baseUrl, keyEnv, modelIds });
+    const mergedSettings = mergeLiteLLMProjectSettings(currentSettings, { providerId: provider, modelIds });
 
     // Summary
     const modeTag = options.dryRun ? dim(" [dry-run]") : "";
@@ -673,7 +876,10 @@ async function mainLiteLLM(argv) {
     console.log(`${dim("base-url".padEnd(labelWidth))}${baseUrl}`);
     console.log(`${dim("api".padEnd(labelWidth))}${LITELLM_PROVIDER_API}`);
     console.log(`${dim("apiKey".padEnd(labelWidth))}$${keyEnv}`);
-    console.log(`${dim("model".padEnd(labelWidth))}${model}`);
+    console.log(`${dim("model".padEnd(labelWidth))}${modelIds[0]}`);
+    for (let i = 1; i < modelIds.length; i++) {
+      console.log(`${"".padEnd(labelWidth)}${modelIds[i]}`);
+    }
     if (mergedModels.conflict) {
       console.log(`${warn("!")} existing provider config differs and will be updated only if you confirm`);
     }

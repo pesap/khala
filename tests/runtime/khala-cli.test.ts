@@ -341,7 +341,7 @@ test("khala setup helper merges LiteLLM provider and project settings without cl
       providerId: "team-litellm",
       baseUrl: "https://lite.example/v1",
       keyEnv: "LITELLM_API_KEY",
-      modelId: "gpt-5.4-mini",
+      modelIds: ["gpt-5.4-mini"],
     },
   );
 
@@ -354,7 +354,7 @@ test("khala setup helper merges LiteLLM provider and project settings without cl
 
   const mergedSettings = mergeLiteLLMProjectSettings(
     { theme: "dark", enabledModels: ["claude-*"], warnings: { foo: true } },
-    { providerId: "team-litellm", modelId: "gpt-5.4-mini" },
+    { providerId: "team-litellm", modelIds: ["gpt-5.4-mini"] },
   );
 
   assert.equal(mergedSettings.defaultProvider, "team-litellm");
@@ -362,6 +362,32 @@ test("khala setup helper merges LiteLLM provider and project settings without cl
   assert.deepEqual(mergedSettings.enabledModels, ["claude-*", "gpt-5.4-mini"]);
   assert.equal(mergedSettings.theme, "dark");
   assert.equal(mergedSettings.warnings.foo, true);
+});
+
+test("khala setup helper merges multiple LiteLLM models in a single pass with the first as the default", () => {
+  const mergedModels = mergeLiteLLMModelsJson(
+    { providers: { "team-litellm": { baseUrl: "https://lite.example/v1", api: LITELLM_PROVIDER_API, apiKey: "$LITELLM_API_KEY", models: [{ id: "gpt-4o" }] } } },
+    {
+      providerId: "team-litellm",
+      baseUrl: "https://lite.example/v1",
+      keyEnv: "LITELLM_API_KEY",
+      modelIds: ["gpt-5.4-mini", "claude-opus-4.7", "gpt-5.4-mini"], // duplicates dropped
+    },
+  );
+
+  assert.equal(mergedModels.conflict, false);
+  assert.deepEqual(
+    mergedModels.value.providers["team-litellm"].models.map((m) => m.id),
+    ["gpt-4o", "gpt-5.4-mini", "claude-opus-4.7"],
+  );
+
+  const mergedSettings = mergeLiteLLMProjectSettings(
+    { enabledModels: ["claude-*"] },
+    { providerId: "team-litellm", modelIds: ["gpt-5.4-mini", "claude-opus-4.7"] },
+  );
+
+  assert.equal(mergedSettings.defaultModel, "gpt-5.4-mini", "defaultModel is the first id supplied");
+  assert.deepEqual(mergedSettings.enabledModels, ["claude-*", "gpt-5.4-mini", "claude-opus-4.7"]);
 });
 
 test("khala litellm --help documents the LiteLLM setup mode and secret boundary", async () => {
@@ -565,6 +591,52 @@ test("khala litellm updates a LiteLLM provider and project settings idempotently
     const rerunSettings = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.deepEqual(rerunModels.providers["team-litellm"].models.map((model) => model.id), ["gpt-4o", "gpt-5.4-mini"]);
     assert.deepEqual(rerunSettings.enabledModels, ["claude-*", "gpt-5.4-mini"]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm registers multiple models in one pass via --model a,b,c", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-multi-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  const modelsPath = path.join(piAgentDir, "models.json");
+  const settingsPath = path.join(tempDir, ".pi", "settings.json");
+
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+
+    const result = await runKhala(
+      [
+        "litellm",
+        "--project",
+        "--provider", "team-litellm",
+        "--base-url", "https://lite.example/v1",
+        "--key-env", "LITELLM_API_KEY",
+        "--model", "gpt-5.4-mini, gpt-4o ,claude-opus-4.7",  // whitespace + duplicates resilience
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir },
+      tempDir,
+    );
+
+    assert.equal(result.code, 0);
+    // Summary shows the first model on the labeled row, then continuation rows.
+    assert.match(result.stdout, /model\s+gpt-5\.4-mini/);
+    assert.match(result.stdout, /\n\s+gpt-4o\n/);
+    assert.match(result.stdout, /\n\s+claude-opus-4\.7/);
+
+    const merged = JSON.parse(await readFile(modelsPath, "utf8"));
+    assert.deepEqual(
+      merged.providers["team-litellm"].models.map((m: { id: string }) => m.id),
+      ["gpt-5.4-mini", "gpt-4o", "claude-opus-4.7"],
+    );
+    assert.equal(merged.providers["team-litellm"].apiKey, "$LITELLM_API_KEY");
+
+    const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.equal(settings.defaultProvider, "team-litellm");
+    assert.equal(settings.defaultModel, "gpt-5.4-mini");
+    assert.deepEqual(settings.enabledModels, ["gpt-5.4-mini", "gpt-4o", "claude-opus-4.7"]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
