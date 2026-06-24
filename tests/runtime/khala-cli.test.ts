@@ -1356,6 +1356,106 @@ test("khala litellm degrades to bare entries when /model/info is unreachable", a
   }
 });
 
+test("khala litellm surfaces the LiteLLM proxy's body and an RBAC hint on a 403 from /model/info", async () => {
+  // Reproduces the real-world failure observed against an internal LiteLLM
+  // proxy: the key is valid for inference but doesn't have admin permission
+  // on /model/info. We want the diagnostic line to actually say WHY — the
+  // raw 'HTTP 403' was useless on its own.
+  const server: Server = createServer((req, res) => {
+    if (req.url === "/model/info") {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        error: { message: "Authentication Error, Only proxy admin can view /model/info" },
+      }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-403-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "nlr",
+        "--base-url", baseUrl,
+        "--key-env", "NLR_KEY",
+        "--model", "gpt-4o",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir, NLR_KEY: "sk-user-scope" },
+      tempDir,
+    );
+
+    // Setup itself succeeds; metadata enrichment is the only thing skipped.
+    assert.equal(result.code, 0);
+    // The metadata row carries:
+    //   - the HTTP status code
+    //   - the proxy's own error message (proves we parsed the body)
+    //   - an actionable hint distinguishing 'no permission' from 'broken'
+    assert.match(result.stdout, /metadata\s+.*HTTP 403/);
+    assert.match(result.stdout, /Only proxy admin can view \/model\/info/);
+    assert.match(result.stdout, /key may not have admin access.*provider itself will still work/);
+    // And the bare write happens — the user's setup isn't blocked.
+    const raw = await readFile(path.join(piAgentDir, "models.json"), "utf8");
+    assert.match(raw, /\{ "id": "gpt-4o" \}/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala litellm surfaces a non-JSON proxy error body (e.g. nginx HTML page) without truncating into garbage", async () => {
+  // Some proxies/load-balancers return text/html on errors. We should still
+  // include a short snippet of the body so the user knows it isn't a JSON
+  // shape we recognize — typically that points at a misrouted host.
+  const server: Server = createServer((req, res) => {
+    if (req.url === "/model/info") {
+      res.writeHead(502, { "content-type": "text/html" });
+      res.end("<html><body><h1>502 Bad Gateway</h1>upstream connection refused</body></html>");
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}/v1`;
+
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-litellm-502-"));
+  const piAgentDir = path.join(tempDir, "pi-agent");
+  try {
+    await mkdir(piAgentDir, { recursive: true });
+    await mkdir(path.join(tempDir, ".pi"), { recursive: true });
+    const result = await runKhala(
+      [
+        "litellm", "--project",
+        "--provider", "nlr",
+        "--base-url", baseUrl,
+        "--key-env", "NLR_KEY",
+        "--model", "gpt-4o",
+        "--yes",
+      ],
+      { PI_CODING_AGENT_DIR: piAgentDir, NLR_KEY: "sk-anything" },
+      tempDir,
+    );
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /metadata\s+.*HTTP 502/);
+    // We surfaced the body, not a JSON parse error.
+    assert.match(result.stdout, /502 Bad Gateway/);
+    // 5xx doesn't get the RBAC hint — only 401/403 do.
+    assert.doesNotMatch(result.stdout, /admin access/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("khala litellm --auth-mode=literal writes auth.json with 0600 perms and uses the key for /model/info", async () => {
   const requests: Array<{ url: string; auth: string | undefined }> = [];
   const server: Server = createServer((req, res) => {

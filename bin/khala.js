@@ -886,7 +886,41 @@ async function fetchLiteLLMModelInfo(baseUrl, apiKey, { timeoutMs = 10_000 } = {
     throw new Error(`${url}: ${reason}`);
   }
   if (!response.ok) {
-    throw new Error(`${url}: HTTP ${response.status}`);
+    // The proxy rejected an authenticated request. Almost always the body
+    // carries the actionable reason — RBAC scope, expired key, model-access
+    // policy. Without it the user sees a bare 'HTTP 403' and has no idea
+    // whether to ask their LiteLLM admin for permission or rotate the key.
+    let detail = "";
+    try {
+      // Cap to ~512B so a misconfigured proxy returning a 30KB HTML error
+      // page doesn't flood the summary block.
+      const raw = (await response.text()).slice(0, 512).trim();
+      if (raw) {
+        try {
+          const j = JSON.parse(raw);
+          // LiteLLM uses several shapes: {error:{message}}, {detail:"…"},
+          // {detail:{error:"…"}}, {message:"…"}. Walk them in order.
+          detail =
+            j?.error?.message ??
+            (typeof j?.detail === "string" ? j.detail : null) ??
+            j?.detail?.error ??
+            j?.detail?.message ??
+            j?.message ??
+            raw;
+        } catch {
+          detail = raw; // not JSON — surface the literal body, truncated
+        }
+      }
+    } catch {
+      // body read failed; fall through with no detail
+    }
+    // 401/403 specifically: tell the user the consequence so they don't
+    // think the whole provider is broken.
+    const hint =
+      response.status === 401 || response.status === 403
+        ? " — your LiteLLM key may not have admin access to /model/info; this only disables auto-enrichment, the provider itself will still work"
+        : "";
+    throw new Error(`${url}: HTTP ${response.status}${detail ? `: ${detail}` : ""}${hint}`);
   }
   let body;
   try {
