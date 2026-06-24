@@ -542,9 +542,20 @@ async function promptValidated(question, normalizer) {
  * The picker is opened in allowCustom mode so users can still type a brand
  * new model id that isn't in the discovery list.
  */
+/**
+ * Build the bare model-name choices for the LiteLLM model picker.
+ *
+ * Sourced only from LiteLLM providers already in models.json — those are
+ * the names we have actual evidence are valid on a user's LiteLLM proxy.
+ * We deliberately do NOT seed from `pi --list-models`: pi's known-model
+ * registry covers vendor catalogs (openai, anthropic, …) that almost
+ * always extend well beyond what any given LiteLLM hub actually proxies,
+ * so surfacing those choices is misleading. On a fresh setup with no
+ * existing LiteLLM providers, pickLiteLLMModel falls back to a free-text
+ * line prompt so the user can simply type the model id their hub serves.
+ */
 function liteLLMModelChoices() {
   const raw = [];
-  for (const row of piDiscoveryRows()) raw.push(row.model);
   for (const provider of liteLLMProvidersFromModelsJson()) {
     for (const m of provider.models) raw.push(m);
   }
