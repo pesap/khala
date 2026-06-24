@@ -39,13 +39,13 @@
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "lint:md": "markdownlint-cli2 README.md docs/maintainer-os-north-star.md",
+    "lint:md": "markdownlint-cli2 README.md 'docs/**/*.md'",
     "lint:yaml": "git ls-files '*.yml' '*.yaml' | xargs yamllint",
     "lint:sh": "shellcheck scripts/*.sh",
-    "lint:spell": "cspell --no-progress README.md docs/maintainer-os-north-star.md .github/workflows/ci.yml",
+    "lint:spell": "cspell --no-progress README.md 'docs/**/*.md' .github/workflows/ci.yml",
     "lint:all": "npm run lint && npm run lint:md && npm run lint:yaml && npm run lint:sh && npm run lint:spell",
     "format": "biome format --write .",
-    "format:md": "prettier --write 'skills/**/*.md' 'skills/**/*.yaml' 'skills/**/*.yml' 'runtime/**/*.yaml' 'workflows/**/*.yaml' '.github/**/*.yml'"
+    "format:md": "prettier --write README.md 'docs/**/*.md' 'skills/**/*.md' 'skills/**/*.yaml' 'skills/**/*.yml' 'runtime/**/*.yaml' 'workflows/**/*.yaml' '.github/**/*.yml'"
   },
   "pi": {
     "extensions": [

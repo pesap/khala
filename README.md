@@ -62,10 +62,10 @@ In interactive mode Khala asks how Pi should resolve the API key for this
 provider. Three options match Pi's own `auth.json` schema, so the resulting file
 is indistinguishable from one written by `/login`:
 
-- **Paste the key value once** — stored in
-  `~/.pi/agent/auth.json` as a literal string under the selected provider/key
-  label. The file is created with `0600` permissions; the value is never echoed
-  to stdout or stderr. Pi reads it directly at runtime; no shell env var needed.
+- **Paste the key value once** — stored in `~/.pi/agent/auth.json` as a literal
+  string under the selected provider/key label. The file is created with `0600`
+  permissions; the value is never echoed to stdout or stderr. Pi reads it
+  directly at runtime; no shell env var needed.
 - **Use a shell command** (e.g. `!op read 'op://Personal/team/credential'` or
   `!security find-generic-password -ws team`) — stored verbatim. Pi exec's the
   command on demand and uses stdout as the key. The actual secret stays in your
@@ -80,19 +80,18 @@ For scripting, the same modes are available as flags:
 
 Interactive setup has separate paths for adding a new provider/key, adding a new
 key label to an existing provider, and reusing an existing key in another
-project. Choose **New key for existing provider** when the proxy
-and model list are already registered but you need a fresh portal key label.
-Khala keeps the provider config, asks for the new key label and secret, and
-stores it without replacing the existing provider-level compatibility entry.
-It then shows the exact `.pi/khala/litellm.json` path and asks whether to
-configure the current project to use that key. If you answer no, only the
-reusable key label and auth entry are saved.
-If that provider/key label already has a stored key, Khala asks before
-overwriting it.
+project. Choose **New key for existing provider** when the proxy and model list
+are already registered but you need a fresh portal key label. Khala keeps the
+provider config, asks for the new key label and secret, and stores it without
+replacing the existing provider-level compatibility entry. It then shows the
+exact `.pi/khala/litellm.json` path and asks whether to configure the current
+project to use that key. If you answer no, only the reusable key label and auth
+entry are saved. If that provider/key label already has a stored key, Khala asks
+before overwriting it.
 
 To configure another project folder with the same LiteLLM provider and key, run
-the helper from the new folder and choose **Reuse existing key** when
-prompted. Khala lists reusable LiteLLM providers from the shared Pi
+the helper from the new folder and choose **Reuse existing key** when prompted.
+Khala lists reusable LiteLLM providers from the shared Pi
 `models.json`/`auth.json` config and Khala's non-secret key-label registry. The
 picker asks for the provider first, then the key label, so the same LiteLLM
 provider can expose multiple reusable labels. After you select one, Khala shows
@@ -115,12 +114,12 @@ metadata (context window, costs, reasoning, input modalities) instead of bare
 
 Khala asks before changing `.pi/settings.json` in interactive runs. In scripts,
 pass `--project-settings` only when you want the selected models to become this
-project's Pi defaults. This does not change what `pi --list-models` prints:
-that command lists the shared `~/.pi/agent/models.json` registry. The project
-model scope is the `defaultProvider`, `defaultModel`, and `enabledModels` block
-inside the current project's `.pi/settings.json`; Khala writes `enabledModels`
-as provider-qualified entries such as `team-litellm/gpt-5.4-mini` so Pi does
-not resolve a same-named model from another provider.
+project's Pi defaults. This does not change what `pi --list-models` prints: that
+command lists the shared `~/.pi/agent/models.json` registry. The project model
+scope is the `defaultProvider`, `defaultModel`, and `enabledModels` block inside
+the current project's `.pi/settings.json`; Khala writes `enabledModels` as
+provider-qualified entries such as `team-litellm/gpt-5.4-mini` so Pi does not
+resolve a same-named model from another provider.
 
 If the package is already installed, run the helper directly:
 

@@ -12,8 +12,8 @@ hooks = [
 repo = "local"
 hooks = [
     { id = "biome-check", name = "biome (lint)", entry = "npx biome lint --no-errors-on-unmatched .", language = "system", pass_filenames = false, always_run = true, types = ["javascript", "json"] },
-    { id = "prettier", name = "prettier", entry = "npx prettier --check README.md docs/maintainer-os-north-star.md .github/workflows/ci.yml", language = "system", pass_filenames = false, always_run = true, types = ["markdown", "yaml"] },
-    { id = "markdownlint", name = "markdownlint", entry = "npx markdownlint-cli2 README.md docs/maintainer-os-north-star.md", language = "system", pass_filenames = false, always_run = true, types = ["markdown"] },
+    { id = "prettier", name = "prettier", entry = "npx prettier --check README.md 'docs/**/*.md' .github/workflows/ci.yml", language = "system", pass_filenames = false, always_run = true, types = ["markdown", "yaml"] },
+    { id = "markdownlint", name = "markdownlint", entry = "npx markdownlint-cli2 README.md 'docs/**/*.md'", language = "system", pass_filenames = false, always_run = true, types = ["markdown"] },
     { id = "yamllint", name = "yamllint", entry = "npm run lint:yaml", language = "system", pass_filenames = false, always_run = true, types = ["yaml"] },
     { id = "shellcheck", name = "shellcheck", entry = "npm run lint:sh", language = "system", pass_filenames = false, always_run = true, types = ["shell"] },
     { id = "cspell", name = "cspell", entry = "npm run lint:spell", language = "system", pass_filenames = false, always_run = true, types = ["markdown", "yaml"] },
