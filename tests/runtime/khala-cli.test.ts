@@ -220,7 +220,11 @@ test("khala setup helper validates LiteLLM provider, base URL, env, and model in
   assert.throws(() => validateLiteLLMKeyEnv("1BAD"), /Key environment variable must match/);
   assert.throws(() => normalizeLiteLLMBaseUrl("https://lite.example/v1?x=1"), /query string/);
   assert.throws(() => normalizeLiteLLMBaseUrl("ftp://lite.example/v1"), /must start with http:\/\//);
-  assert.throws(() => normalizeLiteLLMModelPattern("team-litellm/*"), /slashes/);
+  assert.throws(() => normalizeLiteLLMModelPattern("team-litellm/*"), /'\/' or ':'/);
+  assert.throws(() => normalizeLiteLLMModelPattern("vendor:thinking"), /'\/' or ':'/);
+  // Real LiteLLM hubs publish model ids with internal whitespace; only / and :
+  // are structurally reserved, so spaces must round-trip unchanged.
+  assert.equal(normalizeLiteLLMModelPattern(" HALO Gemma 4 "), "HALO Gemma 4");
 });
 
 test("khala setup helper builds profile picker choices from all discovery rows and LiteLLM models", () => {
@@ -295,15 +299,16 @@ test("khala setup helper filters LiteLLM model picker choices to bare names that
     "gpt-4o-mini",                    // duplicate: dropped
     "text-embed:v1",                  // colon: dropped
     "vendor/model",                   // slash: dropped
-    "two words",                      // whitespace: dropped
+    "HALO Gemma 4",                    // internal whitespace is allowed
     "",                                // empty: dropped
+    "   ",                             // whitespace-only: dropped after trim
     null,                              // non-string: dropped
     undefined,                         // non-string: dropped
-    "  gpt-5.5  ",                    // trimmed and accepted
+    "  gpt-5.5  ",                    // edge whitespace trimmed and accepted
     "gpt-5.5",                        // duplicate of trimmed: dropped
   ]);
 
-  assert.deepEqual(filtered, ["gpt-4o-mini", "claude-opus-4.7", "gpt-5.5"]);
+  assert.deepEqual(filtered, ["gpt-4o-mini", "claude-opus-4.7", "HALO Gemma 4", "gpt-5.5"]);
 });
 
 test("khala setup helper reads thinking support from discovery rows and assumes yes when unknown", () => {

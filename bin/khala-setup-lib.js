@@ -3,7 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const ENV_VAR_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const MODEL_PATTERN_RE = /^[^\s/:]+$/;
+// Permits any non-empty trimmed string except slashes (reserved for the
+// `<provider>/<model>` prefix used by the workflow profile picker) and
+// colons (reserved for the `:thinking` suffix). Whitespace is allowed inside
+// because real LiteLLM hubs publish model ids with spaces (e.g. vendor
+// catalog entries like "HALO Gemma 4").
+const MODEL_PATTERN_RE = /^[^/:]+$/;
 
 export const MALFORMED_PROFILE_MESSAGE =
   "Expected format: provider/model:thinking (example: github-copilot/gpt-5.4-mini:medium)";
@@ -139,7 +144,7 @@ export function normalizeLiteLLMBaseUrl(raw) {
 export function normalizeLiteLLMModelPattern(raw) {
   const value = trimOrEmpty(raw);
   if (!MODEL_PATTERN_RE.test(value)) {
-    throw new Error("LiteLLM model must be a bare model name or glob without spaces, slashes, or colons.");
+    throw new Error("LiteLLM model id must not contain '/' or ':' (those are reserved for the provider prefix and thinking suffix).");
   }
   return value;
 }
