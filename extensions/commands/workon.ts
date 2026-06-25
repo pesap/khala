@@ -733,8 +733,8 @@ function routeInstructionBlock(params: {
       return [
         "## Deterministic /workon route",
         "Route: launched",
-        "Allowed action: continue in the launched Pi handoff after reading and acknowledging the capsule.",
-        "Forbidden actions: do not relaunch or create alternate tabs.",
+        "Allowed action: read and acknowledge the capsule, then report readiness, blockers, and the exact next operator instruction needed to start implementation.",
+        "Forbidden actions: do not relaunch or create alternate tabs; do not edit files, run implementation validation, commit, push, or create/update PRs until a separate explicit operator instruction follows the handoff acknowledgement.",
       ].join("\n");
     case "blocked": {
       const recoveryCommand = params.recoveryCommand?.trim();
@@ -1732,21 +1732,24 @@ ${sourceIssueLines}
 - This handoff comes from \`/workon\`; a session capsule path is provided separately by the launcher.
 - Treat this prompt as starting context, not a final technical decision.
 
-Before doing any implementation:
+Initial handoff acknowledgement (no implementation yet):
 - Read the session capsule path provided by the launcher.
 - Acknowledge that the capsule was read by running: \`${buildHandoffAcknowledgementCommand(params.ledgerPath)}\`.
 - Read the local agent/repo instructions.
-- Inspect the relevant code, docs, tests, recent commits, and linked issue state for every source issue.
+- Inspect the relevant code, docs, tests, recent commits, and linked issue state for every source issue only as needed to verify readiness, drift, and blockers.
 - Decide whether this combined task is still real, already solved, stale, over-scoped, or better handled differently.
 - Call out stale assumptions, hidden risks, and anything that should stop the work.
+- Do not edit files, run implementation validation, create commits, push, create/update PRs, or start \`/simplify\` in the handoff acknowledgement turn.
 
-Task:
-- If your independent review supports it, implement the smallest vertical slice for this combined source-issue set.
+Next-step recommendation:
+- If your independent review supports it, report that the combined source-issue set is ready to implement and summarize the smallest vertical slice.
 - Work through the source issues in this deterministic order unless issue-body evidence supports a different order:
 ${sourceIssueOrder}
-- Create a separate focused commit for each source issue where practical.
-- Keep changes scoped to the source issue set and branch.
+- Wait for a separate explicit operator instruction before implementation edits or VCS/forge mutations.
+- Keep future changes scoped to the source issue set and branch.
 - Do not widen scope beyond the source issues without creating or recommending a follow-up.
+
+Implementation instructions for an explicit follow-up only:
 
 Pre-commit simplify pass:
 - After implementation edits, run focused validation for the touched behavior before simplifying.
@@ -1777,10 +1780,10 @@ ${sourceIssueReferences}
 - Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.
 
 Output:
-- Start with review findings and recommendation.
-- Then provide the plan or patch summary.
-- If you edit code, report exact proof run.
-- Include draft PR URL/status when created, plus latest heartbeat check result.
+- Start with review findings, readiness status, and recommendation.
+- For the handoff acknowledgement turn, report blockers or the exact operator instruction needed to proceed; do not provide a patch summary unless this is a later explicit implementation turn.
+- If a later explicit implementation turn edits code, report exact proof run.
+- Include draft PR URL/status only after a later explicit implementation turn creates or updates one, plus latest heartbeat check result.
 - Do not merge, close issues/PRs, label, or post broad public comments unless explicitly told.`;
 }
 

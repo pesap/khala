@@ -385,12 +385,15 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     assert.match(capsule, /Pi handoff command: \(not launched\)/);
     assert.match(capsule, /Render collected inbox items into canonical buckets/);
     assert.match(capsule, /I want to discuss and possibly work on: feat\(inbox\): render deterministic maintainer queue locally/);
-    assert.match(capsule, /Before doing any implementation:/);
+    assert.match(capsule, /Initial handoff acknowledgement \(no implementation yet\):/);
     assert.match(capsule, /workon-handoff-ack\.sh/);
     assert.match(capsule, /--status capsule-acknowledged/);
+    assert.match(capsule, /Do not edit files, run implementation validation, create commits, push, create\/update PRs, or start `\/simplify` in the handoff acknowledgement turn/);
+    assert.match(capsule, /Wait for a separate explicit operator instruction before implementation edits or VCS\/forge mutations/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
     assert.match(capsule, /check the PR\/issue forge for human feedback every 1\.0/);
-    assert.match(capsule, /implement the smallest vertical slice for pesap\/agents#63/);
+    assert.match(capsule, /ready to implement and summarize the smallest vertical slice/);
+    assert.doesNotMatch(capsule, /implement the smallest vertical slice for pesap\/agents#63/);
     assert.doesNotMatch(capsule, /combined source issue set/);
 
     if (process.platform !== "win32") {
@@ -652,9 +655,10 @@ test("uses packaged handoff template when target cwd has no commands directory",
     const capsulePath = rendered.match(/Session capsule: (.+)/)?.[1]?.trim();
     assert.ok(capsulePath);
     const capsule = await readFile(capsulePath, "utf8");
-    assert.match(capsule, /Before doing any implementation:/);
+    assert.match(capsule, /Initial handoff acknowledgement \(no implementation yet\):/);
     assert.match(capsule, /workon-handoff-ack\.sh/);
     assert.match(capsule, /--status capsule-acknowledged/);
+    assert.match(capsule, /Wait for a separate explicit operator instruction before implementation edits or VCS\/forge mutations/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -1229,9 +1233,13 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
     assert.match(capsule, /Make issue-scoped commits tied to the relevant source issue where practical/);
     assert.match(capsule, /I want to discuss and possibly work on: combined source issue set for pesap\/agents: #104, #105/);
     assert.match(capsule, /Source issues:\n- https:\/\/github\.com\/pesap\/agents\/issues\/104 \(#104\) fix\(workon\): first issue\n- https:\/\/github\.com\/pesap\/agents\/issues\/105 \(#105\) fix\(workon\): second issue/);
-    assert.match(capsule, /implement the smallest vertical slice for this combined source-issue set/);
+    assert.match(capsule, /Initial handoff acknowledgement \(no implementation yet\):/);
+    assert.match(capsule, /Do not edit files, run implementation validation, create commits, push, create\/update PRs, or start `\/simplify` in the handoff acknowledgement turn/);
+    assert.match(capsule, /Wait for a separate explicit operator instruction before implementation edits or VCS\/forge mutations/);
+    assert.match(capsule, /ready to implement and summarize the smallest vertical slice/);
+    assert.doesNotMatch(capsule, /implement the smallest vertical slice for this combined source-issue set/);
     assert.doesNotMatch(capsule, /implement the smallest vertical slice for pesap\/agents#104\./);
-    assert.match(capsule, /Create a separate focused commit for each source issue where practical/);
+    assert.match(capsule, /Implementation instructions for an explicit follow-up only:/);
     assert.match(capsule, /Reviewer Two review loop:/);
     assert.match(capsule, /- Enabled: yes/);
     assert.match(capsule, /- Loop budget: 1/);
@@ -1508,7 +1516,10 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(scriptCall, /--capsule .+github\.com\/pesap\/agents\/capsule\.md/);
     assert.match(scriptCall, /--prompt ## Deterministic \/workon route/);
     assert.match(scriptCall, /Route: launched/);
+    assert.match(scriptCall, /report readiness, blockers, and the exact next operator instruction needed to start implementation/);
+    assert.match(scriptCall, /do not edit files, run implementation validation, commit, push, or create\/update PRs until a separate explicit operator instruction follows the handoff acknowledgement/);
     assert.match(scriptCall, /I want to discuss and possibly work on:/);
+    assert.match(scriptCall, /Initial handoff acknowledgement \(no implementation yet\):/);
     assert.match(scriptCall, /Draft PR and feedback heartbeat:/);
     assert.match(scriptCall, /--heartbeat 0\.25/);
     assert.match(scriptCall, /--model anthropic\/claude-sonnet-4/);
