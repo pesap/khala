@@ -121,15 +121,71 @@ test("PR templates require source-closing checklist body shape", async () => {
   }
 });
 
-test("ship workflow requires source issue close-marker resolution", async () => {
+test("ship workflow keeps draft PR/MR before sync and preserves remote verification", async () => {
   const repoRoot = process.cwd();
+  const promptText = await fs.readFile(
+    path.join(repoRoot, "commands", "ship-workflow.md"),
+    "utf8",
+  );
   const workflowText = await fs.readFile(
     path.join(repoRoot, "workflows", "ship-workflow.yaml"),
     "utf8",
   );
 
-  assert.match(workflowText, /resolve the durable source issue/i);
+  assert.match(
+    promptText,
+    /Follow the workflow order exactly: detect -> target -> draft PR\/MR -> sync -> validate -> publish\/update -> verify PR\/MR -> summarize\./,
+  );
+  assert.match(
+    promptText,
+    /Open or reuse the draft PR\/MR for the selected head branch before any sync\/rebase\/cleanup command\./,
+  );
+  assert.match(
+    promptText,
+    /Do not report success until the real remote PR\/MR base branch, head branch, commit list, signature state, body placeholders, close markers, and checks are verified\./,
+  );
+
+  assert.match(
+    workflowText,
+    /open or reuse a draft PR\/MR for the selected head branch before any sync\/rebase\/cleanup command that can remove or rewrite the worktree/i,
+  );
+  assert.match(
+    workflowText,
+    /gh pr list --repo <owner\/repo> --state open --head <branch>/,
+  );
+  assert.match(
+    workflowText,
+    /if the selected target has only uncommitted changes and no pushable unique commit, stop before sync\/rebase\/cleanup/i,
+  );
+  assert.match(
+    workflowText,
+    /update the existing draft PR\/MR body after every new signed ship commit or meaningful validation status change/i,
+  );
+  assert.match(
+    workflowText,
+    /remote commit list matches the selected ship target and shipped commit/i,
+  );
+  assert.match(workflowText, /PR\/MR checks are visible and verified before success is reported/i);
   assert.match(workflowText, /never contains `Closes: none` or `Closes: non`/);
+  const detectIndex = workflowText.indexOf("  - id: detect");
+  const targetIndex = workflowText.indexOf("  - id: target");
+  const prIndex = workflowText.indexOf("  - id: pr");
+  const syncIndex = workflowText.indexOf("  - id: sync");
+  const validateIndex = workflowText.indexOf("  - id: validate");
+  const publishIndex = workflowText.indexOf("  - id: publish");
+  const summarizeIndex = workflowText.indexOf("  - id: summarize");
+
+  assert.ok(detectIndex >= 0);
+  assert.ok(targetIndex > detectIndex);
+  assert.ok(prIndex > targetIndex);
+  assert.ok(syncIndex > prIndex);
+  assert.ok(validateIndex > syncIndex);
+  assert.ok(publishIndex > validateIndex);
+  assert.ok(summarizeIndex > publishIndex);
+  assert.doesNotMatch(
+    workflowText,
+    /detect -> target -> sync -> validate -> publish -> PR\/MR -> summarize/,
+  );
 });
 
 test("public workflow taxonomy does not expose dropped feature or tdd commands", async () => {

@@ -203,6 +203,23 @@ test("workon handler uses workflow route overrides for default model selection",
   }
 });
 
+test("ship handler opens or reuses a draft PR/MR before sync", async () => {
+  const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
+  const handlers = createHandlers(captured);
+
+  await handlers.ship("", { cwd: process.cwd() } as never);
+
+  const rendered = captured.sections?.join("\n") ?? "";
+  assert.equal(captured.input, "current Git branch");
+  assert.match(rendered, /detect -> target -> draft PR\/MR -> sync -> validate -> publish\/update -> verify PR\/MR -> summarize/);
+  assert.match(rendered, /Reuse or open a draft PR\/MR for the selected head branch before any sync\/rebase\/cleanup command/);
+  assert.match(rendered, /gh pr list --repo <owner\/repo> --state open --head <branch>/);
+  assert.match(rendered, /If the target has only uncommitted changes and no pushable unique commit, stop before sync\/rebase\/cleanup/);
+  assert.match(rendered, /update the existing draft PR\/MR body after every new signed ship commit or meaningful validation status change/);
+  assert.match(rendered, /verify the real remote artifact, including base, head, commits, signature, body placeholders, close markers, and checks/);
+  assert.doesNotMatch(rendered, /detect -> target -> sync -> validate -> publish -> PR\/MR -> summarize/);
+});
+
 test("triage handler asks for /workon-ready packet contract headings", async () => {
   const captured: { sections?: string[]; flags?: Record<string, unknown>; input?: string } = {};
   const handlers = createHandlers(captured);

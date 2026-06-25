@@ -16,10 +16,6 @@ import {
   prepareWorkonBootstrap,
   resolveWorkonMultiplexer,
   type WorkonBootstrapRequest,
-  type WorkonForge,
-  type WorkonMultiplexer,
-  type WorkonMode,
-  type WorkonModelSelection,
 } from "./workon.ts";
 import type { ParsedWorkonArgs } from "./parsers.ts";
 import { resolveWorkflowRoute } from "../runtime/workflow-model-router.ts";
@@ -675,17 +671,19 @@ export function createWorkflowCommandHandlers(params: {
         },
         sections: [
           "Scope: publish one focused branch/stack safely",
-          "Instruction: Follow the workflow order exactly: detect -> target -> sync -> validate -> publish -> PR/MR -> summarize.",
+          "Instruction: Follow the workflow order exactly: detect -> target -> draft PR/MR -> sync -> validate -> publish/update -> verify PR/MR -> summarize.",
           "Instruction: Prefer deterministic command-handler and VCS evidence before model exploration; avoid repeated evidence collection, shell-quoting repair loops, and full session artifact reads when summaries or bounded excerpts suffice.",
           "Instruction: Inspect Git state with bounded commands; identify the current branch and candidate ship target.",
           "Instruction: Select exactly one ship target branch/stack; if ambiguous, show a branch/change table and ask before shipping.",
+          "Instruction: Reuse or open a draft PR/MR for the selected head branch before any sync/rebase/cleanup command; check `gh pr list --repo <owner/repo> --state open --head <branch>` or the GitLab equivalent first so you do not create duplicates.",
+          "Instruction: If the target has only uncommitted changes and no pushable unique commit, stop before sync/rebase/cleanup and report that an early PR/MR cannot be opened until there is a signed checkpoint commit or an existing remote head.",
           "Instruction: Treat other applied branches as parallel work; do not commit, push, or include their changes unless explicitly requested.",
-          "Instruction: Sync the target with the latest base/default branch and stop if there is no unique unmerged work.",
-          "Instruction: Simplify the selected scope, run project CI/test command(s), then create a signed commit if needed and push only after green validation.",
-          "Instruction: Reuse an existing PR/MR when present; otherwise open one against the default branch and verify the real remote artifact.",
+          "Instruction: Sync the target with the latest base/default branch only after the draft PR/MR exists, and stop if there is no unique unmerged work.",
+          "Instruction: Simplify the selected scope, run project CI/test command(s), then create a signed commit if needed, push the head branch, and update the existing draft PR/MR body after every new signed ship commit or meaningful validation status change.",
+          "Instruction: Reuse an existing draft PR/MR when present; otherwise open one against the default branch and verify the real remote artifact, including base, head, commits, signature, body placeholders, close markers, and checks.",
           extraInstruction ? `Additional instruction: ${extraInstruction}` : "",
         ],
-        startedMessage: "Started ship workflow (detect -> target -> sync -> validate -> publish -> PR).",
+        startedMessage: "Started ship workflow (detect -> target -> draft PR/MR -> sync -> validate -> publish/update -> verify PR/MR).",
       });
     },
 

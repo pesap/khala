@@ -27,15 +27,19 @@ guards:
   - prefer deterministic command-handler and VCS evidence before model exploration
   - inspect Git state before local VCS decisions
   - select exactly one ship target branch; if ambiguous, show a branch/change table and ask before shipping
+  - open or reuse a draft PR/MR for the selected head branch before any sync/rebase/cleanup command that can remove or rewrite the worktree
+  - check `gh pr list --repo <owner/repo> --state open --head <branch>` or the GitLab equivalent before creating a new PR/MR for that head branch
   - treat other local branches and unrelated working-tree changes as parallel work unless explicitly requested
   - update the latest default/base branch before simplify, commit, push, or PR
   - stop if the target branch was already merged, reused after squash merge, stale against latest base, or lacks unique unmerged work
+  - if the selected target has only uncommitted changes and no pushable unique commit, stop before sync/rebase/cleanup and report that an early PR/MR cannot be opened until there is a signed checkpoint commit or an existing remote head
   - verify requested edits are in the current repo/worktree diff, not external skill/cache paths
   - never create an unsigned commit; verify the exact ship commit signature
   - detect project test/CI command from repo conventions, run targeted validation, and stop on first failure
   - detect GitHub vs GitLab and use matching tooling
   - do not create duplicate PR/MR for an existing head branch
   - use repo PR/MR template when present, otherwise skill template
+  - update the existing draft PR/MR body after every new signed ship commit or meaningful validation status change, preserving source issue close-marker rules and checkbox state semantics
   - resolve the durable source issue from explicit instruction, branch name, session capsule, or forge issue context before writing PR close text
   - "include a close marker only when a durable source issue is known; otherwise omit close text rather than writing `Closes: none` or `Closes: non`"
   - inspect the real remote artifact before claiming success
@@ -45,14 +49,14 @@ steps:
     action: inspect_git_state
   - id: target
     action: select_single_ship_target
+  - id: pr
+    action: reuse_or_open_pr_and_verify_remote
   - id: sync
     action: sync_with_latest_base_and_verify_unique_work
   - id: validate
     action: simplify_scope_and_run_validation
   - id: publish
     action: create_signed_commit_if_needed_and_push
-  - id: pr
-    action: reuse_or_open_pr_and_verify_remote
   - id: summarize
     action: report_required_final_status
   - id: learn
@@ -62,6 +66,8 @@ remote_invariants:
   - one intended commit unless explicitly justified
   - base branch is repo default unless user specified otherwise
   - head branch is the selected ship target
+  - remote commit list matches the selected ship target and shipped commit
   - shipped commit signature is verified
   - PR/MR body is plain markdown/text with no unreplaced template placeholders
+  - PR/MR checks are visible and verified before success is reported
   - "PR/MR close marker references the resolved source issue number when available and never contains `Closes: none` or `Closes: non`"
