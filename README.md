@@ -254,8 +254,8 @@ profile resolution. The health output includes:
   model, thinking level, used-by routes, problems, and fix steps.
 
 If the resolved development profile is invalid or unresolved, `/workon` refuses
-to emit handoff evidence and points operators back to `/khala-health` instead
-of silently falling back to the planning model.
+to emit handoff evidence and points operators back to `/khala-health` instead of
+silently falling back to the planning model.
 
 ### Policy Commands
 
@@ -421,8 +421,8 @@ package instructions:
 npm run benchmark:harness
 ```
 
-See [`docs/harness-benchmark-sandbox.md`](docs/harness-benchmark-sandbox.md)
-for the benchmark suite format and divergence scoring.
+See [`docs/harness-benchmark-sandbox.md`](docs/harness-benchmark-sandbox.md) for
+the benchmark suite format and divergence scoring.
 
 If a global URL install is also enabled, remove it to avoid duplicate extension
 registration:

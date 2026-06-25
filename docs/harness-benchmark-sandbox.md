@@ -113,7 +113,10 @@ Suites are JSON files with benchmark cases and candidate runs:
           { "name": "read", "argumentIncludes": ["capsule.md"] },
           {
             "name": "exec_command",
-            "argumentIncludes": ["workon-handoff-ack.sh", "capsule-acknowledged"]
+            "argumentIncludes": [
+              "workon-handoff-ack.sh",
+              "capsule-acknowledged"
+            ]
           }
         ],
         "forbiddenToolCalls": [{ "name": "apply_patch" }]
