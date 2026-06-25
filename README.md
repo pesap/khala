@@ -202,7 +202,7 @@ Common `/workon` flags:
 --forge auto|github|gitlab|all
 --multiplexer auto|none|zellij|tmux
 --dry-run
---heartbeat HOURS
+--heartbeat HOURS  # defaults to 0.0834 (about 5 minutes)
 --model provider/model
 ```
 

@@ -32,6 +32,10 @@ if [[ "$*" == "pr list --repo pesap/agents --state open --head ${branch} --json 
   printf '{"number":103,"title":"heartbeat","url":"https://github.com/pesap/agents/pull/103"}\n'
   exit 0
 fi
+if [[ "$*" == "pr checks 103 --repo pesap/agents --json name,state,link,description,bucket" ]]; then
+  printf '[]\n'
+  exit 0
+fi
 if [[ "$*" == *"repos/pesap/agents/issues/103/comments --paginate"* ]]; then
   cat "$fixture_dir/issue-comments.json"
   exit 0
@@ -164,6 +168,10 @@ if [[ "$*" == "pr list --repo github.enterprise.example/PCM/nodal-allocation --s
   printf '{"number":91,"title":"enterprise heartbeat","url":"https://github.enterprise.example/PCM/nodal-allocation/pull/91"}\n'
   exit 0
 fi
+if [[ "$*" == "pr checks 91 --repo github.enterprise.example/PCM/nodal-allocation --json name,state,link,description,bucket" ]]; then
+  printf '[]\n'
+  exit 0
+fi
 if [[ "$*" == "api --hostname github.enterprise.example repos/PCM/nodal-allocation/issues/91/comments --paginate" ]]; then
   cat "$fixture_dir/issue-comments.json"
   exit 0
@@ -218,10 +226,125 @@ exit 2
     assert.match(ghCalls, /api --hostname github\.enterprise\.example repos\/PCM\/nodal-allocation\/pulls\/91\/comments --paginate/);
     assert.match(ghCalls, /api --hostname github\.enterprise\.example repos\/PCM\/nodal-allocation\/pulls\/91\/reviews --paginate/);
     assert.match(ghCalls, /api graphql --hostname github\.enterprise\.example/);
+    assert.match(ghCalls, /pr checks 91 --repo github\.enterprise\.example\/PCM\/nodal-allocation --json name,state,link,description,bucket/);
     assert.match(ghCalls, /-f owner=PCM/);
     assert.match(ghCalls, /-f name=nodal-allocation/);
     assert.doesNotMatch(ghCalls, /pr list --repo PCM\/nodal-allocation/);
     assert.doesNotMatch(ghCalls, /repos\/github\.enterprise\.example\/PCM/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("forge heartbeat notifies the worker about failing CI checks", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-forge-heartbeat-ci-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    const stateFile = path.join(tempDir, "state", "heartbeat.json");
+    const zellijLog = path.join(tempDir, "zellij.log");
+    await mkdir(binDir);
+    await writeFakeZellij(binDir, zellijLog);
+    await writeExecutable(
+      path.join(binDir, "gh"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"user"* && "$*" == *".login"* ]]; then
+  printf 'pesap\n'
+  exit 0
+fi
+if [[ "$*" == "pr list --repo pesap/agents --state open --head ${branch} --json number,title,url --jq .[0] // empty" ]]; then
+  printf '{"number":103,"title":"heartbeat","url":"https://github.com/pesap/agents/pull/103"}\n'
+  exit 0
+fi
+if [[ "$*" == "pr checks 103 --repo pesap/agents --json name,state,link,description,bucket" ]]; then
+  printf '[{"name":"test","state":"FAIL","bucket":"fail","description":"node --test failed","link":"https://github.com/pesap/agents/actions/runs/1"}]\n'
+  exit 1
+fi
+if [[ "$*" == *"repos/pesap/agents/issues/103/comments --paginate"* || "$*" == *"repos/pesap/agents/pulls/103/comments --paginate"* || "$*" == *"repos/pesap/agents/pulls/103/reviews --paginate"* ]]; then
+  printf '[]\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "api" && "$*" == *"graphql"* ]]; then
+  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}\n'
+  exit 0
+fi
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const stdout = await runHeartbeat(
+      {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stateFile,
+    );
+    const jsonLines = parseJsonLines(stdout);
+    const ci = jsonLines.find((line) => line.type === "ci-check");
+
+    assert.ok(ci);
+    assert.equal(ci.actionable, true);
+    assert.equal(ci.checkName, "test");
+    assert.equal(ci.state, "FAIL");
+    assert.match(stdout, /"status":"notified-pi"/);
+
+    const zellijActions = await readFile(zellijLog, "utf8");
+    assert.match(zellijActions, /"type":"ci-check"/);
+    assert.match(zellijActions, /node --test failed/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("forge heartbeat treats missing check runs as no actionable CI", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-forge-heartbeat-no-ci-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    const stateFile = path.join(tempDir, "state", "heartbeat.json");
+    const zellijLog = path.join(tempDir, "zellij.log");
+    await mkdir(binDir);
+    await writeFakeZellij(binDir, zellijLog);
+    await writeExecutable(
+      path.join(binDir, "gh"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"user"* && "$*" == *".login"* ]]; then
+  printf 'pesap\n'
+  exit 0
+fi
+if [[ "$*" == "pr list --repo pesap/agents --state open --head ${branch} --json number,title,url --jq .[0] // empty" ]]; then
+  printf '{"number":103,"title":"heartbeat","url":"https://github.com/pesap/agents/pull/103"}\n'
+  exit 0
+fi
+if [[ "$*" == "pr checks 103 --repo pesap/agents --json name,state,link,description,bucket" ]]; then
+  printf 'no checks reported on the branch\n' >&2
+  exit 1
+fi
+if [[ "$*" == *"repos/pesap/agents/issues/103/comments --paginate"* || "$*" == *"repos/pesap/agents/pulls/103/comments --paginate"* || "$*" == *"repos/pesap/agents/pulls/103/reviews --paginate"* ]]; then
+  printf '[]\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "api" && "$*" == *"graphql"* ]]; then
+  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}\n'
+  exit 0
+fi
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const stdout = await runHeartbeat(
+      {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      stateFile,
+    );
+
+    assert.match(stdout, /No matching feedback comments or failing CI found/);
+    assert.match(stdout, /"status":"no-new-actionable-feedback"/);
+    await assert.rejects(readFile(zellijLog, "utf8"), /ENOENT/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }

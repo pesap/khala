@@ -15,7 +15,7 @@ import {
   parseReviewArgs,
   parseWorkonArgs,
 } from "../../extensions/commands/parsers.ts";
-import { DEFAULT_WORKON_MODEL_SELECTION } from "../../extensions/commands/workon.ts";
+import { DEFAULT_WORKON_MODEL_SELECTION, WORKON_DEFAULT_HEARTBEAT } from "../../extensions/commands/workon.ts";
 import { resetKhalaProfileDiscoveryForTests } from "../../extensions/runtime/khala-profiles.ts";
 import {
   resetActiveWorkflowRouteForTests,
@@ -301,6 +301,7 @@ test("parses inbox flags with safe defaults", () => {
 
 test("parses workon target and flags", () => {
   const defaultModelSelection = DEFAULT_WORKON_MODEL_SELECTION;
+  const defaultHeartbeat = WORKON_DEFAULT_HEARTBEAT;
   const planParsed = parsePlanArgs("shape reviewer two");
   assert.ok(!("error" in planParsed));
   const defaultReview = planParsed.review;
@@ -315,7 +316,7 @@ test("parses workon target and flags", () => {
     forge: "github",
     mode: "start",
     multiplexer: "auto",
-    heartbeat: "1.0",
+    heartbeat: defaultHeartbeat,
     dryRun: false,
     modelSelection: defaultModelSelection,
     review: defaultReview,
@@ -333,7 +334,7 @@ test("parses workon target and flags", () => {
       forge: "gitlab",
       mode: "start",
       multiplexer: "auto",
-      heartbeat: "1.0",
+      heartbeat: defaultHeartbeat,
       dryRun: false,
       modelSelection: defaultModelSelection,
       review: defaultReview,
@@ -348,7 +349,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "prepare",
     multiplexer: "auto",
-    heartbeat: "1.0",
+    heartbeat: defaultHeartbeat,
     dryRun: false,
     modelSelection: defaultModelSelection,
     review: defaultReview,
@@ -362,7 +363,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     multiplexer: "auto",
-    heartbeat: "1.0",
+    heartbeat: defaultHeartbeat,
     dryRun: false,
     modelSelection: defaultModelSelection,
     review: defaultReview,
@@ -408,7 +409,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     multiplexer: "auto",
-    heartbeat: "1.0",
+    heartbeat: defaultHeartbeat,
     dryRun: false,
     modelSelection: defaultModelSelection,
     review: defaultReview,
@@ -422,7 +423,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "prepare",
     multiplexer: "auto",
-    heartbeat: "1.0",
+    heartbeat: defaultHeartbeat,
     dryRun: true,
     modelSelection: defaultModelSelection,
     review: defaultReview,
@@ -450,7 +451,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     multiplexer: "auto",
-    heartbeat: "1.0",
+    heartbeat: defaultHeartbeat,
     dryRun: false,
     modelSelection: defaultModelSelection,
     review: defaultReview,
@@ -464,7 +465,7 @@ test("parses workon target and flags", () => {
     forge: "auto",
     mode: "start",
     multiplexer: "auto",
-    heartbeat: "1.0",
+    heartbeat: defaultHeartbeat,
     dryRun: false,
     modelSelection: defaultModelSelection,
     review: defaultReview,
@@ -485,7 +486,7 @@ test("parses workon target and flags", () => {
       forge: "github",
       mode: "start",
       multiplexer: "auto",
-      heartbeat: "1.0",
+      heartbeat: defaultHeartbeat,
       dryRun: false,
       modelSelection: defaultModelSelection,
       review: defaultReview,

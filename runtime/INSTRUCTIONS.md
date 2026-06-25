@@ -62,7 +62,8 @@ Command workflow contracts:
 - Accept only an issue URL or issue number; use `/plan` for maintainer ideas and `/triage` for user-posted intake.
 - Before starting, run the autonomous-readiness rubric: reproduction/observable behavior, validation/tests, narrow acceptance criteria, repo-guideline alignment, breaking-change risk, review-size risk, and whether the work is worth doing now.
 - If readiness fails, do not create a worktree, Pi session, heartbeat, capsule, or GitHub comment; return concrete action items only.
-- If readiness passes, prepare or start the Worktrunk session capsule and handoff.
+- If readiness passes, prepare or start the Worktrunk session capsule, handoff, and five-minute forge feedback/CI heartbeat.
+- The operator bootstrap does not open the implementation PR; the launched worker creates/reuses the empty-commit draft PR before implementation edits.
 - Do not redefine issue scope or implement within the bootstrap workflow.
 - Store learnings.
 

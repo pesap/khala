@@ -388,10 +388,11 @@ test("prepares GitHub issue workon capsule in global repo path", async () => {
     assert.match(capsule, /Initial handoff and readiness gate:/);
     assert.match(capsule, /workon-handoff-ack\.sh/);
     assert.match(capsule, /--status capsule-acknowledged/);
-    assert.match(capsule, /If no blocker is found, start the smallest scoped implementation slice in this worktree without waiting for another operator instruction/);
+    assert.match(capsule, /If no blocker is found, create\/reuse the draft PR immediately with an empty bootstrap commit, then start the smallest scoped implementation slice in this worktree without waiting for another operator instruction/);
     assert.doesNotMatch(capsule, /Wait for a separate explicit operator instruction/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
-    assert.match(capsule, /check the PR\/issue forge for human feedback every 1\.0/);
+    assert.match(capsule, /Before implementation edits, create or reuse the draft PR for this branch with an empty bootstrap commit/);
+    assert.match(capsule, /check the PR\/issue forge for human feedback and failing CI every 1\.0/);
     assert.match(capsule, /Implementation instructions:/);
     assert.doesNotMatch(capsule, /combined source issue set/);
 
@@ -657,7 +658,8 @@ test("uses packaged handoff template when target cwd has no commands directory",
     assert.match(capsule, /Initial handoff and readiness gate:/);
     assert.match(capsule, /workon-handoff-ack\.sh/);
     assert.match(capsule, /--status capsule-acknowledged/);
-    assert.match(capsule, /If no blocker is found, start the smallest scoped implementation slice in this worktree without waiting for another operator instruction/);
+    assert.match(capsule, /If no blocker is found, create\/reuse the draft PR immediately with an empty bootstrap commit, then start the smallest scoped implementation slice in this worktree without waiting for another operator instruction/);
+    assert.match(capsule, /Before implementation edits, create or reuse the draft PR for this branch with an empty bootstrap commit/);
     assert.match(capsule, /Draft PR and feedback heartbeat:/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -1233,7 +1235,8 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
     assert.match(capsule, /I want to discuss and possibly work on: combined source issue set for pesap\/agents: #104, #105/);
     assert.match(capsule, /Source issues:\n- https:\/\/github\.com\/pesap\/agents\/issues\/104 \(#104\) fix\(workon\): first issue\n- https:\/\/github\.com\/pesap\/agents\/issues\/105 \(#105\) fix\(workon\): second issue/);
     assert.match(capsule, /Initial handoff and readiness gate:/);
-    assert.match(capsule, /If no blocker is found, start the smallest scoped implementation slice in this worktree without waiting for another operator instruction/);
+    assert.match(capsule, /If no blocker is found, create\/reuse the draft PR immediately with an empty bootstrap commit, then start the smallest scoped implementation slice in this worktree without waiting for another operator instruction/);
+    assert.match(capsule, /Before implementation edits, create or reuse the draft PR for this branch with an empty bootstrap commit/);
     assert.doesNotMatch(capsule, /Wait for a separate explicit operator instruction/);
     assert.match(capsule, /Work through the source issues in this deterministic order/);
     assert.match(capsule, /Implementation instructions:/);

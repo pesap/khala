@@ -84,7 +84,7 @@ function isWorkonIssueTarget(target: string): boolean {
 function validateWorkonIssueTargets(targets: string[]): string | null {
   return targets.every(isWorkonIssueTarget)
     ? null
-    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Child Pi launches pin the workon default thinking level. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
+    : "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL]. Heartbeat defaults to 5 minutes. Child Pi launches pin the workon default thinking level. Use /plan for maintainer ideas or /triage for user-posted issue intake before /workon.";
 }
 
 function validateWorkonTargetRepos(targets: string[], repo: string): string | null {
@@ -756,7 +756,7 @@ export function createWorkflowCommandHandlers(params: {
       if (!parsed.target) {
         notify(
           ctx,
-          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
+          "Usage: /workon <issue-url|issue-number> [--repo owner/repo] [--forge auto|github|gitlab|all] [--multiplexer auto|none|zellij|tmux] [--dry-run] [--heartbeat HOURS|--interval HOURS] [--model MODEL] [--review-model provider/model] [--review-thinking off|minimal|low|medium|high|xhigh] [--review-loops 1|2] [--no-review]. Heartbeat defaults to 5 minutes. Child Pi launches pin the workon default thinking level and record Reviewer Two settings.",
           "error",
         );
         return;

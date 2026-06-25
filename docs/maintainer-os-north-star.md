@@ -117,7 +117,10 @@ Pi capsule under `~/.pi/khala/github.com/<owner>/<repo>/capsule.md`, and when a
 built-in multiplexer provider is active starts Pi there with the handoff prompt.
 Zellij and tmux are built-in providers; the direct Worktrunk path remains
 available with `--multiplexer none`. It does not implement the feature or bugfix
-itself.
+itself. The launched worker owns the empty-commit draft PR, implementation
+edits inside the worktree, Reviewer Two loop, and PR/CI updates while the
+five-minute heartbeat feeds trusted comments and failing checks back into the
+worker pane.
 
 ### `/recheck-pr`
 

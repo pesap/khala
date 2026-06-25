@@ -163,7 +163,10 @@ esac
       assert.match(prompt, /First-turn required actions:/);
       assert.match(prompt, /Read the session capsule path with the read tool:/);
       assert.match(prompt, /Run the acknowledgement command with the bash tool exactly after reading the capsule:/);
-      assert.match(prompt, /Final answer must include: capsule-acknowledged; waiting for a separate explicit operator instruction before implementation edits\./);
+      assert.match(prompt, /Confirm this session is in the Worktrunk worktree recorded in the capsule/);
+      assert.match(prompt, /create\/reuse the draft PR immediately with an empty bootstrap commit/);
+      assert.match(prompt, /Final answer must include: capsule-acknowledged; readiness status; draft PR status or exact blocker; first implementation action or escalation\./);
+      assert.doesNotMatch(prompt, /waiting for a separate explicit operator instruction/);
     }
 
     const tmuxLog = await readFile(logPath, "utf8");

@@ -6,12 +6,12 @@ mutation_policy:
   allowed:
     - create_branch_or_worktree_when_ready_and_safe
     - write_session_capsule_when_ready
-    - start_read_only_forge_feedback_heartbeat_when_ready
+    - start_read_only_forge_feedback_ci_heartbeat_when_ready
   forbidden:
     - freeform_issue_creation
     - implementation_changes
     - merge_or_push
-    - pr_creation_for_implementation_work
+    - operator_pr_creation_for_implementation_work
     - bypassing_worktrunk_hook_approvals
     - github_comments_when_readiness_fails
 
@@ -20,7 +20,7 @@ inputs:
   repo: optional owner/repo override
   forge: auto, github, gitlab, or all
   mode: prepare or start
-  heartbeat: forge feedback polling interval in decimal hours (--heartbeat or --interval)
+  heartbeat: forge feedback and CI polling interval in decimal hours (--heartbeat or --interval; default 0.0834, about five minutes)
   dryRun: boolean flag — prepare bootstrap capsule without launching the work session
   model: optional model override for the workon session
   extraInstruction: optional one-off maintainer focus

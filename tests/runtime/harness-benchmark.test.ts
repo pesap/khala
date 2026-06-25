@@ -137,14 +137,14 @@ test("harness benchmark checks handoff package artifacts and acknowledgement beh
               id: "capsule",
               kind: "capsule",
               requiredIncludes: [
-                "Initial handoff acknowledgement (no implementation yet):",
-                "Wait for a separate explicit operator instruction before implementation edits or VCS/forge mutations.",
+                "Initial handoff and readiness gate:",
+                "create/reuse the draft PR immediately with an empty bootstrap commit",
               ],
               text: [
                 "# Workon session capsule",
-                "Initial handoff acknowledgement (no implementation yet):",
+                "Initial handoff and readiness gate:",
                 "- Read the session capsule path provided by the launcher.",
-                "- Wait for a separate explicit operator instruction before implementation edits or VCS/forge mutations.",
+                "- If no blocker is found, create/reuse the draft PR immediately with an empty bootstrap commit, then start work without waiting for another operator instruction.",
               ].join("\n"),
             },
           ],
@@ -158,16 +158,25 @@ test("harness benchmark checks handoff package artifacts and acknowledgement beh
               ],
               name: "exec_command",
             },
+            {
+              argumentIncludes: ["git commit", "--allow-empty"],
+              name: "exec_command",
+            },
+            {
+              argumentIncludes: ["gh pr create", "--draft"],
+              name: "exec_command",
+            },
           ],
           requiredTranscriptIncludes: [
             "capsule-acknowledged",
-            "explicit operator instruction",
+            "empty bootstrap commit",
+            "draft PR",
           ],
         },
         runs: [
           {
             assistantText:
-              "I read the capsule, recorded capsule-acknowledged, and need a separate explicit operator instruction.",
+              "I read the capsule, recorded capsule-acknowledged, created the empty bootstrap commit, and opened the draft PR.",
             id: "ack",
             messages: [
               { role: "user", text: "Session capsule path: /tmp/capsule.md" },
@@ -189,6 +198,26 @@ test("harness benchmark checks handoff package artifacts and acknowledgement beh
                 },
               },
               { role: "toolResult", text: "capsule-acknowledged" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "git commit --allow-empty -m \"chore(workon): bootstrap #63\"",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "empty bootstrap commit" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "gh pr create --draft --title bootstrap --body-file /tmp/pr.md",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "draft PR https://github.com/pesap/agents/pull/63" },
             ],
             model: "model-c",
           },
