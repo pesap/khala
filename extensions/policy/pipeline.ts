@@ -133,7 +133,7 @@ export function evaluateMutationPreflightPolicy(options: {
         `Policy blocked ${options.toolName}.`,
         "Missing or invalid preflight before first mutation.",
         "Send this as chat text, not through the shell:",
-        "  /preflight Preflight: skill=<name|none> reason=\"<short>\" clarify=<yes|no>",
+        "  Preflight: skill=<name|none> reason=\"<short>\" clarify=<yes|no>",
         "Remediate and retry.",
       ].join("\n"),
     };
