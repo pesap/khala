@@ -16,37 +16,23 @@ import {
   type KhalaModelProfile,
   type KhalaProfileName,
 } from "./khala-profiles.ts";
+import {
+  BUILTIN_WORKFLOW_PROFILES,
+  BUILTIN_WORKFLOW_ROUTES,
+} from "./workflow-model-config.ts";
 
 // ── Task-to-profile routing ──────────────────────────────────────
 
 export type WorkflowTask = string;
 export type WorkflowProfileName = KhalaProfileName;
 
-/** Built-in default route table: workflow task -> profile name. */
-const BUILTIN_ROUTES: Record<string, WorkflowProfileName> = {
-  workon: "development",
-  plan: "planning",
-  triage: "planning",
-  debug: "planning",
-  review: "development",
-  "peer-review": "peer-review",
-};
-
-/** Built-in default profile map: profile name -> model id:thinking suffix. */
-const BUILTIN_PROFILES: Record<WorkflowProfileName, string> = {
-  planning: "github-copilot/gpt-5.5:xhigh",
-  development: "github-copilot/gpt-5.4-mini:medium",
-  "peer-review": "github-copilot/claude-opus-4.7:high",
-  agents: "github-copilot/gpt-5.4-mini:medium",
-};
-
 // ── Durable config overrides ────────────────────────────────────
 
 /** Merged routes (builtin + config). */
-let mergedRoutes: Record<string, string> = { ...BUILTIN_ROUTES };
+let mergedRoutes: Record<string, string> = { ...BUILTIN_WORKFLOW_ROUTES };
 
 /** Merged profiles (builtin + config). */
-let mergedProfiles: Record<string, string> = { ...BUILTIN_PROFILES };
+let mergedProfiles: Record<string, string> = { ...BUILTIN_WORKFLOW_PROFILES };
 
 export interface WorkflowModelConfigStatus {
   path?: string;
@@ -82,8 +68,8 @@ export function setWorkflowModelConfig(
   },
   options: WorkflowModelConfigSetOptions = {},
 ): void {
-  mergedRoutes = { ...BUILTIN_ROUTES, ...config.routes };
-  mergedProfiles = { ...BUILTIN_PROFILES, ...config.profiles };
+  mergedRoutes = { ...BUILTIN_WORKFLOW_ROUTES, ...config.routes };
+  mergedProfiles = { ...BUILTIN_WORKFLOW_PROFILES, ...config.profiles };
 
   const explicitProfiles = Array.from(
     new Set(options.explicitProfiles ?? Object.keys(config.profiles)),
@@ -130,8 +116,8 @@ export function getWorkflowModelConfigStatus(): WorkflowModelConfigStatus {
  * Reset config to builtin defaults (for tests).
  */
 export function resetWorkflowModelConfigForTests(): void {
-  mergedRoutes = { ...BUILTIN_ROUTES };
-  mergedProfiles = { ...BUILTIN_PROFILES };
+  mergedRoutes = { ...BUILTIN_WORKFLOW_ROUTES };
+  mergedProfiles = { ...BUILTIN_WORKFLOW_PROFILES };
   workflowModelConfigStatus = {
     found: false,
     explicitProfiles: [],
@@ -213,7 +199,8 @@ export function resolveWorkflowRoute(
   if (!options.ignoreActiveWorkflowFlags) {
     // 1. Check if --khala-workflow-profile flag is set (highest precedence)
     if (activeWorkflowRoute.profileFlag) {
-      const profileName = activeWorkflowRoute.profileFlag as WorkflowProfileName;
+      const profileName =
+        activeWorkflowRoute.profileFlag as WorkflowProfileName;
       const profile = resolveKhalaProfile(profileName);
       return {
         profileName,
@@ -227,7 +214,9 @@ export function resolveWorkflowRoute(
     if (activeWorkflowRoute.taskFlag) {
       const routeProfile = mergedRoutes[activeWorkflowRoute.taskFlag];
       if (routeProfile) {
-        const profile = resolveKhalaProfile(routeProfile as WorkflowProfileName);
+        const profile = resolveKhalaProfile(
+          routeProfile as WorkflowProfileName,
+        );
         return {
           profileName: routeProfile as WorkflowProfileName,
           profile,
@@ -266,7 +255,10 @@ export function resolveWorkflowRoute(
 /**
  * Format a human-readable description of the active workflow route state.
  */
-function formatEntries(entries: Record<string, string>, separator: string): string {
+function formatEntries(
+  entries: Record<string, string>,
+  separator: string,
+): string {
   return Object.entries(entries)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}${separator}${value}`)
@@ -297,17 +289,23 @@ export function formatWorkflowRouteStatus(): string {
     );
   }
   if (workflowModelConfigStatus.warnings.length > 0) {
-    lines.push(`- workflow config warnings: ${workflowModelConfigStatus.warnings.join("; ")}`);
+    lines.push(
+      `- workflow config warnings: ${workflowModelConfigStatus.warnings.join("; ")}`,
+    );
   }
   if (activeWorkflowRoute.profileFlag) {
     lines.push(`- workflow profile flag: ${activeWorkflowRoute.profileFlag}`);
   } else {
-    lines.push("- workflow profile flag: none (CLI override not set; workflow config still applies)");
+    lines.push(
+      "- workflow profile flag: none (CLI override not set; workflow config still applies)",
+    );
   }
   if (activeWorkflowRoute.taskFlag) {
     lines.push(`- workflow task flag: ${activeWorkflowRoute.taskFlag}`);
   } else {
-    lines.push("- workflow task flag: none (CLI override not set; command routes still apply)");
+    lines.push(
+      "- workflow task flag: none (CLI override not set; command routes still apply)",
+    );
   }
   lines.push(`- active profiles: ${formatEntries(mergedProfiles, "=")}`);
   lines.push(`- active routes: ${formatEntries(mergedRoutes, "->")}`);

@@ -323,8 +323,8 @@ test("formatWorkonBootstrapEvidence falls back to resolved Reviewer Two defaults
   });
   const rendered = lines.join("\n");
 
-  assert.match(rendered, /Reviewer Two model: github-copilot\/claude-opus-4\.7/);
-  assert.match(rendered, /Reviewer Two thinking level: high/);
+  assert.match(rendered, /Reviewer Two model: NLR\/HALO GPT OSS 120b/);
+  assert.match(rendered, /Reviewer Two thinking level: off/);
   assert.match(rendered, /Reviewer Two routing reason: Reviewer Two peer-review profile/);
 });
 
@@ -1243,12 +1243,12 @@ test("groups multiple GitHub issues into one capsule and Worktrunk session", asy
     assert.match(capsule, /Reviewer Two review loop:/);
     assert.match(capsule, /- Enabled: yes/);
     assert.match(capsule, /- Loop budget: 1/);
-    assert.match(capsule, /- Model: github-copilot\/claude-opus-4\.7/);
-    assert.match(capsule, /- Thinking level: high/);
+    assert.match(capsule, /- Model: NLR\/HALO GPT OSS 120b/);
+    assert.match(capsule, /- Thinking level: off/);
     assert.match(capsule, /- Routing mode: default/);
     assert.match(capsule, /- Routing reason: Reviewer Two peer-review profile/);
     assert.match(capsule, /- Default context: fresh/);
-    assert.match(capsule, /- Launch contract: Reviewer Two launch contract: \/run reviewer\[model=github-copilot\/claude-opus-4\.7:high\] "<review task>"/);
+    assert.match(capsule, /- Launch contract: Reviewer Two launch contract: \/run reviewer\[model=NLR\/HALO GPT OSS 120b:off\] "<review task>"/);
     assert.match(capsule, /- Run an independent fresh-context Reviewer Two pass after implementation edits, focused validation, \/simplify, and post-simplify validation, but before final commit and draft PR readiness\./);
     assert.match(capsule, /- Use the recorded peer-review model and thinking level when available; if you cannot run an independent Reviewer Two pass without self-reviewing, stop and report the blocker instead\./);
     assert.match(capsule, /- Do not rely on builtin reviewer model inheritance; the launch contract above must carry the peer-review model and thinking level explicitly\./);
@@ -1552,11 +1552,11 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(capsule, /Model routing reason: explicit --model override with default workon thinking/);
     assert.match(capsule, /Reviewer Two enabled: yes/);
     assert.match(capsule, /Reviewer Two loop budget: 1/);
-    assert.match(capsule, /Reviewer Two model: github-copilot\/claude-opus-4\.7/);
-    assert.match(capsule, /Reviewer Two thinking level: high/);
+    assert.match(capsule, /Reviewer Two model: NLR\/HALO GPT OSS 120b/);
+    assert.match(capsule, /Reviewer Two thinking level: off/);
     assert.match(capsule, /Reviewer Two routing mode: default/);
     assert.match(capsule, /Reviewer Two routing reason: Reviewer Two peer-review profile/);
-    assert.match(capsule, /Launch contract: Reviewer Two launch contract: \/run reviewer\[model=github-copilot\/claude-opus-4\.7:high\] "<review task>"/);
+    assert.match(capsule, /Launch contract: Reviewer Two launch contract: \/run reviewer\[model=NLR\/HALO GPT OSS 120b:off\] "<review task>"/);
 
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string; path: string | null }).status, "launched");
@@ -1625,7 +1625,7 @@ test("pins the default model when launching a Worktrunk Zellij handoff", async (
   }
 });
 
-test("blocks before handoff when the default development profile is unresolved", async () => {
+test("uses built-in development profile when legacy discovery is missing", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-unresolved-profile-test-"));
   const previousPath = process.env.PATH;
   try {
@@ -1670,19 +1670,20 @@ fi
     const rendered = sections.join("\n");
     const scriptCall = calls.find((call) => call.startsWith("bash ") && call.includes("scripts/workon-multiplexer-handoff.sh"));
 
-    assert.equal(scriptCall, undefined);
-    assert.match(rendered, /Route: blocked/);
-    assert.match(rendered, /development profile unresolved/);
-    assert.match(rendered, /Run \/khala-health for model profile setup guidance/);
-    assert.match(rendered, /Pi handoff command: \(not launched\)/);
-    assert.match(rendered, /Exact model: \(unresolved\)/);
+    assert.ok(scriptCall);
+    assert.match(scriptCall, /--model NLR\/HALO Devstral 123B/);
+    assert.match(scriptCall, /--thinking off/);
+    assert.match(rendered, /Route: launched/);
+    assert.match(rendered, /Exact model: NLR\/HALO Devstral 123B/);
+    assert.match(rendered, /Exact thinking level: off/);
+    assert.match(rendered, /Model routing reason: Khala\/workon development profile/);
+    assert.match(rendered, /Pi handoff command: zellij action new-pane/);
     assert.doesNotMatch(rendered, /Handoff failure:/);
 
     const ledger = await readHandoffLedger(rendered);
-    assert.equal((ledger.worktree as { status: string }).status, "blocked");
-    assert.equal((ledger.pi as { status: string }).status, "not-launched");
-    assert.equal((ledger.failure as { phase: string }).phase, "bootstrap");
-    assert.match(String(ledger.safeNextAction), /\/khala-health/);
+    assert.equal((ledger.worktree as { status: string }).status, "launched");
+    assert.equal((ledger.pi as { status: string }).status, "pi-process-started");
+    assert.deepEqual(ledger.modelSelection, DEFAULT_WORKON_MODEL_SELECTION);
   } finally {
     resetKhalaProfileDiscoveryForTests();
     if (previousPath === undefined) delete process.env.PATH;

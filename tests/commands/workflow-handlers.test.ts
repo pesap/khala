@@ -125,8 +125,8 @@ test("plan handler tags planning and Reviewer Two routing", async () => {
   const rendered = captured.sections?.join("\n") ?? "";
   assert.equal(captured.input, "shape model profiles");
   assert.equal(captured.enqueueCwd, cwd);
-  assert.equal(captured.flags?.model, "github-copilot/gpt-5.5");
-  assert.equal(captured.flags?.thinkingLevel, "xhigh");
+  assert.equal(captured.flags?.model, "NLR/HALO Nemotron 3 Super");
+  assert.equal(captured.flags?.thinkingLevel, "off");
   assert.equal(captured.flags?.modelRoutingMode, "default");
   assert.match(String(captured.flags?.modelRoutingReason), /Khala planning profile/);
   assert.equal(captured.flags?.review_enabled, true);

@@ -11,6 +11,7 @@
   ],
   "license": "MIT",
   "files": [
+    "benchmarks",
     "bin",
     "commands",
     "docs",
@@ -32,6 +33,8 @@
     "khala": "./bin/khala.js"
   },
   "scripts": {
+    "benchmark:harness": "node --experimental-strip-types scripts/harness-benchmark.ts benchmarks/harness-sandbox.json",
+    "benchmark:pi-drift": "node --experimental-strip-types scripts/harness-pi-drift.ts benchmarks/harness-sandbox.json",
     "smoke": "npm run lint:all && npm run test",
     "test": "npm run typecheck && npm run test:node",
     "test:node": "node --test --test-concurrency=1 --experimental-strip-types tests/**/*.test.ts",

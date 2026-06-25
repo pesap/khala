@@ -6,17 +6,24 @@
  * Example config:
  * ```yaml
  * profiles:
- *   planning: "github-copilot/gpt-5.5:xhigh"
- *   development: "github-copilot/gpt-5.4-mini:medium"
- *   peer-review: "github-copilot/claude-opus-4.7:high"
+ *   planning: "NLR/HALO Nemotron 3 Super:off"
+ *   development: "NLR/HALO Devstral 123B:off"
+ *   peer-review: "NLR/HALO GPT OSS 120b:off"
  *
  * routes:
  *   plan: "planning"
  *   debug: "planning"
- *   triage: "planning"
+ *   audit: "planning"
+ *   address-open-issues: "planning"
+ *   triage: "triage"
  *   workon: "development"
- *   review: "development"
+ *   simplify: "development"
+ *   ship: "development"
+ *   review: "peer-review"
  *   peer-review: "peer-review"
+ *   git-review: "knowledge"
+ *   learn-skill: "knowledge"
+ *   inbox: "lightweight"
  * ```
  *
  * Precedence: explicit workflow override > khala workflow flag >
@@ -42,17 +49,28 @@ const CONFIG_FILE_NAME = "workflow-model.yaml";
 
 /** Built-in defaults. */
 export const BUILTIN_WORKFLOW_PROFILES: Record<string, string> = {
-  planning: "github-copilot/gpt-5.5:xhigh",
-  development: "github-copilot/gpt-5.4-mini:medium",
-  "peer-review": "github-copilot/claude-opus-4.7:high",
+  planning: "NLR/HALO Nemotron 3 Super:off",
+  development: "NLR/HALO Devstral 123B:off",
+  "peer-review": "NLR/HALO GPT OSS 120b:off",
+  triage: "NLR/HALO Llama 4 Scout:off",
+  knowledge: "NLR/HALO Gemma 4:off",
+  lightweight: "NLR/HALO Nemotron 3 Nano:off",
+  agents: "NLR/HALO Devstral 123B:off",
 };
 
 export const BUILTIN_WORKFLOW_ROUTES: Record<string, string> = {
   workon: "development",
   plan: "planning",
-  triage: "planning",
+  triage: "triage",
   debug: "planning",
-  review: "development",
+  review: "peer-review",
+  "git-review": "knowledge",
+  simplify: "development",
+  ship: "development",
+  inbox: "lightweight",
+  audit: "planning",
+  "address-open-issues": "planning",
+  "learn-skill": "knowledge",
   "peer-review": "peer-review",
 };
 

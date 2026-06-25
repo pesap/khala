@@ -644,9 +644,12 @@ test("khala CLI prints setup guidance without running pi in dry-run mode", async
   assert.match(stdout, /install khala package in project Pi settings .*\.pi\/settings\.json/);
   assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
   assert.doesNotMatch(stdout, /^\s*command\b/m);
-  assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
-  assert.match(stdout, /development\s+openai-codex\/gpt-5\.4-mini:medium/);
-  assert.match(stdout, /peer-review\s+github-copilot\/claude-opus-4\.7:high/);
+  assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
+  assert.match(stdout, /development\s+NLR\/HALO Devstral 123B:off/);
+  assert.match(stdout, /peer-review\s+NLR\/HALO GPT OSS 120b:off/);
+  assert.match(stdout, /triage\s+NLR\/HALO Llama 4 Scout:off/);
+  assert.match(stdout, /knowledge\s+NLR\/HALO Gemma 4:off/);
+  assert.match(stdout, /lightweight\s+NLR\/HALO Nemotron 3 Nano:off/);
   assert.match(stdout, /Run without --dry-run when you are ready to install/);
 });
 
@@ -685,7 +688,7 @@ test("khala CLI accepts --no-input as an alias for --yes", async () => {
     "--dry-run",
   ]);
 
-  assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
+  assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
   assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
   assert.doesNotMatch(stdout, /^\s*command\b/m);
 });
@@ -725,9 +728,15 @@ test("khala CLI writes project workflow config after successful install", async 
     assert.match(stdout, /Done\. Khala is installed\./);
     assert.match(stdout, /Wrote workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
     assert.match(stdout, /Start Pi and run \/khala then \/khala-health to verify/);
-    assert.match(config, /planning: "github-copilot\/gpt-5\.5:xhigh"/);
-    assert.match(config, /development: "openai-codex\/gpt-5\.4-mini:medium"/);
-    assert.match(config, /peer-review: "github-copilot\/claude-opus-4\.7:high"/);
+    assert.match(config, /planning: "NLR\/HALO Nemotron 3 Super:off"/);
+    assert.match(config, /development: "NLR\/HALO Devstral 123B:off"/);
+    assert.match(config, /peer-review: "NLR\/HALO GPT OSS 120b:off"/);
+    assert.match(config, /triage: "NLR\/HALO Llama 4 Scout:off"/);
+    assert.match(config, /knowledge: "NLR\/HALO Gemma 4:off"/);
+    assert.match(config, /lightweight: "NLR\/HALO Nemotron 3 Nano:off"/);
+    assert.match(config, /review: "peer-review"/);
+    assert.match(config, /inbox: "lightweight"/);
+    assert.match(config, /learn-skill: "knowledge"/);
     assert.match(config, /peer-review: "peer-review"/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -815,6 +824,9 @@ test("khala CLI full setup prompt uses section hints and confirmation lines", as
     "Pick the model Pi should use for this workflow role",
     "model`, choices",
     "thinking`, THINKING_CHOICES",
+    'askProfile("Planning",    "off"',
+    'askProfile("Development", "off"',
+    'askProfile("Peer review", "off"',
     "bold(label)",
   ];
   for (const marker of markers) {
@@ -876,9 +888,12 @@ exit 99
     );
 
     assert.match(stdout, /Khala configuration/);
-    assert.match(stdout, /planning\s+github-copilot\/gpt-5\.5:xhigh/);
-    assert.match(stdout, /development\s+openai-codex\/gpt-5\.4-mini:medium/);
-    assert.match(stdout, /peer-review\s+github-copilot\/claude-opus-4\.7:high/);
+    assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
+    assert.match(stdout, /development\s+NLR\/HALO Devstral 123B:off/);
+    assert.match(stdout, /peer-review\s+NLR\/HALO GPT OSS 120b:off/);
+    assert.match(stdout, /triage\s+NLR\/HALO Llama 4 Scout:off/);
+    assert.match(stdout, /knowledge\s+NLR\/HALO Gemma 4:off/);
+    assert.match(stdout, /lightweight\s+NLR\/HALO Nemotron 3 Nano:off/);
     assert.doesNotMatch(stdout, /^\s*providers\b/m);
     assert.doesNotMatch(stdout, /availability/);
     assert.doesNotMatch(stdout, /openai-completions|anthropic-messages|openai-responses/);

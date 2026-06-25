@@ -21,6 +21,7 @@
   "include": [
     "extensions/**/*.ts",
     "khala/**/*.ts",
+    "scripts/**/*.ts",
     "tests/**/*.ts",
     "types/**/*.d.ts"
   ],

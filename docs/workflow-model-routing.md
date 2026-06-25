@@ -45,16 +45,26 @@ Example:
 
 ```yaml
 profiles:
-  planning: "github-copilot/gpt-5.5:xhigh"
-  development: "github-copilot/gpt-5.4-mini:medium"
-  peer-review: "github-copilot/claude-opus-4.7:high"
+  planning: "NLR/HALO Nemotron 3 Super:off"
+  development: "NLR/HALO Devstral 123B:off"
+  peer-review: "NLR/HALO GPT OSS 120b:off"
+  triage: "NLR/HALO Llama 4 Scout:off"
+  knowledge: "NLR/HALO Gemma 4:off"
+  lightweight: "NLR/HALO Nemotron 3 Nano:off"
 
 routes:
   plan: "planning"
   debug: "planning"
-  triage: "planning"
+  triage: "triage"
   workon: "development"
-  review: "development"
+  review: "peer-review"
+  git-review: "knowledge"
+  simplify: "development"
+  ship: "development"
+  inbox: "lightweight"
+  audit: "planning"
+  address-open-issues: "planning"
+  learn-skill: "knowledge"
   peer-review: "peer-review"
 ```
 
@@ -72,18 +82,26 @@ explicit workflow override > --khala-workflow-* flag >
 
 When no flags or config are provided:
 
-| Task                         | Resolved profile | Model                                                                                  | Thinking |
-| ---------------------------- | ---------------- | -------------------------------------------------------------------------------------- | -------- |
-| `/workon`                    | development      | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
-| `/plan`, `/triage`, `/debug` | planning         | `github-copilot/gpt-5.5`                                                               | `xhigh`  |
-| Reviewer Two (`/plan`)       | peer-review      | `github-copilot/claude-opus-4.7`                                                       | `high`   |
-| `/review`, `/audit`          | development      | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` |
+|Task|Resolved profile|Model|Thinking|
+|---|---|---|---|
+|`/workon`, `/simplify`, `/ship`|development|`NLR/HALO Devstral 123B`|`off`|
+|`/plan`, `/debug`, `/audit`, `/address-open-issues`|planning|`NLR/HALO Nemotron 3 Super`|`off`|
+|Reviewer Two, `/review`|peer-review|`NLR/HALO GPT OSS 120b`|`off`|
+|`/triage`|triage|`NLR/HALO Llama 4 Scout`|`off`|
+|`/git-review`, `/learn-skill`|knowledge|`NLR/HALO Gemma 4`|`off`|
+|`/inbox`|lightweight|`NLR/HALO Nemotron 3 Nano`|`off`|
 
-| Profile       | Default                                                                                | Thinking | Used by                        |
-| ------------- | -------------------------------------------------------------------------------------- | -------- | ------------------------------ |
-| `planning`    | `github-copilot/gpt-5.5`                                                               | `xhigh`  | `/plan`, `/triage`, `/debug`   |
-| `development` | Pi-discovered `gpt-5.4-mini` provider, preferring `github-copilot` then `openai-codex` | `medium` | `/workon`, `/review`, `/audit` |
-| `peer-review` | `github-copilot/claude-opus-4.7`                                                       | `high`   | Reviewer Two in `/plan`        |
+All builtin NLR HALO profile entries use `thinking=off` because the current
+NLR discovery rows for these models report no thinking support.
+
+|Profile|Default|Thinking|Used by|
+|---|---|---|---|
+|`planning`|`NLR/HALO Nemotron 3 Super`|`off`|`/plan`, `/debug`, `/audit`, `/address-open-issues`|
+|`development`|`NLR/HALO Devstral 123B`|`off`|`/workon`, `/simplify`, `/ship`|
+|`peer-review`|`NLR/HALO GPT OSS 120b`|`off`|Reviewer Two, `/review`|
+|`triage`|`NLR/HALO Llama 4 Scout`|`off`|`/triage`|
+|`knowledge`|`NLR/HALO Gemma 4`|`off`|`/git-review`, `/learn-skill`|
+|`lightweight`|`NLR/HALO Nemotron 3 Nano`|`off`|`/inbox`|
 
 ## Health
 
@@ -93,5 +111,6 @@ Run `/khala-health` to inspect resolution. Health output includes:
 - **Model profiles** section: per-profile `OK`/`ERROR` status with resolved
   model, thinking level, used-by routes, problems, and fix steps.
 
-If the development profile is unresolved, `/workon` refuses to handoff and
-points you to `/khala-health` instead of silently falling back to planning.
+If a resolved development profile is invalid or unresolved, `/workon` refuses
+to handoff and points you to `/khala-health` instead of silently falling back to
+planning.

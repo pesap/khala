@@ -253,9 +253,9 @@ profile resolution. The health output includes:
 - **Model profiles** section: per-profile `OK`/`ERROR` status with resolved
   model, thinking level, used-by routes, problems, and fix steps.
 
-If the development profile is unresolved, `/workon` refuses to emit handoff
-evidence and points operators back to `/khala-health` instead of silently
-falling back to the planning model.
+If the resolved development profile is invalid or unresolved, `/workon` refuses
+to emit handoff evidence and points operators back to `/khala-health` instead
+of silently falling back to the planning model.
 
 ### Policy Commands
 
@@ -310,6 +310,10 @@ routes are configurable via `.pi/khala/workflow-model.yaml` for project installs
 or `~/.pi/agent/khala/workflow-model.yaml` for global installs. Set
 `PI_CODING_AGENT_DIR` if your global Pi config directory is elsewhere. See
 [docs/workflow-model-routing.md](docs/workflow-model-routing.md) for details.
+Builtin workflow defaults are tuned for the NLR HALO no-thinking model set:
+Nemotron 3 Super for planning/audit, Devstral 123B for implementation, GPT OSS
+120b for peer review, Llama 4 Scout for triage, Gemma 4 for knowledge-oriented
+work, and Nemotron 3 Nano for lightweight inbox runs.
 
 ## Runtime Behavior
 
@@ -409,6 +413,16 @@ Use the current checkout while developing:
 ```bash
 pi --no-extensions -e ./extensions/index.ts -p "/khala-health"
 ```
+
+Score saved candidate transcripts against the Khala harness and handoff/capsule
+package instructions:
+
+```bash
+npm run benchmark:harness
+```
+
+See [`docs/harness-benchmark-sandbox.md`](docs/harness-benchmark-sandbox.md)
+for the benchmark suite format and divergence scoring.
 
 If a global URL install is also enabled, remove it to avoid duplicate extension
 registration:

@@ -342,6 +342,11 @@ exit 2
       assert.equal((await stat(handoffDir)).mode & 0o777, 0o700);
       assert.equal((await stat(promptPath)).mode & 0o777, 0o600);
       assert.equal((await stat(piScriptPath)).mode & 0o777, 0o700);
+      const prompt = await readFile(promptPath, "utf8");
+      assert.match(prompt, /First-turn required actions:/);
+      assert.match(prompt, /Read the session capsule path with the read tool:/);
+      assert.match(prompt, /Run the acknowledgement command with the bash tool exactly after reading the capsule:/);
+      assert.match(prompt, /Final answer must include: capsule-acknowledged; waiting for a separate explicit operator instruction before implementation edits\./);
     }
 
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8"));

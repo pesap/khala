@@ -72,8 +72,8 @@ test("khala status includes model profile doctor output", async () => {
   assert.match(messages[0], /compliance: preflight=warn, postflight=warn, response=warn/);
   assert.match(messages[0], /Model profiles/);
   assert.match(messages[0], /OK planning/);
-  assert.match(messages[0], /model: github-copilot\/gpt-5\.5/);
-  assert.match(messages[0], /thinking: medium/);
+  assert.match(messages[0], /model: NLR\/HALO Nemotron 3 Super/);
+  assert.match(messages[0], /thinking: off/);
 });
 
 test("compliance mode changes refresh khala-mode status", async () => {

@@ -6,12 +6,14 @@ import path from "node:path";
 
 import {
   discoverCopilotMiniId,
-  formatKhalaModelProfilesStatus,
   resetKhalaProfileDiscoveryForTests,
   resolveKhalaProfile,
 } from "../../extensions/runtime/khala-profiles.ts";
 
-async function withFakePi(script: string, fn: () => void | Promise<void>): Promise<void> {
+async function withFakePi(
+  script: string,
+  fn: () => void | Promise<void>,
+): Promise<void> {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-profiles-test-"));
   const previousPath = process.env.PATH;
   try {
@@ -28,8 +30,11 @@ async function withFakePi(script: string, fn: () => void | Promise<void>): Promi
   }
 }
 
-test("discovers and caches the Copilot 5.4 mini profile id", async () => {
-  const callLog = path.join(tmpdir(), `khala-profiles-call-log-${process.pid}-${Date.now()}`);
+test("discovers and caches the legacy Copilot 5.4 mini profile id", async () => {
+  const callLog = path.join(
+    tmpdir(),
+    `khala-profiles-call-log-${process.pid}-${Date.now()}`,
+  );
   try {
     await withFakePi(
       `#!/usr/bin/env bash
@@ -46,9 +51,9 @@ fi
         assert.deepEqual(first, { model: "github-copilot/gpt-5.4-mini" });
         assert.equal(second.model, "github-copilot/gpt-5.4-mini");
         const profile = resolveKhalaProfile("agents");
-        assert.equal(profile.name, "development");
-        assert.equal(profile.model, "github-copilot/gpt-5.4-mini");
-        assert.equal(profile.thinkingLevel, "medium");
+        assert.equal(profile.name, "agents");
+        assert.equal(profile.model, "NLR/HALO Devstral 123B");
+        assert.equal(profile.thinkingLevel, "off");
         assert.equal(profile.status, "ok");
       },
     );
@@ -58,7 +63,7 @@ fi
   }
 });
 
-test("discovers a usable non-Copilot 5.4 mini provider", async () => {
+test("discovers a usable non-Copilot 5.4 mini provider without changing NLR defaults", async () => {
   await withFakePi(
     `#!/usr/bin/env bash
 set -euo pipefail
@@ -73,13 +78,14 @@ fi
       assert.deepEqual(discovered, { model: "openai-codex/gpt-5.4-mini" });
 
       const profile = resolveKhalaProfile("development");
-      assert.equal(profile.model, "openai-codex/gpt-5.4-mini");
+      assert.equal(profile.model, "NLR/HALO Devstral 123B");
+      assert.equal(profile.thinkingLevel, "off");
       assert.equal(profile.status, "ok");
     },
   );
 });
 
-test("reports unresolved development profile when Pi discovery misses a usable 5.4 mini provider", async () => {
+test("uses NLR HALO builtin profiles even when legacy Pi discovery misses 5.4 mini", async () => {
   await withFakePi(
     `#!/usr/bin/env bash
 set -euo pipefail
@@ -88,17 +94,9 @@ printf 'github-copilot gpt-5.4 400K 128K yes yes\n'
 `,
     () => {
       const profile = resolveKhalaProfile("development");
-      assert.equal(profile.model, null);
-      assert.equal(profile.status, "unresolved");
-      assert.match(profile.reason ?? "", /github-copilot\/gpt-5\.4-mini/);
-      assert.match(profile.setupHint ?? "", /\/khala-health/);
-
-      const status = formatKhalaModelProfilesStatus();
-      assert.match(status, /Model profiles:/);
-      assert.match(status, /planning: model=github-copilot\/gpt-5\.5, thinking=xhigh/);
-      assert.match(status, /development: model=unresolved, thinking=medium/);
-      assert.match(status, /peer-review: model=github-copilot\/claude-opus-4\.7, thinking=high/);
-      assert.match(status, /unresolved/);
+      assert.equal(profile.model, "NLR/HALO Devstral 123B");
+      assert.equal(profile.thinkingLevel, "off");
+      assert.equal(profile.status, "ok");
     },
   );
 });

@@ -208,7 +208,7 @@ test("/khala-health surfaces workflow config warnings for invalid configured pro
     assert.match(harness.messages[0], /workflow config warning: Ignoring invalid profile entry for 'development': "bad\/model\/extra:medium"\. Expected format: "provider\/model:thinking"\./);
     assert.match(harness.messages[0], /OK found at .*workflow-model\.yaml/);
     assert.match(harness.messages[0], /OK development/);
-    assert.match(harness.messages[0], /model: github-copilot\/gpt-5\.4-mini/);
+    assert.match(harness.messages[0], /model: NLR\/HALO Devstral 123B/);
     assert.doesNotMatch(harness.messages[0], /Khala health: OK/);
   } finally {
     resetActiveWorkflowRouteForTests();

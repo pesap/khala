@@ -99,8 +99,8 @@ test("parses plan review flags with bounded defaults", () => {
     plan: "shape reviewer two",
     review: {
       enabled: true,
-      model: "github-copilot/claude-opus-4.7",
-      thinkingLevel: "high",
+      model: "NLR/HALO GPT OSS 120b",
+      thinkingLevel: "off",
       loops: 1,
       context: "fresh",
       routingMode: "default",
@@ -112,8 +112,8 @@ test("parses plan review flags with bounded defaults", () => {
     plan: "shape reviewer two",
     review: {
       enabled: false,
-      model: "github-copilot/claude-opus-4.7",
-      thinkingLevel: "high",
+      model: "NLR/HALO GPT OSS 120b",
+      thinkingLevel: "off",
       loops: 0,
       context: "fresh",
       routingMode: "override",
@@ -169,15 +169,15 @@ test("Reviewer Two defaults ignore active implementation workflow flags", () => 
 
     const plan = parsePlanArgs("shape reviewer two");
     assert.ok(!("error" in plan));
-    assert.equal(plan.review.model, "github-copilot/claude-opus-4.7");
-    assert.equal(plan.review.thinkingLevel, "high");
+    assert.equal(plan.review.model, "NLR/HALO GPT OSS 120b");
+    assert.equal(plan.review.thinkingLevel, "off");
     assert.equal(plan.review.routingMode, "default");
     assert.match(plan.review.routingReason, /Reviewer Two peer-review profile/);
 
     const workon = parseWorkonArgs("73");
     assert.ok(!("error" in workon));
-    assert.equal(workon.review.model, "github-copilot/claude-opus-4.7");
-    assert.equal(workon.review.thinkingLevel, "high");
+    assert.equal(workon.review.model, "NLR/HALO GPT OSS 120b");
+    assert.equal(workon.review.thinkingLevel, "off");
     assert.equal(workon.review.routingMode, "default");
     assert.match(workon.review.routingReason, /Reviewer Two peer-review profile/);
   } finally {
@@ -305,8 +305,8 @@ test("parses workon target and flags", () => {
   assert.ok(!("error" in planParsed));
   const defaultReview = planParsed.review;
 
-  assert.equal(defaultModelSelection.exactModel, "github-copilot/gpt-5.4-mini");
-  assert.equal(defaultModelSelection.exactThinkingLevel, "medium");
+  assert.equal(defaultModelSelection.exactModel, "NLR/HALO Devstral 123B");
+  assert.equal(defaultModelSelection.exactThinkingLevel, "off");
 
   assert.deepEqual(parseWorkonArgs("61 --repo pesap/agents --forge github"), {
     target: "61",

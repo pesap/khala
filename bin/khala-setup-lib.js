@@ -17,7 +17,7 @@ const KEY_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 const MODEL_PATTERN_RE = /^[^/:]+$/;
 
 export const MALFORMED_PROFILE_MESSAGE =
-  "Expected format: provider/model:thinking (example: github-copilot/gpt-5.4-mini:medium)";
+  "Expected format: provider/model:thinking (example: NLR/HALO Devstral 123B:off)";
 export const LITELLM_PROVIDER_API = "openai-completions";
 export const LITELLM_PROVIDER_APIS = new Set(["openai-completions", "openai-responses"]);
 export const DEFAULT_LITELLM_RESOLVER_COMMAND = "khala";

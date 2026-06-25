@@ -56,17 +56,27 @@ test("getMergedRoutes returns known builtin routes", () => {
   const routes = getMergedRoutes();
   assert.equal(routes.workon, "development");
   assert.equal(routes.plan, "planning");
-  assert.equal(routes.triage, "planning");
+  assert.equal(routes.triage, "triage");
   assert.equal(routes.debug, "planning");
-  assert.equal(routes.review, "development");
+  assert.equal(routes.review, "peer-review");
+  assert.equal(routes["git-review"], "knowledge");
+  assert.equal(routes.simplify, "development");
+  assert.equal(routes.ship, "development");
+  assert.equal(routes.inbox, "lightweight");
+  assert.equal(routes.audit, "planning");
+  assert.equal(routes["address-open-issues"], "planning");
+  assert.equal(routes["learn-skill"], "knowledge");
   assert.equal(routes["peer-review"], "peer-review");
 });
 
 test("getMergedProfiles returns known builtin profiles", () => {
   const profiles = getMergedProfiles();
-  assert.ok(profiles.planning.includes("gpt-5.5"));
-  assert.ok(profiles.development.includes("gpt-5.4-mini"));
-  assert.ok(profiles["peer-review"].includes("claude-opus-4.7"));
+  assert.equal(profiles.planning, "NLR/HALO Nemotron 3 Super:off");
+  assert.equal(profiles.development, "NLR/HALO Devstral 123B:off");
+  assert.equal(profiles["peer-review"], "NLR/HALO GPT OSS 120b:off");
+  assert.equal(profiles.triage, "NLR/HALO Llama 4 Scout:off");
+  assert.equal(profiles.knowledge, "NLR/HALO Gemma 4:off");
+  assert.equal(profiles.lightweight, "NLR/HALO Nemotron 3 Nano:off");
 });
 
 test("resolveWorkflowRoute uses peer-review profile for peer review by default", () => {
@@ -74,8 +84,8 @@ test("resolveWorkflowRoute uses peer-review profile for peer review by default",
   const resolved = resolveWorkflowRoute("peer-review");
   assert.equal(resolved.source, "builtin");
   assert.equal(resolved.profileName, "peer-review");
-  assert.equal(resolved.profile.model, "github-copilot/claude-opus-4.7");
-  assert.equal(resolved.profile.thinkingLevel, "high");
+  assert.equal(resolved.profile.model, "NLR/HALO GPT OSS 120b");
+  assert.equal(resolved.profile.thinkingLevel, "off");
 });
 
 test("resolveWorkflowRoute can ignore active implementation workflow flags for peer review defaults", () => {
@@ -84,8 +94,8 @@ test("resolveWorkflowRoute can ignore active implementation workflow flags for p
   const resolved = resolveWorkflowRoute("peer-review", { ignoreActiveWorkflowFlags: true });
   assert.equal(resolved.source, "builtin");
   assert.equal(resolved.profileName, "peer-review");
-  assert.equal(resolved.profile.model, "github-copilot/claude-opus-4.7");
-  assert.equal(resolved.profile.thinkingLevel, "high");
+  assert.equal(resolved.profile.model, "NLR/HALO GPT OSS 120b");
+  assert.equal(resolved.profile.thinkingLevel, "off");
 });
 
 test("resolveWorkflowRoute uses --khala-workflow-profile flag when set", async () => {
@@ -118,8 +128,8 @@ printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
       const resolved = resolveWorkflowRoute("plan");
       assert.equal(resolved.source, "builtin");
       assert.equal(resolved.profileName, "planning");
-      assert.equal(resolved.profile.model, "github-copilot/gpt-5.5");
-      assert.equal(resolved.profile.thinkingLevel, "xhigh");
+      assert.equal(resolved.profile.model, "NLR/HALO Nemotron 3 Super");
+      assert.equal(resolved.profile.thinkingLevel, "off");
     },
   );
 });
@@ -156,7 +166,9 @@ printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
       setActiveWorkflowRoute({ profileFlag: "", taskFlag: "" });
       const resolved = resolveWorkflowRoute("triage");
       assert.equal(resolved.source, "builtin");
-      assert.equal(resolved.profileName, "planning");
+      assert.equal(resolved.profileName, "triage");
+      assert.equal(resolved.profile.model, "NLR/HALO Llama 4 Scout");
+      assert.equal(resolved.profile.thinkingLevel, "off");
     },
   );
 });
@@ -179,7 +191,7 @@ printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
   );
 });
 
-test("resolveWorkflowRoute reports unresolved profile when model not discovered", async () => {
+test("resolveWorkflowRoute uses builtin NLR development profile without legacy discovery", async () => {
   await withFakePi(
     `#!/usr/bin/env bash
 set -euo pipefail
@@ -190,8 +202,9 @@ printf 'github-copilot gpt-5.4 400K 128K yes yes\n'
       setActiveWorkflowRoute({ profileFlag: "", taskFlag: "workon" });
       const resolved = resolveWorkflowRoute("workon");
       assert.equal(resolved.profileName, "development");
-      assert.equal(resolved.profile.model, null);
-      assert.equal(resolved.profile.status, "unresolved");
+      assert.equal(resolved.profile.model, "NLR/HALO Devstral 123B");
+      assert.equal(resolved.profile.thinkingLevel, "off");
+      assert.equal(resolved.profile.status, "ok");
     },
   );
 });
@@ -259,7 +272,7 @@ test("formatWorkflowRouteStatus reports config state and avoids not-set wording"
 
     const status = formatWorkflowRouteStatus();
     assert.match(status, /workflow config: found at \/tmp\/khala\/workflow-model\.yaml/);
-    assert.match(status, /workflow config warnings: Ignoring invalid profile entry for 'development': \"bad\/model\"\. Expected format: \"provider\/model:thinking\"\./);
+    assert.match(status, /workflow config warnings: Ignoring invalid profile entry for 'development': "bad\/model"\. Expected format: "provider\/model:thinking"\./);
     assert.match(status, /workflow profile flag: none \(CLI override not set; workflow config still applies\)/);
     assert.match(status, /workflow task flag: none \(CLI override not set; command routes still apply\)/);
     assert.match(status, /active profiles: .*development=openai-codex\/gpt-5\.4-mini:low/);
@@ -291,8 +304,8 @@ printf 'github-copilot gpt-5.4-mini 400K 128K yes yes\n'
       });
       const resolved = resolveWorkflowRoute("workon");
       assert.equal(resolved.profileName, "planning");
-      assert.equal(resolved.profile.model, "github-copilot/gpt-5.5");
-      assert.equal(resolved.profile.thinkingLevel, "xhigh");
+      assert.equal(resolved.profile.model, "NLR/HALO Nemotron 3 Super");
+      assert.equal(resolved.profile.thinkingLevel, "off");
     },
   );
 });
@@ -307,7 +320,7 @@ test("getMergedRoutes reflects config overrides", () => {
   assert.equal(merged.workon, "planning");
   // Builtin preserved
   assert.equal(merged.plan, "planning");
-  assert.equal(merged.triage, "planning");
+  assert.equal(merged.triage, "triage");
 });
 
 test("setWorkflowModelConfig preserves builtin defaults for non-overridden keys", () => {
@@ -320,8 +333,8 @@ test("setWorkflowModelConfig preserves builtin defaults for non-overridden keys"
   const profiles = getMergedProfiles();
   assert.equal(routes.workon, "development");
   assert.equal(routes.plan, "planning");
-  assert.ok(profiles.planning.includes("gpt-5.5"));
-  assert.ok(profiles.development.includes("gpt-5.4-mini"));
+  assert.equal(profiles.planning, "NLR/HALO Nemotron 3 Super:off");
+  assert.equal(profiles.development, "NLR/HALO Devstral 123B:off");
 });
 
 test("resetWorkflowModelConfigForTests restores builtin defaults", () => {

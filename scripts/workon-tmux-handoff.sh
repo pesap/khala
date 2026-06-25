@@ -339,7 +339,14 @@ else
   }
 fi
 
+ack_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workon-handoff-ack.sh"
+ack_command="bash $(shell_word "${ack_script}") --ledger $(shell_word "${ledger}") --status capsule-acknowledged"
 clean_prompt="${prompt}
+
+First-turn required actions:
+1. Read the session capsule path with the read tool: ${capsule}
+2. Run the acknowledgement command with the bash tool exactly after reading the capsule: ${ack_command}
+3. Final answer must include: capsule-acknowledged; waiting for a separate explicit operator instruction before implementation edits.
 
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."

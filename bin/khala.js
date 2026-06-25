@@ -36,14 +36,20 @@ const PI_PACKAGE_SPEC = "https://github.com/pesap/khala";
 const WORKFLOW_CONFIG_FILE = "workflow-model.yaml";
 const LITELLM_APIS = new Set(["openai-completions", "openai-responses"]);
 const MODEL_PRESETS = {
-  planning:    ["github-copilot/gpt-5.5:xhigh", "openai-codex/gpt-5.5:xhigh", "openrouter/openai/gpt-5.5:xhigh"],
-  development: ["openai-codex/gpt-5.4-mini:medium", "github-copilot/gpt-5.4-mini:medium", "openrouter/openai/gpt-5.4-mini:medium"],
-  peerReview:  ["github-copilot/claude-opus-4.7:high"],
+  planning:    ["NLR/HALO Nemotron 3 Super:off"],
+  development: ["NLR/HALO Devstral 123B:off"],
+  peerReview:  ["NLR/HALO GPT OSS 120b:off"],
+  triage:      ["NLR/HALO Llama 4 Scout:off"],
+  knowledge:   ["NLR/HALO Gemma 4:off"],
+  lightweight: ["NLR/HALO Nemotron 3 Nano:off"],
 };
 const DEFAULT_MODELS = {
   planning:   MODEL_PRESETS.planning[0],
   development: MODEL_PRESETS.development[0],
   peerReview:  MODEL_PRESETS.peerReview[0],
+  triage: MODEL_PRESETS.triage[0],
+  knowledge: MODEL_PRESETS.knowledge[0],
+  lightweight: MODEL_PRESETS.lightweight[0],
 };
 
 // ── ANSI (TTY + NO_COLOR aware) ────────────────────────────────────────────
@@ -230,13 +236,23 @@ function workflowConfig(models) {
     `  planning: "${models.planning}"`,
     `  development: "${models.development}"`,
     `  peer-review: "${models.peerReview}"`,
+    `  triage: "${models.triage}"`,
+    `  knowledge: "${models.knowledge}"`,
+    `  lightweight: "${models.lightweight}"`,
     "",
     "routes:",
     '  plan: "planning"',
     '  debug: "planning"',
-    '  triage: "planning"',
+    '  triage: "triage"',
     '  workon: "development"',
-    '  review: "development"',
+    '  review: "peer-review"',
+    '  git-review: "knowledge"',
+    '  simplify: "development"',
+    '  ship: "development"',
+    '  inbox: "lightweight"',
+    '  audit: "planning"',
+    '  address-open-issues: "planning"',
+    '  learn-skill: "knowledge"',
     '  peer-review: "peer-review"',
     "",
   ].join("\n");
@@ -2071,11 +2087,14 @@ async function askModels(options) {
   console.log(stepHeading("Workflow models"));
   console.log(hint("  Defaults are recommended. Use filtering if you already know the provider/model id."));
 
-  const planning    = await askProfile("Planning",    "xhigh",  providers, rows, MODEL_PRESETS.planning);
-  const development = await askProfile("Development", "medium", providers, rows, MODEL_PRESETS.development);
-  const peerReview  = await askProfile("Peer review", "high",   providers, rows, MODEL_PRESETS.peerReview);
+  const planning    = await askProfile("Planning",    "off",    providers, rows, MODEL_PRESETS.planning);
+  const development = await askProfile("Development", "off",    providers, rows, MODEL_PRESETS.development);
+  const peerReview  = await askProfile("Peer review", "off",    providers, rows, MODEL_PRESETS.peerReview);
+  const triage      = await askProfile("Triage",      "off",    providers, rows, MODEL_PRESETS.triage);
+  const knowledge   = await askProfile("Knowledge",   "off",    providers, rows, MODEL_PRESETS.knowledge);
+  const lightweight = await askProfile("Lightweight", "off",    providers, rows, MODEL_PRESETS.lightweight);
 
-  return { planning, development, peerReview };
+  return { planning, development, peerReview, triage, knowledge, lightweight };
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -2149,6 +2168,9 @@ async function main() {
     console.log(rowKeep(`${"planning".padEnd(labelWidth)}${models.planning}`));
     console.log(rowKeep(`${"development".padEnd(labelWidth)}${models.development}`));
     console.log(rowKeep(`${"peer-review".padEnd(labelWidth)}${models.peerReview}`));
+    console.log(rowKeep(`${"triage".padEnd(labelWidth)}${models.triage}`));
+    console.log(rowKeep(`${"knowledge".padEnd(labelWidth)}${models.knowledge}`));
+    console.log(rowKeep(`${"lightweight".padEnd(labelWidth)}${models.lightweight}`));
 
     if (options.dryRun) {
       console.log(nextStep(`Run without ${bold("--dry-run")} when you are ready to install.`));

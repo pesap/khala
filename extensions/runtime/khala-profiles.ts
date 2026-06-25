@@ -1,9 +1,26 @@
 import { spawnSync } from "node:child_process";
-import { parseProfileEntry } from "./workflow-model-config.ts";
+import {
+  BUILTIN_WORKFLOW_PROFILES,
+  parseProfileEntry,
+} from "./workflow-model-config.ts";
 
-export type KhalaProfileName = "planning" | "development" | "peer-review" | "agents" | (string & {});
-export type KhalaThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-export type KhalaProfileSource = "builtin" | "pi-model-discovery" | "workflow-model-config";
+export type KhalaProfileName =
+  | "planning"
+  | "development"
+  | "peer-review"
+  | "agents"
+  | (string & {});
+export type KhalaThinkingLevel =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+export type KhalaProfileSource =
+  | "builtin"
+  | "pi-model-discovery"
+  | "workflow-model-config";
 export type KhalaProfileStatus = "ok" | "unresolved";
 
 export interface KhalaModelProfile {
@@ -22,8 +39,6 @@ interface DevelopmentModelDiscovery {
   setupHint?: string;
 }
 
-const PLANNING_MODEL = "github-copilot/gpt-5.5";
-const PEER_REVIEW_MODEL = "github-copilot/claude-opus-4.7";
 const DEVELOPMENT_PROVIDER = "github-copilot";
 const DEVELOPMENT_MODEL = "gpt-5.4-mini";
 const DEVELOPMENT_MODEL_ID = `${DEVELOPMENT_PROVIDER}/${DEVELOPMENT_MODEL}`;
@@ -59,11 +74,16 @@ function parsePiListModelsTable(output: string): string | null {
       const [provider, model] = line.split(/\s+/);
       return provider && model ? { provider, model } : null;
     })
-    .filter((candidate): candidate is { provider: string; model: string } => candidate !== null)
+    .filter(
+      (candidate): candidate is { provider: string; model: string } =>
+        candidate !== null,
+    )
     .filter((candidate) => candidate.model === DEVELOPMENT_MODEL);
 
   for (const provider of DEVELOPMENT_PROVIDER_PREFERENCE) {
-    const preferred = candidates.find((candidate) => candidate.provider === provider);
+    const preferred = candidates.find(
+      (candidate) => candidate.provider === provider,
+    );
     if (preferred) return `${preferred.provider}/${preferred.model}`;
   }
 
@@ -91,7 +111,10 @@ export function discoverCopilotMiniId(): DevelopmentModelDiscovery {
   }
 
   if (result.status !== 0) {
-    const diagnostic = result.stderr?.trim() || result.stdout?.trim() || `pi --list-models exited ${result.status}`;
+    const diagnostic =
+      result.stderr?.trim() ||
+      result.stdout?.trim() ||
+      `pi --list-models exited ${result.status}`;
     copilotMiniDiscoveryCache = {
       model: null,
       reason: diagnostic,
@@ -100,7 +123,9 @@ export function discoverCopilotMiniId(): DevelopmentModelDiscovery {
     return copilotMiniDiscoveryCache;
   }
 
-  const discovered = parsePiListModelsTable(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  const discovered = parsePiListModelsTable(
+    `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+  );
   if (discovered) {
     copilotMiniDiscoveryCache = { model: discovered };
     return copilotMiniDiscoveryCache;
@@ -115,7 +140,9 @@ export function discoverCopilotMiniId(): DevelopmentModelDiscovery {
   return copilotMiniDiscoveryCache;
 }
 
-function resolveConfiguredProfile(name: KhalaProfileName): KhalaModelProfile | null {
+function resolveConfiguredProfile(
+  name: KhalaProfileName,
+): KhalaModelProfile | null {
   if (!explicitConfiguredProfileNames.has(name)) return null;
 
   const entry = configuredProfileEntries[name];
@@ -146,21 +173,13 @@ export function resolveKhalaProfile(name: KhalaProfileName): KhalaModelProfile {
   const configured = resolveConfiguredProfile(name);
   if (configured) return configured;
 
-  if (name === "planning") {
+  const builtinEntry = BUILTIN_WORKFLOW_PROFILES[name];
+  const parsedBuiltin = builtinEntry ? parseProfileEntry(builtinEntry) : null;
+  if (parsedBuiltin) {
     return {
-      name: "planning",
-      model: PLANNING_MODEL,
-      thinkingLevel: "xhigh",
-      source: "builtin",
-      status: "ok",
-    };
-  }
-
-  if (name === "peer-review") {
-    return {
-      name: "peer-review",
-      model: PEER_REVIEW_MODEL,
-      thinkingLevel: "high",
+      name,
+      model: parsedBuiltin.modelId,
+      thinkingLevel: parsedBuiltin.thinkingLevel,
       source: "builtin",
       status: "ok",
     };
@@ -176,23 +195,6 @@ export function resolveKhalaProfile(name: KhalaProfileName): KhalaModelProfile {
     reason: discovery.reason,
     setupHint: discovery.setupHint,
   };
-}
-
-export function formatKhalaModelProfilesStatus(): string {
-  const profiles = [
-    resolveKhalaProfile("planning"),
-    resolveKhalaProfile("development"),
-    resolveKhalaProfile("peer-review"),
-  ];
-  return [
-    "Model profiles:",
-    ...profiles.map((profile) => {
-      const model = profile.model ?? "unresolved";
-      const status = profile.status === "ok" ? "ok" : `unresolved (${profile.reason ?? "unknown reason"})`;
-      const hint = profile.setupHint ? ` Setup: ${profile.setupHint}` : "";
-      return `- ${profile.name}: model=${model}, thinking=${profile.thinkingLevel}, source=${profile.source}, ${status}.${hint}`;
-    }),
-  ].join("\n");
 }
 
 export function resetKhalaProfileDiscoveryForTests(): void {

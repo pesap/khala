@@ -86,8 +86,8 @@ test("formats a blocked Reviewer Two launch contract when model is unresolved", 
 
 test("resolves reviewer two defaults without implementation workflow flags", () => {
   const settings = resolveReviewerTwoReviewSettings();
-  assert.equal(settings.model, "github-copilot/claude-opus-4.7");
-  assert.equal(settings.thinkingLevel, "high");
+  assert.equal(settings.model, "NLR/HALO GPT OSS 120b");
+  assert.equal(settings.thinkingLevel, "off");
   assert.equal(settings.routingMode, "default");
 });
 
