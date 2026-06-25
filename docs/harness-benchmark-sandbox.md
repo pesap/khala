@@ -166,5 +166,6 @@ Each run is evaluated with `evaluateHarnessTurn` and
 
 Lower divergence and higher compliance indicate the model stayed closer to the
 Khala harness and package instructions. The seed suite covers workon handoff
-capsule acknowledgement plus empty-commit draft PR bootstrap, skill routing, focused memory search, evidence routing,
-validation claims, and duplicate evidence collection.
+capsule acknowledgement plus empty-commit draft PR bootstrap, skill routing,
+focused memory search, evidence routing, validation claims, and duplicate
+evidence collection.
