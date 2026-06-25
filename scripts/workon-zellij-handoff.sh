@@ -735,13 +735,13 @@ if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
     heartbeat_action="reused"
     heartbeat_command="reused existing forge-heartbeat pane ${heartbeat_pane_id}"
   else
-    heartbeat_args=(bash "${heartbeat_script}" --multiplexer zellij --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me)
+    heartbeat_args=(bash "${heartbeat_script}" --multiplexer zellij --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me --trusted-author @me --trusted-author copilot-pull-request-reviewer[bot])
     if [[ -n "${pi_pane_id}" ]]; then
       heartbeat_args+=(--notify-pane "${pi_pane_id}")
     else
       printf 'Zellij did not report a Pi pane id; forge heartbeat will not actively notify Pi.\n' >&2
     fi
-    heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --multiplexer zellij --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
+    heartbeat_command="zellij action new-pane --tab-id ${tab_id} --name forge-heartbeat --cwd ${worktree_path} -- bash ${heartbeat_script} --multiplexer zellij --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --trusted-author @me --trusted-author copilot-pull-request-reviewer[bot]"
     if [[ -n "${pi_pane_id}" ]]; then
       heartbeat_command="${heartbeat_command} --notify-pane ${pi_pane_id}"
     fi

@@ -357,9 +357,9 @@ if [[ "${heartbeat}" != "0" && "${heartbeat}" != "0.0" ]]; then
     heartbeat_action="reused"
     heartbeat_command="reused existing forge-heartbeat tmux window ${heartbeat_pane_id}"
   else
-    heartbeat_command="tmux new-window -t ${session_name}: -n forge-heartbeat -c ${worktree_path} bash ${heartbeat_script} --multiplexer tmux --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me"
+    heartbeat_command="tmux new-window -t ${session_name}: -n forge-heartbeat -c ${worktree_path} bash ${heartbeat_script} --multiplexer tmux --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --trusted-author @me --trusted-author copilot-pull-request-reviewer[bot]"
     [[ -z "${pi_pane_id}" ]] || heartbeat_command="${heartbeat_command} --notify-pane ${pi_pane_id}"
-    heartbeat_args=(bash "${heartbeat_script}" --multiplexer tmux --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me)
+    heartbeat_args=(bash "${heartbeat_script}" --multiplexer tmux --repo "${repo}" --branch "${branch}" --interval "${heartbeat}" --author @me --trusted-author @me --trusted-author copilot-pull-request-reviewer[bot])
     [[ -z "${pi_pane_id}" ]] || heartbeat_args+=(--notify-pane "${pi_pane_id}")
     heartbeat_pane_id="$(tmux new-window -d -t "${session_name}:" -n forge-heartbeat -c "${worktree_path}" -P -F '#{pane_id}' "${heartbeat_args[@]}" 2>&1)" || {
       heartbeat_action="failed"

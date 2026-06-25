@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: workon-forge-heartbeat.sh --repo [HOST/]OWNER/REPO --branch BRANCH --interval HOURS [--multiplexer zellij|tmux] [--author LOGIN|@me] [--trusted-author LOGIN] [--notify-pane PANE_ID] [--state-file PATH] [--once]
+Usage: workon-forge-heartbeat.sh --repo [HOST/]OWNER/REPO --branch BRANCH --interval HOURS [--multiplexer zellij|tmux] [--author LOGIN|@me] [--trusted-author LOGIN|@me] [repeatable] [--notify-pane PANE_ID] [--state-file PATH] [--once]
 
 Poll the forge CLI for feedback from the selected author on the open PR for a
 branch. Numeric intervals are decimal hours: 0.25 means 15 minutes, and 2.0
@@ -22,6 +22,8 @@ branch=""
 interval="1.0"
 author="@me"
 trusted_author="pesap"
+trusted_author_specs=()
+trusted_author_specs_present=false
 multiplexer="zellij"
 notify_pane=""
 state_file=""
@@ -43,7 +45,11 @@ while (($#)); do
       shift 2
       ;;
     --author)
-      author="${2:?--author requires LOGIN or @me}"
+      if (($# < 2)); then
+        printf '--author requires LOGIN or @me\n' >&2
+        exit 2
+      fi
+      author="${2}"
       shift 2
       ;;
     --multiplexer)
@@ -51,7 +57,12 @@ while (($#)); do
       shift 2
       ;;
     --trusted-author)
-      trusted_author="${2:?--trusted-author requires LOGIN}"
+      if (($# < 2)); then
+        printf '--trusted-author requires LOGIN\n' >&2
+        exit 2
+      fi
+      trusted_author_specs_present=true
+      trusted_author_specs+=("${2}")
       shift 2
       ;;
     --notify-pane)
@@ -81,6 +92,15 @@ done
 if [[ -z "${repo}" || -z "${branch}" ]]; then
   usage
   exit 2
+fi
+
+if [[ "${trusted_author_specs_present}" == true ]]; then
+  for spec in "${trusted_author_specs[@]}"; do
+    if [[ -z "${spec}" ]]; then
+      printf '{"status":"unsafe-author-ignored","reason":"invalid-login","requestedAuthor":"","resolvedAuthor":""}\n'
+      exit 0
+    fi
+  done
 fi
 
 parse_repo_selector() {
@@ -134,6 +154,11 @@ interval_seconds() {
 
 json_string() {
   jq -Rn --arg value "$1" '$value'
+}
+
+feedback_login_is_valid() {
+  local value="${1:-}"
+  [[ -n "${value}" && "${value}" != *[[:space:]]* ]]
 }
 
 gh_api() {
@@ -229,21 +254,96 @@ ${comments}
     "${count}"
 }
 
-resolve_feedback_author() {
-  local requested_author="${1:?author required}"
-  local expected_author="${2:?trusted author required}"
-  local resolved_author=""
+resolve_login_spec() {
+  local requested_spec="${1-}"
+  local resolved_login=""
 
-  if [[ "${requested_author}" == "@me" ]]; then
-    resolved_author="$(gh_api user --jq .login)"
-  else
-    resolved_author="${requested_author}"
+  if [[ -z "${requested_spec}" ]]; then
+    printf '{"status":"unsafe-author-ignored","reason":"invalid-login","requestedAuthor":%s,"resolvedAuthor":%s}\n' \
+      "$(json_string "${requested_spec}")" \
+      "$(json_string "${resolved_login}")"
+    return 1
   fi
 
-  if [[ "${resolved_author}" != "${expected_author}" ]]; then
-    printf '{"status":"unsafe-author-ignored","expectedAuthor":%s,"resolvedAuthor":%s}\n' \
-      "$(json_string "${expected_author}")" \
-      "$(json_string "${resolved_author}")"
+  if [[ "${requested_spec}" == "@me" ]]; then
+    resolved_login="$(gh_api user --jq .login)"
+  else
+    resolved_login="${requested_spec}"
+  fi
+
+  if ! feedback_login_is_valid "${resolved_login}"; then
+    printf '{"status":"unsafe-author-ignored","reason":"invalid-login","requestedAuthor":%s,"resolvedAuthor":%s}\n' \
+      "$(json_string "${requested_spec}")" \
+      "$(json_string "${resolved_login}")"
+    return 1
+  fi
+
+  printf '%s\n' "${resolved_login}"
+}
+
+build_trusted_authors_json() {
+  local -a specs=()
+  local -a resolved=()
+  local spec=""
+  local resolved_login=""
+
+  if [[ "${trusted_author_specs_present}" == true ]]; then
+    specs=("${trusted_author_specs[@]}")
+  else
+    specs=("${trusted_author}")
+  fi
+
+  for spec in "${specs[@]}"; do
+    local resolved_login_file=""
+    resolved_login_file="$(mktemp "${TMPDIR:-/tmp}/workon-resolved-login.XXXXXX")"
+    if resolve_login_spec "${spec}" >"${resolved_login_file}"; then
+      resolved_login="$(cat "${resolved_login_file}")"
+    else
+      resolved_login="$(cat "${resolved_login_file}")"
+      rm -f "${resolved_login_file}"
+      return 1
+    fi
+    rm -f "${resolved_login_file}"
+    resolved+=("${resolved_login}")
+  done
+
+  if [[ "${#resolved[@]}" -eq 0 ]]; then
+    printf '{"status":"unsafe-author-ignored","reason":"empty-trusted-author-allowlist"}\n'
+    return 1
+  fi
+
+  printf '%s\n' "${resolved[@]}"
+}
+
+resolve_feedback_author() {
+  local requested_author="${1:?author required}"
+  local trusted_authors_json="${2:?trusted authors required}"
+  local resolved_author=""
+  local expected_author=""
+
+  local resolved_author_file=""
+  resolved_author_file="$(mktemp "${TMPDIR:-/tmp}/workon-resolved-author.XXXXXX")"
+  if resolve_login_spec "${requested_author}" >"${resolved_author_file}"; then
+    resolved_author="$(cat "${resolved_author_file}")"
+  else
+    resolved_author="$(cat "${resolved_author_file}")"
+    printf '%s\n' "${resolved_author}"
+    rm -f "${resolved_author_file}"
+    return 1
+  fi
+  rm -f "${resolved_author_file}"
+
+  if ! grep -Fxq -- "${resolved_author}" <<<"${trusted_authors_json}"; then
+    expected_author="$(printf '%s\n' "${trusted_authors_json}" | awk 'NF { if (++count == 1) first = $0 } END { if (count == 1) print first }')"
+    if [[ -n "${expected_author}" ]]; then
+      printf '{"status":"unsafe-author-ignored","expectedAuthor":%s,"resolvedAuthor":%s}\n' \
+        "$(json_string "${expected_author}")" \
+        "$(json_string "${resolved_author}")"
+    else
+      printf '{"status":"unsafe-author-ignored","resolvedAuthor":%s,"trustedAuthors":%s}\n' \
+        "$(json_string "${resolved_author}")" \
+        "$(json_string "${trusted_authors_json}")"
+    fi
     return 1
   fi
 
@@ -290,7 +390,7 @@ fetch_review_threads() {
 
 print_feedback_records() {
   local pr_number="${1:?pr number required}"
-  local feedback_author="${2:?author required}"
+  local trusted_authors_json="${2:?trusted authors required}"
   local issue_comments_json=""
   local review_comments_json=""
   local review_threads_json=""
@@ -322,13 +422,17 @@ print_feedback_records() {
     return 1
   fi
 
+  local trusted_authors_file=""
+  trusted_authors_file="$(mktemp "${TMPDIR:-/tmp}/workon-trusted-authors.XXXXXX")"
+  printf '%s' "${trusted_authors_json}" >"${trusted_authors_file}"
   jq -nc \
-    --arg author "${feedback_author}" \
+    --rawfile trustedAuthors "${trusted_authors_file}" \
     --slurpfile issueComments <(printf '%s' "${issue_comments_json}") \
     --slurpfile reviewComments <(printf '%s' "${review_comments_json}") \
     --slurpfile reviewThreads <(printf '%s' "${review_threads_json}") \
     --slurpfile reviews <(printf '%s' "${reviews_json}") \
     -f "${feedback_filter_path}"
+  rm -f "${trusted_authors_file}"
 }
 
 filter_new_actionable_feedback() {
@@ -381,10 +485,26 @@ if [[ -n "${notify_pane}" ]]; then
 fi
 
 sleep_seconds="$(interval_seconds "${interval}")"
-resolved_author_result="$(resolve_feedback_author "${author}" "${trusted_author}")" || {
+trusted_authors_output_file="$(mktemp "${TMPDIR:-/tmp}/workon-trusted-authors-output.XXXXXX")"
+if build_trusted_authors_json >"${trusted_authors_output_file}"; then
+  trusted_authors_json="$(cat "${trusted_authors_output_file}")"
+else
+  trusted_authors_json="$(cat "${trusted_authors_output_file}")"
+  rm -f "${trusted_authors_output_file}"
+  printf '%s\n' "${trusted_authors_json}"
+  exit 0
+fi
+rm -f "${trusted_authors_output_file}"
+resolved_author_output_file="$(mktemp "${TMPDIR:-/tmp}/workon-resolved-author-output.XXXXXX")"
+if resolve_feedback_author "${author}" "${trusted_authors_json}" >"${resolved_author_output_file}"; then
+  resolved_author_result="$(cat "${resolved_author_output_file}")"
+else
+  resolved_author_result="$(cat "${resolved_author_output_file}")"
+  rm -f "${resolved_author_output_file}"
   printf '%s\n' "${resolved_author_result}"
   exit 0
-}
+fi
+rm -f "${resolved_author_output_file}"
 author="${resolved_author_result}"
 state_file="${state_file:-$(default_state_file)}"
 init_state_file "${state_file}"
@@ -409,7 +529,7 @@ while true; do
     pr_number="$(printf '%s' "${pr_json}" | jq -r '.number')"
     pr_url="$(printf '%s' "${pr_json}" | jq -r '.url')"
     printf '== %s feedback from %s on %s ==\n' "${checked_at}" "${author}" "${pr_url}"
-    if ! feedback_records="$(print_feedback_records "${pr_number}" "${author}")"; then
+    if ! feedback_records="$(print_feedback_records "${pr_number}" "${trusted_authors_json}")"; then
       printf '%s\n' "${feedback_records}"
       poll_failed=true
     elif [[ -z "${feedback_records}" ]]; then

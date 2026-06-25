@@ -529,6 +529,8 @@ exit 2
     const result = JSON.parse(resultLine);
     assert.equal(result.heartbeatAction, "started");
     assert.match(result.heartbeatCommand, /--repo github\.enterprise\.example\/PCM\/nodal-allocation/);
+    assert.match(result.heartbeatCommand, /--trusted-author @me/);
+    assert.match(result.heartbeatCommand, /--trusted-author copilot-pull-request-reviewer\[bot\]/);
 
     const panes = await readFile(paneLog, "utf8");
     assert.match(panes, /--name forge-heartbeat/);
@@ -640,6 +642,8 @@ exit 2
     assert.equal(result.piPaneAction, "started");
     assert.equal(result.heartbeatPaneId, "terminal_160_heartbeat");
     assert.equal(result.heartbeatAction, "started");
+    assert.match(result.heartbeatCommand, /--trusted-author @me/);
+    assert.match(result.heartbeatCommand, /--trusted-author copilot-pull-request-reviewer\[bot\]/);
     assert.match(result.heartbeatCommand, /--notify-pane terminal_160_pi/);
 
     const panes = await readFile(paneLog, "utf8");
@@ -2130,7 +2134,8 @@ exit 0
     );
 
     assert.match(stdout, /"status":"unsafe-author-ignored"/);
-    assert.match(stdout, /"expectedAuthor":"pesap"/);
+    assert.match(stdout, /"reason":"invalid-login"/);
+    assert.match(stdout, /"requestedAuthor":"@me"/);
     assert.match(stdout, /"resolvedAuthor":""/);
     await assert.rejects(readFile(zellijLog, "utf8"), /ENOENT/);
   } finally {

@@ -1,0 +1,72 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_allowlist_untrusted_reply",
+              "isResolved": false,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 5001,
+                    "author": {"login": "pesap"},
+                    "body": "Please make the state update explicit.",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r5001",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:00:00Z",
+                    "updatedAt": "2026-06-06T01:00:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": null
+                  },
+                  {
+                    "databaseId": 5002,
+                    "author": {"login": "mallory"},
+                    "body": "Untrusted replies should not suppress the trusted root comment.",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r5002",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:05:00Z",
+                    "updatedAt": "2026-06-06T01:05:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": {"databaseId": 5001}
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_allowlist_answered_by_trusted_reply",
+              "isResolved": false,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 6001,
+                    "author": {"login": "pesap"},
+                    "body": "Please make this configurable.",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r6001",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:06:00Z",
+                    "updatedAt": "2026-06-06T01:06:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": null
+                  },
+                  {
+                    "databaseId": 6002,
+                    "author": {"login": "copilot-pull-request-reviewer[bot]"},
+                    "body": "Addressed in the current patch.",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r6002",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:07:00Z",
+                    "updatedAt": "2026-06-06T01:07:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": {"databaseId": 6001}
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
