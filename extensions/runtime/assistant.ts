@@ -240,6 +240,46 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
     };
   }
 
+  // Detect heartbeat-delivered actionable review-thread feedback from trusted authors
+  const HEARTBEAT_PREAMBLE = "forge feedback heartbeat found actionable feedback from trusted github login";
+  if (text.includes(HEARTBEAT_PREAMBLE)) {
+    try {
+      const beginMarker = "--- begin untrusted forge feedback json ---";
+      const endMarker = "--- end untrusted forge feedback json ---";
+      const beginIndex = text.indexOf(beginMarker);
+      const endIndex = text.indexOf(endMarker);
+      
+      if (beginIndex !== -1 && endIndex !== -1 && beginIndex < endIndex) {
+        const jsonText = text.substring(beginIndex + beginMarker.length, endIndex).trim();
+        const feedbackArray = JSON.parse(jsonText);
+        
+        if (Array.isArray(feedbackArray)) {
+          const hasActionableReviewThread = feedbackArray.some(item => 
+            item.type === "review-thread" && 
+            item.actionable === true
+          );
+          
+          if (hasActionableReviewThread) {
+            return {
+              obligation: "tool_required",
+              reason: "heartbeat-delivered actionable review-thread feedback requires in-thread reply",
+            };
+          } else {
+            // Heartbeat feedback found but no actionable review-thread items
+            // User can respond normally without needing to take tool action
+            return {
+              obligation: "answer_allowed",
+              reason: "heartbeat feedback contains no actionable review-thread items",
+            };
+          }
+        }
+      }
+    } catch (e) {
+      // If parsing fails, fall through to other checks
+      // This ensures we don't break existing functionality if the heartbeat format changes
+    }
+  }
+
   if (
     /\b(can you|could you|please)\b/.test(text) &&
     /\b(check|review|analyze|verify|confirm)\b/.test(text) &&
