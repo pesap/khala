@@ -148,6 +148,8 @@ esac
     assert.equal(result.heartbeatPaneId, "%2");
     assert.match(result.piHandoffCommand, /tmux new-window .* -n pi /);
     assert.match(result.heartbeatCommand, /--multiplexer tmux/);
+    assert.match(result.heartbeatCommand, /--trusted-author @me/);
+    assert.match(result.heartbeatCommand, /--trusted-author copilot-pull-request-reviewer\[bot\]/);
     assert.match(result.heartbeatCommand, /--notify-pane %1/);
 
     if (process.platform !== "win32") {
@@ -250,6 +252,8 @@ esac
     const result = JSON.parse(stdout.trim());
     assert.equal(result.status, "launched");
     assert.match(result.heartbeatCommand, /--repo github\.enterprise\.example\/PCM\/nodal-allocation/);
+    assert.match(result.heartbeatCommand, /--trusted-author @me/);
+    assert.match(result.heartbeatCommand, /--trusted-author copilot-pull-request-reviewer\[bot\]/);
 
     const tmuxLog = await readFile(logPath, "utf8");
     assert.match(tmuxLog, /new-window .* -n forge-heartbeat /);

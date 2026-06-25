@@ -14,6 +14,9 @@ def suggestion_blocks:
 
 def author_model($login): {login: ($login // "")};
 
+def trusted_authors: (($trustedAuthors // "") | split("\n") | map(select(length > 0)));
+def trusted_author_login($login): (trusted_authors | index($login) != null);
+
 def review_comment_model($restById):
   . as $comment
   | ($restById[($comment.databaseId | tostring)] // {}) as $rest
@@ -44,7 +47,7 @@ def review_comment_model($restById):
 | (
     [
       $issueList[]?
-      | select(.user.login == $author)
+      | select(trusted_author_login(.user.login))
       | (.body // "") as $body
       | (.updated_at // .created_at // "") as $lastModified
       | {
@@ -74,7 +77,7 @@ def review_comment_model($restById):
     +
     [
       $reviewList[]?
-      | select(.user.login == $author)
+      | select(trusted_author_login(.user.login))
       | select((.body // "") != "")
       | (.body // "") as $body
       | (.submitted_at // .updated_at // "") as $lastModified
@@ -110,7 +113,7 @@ def review_comment_model($restById):
       | select(($comments | length) > 0)
       | (($comments | map(select(.inReplyToId == null)) | .[0]) // $comments[0]) as $root
       | ($comments | map(select(.inReplyToId == $root.commentId))) as $replies
-      | ($replies | map(select(.author.login == $author))) as $actorReplies
+      | ($replies | map(select(trusted_author_login(.author.login)))) as $actorReplies
       | (($comments | map(.updatedAt // .createdAt // "") | max) // $root.updatedAt // $root.createdAt // "") as $lastModified
       | {
           schemaVersion: 1,
@@ -135,10 +138,10 @@ def review_comment_model($restById):
           suggestions: $root.suggestions,
           replies: $replies,
           actorReplyCommentIds: ($actorReplies | map(.commentId)),
-          actionable: (((($thread.isResolved // false) | not) and ($root.author.login == $author) and (($actorReplies | length) == 0))),
+          actionable: (((($thread.isResolved // false) | not) and trusted_author_login($root.author.login) and (($actorReplies | length) == 0))),
           skipReason: (
             if ($thread.isResolved // false) then "resolved-review-thread"
-            elif $root.author.login != $author then "root-authored-by-other-user"
+            elif trusted_author_login($root.author.login) | not then "root-authored-by-other-user"
             elif ($actorReplies | length) > 0 then "actor-reply-present"
             else null
             end

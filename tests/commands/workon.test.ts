@@ -142,10 +142,10 @@ function fakeGhRunner(outputs: Record<string, string>): {
               piPaneId: "terminal_91",
               piPaneAction: `zellij action new-pane --tab-id 44 --name pi --cwd /tmp/worktrunk.feat-182 -- pi -a --name ${branch}${modelArgs}${thinkingArgs} <clean-prompt>`,
               heartbeatPaneId: "terminal_92",
-              heartbeatAction: `zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd /tmp/worktrunk.feat-182 -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
+              heartbeatAction: `zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd /tmp/worktrunk.feat-182 -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --trusted-author @me --trusted-author copilot-pull-request-reviewer[bot] --notify-pane terminal_99`,
               worktreeAction: `zellij action new-pane --tab-id 44 --name worktree --cwd /tmp/worktrunk.feat-182 -- wt switch --create ${branch} --format json`,
               piHandoffCommand: `zellij action new-pane --tab-id 44 --name pi --cwd /tmp/worktrunk.feat-182 -- pi -a --name ${branch}${modelArgs}${thinkingArgs} <clean-prompt>`,
-              heartbeatCommand: `zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd /tmp/worktrunk.feat-182 -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
+              heartbeatCommand: `zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd /tmp/worktrunk.feat-182 -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --trusted-author @me --trusted-author copilot-pull-request-reviewer[bot] --notify-pane terminal_99`,
             })}\n`,
             error: `Command failed: bash ${args[0]} --repo ${repo} --branch ${branch} --prompt ## Deterministic /workon route --heartbeat 1.0\n${prompt}`,
             exitCode: 1,
@@ -158,7 +158,7 @@ function fakeGhRunner(outputs: Record<string, string>): {
             path: worktreePath,
             tabName: "agents/feat-65-detect-local-worktrees-stale",
             tabId: 12,
-            heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --notify-pane terminal_99`,
+            heartbeatCommand: `zellij action new-pane --tab-id 12 --name forge-heartbeat --cwd ${worktreePath} -- bash scripts/workon-forge-heartbeat.sh --repo ${repo} --branch ${branch} --interval ${heartbeat} --author @me --trusted-author @me --trusted-author copilot-pull-request-reviewer[bot] --notify-pane terminal_99`,
             piHandoffCommand: `zellij action new-pane --tab-id 12 --name pi --cwd ${worktreePath} -- pi -a --name ${branch}${modelArgs}${thinkingArgs} <clean-prompt>`,
             repo,
           })}\n`,
@@ -1534,6 +1534,7 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
     assert.match(rendered, new RegExp(`-- pi -a --name feat/65-detect-local-worktrees-stale --model anthropic/claude-sonnet-4 --thinking ${DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`));
     assert.match(rendered, /Forge heartbeat command: zellij action new-pane/);
+    assert.match(rendered, /--trusted-author @me --trusted-author copilot-pull-request-reviewer\[bot\]/);
     assert.match(rendered, /--notify-pane terminal_99/);
     assert.doesNotMatch(rendered, /--prompt I want to discuss and possibly work on:/);
     assert.match(rendered, /--prompt <redacted>/);
@@ -2046,6 +2047,7 @@ test("blocked Zellij handoff preserves structured reason and redacts raw prompt 
     assert.match(rendered, /Heartbeat pane ID: terminal_92/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane --tab-id 44 --name pi --cwd \/tmp\/worktrunk\.feat-182 -- pi -a --name fix\/182-structured-handoff-failure/);
     assert.match(rendered, /Forge heartbeat command: zellij action new-pane --tab-id 44 --name forge-heartbeat --cwd \/tmp\/worktrunk\.feat-182 -- bash scripts\/workon-forge-heartbeat\.sh --repo pesap\/agents --branch fix\/182-structured-handoff-failure/);
+    assert.match(rendered, /--trusted-author @me --trusted-author copilot-pull-request-reviewer\[bot\]/);
     assert.match(rendered, /--prompt <redacted>/);
     assert.doesNotMatch(rendered, /--prompt ## Deterministic \/workon route/);
     assert.doesNotMatch(rendered, /Draft PR and feedback heartbeat:/);

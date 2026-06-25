@@ -105,7 +105,12 @@ async function setupScenario(scenario: string): Promise<{
   };
 }
 
-async function runHeartbeat(env: NodeJS.ProcessEnv, stateFile: string, multiplexer = "zellij"): Promise<string> {
+async function runHeartbeat(
+  env: NodeJS.ProcessEnv,
+  stateFile: string,
+  multiplexer = "zellij",
+  extraArgs: string[] = [],
+): Promise<string> {
   const { stdout } = await execFileAsync(
     "bash",
     [
@@ -120,6 +125,7 @@ async function runHeartbeat(env: NodeJS.ProcessEnv, stateFile: string, multiplex
       multiplexer,
       "--author",
       "@me",
+      ...extraArgs,
       "--notify-pane",
       "terminal_99",
       "--state-file",
@@ -259,6 +265,122 @@ test("forge heartbeat sends unresolved root review threads as structured actiona
 
     const state = JSON.parse(await readFile(stateFile, "utf8"));
     assert.deepEqual(state.notifiedKeys, [thread.dedupeKey]);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("forge heartbeat notifies current user and Copilot feedback from an explicit trusted allowlist", async () => {
+  const { tempDir, env, stateFile, zellijLog } = await setupScenario("trusted-allowlist");
+  try {
+    const stdout = await runHeartbeat(env, stateFile, "zellij", [
+      "--trusted-author",
+      "@me",
+      "--trusted-author",
+      "copilot-pull-request-reviewer[bot]",
+    ]);
+    const jsonLines = parseJsonLines(stdout);
+    const authors = jsonLines.flatMap((line) => {
+      const author = line.author as { login?: string } | undefined;
+      return author?.login ? [author.login] : [];
+    });
+
+    assert.match(stdout, /"status":"notified-pi"/);
+    assert.equal(jsonLines.length, 6);
+    assert.deepEqual(authors.sort(), ["copilot-pull-request-reviewer[bot]", "copilot-pull-request-reviewer[bot]", "pesap", "pesap", "pesap"]);
+
+    const issueComments = jsonLines.filter((line) => line.type === "issue-comment");
+    assert.deepEqual(
+      issueComments.map((line) => (line.author as { login?: string } | undefined)?.login),
+      ["pesap", "copilot-pull-request-reviewer[bot]"],
+    );
+
+    const reviews = jsonLines.filter((line) => line.type === "review");
+    assert.deepEqual(
+      reviews.map((line) => (line.author as { login?: string } | undefined)?.login),
+      ["copilot-pull-request-reviewer[bot]"],
+    );
+
+    const threads = jsonLines.filter((line) => line.type === "review-thread");
+    const actionableThread = threads.find((line) => line.threadId === "PRRT_allowlist_untrusted_reply");
+    const answeredThread = threads.find((line) => line.threadId === "PRRT_allowlist_answered_by_trusted_reply");
+    assert.ok(actionableThread);
+    assert.equal(actionableThread.actionable, true);
+    assert.deepEqual(actionableThread.actorReplyCommentIds, []);
+    assert.ok(answeredThread);
+    assert.equal(answeredThread.actionable, false);
+    assert.equal(answeredThread.skipReason, "actor-reply-present");
+    assert.deepEqual(answeredThread.actorReplyCommentIds, [6002]);
+
+    const zellijActions = await readFile(zellijLog, "utf8");
+    assert.match(zellijActions, /BEGIN UNTRUSTED FORGE FEEDBACK JSON/);
+    assert.match(zellijActions, /copilot-pull-request-reviewer\[bot\]/);
+
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(state.notifiedKeys.length, 4);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("forge heartbeat rejects an empty trusted allowlist before polling", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "workon-forge-heartbeat-empty-allowlist-test-"));
+  try {
+    const binDir = path.join(tempDir, "bin");
+    await mkdir(binDir);
+    await writeExecutable(
+      path.join(binDir, "gh"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+    await writeExecutable(
+      path.join(binDir, "zellij"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf 'unexpected zellij args: %s\n' "$*" >&2
+exit 2
+`,
+    );
+
+    const capsulePath = path.join(tempDir, "capsule.md");
+    await writeFile(capsulePath, "# capsule\n", "utf8");
+
+    const { stdout } = await execFileAsync(
+      "bash",
+      [
+        scriptPath,
+        "--repo",
+        "pesap/agents",
+        "--branch",
+        branch,
+        "--interval",
+        "1.0",
+        "--author",
+        "@me",
+        "--trusted-author",
+        "",
+        "--notify-pane",
+        "terminal_99",
+        "--state-file",
+        path.join(tempDir, "state.json"),
+        "--once",
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+
+    assert.match(stdout, /"status":"unsafe-author-ignored"/);
+    assert.match(stdout, /"reason":"invalid-login"/);
+    assert.match(stdout, /"requestedAuthor":""/);
+    assert.match(stdout, /"resolvedAuthor":""/);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
   }
