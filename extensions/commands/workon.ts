@@ -173,6 +173,7 @@ export interface WorkonBootstrapRequest {
 }
 
 export const WORKON_DEFAULT_THINKING_LEVEL: WorkonThinkingLevel = "medium";
+export const WORKON_DEFAULT_HEARTBEAT = "0.0834";
 
 function defaultWorkonModelSelection(): WorkonModelSelection {
   const route = resolveWorkflowRoute("workon");
@@ -1655,6 +1656,7 @@ async function readHandoffTemplate(cwd: string): Promise<string> {
 }
 
 function heartbeatLabel(value: string): string {
+  if (value === WORKON_DEFAULT_HEARTBEAT) return "5 minutes";
   return `${value} hours`;
 }
 
@@ -1681,6 +1683,7 @@ function reviewerTwoHandoffSection(settings: ReviewerTwoReviewSettings): string 
     "- Reviewer Two output contract: decision, blockers, importantRevisions, optionalSuggestions, missingAcceptanceCriteria, validationGaps, scopeConcerns, recommendation.",
     "- Classify findings as must-fix, optional/deferred, or rejected with rationale.",
     "- For must-fix findings, make the changes and rerun focused validation before continuing.",
+    "- If stuck, ask Reviewer Two for a fresh-context blocker review or escalate to the operator with the exact blocker.",
     "- Stop on pass, blocked, exhausted loop budget, or an unapproved product/scope decision.",
   ];
   return lines.join("\n");
@@ -1736,10 +1739,11 @@ Initial handoff and readiness gate:
 - Read the session capsule path provided by the launcher.
 - Acknowledge that the capsule was read by running: \`${buildHandoffAcknowledgementCommand(params.ledgerPath)}\`.
 - Read the local agent/repo instructions.
+- Confirm you are in the Worktrunk worktree recorded in the capsule; only edit files inside that worktree.
 - Inspect the relevant code, docs, tests, recent commits, and linked issue state for every source issue only as needed to verify readiness, drift, and blockers.
 - Decide whether this combined task is still real, already solved, stale, over-scoped, or better handled differently.
 - Call out stale assumptions, hidden risks, and anything that should stop the work.
-- If no blocker is found, start the smallest scoped implementation slice in this worktree without waiting for another operator instruction.
+- If no blocker is found, create/reuse the draft PR immediately with an empty bootstrap commit, then start the smallest scoped implementation slice in this worktree without waiting for another operator instruction.
 
 Next-step action:
 - Work through the source issues in this deterministic order unless issue-body evidence supports a different order:
@@ -1767,7 +1771,8 @@ ${validation}
 ${reviewerTwoHandoffSection(params.reviewSettings)}
 
 Draft PR and feedback heartbeat:
-- Once there is a coherent implementation commit, create or update a draft PR for this branch on the forge.
+- Before implementation edits, create or reuse the draft PR for this branch with an empty bootstrap commit; do not create duplicate PRs for the same head branch.
+- If the empty commit, push, or draft PR create/update fails, stop and report the exact blocker to the operator.
 - Link the draft PR back to all source issues:
 ${sourceIssueReferences}
 - Make clear the draft PR is not ready to merge until validation and review are complete.
@@ -1775,14 +1780,16 @@ ${sourceIssueReferences}
 - For each source issue criterion, use checkbox state, not textual status prefixes: checked means met; unchecked means unmet.
 - Preserve useful concise evidence as nested \`Evidence:\` lines under checklist items.
 - For unmet criteria, keep the checkbox unchecked and include a concise reason/follow-up under the item or in Deviations.
-- After opening the draft PR, check the PR/issue forge for human feedback every ${heartbeatLabel(params.heartbeat)} while you are still working.
+- After opening the draft PR, check the PR/issue forge for human feedback and failing CI every ${heartbeatLabel(params.heartbeat)} while you are still working.
+- After opening the draft PR and after pushing implementation updates, check PR CI before claiming status; report failing checks exactly and keep working only when the fix is in scope.
+- Before handoff, update the implementation commit message and PR body so they match the final validated scope.
 - Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.
 
 Output:
 - Start with review findings, readiness status, and recommendation.
 - If the readiness gate finds a blocker, report the blocker and stop before implementation.
 - If implementation edits code, report exact proof run.
-- Include draft PR URL/status only after a later explicit implementation turn creates or updates one, plus latest heartbeat check result.
+- Include draft PR URL/status after the bootstrap PR create/update, plus latest heartbeat and CI check result.
 - Do not merge, close issues/PRs, label, or post broad public comments unless explicitly told.`;
 }
 

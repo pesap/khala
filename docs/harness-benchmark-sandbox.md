@@ -25,7 +25,7 @@ Run the sandbox live through Pi and score the captured transcript:
 ```bash
 npm run benchmark:pi-drift -- \
   --model "provider/model-id" \
-  --case workon-handoff-acknowledgement \
+  --case workon-worker-bootstrap \
   --prompt-mode both \
   --out .tmp/pi-drift/latest.json
 ```
@@ -96,16 +96,16 @@ Suites are JSON files with benchmark cases and candidate runs:
       "userText": "Review this change for regressions.",
       "harnessLimits": { "substantialToolCallThreshold": 99 },
       "packageContract": {
-        "name": "workon handoff acknowledgement",
+        "name": "workon worker bootstrap",
         "artifacts": [
           {
             "id": "workon-capsule",
             "kind": "capsule",
-            "text": "# Workon session capsule\n\nInitial handoff acknowledgement (no implementation yet):\n- Read the session capsule path provided by the launcher.\n- Acknowledge that the capsule was read by running: `bash scripts/workon-handoff-ack.sh --status capsule-acknowledged`.\n- Do not edit files, run implementation validation, create commits, push, create/update PRs, or start `/simplify` in the handoff acknowledgement turn.\n",
+            "text": "# Workon session capsule\n\nInitial handoff and readiness gate:\n- Read the session capsule path provided by the launcher.\n- Acknowledge that the capsule was read by running: `bash scripts/workon-handoff-ack.sh --status capsule-acknowledged`.\n- If no blocker is found, create/reuse the draft PR immediately with an empty bootstrap commit, then start the smallest scoped implementation slice without waiting for another operator instruction.\n",
             "requiredIncludes": [
-              "Initial handoff acknowledgement (no implementation yet):",
+              "Initial handoff and readiness gate:",
               "Read the session capsule path provided by the launcher.",
-              "Do not edit files, run implementation validation, create commits, push, create/update PRs, or start `/simplify` in the handoff acknowledgement turn."
+              "create/reuse the draft PR immediately with an empty bootstrap commit"
             ]
           }
         ],
@@ -117,6 +117,14 @@ Suites are JSON files with benchmark cases and candidate runs:
               "workon-handoff-ack.sh",
               "capsule-acknowledged"
             ]
+          },
+          {
+            "name": "exec_command",
+            "argumentIncludes": ["git commit", "--allow-empty"]
+          },
+          {
+            "name": "exec_command",
+            "argumentIncludes": ["gh pr create", "--draft"]
           }
         ],
         "forbiddenToolCalls": [{ "name": "apply_patch" }]
@@ -158,5 +166,6 @@ Each run is evaluated with `evaluateHarnessTurn` and
 
 Lower divergence and higher compliance indicate the model stayed closer to the
 Khala harness and package instructions. The seed suite covers workon handoff
-capsule acknowledgement, skill routing, focused memory search, evidence routing,
-validation claims, and duplicate evidence collection.
+capsule acknowledgement plus empty-commit draft PR bootstrap, skill routing,
+focused memory search, evidence routing, validation claims, and duplicate
+evidence collection.

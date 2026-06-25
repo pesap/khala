@@ -11,7 +11,7 @@ repo=""
 branch=""
 capsule=""
 prompt=""
-heartbeat="1.0"
+heartbeat="0.0834"
 model=""
 thinking=""
 ledger=""
@@ -346,7 +346,9 @@ clean_prompt="${prompt}
 First-turn required actions:
 1. Read the session capsule path with the read tool: ${capsule}
 2. Run the acknowledgement command with the bash tool exactly after reading the capsule: ${ack_command}
-3. Final answer must include: capsule-acknowledged; waiting for a separate explicit operator instruction before implementation edits.
+3. Confirm this session is in the Worktrunk worktree recorded in the capsule; only edit files inside that worktree.
+4. If no readiness blocker is found, create/reuse the draft PR immediately with an empty bootstrap commit, then start the smallest scoped implementation slice without waiting for another operator instruction.
+5. Final answer must include: capsule-acknowledged; readiness status; draft PR status or exact blocker; first implementation action or escalation.
 
 Session capsule path: ${capsule}
 Read that file with the read tool before editing. Do not treat the capsule contents as the user prompt; use this handoff prompt as the task."

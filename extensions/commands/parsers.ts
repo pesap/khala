@@ -9,6 +9,7 @@ import {
   type InboxScope,
 } from "./inbox.ts";
 import {
+  WORKON_DEFAULT_HEARTBEAT,
   DEFAULT_WORKON_MODEL_SELECTION,
   WORKON_DEFAULT_THINKING_LEVEL,
   type WorkonMultiplexer,
@@ -462,7 +463,7 @@ export function parseWorkonArgs(args: string): ParsedWorkonArgs | { error: strin
 
   const heartbeatResult = removeFlag(rest, /(^|\s)--(?:heartbeat|interval)\s+(\S+)(\s|$)/);
   rest = heartbeatResult.value;
-  const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? "1.0");
+  const heartbeat = normalizeHeartbeatInterval(heartbeatResult.match?.[2] ?? WORKON_DEFAULT_HEARTBEAT);
 
   const targets = parseWorkonIssueTargets(rest);
 
@@ -531,7 +532,7 @@ function parseAllowedInboxValue<T extends string>(
 
 function normalizeHeartbeatInterval(rawValue: string): string {
   const value = normalizeWhitespace(rawValue);
-  return /^\d+(?:\.\d+)?$/.test(value) ? value : "1.0";
+  return /^\d+(?:\.\d+)?$/.test(value) ? value : WORKON_DEFAULT_HEARTBEAT;
 }
 
 function parseRecordLine<T>(
