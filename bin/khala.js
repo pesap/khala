@@ -2204,7 +2204,7 @@ async function main() {
       console.log("");
       console.log(green(bold("Done.")) + dim(" Khala is installed."));
       console.log(wroteLine(`workflow model config ${targetConfigPath}`));
-      console.log(nextStep(`Start Pi and run ${bold("/khala")} then ${bold("/khala-health")} to verify.`));
+      console.log(nextStep(`Start Pi and run ${bold("/khala-health")} to verify.`));
     }
   } catch (error) {
     if (isAbortError(error)) {

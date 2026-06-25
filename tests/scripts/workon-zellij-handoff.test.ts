@@ -197,6 +197,7 @@ exit 2
         env: {
           ...process.env,
           HOME: tempDir,
+          PI_CODING_AGENT_DIR: "",
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
         },
       },

@@ -13,7 +13,6 @@ type ArgumentCompletions = (prefix: string) => AutocompleteItem[] | null;
 interface CommandRegistrarDeps {
   pi: ExtensionAPI;
   handlers: {
-    khala: CommandHandler;
     khalaMode: CommandHandler;
     khalaHealth: CommandHandler;
     khalaHub: CommandHandler;
@@ -67,7 +66,6 @@ export function registerCommands({
   completions,
 }: CommandRegistrarDeps): void {
   const commands = [
-    { name: "khala", description: "Initialize khala context injection, enable end-of-turn learning assessment, and optionally set memory threshold (/khala --learn-tool-limit 15 or --memory-tool-limit 15); use /khala-health for read-only status", handler: handlers.khala },
     { name: "khala-mode", description: "Inspect or change Khala compliance modes without enabling Khala (/khala-mode warn); use /khala-health for read-only status", handler: handlers.khalaMode },
     { name: "khala-health", description: "Inspect read-only Khala health/status without enabling Khala or changing compliance", handler: handlers.khalaHealth },
     { name: "khala-hub", description: "Report or set the Khala hub storage path for the LLM wiki", handler: handlers.khalaHub },

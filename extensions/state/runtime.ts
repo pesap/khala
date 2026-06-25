@@ -43,7 +43,7 @@ export interface RuntimeState {
 
 export function createRuntimeState(): RuntimeState {
   return {
-    agentEnabled: false,
+    agentEnabled: true,
     riskApproval: null,
     riskEvents: [],
     firstPrinciplesConfig: { preflightMode: "warn", postflightMode: "warn", responseComplianceMode: "warn" },

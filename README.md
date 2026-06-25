@@ -134,10 +134,9 @@ pi install https://github.com/pesap/khala              # writes ~/.pi/agent/sett
 pi install -l https://github.com/pesap/khala           # writes .pi/settings.json for this project
 ```
 
-Start Pi and initialize Khala:
+Start Pi and verify Khala:
 
 ```text
-/khala
 /khala-health
 ```
 
@@ -263,7 +262,6 @@ silently falling back to the planning model.
 
 | Command                                                                       | Purpose                                                                                                                                       |
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/khala`                                                                      | Initialize khala and set compliance to `warn`.                                                                                                |
 | `/khala-health`                                                               | Report read-only Khala health/status, including session enablement, memory tool limit, compliance modes, workflow config, and model profiles. |
 | `/khala-hub [--path <path\|git-ref> [--subdir <relative-path>]]`              | Report or set the Khala hub path for the LLM wiki. Default storage is `~/.pi/khala/hub/`.                                                     |
 | `/khala-mode [enforce\|warn\|ignore]`                                         | With no arguments, report read-only status. With a mode argument, change all compliance modes.                                                |

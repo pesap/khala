@@ -32,7 +32,7 @@ interface ComplianceModeEntryData {
 }
 
 export function getAgentEnabledFromSession(ctx: ExtensionContext): boolean {
-  let enabled = false;
+  let enabled: boolean | null = null;
 
   for (const entry of ctx.sessionManager.getEntries()) {
     if (entry.type !== "custom" || entry.customType !== AGENT_STATE_TYPE) continue;
@@ -45,7 +45,7 @@ export function getAgentEnabledFromSession(ctx: ExtensionContext): boolean {
     }
   }
 
-  return enabled;
+  return enabled ?? true;
 }
 
 export function getComplianceModeFromSession(ctx: ExtensionContext): RuntimeState["firstPrinciplesConfig"] | null {

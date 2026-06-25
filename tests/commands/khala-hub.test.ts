@@ -133,7 +133,7 @@ async function writeGitRepoWithDirtyAndUntrackedFiles(root: string): Promise<voi
   await writeFile(path.join(root, "untracked.txt"), "new\n");
 }
 
-test("registerCommands exposes /khala-hub", () => {
+test("registerCommands exposes /khala-hub and omits /khala", () => {
   const { pi, registrations } = makeRegisterHarness();
   registerCommands({
     pi,
@@ -146,6 +146,7 @@ test("registerCommands exposes /khala-hub", () => {
   assert.ok(khalaHub);
   assert.equal(khalaHub?.description, "Report or set the Khala hub storage path for the LLM wiki");
   assert.equal(typeof khalaHub?.handler, "function");
+  assert.equal(registrations.some((entry) => entry.name === "khala"), false);
 });
 
 test("default /khala-hub scaffolds the managed hub and reports the default path", async () => {
