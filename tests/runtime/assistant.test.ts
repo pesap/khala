@@ -615,7 +615,7 @@ prefer in-thread replies for review comments. do not merge, mark ready, close is
 
 test("does not classify non-heartbeat text as tool required due to heartbeat detection", () => {
   const regularText = "please inspect the runtime behavior and suggest improvements";
-  
+
   const result = inferTurnObligation(regularText);
   // Should be classified as tool_request due to the inspection request, not heartbeat detection
   assert.equal(result.obligation, "tool_required");

@@ -248,17 +248,17 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
       const endMarker = "--- end untrusted forge feedback json ---";
       const beginIndex = text.indexOf(beginMarker);
       const endIndex = text.indexOf(endMarker);
-      
+
       if (beginIndex !== -1 && endIndex !== -1 && beginIndex < endIndex) {
         const jsonText = text.substring(beginIndex + beginMarker.length, endIndex).trim();
         const feedbackArray = JSON.parse(jsonText);
-        
+
         if (Array.isArray(feedbackArray)) {
-          const hasActionableReviewThread = feedbackArray.some(item => 
-            item.type === "review-thread" && 
+          const hasActionableReviewThread = feedbackArray.some(item =>
+            item.type === "review-thread" &&
             item.actionable === true
           );
-          
+
           if (hasActionableReviewThread) {
             return {
               obligation: "tool_required",
