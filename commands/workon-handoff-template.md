@@ -13,7 +13,7 @@ Context:
 - This handoff comes from `/workon`; a session capsule path is provided separately by the launcher.
 - Treat this prompt as starting context, not a final technical decision.
 
-Initial handoff acknowledgement (no implementation yet):
+Initial handoff and readiness gate:
 - Read the session capsule path provided by the launcher.
 - Acknowledge that the capsule was read by running: `{{ack_command}}`.
 - Read the local agent/repo instructions.
@@ -23,15 +23,14 @@ Initial handoff acknowledgement (no implementation yet):
 - If the issue has a `Workon readiness` section, verify it says `Ready for /workon: yes` and contains no unresolved `no`, `unknown`, `TBD`, or `to be confirmed` fields. If it fails, stop before implementation and report the exact readiness gaps.
 - Honor any `STOP conditions` in the issue body. If one is true before or during work, stop and report instead of improvising.
 - Call out stale assumptions, hidden risks, and anything that should stop the work.
-- Do not edit files, run implementation validation, create commits, push, create/update PRs, or start `/simplify` in the handoff acknowledgement turn.
+- If no blocker is found, start the smallest scoped implementation slice in this worktree without waiting for another operator instruction.
 
-Next-step recommendation:
-- If your independent review supports it and the issue is `/workon` ready, report that {{repo}}#{{issue_number}} is ready to implement and summarize the smallest vertical slice.
-- Wait for a separate explicit operator instruction before implementation edits or VCS/forge mutations.
+Next-step action:
 - Keep future changes scoped to the issue and branch.
 - Do not widen scope beyond the issue without creating or recommending a follow-up.
+- Stop and report instead of editing if the readiness gate finds drift, stale assumptions, unresolved readiness gaps, or a true STOP condition.
 
-Implementation instructions for an explicit follow-up only:
+Implementation instructions:
 
 Pre-commit simplify pass:
 - After implementation edits, run focused validation for the touched behavior before simplifying.
@@ -59,7 +58,7 @@ Draft PR and feedback heartbeat:
 
 Output:
 - Start with review findings, readiness status, and recommendation.
-- For the handoff acknowledgement turn, report blockers or the exact operator instruction needed to proceed; do not provide a patch summary unless this is a later explicit implementation turn.
-- If a later explicit implementation turn edits code, report exact proof run.
+- If the readiness gate finds a blocker, report the blocker and stop before implementation.
+- If implementation edits code, report exact proof run.
 - Include draft PR URL/status only after a later explicit implementation turn creates or updates one, plus latest heartbeat check result.
 - Do not merge, close issues/PRs, label, or post broad public comments unless explicitly told.
