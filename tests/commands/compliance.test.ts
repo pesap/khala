@@ -114,6 +114,76 @@ test("compliance mode changes refresh khala-mode status", async () => {
   assert.deepEqual(refreshed, ["enforce"]);
 });
 
+test("preflight command records workflow-scoped manual preflight", async () => {
+  const messages: string[] = [];
+  const appended: RuntimeState["activePreflight"][] = [];
+  const runtimeState = {
+    agentEnabled: true,
+    memoryToolCallLimit: 15,
+    firstPrinciplesConfig: {
+      preflightMode: "warn",
+      postflightMode: "warn",
+      responseComplianceMode: "warn",
+    },
+    riskApproval: null,
+    riskEvents: [],
+    activePreflight: null,
+    latestPostflight: null,
+    policyEvents: [],
+    lastObligationBlockKey: null,
+    lastObligationBlockCount: 0,
+    lastMemoryGateBlockKey: null,
+    lastMemoryGateBlockCount: 0,
+    lastEmptyResponseBlockKey: null,
+    lastEmptyResponseBlockCount: 0,
+  } as RuntimeState;
+
+  const handlers = createComplianceCommandHandlers({
+    runtimeState,
+    notify: (_ctx, message) => messages.push(message),
+    parseComplianceArgs,
+    parseApproveRiskArgs: () => ({ reason: "", ttlMinutes: 20 }),
+    parsePreflightArgs: (args) => ({
+      record: {
+        at: "2026-06-12T00:00:00.000Z",
+        skill: "github",
+        reason: "Investigate CI",
+        clarify: "no",
+        raw: args,
+        source: "manual",
+      },
+    }),
+    parsePostflightArgs: () => ({}),
+    nowIso: () => "2026-06-12T00:00:00.000Z",
+    getDefaultFirstPrinciplesConfig: () => ({
+      preflightMode: "warn",
+      postflightMode: "warn",
+      responseComplianceMode: "warn",
+    }) as never,
+    getActiveWorkflowId: () => "workflow-123",
+    appendComplianceModeEntry: () => undefined,
+    appendRiskApprovalEntry: () => undefined,
+    appendPreflightEntry: (record) => {
+      appended.push(record);
+    },
+    appendPostflightEntry: () => undefined,
+  });
+
+  await handlers.preflight('Preflight: skill=github reason="Investigate CI" clarify=no', { cwd: process.cwd() } as never);
+
+  assert.deepEqual(messages, ["Preflight recorded (github)."]);
+  assert.deepEqual(runtimeState.activePreflight, {
+    at: "2026-06-12T00:00:00.000Z",
+    skill: "github",
+    reason: "Investigate CI",
+    clarify: "no",
+    raw: 'Preflight: skill=github reason="Investigate CI" clarify=no',
+    source: "manual",
+    workflowId: "workflow-123",
+  });
+  assert.deepEqual(appended, [runtimeState.activePreflight]);
+});
+
 test("parseKhalaModeArgs recognizes aliases and rejects status", () => {
   assert.deepEqual(parseKhalaModeArgs(""), { preset: "status" });
   assert.deepEqual(parseKhalaModeArgs("enforce"), { preset: "enforce" });
