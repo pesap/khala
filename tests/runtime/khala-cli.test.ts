@@ -727,7 +727,7 @@ test("khala CLI writes project workflow config after successful install", async 
     assert.equal(await readFile(piLog, "utf8"), "install -l https://github.com/pesap/khala\n");
     assert.match(stdout, /Done\. Khala is installed\./);
     assert.match(stdout, /Wrote workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
-    assert.match(stdout, /Start Pi and run \/khala then \/khala-health to verify/);
+    assert.match(stdout, /Start Pi and run \/khala-health to verify/);
     assert.match(config, /planning: "NLR\/HALO Nemotron 3 Super:off"/);
     assert.match(config, /development: "NLR\/HALO Devstral 123B:off"/);
     assert.match(config, /peer-review: "NLR\/HALO GPT OSS 120b:off"/);

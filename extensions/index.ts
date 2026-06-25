@@ -2689,10 +2689,6 @@ export default function khalaExtension(pi: ExtensionAPI): void {
   const khalaHandlers = createKhalaCommandHandlers({
     runtimeState,
     notify,
-    setAgentEnabledState,
-    appendAgentStateEntry: (enabled, at, source) =>
-      appendAgentStateEntry(pi, enabled, at, source),
-    nowIso,
     runCompliancePreset: (preset, ctx) => complianceHandlers.compliance(preset, ctx),
   });
   const khalaHubHandlers = createKhalaHubCommandHandlers({

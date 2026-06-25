@@ -7,7 +7,6 @@ import {
   getWorkflowModelConfigStatus,
 } from "../runtime/workflow-model-router.ts";
 import type { RuntimeState } from "../state/runtime.ts";
-import { normalizeWhitespace } from "../lib/text.ts";
 import { parseKhalaModeArgs } from "./parsers.ts";
 
 type NotifyType = "info" | "error" | "warning" | "success";
@@ -108,29 +107,6 @@ export function formatKhalaHealthStatus(state: KhalaHealthState): string {
   return lines.join("\n");
 }
 
-export function parseKhalaArgs(args: string | undefined): {
-  remainingArgs: string;
-  memoryToolLimit?: number;
-} {
-  const rawArgs = normalizeWhitespace(args ?? "");
-  const limitMatch = rawArgs.match(
-    /(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+(\d+)(?=\s|$)/,
-  );
-  const remainingArgs = normalizeWhitespace(
-    rawArgs.replace(
-      /(?:^|\s)--(?:learn-tool-limit|memory-tool-limit)\s+\d+(?=\s|$)/,
-      " ",
-    ),
-  );
-
-  return {
-    remainingArgs,
-    memoryToolLimit: limitMatch
-      ? Math.max(1, Math.min(100, Number.parseInt(limitMatch[1] ?? "15", 10)))
-      : undefined,
-  };
-}
-
 export function createKhalaCommandHandlers(params: {
   runtimeState: RuntimeState;
   notify: (
@@ -138,15 +114,8 @@ export function createKhalaCommandHandlers(params: {
     message: string,
     type: NotifyType,
   ) => void;
-  setAgentEnabledState: (
-    ctx: Pick<ExtensionCommandContext, "hasUI" | "ui">,
-    enabled: boolean,
-  ) => void;
-  appendAgentStateEntry: (enabled: boolean, at: string, source?: string) => void;
-  nowIso: () => string;
   runCompliancePreset: (preset: string, ctx: ExtensionCommandContext) => Promise<void>;
 }): {
-  khala: CommandHandler;
   khalaHealth: CommandHandler;
   khalaMode: CommandHandler;
 } {
@@ -186,41 +155,5 @@ export function createKhalaCommandHandlers(params: {
       await params.runCompliancePreset(parsed.preset, ctx);
     },
 
-    khala: async (args, ctx) => {
-      const parsed = parseKhalaArgs(args);
-      const normalizedArgs = normalizeWhitespace(parsed.remainingArgs).toLowerCase();
-
-      if (normalizedArgs) {
-        params.notify(
-          ctx,
-          "Usage: /khala [--learn-tool-limit N|--memory-tool-limit N] or /khala-health for status",
-          "error",
-        );
-        return;
-      }
-
-      if (parsed.memoryToolLimit !== undefined) {
-        params.runtimeState.memoryToolCallLimit = parsed.memoryToolLimit;
-        if (params.runtimeState.agentEnabled) {
-          params.notify(
-            ctx,
-            `khala memory/tool learning threshold updated: memory_tool_limit=${params.runtimeState.memoryToolCallLimit}`,
-            "success",
-          );
-        }
-      }
-
-      if (!params.runtimeState.agentEnabled) {
-        params.setAgentEnabledState(ctx, true);
-        params.appendAgentStateEntry(true, params.nowIso(), "khala");
-        params.notify(
-          ctx,
-          `khala initialized. End-of-turn learning assessment is now active. memory_tool_limit=${params.runtimeState.memoryToolCallLimit}`,
-          "success",
-        );
-      }
-
-      await params.runCompliancePreset("warn", ctx);
-    },
   };
 }
