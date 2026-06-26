@@ -1517,7 +1517,11 @@ test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
     assert.match(scriptCall, /--capsule .+github\.com\/pesap\/agents\/capsule\.md/);
     assert.match(scriptCall, /--prompt ## Deterministic \/workon route/);
     assert.match(scriptCall, /Route: launched/);
+    assert.match(scriptCall, /Allowed action: report the deterministic launch state and stop\./);
+    assert.match(scriptCall, /## Worker continuation context/);
+    assert.match(scriptCall, /This prompt is for the spawned worker Pi pane only, not the operator\/bootstrap surface\./);
     assert.match(scriptCall, /verify readiness, blockers, and STOP conditions, then start implementation automatically when no blocker is found/);
+    assert.match(scriptCall, /do not treat this prompt as permission for the operator\/bootstrap surface to implement, review, run Reviewer Two, create PRs, or continue worker tasks/);
     assert.match(scriptCall, /do not relaunch or create alternate tabs; do not merge, mark ready, close issues\/PRs, label, or post broad public comments unless explicitly told/);
     assert.match(scriptCall, /I want to discuss and possibly work on:/);
     assert.match(scriptCall, /Initial handoff and readiness gate:/);
@@ -1679,6 +1683,9 @@ fi
     assert.match(rendered, /Exact thinking level: off/);
     assert.match(rendered, /Model routing reason: Khala\/workon development profile/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
+    assert.match(rendered, /Allowed action: report the deterministic launch state and stop\./);
+    assert.doesNotMatch(rendered, /start implementation automatically/);
+    assert.match(rendered, /Final response: report readiness, source issue, branch\/worktree, capsule path, Pi pane, heartbeat pane, next operator action, risks, result, and confidence/);
     assert.doesNotMatch(rendered, /Handoff failure:/);
 
     const ledger = await readHandoffLedger(rendered);
