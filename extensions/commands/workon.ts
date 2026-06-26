@@ -734,8 +734,9 @@ function routeInstructionBlock(params: {
       return [
         "## Deterministic /workon route",
         "Route: launched",
-        "Allowed action: read and acknowledge the capsule, verify readiness, blockers, and STOP conditions, then start implementation automatically when no blocker is found.",
-        "Forbidden actions: do not relaunch or create alternate tabs; do not merge, mark ready, close issues/PRs, label, or post broad public comments unless explicitly told.",
+        "Allowed action: report the deterministic launch state and stop.",
+        "Final response: report readiness, source issue, branch/worktree, capsule path, Pi pane, heartbeat pane, next operator action, risks, result, and confidence.",
+        "Forbidden actions: do not implement, review, run Reviewer Two, create PRs, or continue worker tasks from the operator/bootstrap surface; do not relaunch or create alternate tabs; do not merge, mark ready, close issues/PRs, label, or post broad public comments unless explicitly told.",
       ].join("\n");
     case "blocked": {
       const recoveryCommand = params.recoveryCommand?.trim();
@@ -764,7 +765,16 @@ function handoffPromptInstructionBlock(params: {
   failureSummary?: string;
 }): string {
   if (params.route !== "blocked") {
-    return routeInstructionBlock(params);
+    const routeInstruction = routeInstructionBlock(params);
+    if (params.route !== "launched") return routeInstruction;
+    return [
+      routeInstruction,
+      "",
+      "## Worker continuation context",
+      "This prompt is for the spawned worker Pi pane only, not the operator/bootstrap surface.",
+      "Allowed action: read and acknowledge the capsule, verify readiness, blockers, and STOP conditions, then start implementation automatically when no blocker is found.",
+      "Forbidden actions: do not treat this prompt as permission for the operator/bootstrap surface to implement, review, run Reviewer Two, create PRs, or continue worker tasks.",
+    ].join("\n");
   }
 
   const recoveryCommand = params.recoveryCommand?.trim();
