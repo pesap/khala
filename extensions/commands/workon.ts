@@ -765,12 +765,11 @@ function handoffPromptInstructionBlock(params: {
   failureSummary?: string;
 }): string {
   if (params.route !== "blocked") {
-    const routeInstruction = routeInstructionBlock(params);
-    if (params.route !== "launched") return routeInstruction;
+    if (params.route !== "launched") return routeInstructionBlock(params);
     return [
-      routeInstruction,
-      "",
       "## Worker continuation context",
+      "Parent /workon route: launched",
+      "The parent/operator stop contract does not apply in the worker pane.",
       "This prompt is for the spawned worker Pi pane only, not the operator/bootstrap surface.",
       "Allowed action: read and acknowledge the capsule, verify readiness, blockers, and STOP conditions, then start implementation automatically when no blocker is found.",
       "Forbidden actions: do not treat this prompt as permission for the operator/bootstrap surface to implement, review, run Reviewer Two, create PRs, or continue worker tasks.",
