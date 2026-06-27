@@ -446,6 +446,37 @@ test("forge heartbeat notifies current user and Copilot feedback from an explici
   }
 });
 
+test("forge heartbeat normalizes Copilot review-thread identity across GitHub API surfaces", async () => {
+  const { tempDir, env, stateFile, zellijLog } = await setupScenario("copilot-identity-variants");
+  try {
+    const stdout = await runHeartbeat(env, stateFile, "zellij", ["--trusted-author", "@me", "--trusted-author", "copilot-pull-request-reviewer[bot]"]);
+    const jsonLines = parseJsonLines(stdout);
+    const review = jsonLines.find((line) => line.type === "review");
+    const thread = jsonLines.find((line) => line.type === "review-thread");
+
+    assert.ok(review);
+    assert.equal((review.author as { login?: string } | undefined)?.login, "copilot-pull-request-reviewer[bot]");
+    assert.ok(thread);
+    assert.equal(thread.actionable, true);
+    assert.equal(thread.skipReason, null);
+    const threadAuthorLogin = (thread.author as { login?: string } | undefined)?.login;
+    assert.equal(threadAuthorLogin, "copilot-pull-request-reviewer");
+    assert.equal(thread.body, "I found a small issue and suggest a change.");
+    assert.equal(thread.path, "scripts/workon-forge-heartbeat.sh");
+    assert.equal(thread.url, "https://github.com/pesap/agents/pull/103#discussion_r7001");
+    assert.match(stdout, /"status":"notified-pi"/);
+    assert.match(stdout, /"type":"review-thread"/);
+    assert.match(stdout, /"type":"review"/);
+
+    const zellijActions = await readFile(zellijLog, "utf8");
+    assert.match(zellijActions, /BEGIN UNTRUSTED FORGE FEEDBACK JSON/);
+    assert.match(zellijActions, /copilot-pull-request-reviewer\[bot\]/);
+    assert.match(zellijActions, /copilot-pull-request-reviewer"/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("forge heartbeat rejects an empty trusted allowlist before polling", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "workon-forge-heartbeat-empty-allowlist-test-"));
   try {
