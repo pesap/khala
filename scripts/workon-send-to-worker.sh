@@ -35,7 +35,7 @@ while (($#)); do
   esac
 done
 
-if [[ -z "${ledger}" || -z "${message}" ]]; then
+if [[ -z "${ledger}" || -z "${message//[[:space:]]/}" ]]; then
   usage
   exit 2
 fi
@@ -88,7 +88,7 @@ esac
 case "${multiplexer}" in
   zellij)
     require_command zellij
-    if ! zellij action list-panes --json | jq -e --arg pane_id "${pi_pane_id}" 'any((.panes? // .)[]?; (((.id // .pane_id // empty) | tostring) == $pane_id) or (("terminal_" + ((.id // .pane_id // empty) | tostring)) == $pane_id) or (("plugin_" + ((.id // .pane_id // empty) | tostring)) == $pane_id))' >/dev/null; then
+    if ! zellij action list-panes --json | jq -e --arg pane_id "${pi_pane_id}" 'if type == "object" and has("panes") then .panes elif type == "array" then . else [] end | any(.[]?; (((.id // .pane_id // empty) | tostring) == $pane_id) or (("terminal_" + ((.id // .pane_id // empty) | tostring)) == $pane_id) or (("plugin_" + ((.id // .pane_id // empty) | tostring)) == $pane_id))' >/dev/null; then
       printf 'recorded Zellij pane id is not live: %s\n' "${pi_pane_id}" >&2
       exit 1
     fi

@@ -8,6 +8,7 @@ import {
   readRunLedger,
   type RunLedgerRecord,
 } from "../runtime/run-ledger.ts";
+import { isSendableWorkonPiStatus } from "./workon.ts";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -627,7 +628,14 @@ async function probeOperatorFollowUpPane(
     const result = await runCommand(runner, cwd, commands, "zellij", ["action", "list-panes", "--json"]);
     if (!result.ok) return false;
     try {
-      const panes = JSON.parse(result.stdout) as Array<{ id?: string | number; pane_id?: string | number }>;
+      const parsed = JSON.parse(result.stdout) as
+        | Array<{ id?: string | number; pane_id?: string | number }>
+        | { panes?: Array<{ id?: string | number; pane_id?: string | number }> };
+      const panes = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.panes)
+          ? parsed.panes
+          : [];
       return panes.some((pane) => {
         const id = String(pane.id ?? pane.pane_id ?? "");
         return id === paneId || `terminal_${id}` === paneId || `plugin_${id}` === paneId;
@@ -1051,7 +1059,7 @@ async function collectLocalEvidence(
         : null;
     const paneId = ledger?.pi?.paneId?.trim() ?? "";
     const livePane =
-      Boolean(sendableMultiplexer && paneId && ledger?.pi?.status && ledger.pi.status !== "not-launched")
+      Boolean(sendableMultiplexer && paneId && isSendableWorkonPiStatus(ledger?.pi?.status))
         ? await probeOperatorFollowUpPane(runner, request.cwd, evidence.commands, sendableMultiplexer, paneId)
         : false;
     const suggestedCommand =

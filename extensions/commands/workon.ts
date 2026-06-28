@@ -705,6 +705,10 @@ function buildHandoffAcknowledgementCommand(ledgerPath: string): string {
   return `bash ${shellQuote(ackScript)} --ledger ${shellQuote(ledgerPath)} --status capsule-acknowledged`;
 }
 
+export function isSendableWorkonPiStatus(status: WorkonHandoffLedger["pi"]["status"] | string | null | undefined): status is "pi-process-started" | "capsule-acknowledged" {
+  return status === "pi-process-started" || status === "capsule-acknowledged";
+}
+
 function buildOperatorFollowUpSendCommand(ledgerPath: string): string {
   const sendScript = path.join(PACKAGE_ROOT, "scripts", "workon-send-to-worker.sh");
   return `bash ${shellQuote(sendScript)} --ledger ${shellQuote(ledgerPath)} --message ${shellQuote("<operator follow-up message>")}`;
@@ -2163,7 +2167,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         ...(evidence.ledger?.heartbeat.action ? [`Heartbeat action: ${evidence.ledger.heartbeat.action}`] : []),
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
-        ...(evidence.worktreeStatus === "launched" && evidence.ledgerPath ? [`Operator follow-up send command: ${buildOperatorFollowUpSendCommand(evidence.ledgerPath)}`] : []),
+        ...(evidence.worktreeStatus === "launched" && evidence.ledgerPath && isSendableWorkonPiStatus(evidence.ledger?.pi.status) && evidence.ledger?.multiplexer.resolved !== "none" ? [`Operator follow-up send command: ${buildOperatorFollowUpSendCommand(evidence.ledgerPath)}`] : []),
         `Exact model: ${evidence.modelSelection?.exactModel || DEFAULT_WORKON_MODEL_SELECTION.exactModel || "(unresolved)"}`,
         `Exact thinking level: ${evidence.modelSelection?.exactThinkingLevel ?? DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
