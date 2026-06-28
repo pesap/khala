@@ -1,0 +1,31 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_copilot_identity_variant",
+              "isResolved": false,
+              "comments": {
+                "nodes": [
+                  {
+                    "databaseId": 7001,
+                    "author": {"login": "copilot-pull-request-reviewer"},
+                    "body": "I found a small issue and suggest a change.",
+                    "url": "https://github.com/pesap/agents/pull/103#discussion_r7001",
+                    "path": "scripts/workon-forge-heartbeat.sh",
+                    "createdAt": "2026-06-06T01:08:00Z",
+                    "updatedAt": "2026-06-06T01:08:00Z",
+                    "lastEditedAt": null,
+                    "replyTo": null
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

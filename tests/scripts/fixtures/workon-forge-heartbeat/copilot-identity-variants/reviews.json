@@ -1,0 +1,11 @@
+[
+  {
+    "id": 6001,
+    "user": {"login": "copilot-pull-request-reviewer[bot]"},
+    "body": "Looks good overall, but please make the allowlist explicit.",
+    "submitted_at": "2026-06-06T01:03:00Z",
+    "updated_at": "2026-06-06T01:03:00Z",
+    "html_url": "https://github.com/pesap/agents/pull/103#review-6001",
+    "pull_request_url": "https://github.com/pesap/agents/pull/103"
+  }
+]

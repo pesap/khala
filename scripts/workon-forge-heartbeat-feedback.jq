@@ -14,8 +14,16 @@ def suggestion_blocks:
 
 def author_model($login): {login: ($login // "")};
 
+def canonical_author_login($login):
+  (($login // "")
+  | if . == "Copilot" or . == "copilot-pull-request-reviewer" then
+      "copilot-pull-request-reviewer[bot]"
+    else
+      .
+    end);
+
 def trusted_authors: (($trustedAuthors // "") | split("\n") | map(select(length > 0)));
-def trusted_author_login($login): (trusted_authors | index($login) != null);
+def trusted_author_login($login): ((trusted_authors | map(canonical_author_login(.))) | index(canonical_author_login($login)) != null);
 
 def review_comment_model($restById):
   . as $comment
