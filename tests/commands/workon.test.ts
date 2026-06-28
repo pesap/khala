@@ -1686,6 +1686,8 @@ fi
     assert.match(rendered, /Exact thinking level: off/);
     assert.match(rendered, /Model routing reason: Khala\/workon development profile/);
     assert.match(rendered, /Pi handoff command: zellij action new-pane/);
+    assert.match(rendered, /Operator follow-up send command: bash '/);
+    assert.match(rendered, /workon-send-to-worker\.sh' --ledger/);
     assert.match(rendered, /Allowed action: report the deterministic launch state and stop\./);
     assert.doesNotMatch(rendered, /Parent \/workon route: launched/);
     assert.doesNotMatch(rendered, /The parent\/operator stop contract does not apply in the worker pane\./);
@@ -1696,6 +1698,7 @@ fi
     const ledger = await readHandoffLedger(rendered);
     assert.equal((ledger.worktree as { status: string }).status, "launched");
     assert.equal((ledger.pi as { status: string }).status, "pi-process-started");
+    assert.deepEqual((ledger.pi as { operatorFollowUps?: unknown[] }).operatorFollowUps, []);
     assert.deepEqual(ledger.modelSelection, DEFAULT_WORKON_MODEL_SELECTION);
   } finally {
     resetKhalaProfileDiscoveryForTests();

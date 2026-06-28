@@ -66,6 +66,16 @@ interface WorkonLedgerAttempt {
   detail: string | null;
 }
 
+interface WorkonLedgerOperatorFollowUp {
+  at: string;
+  status: "sent" | "failed";
+  multiplexer: ResolvedWorkonMultiplexer;
+  paneId: string;
+  issue: string | null;
+  capsulePath: string | null;
+  message: string;
+}
+
 interface WorkonHandoffLedger {
   version: 1;
   repo: string;
@@ -109,6 +119,7 @@ interface WorkonHandoffLedger {
     paneAction: string | null;
     handoffCommand: string | null;
     acknowledgementCommand: string | null;
+    operatorFollowUps?: WorkonLedgerOperatorFollowUp[];
   };
   heartbeat: {
     status: "disabled" | "not-launched" | "started";
@@ -694,6 +705,11 @@ function buildHandoffAcknowledgementCommand(ledgerPath: string): string {
   return `bash ${shellQuote(ackScript)} --ledger ${shellQuote(ledgerPath)} --status capsule-acknowledged`;
 }
 
+function buildOperatorFollowUpSendCommand(ledgerPath: string): string {
+  const sendScript = path.join(PACKAGE_ROOT, "scripts", "workon-send-to-worker.sh");
+  return `bash ${shellQuote(sendScript)} --ledger ${shellQuote(ledgerPath)} --message ${shellQuote("<operator follow-up message>")}`;
+}
+
 function blockedNoRecoveryAction(operatorAction?: string): string {
   return operatorAction
     ?? "No route-owned recovery command is safe for this blocked state. Resolve the bootstrap failure above, then rerun /workon.";
@@ -926,6 +942,7 @@ function buildHandoffLedger(params: {
       paneAction: params.multiplexerResult?.piPaneAction ?? null,
       handoffCommand: params.piHandoffCommand ?? null,
       acknowledgementCommand: buildHandoffAcknowledgementCommand(ledgerPath),
+      operatorFollowUps: [],
     },
     heartbeat: {
       status: heartbeatStatus,
@@ -2146,6 +2163,7 @@ export function formatWorkonBootstrapEvidence(evidence: WorkonBootstrapEvidence)
         ...(evidence.ledger?.heartbeat.action ? [`Heartbeat action: ${evidence.ledger.heartbeat.action}`] : []),
         `Pi handoff command: ${evidence.piHandoffCommand ?? "(not launched)"}`,
         `Forge heartbeat command: ${evidence.heartbeatCommand ?? "(not launched)"}`,
+        ...(evidence.worktreeStatus === "launched" && evidence.ledgerPath ? [`Operator follow-up send command: ${buildOperatorFollowUpSendCommand(evidence.ledgerPath)}`] : []),
         `Exact model: ${evidence.modelSelection?.exactModel || DEFAULT_WORKON_MODEL_SELECTION.exactModel || "(unresolved)"}`,
         `Exact thinking level: ${evidence.modelSelection?.exactThinkingLevel ?? DEFAULT_WORKON_MODEL_SELECTION.exactThinkingLevel}`,
         `Model routing mode: ${evidence.modelSelection?.routingMode ?? "default"}`,
