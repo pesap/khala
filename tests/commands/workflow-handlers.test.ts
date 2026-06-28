@@ -198,6 +198,7 @@ test("workon handler uses workflow route overrides for default model selection",
     assert.match(rendered, /Exact model: openai-codex\/gpt-5\.4-mini/);
     assert.match(rendered, /Exact thinking level: high/);
     assert.match(rendered, /Model routing reason: .*workflow route config route workon -> agents/);
+    assert.doesNotMatch(rendered, /operator follow-up send command|pi-subagents worker/);
   } finally {
     resetActiveWorkflowRouteForTests();
   }
@@ -439,5 +440,6 @@ test("workon handler skips the Zellij gate in --dry-run mode", async () => {
   assert.equal(typeof captured.flags?.ledgerPath, "string");
   assert.match(String(captured.flags?.ledgerPath), /\/handoff-ledger\.json$/);
   assert.equal(captured.flags?.worktreePath, undefined);
+  assert.doesNotMatch(captured.sections?.join("\n") ?? "", /operator follow-up send command|pi-subagents worker/);
   assert.deepEqual(captured.notifications, []);
 });

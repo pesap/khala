@@ -519,6 +519,96 @@ test("session focus discovers stale capsules and correlates branch worktrees", a
   }
 });
 
+test("session focus suggests sending to a live worker pane when the ledger probe succeeds", async () => {
+  const capsuleRoot = await mkdtemp(path.join(tmpdir(), "khala-inbox-test-"));
+  try {
+    const capsulePath = path.join(
+      capsuleRoot,
+      "github.com",
+      "pesap",
+      "agents",
+      "capsule.md",
+    );
+    const ledgerPath = path.join(
+      capsuleRoot,
+      "github.com",
+      "pesap",
+      "agents",
+      "handoff-ledger.json",
+    );
+    const worktreePath = path.join(capsuleRoot, "feature-85");
+    await mkdir(path.dirname(capsulePath), { recursive: true });
+    await mkdir(worktreePath, { recursive: true });
+    await writeFile(
+      capsulePath,
+      [
+        "# Workon session capsule",
+        "",
+        "Repo: pesap/agents",
+        "Issue: https://github.com/pesap/agents/issues/85",
+        "Issue number: #85",
+        "Branch: feat/85-surface-stale-sessions-and-capsules",
+        "Worktree status: launched",
+        `Worktree path: ${worktreePath}`,
+        "Created: 2026-06-04T00:00:00.000Z",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      ledgerPath,
+      JSON.stringify({
+        version: 1,
+        multiplexer: { resolved: "zellij" },
+        pi: { status: "capsule-acknowledged", paneId: "terminal_91" },
+        attempts: [],
+      }),
+      "utf8",
+    );
+
+    const { calls, runner } = fakeCommandRunner({
+      "git worktree list --porcelain": [
+        "worktree /repo/main",
+        "HEAD abc",
+        "branch refs/heads/main",
+        "",
+        "worktree /repo/feature-85",
+        "HEAD def",
+        "branch refs/heads/feat/85-surface-stale-sessions-and-capsules",
+        "",
+      ].join("\n"),
+      "git rev-parse --is-inside-work-tree": "true\n",
+      "git remote get-url origin": "git@github.com:pesap/agents.git\n",
+      "zellij action list-panes --json": JSON.stringify([{ id: "terminal_91" }]),
+    });
+
+    const sections = await collectInboxEvidence(
+      {
+        cwd: "/repo/main",
+        limit: 5,
+        repo: "",
+        user: "",
+        forge: "gitlab",
+        focus: "sessions",
+        capsuleRoot,
+        nowIso: "2026-06-05T13:00:00.000Z",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Agent\/session needs attention \(1\):/);
+    assert.match(rendered, /source=stale-session-capsule repo=pesap\/agents title="#feat\/85-surface-stale-sessions-and-capsules #85: stale-37h capsule at .* worktree=.*feature-85"/);
+    assert.match(rendered, /next=bash '/);
+    assert.match(rendered, /workon-send-to-worker\.sh' --ledger/);
+    assert.match(rendered, /--message '<operator follow-up message>'/);
+    assert.match(rendered, /evidence=session capsule metadata; capsule worktree path; operator follow-up pane live/);
+    assert.match(calls.join("\n"), /zellij action list-panes --json/);
+  } finally {
+    await rm(capsuleRoot, { recursive: true, force: true });
+  }
+});
+
 test("session focus reports blocked capsules with deleted worktrees", async () => {
   const capsuleRoot = await mkdtemp(path.join(tmpdir(), "khala-inbox-test-"));
   try {

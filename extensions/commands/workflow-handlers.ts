@@ -806,6 +806,13 @@ export function createWorkflowCommandHandlers(params: {
         reviewSettings: parsed.review,
       });
       const localContext = workonLocalContextFlags(workonBootstrapSections);
+      const routeOwnedFollowUpInstructions = workonBootstrapSections.some((section) =>
+        section.includes("Operator follow-up send command:"),
+      )
+        ? [
+            "Instruction: If a launched /workon ledger has a reachable Pi pane and a route-owned operator follow-up send command, use that direct pane route; do not substitute pi-subagents worker for that communication path.",
+          ]
+        : [];
 
       await runMirroredSourceWorkflow({
         ctx,
@@ -860,6 +867,7 @@ export function createWorkflowCommandHandlers(params: {
           "Instruction: Resolve the durable source issue before branch/worktree work only when the route permits branch/worktree work.",
           "Instruction: Run the autonomous-readiness rubric before starting; if readiness fails, return only concrete action items needed to make the issue /workon-ready.",
           "Instruction: Follow only route-owned branch/worktree/handoff/recovery commands. Never invent alternate Worktrunk or multiplexer commands, and never bypass Worktrunk hook approval prompts.",
+          ...routeOwnedFollowUpInstructions,
           "Instruction: Do not redefine the issue scope; consume the approved work packet and stop after source-of-truth, route-approved branch/worktree preparation, and route-approved session capsule handoff.",
           "Instruction: Use the deterministic bootstrap evidence above as the source-of-truth handoff; do not spend model/tool tokens recreating issue, branch, capsule, multiplexer, or heartbeat evidence the handler already supplied.",
           "Instruction: When the route permits a session capsule, it must include repo, issue/PR, branch/worktree, problem, acceptance criteria, non-goals, validation, open questions, and next prompt.",

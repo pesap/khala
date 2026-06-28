@@ -8,6 +8,7 @@ import {
   readRunLedger,
   type RunLedgerRecord,
 } from "../runtime/run-ledger.ts";
+import { isSendableWorkonPiStatus } from "./workon.ts";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -217,6 +218,7 @@ interface SessionCapsule {
   worktreeStatus?: string;
   state?: string;
   createdIso?: string;
+  ledgerPath?: string;
 }
 
 interface LocalEvidence {
@@ -576,6 +578,80 @@ async function runGit(
   return runner("git", args, { cwd });
 }
 
+async function runCommand(
+  runner: InboxCommandRunner,
+  cwd: string,
+  commands: string[],
+  command: string,
+  args: string[],
+): Promise<CommandResult> {
+  commands.push(`${command} ${args.join(" ")}`);
+  return runner(command, args, { cwd });
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\''`)}'`;
+}
+
+interface SessionHandoffLedger {
+  multiplexer?: { resolved?: string | null };
+  pi?: { status?: string | null; paneId?: string | null };
+  primaryIssue?: { number?: number; url?: string | null };
+  issue?: { number?: number; url?: string | null };
+}
+
+function getSessionCapsuleLedgerPath(capsulePath: string): string {
+  return path.join(path.dirname(capsulePath), "handoff-ledger.json");
+}
+
+async function readSessionHandoffLedger(ledgerPath: string): Promise<SessionHandoffLedger | null> {
+  try {
+    return JSON.parse(await readFile(ledgerPath, "utf8")) as SessionHandoffLedger;
+  } catch {
+    return null;
+  }
+}
+
+function getOperatorFollowUpSendCommand(ledgerPath: string): string {
+  const scriptPath = path.resolve(import.meta.dirname, "..", "..", "scripts", "workon-send-to-worker.sh");
+  return `bash ${shellQuote(scriptPath)} --ledger ${shellQuote(ledgerPath)} --message ${shellQuote("<operator follow-up message>")}`;
+}
+
+async function probeOperatorFollowUpPane(
+  runner: InboxCommandRunner,
+  cwd: string,
+  commands: string[],
+  multiplexer: string,
+  paneId: string,
+): Promise<boolean> {
+  if (multiplexer === "zellij") {
+    const result = await runCommand(runner, cwd, commands, "zellij", ["action", "list-panes", "--json"]);
+    if (!result.ok) return false;
+    try {
+      const parsed = JSON.parse(result.stdout) as
+        | Array<{ id?: string | number; pane_id?: string | number }>
+        | { panes?: Array<{ id?: string | number; pane_id?: string | number }> };
+      const panes = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.panes)
+          ? parsed.panes
+          : [];
+      return panes.some((pane) => {
+        const id = String(pane.id ?? pane.pane_id ?? "");
+        return id === paneId || `terminal_${id}` === paneId || `plugin_${id}` === paneId;
+      });
+    } catch {
+      return false;
+    }
+  }
+  if (multiplexer === "tmux") {
+    const result = await runCommand(runner, cwd, commands, "tmux", ["list-panes", "-a", "-F", "#{pane_id}"]);
+    if (!result.ok) return false;
+    return result.stdout.split(/\r?\n/).some((line) => line.trim() === paneId);
+  }
+  return false;
+}
+
 function normalizeBranch(ref: string): string {
   return ref.replace(/^refs\/heads\//, "");
 }
@@ -685,6 +761,7 @@ async function readSessionCapsule(
       worktreeStatus: normalizedCapsuleValue(fields["Worktree status"]),
       state: normalizedCapsuleValue(fields.State),
       createdIso: parseCapsuleCreated(fields.Created),
+      ledgerPath: getSessionCapsuleLedgerPath(capsulePath),
     };
   } catch {
     return null;
@@ -974,6 +1051,21 @@ async function collectLocalEvidence(
     const branch = capsule.branch ?? "unknown-branch";
     const issue = capsule.issueNumber ? ` ${capsule.issueNumber}` : "";
     const worktreePath = worktree.path ? ` worktree=${worktree.path}` : "";
+    const ledgerPath = capsule.ledgerPath ?? getSessionCapsuleLedgerPath(capsule.path);
+    const ledger = await readSessionHandoffLedger(ledgerPath);
+    const sendableMultiplexer =
+      ledger?.multiplexer?.resolved === "zellij" || ledger?.multiplexer?.resolved === "tmux"
+        ? ledger.multiplexer.resolved
+        : null;
+    const paneId = ledger?.pi?.paneId?.trim() ?? "";
+    const livePane =
+      Boolean(sendableMultiplexer && paneId && isSendableWorkonPiStatus(ledger?.pi?.status))
+        ? await probeOperatorFollowUpPane(runner, request.cwd, evidence.commands, sendableMultiplexer, paneId)
+        : false;
+    const suggestedCommand =
+      livePane && sendableMultiplexer && paneId
+        ? getOperatorFollowUpSendCommand(ledgerPath)
+        : `/workon ${capsule.issue ?? "<issue-number>"} --repo ${capsule.repo}`;
     evidence.items.push({
       bucket:
         blocked || missingWorktree
@@ -984,8 +1076,10 @@ async function collectLocalEvidence(
       title: `${branch}${issue}: ${signals.join("+")} capsule at ${capsule.path}${worktreePath}`,
       url: capsule.issue ?? capsule.path,
       updatedAt: created,
-      suggestedCommand: `/workon ${capsule.issue ?? "<issue-number>"} --repo ${capsule.repo}`,
-      evidence: `session capsule metadata; ${worktree.matchedBy}`,
+      suggestedCommand,
+      evidence: livePane
+        ? `session capsule metadata; ${worktree.matchedBy}; operator follow-up pane live`
+        : `session capsule metadata; ${worktree.matchedBy}`,
     });
   }
   evidence.items.push(
