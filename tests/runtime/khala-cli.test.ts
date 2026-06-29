@@ -637,20 +637,35 @@ sys.exit(0 if state >= 4 and proc.returncode == 130 else 1)
   return result.stdout;
 }
 
-test("khala CLI prints setup guidance without running pi in dry-run mode", async () => {
-  const { stdout } = await execFileAsync("node", ["bin/khala.js", "--project", "--dry-run"]);
+test("khala CLI reports discovery fallback when pi is unavailable in dry-run mode", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-no-pi-"));
 
-  assert.match(stdout, /Khala configuration \[dry-run\]:/);
-  assert.match(stdout, /install khala package in project Pi settings .*\.pi\/settings\.json/);
-  assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
-  assert.doesNotMatch(stdout, /^\s*command\b/m);
-  assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
-  assert.match(stdout, /development\s+NLR\/HALO Devstral 123B:off/);
-  assert.match(stdout, /peer-review\s+NLR\/HALO GPT OSS 120b:off/);
-  assert.match(stdout, /triage\s+NLR\/HALO Llama 4 Scout:off/);
-  assert.match(stdout, /knowledge\s+NLR\/HALO Gemma 4:off/);
-  assert.match(stdout, /lightweight\s+NLR\/HALO Nemotron 3 Nano:off/);
-  assert.match(stdout, /Run without --dry-run when you are ready to install/);
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [path.resolve("bin/khala.js"), "--project", "--dry-run"], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        PATH: tempDir,
+      },
+    });
+
+    assert.match(stdout, /Workflow models/);
+    assert.match(stdout, /Pi discovery unavailable:/);
+    assert.match(stdout, /Falling back to hardcoded presets\./);
+    assert.match(stdout, /Khala configuration \[dry-run\]:/);
+    assert.match(stdout, /install khala package in project Pi settings .*\.pi\/settings\.json/);
+    assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+    assert.doesNotMatch(stdout, /^\s*command\b/m);
+    assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
+    assert.match(stdout, /development\s+NLR\/HALO Devstral 123B:off/);
+    assert.match(stdout, /peer-review\s+NLR\/HALO GPT OSS 120b:off/);
+    assert.match(stdout, /triage\s+NLR\/HALO Llama 4 Scout:off/);
+    assert.match(stdout, /knowledge\s+NLR\/HALO Gemma 4:off/);
+    assert.match(stdout, /lightweight\s+NLR\/HALO Nemotron 3 Nano:off/);
+    assert.match(stdout, /Run without --dry-run when you are ready to install/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("khala CLI exposes help with commands, flags, examples, and environment sections", async () => {
@@ -681,24 +696,96 @@ test("khala CLI reports unknown top-level commands as commands", async () => {
 });
 
 test("khala CLI accepts --no-input as an alias for --yes", async () => {
-  const { stdout } = await execFileAsync("node", [
-    "bin/khala.js",
-    "--project",
-    "--no-input",
-    "--dry-run",
-  ]);
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-no-input-"));
 
-  assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
-  assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
-  assert.doesNotMatch(stdout, /^\s*command\b/m);
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [path.resolve("bin/khala.js"), "--project", "--no-input", "--dry-run"],
+      {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          PATH: tempDir,
+        },
+      },
+    );
+
+    assert.match(stdout, /Pi discovery unavailable:/);
+    assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
+    assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+    assert.doesNotMatch(stdout, /^\s*command\b/m);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("khala CLI defaults to global scope in non-interactive dry-run mode", async () => {
-  const { stdout } = await execFileAsync("node", ["bin/khala.js", "--dry-run"]);
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-global-no-pi-"));
 
-  assert.match(stdout, /install khala package in global Pi settings .*\.pi\/agent\/settings\.json/);
-  assert.match(stdout, /write workflow model config .*workflow-model\.yaml/);
-  assert.doesNotMatch(stdout, /^\s*command\b/m);
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [path.resolve("bin/khala.js"), "--dry-run"], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        PATH: tempDir,
+      },
+    });
+
+    assert.match(stdout, /Pi discovery unavailable:/);
+    assert.match(stdout, /install khala package in global Pi settings .*\.pi\/agent\/settings\.json/);
+    assert.match(stdout, /write workflow model config .*workflow-model\.yaml/);
+    assert.doesNotMatch(stdout, /^\s*command\b/m);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("khala CLI shows discovered models in non-interactive --yes dry-run mode when pi is available", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-cli-discovery-"));
+  const binDir = path.join(tempDir, "bin");
+  const piLog = path.join(tempDir, "pi.log");
+
+  try {
+    await writeFakePi(
+      binDir,
+      `printf '%s\n' "$*" >> ${JSON.stringify(piLog)}
+if [ "$1" = "--list-models" ]; then
+  printf 'provider model availability authentication reasoning\n'
+  printf 'github-copilot gpt-5.5 yes yes yes\n'
+  printf 'openai-codex gpt-5.4-mini yes yes yes\n'
+  printf 'github-copilot claude-opus-4.7 yes yes yes\n'
+  exit 0
+fi
+exit 0
+`,
+    );
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [path.resolve("bin/khala.js"), "--project", "--yes", "--dry-run"],
+      {
+        cwd: tempDir,
+        env: {
+          ...process.env,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+
+    const piInvocations = await readFile(piLog, "utf8");
+    assert.match(piInvocations, /--list-models/);
+    assert.match(stdout, /Workflow models/);
+    assert.match(stdout, /Discovered Pi models:/);
+    assert.match(stdout, /github-copilot\/gpt-5\.5/);
+    assert.match(stdout, /openai-codex\/gpt-5\.4-mini/);
+    assert.match(stdout, /github-copilot\/claude-opus-4\.7/);
+    assert.match(stdout, /Khala configuration \[dry-run\]:/);
+    assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
+    assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("khala CLI writes project workflow config after successful install", async () => {
@@ -844,6 +931,13 @@ test("khala CLI summary omits provider/availability noise and never prints model
     await writeFakePi(
       binDir,
       `printf '%s\n' "$*" >> ${JSON.stringify(piLog)}
+if [ "$1" = "--list-models" ]; then
+  printf 'provider model availability authentication reasoning\n'
+  printf 'github-copilot gpt-5.5 yes yes yes\n'
+  printf 'openai-codex gpt-5.4-mini yes yes yes\n'
+  printf 'github-copilot claude-opus-4.7 yes yes yes\n'
+  exit 0
+fi
 printf 'unexpected pi invocation: %s\n' "$*" >&2
 exit 99
 `,
@@ -900,8 +994,14 @@ exit 99
     assert.doesNotMatch(stdout, /team-a-secret|anthropic-secret/);
     assert.equal(stderr, "");
 
-    const piInvocations = await readFile(piLog, "utf8").catch(() => "");
-    assert.equal(piInvocations, "", "pi should not be invoked in non-interactive --dry-run");
+    const piInvocations = await readFile(piLog, "utf8");
+    assert.match(piInvocations, /--list-models/);
+    assert.match(stdout, /Discovered Pi models:/);
+    assert.match(stdout, /github-copilot\/gpt-5\.5/);
+    assert.match(stdout, /openai-codex\/gpt-5\.4-mini/);
+    assert.doesNotMatch(stdout, /providers\b/);
+    assert.doesNotMatch(stdout, /availability/);
+    assert.doesNotMatch(stdout, /team-a-secret|anthropic-secret/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
