@@ -729,7 +729,7 @@ test("khala CLI accepts --no-input as an alias for --yes", async () => {
 
     assert.match(stdout, /Pi discovery unavailable:/);
     assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
-    assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+    assert.match(stdout, /write workflow model config .*\.pi[\\/]khala[\\/]workflow-model\.yaml/);
     assert.doesNotMatch(stdout, /^\s*command\b/m);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -800,7 +800,7 @@ if (process.argv[2] === "--list-models") {
     assert.match(stdout, /github-copilot\/claude-opus-4\.7/);
     assert.match(stdout, /Khala configuration \[dry-run\]:/);
     assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
-    assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+    assert.match(stdout, /write workflow model config .*\.pi[\\/]khala[\\/]workflow-model\.yaml/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -831,7 +831,7 @@ test("khala CLI writes project workflow config after successful install", async 
     const config = await readFile(path.join(tempDir, ".pi", "khala", "workflow-model.yaml"), "utf8");
     assert.equal(await readFile(piLog, "utf8"), "install -l https://github.com/pesap/khala\n");
     assert.match(stdout, /Done\. Khala is installed\./);
-    assert.match(stdout, /Wrote workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+    assert.match(stdout, /Wrote workflow model config .*\.pi[\\/]khala[\\/]workflow-model\.yaml/);
     assert.match(stdout, /Start Pi and run \/khala-health to verify/);
     assert.match(config, /planning: "NLR\/HALO Nemotron 3 Super:off"/);
     assert.match(config, /development: "NLR\/HALO Devstral 123B:off"/);
