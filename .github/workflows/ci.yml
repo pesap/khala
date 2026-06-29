@@ -57,7 +57,13 @@ jobs:
         run: npm ci
 
       - name: Run focused setup-helper tests
-        run: node --test --test-concurrency=1 --experimental-strip-types tests/runtime/khala-cli.test.ts
+        run: >-
+          node --test --test-concurrency=1 --experimental-strip-types
+          --test-name-pattern="khala CLI reports discovery fallback when pi is
+          unavailable in dry-run mode|khala CLI shows discovered models in
+          non-interactive --yes dry-run mode when pi is available|khala setup
+          helper preserves pi install arguments on Windows shims"
+          tests/runtime/khala-cli.test.ts
 
   github-package-smoke:
     name: GitHub package smoke
