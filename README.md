@@ -284,8 +284,8 @@ Preflight: skill=<name|none> reason="<short>" clarify=<yes|no>
 
 The fields mean:
 
-- `skill`: the primary skill or workflow that justifies the mutation, or
-  `none` when no skill applies.
+- `skill`: the primary skill or workflow that justifies the mutation, or `none`
+  when no skill applies.
 - `reason`: a short mutation intent summary, limited to one quoted line.
 - `clarify`: `yes` when the agent still needs a blocking clarification before
   mutating, otherwise `no`.
