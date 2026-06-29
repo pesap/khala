@@ -112,7 +112,9 @@ import {
 import { listLearnedWorkflows } from "./learning/workflows.ts";
 import { validateGeneratedSkillDir } from "./learning/skill-guard.ts";
 import {
+  extractPreflightFromText,
   extractPostflightFromAssistantText,
+  isPreflightOnlyText,
   modeOutcome,
   parsePostflightLine,
   parsePreflightLine,
@@ -171,6 +173,14 @@ import {
   evaluateObligationLoopGuard,
   shouldBlockUnsatisfiedTurnObligation,
 } from "./runtime/assistant.ts";
+import {
+  createAssistantPreflightStreamState,
+  getUnappliedAssistantPreflight,
+  markAssistantPreflightApplied,
+  resetAssistantPreflightStreamState,
+  updateAssistantPreflightFromMessageStart,
+  updateAssistantPreflightFromMessageUpdate,
+} from "./runtime/assistant-preflight.ts";
 import {
   appendBackgroundReviewLearningSection,
   buildAutonomousSkillName,
@@ -249,6 +259,7 @@ let latestTaskInput = "";
 let latestMemoryRefreshQuery = "";
 let learnedSkillCompletionCache: string[] = [];
 let learnedWorkflowCompletionCache: string[] = [];
+const assistantPreflightStream = createAssistantPreflightStreamState();
 let memoryGate = {
   hasRead: false,
   toolCallsSinceRead: 0,
@@ -278,6 +289,30 @@ async function recordPendingWorkflowSkillEvent(params: {
       at: params.at,
     }),
   });
+}
+
+function recordActivePreflight(
+  pi: ExtensionAPI,
+  preflight: PreflightRecord,
+): PreflightRecord {
+  const scopedPreflight = pendingWorkflow
+    ? { ...preflight, workflowId: pendingWorkflow.id }
+    : preflight;
+  runtimeState.activePreflight = scopedPreflight;
+  appendPreflightEntry(pi, scopedPreflight);
+  return scopedPreflight;
+}
+
+function recordUnappliedAssistantPreflight(pi: ExtensionAPI): PreflightRecord | null {
+  const preflight = getUnappliedAssistantPreflight(
+    assistantPreflightStream,
+    nowIso,
+  );
+  if (!preflight) return null;
+
+  const scopedPreflight = recordActivePreflight(pi, preflight);
+  markAssistantPreflightApplied(assistantPreflightStream, scopedPreflight);
+  return scopedPreflight;
 }
 
 async function recordSkillUsedWithoutLoadEvents(params: {
@@ -1196,7 +1231,7 @@ function isPreflightClarify(value: unknown): value is PreflightClarify {
 }
 
 function isPreflightSource(value: unknown): value is PreflightSource {
-  return value === "manual" || value === "auto";
+  return value === "manual" || value === "assistant" || value === "auto";
 }
 
 function setAgentEnabledState(
@@ -2179,11 +2214,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
     const preflight = parsePreflightLine(text, nowIso);
     if (preflight) {
-      const scopedPreflight = pendingWorkflow
-        ? { ...preflight, workflowId: pendingWorkflow.id }
-        : preflight;
-      runtimeState.activePreflight = scopedPreflight;
-      appendPreflightEntry(pi, scopedPreflight);
+      recordActivePreflight(pi, preflight);
       return;
     }
 
@@ -2197,8 +2228,28 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     if (!runtimeState.agentEnabled) return;
   });
 
+  pi.on("turn_start", async () => {
+    resetAssistantPreflightStreamState(assistantPreflightStream);
+  });
+
+  pi.on("message_start", async (event) => {
+    updateAssistantPreflightFromMessageStart(
+      assistantPreflightStream,
+      event,
+    );
+  });
+
+  pi.on("message_update", async (event) => {
+    updateAssistantPreflightFromMessageUpdate(
+      assistantPreflightStream,
+      event,
+    );
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!runtimeState.agentEnabled) return;
+
+    recordUnappliedAssistantPreflight(pi);
 
     const counters = getToolInterceptionCounters(event);
     if (counters.incrementTaskToolCall) {
@@ -2287,6 +2338,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
     const userText = extractLastUserText(messages);
     const hasWorkflowFooter = hasRequiredWorkflowFooter(assistantText);
     const pendingMemoryGateRecovery = findPendingMemoryGateRecovery(messages);
+    const assistantSentOnlyPreflight =
+      isPreflightOnlyText(assistantText) &&
+      !assistantMessageHasToolCall(lastAssistantMessage);
     let harnessIssues: HarnessTurnIssue[] = [];
 
     if (isEmptyTerminalAssistantResponse(messages)) {
@@ -2332,6 +2386,26 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
     runtimeState.lastEmptyResponseBlockKey = null;
     runtimeState.lastEmptyResponseBlockCount = 0;
+
+    if (
+      runtimeState.agentEnabled &&
+      lastAssistantMessage?.stopReason === "stop" &&
+      assistantSentOnlyPreflight
+    ) {
+      const preflight = extractPreflightFromText(
+        assistantText,
+        nowIso,
+        "assistant",
+      );
+      if (preflight) {
+        const scopedPreflight = recordActivePreflight(pi, preflight);
+        markAssistantPreflightApplied(
+          assistantPreflightStream,
+          scopedPreflight,
+        );
+      }
+      return;
+    }
 
     if (
       pendingMemoryGateRecovery &&
@@ -2386,6 +2460,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
       runtimeState.agentEnabled &&
       lastAssistantMessage?.stopReason === "stop" &&
       isActionOrApprovalObligation(obligation.obligation) &&
+      !assistantSentOnlyPreflight &&
       !assistantMessageHasToolCall(lastAssistantMessage) &&
       !assistantTurnHasToolCallSinceLatestUser(messages) &&
       !isAssistantClarificationAllowedForObligation(
@@ -2444,7 +2519,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
     if (
       runtimeState.agentEnabled &&
-      lastAssistantMessage?.stopReason === "stop"
+      lastAssistantMessage?.stopReason === "stop" &&
+      !assistantSentOnlyPreflight
     ) {
       harnessIssues = evaluateHarnessTurn({
         messages,

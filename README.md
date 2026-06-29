@@ -419,8 +419,18 @@ package instructions:
 npm run benchmark:harness
 ```
 
+For deterministic harness automation, preflight suites before scoring and write
+stable report files:
+
+```bash
+node --experimental-strip-types scripts/harness-benchmark.ts \
+  --preflight \
+  benchmarks/harness-sandbox.json
+```
+
 See [`docs/harness-benchmark-sandbox.md`](docs/harness-benchmark-sandbox.md) for
-the benchmark suite format and divergence scoring.
+the benchmark suite format, live Pi drift loops, resume behavior, and divergence
+scoring.
 
 If a global URL install is also enabled, remove it to avoid duplicate extension
 registration:

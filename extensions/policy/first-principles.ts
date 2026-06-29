@@ -5,7 +5,7 @@ import { isRecord } from "../lib/io.ts";
 export type PolicyMode = "ignore" | "warn" | "enforce";
 export type PolicyOutcome = "allow" | "warn" | "block";
 export type PreflightClarify = "yes" | "no";
-export type PreflightSource = "manual" | "auto";
+export type PreflightSource = "manual" | "assistant" | "auto";
 export type PostflightResult = "pass" | "fail" | "not-run";
 
 export interface FirstPrinciplesConfig {
@@ -95,7 +95,11 @@ export function parseFirstPrinciplesConfig(
   };
 }
 
-export function parsePreflightLine(line: string, nowIso: () => string): PreflightRecord | null {
+export function parsePreflightLine(
+  line: string,
+  nowIso: () => string,
+  source: PreflightSource = "manual",
+): PreflightRecord | null {
   const match = line.trim().match(PREFLIGHT_LINE_REGEX);
   if (!match) return null;
 
@@ -108,8 +112,25 @@ export function parsePreflightLine(line: string, nowIso: () => string): Prefligh
     reason: match[2],
     clarify,
     raw: line.trim(),
-    source: "manual",
+    source,
   };
+}
+
+export function extractPreflightFromText(
+  text: string,
+  nowIso: () => string,
+  source: PreflightSource = "manual",
+): PreflightRecord | null {
+  for (const line of text.split(/\r?\n/)) {
+    const parsed = parsePreflightLine(line, nowIso, source);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+export function isPreflightOnlyText(text: string): boolean {
+  return PREFLIGHT_LINE_REGEX.test(text.trim());
 }
 
 export function parsePostflightLine(line: string, nowIso: () => string): PostflightRecord | null {

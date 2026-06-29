@@ -14,10 +14,29 @@ Run the seed suite:
 npm run benchmark:harness
 ```
 
+Preflight a suite before scoring it:
+
+```bash
+node --experimental-strip-types scripts/harness-benchmark.ts \
+  --preflight \
+  benchmarks/harness-sandbox.json
+```
+
 Emit machine-readable output:
 
 ```bash
 node --experimental-strip-types scripts/harness-benchmark.ts --json benchmarks/harness-sandbox.json
+```
+
+Filter deterministic reports and fail CI when any selected run diverges:
+
+```bash
+node --experimental-strip-types scripts/harness-benchmark.ts \
+  --case workon-worker-bootstrap \
+  --model candidate/example \
+  --fail-on-divergence \
+  --out .tmp/harness/workon-bootstrap.md \
+  benchmarks/harness-sandbox.json
 ```
 
 Run the sandbox live through Pi and score the captured transcript:
@@ -28,6 +47,15 @@ npm run benchmark:pi-drift -- \
   --case workon-worker-bootstrap \
   --prompt-mode both \
   --out .tmp/pi-drift/latest.json
+```
+
+Preflight a live drift run before spending model calls:
+
+```bash
+npm run benchmark:pi-drift -- \
+  --model "provider/model-id" \
+  --case workon-worker-bootstrap \
+  --preflight
 ```
 
 Live drift runs do not have a builtin model default. Pass one or more models
@@ -70,6 +98,27 @@ npm run benchmark:pi-drift -- \
   --timeout-ms 30000 \
   --out .tmp/pi-drift/ready-packaged.json
 ```
+
+When `--out` is set, the live runner writes the generated suite after every
+completed model run. Use `--resume` with the same output path to skip completed
+run ids after an interruption:
+
+```bash
+npm run benchmark:pi-drift -- \
+  --model "provider/model-a,provider/model-b:high" \
+  --case workon-worker-bootstrap \
+  --prompt-mode both \
+  --repeat 3 \
+  --out .tmp/pi-drift/workon-bootstrap.json \
+  --resume
+```
+
+`--repeat` gives deterministic looped sampling for each selected
+case/model/prompt-mode combination. Repeated runs receive stable `-rN` run ids.
+The runner also uses a deterministic sandbox state directory when `--out` is
+set: `<out>.state`. Override it with `--state-dir` when you want the sandbox
+artifacts somewhere else. Runs without `--out` still use temporary sandboxes and
+clean them up by default.
 
 The initial NLR HALO live drift run showed the ready-packet package contract
 improved from package divergence `40` in raw mode to `0` in packaged mode for
