@@ -51,6 +51,22 @@ async function writeFakePi(binDir: string, body: string): Promise<void> {
   await writeFile(path.join(binDir, "pi"), `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`, { mode: 0o755 });
 }
 
+async function writePortableFakePi(binDir: string, nodeBody: string): Promise<void> {
+  await mkdir(binDir, { recursive: true });
+  const helperPath = path.join(binDir, "pi-fake.cjs");
+  await writeFile(helperPath, nodeBody, "utf8");
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/usr/bin/env bash\nset -euo pipefail\nexec "${process.execPath}" "${helperPath}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  await writeFile(
+    path.join(binDir, "pi.cmd"),
+    `@echo off\r\n"${process.execPath}" "%~dp0pi-fake.cjs" %*\r\n`,
+    "utf8",
+  );
+}
+
 async function runKhala(args: string[], env: NodeJS.ProcessEnv = {}, cwd?: string) {
   try {
     const result = await execFileAsync(process.execPath, [path.resolve("bin/khala.js"), ...args], {
@@ -653,8 +669,8 @@ test("khala CLI reports discovery fallback when pi is unavailable in dry-run mod
     assert.match(stdout, /Pi discovery unavailable:/);
     assert.match(stdout, /Falling back to hardcoded presets\./);
     assert.match(stdout, /Khala configuration \[dry-run\]:/);
-    assert.match(stdout, /install khala package in project Pi settings .*\.pi\/settings\.json/);
-    assert.match(stdout, /write workflow model config .*\.pi\/khala\/workflow-model\.yaml/);
+    assert.match(stdout, /install khala package in project Pi settings .*\.pi[\\/]settings\.json/);
+    assert.match(stdout, /write workflow model config .*\.pi[\\/]khala[\\/]workflow-model\.yaml/);
     assert.doesNotMatch(stdout, /^\s*command\b/m);
     assert.match(stdout, /planning\s+NLR\/HALO Nemotron 3 Super:off/);
     assert.match(stdout, /development\s+NLR\/HALO Devstral 123B:off/);
@@ -747,17 +763,18 @@ test("khala CLI shows discovered models in non-interactive --yes dry-run mode wh
   const piLog = path.join(tempDir, "pi.log");
 
   try {
-    await writeFakePi(
+    await writePortableFakePi(
       binDir,
-      `printf '%s\n' "$*" >> ${JSON.stringify(piLog)}
-if [ "$1" = "--list-models" ]; then
-  printf 'provider model availability authentication reasoning\n'
-  printf 'github-copilot gpt-5.5 yes yes yes\n'
-  printf 'openai-codex gpt-5.4-mini yes yes yes\n'
-  printf 'github-copilot claude-opus-4.7 yes yes yes\n'
-  exit 0
-fi
-exit 0
+      String.raw`
+const fs = require("node:fs");
+const logPath = process.env.PI_LOG;
+if (logPath) fs.appendFileSync(logPath, process.argv.slice(2).join(" ") + "\n");
+if (process.argv[2] === "--list-models") {
+  console.log("provider model availability authentication reasoning");
+  console.log("github-copilot gpt-5.5 yes yes yes");
+  console.log("openai-codex gpt-5.4-mini yes yes yes");
+  console.log("github-copilot claude-opus-4.7 yes yes yes");
+}
 `,
     );
 
@@ -769,6 +786,7 @@ exit 0
         env: {
           ...process.env,
           PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          PI_LOG: piLog,
         },
       },
     );
