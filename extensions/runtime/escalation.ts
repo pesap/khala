@@ -1,4 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { PREFLIGHT_LINE_REGEX } from "../lib/constants.ts";
 import type { HarnessLimits } from "./profile.ts";
 import {
   assistantClaimedSkillNames as registryAssistantClaimedSkillNames,
@@ -4982,6 +4983,8 @@ export function evaluateHarnessTurn(params: {
     "substantialToolCallThreshold" | "toolFailureEscalationThreshold"
   >;
 }): HarnessTurnIssue[] {
+  if (PREFLIGHT_LINE_REGEX.test(params.assistantText.trim())) return [];
+
   const block = shouldBlockHarnessIssue(params.responseComplianceMode);
   const issues: HarnessTurnIssue[] = [];
 

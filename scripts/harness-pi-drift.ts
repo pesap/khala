@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,6 +17,7 @@ import {
   evaluateHarnessBenchmark,
   formatHarnessBenchmarkMarkdown,
   parseHarnessBenchmarkSuite,
+  preflightHarnessBenchmarkSuite,
   type HarnessBenchmarkCase,
   type HarnessBenchmarkMessage,
   type HarnessBenchmarkPackageArtifact,
@@ -45,11 +53,45 @@ export interface HarnessPiDriftCliArgs {
   modelEntries: string[];
   modelFiles: string[];
   outputPath?: string;
+  preflight: boolean;
   promptModes: PromptMode[];
+  repeat: number;
+  resume: boolean;
+  stateDir?: string;
   suitePath: string;
   thinking: string;
   timeoutMs: number;
   tools: ToolMode;
+}
+
+export interface HarnessPiDriftPreflightIssue {
+  severity: "error" | "warning";
+  code:
+    | "no_cases_selected"
+    | "no_models_selected"
+    | "output_required_for_resume"
+    | "pi_unavailable"
+    | "resume_file_unreadable"
+    | "suite_preflight"
+    | "unknown_case_id";
+  message: string;
+}
+
+export interface HarnessPiDriftPreflightReport {
+  ok: boolean;
+  suitePath: string;
+  outputPath?: string;
+  stateDir?: string;
+  caseCount: number;
+  selectedCaseCount: number;
+  modelCount: number;
+  promptModes: PromptMode[];
+  repeat: number;
+  plannedRunCount: number;
+  issueCount: number;
+  errorCount: number;
+  warningCount: number;
+  issues: HarnessPiDriftPreflightIssue[];
 }
 
 interface MaterializedCase {
@@ -78,6 +120,15 @@ interface PiAgentEndEvent {
   messages?: PiJsonMessage[];
 }
 
+class CliExit extends Error {
+  exitCode: number;
+
+  constructor(message: string, exitCode: number) {
+    super(message);
+    this.exitCode = exitCode;
+  }
+}
+
 function usage(): string {
   return [
     "Usage: node --experimental-strip-types scripts/harness-pi-drift.ts [options] <suite.json>",
@@ -92,10 +143,14 @@ function usage(): string {
     "  --thinking <level>         Default thinking level for models without a suffix. Defaults to off.",
     "  --case <id[,id...]>        Case id(s) to run. Defaults to every suite case.",
     "  --limit <n>                Limit selected cases after filtering.",
+    "  --repeat <n>               Run each selected model/case/prompt n times. Defaults to 1.",
     "  --prompt-mode <mode>       raw, packaged, or both. Defaults to packaged.",
     "  --timeout-ms <n>           Per Pi run timeout. Defaults to 60000.",
     "  --tools <mode>             none or read,bash. Defaults to read,bash.",
     "  --out <path>               Write the generated live suite JSON.",
+    "  --resume                   Reuse --out and skip completed run ids already present.",
+    "  --state-dir <path>         Deterministic sandbox state dir. Defaults to <out>.state.",
+    "  --preflight                Validate selection, models, output, and Pi availability only.",
     "  --json                     Emit machine-readable report JSON.",
     "  --keep-sandbox             Do not delete temporary sandbox directories.",
   ].join("\n");
@@ -216,7 +271,10 @@ export function parseHarnessPiDriftArgs(args: string[]): HarnessPiDriftCliArgs {
     keepSandbox: false,
     modelEntries: [],
     modelFiles: [],
+    preflight: false,
     promptModes: ["packaged"],
+    repeat: 1,
+    resume: false,
     suitePath: "",
     thinking: "off",
     timeoutMs: 60_000,
@@ -227,7 +285,7 @@ export function parseHarnessPiDriftArgs(args: string[]): HarnessPiDriftCliArgs {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--help" || arg === "-h") {
-      throw new Error(usage());
+      throw new CliExit(usage(), 0);
     }
     if (arg === "--json") {
       parsed.json = true;
@@ -235,6 +293,14 @@ export function parseHarnessPiDriftArgs(args: string[]): HarnessPiDriftCliArgs {
     }
     if (arg === "--keep-sandbox") {
       parsed.keepSandbox = true;
+      continue;
+    }
+    if (arg === "--preflight") {
+      parsed.preflight = true;
+      continue;
+    }
+    if (arg === "--resume") {
+      parsed.resume = true;
       continue;
     }
     if (arg === "--model") {
@@ -265,6 +331,14 @@ export function parseHarnessPiDriftArgs(args: string[]): HarnessPiDriftCliArgs {
       parsed.limit = limit;
       continue;
     }
+    if (arg === "--repeat") {
+      const repeat = Number(args[++index]);
+      if (!Number.isInteger(repeat) || repeat < 1) {
+        throw new Error("--repeat must be a positive integer");
+      }
+      parsed.repeat = repeat;
+      continue;
+    }
     if (arg === "--prompt-mode") {
       parsed.promptModes = parsePromptModes(args[++index] ?? "");
       continue;
@@ -287,6 +361,16 @@ export function parseHarnessPiDriftArgs(args: string[]): HarnessPiDriftCliArgs {
     }
     if (arg === "--out") {
       parsed.outputPath = args[++index];
+      if (!parsed.outputPath) {
+        throw new Error("--out requires a path");
+      }
+      continue;
+    }
+    if (arg === "--state-dir") {
+      parsed.stateDir = args[++index];
+      if (!parsed.stateDir) {
+        throw new Error("--state-dir requires a path");
+      }
       continue;
     }
     paths.push(arg);
@@ -300,6 +384,9 @@ export function parseHarnessPiDriftArgs(args: string[]): HarnessPiDriftCliArgs {
     throw new Error(
       "--model or --model-file is required for live Pi drift runs",
     );
+  }
+  if (parsed.resume && !parsed.outputPath) {
+    throw new Error("--resume requires --out so completed runs can be reused");
   }
   return parsed;
 }
@@ -423,8 +510,16 @@ function packagedPrompt(params: {
 async function materializeCase(
   benchmarkCase: HarnessBenchmarkCase,
   promptMode: PromptMode,
+  stateDir?: string,
 ): Promise<MaterializedCase> {
-  const sandboxDir = await mkdtemp(path.join(tmpdir(), "khala-pi-drift-"));
+  const sourceCaseId = benchmarkCase.id ?? (slug(benchmarkCase.name) || "case");
+  const sandboxDir = stateDir
+    ? path.join(stateDir, "sandboxes", sourceCaseId, promptMode)
+    : await mkdtemp(path.join(tmpdir(), "khala-pi-drift-"));
+  if (stateDir) {
+    await rm(sandboxDir, { force: true, recursive: true });
+    await mkdir(sandboxDir, { recursive: true });
+  }
   const ledgerPath = path.join(sandboxDir, "handoff-ledger.json");
   const replacements = new Map([
     ["/tmp/khala/handoff-ledger.json", ledgerPath],
@@ -467,7 +562,7 @@ async function materializeCase(
         attempts: [],
         phases: { pi: "pi-process-started" },
         pi: { status: "pi-process-started" },
-        updatedAt: new Date().toISOString(),
+        updatedAt: "1970-01-01T00:00:00.000Z",
       },
       null,
       2,
@@ -479,6 +574,7 @@ async function materializeCase(
   return {
     benchmarkCase: {
       ...benchmarkCase,
+      id: `${sourceCaseId}-${promptMode}`,
       packageContract,
       runs: [],
       userText:
@@ -559,17 +655,34 @@ function parsePiJsonLines(stdout: string): PiAgentEndEvent {
   return agentEnd;
 }
 
+function piRunId(params: {
+  benchmarkCase: HarnessBenchmarkCase;
+  model: HarnessPiDriftModelTarget;
+  promptMode: PromptMode;
+  repeatIndex: number;
+  repeatCount: number;
+}): string {
+  const modelLabel = `${params.model.id}:${params.model.thinking}`;
+  const repeatSuffix =
+    params.repeatCount > 1 ? `-r${params.repeatIndex + 1}` : "";
+  return `${params.benchmarkCase.id ?? slug(params.benchmarkCase.name)}-${slug(modelLabel)}-${params.promptMode}${repeatSuffix}`;
+}
+
 async function runPiCase(params: {
   benchmarkCase: HarnessBenchmarkCase;
   model: HarnessPiDriftModelTarget;
   prompt: string;
   promptMode: PromptMode;
+  repeatCount: number;
+  repeatIndex: number;
   timeoutMs: number;
   tools: ToolMode;
 }): Promise<HarnessBenchmarkRun> {
   const modelLabel = `${params.model.id}:${params.model.thinking}`;
-  const modelRunLabel = `${modelLabel} [${params.promptMode}]`;
-  const runId = `${params.benchmarkCase.id ?? slug(params.benchmarkCase.name)}-${slug(modelLabel)}-${params.promptMode}`;
+  const repeatLabel =
+    params.repeatCount > 1 ? ` r${params.repeatIndex + 1}` : "";
+  const modelRunLabel = `${modelLabel} [${params.promptMode}${repeatLabel}]`;
+  const runId = piRunId(params);
   const toolArgs =
     params.tools === "none" ? ["--no-tools"] : ["--tools", params.tools];
   let stdout = "";
@@ -691,54 +804,342 @@ async function resolveModelTargets(
   return [...unique.values()];
 }
 
+function compareText(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function effectiveStateDir(args: HarnessPiDriftCliArgs): string | undefined {
+  if (args.stateDir) return path.resolve(args.stateDir);
+  if (args.outputPath) return path.resolve(`${args.outputPath}.state`);
+  return undefined;
+}
+
+function sortedLiveCases(
+  cases: HarnessBenchmarkCase[],
+): HarnessBenchmarkCase[] {
+  return cases
+    .map((benchmarkCase) => ({
+      ...benchmarkCase,
+      runs: [...benchmarkCase.runs].sort(
+        (left, right) =>
+          compareText(left.id ?? "", right.id ?? "") ||
+          compareText(left.model ?? "", right.model ?? ""),
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        compareText(left.id ?? "", right.id ?? "") ||
+        compareText(left.name, right.name),
+    );
+}
+
+function liveSuiteForOutput(params: {
+  sourceSuite: HarnessBenchmarkSuite;
+  suitePath: string;
+  liveCases: HarnessBenchmarkCase[];
+}): HarnessBenchmarkSuite {
+  return {
+    cases: sortedLiveCases(params.liveCases),
+    description: `Live Pi drift run from ${params.sourceSuite.name ?? params.suitePath}`,
+    name: "Khala Pi Drift Sandbox",
+    version: 1,
+  };
+}
+
+async function writeLiveSuite(params: {
+  outputPath?: string;
+  sourceSuite: HarnessBenchmarkSuite;
+  suitePath: string;
+  liveCases: HarnessBenchmarkCase[];
+}): Promise<void> {
+  if (!params.outputPath) return;
+  await mkdir(path.dirname(params.outputPath), { recursive: true });
+  const tempPath = `${params.outputPath}.tmp-${process.pid}`;
+  await writeFile(
+    tempPath,
+    `${JSON.stringify(
+      liveSuiteForOutput({
+        liveCases: params.liveCases,
+        sourceSuite: params.sourceSuite,
+        suitePath: params.suitePath,
+      }),
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  await rename(tempPath, params.outputPath);
+}
+
+async function readResumeSuite(
+  outputPath: string,
+): Promise<HarnessBenchmarkSuite | undefined> {
+  try {
+    const payload = JSON.parse(await readFile(outputPath, "utf8")) as unknown;
+    return parseHarnessBenchmarkSuite(payload);
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function upsertLiveCase(
+  liveCases: HarnessBenchmarkCase[],
+  benchmarkCase: HarnessBenchmarkCase,
+): HarnessBenchmarkCase {
+  const existingIndex = liveCases.findIndex(
+    (candidate) => candidate.id === benchmarkCase.id,
+  );
+  if (existingIndex === -1) {
+    liveCases.push(benchmarkCase);
+    return benchmarkCase;
+  }
+  const existing = liveCases[existingIndex];
+  const merged = {
+    ...benchmarkCase,
+    runs: existing.runs,
+  };
+  liveCases[existingIndex] = merged;
+  return merged;
+}
+
+async function preflightPiDrift(params: {
+  args: HarnessPiDriftCliArgs;
+  models: HarnessPiDriftModelTarget[];
+  selectedCases: HarnessBenchmarkCase[];
+  sourceSuite: HarnessBenchmarkSuite;
+  stateDir?: string;
+}): Promise<HarnessPiDriftPreflightReport> {
+  const issues: HarnessPiDriftPreflightIssue[] = [];
+  const suitePreflight = preflightHarnessBenchmarkSuite(params.sourceSuite);
+
+  for (const issue of suitePreflight.issues) {
+    issues.push({
+      code: "suite_preflight",
+      message: `${issue.code}: ${issue.message}`,
+      severity: issue.severity,
+    });
+  }
+
+  if (params.selectedCases.length === 0) {
+    issues.push({
+      code: "no_cases_selected",
+      message: "no benchmark cases matched the requested filters",
+      severity: "error",
+    });
+  }
+  if (params.args.cases.length > 0) {
+    const knownCaseIds = new Set(
+      params.sourceSuite.cases
+        .map((benchmarkCase) => benchmarkCase.id)
+        .filter((id): id is string => id !== undefined),
+    );
+    for (const caseId of params.args.cases) {
+      if (knownCaseIds.has(caseId)) continue;
+      issues.push({
+        code: "unknown_case_id",
+        message: `unknown --case id: ${caseId}`,
+        severity: "error",
+      });
+    }
+  }
+  if (params.models.length === 0) {
+    issues.push({
+      code: "no_models_selected",
+      message: "--model or --model-file must provide at least one model",
+      severity: "error",
+    });
+  }
+  if (params.args.resume && !params.args.outputPath) {
+    issues.push({
+      code: "output_required_for_resume",
+      message: "--resume requires --out so completed runs can be reused",
+      severity: "error",
+    });
+  }
+  if (params.args.resume && params.args.outputPath) {
+    try {
+      await readResumeSuite(params.args.outputPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      issues.push({
+        code: "resume_file_unreadable",
+        message: `could not parse resume file ${params.args.outputPath}: ${message}`,
+        severity: "error",
+      });
+    }
+  }
+  try {
+    await execFileAsync("pi", ["--version"], { timeout: 10_000 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    issues.push({
+      code: "pi_unavailable",
+      message: `pi --version failed: ${message}`,
+      severity: "error",
+    });
+  }
+
+  const errorCount = issues.filter(
+    (issue) => issue.severity === "error",
+  ).length;
+  const warningCount = issues.length - errorCount;
+  return {
+    caseCount: params.sourceSuite.cases.length,
+    errorCount,
+    issueCount: issues.length,
+    issues,
+    modelCount: params.models.length,
+    ok: errorCount === 0,
+    outputPath: params.args.outputPath,
+    plannedRunCount:
+      params.selectedCases.length *
+      params.models.length *
+      params.args.promptModes.length *
+      params.args.repeat,
+    promptModes: params.args.promptModes,
+    repeat: params.args.repeat,
+    selectedCaseCount: params.selectedCases.length,
+    stateDir: params.stateDir,
+    suitePath: params.args.suitePath,
+    warningCount,
+  };
+}
+
+function formatPiDriftPreflightMarkdown(
+  report: HarnessPiDriftPreflightReport,
+): string {
+  const lines = [
+    "# Khala Pi drift preflight",
+    "",
+    `Status: ${report.ok ? "ok" : "failed"}`,
+    `Cases: ${report.selectedCaseCount}/${report.caseCount}  Models: ${report.modelCount}  Prompt modes: ${report.promptModes.join(", ")}`,
+    `Repeat: ${report.repeat}  Planned runs: ${report.plannedRunCount}`,
+    report.outputPath
+      ? `Output: ${report.outputPath}`
+      : "Output: (not configured)",
+    report.stateDir
+      ? `State: ${report.stateDir}`
+      : "State: temporary sandboxes",
+    `Errors: ${report.errorCount}  Warnings: ${report.warningCount}`,
+    "",
+  ];
+
+  if (report.issues.length === 0) {
+    lines.push("No issues found.");
+    return `${lines.join("\n")}\n`;
+  }
+
+  lines.push("| Severity | Code | Message |");
+  lines.push("| --- | --- | --- |");
+  for (const issue of report.issues) {
+    lines.push(
+      `| ${issue.severity} | ${issue.code} | ${issue.message.replaceAll("|", "\\|")} |`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 async function main(): Promise<void> {
   const args = parseHarnessPiDriftArgs(process.argv.slice(2));
   const models = await resolveModelTargets(args);
   const payload = JSON.parse(await readFile(args.suitePath, "utf8")) as unknown;
   const sourceSuite = parseHarnessBenchmarkSuite(payload);
   const selectedCases = selectCases(sourceSuite, args);
-  if (selectedCases.length === 0) {
-    throw new Error("no benchmark cases matched the requested filters");
+  const stateDir = effectiveStateDir(args);
+  const preflight = await preflightPiDrift({
+    args,
+    models,
+    selectedCases,
+    sourceSuite,
+    stateDir,
+  });
+
+  if (args.preflight) {
+    const output = args.json
+      ? `${JSON.stringify(preflight, null, 2)}\n`
+      : formatPiDriftPreflightMarkdown(preflight);
+    process.stdout.write(output);
+    if (!preflight.ok) process.exitCode = 2;
+    return;
   }
 
-  const liveCases: HarnessBenchmarkCase[] = [];
+  if (!preflight.ok) {
+    process.stderr.write(formatPiDriftPreflightMarkdown(preflight));
+    process.exitCode = 2;
+    return;
+  }
+
+  const resumeSuite =
+    args.resume && args.outputPath
+      ? await readResumeSuite(args.outputPath)
+      : undefined;
+  const liveCases: HarnessBenchmarkCase[] = resumeSuite?.cases ?? [];
   const sandboxDirs: string[] = [];
   try {
     for (const sourceCase of selectedCases) {
       for (const promptMode of args.promptModes) {
-        const materialized = await materializeCase(sourceCase, promptMode);
+        const materialized = await materializeCase(
+          sourceCase,
+          promptMode,
+          stateDir,
+        );
         sandboxDirs.push(materialized.sandboxDir);
-        const runs: HarnessBenchmarkRun[] = [];
+        const liveCase = upsertLiveCase(liveCases, materialized.benchmarkCase);
         for (const model of models) {
-          runs.push(
-            await runPiCase({
+          for (
+            let repeatIndex = 0;
+            repeatIndex < args.repeat;
+            repeatIndex += 1
+          ) {
+            const expectedRunId = piRunId({
               benchmarkCase: materialized.benchmarkCase,
               model,
-              prompt: materialized.prompt,
               promptMode,
-              timeoutMs: args.timeoutMs,
-              tools: args.tools,
-            }),
-          );
+              repeatCount: args.repeat,
+              repeatIndex,
+            });
+            if (liveCase.runs.some((run) => run.id === expectedRunId)) {
+              continue;
+            }
+            liveCase.runs.push(
+              await runPiCase({
+                benchmarkCase: materialized.benchmarkCase,
+                model,
+                prompt: materialized.prompt,
+                promptMode,
+                repeatCount: args.repeat,
+                repeatIndex,
+                timeoutMs: args.timeoutMs,
+                tools: args.tools,
+              }),
+            );
+            await writeLiveSuite({
+              liveCases,
+              outputPath: args.outputPath,
+              sourceSuite,
+              suitePath: args.suitePath,
+            });
+          }
         }
-        liveCases.push({ ...materialized.benchmarkCase, runs });
       }
     }
 
-    const liveSuite: HarnessBenchmarkSuite = {
-      cases: liveCases,
-      description: `Live Pi drift run from ${sourceSuite.name ?? args.suitePath}`,
-      name: "Khala Pi Drift Sandbox",
-      version: 1,
-    };
-    if (args.outputPath) {
-      await mkdir(path.dirname(args.outputPath), { recursive: true });
-      await writeFile(
-        args.outputPath,
-        `${JSON.stringify(liveSuite, null, 2)}\n`,
-        "utf8",
-      );
-    }
+    const liveSuite = liveSuiteForOutput({
+      liveCases,
+      sourceSuite,
+      suitePath: args.suitePath,
+    });
+    await writeLiveSuite({
+      liveCases,
+      outputPath: args.outputPath,
+      sourceSuite,
+      suitePath: args.suitePath,
+    });
 
     const report = evaluateHarnessBenchmark(liveSuite);
     if (args.json) {
@@ -747,7 +1148,7 @@ async function main(): Promise<void> {
       process.stdout.write(formatHarnessBenchmarkMarkdown(report));
     }
   } finally {
-    if (!args.keepSandbox) {
+    if (!args.keepSandbox && !stateDir) {
       await Promise.all(
         sandboxDirs.map((sandboxDir) =>
           rm(sandboxDir, { force: true, recursive: true }),
@@ -763,7 +1164,11 @@ if (
 ) {
   main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof CliExit && error.exitCode === 0) {
+      process.stdout.write(`${message}\n`);
+      return;
+    }
     process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof CliExit ? error.exitCode : 1;
   });
 }

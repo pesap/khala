@@ -9935,6 +9935,30 @@ test("combined harness accepts cheap evidence, memory, learning, and escalation 
   );
 });
 
+test("combined harness ignores preflight-only control responses", () => {
+  const messages: Message[] = [
+    textMessage("user", "Fix the repo and run tests."),
+    assistantToolCall("write", { path: "notes.txt", content: "ok" }),
+    toolResult("Policy blocked write.\nMissing or invalid preflight."),
+    textMessage(
+      "assistant",
+      'Preflight: skill=debug-investigation reason="retry blocked write" clarify=no',
+    ),
+  ];
+
+  assert.deepEqual(
+    evaluateHarnessTurn({
+      messages,
+      userText: "Fix the repo and run tests.",
+      assistantText:
+        'Preflight: skill=debug-investigation reason="retry blocked write" clarify=no',
+      lowConfidenceThreshold: 0.7,
+      responseComplianceMode: "enforce",
+    }),
+    [],
+  );
+});
+
 test("does not require memory search for trivial one-tool inspection", () => {
   assert.deepEqual(
     evaluateMemorySearchRouting({

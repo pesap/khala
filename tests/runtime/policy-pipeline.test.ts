@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parsePreflightLine } from "../../extensions/policy/first-principles.ts";
+import {
+  extractPreflightFromText,
+  isPreflightOnlyText,
+  parsePreflightLine,
+} from "../../extensions/policy/first-principles.ts";
 import { evaluateMutationPreflightPolicy, evaluateSpawnPolicy } from "../../extensions/policy/pipeline.ts";
 
 test("spawn policy blocks Pi slash preflight sent to shell", () => {
@@ -29,7 +33,8 @@ test("enforced mutation preflight tells agents to send the record as chat text",
   });
 
   assert.equal(decision.outcome, "block");
-  assert.match(decision.blockReason ?? "", /Send this as chat text, not through the shell/);
+  assert.match(decision.blockReason ?? "", /assistant\/chat text, not through the shell/);
+  assert.match(decision.blockReason ?? "", /immediately before the retrying tool call/);
   assert.match(decision.blockReason ?? "", /Preflight: skill=<name\|none> reason="<short>" clarify=<yes\|no>/);
 });
 
@@ -57,4 +62,52 @@ test("manual chat preflight guidance satisfies the active workflow gate", () => 
 
   assert.equal(decision.outcome, "allow");
   assert.match(decision.detail, /Using manual preflight: Preflight: skill=github reason="Investigate CI" clarify=no/);
+});
+
+test("assistant same-turn preflight text satisfies the mutation gate", () => {
+  const parsed = extractPreflightFromText(
+    [
+      "Preflight: skill=debug-investigation reason=\"validate harness preflight fix\" clarify=no",
+      "I will retry the blocked write now.",
+    ].join("\n"),
+    () => "2026-06-29T00:00:00.000Z",
+    "assistant",
+  );
+
+  assert.deepEqual(parsed, {
+    at: "2026-06-29T00:00:00.000Z",
+    skill: "debug-investigation",
+    reason: "validate harness preflight fix",
+    clarify: "no",
+    raw: 'Preflight: skill=debug-investigation reason="validate harness preflight fix" clarify=no',
+    source: "assistant",
+  });
+
+  const decision = evaluateMutationPreflightPolicy({
+    preflightMode: "enforce",
+    preflight: parsed,
+    toolName: "write",
+    activeWorkflowId: null,
+  });
+
+  assert.equal(decision.outcome, "allow");
+  assert.match(
+    decision.detail,
+    /Using assistant preflight: Preflight: skill=debug-investigation reason="validate harness preflight fix" clarify=no/,
+  );
+});
+
+test("preflight-only text is recognized as a control response", () => {
+  assert.equal(
+    isPreflightOnlyText(
+      'Preflight: skill=none reason="prepare mutation" clarify=no',
+    ),
+    true,
+  );
+  assert.equal(
+    isPreflightOnlyText(
+      'Preflight: skill=none reason="prepare mutation" clarify=no\nRetrying now.',
+    ),
+    false,
+  );
 });

@@ -6,6 +6,7 @@ import {
   evaluateHarnessBenchmark,
   formatHarnessBenchmarkMarkdown,
   parseHarnessBenchmarkSuite,
+  preflightHarnessBenchmarkSuite,
   type HarnessBenchmarkSuite,
 } from "../../khala/harness.ts";
 import {
@@ -126,6 +127,69 @@ test("harness benchmark reports expected issue distance and Markdown output", ()
   assert.match(markdown, /tool_efficiency/);
 });
 
+test("harness preflight reports package, expected-code, and recovery key problems", () => {
+  const report = preflightHarnessBenchmarkSuite({
+    cases: [
+      {
+        expectedIssueCodes: ["not_a_real_issue" as never],
+        id: "case-a",
+        name: "Problem case",
+        packageContract: {
+          artifacts: [
+            {
+              forbiddenIncludes: ["stale"],
+              id: "capsule",
+              requiredIncludes: ["must keep"],
+              text: "stale package text",
+            },
+          ],
+        },
+        runs: [
+          {
+            id: "same-run",
+            messages: [],
+            model: "model-a",
+          },
+          {
+            id: "same-run",
+            messages: [{ role: "user", text: "Do the task." }],
+            model: "model-b",
+          },
+        ],
+        userText: "Do the task.",
+      },
+      {
+        id: "case-a",
+        name: "Duplicate case",
+        runs: [
+          {
+            assistantText: "Done.",
+            messages: [{ role: "user", text: "Do the task." }],
+          },
+        ],
+        userText: "Do the task.",
+      },
+    ],
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.caseCount, 2);
+  assert.equal(report.runCount, 3);
+  assert.deepEqual(
+    report.issues.map((issue) => issue.code),
+    [
+      "unknown_expected_issue_code",
+      "package_artifact_missing_required_text",
+      "package_artifact_contains_forbidden_text",
+      "run_without_messages",
+      "run_without_assistant_output",
+      "duplicate_run_id",
+      "run_without_assistant_output",
+      "duplicate_case_id",
+    ],
+  );
+});
+
 test("harness benchmark checks handoff package artifacts and acknowledgement behavior", () => {
   const report = evaluateHarnessBenchmark({
     cases: [
@@ -202,7 +266,7 @@ test("harness benchmark checks handoff package artifacts and acknowledgement beh
                 role: "assistant",
                 toolCall: {
                   arguments: {
-                    cmd: "git commit --allow-empty -m \"chore(workon): bootstrap #63\"",
+                    cmd: 'git commit --allow-empty -m "chore(workon): bootstrap #63"',
                   },
                   name: "exec_command",
                 },
@@ -217,7 +281,10 @@ test("harness benchmark checks handoff package artifacts and acknowledgement beh
                   name: "exec_command",
                 },
               },
-              { role: "toolResult", text: "draft PR https://github.com/pesap/agents/pull/63" },
+              {
+                role: "toolResult",
+                text: "draft PR https://github.com/pesap/agents/pull/63",
+              },
             ],
             model: "model-c",
           },
@@ -305,6 +372,16 @@ test("pi drift runner requires explicit user-selected models", () => {
     () => parseHarnessPiDriftArgs(["benchmarks/harness-sandbox.json"]),
     /--model or --model-file is required/,
   );
+  assert.throws(
+    () =>
+      parseHarnessPiDriftArgs([
+        "benchmarks/harness-sandbox.json",
+        "--model",
+        "provider/model-a",
+        "--resume",
+      ]),
+    /--resume requires --out/,
+  );
 
   const parsed = parseHarnessPiDriftArgs([
     "benchmarks/harness-sandbox.json",
@@ -314,10 +391,21 @@ test("pi drift runner requires explicit user-selected models", () => {
     "medium",
     "--prompt-mode",
     "both",
+    "--repeat",
+    "3",
+    "--out",
+    ".tmp/pi-drift/latest.json",
+    "--resume",
+    "--state-dir",
+    ".tmp/pi-drift/state",
   ]);
 
   assert.equal(parsed.suitePath, "benchmarks/harness-sandbox.json");
   assert.equal(parsed.thinking, "medium");
+  assert.equal(parsed.repeat, 3);
+  assert.equal(parsed.resume, true);
+  assert.equal(parsed.outputPath, ".tmp/pi-drift/latest.json");
+  assert.equal(parsed.stateDir, ".tmp/pi-drift/state");
   assert.deepEqual(parsed.modelEntries, [
     "provider/model-a",
     "provider/model-b:high",
