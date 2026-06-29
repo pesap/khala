@@ -271,6 +271,45 @@ silently falling back to the planning model.
 
 <!-- markdownlint-enable MD013 MD060 -->
 
+### Mutation Preflight
+
+Khala preflight is the intent record checked before mutation tools such as
+`write`, `edit`, `apply_patch`, and mutating shell commands. It is not a user
+approval prompt and it does not run validation. It gives the harness a compact,
+parseable record of why a mutation is about to happen:
+
+```text
+Preflight: skill=<name|none> reason="<short>" clarify=<yes|no>
+```
+
+The fields mean:
+
+- `skill`: the primary skill or workflow that justifies the mutation, or
+  `none` when no skill applies.
+- `reason`: a short mutation intent summary, limited to one quoted line.
+- `clarify`: `yes` when the agent still needs a blocking clarification before
+  mutating, otherwise `no`.
+
+Preflight mode controls how strictly Khala treats missing or invalid records:
+
+| Mode      | Behavior                                                               |
+| --------- | ---------------------------------------------------------------------- |
+| `ignore`  | Do not enforce preflight.                                              |
+| `warn`    | Allow the mutation and emit a policy warning when preflight is absent. |
+| `enforce` | Block the mutation until a valid preflight has been recorded.          |
+
+Agents can record preflight in either of these ways:
+
+- Send `/preflight Preflight: ...` as a Pi command before mutating.
+- Emit `Preflight: ...` as assistant text immediately before the retrying
+  mutation tool call in the same assistant turn.
+
+When a blocked agent sends only the `Preflight: ...` line as a recovery turn,
+Khala records it as control traffic and does not require unrelated evidence or
+memory-search work for that turn. Benchmark-suite `--preflight` is separate: it
+validates saved harness benchmark input before scoring and does not satisfy the
+runtime mutation gate.
+
 ### Learning, Skills, and Rules
 
 | Command                                                 | Purpose                                                      |
