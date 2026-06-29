@@ -444,6 +444,13 @@ function piDiscoveryRows() {
   return cached.skipped ? [] : cached.rows;
 }
 
+function formatDiscoverySummary(rows, maxRows = 6) {
+  const sample = rows.slice(0, maxRows).map((row) => `${row.provider}/${row.model}`);
+  if (!sample.length) return "";
+  if (rows.length <= maxRows) return sample.join(", ");
+  return `${sample.join(", ")} … +${rows.length - maxRows} more`;
+}
+
 // Cache provider list for the process lifetime (reads models.json once).
 let _providersCache = null;
 
@@ -2079,10 +2086,21 @@ async function askProfile(label, defaultThinking, providers, discoveryRows, fall
 }
 
 async function askModels(options) {
-  if (options.yes || !canPrompt()) return DEFAULT_MODELS;
-
   const providers = liteLLMProvidersFromModelsJson();
-  const rows      = piDiscoveryRows();
+  const discovery = piModelList();
+
+  if (options.yes || !canPrompt()) {
+    console.log(stepHeading("Workflow models"));
+    if (discovery.skipped) {
+      console.log(hint(`  Pi discovery unavailable: ${discovery.reason}. Falling back to hardcoded presets.`));
+    } else {
+      console.log(hint("  Discovered Pi models:"));
+      console.log(hint(`  ${formatDiscoverySummary(discovery.rows)}`));
+    }
+    return DEFAULT_MODELS;
+  }
+
+  const rows = discovery.rows;
 
   console.log(stepHeading("Workflow models"));
   console.log(hint("  Defaults are recommended. Use filtering if you already know the provider/model id."));

@@ -38,6 +38,33 @@ jobs:
       - name: Test
         run: npm run test:node
 
+  setup-helper-windows:
+    name: Setup helper focused tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run focused setup-helper tests
+        run: >-
+          node --test --test-concurrency=1 --experimental-strip-types
+          --test-name-pattern="khala CLI reports discovery fallback when pi is
+          unavailable in dry-run mode|khala CLI shows discovered models in
+          non-interactive --yes dry-run mode when pi is available|khala setup
+          helper preserves pi install arguments on Windows shims"
+          tests/runtime/khala-cli.test.ts
+
   github-package-smoke:
     name: GitHub package smoke
     runs-on: ubuntu-latest
