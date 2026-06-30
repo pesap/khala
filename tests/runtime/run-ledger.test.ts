@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -67,6 +68,47 @@ test("writeRunLedger replaces run files without leaving temporary files", async 
       [],
     );
   } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("writeRunLedger retries transient rename permission failures", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-run-ledger-rename-retry-"));
+  const originalRename = fs.rename;
+  let attempts = 0;
+  fs.rename = (async (...args: unknown[]) => {
+    attempts += 1;
+    if (attempts <= 2) {
+      throw Object.assign(new Error("EPERM: operation not permitted, rename"), {
+        code: "EPERM",
+      });
+    }
+    return originalRename(args[0] as never, args[1] as never);
+  }) as typeof fs.rename;
+  try {
+    const runFile = path.join(tempDir, "runs", "plan-1.json");
+    await writeRunLedger(
+      runFile,
+      buildRunLedgerRecord({
+        version: 1,
+        id: "plan-1",
+        type: "plan",
+        input: "transient Windows rename failure",
+        flags: {},
+        startedAt: "2026-06-20T00:00:00.000Z",
+      }),
+    );
+
+    assert.equal(attempts, 3);
+    assert.equal((await readRunLedger(runFile))?.input, "transient Windows rename failure");
+    assert.deepEqual(
+      (await readdir(path.dirname(runFile))).filter((file) =>
+        file.endsWith(".tmp"),
+      ),
+      [],
+    );
+  } finally {
+    fs.rename = originalRename;
     await rm(tempDir, { recursive: true, force: true });
   }
 });

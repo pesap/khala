@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { LEARNING_STORE_DIRNAME } from "../lib/constants.ts";
 import { formatErrorMessage, isRecord, readTextIfExists } from "../lib/io.ts";
 import type { WorkflowFlags } from "../learning/store.ts";
@@ -89,6 +90,8 @@ const MEMORY_REFRESH_REQUIREMENTS = new Set<string>([
   "required_before_mutation",
   "not_required",
 ]);
+const TRANSIENT_RENAME_ERROR_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const RUN_LEDGER_RENAME_RETRY_DELAYS_MS = [10, 25, 50, 100, 200];
 
 export type { ToolSideEffectClass } from "./tool-registry.ts";
 export type { ToolEvidenceClass } from "./tool-registry.ts";
@@ -1312,10 +1315,33 @@ export async function writeRunLedger(
   );
   try {
     await fs.writeFile(tempFile, `${JSON.stringify(persistedRecord, null, 2)}\n`, "utf8");
-    await fs.rename(tempFile, runFile);
+    await renameWithTransientRetry(tempFile, runFile);
   } catch (error) {
     await fs.rm(tempFile, { force: true }).catch(() => undefined);
     throw error;
+  }
+}
+
+async function renameWithTransientRetry(
+  source: string,
+  target: string,
+): Promise<void> {
+  for (const retryDelayMs of [
+    ...RUN_LEDGER_RENAME_RETRY_DELAYS_MS,
+    undefined,
+  ]) {
+    try {
+      await fs.rename(source, target);
+      return;
+    } catch (error) {
+      const code = isRecord(error) && typeof error.code === "string"
+        ? error.code
+        : undefined;
+      if (!code || !TRANSIENT_RENAME_ERROR_CODES.has(code) || retryDelayMs === undefined) {
+        throw error;
+      }
+      await delay(retryDelayMs);
+    }
   }
 }
 
