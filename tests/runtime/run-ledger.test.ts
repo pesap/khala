@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -28,7 +28,7 @@ import { getToolMetadata } from "../../extensions/runtime/tool-registry.ts";
 import { buildSkillRegistryEvent } from "../../extensions/runtime/skill-registry.ts";
 
 test("global run ledger directory is under the global khala store", () => {
-  assert.match(getGlobalRunLedgerDir(), /\/\.pi\/khala\/runs$/);
+  assert.equal(getGlobalRunLedgerDir(), path.join(homedir(), ".pi", "khala", "runs"));
 });
 
 test("writeRunLedger replaces run files without leaving temporary files", async () => {

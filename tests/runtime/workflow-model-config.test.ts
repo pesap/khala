@@ -229,5 +229,5 @@ test("writeWorkflowModelConfig writes and can be read back", async () => {
 
 test("getWorkflowModelConfigPath joins correctly", () => {
   const result = getWorkflowModelConfigPath("/tmp/khala-store");
-  assert.equal(result, "/tmp/khala-store/workflow-model.yaml");
+  assert.equal(result, path.join("/tmp/khala-store", "workflow-model.yaml"));
 });

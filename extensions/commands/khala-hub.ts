@@ -93,9 +93,13 @@ export function isRecognizedHubGitRef(value: string): boolean {
 export function isPathLikeHubValue(value: string): boolean {
   const trimmed = value.trim();
   return (
+    path.isAbsolute(trimmed) ||
+    path.win32.isAbsolute(trimmed) ||
     trimmed.startsWith("/") ||
     trimmed.startsWith("./") ||
+    trimmed.startsWith(".\\") ||
     trimmed.startsWith("../") ||
+    trimmed.startsWith("..\\") ||
     trimmed.startsWith("~/") ||
     trimmed === "~" ||
     trimmed.startsWith("~\\")
@@ -113,7 +117,7 @@ export function expandHubHome(value: string, homeDir: string): string {
 export function normalizeHubSubdir(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (path.isAbsolute(trimmed)) return null;
+  if (path.isAbsolute(trimmed) || path.win32.isAbsolute(trimmed)) return null;
   const segments = trimmed.split(/[\\/]+/).filter(Boolean);
   if (segments.length === 0) return null;
   if (segments.some((segment) => segment === "." || segment === "..")) return null;

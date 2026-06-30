@@ -3322,9 +3322,11 @@ test("khala litellm --auth-mode=literal writes auth.json with 0600 perms and use
     const authParsed = JSON.parse(authRaw);
     assert.deepEqual(authParsed["team-litellm"], { type: "api_key", key: secretValue });
     assert.deepEqual(authParsed.openai, { type: "api_key", key: "sk-keep-me" });
-    const { mode } = await import("node:fs/promises").then((m) => m.stat(authPath));
-    // Lower 9 bits == permission bits; 0o600 == 0o400 (user-read) | 0o200 (user-write).
-    assert.equal(mode & 0o777, 0o600, `auth.json must be 0600, was 0${(mode & 0o777).toString(8)}`);
+    if (process.platform !== "win32") {
+      const { mode } = await import("node:fs/promises").then((m) => m.stat(authPath));
+      // Lower 9 bits == permission bits; 0o600 == 0o400 (user-read) | 0o200 (user-write).
+      assert.equal(mode & 0o777, 0o600, `auth.json must be 0600, was 0${(mode & 0o777).toString(8)}`);
+    }
     assert.match(result.stdout, /Khala stored your API key in global auth store/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

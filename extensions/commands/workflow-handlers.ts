@@ -773,6 +773,7 @@ export function createWorkflowCommandHandlers(params: {
         notify(ctx, targetRepoError, "error");
         return;
       }
+      if (!ensureWorkflowSlotAvailable(ctx)) return;
       const resolvedMultiplexer = resolveWorkonMultiplexer({
         requested: parsed.multiplexer,
         env: {
