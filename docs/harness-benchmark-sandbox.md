@@ -281,8 +281,8 @@ Suites are JSON files with benchmark cases and candidate runs:
 
 Each run is evaluated with `evaluateHarnessTurn` and
 `evaluateHarnessTurnMetrics`. Internally, runs are first normalized into a
-deterministic `KhalaTranscript`; existing `runs[].messages` fixtures still
-work, and future fixtures may provide `runs[].transcript` directly. The report
+deterministic `KhalaTranscript`; existing `runs[].messages` fixtures still work,
+and future fixtures may provide `runs[].transcript` directly. The report
 includes:
 
 - `issueCodes`: harness violations found in the transcript.
@@ -311,11 +311,11 @@ Fixtures can still use `runs[].messages`; new fixtures may provide
 events receive stable sequence numbers and ids, timestamps are optional, and
 hashes use stable JSON serialization.
 
-Core event families include user input, bootstrap payloads, workflow state,
-tool calls, gate decisions, tool results, policy issues, skill events, memory
-gates, assistant deltas/finals, ledger events, checkpoints, and budget samples.
-Only the message-like subset is projected back into `evaluateHarnessTurn`, so
-runtime policy logic stays in one place.
+Core event families include user input, bootstrap payloads, workflow state, tool
+calls, gate decisions, tool results, policy issues, skill events, memory gates,
+assistant deltas/finals, ledger events, checkpoints, and budget samples. Only
+the message-like subset is projected back into `evaluateHarnessTurn`, so runtime
+policy logic stays in one place.
 
 Use the JSONL helpers from `khala/harness` for replay files:
 
@@ -361,8 +361,8 @@ Temporal failures use one-line package issue codes in Markdown:
 - `package_run_required_tool_missing_before_anchor`
 - `package_run_next_tool_mismatch`
 
-The golden workon cases guard the bootstrap order: capsule read, acknowledgement,
-empty bootstrap commit, draft PR, then implementation edits.
+The golden workon cases guard the bootstrap order: capsule read,
+acknowledgement, empty bootstrap commit, draft PR, then implementation edits.
 
 ## Budget Estimates
 
@@ -378,11 +378,10 @@ the compliance score.
 
 `scripts/generate-harness-contracts.ts` reads checked-in source files and writes
 `benchmarks/package-contracts.generated.json`. The current generator is narrow:
-it derives a workon handoff contract from
-`commands/workon-handoff-template.md` and a runtime instruction retention
-contract from `runtime/INSTRUCTIONS.md`. Generated contracts include
-`sourcePath`, `sourceHash`, required includes, required calls, and obvious
-temporal assertions.
+it derives a workon handoff contract from `commands/workon-handoff-template.md`
+and a runtime instruction retention contract from `runtime/INSTRUCTIONS.md`.
+Generated contracts include `sourcePath`, `sourceHash`, required includes,
+required calls, and obvious temporal assertions.
 
 `benchmarks/harness-golden.json` contains small deterministic cases tagged by
 workflow and failure class. Some runs intentionally violate a harness or package
