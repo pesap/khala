@@ -590,7 +590,7 @@ async function runCommand(
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\''`)}'`;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 interface SessionHandoffLedger {
@@ -1059,7 +1059,7 @@ async function collectLocalEvidence(
         : null;
     const paneId = ledger?.pi?.paneId?.trim() ?? "";
     const livePane =
-      Boolean(sendableMultiplexer && paneId && isSendableWorkonPiStatus(ledger?.pi?.status))
+      sendableMultiplexer && paneId && isSendableWorkonPiStatus(ledger?.pi?.status)
         ? await probeOperatorFollowUpPane(runner, request.cwd, evidence.commands, sendableMultiplexer, paneId)
         : false;
     const suggestedCommand =

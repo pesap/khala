@@ -274,9 +274,8 @@ export function inferTurnObligation(userText: string): TurnObligationResult {
           }
         }
       }
-    } catch (e) {
-      // If parsing fails, fall through to other checks
-      // This ensures we don't break existing functionality if the heartbeat format changes
+    } catch {
+      // Ignore malformed heartbeat feedback and let the generic checks decide.
     }
   }
 

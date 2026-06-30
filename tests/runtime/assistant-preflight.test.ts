@@ -69,6 +69,7 @@ test("assistant preflight tracker extracts same-turn text before a tool call", (
     () => "2026-06-29T00:00:00.000Z",
   );
 
+  assert.ok(preflight);
   assert.deepEqual(preflight, {
     at: "2026-06-29T00:00:00.000Z",
     skill: "debug-investigation",
@@ -78,7 +79,7 @@ test("assistant preflight tracker extracts same-turn text before a tool call", (
     source: "assistant",
   });
 
-  markAssistantPreflightApplied(state, preflight!);
+  markAssistantPreflightApplied(state, preflight);
   assert.equal(
     getUnappliedAssistantPreflight(
       state,

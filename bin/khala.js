@@ -439,11 +439,6 @@ function piModelList() {
   return _piModelListCache;
 }
 
-function piDiscoveryRows() {
-  const cached = piModelList();
-  return cached.skipped ? [] : cached.rows;
-}
-
 function formatDiscoverySummary(rows, maxRows = 6) {
   const sample = rows.slice(0, maxRows).map((row) => `${row.provider}/${row.model}`);
   if (!sample.length) return "";

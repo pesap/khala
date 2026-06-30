@@ -89,10 +89,6 @@
     "js-yaml": "^5.1.0",
     "pi-subagents": "^0.30.0"
   },
-  "bundledDependencies": [
-    "@ff-labs/pi-fff",
-    "pi-subagents"
-  ],
   "devDependencies": {
     "@biomejs/biome": "^2.2.6",
     "@earendil-works/pi-ai": "0.79.10",
