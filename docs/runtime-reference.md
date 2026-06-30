@@ -46,54 +46,53 @@ flowchart TD
 
 Khala keeps package code and mutable state separate.
 
-| Location | Purpose |
-| --- | --- |
-| `runtime/` | Packaged defaults, compliance config, hook docs, and bootstrap instructions |
-| `commands/` | User-facing workflow prompts |
-| `workflows/` | Workflow specs queued into Pi messages |
-| `skills/` | Packaged reusable skills |
-| `extensions/` | Pi extension implementation |
-| `scripts/` | Lightweight guard and regression checks |
-| `~/.pi/agent/settings.json` | Global Pi package configuration; `pi install https://github.com/pesap/khala` writes here |
-| `.pi/settings.json` | Project-local Pi package configuration; `pi install -l https://github.com/pesap/khala` writes here |
-| `.pi/khala/` | Project-local Khala configuration files such as `workflow-model.yaml` |
-| `~/.pi/agent/khala/` | Global Khala configuration files such as `workflow-model.yaml` |
-| `~/.pi/khala/` | Mutable Khala state: memory, learned skills, rules, run ledgers, and runtime logs |
+| Location                    | Purpose                                                                                            |
+| --------------------------- | -------------------------------------------------------------------------------------------------- |
+| `runtime/`                  | Packaged defaults, compliance config, hook docs, and bootstrap instructions                        |
+| `commands/`                 | User-facing workflow prompts                                                                       |
+| `workflows/`                | Workflow specs queued into Pi messages                                                             |
+| `skills/`                   | Packaged reusable skills                                                                           |
+| `extensions/`               | Pi extension implementation                                                                        |
+| `scripts/`                  | Lightweight guard and regression checks                                                            |
+| `~/.pi/agent/settings.json` | Global Pi package configuration; `pi install https://github.com/pesap/khala` writes here           |
+| `.pi/settings.json`         | Project-local Pi package configuration; `pi install -l https://github.com/pesap/khala` writes here |
+| `.pi/khala/`                | Project-local Khala configuration files such as `workflow-model.yaml`                              |
+| `~/.pi/agent/khala/`        | Global Khala configuration files such as `workflow-model.yaml`                                     |
+| `~/.pi/khala/`              | Mutable Khala state: memory, learned skills, rules, run ledgers, and runtime logs                  |
 
 The repository intentionally ignores `.pi/`. Project-local Pi settings and
 runtime artifacts are local state, not source code.
 
 Important mutable files under `~/.pi/khala/`:
 
-| File | Purpose |
-| --- | --- |
-| `runs/*.json` | Durable workflow run ledgers with events, checkpoints, resume attempts, and completion metadata |
-| `memory/learning.jsonl` | Structured workflow observations |
-| `memory/lessons.jsonl` | Passive lessons from corrective prompts |
-| `memory/MEMORY.md` | Compact chronological memory |
-| `memory/promotion-queue.md` | Candidate improvements from repeated outcomes |
-| `memory/skill-curator-report.md` | Learned-skill review notes |
-| `rules/active.jsonl` | Durable active runtime rules |
-| `rules/session.jsonl` | Session-only rules, cleared on shutdown |
-| `rules/candidates.jsonl` | Proposed rules waiting for promotion |
-| `rules/audit.jsonl` | Rule hit, warn, block, reload, and promotion events |
-| `rules/RULES.md` | Human-readable durable rule mirror |
-| `runtime/live/dailylog.md` | Hook teardown summaries and runtime notes |
+| File                             | Purpose                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `runs/*.json`                    | Durable workflow run ledgers with events, checkpoints, resume attempts, and completion metadata |
+| `memory/learning.jsonl`          | Structured workflow observations                                                                |
+| `memory/lessons.jsonl`           | Passive lessons from corrective prompts                                                         |
+| `memory/MEMORY.md`               | Compact chronological memory                                                                    |
+| `memory/promotion-queue.md`      | Candidate improvements from repeated outcomes                                                   |
+| `memory/skill-curator-report.md` | Learned-skill review notes                                                                      |
+| `rules/active.jsonl`             | Durable active runtime rules                                                                    |
+| `rules/session.jsonl`            | Session-only rules, cleared on shutdown                                                         |
+| `rules/candidates.jsonl`         | Proposed rules waiting for promotion                                                            |
+| `rules/audit.jsonl`              | Rule hit, warn, block, reload, and promotion events                                             |
+| `rules/RULES.md`                 | Human-readable durable rule mirror                                                              |
+| `runtime/live/dailylog.md`       | Hook teardown summaries and runtime notes                                                       |
 
 ## Memory Tools
 
 Khala exposes four memory tools to the model:
 
-| Tool | Purpose |
-| --- | --- |
-| `khala_read_memory` | Read current task memory, active rules, recent learnings, and context snippets |
-| `khala_search_memory` | Search older memory, rules, learned skills, prompt templates, and workflow artifacts |
-| `khala_assess_learning` | Score whether a lesson is worth storing |
-| `khala_learn` | Persist a structured learning record after quality checks |
+| Tool                    | Purpose                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------ |
+| `khala_read_memory`     | Read current task memory, active rules, recent learnings, and context snippets       |
+| `khala_search_memory`   | Search older memory, rules, learned skills, prompt templates, and workflow artifacts |
+| `khala_assess_learning` | Score whether a lesson is worth storing                                              |
+| `khala_learn`           | Persist a structured learning record after quality checks                            |
 
-> [!IMPORTANT]
-> Learning is file-backed and easy to inspect. Khala stores reusable lessons and
-> rules in local files, not model weights.
+> [!IMPORTANT] Learning is file-backed and easy to inspect. Khala stores
+> reusable lessons and rules in local files, not model weights.
 
 ## Design Goals
 
