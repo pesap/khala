@@ -401,7 +401,11 @@ function resolveKeyForFetch(rawValue) {
 function writeSecureJsonFile(filePath, value) {
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(filePath, 0o600);
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    // ignore chmod failures on non-POSIX filesystems
+  }
 }
 
 function findLiteLLMProjectConfigPath(startDir = process.cwd()) {

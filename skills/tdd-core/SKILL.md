@@ -14,6 +14,8 @@ license: MIT
 
 **Bad tests** are coupled to implementation. They mock internal collaborators, test private methods, or verify through external means (like querying a database directly instead of using the interface). The warning sign: your test breaks when you refactor, but behavior hasn't changed. If you rename an internal function and tests fail, those tests were testing implementation, not behavior.
 
+**Tautological tests** restate the implementation inside the assertion, so they pass by construction and give zero confidence. When the expected value is computed the way the code computes it — `expect(add(a, b)).toBe(a + b)`, snapshotting a figure derived the same way as production code, or asserting a constant equals itself — the test can never disagree with the code. The expected value must come from an independent source of truth: a known-good literal, a worked example, or the spec.
+
 See [tests.md](tests.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
 
 ## Anti-Pattern: Horizontal Slices
@@ -114,6 +116,7 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 
 - Writing the whole test suite up front instead of learning one slice at a time.
 - Testing helpers, mocks, or internal wiring rather than behavior through public interfaces.
+- Computing expected values with the same logic used by the implementation.
 - Letting GREEN expand into speculative implementation for future tests.
 - Refactoring while still RED.
 - Keeping brittle tests that fail on refactor without behavior change.
@@ -124,6 +127,7 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 [ ] Test describes behavior, not implementation
 [ ] Test uses public interface only
 [ ] Test would survive internal refactor
+[ ] Expected values are independent literals, worked examples, or spec-derived values, not recomputed from the code
 [ ] Code is minimal for this test
 [ ] No speculative features added
 ```

@@ -17,6 +17,8 @@ import {
   getDefaultHubPath,
   getHubConfigPath,
   getHubScaffoldPaths,
+  isPathLikeHubValue,
+  normalizeHubSubdir,
 } from "../../extensions/commands/khala-hub.ts";
 import { registerCommands } from "../../extensions/commands/register.ts";
 
@@ -147,6 +149,21 @@ test("registerCommands exposes /khala-hub and omits /khala", () => {
   assert.equal(khalaHub?.description, "Report or set the Khala hub storage path for the LLM wiki");
   assert.equal(typeof khalaHub?.handler, "function");
   assert.equal(registrations.some((entry) => entry.name === "khala"), false);
+});
+
+test("hub path classification accepts Windows-style local paths", () => {
+  assert.equal(isPathLikeHubValue("C:\\Users\\me\\hub"), true);
+  assert.equal(isPathLikeHubValue("D:/khala/hub"), true);
+  assert.equal(isPathLikeHubValue(".\\hub"), true);
+  assert.equal(isPathLikeHubValue("..\\hub"), true);
+  assert.equal(isPathLikeHubValue("\\\\server\\share\\hub"), true);
+  assert.equal(isPathLikeHubValue("owner/repo"), false);
+});
+
+test("hub subdir validation rejects Windows absolute paths", () => {
+  assert.equal(normalizeHubSubdir("docs\\notes"), path.join("docs", "notes"));
+  assert.equal(normalizeHubSubdir("C:\\Users\\me\\hub"), null);
+  assert.equal(normalizeHubSubdir("\\\\server\\share\\hub"), null);
 });
 
 test("default /khala-hub scaffolds the managed hub and reports the default path", async () => {

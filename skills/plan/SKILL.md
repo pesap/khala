@@ -7,6 +7,7 @@ license: MIT
 ## Source
 
 - Adapted from: https://github.com/mattpocock/skills/tree/main/skills/engineering/grill-with-docs
+- Also incorporates domain-modeling discipline from: https://github.com/mattpocock/skills/tree/main/skills/engineering/domain-modeling
 
 ## Use when
 
@@ -32,6 +33,7 @@ license: MIT
 - Create files lazily:
   - create `CONTEXT.md` when first term is resolved
   - create `docs/adr/` when first ADR is needed
+- Treat `CONTEXT.md` as a glossary only. Do not use it as a spec, scratch pad, implementation plan, or repository for implementation decisions; put implementation decisions in the plan or an ADR instead.
 
 ## During the session
 

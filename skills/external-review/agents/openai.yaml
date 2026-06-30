@@ -1,0 +1,4 @@
+interface:
+  display_name: "External Review"
+  short_description: "Run a fresh Pi review pass"
+  default_prompt: "Use $external-review to run an independent high-thinking Pi review of my current diff."

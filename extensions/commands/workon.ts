@@ -1913,7 +1913,7 @@ function extractWorktreePath(output: string): string | undefined {
       // Ignore non-JSON hook output around Worktrunk's JSON line.
     }
   }
-  return output.match(/(?:^|\s)(\/[^\s]+)/)?.[1];
+  return output.match(/(?:^|\s)((?:[A-Za-z]:[\\/]|\\\\[^\s]+|\/)[^\s]*)/)?.[1];
 }
 
 function parseMultiplexerHandoffResult(output: string): MultiplexerHandoffResult | null {

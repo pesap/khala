@@ -1463,6 +1463,47 @@ test("starts Worktrunk worktree directly outside Zellij", async () => {
   }
 });
 
+test("direct Worktrunk start extracts Windows paths from non-JSON output", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-windows-path-test-"));
+  try {
+    const windowsWorktreePath = "C:\\worktrunk\\feat-65";
+    const { runner } = fakeGhRunner({
+      "auth status": "",
+      "issue view 65 --repo pesap/agents --json number,title,url,body,state,author,labels,assignees": issueViewOutput(
+        65,
+        "feat(inbox): detect local worktrees and stale sessions",
+      ),
+      "wt --version": "worktrunk 1.0.0\n",
+      "wt switch --create feat/65-detect-local-worktrees-stale --format json":
+        `Created worktree at ${windowsWorktreePath}\n`,
+    });
+
+    const sections = await prepareWorkonBootstrap(
+      {
+        cwd: process.cwd(),
+        target: "65",
+        repo: "pesap/agents",
+        forge: "github",
+        mode: "start",
+        capsuleRoot: tempDir,
+        nowIso: "2026-06-05T00:00:00.000Z",
+        requestedMultiplexer: "none",
+        resolvedMultiplexer: "none",
+        heartbeat: "1.0",
+      },
+      runner,
+    );
+    const rendered = sections.join("\n");
+
+    assert.match(rendered, /Worktree status: started/);
+    assert.match(rendered, /Worktree path: C:\\worktrunk\\feat-65/);
+    const ledger = await readHandoffLedger(rendered);
+    assert.equal((ledger.worktree as { path: string | null }).path, windowsWorktreePath);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("waits for Worktrunk Zellij tab before launching Pi pane", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "khala-workon-zellij-test-"));
   try {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { createWorkflowCommandHandlers } from "../../extensions/commands/workflow-handlers.ts";
 import { parseWorkonArgs } from "../../extensions/commands/parsers.ts";
+import type { WorkonBootstrapRequest } from "../../extensions/commands/workon.ts";
 import {
   ensureWorkflowSlotAvailable,
   markWorkflowWaitingForFooter,
@@ -25,11 +26,18 @@ function createPendingWorkflow(type: string): PendingWorkflow {
   };
 }
 
-function createHandlers(state: {
-  pendingWorkflow: PendingWorkflow | null;
-  notifications: string[];
-  workonStarted: boolean;
-}) {
+function createHandlers(
+  state: {
+    pendingWorkflow: PendingWorkflow | null;
+    notifications: string[];
+    workonStarted: boolean;
+  },
+  options: {
+    prepareWorkonBootstrap?: (
+      request: WorkonBootstrapRequest,
+    ) => Promise<string[]>;
+  } = {},
+) {
   return createWorkflowCommandHandlers({
     pi: { appendEntry: () => undefined } as never,
     notify: (_ctx, message) => state.notifications.push(message),
@@ -46,6 +54,7 @@ function createHandlers(state: {
       workflowFile: "workflows/workon-workflow.yaml",
       entryType: "workflow",
     }) as never,
+    prepareWorkonBootstrap: options.prepareWorkonBootstrap,
     beginWorkflowTracking: async (_pi, _ctx, type) => {
       state.pendingWorkflow = createPendingWorkflow(type);
       if (type === "workon") state.workonStarted = true;
@@ -149,6 +158,34 @@ test("/workon starts after a completed /debug workflow releases the slot", async
       message.includes("Workflow already running (debug)"),
     ),
     false,
+  );
+});
+
+test("/workon does not bootstrap while another workflow owns the slot", async () => {
+  const state = {
+    pendingWorkflow: createPendingWorkflow("plan") as PendingWorkflow | null,
+    notifications: [] as string[],
+    workonStarted: false,
+  };
+  let bootstrapCalled = false;
+  const handlers = createHandlers(state, {
+    prepareWorkonBootstrap: async () => {
+      bootstrapCalled = true;
+      return ["Deterministic workon bootstrap evidence:"];
+    },
+  });
+
+  await handlers.workon("113 --repo pesap/agents --dry-run", {
+    cwd: process.cwd(),
+  } as never);
+
+  assert.equal(bootstrapCalled, false);
+  assert.equal(state.workonStarted, false);
+  assert.equal(
+    state.notifications.some((message) =>
+      message.includes("Workflow already running (plan)"),
+    ),
+    true,
   );
 });
 

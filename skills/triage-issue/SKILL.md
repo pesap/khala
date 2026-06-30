@@ -15,16 +15,19 @@ license: MIT
 ## Avoid when
 - User already provided a final issue and does not want investigation.
 - Task is feature planning, not bug triage.
+- The task is enhancement rejection or out-of-scope tracking; use `triage` instead.
 
 ## Workflow
 1. Capture problem statement (ask one minimal clarifying question only if needed).
 2. Investigate code paths, related tests, and recent changes.
-3. Determine root cause and minimal durable fix direction.
-4. Build TDD plan as RED/GREEN vertical slices.
-5. Create GitHub issue with problem, root cause analysis, TDD plan, and acceptance criteria.
+3. Check for an existing open issue and for already-implemented behavior before drafting a duplicate bug ticket.
+4. Determine root cause and minimal durable fix direction.
+5. Build TDD plan as RED/GREEN vertical slices.
+6. Draft the GitHub issue with problem, root cause analysis, TDD plan, and acceptance criteria.
+7. Ask for explicit authorization before creating the issue.
 
 ## Output
 - Root cause summary
 - TDD fix plan (ordered RED/GREEN cycles)
-- Created issue URL/number (or reason issue creation failed)
+- Draft issue body and, if authorized, created issue URL/number (or reason issue creation failed)
 - Risks and unknowns requiring follow-up
