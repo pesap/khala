@@ -14,6 +14,18 @@ Run the seed suite:
 npm run benchmark:harness
 ```
 
+Run the deterministic golden CI gate:
+
+```bash
+npm run benchmark:harness:ci
+```
+
+Regenerate source-derived package contracts:
+
+```bash
+npm run benchmark:harness:contracts
+```
+
 Preflight a suite before scoring it:
 
 ```bash
@@ -37,6 +49,21 @@ node --experimental-strip-types scripts/harness-benchmark.ts \
   --fail-on-divergence \
   --out .tmp/harness/workon-bootstrap.md \
   benchmarks/harness-sandbox.json
+```
+
+Write or compare a CI baseline:
+
+```bash
+node --experimental-strip-types scripts/harness-benchmark.ts \
+  --json \
+  --write-baseline .tmp/harness/baseline.json \
+  benchmarks/harness-golden.json
+
+node --experimental-strip-types scripts/harness-benchmark.ts \
+  --baseline .tmp/harness/baseline.json \
+  --fail-on-blocking-regression \
+  --must-pass-tag golden \
+  benchmarks/harness-golden.json
 ```
 
 Run the sandbox live through Pi and score the captured transcript:
@@ -176,7 +203,58 @@ Suites are JSON files with benchmark cases and candidate runs:
             "argumentIncludes": ["gh pr create", "--draft"]
           }
         ],
-        "forbiddenToolCalls": [{ "name": "apply_patch" }]
+        "forbiddenToolCalls": [{ "name": "apply_patch" }],
+        "orderedToolCalls": [
+          { "name": "read", "argumentIncludes": ["capsule.md"] },
+          {
+            "name": "exec_command",
+            "argumentIncludes": [
+              "workon-handoff-ack.sh",
+              "capsule-acknowledged"
+            ]
+          },
+          {
+            "name": "exec_command",
+            "argumentIncludes": ["git commit", "--allow-empty"]
+          },
+          {
+            "name": "exec_command",
+            "argumentIncludes": ["gh pr create", "--draft"]
+          }
+        ],
+        "forbiddenBefore": [
+          {
+            "forbidden": { "name": "apply_patch" },
+            "before": {
+              "name": "exec_command",
+              "argumentIncludes": ["gh pr create", "--draft"]
+            }
+          }
+        ],
+        "requiredBefore": [
+          {
+            "required": { "name": "read", "argumentIncludes": ["capsule.md"] },
+            "before": {
+              "name": "exec_command",
+              "argumentIncludes": [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged"
+              ]
+            }
+          }
+        ],
+        "nextToolMustBe": [
+          {
+            "after": { "name": "read", "argumentIncludes": ["capsule.md"] },
+            "next": {
+              "name": "exec_command",
+              "argumentIncludes": [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged"
+              ]
+            }
+          }
+        ]
       },
       "runs": [
         {
@@ -202,10 +280,16 @@ Suites are JSON files with benchmark cases and candidate runs:
 ```
 
 Each run is evaluated with `evaluateHarnessTurn` and
-`evaluateHarnessTurnMetrics`. The report includes:
+`evaluateHarnessTurnMetrics`. Internally, runs are first normalized into a
+deterministic `KhalaTranscript`; existing `runs[].messages` fixtures still
+work, and future fixtures may provide `runs[].transcript` directly. The report
+includes:
 
 - `issueCodes`: harness violations found in the transcript.
 - `blockingIssueCount`: violations that would block in enforce mode.
+- `transcriptEventCount`: normalized event count used for scoring and replay.
+- `budget`: deterministic estimated context-budget components and advisory
+  warnings.
 - `packageIssues`: missing or violated package/capsule instructions.
 - `packageDivergenceScore`: weighted distance from the package contract.
 - `divergenceScore`: weighted distance from an ideal zero-issue run.
@@ -218,3 +302,107 @@ Khala harness and package instructions. The seed suite covers workon handoff
 capsule acknowledgement plus empty-commit draft PR bootstrap, skill routing,
 focused memory search, evidence routing, validation claims, and duplicate
 evidence collection.
+
+## Transcript Replay
+
+The benchmark normalizes every run into a `KhalaTranscript` before scoring.
+Fixtures can still use `runs[].messages`; new fixtures may provide
+`runs[].transcript` directly. The event model is append-only and deterministic:
+events receive stable sequence numbers and ids, timestamps are optional, and
+hashes use stable JSON serialization.
+
+Core event families include user input, bootstrap payloads, workflow state,
+tool calls, gate decisions, tool results, policy issues, skill events, memory
+gates, assistant deltas/finals, ledger events, checkpoints, and budget samples.
+Only the message-like subset is projected back into `evaluateHarnessTurn`, so
+runtime policy logic stays in one place.
+
+Use the JSONL helpers from `khala/harness` for replay files:
+
+```ts
+import {
+  readKhalaTranscriptJsonl,
+  writeKhalaTranscriptJsonl,
+} from "khala/harness";
+
+await writeKhalaTranscriptJsonl(".tmp/harness/run.jsonl", transcript);
+const replay = await readKhalaTranscriptJsonl(".tmp/harness/run.jsonl");
+```
+
+JSONL files start with a `khala_transcript_start` metadata line, followed by one
+`khala_event` object per event. Ledger-originated events may carry
+`ledgerEventId` or `runLedgerId`; the transcript schema stays separate from the
+run ledger schema.
+
+## Fake Runner
+
+`runKhalaHarnessScript` provides a deterministic fake runtime seam for tests. It
+supports scripted user input, assistant deltas/finals, tool calls, gate
+decisions, fake tool results, memory gates, skill routing/loading/missing
+events, policy issues, checkpoints, ledger events, and budget samples. Blocked
+tool calls emit block/result events without executing fake tools.
+
+The runner does not simulate Pi. It exists to exercise Khala harness behavior
+without a model, network call, or Pi process.
+
+## Temporal Contracts
+
+Package contracts can assert tool order using transcript event sequence numbers:
+
+- `orderedToolCalls`: required calls must appear in the listed order.
+- `forbiddenBefore`: a forbidden call must not occur before an anchor call.
+- `requiredBefore`: a required call must occur before an anchor call.
+- `nextToolMustBe`: the immediate next tool after an anchor must match.
+
+Temporal failures use one-line package issue codes in Markdown:
+
+- `package_run_tool_order_violation`
+- `package_run_forbidden_tool_before_anchor`
+- `package_run_required_tool_missing_before_anchor`
+- `package_run_next_tool_mismatch`
+
+The golden workon cases guard the bootstrap order: capsule read, acknowledgement,
+empty bootstrap commit, draft PR, then implementation edits.
+
+## Budget Estimates
+
+Budget accounting is deterministic and advisory. The estimator uses
+`Math.ceil(chars / 4)` over stable text/JSON renderings, not an external
+tokenizer. Reports include component totals for bootstrap context, runtime
+instructions, workflow prompt, skill payloads, handoff/capsule content, memory
+tail, runtime rules, and transcript events. A `budgetWarningThreshold` on the
+suite, case, run, or evaluation options adds Markdown warnings without changing
+the compliance score.
+
+## Generated And Golden Fixtures
+
+`scripts/generate-harness-contracts.ts` reads checked-in source files and writes
+`benchmarks/package-contracts.generated.json`. The current generator is narrow:
+it derives a workon handoff contract from
+`commands/workon-handoff-template.md` and a runtime instruction retention
+contract from `runtime/INSTRUCTIONS.md`. Generated contracts include
+`sourcePath`, `sourceHash`, required includes, required calls, and obvious
+temporal assertions.
+
+`benchmarks/harness-golden.json` contains small deterministic cases tagged by
+workflow and failure class. Some runs intentionally violate a harness or package
+rule; those runs declare `expectedIssueCodes` or `expectedPackageIssueCodes` so
+CI fails only on new or missing behavior.
+
+## CI Flags
+
+`scripts/harness-benchmark.ts` supports these CI-oriented flags:
+
+- `--json`: emit the structured report.
+- `--baseline <path>`: compare against a saved JSON report.
+- `--write-baseline <path>`: write the current report as JSON.
+- `--fail-on-blocking-regression`: fail when a run gains an unexpected blocking
+  issue, or when blocking count exceeds the baseline.
+- `--must-pass-tag <tag>`: require tagged cases to match expected harness and
+  package issue codes.
+- `--max-divergence <n>`: fail when any run exceeds a divergence ceiling.
+- `--max-divergence-tag <tag=n>`: apply a divergence ceiling to tagged cases.
+
+The JSON report includes issue counts by model, case, and tag, plus structured
+budget values for each run. Live Pi drift remains opt-in through
+`benchmark:pi-drift` and is not part of normal PR CI.

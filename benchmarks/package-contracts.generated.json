@@ -1,0 +1,328 @@
+{
+  "cases": [
+    {
+      "description": "Generated from the workon handoff template to guard the worker bootstrap order.",
+      "harnessLimits": {
+        "substantialToolCallThreshold": 99
+      },
+      "id": "generated-workon-handoff-contract",
+      "name": "Generated workon handoff contract",
+      "packageContract": {
+        "artifacts": [
+          {
+            "id": "commands/workon-handoff-template.md",
+            "kind": "handoff_prompt",
+            "requiredIncludes": [
+              "Initial handoff and readiness gate:",
+              "Read the session capsule path provided by the launcher.",
+              "Acknowledge that the capsule was read by running:",
+              "Read the local agent/repo instructions.",
+              "Confirm you are in the Worktrunk worktree recorded in the capsule",
+              "create/reuse the draft PR immediately with an empty bootstrap commit",
+              "Draft PR and feedback heartbeat:",
+              "Before implementation edits, create or reuse the draft PR"
+            ],
+            "text": "{{route_instruction_block}}\n\nI want to discuss and possibly work on: {{issue_title}}\n\nContext:\n- Repository: {{repo}}\n- Source issue: {{issue_url}}\n- Branch: {{branch_name}}\n- Handoff ledger: {{handoff_ledger}}\n- Exact model: {{resolved_model}}\n- Exact thinking level: {{resolved_thinking_level}}\n- Model routing: {{model_routing_mode}} ({{model_routing_reason}})\n- This handoff comes from `/workon`; a session capsule path is provided separately by the launcher.\n- Treat this prompt as starting context, not a final technical decision.\n\nInitial handoff and readiness gate:\n- Read the session capsule path provided by the launcher.\n- Acknowledge that the capsule was read by running: `{{ack_command}}`.\n- Read the local agent/repo instructions.\n- Confirm you are in the Worktrunk worktree recorded in the capsule; only edit files inside that worktree.\n- Inspect the relevant code, docs, tests, recent commits, and linked issue state only as needed to verify readiness, drift, and blockers.\n- Decide whether this task is still real, already solved, stale, over-scoped, or better handled differently.\n- If the issue has an `improve` plan body, run its `Drift check` command before editing. If in-scope files changed, compare the issue's Current state excerpts against live code. If they do not match, stop before implementation, report the drift, and recommend `/plan` refresh the issue.\n- If the issue has a `Workon readiness` section, verify it says `Ready for /workon: yes` and contains no unresolved `no`, `unknown`, `TBD`, or `to be confirmed` fields. If it fails, stop before implementation and report the exact readiness gaps.\n- Honor any `STOP conditions` in the issue body. If one is true before or during work, stop and report instead of improvising.\n- Call out stale assumptions, hidden risks, and anything that should stop the work.\n- If no blocker is found, create/reuse the draft PR immediately with an empty bootstrap commit, then start the smallest scoped implementation slice in this worktree without waiting for another operator instruction.\n\nNext-step action:\n- Keep future changes scoped to the issue and branch.\n- Do not widen scope beyond the issue without creating or recommending a follow-up.\n- Stop and report instead of editing if the readiness gate finds drift, stale assumptions, unresolved readiness gaps, or a true STOP condition.\n\nImplementation instructions:\n\nPre-commit simplify pass:\n- After implementation edits, run focused validation for the touched behavior before simplifying.\n- Run `/simplify` only on the dirty tree before creating the implementation commit; `/workon` bootstrap must not invoke `/simplify` because no implementation dirty tree exists yet.\n- Keep the simplify pass behavior-preserving, source-issue-scoped, and free of drive-by refactors.\n- Rerun the focused validation after simplification and before committing.\n- Commit only the final implementation plus simplify result; do not require a separate simplify commit.\n\nValidation:\n- Run focused tests for the touched code.\n- Run the relevant repo quality gate when the change affects public workflow behavior.\n- Include exact commands and results in your summary.\n\n{{reviewer_two_review_loop}}\n\nDraft PR and feedback heartbeat:\n- Before implementation edits, create or reuse the draft PR for this branch with an empty bootstrap commit; do not create duplicate PRs for the same head branch.\n- If the empty commit, push, or draft PR create/update fails, stop and report the exact blocker to the operator.\n- Link the draft PR back to {{issue_url}} and make clear it is not ready to merge until validation and review are complete.\n- In the draft PR body, use the repo PR template shape: resolved source-closing marker when applicable, Summary, checklist-style Acceptance criteria copied from every source issue criterion, Deviations from the original plan, command-only Testing Strategy, and References.\n- For each source issue criterion, use checkbox state, not textual status prefixes: checked means met; unchecked means unmet.\n- Preserve useful concise evidence as nested `Evidence:` lines under checklist items.\n- For unmet criteria, keep the checkbox unchecked and include a concise reason/follow-up under the item or in Deviations.\n- After opening the draft PR, check the PR/issue forge for human feedback and failing CI every {{heartbeat_interval}} while you are still working.\n- After opening the draft PR and after pushing implementation updates, check PR CI before claiming status; report failing checks exactly and keep working only when the fix is in scope.\n- Before handoff, update the implementation commit message and PR body so they match the final validated scope.\n- Prefer in-thread replies for review comments. Do not merge, mark ready, close issues, label, or post broad public comments unless explicitly told.\n\nOutput:\n- Start with review findings, readiness status, and recommendation.\n- If the readiness gate finds a blocker, report the blocker and stop before implementation.\n- If implementation edits code, report exact proof run.\n- Include draft PR URL/status after the bootstrap PR create/update, plus latest heartbeat and CI check result.\n- Do not merge, close issues/PRs, label, or post broad public comments unless explicitly told.\n"
+          }
+        ],
+        "forbiddenBefore": [
+          {
+            "before": {
+              "argumentIncludes": [
+                "gh pr create",
+                "--draft"
+              ],
+              "name": "exec_command"
+            },
+            "forbidden": {
+              "name": "apply_patch"
+            }
+          },
+          {
+            "before": {
+              "argumentIncludes": [
+                "gh pr create",
+                "--draft"
+              ],
+              "name": "exec_command"
+            },
+            "forbidden": {
+              "name": "edit"
+            }
+          },
+          {
+            "before": {
+              "argumentIncludes": [
+                "gh pr create",
+                "--draft"
+              ],
+              "name": "exec_command"
+            },
+            "forbidden": {
+              "name": "write"
+            }
+          }
+        ],
+        "name": "generated workon handoff",
+        "nextToolMustBe": [
+          {
+            "after": {
+              "argumentIncludes": [
+                "capsule"
+              ],
+              "name": "read"
+            },
+            "next": {
+              "argumentIncludes": [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged"
+              ],
+              "name": "exec_command"
+            }
+          }
+        ],
+        "orderedToolCalls": [
+          {
+            "argumentIncludes": [
+              "capsule"
+            ],
+            "name": "read"
+          },
+          {
+            "argumentIncludes": [
+              "workon-handoff-ack.sh",
+              "capsule-acknowledged"
+            ],
+            "name": "exec_command"
+          },
+          {
+            "argumentIncludes": [
+              "git commit",
+              "--allow-empty"
+            ],
+            "name": "exec_command"
+          },
+          {
+            "argumentIncludes": [
+              "gh pr create",
+              "--draft"
+            ],
+            "name": "exec_command"
+          }
+        ],
+        "requiredBefore": [
+          {
+            "before": {
+              "argumentIncludes": [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged"
+              ],
+              "name": "exec_command"
+            },
+            "required": {
+              "argumentIncludes": [
+                "capsule"
+              ],
+              "name": "read"
+            }
+          },
+          {
+            "before": {
+              "argumentIncludes": [
+                "git commit",
+                "--allow-empty"
+              ],
+              "name": "exec_command"
+            },
+            "required": {
+              "argumentIncludes": [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged"
+              ],
+              "name": "exec_command"
+            }
+          },
+          {
+            "before": {
+              "argumentIncludes": [
+                "gh pr create",
+                "--draft"
+              ],
+              "name": "exec_command"
+            },
+            "required": {
+              "argumentIncludes": [
+                "git commit",
+                "--allow-empty"
+              ],
+              "name": "exec_command"
+            }
+          }
+        ],
+        "requiredToolCalls": [
+          {
+            "argumentIncludes": [
+              "capsule"
+            ],
+            "name": "read"
+          },
+          {
+            "argumentIncludes": [
+              "workon-handoff-ack.sh",
+              "capsule-acknowledged"
+            ],
+            "name": "exec_command"
+          },
+          {
+            "argumentIncludes": [
+              "git commit",
+              "--allow-empty"
+            ],
+            "name": "exec_command"
+          },
+          {
+            "argumentIncludes": [
+              "gh pr create",
+              "--draft"
+            ],
+            "name": "exec_command"
+          }
+        ],
+        "requiredTranscriptIncludes": [
+          "capsule-acknowledged",
+          "empty bootstrap commit",
+          "draft PR"
+        ],
+        "sourceHash": "098a4b9219a3903214e82e716ac86bbc47f5d178d3c0384bfabdea905fc2161f",
+        "sourcePath": "commands/workon-handoff-template.md"
+      },
+      "runs": [
+        {
+          "assistantText": "I read the capsule, recorded capsule-acknowledged, created the empty bootstrap commit, and opened the draft PR.",
+          "expectedIssueCodes": [
+            "memory_search"
+          ],
+          "id": "generated-workon-happy-path",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Session capsule path: /tmp/capsule.md"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "arguments": {
+                  "path": "/tmp/capsule.md"
+                },
+                "name": "read"
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "capsule text"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "arguments": {
+                  "cmd": "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged"
+                },
+                "name": "exec_command"
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "capsule-acknowledged"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "arguments": {
+                  "cmd": "git commit --allow-empty -m \"chore(workon): bootstrap\""
+                },
+                "name": "exec_command"
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "empty bootstrap commit"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "arguments": {
+                  "cmd": "gh pr create --draft --title bootstrap --body-file /tmp/pr.md"
+                },
+                "name": "exec_command"
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "draft PR opened"
+            }
+          ],
+          "model": "generated/example"
+        }
+      ],
+      "tags": [
+        "generated",
+        "workon",
+        "package-contract"
+      ],
+      "userText": "Session capsule path: /tmp/capsule.md"
+    },
+    {
+      "description": "Generated from runtime instructions to keep core policy reminders visible in harness fixtures.",
+      "harnessLimits": {
+        "substantialToolCallThreshold": 99
+      },
+      "id": "generated-runtime-instructions-contract",
+      "name": "Generated runtime instruction contract",
+      "packageContract": {
+        "artifacts": [
+          {
+            "id": "runtime/INSTRUCTIONS.md",
+            "kind": "other",
+            "requiredIncludes": [
+              "Operational defaults:",
+              "Command workflow contracts:",
+              "## /workon",
+              "Self-improvement policy:"
+            ],
+            "text": "# INSTRUCTIONS\n\nOperational defaults:\n\n- Use concise, direct technical communication by default.\n- Focus on single-agent execution in this extension runtime.\n- Capture durable learnings after meaningful tasks using file-backed workflow observations and khala learning assessment.\n- When `/khala` is enabled, run end-of-turn learning assessment after meaningful prompts. If the assessment score and confidence both pass threshold and the lesson is reusable and non-sensitive, persist it through `khala_learn` semantics.\n- Launch `surgical-dev` for every task that changes code (create/edit/rename/delete).\n- When you load a skill for concrete execution, fully read the relevant skill file and its referenced companion docs before claiming tool limits or choosing fallback paths.\n- Include a short audit line when skill reading materially affected execution: `Skill audit: full-read=yes native-path-confirmed=yes fallback-needed=no|yes`.\n- When the user provides a GitHub repository URL, `github.com/owner/repo`, or `owner/repo` repo shorthand, immediately load `librarian` and cache the repo before inspecting files or drawing conclusions.\n- If parallel orchestration is needed, defer to the dedicated orchestration extension.\n- Validate pi command/interception behavior from inside pi runtime (`pi -p` or `pi --mode rpc` + extension), not host-shell shortcuts.\n- Do not run direct host `python`/`python3` for agent-behavior validation unless the user explicitly asks for out-of-band checks.\n- Add the full `Bias Check (Tier 1)` footer only for workflow final responses, `/audit`, contested claims, high-stakes decisions, or when response compliance explicitly requires it. For ordinary task updates and handoffs, keep the bias check implicit and report only concrete evidence, validation, risks, and confidence when useful.\n- Treat `/audit` as the full claim-audit workflow for high-stakes or contested claims.\n\nCommand workflow contracts:\n\n## /debug\n\n- Use when the maintainer observed an unreported symptom or bug and wants evidence before filing work.\n- Reject existing GitHub issue URLs and redirect to `/triage <issue-url>`.\n- Restate the observed symptom.\n- Build a reproduction or observable feedback loop when possible.\n- Build and test hypotheses systematically, ranked by evidence strength.\n- Rank findings by confidence.\n- Draft a new issue title/body, acceptance criteria, non-goals, validation plan, and `/workon` readiness notes when evidence justifies it.\n- Ask for explicit authorization before creating the GitHub issue.\n- If authorized, create the issue with `gh issue create --body-file <file>` or equivalent safe tooling, then report the issue URL.\n- Do not fix during `/debug`; use `/workon <issue>` after the issue exists and is ready.\n- Store learnings.\n\n## /triage\n\n- Use when a user posted an issue/request that needs cleanup before autonomous work.\n- Gather issue/request context, comments, labels, reporter activity, relevant code/docs, repo guidelines, and prior out-of-scope decisions when available.\n- Default to one cleaned-up work packet.\n- Propose a split table only when the issue is clearly too broad or likely to exceed reviewable PR size.\n- Draft current behavior or goal, desired behavior, acceptance criteria, validation/tests, non-goals, breaking-change risk, review-size risk, and `/workon` readiness status.\n- Ask for explicit authorization before creating/updating GitHub issues, labels, or comments.\n- Store learnings.\n\n## /plan\n\n- Use for maintainer-originated planned changes, codebase improvements, and feature ideas.\n- Inspect code/docs before asking questions when practical.\n- Ask only blocking questions, one at a time.\n- Challenge ambiguous/conflicting terms against existing `CONTEXT.md` language.\n- Capture edge cases, constraints, trade-offs, and out-of-scope ideas before implementation.\n- Default to one issue/work packet unless splitting clearly improves reviewability.\n- When multiple slices are justified, produce an exact slice table before any issue creation.\n- Soft cap the slice table at 3 issues; more requires explicit approval and a reason.\n- Each slice should be independently reviewable and target less than about 500 lines of code change per PR.\n- Ask for explicit authorization on the exact issue/slice list before creating or updating issues.\n- Store learnings.\n\n## /workon\n\n- Use only for a clear, approved issue/work packet.\n- Accept only an issue URL or issue number; use `/plan` for maintainer ideas and `/triage` for user-posted intake.\n- Before starting, run the autonomous-readiness rubric: reproduction/observable behavior, validation/tests, narrow acceptance criteria, repo-guideline alignment, breaking-change risk, review-size risk, and whether the work is worth doing now.\n- If readiness fails, do not create a worktree, Pi session, heartbeat, capsule, or GitHub comment; return concrete action items only.\n- If readiness passes, prepare or start the Worktrunk session capsule, handoff, and five-minute forge feedback/CI heartbeat.\n- The operator bootstrap does not open the implementation PR; the launched worker creates/reuses the empty-commit draft PR before implementation edits.\n- Do not redefine issue scope or implement within the bootstrap workflow.\n- Store learnings.\n\n## /learn-skill\n\n- Define skill scope and boundaries.\n- Draft skill artifact in `<learning-store>/skills/<name>/SKILL.md`.\n- Add optional helper scripts only when justified.\n- Validate safety, brevity, and reusability.\n- Store learnings about when this skill should trigger.\n\n## /audit\n\n- Restate the claim precisely.\n- Identify assumptions required for the claim to hold.\n- List strongest supporting evidence and strongest contradicting evidence.\n- Steelman the strongest opposing view.\n- Produce at least three plausible alternative explanations.\n- Compare explanations with evidence, assumptions, and confidence.\n- Reframe to: \"What explanation is most plausible given all data?\"\n- End with revised conclusion, confidence, uncertainties, and disconfirming evidence needed.\n\n## /git-review\n\n- Run git-history diagnostics before reading code.\n- Cover churn, authorship, bug clusters, velocity, and revert/hotfix signals.\n- Cross-check churn hotspots with bug hotspots and name the first files to inspect.\n- Store learnings.\n\nSelf-improvement policy:\n\n- May patch `INSTRUCTIONS.md`, command prompts, and agent-authored skills when the user requested agent/runtime improvement or when a loaded instruction caused a verified failure.\n- Explain expected benefit and rollback path for risky self-edits; keep low-risk wording/guardrail fixes small and validated.\n- Use repeated observations in `memory/learning.jsonl` and passive lessons in `memory/lessons.jsonl` to suggest promotion hints into `memory/promotion-queue.md`.\n- When a loaded skill proves stale, incomplete, or wrong during a meaningful task, patch it before closing the task if it is agent-authored; otherwise propose the patch to the user.\n- If you miss a documented capability or instruction that was already present in a loaded skill/reference, treat it as failure-triggered remediation: patch the relevant skill/workflow immediately with a stronger read/verification requirement before closing the task.\n- Prefer patching an existing class-level skill over creating a new narrow skill. Create a new skill only when the learning is reusable across a class of tasks and no existing umbrella skill fits.\n"
+          }
+        ],
+        "name": "generated runtime instructions",
+        "requiredTranscriptIncludes": [
+          "single-agent execution",
+          "Store learnings",
+          "/workon"
+        ],
+        "sourceHash": "aff651f10325bde0e5fb3847ff989ab821318e82076724502d9a5e53c7cba22c",
+        "sourcePath": "runtime/INSTRUCTIONS.md"
+      },
+      "runs": [
+        {
+          "assistantText": "I preserved single-agent execution, /workon handoff rules, and Store learnings guidance.",
+          "id": "generated-runtime-happy-path",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Check runtime instruction retention."
+            }
+          ],
+          "model": "generated/example"
+        }
+      ],
+      "tags": [
+        "generated",
+        "runtime",
+        "package-contract"
+      ],
+      "userText": "Check runtime instruction retention."
+    }
+  ],
+  "description": "Deterministic package contracts generated from checked-in Khala source files.",
+  "name": "Khala Generated Package Contracts",
+  "version": 1
+}

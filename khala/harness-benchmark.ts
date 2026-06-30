@@ -4,9 +4,24 @@ import {
   type HarnessTurnIssue,
   type HarnessTurnMetrics,
 } from "../extensions/runtime/escalation.ts";
+import {
+  benchmarkMessagesToKhalaTranscript,
+  khalaTranscriptSearchText,
+  khalaTranscriptToBenchmarkMessages,
+  khalaTranscriptToHarnessMessages,
+  khalaTranscriptToolCalls,
+  latestKhalaAssistantText,
+  normalizeKhalaTranscript,
+  stableKhalaJsonStringify,
+  type KhalaToolCallRequestedEvent,
+  type KhalaTranscript,
+} from "./harness-events.ts";
+import {
+  estimateKhalaBudget,
+  type KhalaBudgetReport,
+} from "./harness-budget.ts";
 
 type HarnessEvaluationParams = Parameters<typeof evaluateHarnessTurn>[0];
-type HarnessMessage = HarnessEvaluationParams["messages"][number];
 type HarnessBenchmarkLimits = Partial<
   NonNullable<HarnessEvaluationParams["harnessLimits"]>
 >;
@@ -30,11 +45,14 @@ export interface HarnessBenchmarkRun {
   id?: string;
   model?: string;
   assistantText?: string;
-  messages: HarnessBenchmarkMessage[];
+  messages?: HarnessBenchmarkMessage[];
+  transcript?: KhalaTranscript;
   expectedIssueCodes?: HarnessBenchmarkIssueCode[];
+  expectedPackageIssueCodes?: HarnessBenchmarkPackageIssueCode[];
   lowConfidenceThreshold?: number;
   responseComplianceMode?: string;
   harnessLimits?: HarnessBenchmarkLimits;
+  budgetWarningThreshold?: number;
 }
 
 export type HarnessBenchmarkPackageArtifactKind =
@@ -62,27 +80,55 @@ export interface HarnessBenchmarkForbiddenToolCallCheck {
   argumentIncludes?: string[];
 }
 
+export interface HarnessBenchmarkForbiddenBeforeCheck {
+  forbidden: HarnessBenchmarkForbiddenToolCallCheck;
+  before: HarnessBenchmarkToolCallCheck;
+}
+
+export interface HarnessBenchmarkRequiredBeforeCheck {
+  required: HarnessBenchmarkToolCallCheck;
+  before: HarnessBenchmarkToolCallCheck;
+}
+
+export interface HarnessBenchmarkNextToolCheck {
+  after: HarnessBenchmarkToolCallCheck;
+  next: HarnessBenchmarkToolCallCheck;
+}
+
 export interface HarnessBenchmarkPackageContract {
   name?: string;
+  sourcePath?: string;
+  sourceHash?: string;
   artifacts?: HarnessBenchmarkPackageArtifact[];
   requiredTranscriptIncludes?: string[];
   forbiddenTranscriptIncludes?: string[];
   requiredToolCalls?: HarnessBenchmarkToolCallCheck[];
   forbiddenToolCalls?: HarnessBenchmarkForbiddenToolCallCheck[];
+  orderedToolCalls?: HarnessBenchmarkToolCallCheck[];
+  forbiddenBefore?: HarnessBenchmarkForbiddenBeforeCheck[];
+  requiredBefore?: HarnessBenchmarkRequiredBeforeCheck[];
+  nextToolMustBe?: HarnessBenchmarkNextToolCheck[];
 }
 
+export type HarnessBenchmarkPackageIssueCode =
+  | "package_artifact_missing_required_text"
+  | "package_artifact_contains_forbidden_text"
+  | "package_run_missing_required_text"
+  | "package_run_contains_forbidden_text"
+  | "package_run_missing_required_tool_call"
+  | "package_run_used_forbidden_tool_call"
+  | "package_run_tool_order_violation"
+  | "package_run_forbidden_tool_before_anchor"
+  | "package_run_required_tool_missing_before_anchor"
+  | "package_run_next_tool_mismatch";
+
 export interface HarnessBenchmarkPackageIssue {
-  code:
-    | "package_artifact_missing_required_text"
-    | "package_artifact_contains_forbidden_text"
-    | "package_run_missing_required_text"
-    | "package_run_contains_forbidden_text"
-    | "package_run_missing_required_tool_call"
-    | "package_run_used_forbidden_tool_call";
+  code: HarnessBenchmarkPackageIssueCode;
   message: string;
   artifactId?: string;
   text?: string;
   toolName?: string;
+  anchorToolName?: string;
 }
 
 export interface HarnessBenchmarkCase {
@@ -93,9 +139,11 @@ export interface HarnessBenchmarkCase {
   userText: string;
   assistantText?: string;
   expectedIssueCodes?: HarnessBenchmarkIssueCode[];
+  expectedPackageIssueCodes?: HarnessBenchmarkPackageIssueCode[];
   lowConfidenceThreshold?: number;
   responseComplianceMode?: string;
   harnessLimits?: HarnessBenchmarkLimits;
+  budgetWarningThreshold?: number;
   packageContract?: HarnessBenchmarkPackageContract;
   runs: HarnessBenchmarkRun[];
 }
@@ -110,6 +158,7 @@ export interface HarnessBenchmarkSuite {
 export interface HarnessBenchmarkOptions {
   lowConfidenceThreshold?: number;
   responseComplianceMode?: string;
+  budgetWarningThreshold?: number;
 }
 
 export interface HarnessBenchmarkRunResult {
@@ -124,8 +173,15 @@ export interface HarnessBenchmarkRunResult {
   missingExpectedIssueCodes: HarnessBenchmarkIssueCode[];
   unexpectedIssueCodes: HarnessBenchmarkIssueCode[];
   expectedIssueDistance: number;
+  expectedPackageIssueCodes: HarnessBenchmarkPackageIssueCode[];
+  missingExpectedPackageIssueCodes: HarnessBenchmarkPackageIssueCode[];
+  unexpectedPackageIssueCodes: HarnessBenchmarkPackageIssueCode[];
+  expectedPackageIssueDistance: number;
   packageIssues: HarnessBenchmarkPackageIssue[];
   packageDivergenceScore: number;
+  transcriptEventCount: number;
+  budget: KhalaBudgetReport;
+  tags: string[];
   blockingIssueCount: number;
   divergenceScore: number;
   complianceScore: number;
@@ -140,12 +196,36 @@ export interface HarnessBenchmarkModelSummary {
   packageIssueCount: number;
 }
 
+export interface HarnessBenchmarkCaseSummary {
+  caseId?: string;
+  caseName: string;
+  tags: string[];
+  runCount: number;
+  totalDivergenceScore: number;
+  blockingIssueCount: number;
+  packageIssueCount: number;
+  budgetWarningCount: number;
+  issueCounts: Partial<Record<HarnessBenchmarkIssueCode, number>>;
+}
+
+export interface HarnessBenchmarkTagSummary {
+  tag: string;
+  runCount: number;
+  totalDivergenceScore: number;
+  blockingIssueCount: number;
+  packageIssueCount: number;
+  budgetWarningCount: number;
+  issueCounts: Partial<Record<HarnessBenchmarkIssueCode, number>>;
+}
+
 export interface HarnessBenchmarkReport {
   suiteName: string;
   caseCount: number;
   runCount: number;
   results: HarnessBenchmarkRunResult[];
   modelSummaries: HarnessBenchmarkModelSummary[];
+  caseSummaries: HarnessBenchmarkCaseSummary[];
+  tagSummaries: HarnessBenchmarkTagSummary[];
 }
 
 export type HarnessBenchmarkPreflightSeverity = "error" | "warning";
@@ -154,6 +234,7 @@ export type HarnessBenchmarkPreflightIssueCode =
   | "duplicate_case_id"
   | "duplicate_run_id"
   | "unknown_expected_issue_code"
+  | "unknown_expected_package_issue_code"
   | "package_artifact_missing_required_text"
   | "package_artifact_contains_forbidden_text"
   | "run_without_assistant_output"
@@ -196,6 +277,19 @@ const HARNESS_BENCHMARK_ISSUE_CODE_ORDER: HarnessBenchmarkIssueCode[] = [
 const HARNESS_BENCHMARK_ISSUE_CODES = new Set<string>(
   HARNESS_BENCHMARK_ISSUE_CODE_ORDER,
 );
+const HARNESS_BENCHMARK_PACKAGE_ISSUE_CODES =
+  new Set<HarnessBenchmarkPackageIssueCode>([
+    "package_artifact_contains_forbidden_text",
+    "package_artifact_missing_required_text",
+    "package_run_contains_forbidden_text",
+    "package_run_forbidden_tool_before_anchor",
+    "package_run_missing_required_text",
+    "package_run_missing_required_tool_call",
+    "package_run_next_tool_mismatch",
+    "package_run_required_tool_missing_before_anchor",
+    "package_run_tool_order_violation",
+    "package_run_used_forbidden_tool_call",
+  ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -226,6 +320,14 @@ function optionalStringArray(
     !value.every((item) => typeof item === "string")
   ) {
     throw new Error(`${label} must be an array of strings when provided`);
+  }
+  return value;
+}
+
+function optionalNumber(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label} must be a finite number when provided`);
   }
   return value;
 }
@@ -261,6 +363,22 @@ function parsePackageArtifacts(
   });
 }
 
+function parseToolCallCheck(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkToolCallCheck {
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return {
+    argumentIncludes: optionalStringArray(
+      value.argumentIncludes,
+      `${label}.argumentIncludes`,
+    ),
+    name: requireString(value.name, `${label}.name`),
+  };
+}
+
 function parseToolCallChecks(
   value: unknown,
   label: string,
@@ -270,18 +388,25 @@ function parseToolCallChecks(
     throw new Error(`${label} must be an array when provided`);
   }
 
-  return value.map((check, index) => {
-    if (!isRecord(check)) {
-      throw new Error(`${label}[${index}] must be an object`);
-    }
-    return {
-      argumentIncludes: optionalStringArray(
-        check.argumentIncludes,
-        `${label}[${index}].argumentIncludes`,
-      ),
-      name: requireString(check.name, `${label}[${index}].name`),
-    };
-  });
+  return value.map((check, index) =>
+    parseToolCallCheck(check, `${label}[${index}]`),
+  );
+}
+
+function parseForbiddenToolCallCheck(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkForbiddenToolCallCheck {
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return {
+    argumentIncludes: optionalStringArray(
+      value.argumentIncludes,
+      `${label}.argumentIncludes`,
+    ),
+    name: optionalString(value.name, `${label}.name`),
+  };
 }
 
 function parseForbiddenToolCallChecks(
@@ -293,16 +418,73 @@ function parseForbiddenToolCallChecks(
     throw new Error(`${label} must be an array when provided`);
   }
 
+  return value.map((check, index) =>
+    parseForbiddenToolCallCheck(check, `${label}[${index}]`),
+  );
+}
+
+function parseForbiddenBeforeChecks(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkForbiddenBeforeCheck[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array when provided`);
+  }
+
   return value.map((check, index) => {
     if (!isRecord(check)) {
       throw new Error(`${label}[${index}] must be an object`);
     }
     return {
-      argumentIncludes: optionalStringArray(
-        check.argumentIncludes,
-        `${label}[${index}].argumentIncludes`,
+      before: parseToolCallCheck(check.before, `${label}[${index}].before`),
+      forbidden: parseForbiddenToolCallCheck(
+        check.forbidden,
+        `${label}[${index}].forbidden`,
       ),
-      name: optionalString(check.name, `${label}[${index}].name`),
+    };
+  });
+}
+
+function parseRequiredBeforeChecks(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkRequiredBeforeCheck[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array when provided`);
+  }
+
+  return value.map((check, index) => {
+    if (!isRecord(check)) {
+      throw new Error(`${label}[${index}] must be an object`);
+    }
+    return {
+      before: parseToolCallCheck(check.before, `${label}[${index}].before`),
+      required: parseToolCallCheck(
+        check.required,
+        `${label}[${index}].required`,
+      ),
+    };
+  });
+}
+
+function parseNextToolChecks(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkNextToolCheck[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array when provided`);
+  }
+
+  return value.map((check, index) => {
+    if (!isRecord(check)) {
+      throw new Error(`${label}[${index}] must be an object`);
+    }
+    return {
+      after: parseToolCallCheck(check.after, `${label}[${index}].after`),
+      next: parseToolCallCheck(check.next, `${label}[${index}].next`),
     };
   });
 }
@@ -318,6 +500,10 @@ function parsePackageContract(
 
   return {
     artifacts: parsePackageArtifacts(value.artifacts, `${label}.artifacts`),
+    forbiddenBefore: parseForbiddenBeforeChecks(
+      value.forbiddenBefore,
+      `${label}.forbiddenBefore`,
+    ),
     forbiddenToolCalls: parseForbiddenToolCallChecks(
       value.forbiddenToolCalls,
       `${label}.forbiddenToolCalls`,
@@ -327,6 +513,18 @@ function parsePackageContract(
       `${label}.forbiddenTranscriptIncludes`,
     ),
     name: optionalString(value.name, `${label}.name`),
+    nextToolMustBe: parseNextToolChecks(
+      value.nextToolMustBe,
+      `${label}.nextToolMustBe`,
+    ),
+    orderedToolCalls: parseToolCallChecks(
+      value.orderedToolCalls,
+      `${label}.orderedToolCalls`,
+    ),
+    requiredBefore: parseRequiredBeforeChecks(
+      value.requiredBefore,
+      `${label}.requiredBefore`,
+    ),
     requiredToolCalls: parseToolCallChecks(
       value.requiredToolCalls,
       `${label}.requiredToolCalls`,
@@ -335,6 +533,8 @@ function parsePackageContract(
       value.requiredTranscriptIncludes,
       `${label}.requiredTranscriptIncludes`,
     ),
+    sourceHash: optionalString(value.sourceHash, `${label}.sourceHash`),
+    sourcePath: optionalString(value.sourcePath, `${label}.sourcePath`),
   };
 }
 
@@ -375,6 +575,19 @@ function parseMessages(
   });
 }
 
+function parseTranscript(
+  value: unknown,
+  label: string,
+): KhalaTranscript | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return normalizeKhalaTranscript(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} must be a Khala transcript: ${message}`);
+  }
+}
+
 function parseRuns(value: unknown, label: string): HarnessBenchmarkRun[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error(`${label} must be a non-empty array`);
@@ -383,6 +596,23 @@ function parseRuns(value: unknown, label: string): HarnessBenchmarkRun[] {
   return value.map((run, index) => {
     if (!isRecord(run)) {
       throw new Error(`${label}[${index}] must be an object`);
+    }
+    const transcript = parseTranscript(
+      run.transcript,
+      `${label}[${index}].transcript`,
+    );
+    const messages =
+      run.messages === undefined
+        ? transcript
+          ? (khalaTranscriptToBenchmarkMessages(
+              transcript,
+            ) as HarnessBenchmarkMessage[])
+          : undefined
+        : parseMessages(run.messages, `${label}[${index}].messages`);
+    if (messages === undefined) {
+      throw new Error(
+        `${label}[${index}].messages must be an array unless transcript is provided`,
+      );
     }
     return {
       assistantText: optionalString(
@@ -393,18 +623,27 @@ function parseRuns(value: unknown, label: string): HarnessBenchmarkRun[] {
         run.expectedIssueCodes,
         `${label}[${index}].expectedIssueCodes`,
       ) as HarnessBenchmarkIssueCode[] | undefined,
+      expectedPackageIssueCodes: optionalStringArray(
+        run.expectedPackageIssueCodes,
+        `${label}[${index}].expectedPackageIssueCodes`,
+      ) as HarnessBenchmarkPackageIssueCode[] | undefined,
       harnessLimits: run.harnessLimits as HarnessBenchmarkRun["harnessLimits"],
       id: optionalString(run.id, `${label}[${index}].id`),
-      lowConfidenceThreshold:
-        typeof run.lowConfidenceThreshold === "number"
-          ? run.lowConfidenceThreshold
-          : undefined,
-      messages: parseMessages(run.messages, `${label}[${index}].messages`),
+      budgetWarningThreshold: optionalNumber(
+        run.budgetWarningThreshold,
+        `${label}[${index}].budgetWarningThreshold`,
+      ),
+      lowConfidenceThreshold: optionalNumber(
+        run.lowConfidenceThreshold,
+        `${label}[${index}].lowConfidenceThreshold`,
+      ),
+      messages,
       model: optionalString(run.model, `${label}[${index}].model`),
       responseComplianceMode: optionalString(
         run.responseComplianceMode,
         `${label}[${index}].responseComplianceMode`,
       ),
+      transcript,
     };
   });
 }
@@ -437,13 +676,21 @@ export function parseHarnessBenchmarkSuite(
           benchmarkCase.expectedIssueCodes,
           `cases[${index}].expectedIssueCodes`,
         ) as HarnessBenchmarkIssueCode[] | undefined,
+        expectedPackageIssueCodes: optionalStringArray(
+          benchmarkCase.expectedPackageIssueCodes,
+          `cases[${index}].expectedPackageIssueCodes`,
+        ) as HarnessBenchmarkPackageIssueCode[] | undefined,
         harnessLimits:
           benchmarkCase.harnessLimits as HarnessBenchmarkCase["harnessLimits"],
         id: optionalString(benchmarkCase.id, `cases[${index}].id`),
-        lowConfidenceThreshold:
-          typeof benchmarkCase.lowConfidenceThreshold === "number"
-            ? benchmarkCase.lowConfidenceThreshold
-            : undefined,
+        budgetWarningThreshold: optionalNumber(
+          benchmarkCase.budgetWarningThreshold,
+          `cases[${index}].budgetWarningThreshold`,
+        ),
+        lowConfidenceThreshold: optionalNumber(
+          benchmarkCase.lowConfidenceThreshold,
+          `cases[${index}].lowConfidenceThreshold`,
+        ),
         name: requireString(benchmarkCase.name, `cases[${index}].name`),
         packageContract: parsePackageContract(
           benchmarkCase.packageContract,
@@ -467,37 +714,9 @@ export function parseHarnessBenchmarkSuite(
   };
 }
 
-function benchmarkMessageToHarnessMessage(
-  message: HarnessBenchmarkMessage,
-): HarnessMessage {
-  if (message.content !== undefined) {
-    return {
-      content: message.content,
-      role: message.role,
-    };
-  }
-
-  if (message.toolCall) {
-    return {
-      content: [
-        {
-          arguments: message.toolCall.arguments ?? {},
-          id: message.toolCall.id ?? `call-${message.toolCall.name}`,
-          name: message.toolCall.name,
-          type: "toolCall" as const,
-        },
-      ],
-      role: message.role,
-    };
-  }
-
-  return {
-    content: [{ text: message.text ?? "", type: "text" as const }],
-    role: message.role,
-  };
-}
-
-function latestAssistantText(messages: HarnessBenchmarkMessage[]): string {
+function latestAssistantText(
+  messages: readonly HarnessBenchmarkMessage[] = [],
+): string {
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;
     if (typeof message.text === "string") return message.text;
@@ -505,10 +724,26 @@ function latestAssistantText(messages: HarnessBenchmarkMessage[]): string {
   return "";
 }
 
+function latestRunAssistantText(run: HarnessBenchmarkRun): string {
+  if (run.transcript) {
+    const transcriptText = latestKhalaAssistantText(run.transcript);
+    if (transcriptText.trim()) return transcriptText;
+  }
+  return latestAssistantText(run.messages);
+}
+
 function isHarnessBenchmarkIssueCode(
   code: string,
 ): code is HarnessBenchmarkIssueCode {
   return HARNESS_BENCHMARK_ISSUE_CODES.has(code);
+}
+
+function isHarnessBenchmarkPackageIssueCode(
+  code: string,
+): code is HarnessBenchmarkPackageIssueCode {
+  return HARNESS_BENCHMARK_PACKAGE_ISSUE_CODES.has(
+    code as HarnessBenchmarkPackageIssueCode,
+  );
 }
 
 function pushPreflightIssue(
@@ -533,6 +768,29 @@ function preflightExpectedIssueCodes(params: {
       caseName: params.caseName,
       code: "unknown_expected_issue_code",
       message: `unknown expected issue code: ${code}`,
+      model: params.model,
+      runId: params.runId,
+      severity: "error",
+      text: code,
+    });
+  }
+}
+
+function preflightExpectedPackageIssueCodes(params: {
+  codes?: HarnessBenchmarkPackageIssueCode[];
+  issues: HarnessBenchmarkPreflightIssue[];
+  caseId?: string;
+  caseName: string;
+  runId?: string;
+  model?: string;
+}): void {
+  for (const code of (params.codes ?? []) as string[]) {
+    if (isHarnessBenchmarkPackageIssueCode(code)) continue;
+    pushPreflightIssue(params.issues, {
+      caseId: params.caseId,
+      caseName: params.caseName,
+      code: "unknown_expected_package_issue_code",
+      message: `unknown expected package issue code: ${code}`,
       model: params.model,
       runId: params.runId,
       severity: "error",
@@ -569,6 +827,12 @@ export function preflightHarnessBenchmarkSuite(
       caseId: benchmarkCase.id,
       caseName: benchmarkCase.name,
       codes: benchmarkCase.expectedIssueCodes,
+      issues,
+    });
+    preflightExpectedPackageIssueCodes({
+      caseId: benchmarkCase.id,
+      caseName: benchmarkCase.name,
+      codes: benchmarkCase.expectedPackageIssueCodes,
       issues,
     });
 
@@ -628,8 +892,18 @@ export function preflightHarnessBenchmarkSuite(
         model: run.model,
         runId,
       });
+      preflightExpectedPackageIssueCodes({
+        caseId: benchmarkCase.id,
+        caseName: benchmarkCase.name,
+        codes: run.expectedPackageIssueCodes,
+        issues,
+        model: run.model,
+        runId,
+      });
 
-      if (run.messages.length === 0) {
+      const transcriptEventCount =
+        run.transcript?.events.length ?? run.messages?.length ?? 0;
+      if (transcriptEventCount === 0) {
         pushPreflightIssue(issues, {
           caseId: benchmarkCase.id,
           caseName: benchmarkCase.name,
@@ -643,7 +917,7 @@ export function preflightHarnessBenchmarkSuite(
       const assistantText =
         run.assistantText ??
         benchmarkCase.assistantText ??
-        latestAssistantText(run.messages);
+        latestRunAssistantText(run);
       if (assistantText.trim() === "") {
         pushPreflightIssue(issues, {
           caseId: benchmarkCase.id,
@@ -676,69 +950,83 @@ export function preflightHarnessBenchmarkSuite(
 function stringifyUnknown(value: unknown): string {
   if (typeof value === "string") return value;
   try {
-    return JSON.stringify(value) ?? "";
+    return stableKhalaJsonStringify(value) ?? "";
   } catch {
     return String(value);
   }
 }
 
-function transcriptText(
-  run: HarnessBenchmarkRun,
-  assistantText: string,
-): string {
-  const parts = [assistantText];
-  for (const message of run.messages) {
-    parts.push(message.role);
-    if (message.text) parts.push(message.text);
-    if (message.toolCall) {
-      parts.push(message.toolCall.name);
-      parts.push(stringifyUnknown(message.toolCall.arguments));
-    }
-    if (message.content !== undefined) {
-      parts.push(stringifyUnknown(message.content));
-    }
-  }
-  return parts.join("\n");
+function transcriptText(transcript: KhalaTranscript): string {
+  return khalaTranscriptSearchText(transcript);
 }
 
-function toolCallArgumentsText(toolCall: HarnessBenchmarkToolCall): string {
-  return stringifyUnknown(toolCall.arguments ?? {});
+function toolCallArgumentsText(value: unknown): string {
+  return stringifyUnknown(value ?? {});
+}
+
+function toolCallMatchesRequired(
+  toolCall: KhalaToolCallRequestedEvent,
+  check: HarnessBenchmarkToolCallCheck,
+): boolean {
+  if (toolCall.name !== check.name) return false;
+  const argumentText = toolCallArgumentsText(toolCall.arguments);
+  return (check.argumentIncludes ?? []).every((text) =>
+    argumentText.includes(text),
+  );
+}
+
+function toolCallMatchesForbidden(
+  toolCall: KhalaToolCallRequestedEvent,
+  check: HarnessBenchmarkForbiddenToolCallCheck,
+): boolean {
+  if (check.name !== undefined && toolCall.name !== check.name) return false;
+  const argumentText = toolCallArgumentsText(toolCall.arguments);
+  return (check.argumentIncludes ?? []).every((text) =>
+    argumentText.includes(text),
+  );
+}
+
+function formatToolCallCheck(
+  check: HarnessBenchmarkToolCallCheck | HarnessBenchmarkForbiddenToolCallCheck,
+): string {
+  const args = check.argumentIncludes?.length
+    ? ` with arguments including ${check.argumentIncludes.join(", ")}`
+    : "";
+  return `${check.name ?? "any tool"}${args}`;
+}
+
+function firstMatchingToolCall(
+  toolCalls: readonly KhalaToolCallRequestedEvent[],
+  check: HarnessBenchmarkToolCallCheck,
+  afterSeq = 0,
+): KhalaToolCallRequestedEvent | undefined {
+  return toolCalls.find(
+    (toolCall) =>
+      toolCall.seq > afterSeq && toolCallMatchesRequired(toolCall, check),
+  );
 }
 
 function runHasRequiredToolCall(
-  run: HarnessBenchmarkRun,
+  transcript: KhalaTranscript,
   check: HarnessBenchmarkToolCallCheck,
 ): boolean {
-  return run.messages.some((message) => {
-    if (!message.toolCall) return false;
-    if (message.toolCall.name !== check.name) return false;
-    const argumentText = toolCallArgumentsText(message.toolCall);
-    return (check.argumentIncludes ?? []).every((text) =>
-      argumentText.includes(text),
-    );
-  });
+  return khalaTranscriptToolCalls(transcript).some((toolCall) =>
+    toolCallMatchesRequired(toolCall, check),
+  );
 }
 
 function runHasForbiddenToolCall(
-  run: HarnessBenchmarkRun,
+  transcript: KhalaTranscript,
   check: HarnessBenchmarkForbiddenToolCallCheck,
 ): boolean {
-  return run.messages.some((message) => {
-    if (!message.toolCall) return false;
-    if (check.name !== undefined && message.toolCall.name !== check.name) {
-      return false;
-    }
-    const argumentText = toolCallArgumentsText(message.toolCall);
-    return (check.argumentIncludes ?? []).every((text) =>
-      argumentText.includes(text),
-    );
-  });
+  return khalaTranscriptToolCalls(transcript).some((toolCall) =>
+    toolCallMatchesForbidden(toolCall, check),
+  );
 }
 
 function evaluatePackageContract(params: {
   contract?: HarnessBenchmarkPackageContract;
-  run: HarnessBenchmarkRun;
-  assistantText: string;
+  transcript: KhalaTranscript;
 }): HarnessBenchmarkPackageIssue[] {
   const contract = params.contract;
   if (!contract) return [];
@@ -771,7 +1059,7 @@ function evaluatePackageContract(params: {
     }
   }
 
-  const transcript = transcriptText(params.run, params.assistantText);
+  const transcript = transcriptText(params.transcript);
   for (const requiredText of contract.requiredTranscriptIncludes ?? []) {
     if (!transcript.includes(requiredText)) {
       issues.push({
@@ -791,7 +1079,7 @@ function evaluatePackageContract(params: {
     }
   }
   for (const requiredToolCall of contract.requiredToolCalls ?? []) {
-    if (!runHasRequiredToolCall(params.run, requiredToolCall)) {
+    if (!runHasRequiredToolCall(params.transcript, requiredToolCall)) {
       issues.push({
         code: "package_run_missing_required_tool_call",
         message: `candidate transcript did not call required package tool: ${requiredToolCall.name}`,
@@ -800,7 +1088,7 @@ function evaluatePackageContract(params: {
     }
   }
   for (const forbiddenToolCall of contract.forbiddenToolCalls ?? []) {
-    if (runHasForbiddenToolCall(params.run, forbiddenToolCall)) {
+    if (runHasForbiddenToolCall(params.transcript, forbiddenToolCall)) {
       issues.push({
         code: "package_run_used_forbidden_tool_call",
         message: `candidate transcript used forbidden package tool: ${forbiddenToolCall.name ?? "any matching tool"}`,
@@ -809,19 +1097,96 @@ function evaluatePackageContract(params: {
     }
   }
 
+  const toolCalls = khalaTranscriptToolCalls(params.transcript);
+  let orderedCursor = 0;
+  for (const orderedToolCall of contract.orderedToolCalls ?? []) {
+    const match = firstMatchingToolCall(
+      toolCalls,
+      orderedToolCall,
+      orderedCursor,
+    );
+    if (!match) {
+      issues.push({
+        code: "package_run_tool_order_violation",
+        message: `candidate transcript did not call ordered package tool after the prior step: ${formatToolCallCheck(
+          orderedToolCall,
+        )}`,
+        toolName: orderedToolCall.name,
+      });
+      break;
+    }
+    orderedCursor = match.seq;
+  }
+
+  for (const check of contract.forbiddenBefore ?? []) {
+    const anchor = firstMatchingToolCall(toolCalls, check.before);
+    if (!anchor) continue;
+    const forbidden = toolCalls.find(
+      (toolCall) =>
+        toolCall.seq < anchor.seq &&
+        toolCallMatchesForbidden(toolCall, check.forbidden),
+    );
+    if (forbidden) {
+      issues.push({
+        anchorToolName: check.before.name,
+        code: "package_run_forbidden_tool_before_anchor",
+        message: `candidate transcript called forbidden package tool ${formatToolCallCheck(
+          check.forbidden,
+        )} before ${formatToolCallCheck(check.before)}`,
+        toolName: forbidden.name,
+      });
+    }
+  }
+
+  for (const check of contract.requiredBefore ?? []) {
+    const anchor = firstMatchingToolCall(toolCalls, check.before);
+    if (!anchor) continue;
+    const required = toolCalls.find(
+      (toolCall) =>
+        toolCall.seq < anchor.seq &&
+        toolCallMatchesRequired(toolCall, check.required),
+    );
+    if (!required) {
+      issues.push({
+        anchorToolName: check.before.name,
+        code: "package_run_required_tool_missing_before_anchor",
+        message: `candidate transcript did not call required package tool ${formatToolCallCheck(
+          check.required,
+        )} before ${formatToolCallCheck(check.before)}`,
+        toolName: check.required.name,
+      });
+    }
+  }
+
+  for (const check of contract.nextToolMustBe ?? []) {
+    const after = firstMatchingToolCall(toolCalls, check.after);
+    if (!after) continue;
+    const next = toolCalls.find((toolCall) => toolCall.seq > after.seq);
+    if (!next || !toolCallMatchesRequired(next, check.next)) {
+      issues.push({
+        anchorToolName: check.after.name,
+        code: "package_run_next_tool_mismatch",
+        message: `candidate transcript did not call ${formatToolCallCheck(
+          check.next,
+        )} immediately after ${formatToolCallCheck(check.after)}`,
+        toolName: next?.name ?? check.next.name,
+      });
+    }
+  }
+
   return issues;
 }
 
-function multisetDifference(
-  left: HarnessBenchmarkIssueCode[],
-  right: HarnessBenchmarkIssueCode[],
-): HarnessBenchmarkIssueCode[] {
-  const remaining = new Map<HarnessBenchmarkIssueCode, number>();
+function multisetDifference<T extends string>(
+  left: readonly T[],
+  right: readonly T[],
+): T[] {
+  const remaining = new Map<T, number>();
   for (const code of right) {
     remaining.set(code, (remaining.get(code) ?? 0) + 1);
   }
 
-  const difference: HarnessBenchmarkIssueCode[] = [];
+  const difference: T[] = [];
   for (const code of left) {
     const count = remaining.get(code) ?? 0;
     if (count > 0) {
@@ -857,7 +1222,12 @@ function packageDivergenceScore(
     switch (issue.code) {
       case "package_run_used_forbidden_tool_call":
         return sum + 14;
+      case "package_run_forbidden_tool_before_anchor":
+      case "package_run_next_tool_mismatch":
+      case "package_run_tool_order_violation":
+        return sum + 14;
       case "package_run_missing_required_tool_call":
+      case "package_run_required_tool_missing_before_anchor":
         return sum + 12;
       case "package_artifact_missing_required_text":
       case "package_artifact_contains_forbidden_text":
@@ -932,6 +1302,121 @@ function summarizeModels(
     });
 }
 
+function orderedIssueCounts(
+  results: readonly HarnessBenchmarkRunResult[],
+): Partial<Record<HarnessBenchmarkIssueCode, number>> {
+  const counts: Partial<Record<HarnessBenchmarkIssueCode, number>> = {};
+  for (const result of results) {
+    for (const code of result.issueCodes) {
+      counts[code] = (counts[code] ?? 0) + 1;
+    }
+  }
+
+  const ordered: Partial<Record<HarnessBenchmarkIssueCode, number>> = {};
+  for (const code of HARNESS_BENCHMARK_ISSUE_CODE_ORDER) {
+    const count = counts[code];
+    if (count !== undefined) ordered[code] = count;
+  }
+  return ordered;
+}
+
+function summarizeCases(
+  results: readonly HarnessBenchmarkRunResult[],
+): HarnessBenchmarkCaseSummary[] {
+  const grouped = new Map<string, HarnessBenchmarkRunResult[]>();
+  for (const result of results) {
+    const key = result.caseId ?? result.caseName;
+    grouped.set(key, [...(grouped.get(key) ?? []), result]);
+  }
+
+  return [...grouped.values()]
+    .map((caseResults) => {
+      const first = caseResults[0];
+      return {
+        blockingIssueCount: caseResults.reduce(
+          (sum, result) => sum + result.blockingIssueCount,
+          0,
+        ),
+        budgetWarningCount: caseResults.reduce(
+          (sum, result) => sum + result.budget.warnings.length,
+          0,
+        ),
+        caseId: first.caseId,
+        caseName: first.caseName,
+        issueCounts: orderedIssueCounts(caseResults),
+        packageIssueCount: caseResults.reduce(
+          (sum, result) => sum + result.packageIssues.length,
+          0,
+        ),
+        runCount: caseResults.length,
+        tags: first.tags,
+        totalDivergenceScore: caseResults.reduce(
+          (sum, result) => sum + result.divergenceScore,
+          0,
+        ),
+      };
+    })
+    .sort((left, right) =>
+      compareText(left.caseId ?? left.caseName, right.caseId ?? right.caseName),
+    );
+}
+
+function summarizeTags(
+  results: readonly HarnessBenchmarkRunResult[],
+): HarnessBenchmarkTagSummary[] {
+  const grouped = new Map<string, HarnessBenchmarkRunResult[]>();
+  for (const result of results) {
+    for (const tag of result.tags) {
+      grouped.set(tag, [...(grouped.get(tag) ?? []), result]);
+    }
+  }
+
+  return [...grouped.entries()]
+    .map(([tag, tagResults]) => ({
+      blockingIssueCount: tagResults.reduce(
+        (sum, result) => sum + result.blockingIssueCount,
+        0,
+      ),
+      budgetWarningCount: tagResults.reduce(
+        (sum, result) => sum + result.budget.warnings.length,
+        0,
+      ),
+      issueCounts: orderedIssueCounts(tagResults),
+      packageIssueCount: tagResults.reduce(
+        (sum, result) => sum + result.packageIssues.length,
+        0,
+      ),
+      runCount: tagResults.length,
+      tag,
+      totalDivergenceScore: tagResults.reduce(
+        (sum, result) => sum + result.divergenceScore,
+        0,
+      ),
+    }))
+    .sort((left, right) => compareText(left.tag, right.tag));
+}
+
+function transcriptForRun(params: {
+  benchmarkCase: HarnessBenchmarkCase;
+  run: HarnessBenchmarkRun;
+  assistantText: string;
+  runId: string;
+}): KhalaTranscript {
+  if (params.run.transcript)
+    return normalizeKhalaTranscript(params.run.transcript);
+  return benchmarkMessagesToKhalaTranscript({
+    assistantText: params.assistantText,
+    messages: params.run.messages ?? [],
+    metadata: {
+      caseId: params.benchmarkCase.id,
+      caseName: params.benchmarkCase.name,
+      model: params.run.model,
+      runId: params.runId,
+    },
+    userText: params.benchmarkCase.userText,
+  });
+}
+
 export function evaluateHarnessBenchmark(
   suite: HarnessBenchmarkSuite,
   options: HarnessBenchmarkOptions = {},
@@ -941,11 +1426,20 @@ export function evaluateHarnessBenchmark(
 
   for (const benchmarkCase of parsedSuite.cases) {
     for (const [runIndex, run] of benchmarkCase.runs.entries()) {
-      const messages = run.messages.map(benchmarkMessageToHarnessMessage);
       const assistantText =
         run.assistantText ??
         benchmarkCase.assistantText ??
-        latestAssistantText(run.messages);
+        latestRunAssistantText(run);
+      const runId = run.id ?? `${benchmarkCase.id ?? "case"}-${runIndex + 1}`;
+      const transcript = transcriptForRun({
+        assistantText,
+        benchmarkCase,
+        run,
+        runId,
+      });
+      const messages = khalaTranscriptToHarnessMessages(
+        transcript,
+      ) as HarnessEvaluationParams["messages"];
       const lowConfidenceThreshold =
         run.lowConfidenceThreshold ??
         benchmarkCase.lowConfidenceThreshold ??
@@ -981,10 +1475,25 @@ export function evaluateHarnessBenchmark(
       const expectedIssueDistance =
         missingExpectedIssueCodes.length + unexpectedIssueCodes.length;
       const packageIssues = evaluatePackageContract({
-        assistantText,
         contract: benchmarkCase.packageContract,
-        run,
+        transcript,
       });
+      const packageIssueCodes = packageIssues.map((issue) => issue.code);
+      const expectedPackageIssueCodes =
+        run.expectedPackageIssueCodes ??
+        benchmarkCase.expectedPackageIssueCodes ??
+        [];
+      const missingExpectedPackageIssueCodes = multisetDifference(
+        expectedPackageIssueCodes,
+        packageIssueCodes,
+      );
+      const unexpectedPackageIssueCodes = multisetDifference(
+        packageIssueCodes,
+        expectedPackageIssueCodes,
+      );
+      const expectedPackageIssueDistance =
+        missingExpectedPackageIssueCodes.length +
+        unexpectedPackageIssueCodes.length;
       const packageScore = packageDivergenceScore(packageIssues);
       const score = divergenceScore({
         expectedIssueDistance,
@@ -992,8 +1501,23 @@ export function evaluateHarnessBenchmark(
         metrics,
         packageDivergenceScore: packageScore,
       });
+      const budget = estimateKhalaBudget({
+        handoffCapsule: benchmarkCase.packageContract?.artifacts?.map(
+          (artifact) => ({
+            id: artifact.id,
+            kind: artifact.kind,
+            text: artifact.text,
+          }),
+        ),
+        transcript,
+        warningThresholdTokens:
+          run.budgetWarningThreshold ??
+          benchmarkCase.budgetWarningThreshold ??
+          options.budgetWarningThreshold,
+      });
 
       results.push({
+        budget,
         blockingIssueCount: issues.filter((issue) => issue.block).length,
         caseId: benchmarkCase.id,
         caseName: benchmarkCase.name,
@@ -1001,15 +1525,21 @@ export function evaluateHarnessBenchmark(
         divergenceScore: score,
         expectedIssueCodes,
         expectedIssueDistance,
+        expectedPackageIssueCodes,
+        expectedPackageIssueDistance,
         issueCodes,
         issues,
         metrics,
         missingExpectedIssueCodes,
+        missingExpectedPackageIssueCodes,
         model: run.model ?? DEFAULT_MODEL_NAME,
         packageDivergenceScore: packageScore,
         packageIssues,
-        runId: run.id ?? `${benchmarkCase.id ?? "case"}-${runIndex + 1}`,
+        runId,
+        tags: benchmarkCase.tags ?? [],
+        transcriptEventCount: transcript.events.length,
         unexpectedIssueCodes,
+        unexpectedPackageIssueCodes,
       });
     }
   }
@@ -1030,11 +1560,13 @@ export function evaluateHarnessBenchmark(
   });
 
   return {
+    caseSummaries: summarizeCases(results),
     caseCount: parsedSuite.cases.length,
     modelSummaries: summarizeModels(results),
     results,
     runCount: results.length,
     suiteName: parsedSuite.name ?? "Khala harness benchmark",
+    tagSummaries: summarizeTags(results),
   };
 }
 
@@ -1077,18 +1609,60 @@ export function formatHarnessBenchmarkMarkdown(
     "",
     "## Runs",
     "",
-    "| Case | Run | Model | Compliance | Divergence | Harness Issues | Package Divergence | Expected Distance |",
-    "| --- | --- | --- | ---: | ---: | --- | ---: | ---: |",
+    "| Case | Run | Model | Compliance | Divergence | Events | Budget | Harness Issues | Package Divergence | Expected Distance |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |",
   );
 
   for (const result of report.results) {
     lines.push(
       `| ${markdownCell(result.caseName)} | ${markdownCell(
         result.runId,
-      )} | ${markdownCell(result.model)} | ${result.complianceScore} | ${result.divergenceScore} | ${markdownCell(
+      )} | ${markdownCell(result.model)} | ${result.complianceScore} | ${result.divergenceScore} | ${result.transcriptEventCount} | ${result.budget.totalTokens} | ${markdownCell(
         issueCodeText(result.issueCodes),
       )} | ${result.packageDivergenceScore} | ${result.expectedIssueDistance} |`,
     );
+  }
+
+  const packageIssueRows = report.results.flatMap((result) =>
+    result.packageIssues.map((issue) => ({ issue, result })),
+  );
+  if (packageIssueRows.length > 0) {
+    lines.push(
+      "",
+      "## Package Issues",
+      "",
+      "| Case | Run | Code | Message |",
+      "| --- | --- | --- | --- |",
+    );
+    for (const row of packageIssueRows) {
+      lines.push(
+        `| ${markdownCell(row.result.caseName)} | ${markdownCell(
+          row.result.runId,
+        )} | ${row.issue.code} | ${markdownCell(row.issue.message)} |`,
+      );
+    }
+  }
+
+  const budgetWarningRows = report.results.flatMap((result) =>
+    result.budget.warnings.map((warning) => ({ result, warning })),
+  );
+  if (budgetWarningRows.length > 0) {
+    lines.push(
+      "",
+      "## Budget Warnings",
+      "",
+      "| Case | Run | Tokens | Threshold | Message |",
+      "| --- | --- | ---: | ---: | --- |",
+    );
+    for (const row of budgetWarningRows) {
+      lines.push(
+        `| ${markdownCell(row.result.caseName)} | ${markdownCell(
+          row.result.runId,
+        )} | ${row.warning.tokens} | ${row.warning.thresholdTokens} | ${markdownCell(
+          row.warning.message,
+        )} |`,
+      );
+    }
   }
 
   return `${lines.join("\n")}\n`;

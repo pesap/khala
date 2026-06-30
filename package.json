@@ -34,6 +34,8 @@
   },
   "scripts": {
     "benchmark:harness": "node --experimental-strip-types scripts/harness-benchmark.ts benchmarks/harness-sandbox.json",
+    "benchmark:harness:ci": "node --experimental-strip-types scripts/harness-benchmark.ts --fail-on-blocking-regression --must-pass-tag golden benchmarks/harness-golden.json",
+    "benchmark:harness:contracts": "node --experimental-strip-types scripts/generate-harness-contracts.ts",
     "benchmark:pi-drift": "node --experimental-strip-types scripts/harness-pi-drift.ts benchmarks/harness-sandbox.json",
     "smoke": "npm run lint:all && npm run test",
     "test": "npm run typecheck && npm run test:node",

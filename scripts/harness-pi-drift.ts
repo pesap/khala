@@ -25,6 +25,7 @@ import {
   type HarnessBenchmarkRun,
   type HarnessBenchmarkSuite,
 } from "../khala/harness-benchmark.ts";
+import { piAgentEndMessagesToKhalaTranscript } from "../khala/harness-events.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -718,6 +719,18 @@ async function runPiCase(params: {
         id: runId,
         messages: piMessagesToBenchmarkMessages(agentEnd.messages ?? []),
         model: modelRunLabel,
+        transcript: piAgentEndMessagesToKhalaTranscript(
+          agentEnd.messages ?? [],
+          {
+            metadata: {
+              model: params.model.id,
+              promptMode: params.promptMode,
+              source: "pi-drift",
+              thinking: params.model.thinking,
+            },
+            userText: params.prompt,
+          },
+        ),
       };
     } catch {
       const message = error instanceof Error ? error.message : String(error);
@@ -758,6 +771,36 @@ async function runPiCase(params: {
           },
         ],
         model: modelRunLabel,
+        transcript: piAgentEndMessagesToKhalaTranscript(
+          [
+            {
+              content: [
+                {
+                  text: params.prompt,
+                  type: "text",
+                },
+              ],
+              role: "user",
+            },
+            {
+              content: [
+                {
+                  text: `Pi run failed before a complete transcript was captured: ${message}`,
+                  type: "text",
+                },
+              ],
+              role: "assistant",
+            },
+          ],
+          {
+            metadata: {
+              model: params.model.id,
+              promptMode: params.promptMode,
+              source: "pi-drift",
+              thinking: params.model.thinking,
+            },
+          },
+        ),
       };
     }
   }
@@ -768,6 +811,15 @@ async function runPiCase(params: {
     id: runId,
     messages,
     model: modelRunLabel,
+    transcript: piAgentEndMessagesToKhalaTranscript(agentEnd.messages ?? [], {
+      metadata: {
+        model: params.model.id,
+        promptMode: params.promptMode,
+        source: "pi-drift",
+        thinking: params.model.thinking,
+      },
+      userText: params.prompt,
+    }),
   };
 }
 

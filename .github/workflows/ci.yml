@@ -38,6 +38,9 @@ jobs:
       - name: Test
         run: npm run test:node
 
+      - name: Harness benchmark CI
+        run: npm run benchmark:harness:ci
+
   setup-helper-windows:
     name: Setup helper focused tests (Windows)
     runs-on: windows-latest

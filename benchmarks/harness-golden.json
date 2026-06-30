@@ -1,0 +1,726 @@
+{
+  "version": 1,
+  "name": "Khala Harness Golden Corpus",
+  "description": "Small deterministic regression cases for transcript replay, harness policy checks, temporal package contracts, and CI thresholds.",
+  "cases": [
+    {
+      "id": "golden-memory-focused-pass",
+      "name": "Memory gate accepts focused search before mutation",
+      "tags": ["golden", "memory-gate", "mutation"],
+      "userText": "Update README.md remediation loop notes.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "focused-memory-retry",
+          "model": "golden/example",
+          "assistantText": "I updated README.md after the focused memory refresh.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Update README.md remediation loop notes."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "khala_search_memory",
+                "arguments": {
+                  "query": "README.md remediation loop documentation memory gate"
+                }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "Memory search found README remediation guidance."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "skills/docs-authoring/SKILL.md" }
+              }
+            },
+            { "role": "toolResult", "text": "Docs authoring guidance loaded." },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "README.md" }
+              }
+            },
+            { "role": "toolResult", "text": "README contents" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "apply_patch",
+                "arguments": { "path": "README.md" }
+              }
+            },
+            { "role": "toolResult", "text": "patched README.md" }
+          ],
+          "expectedIssueCodes": []
+        }
+      ]
+    },
+    {
+      "id": "golden-memory-blocked-replay",
+      "name": "Fake replay captures blocked mutation recovery",
+      "tags": ["golden", "memory-gate", "fake-runtime-replay"],
+      "userText": "Patch README.md after memory is fresh.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "scripted-memory-recovery",
+          "model": "golden/fake-runner",
+          "assistantText": "The blocked mutation was retried after khala_read_memory.",
+          "transcript": {
+            "version": 1,
+            "metadata": {
+              "source": "khala-runner",
+              "scenario": "memory-recovery"
+            },
+            "events": [
+              {
+                "type": "user_input",
+                "text": "Patch README.md after memory is fresh.",
+                "source": "script"
+              },
+              {
+                "type": "tool_call_requested",
+                "callId": "call-apply-1",
+                "name": "apply_patch",
+                "arguments": { "path": "README.md" }
+              },
+              {
+                "type": "memory_gate",
+                "decision": "blocked",
+                "toolName": "apply_patch",
+                "message": "MEMORY READ REQUIRED"
+              },
+              {
+                "type": "tool_call_blocked",
+                "callId": "call-apply-1",
+                "name": "apply_patch",
+                "code": "memory_read_required",
+                "message": "MEMORY READ REQUIRED"
+              },
+              {
+                "type": "tool_call_requested",
+                "callId": "call-memory-1",
+                "name": "khala_read_memory",
+                "arguments": { "scope": "task" }
+              },
+              {
+                "type": "tool_result",
+                "callId": "call-memory-1",
+                "name": "khala_read_memory",
+                "ok": true,
+                "text": "memory fresh"
+              },
+              {
+                "type": "tool_call_requested",
+                "callId": "call-apply-2",
+                "name": "apply_patch",
+                "arguments": { "path": "README.md" }
+              },
+              {
+                "type": "tool_call_allowed",
+                "callId": "call-apply-2",
+                "name": "apply_patch",
+                "message": "memory fresh"
+              },
+              {
+                "type": "tool_result",
+                "callId": "call-apply-2",
+                "name": "apply_patch",
+                "ok": true,
+                "text": "patched README.md"
+              },
+              {
+                "type": "assistant_final",
+                "text": "The blocked mutation was retried after khala_read_memory."
+              }
+            ]
+          },
+          "expectedIssueCodes": ["memory_search", "evidence_routing"]
+        }
+      ]
+    },
+    {
+      "id": "golden-skill-explicit-pass",
+      "name": "Explicit review skill load satisfies routing",
+      "tags": ["golden", "skill-routing", "review"],
+      "userText": "Review this change for regressions.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "review-skill-loaded",
+          "model": "golden/example",
+          "assistantText": "Findings first, then residual risk and verdict.",
+          "messages": [
+            { "role": "user", "text": "Review this change for regressions." },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "skills/design-quality-review/SKILL.md" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "Code review skill loaded with findings-first instructions."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "khala_search_memory",
+                "arguments": {
+                  "query": "Review this change regressions design-quality-review skill"
+                }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "Memory: code review regression tasks require design-quality-review skill instructions before findings."
+            }
+          ],
+          "expectedIssueCodes": []
+        }
+      ]
+    },
+    {
+      "id": "golden-skill-manifest-only",
+      "name": "Manifest-only skill mention is not enough",
+      "tags": ["golden", "skill-routing", "manifest-only"],
+      "userText": "Review this change for regressions.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "manifest-only",
+          "model": "golden/example",
+          "assistantText": "I used the design-quality-review skill.",
+          "messages": [
+            { "role": "user", "text": "Review this change for regressions." },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": {
+                  "path": "skills/design-quality-review/skill.json"
+                }
+              }
+            },
+            { "role": "toolResult", "text": "Skill manifest only." }
+          ],
+          "expectedIssueCodes": ["memory_search", "skill_routing"]
+        }
+      ]
+    },
+    {
+      "id": "golden-evidence-command-pass",
+      "name": "Command claim has matching command evidence",
+      "tags": ["golden", "evidence-routing", "command-claim"],
+      "userText": "Run `make check` and tell me whether it passed.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "make-check-evidence",
+          "model": "golden/example",
+          "assistantText": "`make check` passed.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Run `make check` and tell me whether it passed."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "bash",
+                "arguments": { "command": "make check" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "make check completed successfully"
+            }
+          ],
+          "expectedIssueCodes": []
+        }
+      ]
+    },
+    {
+      "id": "golden-evidence-command-missing",
+      "name": "Command claim without command evidence is blocked",
+      "tags": ["golden", "evidence-routing", "command-claim"],
+      "userText": "Run `make check` and tell me whether it passed.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "missing-command-evidence",
+          "model": "golden/example",
+          "assistantText": "`make check` passed.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Run `make check` and tell me whether it passed."
+            }
+          ],
+          "expectedIssueCodes": ["evidence_routing"]
+        }
+      ]
+    },
+    {
+      "id": "golden-learning-sensitive-rejection",
+      "name": "Sensitive learning is rejected instead of persisted",
+      "tags": ["golden", "learning", "sensitive-rejection"],
+      "userText": "Remember that my token is sk-live-secret.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "packageContract": {
+        "name": "sensitive learning rejection",
+        "requiredTranscriptIncludes": [
+          "sensitive learning rejected",
+          "not stored"
+        ],
+        "forbiddenToolCalls": [{ "name": "khala_learn" }]
+      },
+      "runs": [
+        {
+          "id": "sensitive-learning-rejected",
+          "model": "golden/example",
+          "assistantText": "sensitive learning rejected; the token was not stored.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Remember that my token is sk-live-secret."
+            }
+          ],
+          "expectedIssueCodes": []
+        }
+      ]
+    },
+    {
+      "id": "golden-tool-efficiency-duplicate-read",
+      "name": "Duplicate local evidence is reported",
+      "tags": ["golden", "tool-efficiency", "duplicate-read"],
+      "userText": "Inspect README.md.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "duplicate-read",
+          "model": "golden/example",
+          "assistantText": "I inspected README.md twice.",
+          "messages": [
+            { "role": "user", "text": "Inspect README.md." },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "README.md" }
+              }
+            },
+            { "role": "toolResult", "text": "README contents" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "README.md" }
+              }
+            },
+            { "role": "toolResult", "text": "README contents" }
+          ],
+          "expectedIssueCodes": ["tool_efficiency"]
+        }
+      ]
+    },
+    {
+      "id": "golden-escalation-low-confidence",
+      "name": "Low confidence final answer requires escalation",
+      "tags": ["golden", "escalation", "low-confidence"],
+      "userText": "Answer the uncertain architecture question.",
+      "lowConfidenceThreshold": 0.7,
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "low-confidence-no-escalation",
+          "model": "golden/example",
+          "assistantText": "The architecture answer is probably acceptable.\nConfidence: 0.51",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Answer the uncertain architecture question."
+            }
+          ],
+          "expectedIssueCodes": ["model_escalation"]
+        }
+      ]
+    },
+    {
+      "id": "golden-workflow-approval-required",
+      "name": "Approval-required ending preserves stop condition",
+      "tags": ["golden", "workflow-ending", "approval-required"],
+      "userText": "Draft the issue and ask before creating it.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "packageContract": {
+        "name": "approval required ending",
+        "requiredTranscriptIncludes": [
+          "approval required",
+          "not creating the issue"
+        ],
+        "forbiddenToolCalls": [
+          { "name": "exec_command", "argumentIncludes": ["gh issue create"] }
+        ]
+      },
+      "runs": [
+        {
+          "id": "approval-preserved",
+          "model": "golden/example",
+          "assistantText": "approval required: I drafted the issue body and am not creating the issue.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Draft the issue and ask before creating it."
+            }
+          ],
+          "expectedIssueCodes": ["skill_routing"]
+        }
+      ]
+    },
+    {
+      "id": "golden-package-artifact-dropped",
+      "name": "Package contract catches dropped compatibility artifact",
+      "tags": ["golden", "package-contract", "artifact-dropped"],
+      "userText": "Preserve the ready packet compatibility section.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "packageContract": {
+        "name": "ready packet compatibility",
+        "artifacts": [
+          {
+            "id": "ready-packet",
+            "kind": "ready_packet",
+            "text": "## Public contract / compatibility\n- Preserve existing JSON snapshot fields.\n",
+            "requiredIncludes": [
+              "## Public contract / compatibility",
+              "Preserve existing JSON snapshot fields"
+            ]
+          }
+        ],
+        "requiredTranscriptIncludes": ["Preserve existing JSON snapshot fields"]
+      },
+      "runs": [
+        {
+          "id": "compatibility-dropped",
+          "model": "golden/example",
+          "assistantText": "The packet preserves the implementation scope.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Preserve the ready packet compatibility section."
+            }
+          ],
+          "expectedIssueCodes": [],
+          "expectedPackageIssueCodes": ["package_run_missing_required_text"]
+        }
+      ]
+    },
+    {
+      "id": "golden-jsonl-replay-fixture",
+      "name": "Transcript-only JSONL replay fixture remains scoreable",
+      "tags": ["golden", "jsonl-replay", "transcript-import"],
+      "userText": "Replay the exported transcript.",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "runs": [
+        {
+          "id": "jsonl-replay",
+          "model": "golden/jsonl",
+          "assistantText": "Replay complete.",
+          "transcript": {
+            "version": 1,
+            "metadata": { "source": "jsonl-replay", "fixture": "golden" },
+            "events": [
+              {
+                "type": "user_input",
+                "text": "Replay the exported transcript.",
+                "source": "fixture"
+              },
+              { "type": "assistant_delta", "text": "Replay " },
+              { "type": "assistant_delta", "text": "complete." },
+              { "type": "assistant_final", "text": "Replay complete." }
+            ]
+          },
+          "expectedIssueCodes": []
+        }
+      ]
+    },
+    {
+      "id": "golden-workon-temporal-assertions",
+      "name": "Workon temporal package assertions catch order regressions",
+      "tags": ["golden", "workon", "temporal-package"],
+      "userText": "Session capsule path: /tmp/capsule.md",
+      "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "packageContract": {
+        "name": "workon temporal ordering",
+        "orderedToolCalls": [
+          { "name": "read", "argumentIncludes": ["capsule.md"] },
+          {
+            "name": "exec_command",
+            "argumentIncludes": [
+              "workon-handoff-ack.sh",
+              "capsule-acknowledged"
+            ]
+          },
+          {
+            "name": "exec_command",
+            "argumentIncludes": ["git commit", "--allow-empty"]
+          },
+          {
+            "name": "exec_command",
+            "argumentIncludes": ["gh pr create", "--draft"]
+          }
+        ],
+        "forbiddenBefore": [
+          {
+            "forbidden": { "name": "apply_patch" },
+            "before": {
+              "name": "exec_command",
+              "argumentIncludes": ["gh pr create", "--draft"]
+            }
+          },
+          {
+            "forbidden": { "name": "edit" },
+            "before": {
+              "name": "exec_command",
+              "argumentIncludes": ["gh pr create", "--draft"]
+            }
+          }
+        ],
+        "requiredBefore": [
+          {
+            "required": { "name": "read", "argumentIncludes": ["capsule.md"] },
+            "before": {
+              "name": "exec_command",
+              "argumentIncludes": [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged"
+              ]
+            }
+          },
+          {
+            "required": {
+              "name": "exec_command",
+              "argumentIncludes": ["git commit", "--allow-empty"]
+            },
+            "before": {
+              "name": "exec_command",
+              "argumentIncludes": ["gh pr create", "--draft"]
+            }
+          }
+        ],
+        "nextToolMustBe": [
+          {
+            "after": { "name": "read", "argumentIncludes": ["capsule.md"] },
+            "next": {
+              "name": "exec_command",
+              "argumentIncludes": [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged"
+              ]
+            }
+          }
+        ]
+      },
+      "runs": [
+        {
+          "id": "workon-order-happy",
+          "model": "golden/example",
+          "assistantText": "I read the capsule, acknowledged it, created the empty commit, and opened the draft PR.",
+          "messages": [
+            { "role": "user", "text": "Session capsule path: /tmp/capsule.md" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "/tmp/capsule.md" }
+              }
+            },
+            { "role": "toolResult", "text": "capsule" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": {
+                  "cmd": "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged"
+                }
+              }
+            },
+            { "role": "toolResult", "text": "capsule-acknowledged" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "git commit --allow-empty -m bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "empty bootstrap commit" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "gh pr create --draft --title bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "draft PR" }
+          ],
+          "expectedIssueCodes": ["memory_search"]
+        },
+        {
+          "id": "ack-before-capsule-read",
+          "model": "golden/example",
+          "assistantText": "I acknowledged before reading.",
+          "messages": [
+            { "role": "user", "text": "Session capsule path: /tmp/capsule.md" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": {
+                  "cmd": "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged"
+                }
+              }
+            },
+            { "role": "toolResult", "text": "capsule-acknowledged" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "/tmp/capsule.md" }
+              }
+            },
+            { "role": "toolResult", "text": "capsule" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "git commit --allow-empty -m bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "empty bootstrap commit" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "gh pr create --draft --title bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "draft PR" }
+          ],
+          "expectedIssueCodes": ["memory_search"],
+          "expectedPackageIssueCodes": [
+            "package_run_tool_order_violation",
+            "package_run_required_tool_missing_before_anchor",
+            "package_run_next_tool_mismatch"
+          ]
+        },
+        {
+          "id": "edit-before-draft-pr",
+          "model": "golden/example",
+          "assistantText": "I edited before opening the draft PR.",
+          "messages": [
+            { "role": "user", "text": "Session capsule path: /tmp/capsule.md" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "/tmp/capsule.md" }
+              }
+            },
+            { "role": "toolResult", "text": "capsule" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": {
+                  "cmd": "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged"
+                }
+              }
+            },
+            { "role": "toolResult", "text": "capsule-acknowledged" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "git commit --allow-empty -m bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "empty bootstrap commit" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "apply_patch",
+                "arguments": { "path": "src/index.ts" }
+              }
+            },
+            { "role": "toolResult", "text": "patched" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "gh pr create --draft --title bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "draft PR" }
+          ],
+          "expectedIssueCodes": ["memory_search"],
+          "expectedPackageIssueCodes": [
+            "package_run_forbidden_tool_before_anchor"
+          ]
+        },
+        {
+          "id": "draft-pr-before-empty-commit",
+          "model": "golden/example",
+          "assistantText": "I opened the draft PR before the empty commit.",
+          "messages": [
+            { "role": "user", "text": "Session capsule path: /tmp/capsule.md" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "/tmp/capsule.md" }
+              }
+            },
+            { "role": "toolResult", "text": "capsule" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": {
+                  "cmd": "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged"
+                }
+              }
+            },
+            { "role": "toolResult", "text": "capsule-acknowledged" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "gh pr create --draft --title bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "draft PR" },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "git commit --allow-empty -m bootstrap" }
+              }
+            },
+            { "role": "toolResult", "text": "empty bootstrap commit" }
+          ],
+          "expectedIssueCodes": ["memory_search"],
+          "expectedPackageIssueCodes": [
+            "package_run_tool_order_violation",
+            "package_run_required_tool_missing_before_anchor"
+          ]
+        }
+      ]
+    }
+  ]
+}

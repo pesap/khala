@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  benchmarkMessagesToKhalaTranscript,
+  estimateJsonTokens,
+  estimateKhalaBudget,
+  estimateTextTokens,
   evaluateHarnessBenchmark,
   formatHarnessBenchmarkMarkdown,
   parseHarnessBenchmarkSuite,
@@ -10,10 +15,18 @@ import {
   type HarnessBenchmarkSuite,
 } from "../../khala/harness.ts";
 import {
+  evaluateHarnessBenchmarkCiFailures,
+  parseHarnessBenchmarkCliArgs,
+} from "../../scripts/harness-benchmark.ts";
+import {
   parseHarnessPiDriftArgs,
   parseHarnessPiDriftModelFile,
   parseHarnessPiDriftModelTargets,
 } from "../../scripts/harness-pi-drift.ts";
+import {
+  formatGeneratedHarnessContracts,
+  generateHarnessContracts,
+} from "../../scripts/generate-harness-contracts.ts";
 
 test("harness benchmark ranks cleaner candidate transcripts ahead of divergent runs", () => {
   const suite: HarnessBenchmarkSuite = {
@@ -75,6 +88,7 @@ test("harness benchmark ranks cleaner candidate transcripts ahead of divergent r
   assert.equal(report.results[0].runId, "loaded-skill");
   assert.deepEqual(report.results[0].issueCodes, []);
   assert.equal(report.results[0].complianceScore, 100);
+  assert.ok(report.results[0].transcriptEventCount > 0);
 
   const missingSkill = report.results.find(
     (result) => result.runId === "missing-skill",
@@ -125,6 +139,46 @@ test("harness benchmark reports expected issue distance and Markdown output", ()
   assert.match(markdown, /# Khala harness benchmark/);
   assert.match(markdown, /model-b/);
   assert.match(markdown, /tool_efficiency/);
+  assert.match(markdown, /Events/);
+});
+
+test("harness benchmark accepts transcript fixtures without message arrays", () => {
+  const transcript = benchmarkMessagesToKhalaTranscript({
+    assistantText: "I inspected README.md.",
+    messages: [
+      { role: "user", text: "Inspect README.md." },
+      {
+        role: "assistant",
+        toolCall: { arguments: { path: "README.md" }, name: "read" },
+      },
+      { role: "toolResult", text: "README contents" },
+    ],
+  });
+  const suite = parseHarnessBenchmarkSuite({
+    cases: [
+      {
+        name: "Transcript-only run",
+        runs: [
+          {
+            id: "transcript-only",
+            model: "model-transcript",
+            transcript,
+          },
+        ],
+        userText: "Inspect README.md.",
+      },
+    ],
+  });
+
+  const report = evaluateHarnessBenchmark(suite);
+
+  assert.equal(report.runCount, 1);
+  assert.equal(report.results[0].runId, "transcript-only");
+  assert.equal(
+    report.results[0].transcriptEventCount,
+    transcript.events.length,
+  );
+  assert.deepEqual(report.results[0].metrics.toolCallCount, 1);
 });
 
 test("harness preflight reports package, expected-code, and recovery key problems", () => {
@@ -329,6 +383,353 @@ test("harness benchmark checks handoff package artifacts and acknowledgement beh
   assert.ok(
     earlyEdit.packageIssues.some(
       (issue) => issue.code === "package_run_used_forbidden_tool_call",
+    ),
+  );
+});
+
+test("harness benchmark enforces temporal package assertions", () => {
+  const report = evaluateHarnessBenchmark({
+    cases: [
+      {
+        harnessLimits: { substantialToolCallThreshold: 99 },
+        name: "Temporal workon contract",
+        packageContract: {
+          forbiddenBefore: [
+            {
+              before: {
+                argumentIncludes: ["gh pr create", "--draft"],
+                name: "exec_command",
+              },
+              forbidden: { name: "apply_patch" },
+            },
+          ],
+          nextToolMustBe: [
+            {
+              after: { argumentIncludes: ["capsule.md"], name: "read" },
+              next: {
+                argumentIncludes: [
+                  "workon-handoff-ack.sh",
+                  "capsule-acknowledged",
+                ],
+                name: "exec_command",
+              },
+            },
+          ],
+          orderedToolCalls: [
+            { argumentIncludes: ["capsule.md"], name: "read" },
+            {
+              argumentIncludes: [
+                "workon-handoff-ack.sh",
+                "capsule-acknowledged",
+              ],
+              name: "exec_command",
+            },
+            {
+              argumentIncludes: ["git commit", "--allow-empty"],
+              name: "exec_command",
+            },
+            {
+              argumentIncludes: ["gh pr create", "--draft"],
+              name: "exec_command",
+            },
+          ],
+          requiredBefore: [
+            {
+              before: {
+                argumentIncludes: [
+                  "workon-handoff-ack.sh",
+                  "capsule-acknowledged",
+                ],
+                name: "exec_command",
+              },
+              required: { argumentIncludes: ["capsule.md"], name: "read" },
+            },
+            {
+              before: {
+                argumentIncludes: ["gh pr create", "--draft"],
+                name: "exec_command",
+              },
+              required: {
+                argumentIncludes: ["git commit", "--allow-empty"],
+                name: "exec_command",
+              },
+            },
+          ],
+        },
+        runs: [
+          {
+            assistantText: "I acknowledged before reading the capsule.",
+            id: "ack-before-read",
+            messages: [
+              { role: "user", text: "Session capsule path: /tmp/capsule.md" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "capsule-acknowledged" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "/tmp/capsule.md" },
+                  name: "read",
+                },
+              },
+              { role: "toolResult", text: "capsule" },
+            ],
+          },
+          {
+            assistantText: "I opened the draft PR before the empty commit.",
+            id: "draft-before-commit",
+            messages: [
+              { role: "user", text: "Session capsule path: /tmp/capsule.md" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "/tmp/capsule.md" },
+                  name: "read",
+                },
+              },
+              { role: "toolResult", text: "capsule" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "capsule-acknowledged" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { cmd: "gh pr create --draft --title bootstrap" },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "draft PR" },
+            ],
+          },
+          {
+            assistantText: "I edited before opening the draft PR.",
+            id: "edit-before-pr",
+            messages: [
+              { role: "user", text: "Session capsule path: /tmp/capsule.md" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "/tmp/capsule.md" },
+                  name: "read",
+                },
+              },
+              { role: "toolResult", text: "capsule" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "bash scripts/workon-handoff-ack.sh --status capsule-acknowledged",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "capsule-acknowledged" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "git commit --allow-empty -m bootstrap",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "empty bootstrap commit" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/index.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { cmd: "gh pr create --draft --title bootstrap" },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "draft PR" },
+            ],
+          },
+        ],
+        userText: "Session capsule path: /tmp/capsule.md",
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    report.results
+      .find((result) => result.runId === "ack-before-read")
+      ?.packageIssues.map((issue) => issue.code),
+    [
+      "package_run_tool_order_violation",
+      "package_run_required_tool_missing_before_anchor",
+      "package_run_next_tool_mismatch",
+    ],
+  );
+  assert.deepEqual(
+    report.results
+      .find((result) => result.runId === "draft-before-commit")
+      ?.packageIssues.map((issue) => issue.code),
+    [
+      "package_run_tool_order_violation",
+      "package_run_required_tool_missing_before_anchor",
+    ],
+  );
+  assert.deepEqual(
+    report.results
+      .find((result) => result.runId === "edit-before-pr")
+      ?.packageIssues.map((issue) => issue.code),
+    ["package_run_forbidden_tool_before_anchor"],
+  );
+  assert.match(
+    formatHarnessBenchmarkMarkdown(report),
+    /package_run_next_tool_mismatch/,
+  );
+});
+
+test("harness budget estimates are deterministic and advisory", () => {
+  assert.equal(estimateTextTokens("abcd"), 1);
+  assert.equal(estimateTextTokens("abcde"), 2);
+  assert.equal(
+    estimateJsonTokens({ b: 2, a: 1 }),
+    estimateJsonTokens({ a: 1, b: 2 }),
+  );
+
+  const budget = estimateKhalaBudget({
+    bootstrapContext: "bootstrap",
+    runtimeRules: "memory before mutation",
+    warningThresholdTokens: 1,
+    workflowPrompt: "Update README.md",
+  });
+
+  assert.ok(budget.totalTokens > 1);
+  assert.deepEqual(
+    budget.warnings.map((warning) => warning.code),
+    ["budget_total_exceeds_threshold"],
+  );
+
+  const report = evaluateHarnessBenchmark(
+    {
+      cases: [
+        {
+          budgetWarningThreshold: 1,
+          name: "Budget warning case",
+          runs: [
+            {
+              assistantText: "Done.",
+              messages: [{ role: "user", text: "Summarize." }],
+            },
+          ],
+          userText: "Summarize.",
+        },
+      ],
+    },
+    { budgetWarningThreshold: 1 },
+  );
+
+  assert.ok(report.results[0].budget.totalTokens > 0);
+  assert.match(formatHarnessBenchmarkMarkdown(report), /Budget Warnings/);
+});
+
+test("harness benchmark CI gates pass and fail expected threshold cases", () => {
+  const args = parseHarnessBenchmarkCliArgs([
+    "--fail-on-blocking-regression",
+    "--must-pass-tag",
+    "golden",
+    "--max-divergence",
+    "0",
+    "suite.json",
+  ]);
+  const clean = evaluateHarnessBenchmark({
+    cases: [
+      {
+        name: "Clean golden",
+        runs: [
+          {
+            assistantText: "Done.",
+            messages: [{ role: "user", text: "Say done." }],
+          },
+        ],
+        tags: ["golden"],
+        userText: "Say done.",
+      },
+    ],
+  });
+  assert.deepEqual(
+    evaluateHarnessBenchmarkCiFailures({ args, report: clean }),
+    [],
+  );
+
+  const regressed = evaluateHarnessBenchmark({
+    cases: [
+      {
+        lowConfidenceThreshold: 0.7,
+        name: "Regressed golden",
+        runs: [
+          {
+            assistantText: "Probably done.\nConfidence: 0.51",
+            messages: [{ role: "user", text: "Answer uncertainly." }],
+          },
+        ],
+        tags: ["golden"],
+        userText: "Answer uncertainly.",
+      },
+    ],
+  });
+  const failures = evaluateHarnessBenchmarkCiFailures({
+    args,
+    baseline: clean,
+    report: regressed,
+  });
+
+  assert.ok(failures.some((failure) => failure.code === "blocking_regression"));
+  assert.ok(
+    failures.some((failure) => failure.code === "must_pass_tag_failed"),
+  );
+  assert.ok(
+    failures.some((failure) => failure.code === "max_divergence_exceeded"),
+  );
+});
+
+test("generated workon package contracts are stable", async () => {
+  const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const generated = await generateHarnessContracts({ repoRoot });
+  const checkedIn = await readFile(
+    new URL(
+      "../../benchmarks/package-contracts.generated.json",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.equal(formatGeneratedHarnessContracts(generated), checkedIn);
+  const workon = generated.cases.find(
+    (benchmarkCase) => benchmarkCase.id === "generated-workon-handoff-contract",
+  );
+  assert.ok(workon?.packageContract?.sourceHash);
+  assert.ok((workon.packageContract.orderedToolCalls?.length ?? 0) > 0);
+  assert.ok((workon.packageContract.forbiddenBefore?.length ?? 0) > 0);
+  assert.ok(
+    workon.packageContract.requiredToolCalls?.some(
+      (check) =>
+        check.name === "exec_command" &&
+        check.argumentIncludes?.includes("gh pr create"),
     ),
   );
 });

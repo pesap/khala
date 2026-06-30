@@ -1,24 +1,53 @@
 #!/usr/bin/env node
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   evaluateHarnessBenchmark,
   formatHarnessBenchmarkMarkdown,
   parseHarnessBenchmarkSuite,
   preflightHarnessBenchmarkSuite,
+  type HarnessBenchmarkReport,
   type HarnessBenchmarkPreflightReport,
   type HarnessBenchmarkSuite,
 } from "../khala/harness-benchmark.ts";
+import { stableKhalaJsonStringify } from "../khala/harness-events.ts";
 
-interface CliArgs {
+export interface HarnessBenchmarkMaxDivergenceTag {
+  tag: string;
+  maxDivergence: number;
+}
+
+export interface CliArgs {
+  baselinePath?: string;
   cases: string[];
   failOnDivergence: boolean;
+  failOnBlockingRegression: boolean;
   json: boolean;
+  maxDivergence?: number;
+  maxDivergenceTags: HarnessBenchmarkMaxDivergenceTag[];
   models: string[];
+  mustPassTags: string[];
   outputPath?: string;
   preflight: boolean;
   suitePath: string;
+  writeBaselinePath?: string;
+}
+
+export interface HarnessBenchmarkCiFailure {
+  code:
+    | "blocking_regression"
+    | "must_pass_tag_failed"
+    | "max_divergence_exceeded";
+  message: string;
+  caseName?: string;
+  runId?: string;
+  model?: string;
+  tag?: string;
+  current?: number;
+  baseline?: number;
+  max?: number;
 }
 
 class CliExit extends Error {
@@ -41,6 +70,14 @@ function usage(): string {
     "  --model <id[,id...]>      Score only selected run model(s).",
     "  --preflight              Validate suite shape and package contracts only.",
     "  --fail-on-divergence     Exit non-zero when any scored run diverges.",
+    "  --baseline <path>        Compare against a saved JSON benchmark report.",
+    "  --write-baseline <path>  Write the current JSON benchmark report.",
+    "  --fail-on-blocking-regression",
+    "                           Exit non-zero on a new blocking issue.",
+    "  --must-pass-tag <tag>    Require tagged cases to match expected issues.",
+    "  --max-divergence <n>     Exit non-zero when any run exceeds divergence n.",
+    "  --max-divergence-tag <tag=n>",
+    "                           Apply a divergence ceiling to a case tag.",
     "  --out <path>             Write the report to a file as well as stdout.",
     "  --json                   Emit machine-readable JSON.",
     "  -h, --help               Show help.",
@@ -54,12 +91,39 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
-function parseArgs(args: string[]): CliArgs {
+function parseNumber(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} requires a finite number`);
+  }
+  return parsed;
+}
+
+function parseMaxDivergenceTag(
+  value: string,
+): HarnessBenchmarkMaxDivergenceTag {
+  const separator = value.lastIndexOf("=");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error("--max-divergence-tag requires <tag=n>");
+  }
+  return {
+    maxDivergence: parseNumber(
+      value.slice(separator + 1),
+      "--max-divergence-tag",
+    ),
+    tag: value.slice(0, separator),
+  };
+}
+
+export function parseHarnessBenchmarkCliArgs(args: string[]): CliArgs {
   const parsed: Omit<CliArgs, "suitePath"> = {
     cases: [],
     failOnDivergence: false,
+    failOnBlockingRegression: false,
     json: false,
+    maxDivergenceTags: [],
     models: [],
+    mustPassTags: [],
     preflight: false,
   };
   const paths: string[] = [];
@@ -76,6 +140,37 @@ function parseArgs(args: string[]): CliArgs {
     }
     if (arg === "--fail-on-divergence") {
       parsed.failOnDivergence = true;
+      continue;
+    }
+    if (arg === "--fail-on-blocking-regression") {
+      parsed.failOnBlockingRegression = true;
+      continue;
+    }
+    if (arg === "--baseline") {
+      const baselinePath = args[++index];
+      if (!baselinePath) throw new Error("--baseline requires a path");
+      parsed.baselinePath = baselinePath;
+      continue;
+    }
+    if (arg === "--write-baseline") {
+      const baselinePath = args[++index];
+      if (!baselinePath) throw new Error("--write-baseline requires a path");
+      parsed.writeBaselinePath = baselinePath;
+      continue;
+    }
+    if (arg === "--must-pass-tag") {
+      parsed.mustPassTags.push(...parseList(args[++index] ?? ""));
+      continue;
+    }
+    if (arg === "--max-divergence") {
+      parsed.maxDivergence = parseNumber(
+        args[++index] ?? "",
+        "--max-divergence",
+      );
+      continue;
+    }
+    if (arg === "--max-divergence-tag") {
+      parsed.maxDivergenceTags.push(parseMaxDivergenceTag(args[++index] ?? ""));
       continue;
     }
     if (arg === "--case") {
@@ -103,6 +198,142 @@ function parseArgs(args: string[]): CliArgs {
   }
 
   return { ...parsed, suitePath: paths[0] };
+}
+
+function resultKey(result: {
+  caseId?: string;
+  caseName: string;
+  runId: string;
+  model: string;
+}): string {
+  return [result.caseId ?? result.caseName, result.runId, result.model].join(
+    "\0",
+  );
+}
+
+function parseBenchmarkReport(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkReport {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !Array.isArray((value as HarnessBenchmarkReport).results)
+  ) {
+    throw new Error(`${label} must be a harness benchmark JSON report`);
+  }
+  return value as HarnessBenchmarkReport;
+}
+
+function issueExpectationFailed(
+  result: HarnessBenchmarkReport["results"][number],
+): boolean {
+  return (
+    result.expectedIssueDistance > 0 || result.expectedPackageIssueDistance > 0
+  );
+}
+
+function hasUnexpectedBlockingIssue(
+  result: HarnessBenchmarkReport["results"][number],
+): boolean {
+  return result.issues.some(
+    (issue) => issue.block && result.unexpectedIssueCodes.includes(issue.code),
+  );
+}
+
+export function evaluateHarnessBenchmarkCiFailures(params: {
+  report: HarnessBenchmarkReport;
+  args: Pick<
+    CliArgs,
+    | "failOnBlockingRegression"
+    | "maxDivergence"
+    | "maxDivergenceTags"
+    | "mustPassTags"
+  >;
+  baseline?: HarnessBenchmarkReport;
+}): HarnessBenchmarkCiFailure[] {
+  const failures: HarnessBenchmarkCiFailure[] = [];
+  const baselineResults = new Map(
+    (params.baseline?.results ?? []).map((result) => [
+      resultKey(result),
+      result,
+    ]),
+  );
+
+  if (params.args.failOnBlockingRegression) {
+    for (const result of params.report.results) {
+      const baseline = baselineResults.get(resultKey(result));
+      const regressed = baseline
+        ? result.blockingIssueCount > baseline.blockingIssueCount
+        : hasUnexpectedBlockingIssue(result);
+      if (!regressed) continue;
+      failures.push({
+        baseline: baseline?.blockingIssueCount ?? 0,
+        caseName: result.caseName,
+        code: "blocking_regression",
+        current: result.blockingIssueCount,
+        message: `blocking issue regression in ${result.caseName}/${result.runId}: ${baseline?.blockingIssueCount ?? 0} -> ${result.blockingIssueCount}`,
+        model: result.model,
+        runId: result.runId,
+      });
+    }
+  }
+
+  for (const tag of params.args.mustPassTags) {
+    for (const result of params.report.results) {
+      if (!result.tags.includes(tag)) continue;
+      if (
+        !issueExpectationFailed(result) &&
+        !hasUnexpectedBlockingIssue(result)
+      ) {
+        continue;
+      }
+      failures.push({
+        caseName: result.caseName,
+        code: "must_pass_tag_failed",
+        current:
+          result.expectedIssueDistance + result.expectedPackageIssueDistance,
+        message: `must-pass tag '${tag}' failed for ${result.caseName}/${result.runId}`,
+        model: result.model,
+        runId: result.runId,
+        tag,
+      });
+    }
+  }
+
+  if (params.args.maxDivergence !== undefined) {
+    for (const result of params.report.results) {
+      if (result.divergenceScore <= params.args.maxDivergence) continue;
+      failures.push({
+        caseName: result.caseName,
+        code: "max_divergence_exceeded",
+        current: result.divergenceScore,
+        max: params.args.maxDivergence,
+        message: `divergence ${result.divergenceScore} exceeds ${params.args.maxDivergence} for ${result.caseName}/${result.runId}`,
+        model: result.model,
+        runId: result.runId,
+      });
+    }
+  }
+
+  for (const threshold of params.args.maxDivergenceTags) {
+    for (const result of params.report.results) {
+      if (!result.tags.includes(threshold.tag)) continue;
+      if (result.divergenceScore <= threshold.maxDivergence) continue;
+      failures.push({
+        caseName: result.caseName,
+        code: "max_divergence_exceeded",
+        current: result.divergenceScore,
+        max: threshold.maxDivergence,
+        message: `divergence ${result.divergenceScore} exceeds ${threshold.maxDivergence} for tag '${threshold.tag}' in ${result.caseName}/${result.runId}`,
+        model: result.model,
+        runId: result.runId,
+        tag: threshold.tag,
+      });
+    }
+  }
+
+  return failures;
 }
 
 function filterSuite(
@@ -190,7 +421,7 @@ async function writeOutput(outputPath: string, output: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseHarnessBenchmarkCliArgs(process.argv.slice(2));
   const payload = JSON.parse(await readFile(args.suitePath, "utf8")) as unknown;
   const suite = filterSuite(parseHarnessBenchmarkSuite(payload), args);
   const preflightReport = preflightHarnessBenchmarkSuite(suite);
@@ -212,10 +443,28 @@ async function main(): Promise<void> {
   }
 
   const report = evaluateHarnessBenchmark(suite);
+  const baseline =
+    args.baselinePath === undefined
+      ? undefined
+      : parseBenchmarkReport(
+          JSON.parse(await readFile(args.baselinePath, "utf8")) as unknown,
+          args.baselinePath,
+        );
+  const ciFailures = evaluateHarnessBenchmarkCiFailures({
+    args,
+    baseline,
+    report,
+  });
   const output = args.json
     ? `${JSON.stringify(report, null, 2)}\n`
     : formatHarnessBenchmarkMarkdown(report);
   if (args.outputPath) await writeOutput(args.outputPath, output);
+  if (args.writeBaselinePath) {
+    await writeOutput(
+      args.writeBaselinePath,
+      `${stableKhalaJsonStringify(report, 2)}\n`,
+    );
+  }
   process.stdout.write(output);
 
   if (
@@ -224,14 +473,26 @@ async function main(): Promise<void> {
   ) {
     process.exitCode = 2;
   }
+  if (ciFailures.length > 0) {
+    process.stderr.write(
+      ciFailures.map((failure) => failure.message).join("\n"),
+    );
+    process.stderr.write("\n");
+    process.exitCode = 2;
+  }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  if (error instanceof CliExit && error.exitCode === 0) {
-    process.stdout.write(`${message}\n`);
-    return;
-  }
-  process.stderr.write(`${message}\n`);
-  process.exitCode = error instanceof CliExit ? error.exitCode : 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof CliExit && error.exitCode === 0) {
+      process.stdout.write(`${message}\n`);
+      return;
+    }
+    process.stderr.write(`${message}\n`);
+    process.exitCode = error instanceof CliExit ? error.exitCode : 1;
+  });
+}
