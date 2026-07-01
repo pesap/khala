@@ -53,7 +53,10 @@
           },
           {
             "name": "exec_command",
-            "argumentIncludes": ["workon-handoff-ack.sh", "capsule-acknowledged"]
+            "argumentIncludes": [
+              "workon-handoff-ack.sh",
+              "capsule-acknowledged"
+            ]
           },
           {
             "name": "exec_command",
@@ -296,14 +299,57 @@
       "description": "A TypeScript settings change should search task memory, load the TypeScript skill, and back mutation claims with mutation evidence.",
       "tags": ["memory-routing", "skill-routing", "evidence-routing"],
       "userText": "Update the TypeScript compile settings.",
+      "expectedBestRunId": "typescript-focused-route",
+      "expectedBestMinDivergenceMargin": 14,
       "harnessLimits": { "substantialToolCallThreshold": 99 },
+      "packageContract": {
+        "allowedMutationToolCalls": [
+          {
+            "name": "apply_patch",
+            "argumentIncludes": ["tsconfig.typecheck.json"]
+          }
+        ],
+        "requiredAssistantIncludes": [
+          "tsconfig.typecheck.json",
+          "npm run typecheck"
+        ],
+        "requiredEvidenceAfter": [
+          {
+            "evidence": {
+              "name": "exec_command",
+              "argumentIncludes": ["npm run typecheck"],
+              "resultIncludes": ["completed successfully"]
+            },
+            "after": {
+              "name": "apply_patch",
+              "argumentIncludes": ["tsconfig.typecheck.json"]
+            }
+          }
+        ],
+        "requiredEvidenceBefore": [
+          {
+            "evidence": {
+              "name": "read",
+              "argumentIncludes": ["tsconfig.typecheck.json"],
+              "resultIncludes": ["compilerOptions", "include"]
+            },
+            "before": {
+              "name": "apply_patch",
+              "argumentIncludes": ["tsconfig.typecheck.json"]
+            }
+          }
+        ]
+      },
       "runs": [
         {
           "id": "typescript-broad-search-wrong-skill",
           "model": "candidate/example",
           "assistantText": "I updated the TypeScript settings.",
           "messages": [
-            { "role": "user", "text": "Update the TypeScript compile settings." },
+            {
+              "role": "user",
+              "text": "Update the TypeScript compile settings."
+            },
             {
               "role": "assistant",
               "toolCall": {
@@ -325,9 +371,227 @@
         {
           "id": "typescript-focused-route",
           "model": "candidate/example",
-          "assistantText": "I updated the TypeScript compile settings and verified the targeted change.",
+          "assistantText": "I updated tsconfig.typecheck.json and verified the targeted TypeScript compile settings change with npm run typecheck.",
           "messages": [
-            { "role": "user", "text": "Update the TypeScript compile settings." },
+            {
+              "role": "user",
+              "text": "Update the TypeScript compile settings."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "khala_search_memory",
+                "arguments": {
+                  "query": "TypeScript compile settings tsconfig typecheck skill routing"
+                }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "Memory: TypeScript compile settings require exact TypeScript skill instructions and typecheck validation."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "skills/typescript/SKILL.md" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "TypeScript skill loaded with tsconfig and typecheck guidance."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "{ \"compilerOptions\": { \"noEmit\": true }, \"include\": [\"extensions/**/*.ts\"] }"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "apply_patch",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "patched tsconfig.typecheck.json"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "npm run typecheck" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "npm run typecheck completed successfully"
+            }
+          ]
+        },
+        {
+          "id": "typescript-drive-by-edit",
+          "model": "candidate/example",
+          "assistantText": "I updated tsconfig.typecheck.json and README.md, then verified the TypeScript compile settings change with npm run typecheck.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Update the TypeScript compile settings."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "khala_search_memory",
+                "arguments": {
+                  "query": "TypeScript compile settings tsconfig typecheck skill routing"
+                }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "Memory: TypeScript compile settings require exact TypeScript skill instructions and typecheck validation."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "skills/typescript/SKILL.md" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "TypeScript skill loaded with tsconfig and typecheck guidance."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "{ \"compilerOptions\": { \"noEmit\": true }, \"include\": [\"extensions/**/*.ts\"] }"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "apply_patch",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "patched tsconfig.typecheck.json"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "apply_patch",
+                "arguments": { "path": "README.md" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "patched README.md"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "npm run typecheck" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "npm run typecheck completed successfully"
+            }
+          ]
+        },
+        {
+          "id": "typescript-opaque-summary",
+          "model": "candidate/example",
+          "assistantText": "Done.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Update the TypeScript compile settings."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "khala_search_memory",
+                "arguments": {
+                  "query": "TypeScript compile settings tsconfig typecheck skill routing"
+                }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "Memory: TypeScript compile settings require exact TypeScript skill instructions and typecheck validation."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "skills/typescript/SKILL.md" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "TypeScript skill loaded with tsconfig and typecheck guidance."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "{ \"compilerOptions\": { \"noEmit\": true }, \"include\": [\"extensions/**/*.ts\"] }"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "apply_patch",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "patched tsconfig.typecheck.json"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "exec_command",
+                "arguments": { "cmd": "npm run typecheck" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "npm run typecheck completed successfully"
+            }
+          ]
+        },
+        {
+          "id": "typescript-edit-before-evidence",
+          "model": "candidate/example",
+          "assistantText": "I updated the TypeScript compile settings before checking the existing tsconfig.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Update the TypeScript compile settings."
+            },
             {
               "role": "assistant",
               "toolCall": {
@@ -366,6 +630,63 @@
             {
               "role": "assistant",
               "toolCall": {
+                "name": "read",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "{ \"compilerOptions\": { \"noEmit\": true }, \"include\": [\"extensions/**/*.ts\"] }"
+            }
+          ]
+        },
+        {
+          "id": "typescript-validation-before-edit",
+          "model": "candidate/example",
+          "assistantText": "I checked typecheck first, then updated the TypeScript compile settings.",
+          "messages": [
+            {
+              "role": "user",
+              "text": "Update the TypeScript compile settings."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "khala_search_memory",
+                "arguments": {
+                  "query": "TypeScript compile settings tsconfig typecheck skill routing"
+                }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "Memory: TypeScript compile settings require exact TypeScript skill instructions and typecheck validation."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "skills/typescript/SKILL.md" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "TypeScript skill loaded with tsconfig and typecheck guidance."
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "read",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "{ \"compilerOptions\": { \"noEmit\": true }, \"include\": [\"extensions/**/*.ts\"] }"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
                 "name": "exec_command",
                 "arguments": { "cmd": "npm run typecheck" }
               }
@@ -373,6 +694,17 @@
             {
               "role": "toolResult",
               "text": "npm run typecheck completed successfully"
+            },
+            {
+              "role": "assistant",
+              "toolCall": {
+                "name": "apply_patch",
+                "arguments": { "path": "tsconfig.typecheck.json" }
+              }
+            },
+            {
+              "role": "toolResult",
+              "text": "patched tsconfig.typecheck.json"
             }
           ]
         }
@@ -401,7 +733,10 @@
                 "arguments": { "path": "README.md" }
               }
             },
-            { "role": "toolResult", "text": "README runtime harness documentation" },
+            {
+              "role": "toolResult",
+              "text": "README runtime harness documentation"
+            },
             {
               "role": "assistant",
               "toolCall": {
@@ -409,7 +744,10 @@
                 "arguments": { "path": "README.md" }
               }
             },
-            { "role": "toolResult", "text": "README runtime harness documentation" }
+            {
+              "role": "toolResult",
+              "text": "README runtime harness documentation"
+            }
           ]
         },
         {
@@ -428,7 +766,10 @@
                 "arguments": { "path": "README.md" }
               }
             },
-            { "role": "toolResult", "text": "README runtime harness documentation" }
+            {
+              "role": "toolResult",
+              "text": "README runtime harness documentation"
+            }
           ]
         }
       ]

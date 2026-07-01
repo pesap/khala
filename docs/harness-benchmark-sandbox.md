@@ -170,6 +170,7 @@ Suites are JSON files with benchmark cases and candidate runs:
     {
       "name": "Review task routes through the review skill",
       "userText": "Review this change for regressions.",
+      "expectedBestRunId": "candidate-run",
       "harnessLimits": { "substantialToolCallThreshold": 99 },
       "packageContract": {
         "name": "workon worker bootstrap",
@@ -184,6 +185,10 @@ Suites are JSON files with benchmark cases and candidate runs:
               "create/reuse the draft PR immediately with an empty bootstrap commit"
             ]
           }
+        ],
+        "requiredAssistantIncludes": [
+          "tsconfig.typecheck.json",
+          "npm run typecheck"
         ],
         "requiredToolCalls": [
           { "name": "read", "argumentIncludes": ["capsule.md"] },
@@ -204,6 +209,12 @@ Suites are JSON files with benchmark cases and candidate runs:
           }
         ],
         "forbiddenToolCalls": [{ "name": "apply_patch" }],
+        "allowedMutationToolCalls": [
+          {
+            "name": "apply_patch",
+            "argumentIncludes": ["tsconfig.typecheck.json"]
+          }
+        ],
         "orderedToolCalls": [
           { "name": "read", "argumentIncludes": ["capsule.md"] },
           {
@@ -240,6 +251,32 @@ Suites are JSON files with benchmark cases and candidate runs:
                 "workon-handoff-ack.sh",
                 "capsule-acknowledged"
               ]
+            }
+          }
+        ],
+        "requiredEvidenceBefore": [
+          {
+            "evidence": {
+              "name": "read",
+              "argumentIncludes": ["tsconfig.typecheck.json"],
+              "resultIncludes": ["compilerOptions", "include"]
+            },
+            "before": {
+              "name": "apply_patch",
+              "argumentIncludes": ["tsconfig.typecheck.json"]
+            }
+          }
+        ],
+        "requiredEvidenceAfter": [
+          {
+            "evidence": {
+              "name": "exec_command",
+              "argumentIncludes": ["npm run typecheck"],
+              "resultIncludes": ["completed successfully"]
+            },
+            "after": {
+              "name": "apply_patch",
+              "argumentIncludes": ["tsconfig.typecheck.json"]
             }
           }
         ],
@@ -294,6 +331,13 @@ includes:
 - `packageDivergenceScore`: weighted distance from the package contract.
 - `divergenceScore`: weighted distance from an ideal zero-issue run.
 - `complianceScore`: `100 - divergenceScore`, floored at zero.
+- `bestRunRank` and `caseBestRunId`: the run's rank and winner within its
+  benchmark case.
+- `expectedBestRunMatched`: whether optional `expectedBestRunId` matched the
+  top-ranked run for the case.
+- `bestRunDivergenceMargin` and `expectedBestMarginMatched`: whether the
+  top-ranked run beat the second-ranked run by the optional minimum divergence
+  margin.
 - `expectedIssueDistance`: distance from optional `expectedIssueCodes`, useful
   when fixtures intentionally exercise a known violation.
 
@@ -301,7 +345,23 @@ Lower divergence and higher compliance indicate the model stayed closer to the
 Khala harness and package instructions. The seed suite covers workon handoff
 capsule acknowledgement plus empty-commit draft PR bootstrap, skill routing,
 focused memory search, evidence routing, validation claims, and duplicate
-evidence collection.
+evidence collection. The TypeScript mutation case also includes a drive-by edit
+candidate so the expected winner must stay scoped to the declared tsconfig
+mutation.
+
+## Expected Winners
+
+Set `expectedBestRunId` on a benchmark case when the suite author knows which
+candidate is the intended best solution. The evaluator ranks runs within the
+case using compliance score, divergence score, then deterministic tie-breakers.
+Reports include an `Expected Best Runs` table whenever a case declares an
+expected winner. A mismatch means either the harness scoring is too weak to
+select the intended solution, or the fixture's declared winner needs to be
+updated.
+
+Set `expectedBestMinDivergenceMargin` when the intended winner must beat the
+next candidate by score, not just by deterministic tie-breaker. A margin of `0`
+means the harness did not find a scored difference between the top two runs.
 
 ## Transcript Replay
 
@@ -347,11 +407,43 @@ without a model, network call, or Pi process.
 
 ## Temporal Contracts
 
+Package contracts can assert text inclusion either across the whole transcript
+or only in assistant output:
+
+- `requiredTranscriptIncludes` and `forbiddenTranscriptIncludes`: scan the whole
+  normalized transcript, including user input, tool calls, and tool results.
+- `requiredAssistantIncludes` and `forbiddenAssistantIncludes`: scan only
+  assistant output. Use these when the candidate must report scope, validation,
+  risks, or handoff content rather than merely encountering that text in
+  evidence.
+
+Assistant-only text failures use package issue codes:
+
+- `package_run_missing_required_assistant_text`
+- `package_run_contains_forbidden_assistant_text`
+
+Package contracts can also limit mutation scope:
+
+- `allowedMutationToolCalls`: when present, every mutation-capable tool call
+  detected by the runtime tool registry must match one listed tool-call check.
+  Read/search/evidence calls remain unrestricted. An empty list means no
+  mutations are allowed.
+
+Scoped mutation failures use this package issue code:
+
+- `package_run_unscoped_mutation_tool_call`
+
 Package contracts can assert tool order using transcript event sequence numbers:
 
 - `orderedToolCalls`: required calls must appear in the listed order.
 - `forbiddenBefore`: a forbidden call must not occur before an anchor call.
 - `requiredBefore`: a required call must occur before an anchor call.
+- `requiredEvidenceBefore`: a matching tool result must occur before an anchor
+  call. Evidence can match the producing tool name, tool-call argument text, and
+  result text.
+- `requiredEvidenceAfter`: a matching tool result must occur after an anchor
+  call, and when call ids are available, the producing tool call must also occur
+  after that anchor.
 - `nextToolMustBe`: the immediate next tool after an anchor must match.
 
 Temporal failures use one-line package issue codes in Markdown:
@@ -359,10 +451,17 @@ Temporal failures use one-line package issue codes in Markdown:
 - `package_run_tool_order_violation`
 - `package_run_forbidden_tool_before_anchor`
 - `package_run_required_tool_missing_before_anchor`
+- `package_run_required_evidence_missing_before_anchor`
+- `package_run_required_evidence_missing_after_anchor`
 - `package_run_next_tool_mismatch`
 
 The golden workon cases guard the bootstrap order: capsule read,
 acknowledgement, empty bootstrap commit, draft PR, then implementation edits.
+Implementation-quality cases can also require source or command evidence before
+mutation, which lets the sandbox rank evidence-driven patches ahead of shallow
+edits that inspect the target only after changing it. They can require command
+evidence after mutation, which ranks actually validated patches ahead of stale
+pre-change checks or unvalidated edits.
 
 ## Budget Estimates
 
@@ -398,7 +497,8 @@ CI fails only on new or missing behavior.
 - `--fail-on-blocking-regression`: fail when a run gains an unexpected blocking
   issue, or when blocking count exceeds the baseline.
 - `--must-pass-tag <tag>`: require tagged cases to match expected harness and
-  package issue codes.
+  package issue codes, and require any tagged case's `expectedBestRunId` to rank
+  first with any configured `expectedBestMinDivergenceMargin`.
 - `--max-divergence <n>`: fail when any run exceeds a divergence ceiling.
 - `--max-divergence-tag <tag=n>`: apply a divergence ceiling to tagged cases.
 

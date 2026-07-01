@@ -4,6 +4,7 @@ import {
   type HarnessTurnIssue,
   type HarnessTurnMetrics,
 } from "../extensions/runtime/escalation.ts";
+import { isMutationToolCall } from "../extensions/runtime/tool-registry.ts";
 import {
   benchmarkMessagesToKhalaTranscript,
   khalaTranscriptSearchText,
@@ -14,6 +15,7 @@ import {
   normalizeKhalaTranscript,
   stableKhalaJsonStringify,
   type KhalaToolCallRequestedEvent,
+  type KhalaToolResultEvent,
   type KhalaTranscript,
 } from "./harness-events.ts";
 import {
@@ -95,6 +97,22 @@ export interface HarnessBenchmarkNextToolCheck {
   next: HarnessBenchmarkToolCallCheck;
 }
 
+export interface HarnessBenchmarkEvidenceCheck {
+  name?: string;
+  argumentIncludes?: string[];
+  resultIncludes?: string[];
+}
+
+export interface HarnessBenchmarkRequiredEvidenceBeforeCheck {
+  evidence: HarnessBenchmarkEvidenceCheck;
+  before: HarnessBenchmarkToolCallCheck;
+}
+
+export interface HarnessBenchmarkRequiredEvidenceAfterCheck {
+  evidence: HarnessBenchmarkEvidenceCheck;
+  after: HarnessBenchmarkToolCallCheck;
+}
+
 export interface HarnessBenchmarkPackageContract {
   name?: string;
   sourcePath?: string;
@@ -102,11 +120,16 @@ export interface HarnessBenchmarkPackageContract {
   artifacts?: HarnessBenchmarkPackageArtifact[];
   requiredTranscriptIncludes?: string[];
   forbiddenTranscriptIncludes?: string[];
+  requiredAssistantIncludes?: string[];
+  forbiddenAssistantIncludes?: string[];
+  allowedMutationToolCalls?: HarnessBenchmarkToolCallCheck[];
   requiredToolCalls?: HarnessBenchmarkToolCallCheck[];
   forbiddenToolCalls?: HarnessBenchmarkForbiddenToolCallCheck[];
   orderedToolCalls?: HarnessBenchmarkToolCallCheck[];
   forbiddenBefore?: HarnessBenchmarkForbiddenBeforeCheck[];
   requiredBefore?: HarnessBenchmarkRequiredBeforeCheck[];
+  requiredEvidenceAfter?: HarnessBenchmarkRequiredEvidenceAfterCheck[];
+  requiredEvidenceBefore?: HarnessBenchmarkRequiredEvidenceBeforeCheck[];
   nextToolMustBe?: HarnessBenchmarkNextToolCheck[];
 }
 
@@ -115,11 +138,16 @@ export type HarnessBenchmarkPackageIssueCode =
   | "package_artifact_contains_forbidden_text"
   | "package_run_missing_required_text"
   | "package_run_contains_forbidden_text"
+  | "package_run_missing_required_assistant_text"
+  | "package_run_contains_forbidden_assistant_text"
   | "package_run_missing_required_tool_call"
   | "package_run_used_forbidden_tool_call"
+  | "package_run_unscoped_mutation_tool_call"
   | "package_run_tool_order_violation"
   | "package_run_forbidden_tool_before_anchor"
+  | "package_run_required_evidence_missing_after_anchor"
   | "package_run_required_tool_missing_before_anchor"
+  | "package_run_required_evidence_missing_before_anchor"
   | "package_run_next_tool_mismatch";
 
 export interface HarnessBenchmarkPackageIssue {
@@ -138,6 +166,8 @@ export interface HarnessBenchmarkCase {
   tags?: string[];
   userText: string;
   assistantText?: string;
+  expectedBestRunId?: string;
+  expectedBestMinDivergenceMargin?: number;
   expectedIssueCodes?: HarnessBenchmarkIssueCode[];
   expectedPackageIssueCodes?: HarnessBenchmarkPackageIssueCode[];
   lowConfidenceThreshold?: number;
@@ -182,6 +212,13 @@ export interface HarnessBenchmarkRunResult {
   transcriptEventCount: number;
   budget: KhalaBudgetReport;
   tags: string[];
+  expectedBestRunId?: string;
+  expectedBestMinDivergenceMargin?: number;
+  caseBestRunId: string;
+  bestRunRank: number;
+  bestRunDivergenceMargin: number;
+  expectedBestRunMatched?: boolean;
+  expectedBestMarginMatched?: boolean;
   blockingIssueCount: number;
   divergenceScore: number;
   complianceScore: number;
@@ -202,6 +239,12 @@ export interface HarnessBenchmarkCaseSummary {
   tags: string[];
   runCount: number;
   totalDivergenceScore: number;
+  expectedBestRunId?: string;
+  expectedBestMinDivergenceMargin?: number;
+  actualBestRunId: string;
+  bestRunDivergenceMargin: number;
+  expectedBestRunMatched?: boolean;
+  expectedBestMarginMatched?: boolean;
   blockingIssueCount: number;
   packageIssueCount: number;
   budgetWarningCount: number;
@@ -233,6 +276,8 @@ export type HarnessBenchmarkPreflightSeverity = "error" | "warning";
 export type HarnessBenchmarkPreflightIssueCode =
   | "duplicate_case_id"
   | "duplicate_run_id"
+  | "invalid_expected_best_margin"
+  | "unknown_expected_best_run_id"
   | "unknown_expected_issue_code"
   | "unknown_expected_package_issue_code"
   | "package_artifact_missing_required_text"
@@ -281,13 +326,18 @@ const HARNESS_BENCHMARK_PACKAGE_ISSUE_CODES =
   new Set<HarnessBenchmarkPackageIssueCode>([
     "package_artifact_contains_forbidden_text",
     "package_artifact_missing_required_text",
+    "package_run_contains_forbidden_assistant_text",
     "package_run_contains_forbidden_text",
+    "package_run_missing_required_assistant_text",
     "package_run_forbidden_tool_before_anchor",
     "package_run_missing_required_text",
     "package_run_missing_required_tool_call",
     "package_run_next_tool_mismatch",
+    "package_run_required_evidence_missing_after_anchor",
+    "package_run_required_evidence_missing_before_anchor",
     "package_run_required_tool_missing_before_anchor",
     "package_run_tool_order_violation",
+    "package_run_unscoped_mutation_tool_call",
     "package_run_used_forbidden_tool_call",
   ]);
 
@@ -469,6 +519,83 @@ function parseRequiredBeforeChecks(
   });
 }
 
+function parseEvidenceCheck(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkEvidenceCheck {
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  const check = {
+    argumentIncludes: optionalStringArray(
+      value.argumentIncludes,
+      `${label}.argumentIncludes`,
+    ),
+    name: optionalString(value.name, `${label}.name`),
+    resultIncludes: optionalStringArray(
+      value.resultIncludes,
+      `${label}.resultIncludes`,
+    ),
+  };
+  if (
+    check.name === undefined &&
+    (check.argumentIncludes?.length ?? 0) === 0 &&
+    (check.resultIncludes?.length ?? 0) === 0
+  ) {
+    throw new Error(
+      `${label} must include name, argumentIncludes, or resultIncludes`,
+    );
+  }
+  return check;
+}
+
+function parseRequiredEvidenceBeforeChecks(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkRequiredEvidenceBeforeCheck[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array when provided`);
+  }
+
+  return value.map((check, index) => {
+    if (!isRecord(check)) {
+      throw new Error(`${label}[${index}] must be an object`);
+    }
+    return {
+      before: parseToolCallCheck(check.before, `${label}[${index}].before`),
+      evidence: parseEvidenceCheck(
+        check.evidence,
+        `${label}[${index}].evidence`,
+      ),
+    };
+  });
+}
+
+function parseRequiredEvidenceAfterChecks(
+  value: unknown,
+  label: string,
+): HarnessBenchmarkRequiredEvidenceAfterCheck[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array when provided`);
+  }
+
+  return value.map((check, index) => {
+    if (!isRecord(check)) {
+      throw new Error(`${label}[${index}] must be an object`);
+    }
+    return {
+      after: parseToolCallCheck(check.after, `${label}[${index}].after`),
+      evidence: parseEvidenceCheck(
+        check.evidence,
+        `${label}[${index}].evidence`,
+      ),
+    };
+  });
+}
+
 function parseNextToolChecks(
   value: unknown,
   label: string,
@@ -499,6 +626,10 @@ function parsePackageContract(
   }
 
   return {
+    allowedMutationToolCalls: parseToolCallChecks(
+      value.allowedMutationToolCalls,
+      `${label}.allowedMutationToolCalls`,
+    ),
     artifacts: parsePackageArtifacts(value.artifacts, `${label}.artifacts`),
     forbiddenBefore: parseForbiddenBeforeChecks(
       value.forbiddenBefore,
@@ -512,6 +643,10 @@ function parsePackageContract(
       value.forbiddenTranscriptIncludes,
       `${label}.forbiddenTranscriptIncludes`,
     ),
+    forbiddenAssistantIncludes: optionalStringArray(
+      value.forbiddenAssistantIncludes,
+      `${label}.forbiddenAssistantIncludes`,
+    ),
     name: optionalString(value.name, `${label}.name`),
     nextToolMustBe: parseNextToolChecks(
       value.nextToolMustBe,
@@ -524,6 +659,18 @@ function parsePackageContract(
     requiredBefore: parseRequiredBeforeChecks(
       value.requiredBefore,
       `${label}.requiredBefore`,
+    ),
+    requiredAssistantIncludes: optionalStringArray(
+      value.requiredAssistantIncludes,
+      `${label}.requiredAssistantIncludes`,
+    ),
+    requiredEvidenceAfter: parseRequiredEvidenceAfterChecks(
+      value.requiredEvidenceAfter,
+      `${label}.requiredEvidenceAfter`,
+    ),
+    requiredEvidenceBefore: parseRequiredEvidenceBeforeChecks(
+      value.requiredEvidenceBefore,
+      `${label}.requiredEvidenceBefore`,
     ),
     requiredToolCalls: parseToolCallChecks(
       value.requiredToolCalls,
@@ -676,6 +823,14 @@ export function parseHarnessBenchmarkSuite(
           benchmarkCase.expectedIssueCodes,
           `cases[${index}].expectedIssueCodes`,
         ) as HarnessBenchmarkIssueCode[] | undefined,
+        expectedBestRunId: optionalString(
+          benchmarkCase.expectedBestRunId,
+          `cases[${index}].expectedBestRunId`,
+        ),
+        expectedBestMinDivergenceMargin: optionalNumber(
+          benchmarkCase.expectedBestMinDivergenceMargin,
+          `cases[${index}].expectedBestMinDivergenceMargin`,
+        ),
         expectedPackageIssueCodes: optionalStringArray(
           benchmarkCase.expectedPackageIssueCodes,
           `cases[${index}].expectedPackageIssueCodes`,
@@ -751,6 +906,14 @@ function pushPreflightIssue(
   issue: HarnessBenchmarkPreflightIssue,
 ): void {
   issues.push(issue);
+}
+
+function benchmarkRunId(
+  benchmarkCase: Pick<HarnessBenchmarkCase, "id">,
+  run: Pick<HarnessBenchmarkRun, "id">,
+  runIndex: number,
+): string {
+  return run.id ?? `${benchmarkCase.id ?? "case"}-${runIndex + 1}`;
 }
 
 function preflightExpectedIssueCodes(params: {
@@ -870,7 +1033,7 @@ export function preflightHarnessBenchmarkSuite(
     const runIds = new Set<string>();
     for (const [runIndex, run] of benchmarkCase.runs.entries()) {
       runCount += 1;
-      const runId = run.id ?? `${benchmarkCase.id ?? "case"}-${runIndex + 1}`;
+      const runId = benchmarkRunId(benchmarkCase, run, runIndex);
       if (runIds.has(runId)) {
         pushPreflightIssue(issues, {
           caseId: benchmarkCase.id,
@@ -930,6 +1093,47 @@ export function preflightHarnessBenchmarkSuite(
         });
       }
     }
+
+    if (
+      benchmarkCase.expectedBestRunId !== undefined &&
+      !runIds.has(benchmarkCase.expectedBestRunId)
+    ) {
+      pushPreflightIssue(issues, {
+        caseId: benchmarkCase.id,
+        caseName: benchmarkCase.name,
+        code: "unknown_expected_best_run_id",
+        message: `expected best run '${benchmarkCase.expectedBestRunId}' is not a run id in case '${benchmarkCase.name}'`,
+        runId: benchmarkCase.expectedBestRunId,
+        severity: "error",
+      });
+    }
+
+    if (
+      benchmarkCase.expectedBestMinDivergenceMargin !== undefined &&
+      benchmarkCase.expectedBestRunId === undefined
+    ) {
+      pushPreflightIssue(issues, {
+        caseId: benchmarkCase.id,
+        caseName: benchmarkCase.name,
+        code: "invalid_expected_best_margin",
+        message:
+          "expectedBestMinDivergenceMargin requires expectedBestRunId on the same case",
+        severity: "error",
+      });
+    }
+    if (
+      benchmarkCase.expectedBestMinDivergenceMargin !== undefined &&
+      benchmarkCase.expectedBestMinDivergenceMargin < 0
+    ) {
+      pushPreflightIssue(issues, {
+        caseId: benchmarkCase.id,
+        caseName: benchmarkCase.name,
+        code: "invalid_expected_best_margin",
+        message:
+          "expectedBestMinDivergenceMargin must be greater than or equal to 0",
+        severity: "error",
+      });
+    }
   }
 
   const errorCount = issues.filter(
@@ -958,6 +1162,20 @@ function stringifyUnknown(value: unknown): string {
 
 function transcriptText(transcript: KhalaTranscript): string {
   return khalaTranscriptSearchText(transcript);
+}
+
+function assistantTranscriptText(transcript: KhalaTranscript): string {
+  return normalizeKhalaTranscript(transcript)
+    .events.flatMap((event) => {
+      switch (event.type) {
+        case "assistant_delta":
+        case "assistant_final":
+          return [event.text];
+        default:
+          return [];
+      }
+    })
+    .join("\n");
 }
 
 function toolCallArgumentsText(value: unknown): string {
@@ -1024,6 +1242,105 @@ function runHasForbiddenToolCall(
   );
 }
 
+function toolCallIsScopedMutation(
+  toolCall: KhalaToolCallRequestedEvent,
+  allowedMutationToolCalls: readonly HarnessBenchmarkToolCallCheck[],
+): boolean {
+  if (
+    !isMutationToolCall({
+      input: toolCall.arguments,
+      toolName: toolCall.name,
+    })
+  ) {
+    return true;
+  }
+  return allowedMutationToolCalls.some((check) =>
+    toolCallMatchesRequired(toolCall, check),
+  );
+}
+
+function toolResultText(event: KhalaToolResultEvent): string {
+  return event.text ?? stringifyUnknown(event.result ?? {});
+}
+
+function evidenceMatches(
+  evidence: KhalaToolResultEvent,
+  toolCall: KhalaToolCallRequestedEvent | undefined,
+  check: HarnessBenchmarkEvidenceCheck,
+): boolean {
+  const toolName = toolCall?.name ?? evidence.name;
+  if (check.name !== undefined && toolName !== check.name) return false;
+
+  const argumentText = toolCallArgumentsText(toolCall?.arguments ?? {});
+  if (
+    !(check.argumentIncludes ?? []).every((text) => argumentText.includes(text))
+  ) {
+    return false;
+  }
+
+  const resultText = toolResultText(evidence);
+  return (check.resultIncludes ?? []).every((text) =>
+    resultText.includes(text),
+  );
+}
+
+function transcriptEvidenceBefore(
+  transcript: KhalaTranscript,
+  anchorSeq: number,
+  check: HarnessBenchmarkEvidenceCheck,
+): KhalaToolResultEvent | undefined {
+  const toolCallsByCallId = new Map(
+    khalaTranscriptToolCalls(transcript).map((toolCall) => [
+      toolCall.callId,
+      toolCall,
+    ]),
+  );
+
+  return normalizeKhalaTranscript(transcript).events.find(
+    (event): event is KhalaToolResultEvent => {
+      if (event.type !== "tool_result" || event.seq >= anchorSeq) {
+        return false;
+      }
+      return evidenceMatches(
+        event,
+        event.callId === undefined
+          ? undefined
+          : toolCallsByCallId.get(event.callId),
+        check,
+      );
+    },
+  );
+}
+
+function transcriptEvidenceAfter(
+  transcript: KhalaTranscript,
+  anchorSeq: number,
+  check: HarnessBenchmarkEvidenceCheck,
+): KhalaToolResultEvent | undefined {
+  const toolCallsByCallId = new Map(
+    khalaTranscriptToolCalls(transcript).map((toolCall) => [
+      toolCall.callId,
+      toolCall,
+    ]),
+  );
+
+  return normalizeKhalaTranscript(transcript).events.find(
+    (event): event is KhalaToolResultEvent => {
+      if (event.type !== "tool_result" || event.seq <= anchorSeq) {
+        return false;
+      }
+      const toolCall =
+        event.callId === undefined
+          ? undefined
+          : toolCallsByCallId.get(event.callId);
+      if (toolCall !== undefined && toolCall.seq <= anchorSeq) {
+        return false;
+      }
+      return evidenceMatches(event, toolCall, check);
+    },
+  );
+}
+
 function evaluatePackageContract(params: {
   contract?: HarnessBenchmarkPackageContract;
   transcript: KhalaTranscript;
@@ -1078,6 +1395,26 @@ function evaluatePackageContract(params: {
       });
     }
   }
+
+  const assistantText = assistantTranscriptText(params.transcript);
+  for (const requiredText of contract.requiredAssistantIncludes ?? []) {
+    if (!assistantText.includes(requiredText)) {
+      issues.push({
+        code: "package_run_missing_required_assistant_text",
+        message: `candidate assistant output is missing required package-following text: ${requiredText}`,
+        text: requiredText,
+      });
+    }
+  }
+  for (const forbiddenText of contract.forbiddenAssistantIncludes ?? []) {
+    if (assistantText.includes(forbiddenText)) {
+      issues.push({
+        code: "package_run_contains_forbidden_assistant_text",
+        message: `candidate assistant output contains forbidden package text: ${forbiddenText}`,
+        text: forbiddenText,
+      });
+    }
+  }
   for (const requiredToolCall of contract.requiredToolCalls ?? []) {
     if (!runHasRequiredToolCall(params.transcript, requiredToolCall)) {
       issues.push({
@@ -1098,6 +1435,19 @@ function evaluatePackageContract(params: {
   }
 
   const toolCalls = khalaTranscriptToolCalls(params.transcript);
+  if (contract.allowedMutationToolCalls !== undefined) {
+    for (const toolCall of toolCalls) {
+      if (toolCallIsScopedMutation(toolCall, contract.allowedMutationToolCalls)) {
+        continue;
+      }
+      issues.push({
+        code: "package_run_unscoped_mutation_tool_call",
+        message: `candidate transcript used mutation outside the allowed package scope: ${toolCall.name}`,
+        toolName: toolCall.name,
+      });
+    }
+  }
+
   let orderedCursor = 0;
   for (const orderedToolCall of contract.orderedToolCalls ?? []) {
     const match = firstMatchingToolCall(
@@ -1154,6 +1504,46 @@ function evaluatePackageContract(params: {
           check.required,
         )} before ${formatToolCallCheck(check.before)}`,
         toolName: check.required.name,
+      });
+    }
+  }
+
+  for (const check of contract.requiredEvidenceBefore ?? []) {
+    const anchor = firstMatchingToolCall(toolCalls, check.before);
+    if (!anchor) continue;
+    const evidence = transcriptEvidenceBefore(
+      params.transcript,
+      anchor.seq,
+      check.evidence,
+    );
+    if (!evidence) {
+      issues.push({
+        anchorToolName: check.before.name,
+        code: "package_run_required_evidence_missing_before_anchor",
+        message: `candidate transcript did not collect required evidence ${formatToolCallCheck(
+          check.evidence,
+        )} before ${formatToolCallCheck(check.before)}`,
+        toolName: check.evidence.name,
+      });
+    }
+  }
+
+  for (const check of contract.requiredEvidenceAfter ?? []) {
+    const anchor = firstMatchingToolCall(toolCalls, check.after);
+    if (!anchor) continue;
+    const evidence = transcriptEvidenceAfter(
+      params.transcript,
+      anchor.seq,
+      check.evidence,
+    );
+    if (!evidence) {
+      issues.push({
+        anchorToolName: check.after.name,
+        code: "package_run_required_evidence_missing_after_anchor",
+        message: `candidate transcript did not collect required evidence ${formatToolCallCheck(
+          check.evidence,
+        )} after ${formatToolCallCheck(check.after)}`,
+        toolName: check.evidence.name,
       });
     }
   }
@@ -1221,9 +1611,12 @@ function packageDivergenceScore(
   return issues.reduce((sum, issue) => {
     switch (issue.code) {
       case "package_run_used_forbidden_tool_call":
+      case "package_run_unscoped_mutation_tool_call":
         return sum + 14;
       case "package_run_forbidden_tool_before_anchor":
       case "package_run_next_tool_mismatch":
+      case "package_run_required_evidence_missing_after_anchor":
+      case "package_run_required_evidence_missing_before_anchor":
       case "package_run_tool_order_violation":
         return sum + 14;
       case "package_run_missing_required_tool_call":
@@ -1232,6 +1625,8 @@ function packageDivergenceScore(
       case "package_artifact_missing_required_text":
       case "package_artifact_contains_forbidden_text":
         return sum + 10;
+      case "package_run_missing_required_assistant_text":
+      case "package_run_contains_forbidden_assistant_text":
       case "package_run_missing_required_text":
       case "package_run_contains_forbidden_text":
         return sum + 8;
@@ -1244,6 +1639,24 @@ function compareText(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
+}
+
+function compareRunResults(
+  left: HarnessBenchmarkRunResult,
+  right: HarnessBenchmarkRunResult,
+): number {
+  if (right.complianceScore !== left.complianceScore) {
+    return right.complianceScore - left.complianceScore;
+  }
+  if (left.divergenceScore !== right.divergenceScore) {
+    return left.divergenceScore - right.divergenceScore;
+  }
+  return (
+    compareText(left.caseId ?? "", right.caseId ?? "") ||
+    compareText(left.caseName, right.caseName) ||
+    compareText(left.runId, right.runId) ||
+    compareText(left.model, right.model)
+  );
 }
 
 function summarizeModels(
@@ -1320,6 +1733,42 @@ function orderedIssueCounts(
   return ordered;
 }
 
+function annotateCaseBestRunResults(
+  results: HarnessBenchmarkRunResult[],
+): void {
+  const grouped = new Map<string, HarnessBenchmarkRunResult[]>();
+  for (const result of results) {
+    const key = result.caseId ?? result.caseName;
+    grouped.set(key, [...(grouped.get(key) ?? []), result]);
+  }
+
+  for (const caseResults of grouped.values()) {
+    const ranked = [...caseResults].sort(compareRunResults);
+    const best = ranked[0];
+    if (!best) continue;
+    const secondBest = ranked[1];
+    const bestRunDivergenceMargin =
+      secondBest === undefined
+        ? 0
+        : secondBest.divergenceScore - best.divergenceScore;
+
+    for (const [rankIndex, result] of ranked.entries()) {
+      result.bestRunRank = rankIndex + 1;
+      result.caseBestRunId = best.runId;
+      result.bestRunDivergenceMargin = bestRunDivergenceMargin;
+      result.expectedBestRunMatched =
+        result.expectedBestRunId === undefined
+          ? undefined
+          : result.expectedBestRunId === best.runId;
+      result.expectedBestMarginMatched =
+        result.expectedBestMinDivergenceMargin === undefined
+          ? undefined
+          : result.expectedBestRunMatched === true &&
+            bestRunDivergenceMargin >= result.expectedBestMinDivergenceMargin;
+    }
+  }
+}
+
 function summarizeCases(
   results: readonly HarnessBenchmarkRunResult[],
 ): HarnessBenchmarkCaseSummary[] {
@@ -1332,7 +1781,11 @@ function summarizeCases(
   return [...grouped.values()]
     .map((caseResults) => {
       const first = caseResults[0];
+      const best =
+        caseResults.find((result) => result.bestRunRank === 1) ?? first;
       return {
+        actualBestRunId: best.caseBestRunId,
+        bestRunDivergenceMargin: best.bestRunDivergenceMargin,
         blockingIssueCount: caseResults.reduce(
           (sum, result) => sum + result.blockingIssueCount,
           0,
@@ -1343,6 +1796,10 @@ function summarizeCases(
         ),
         caseId: first.caseId,
         caseName: first.caseName,
+        expectedBestMinDivergenceMargin: first.expectedBestMinDivergenceMargin,
+        expectedBestRunId: first.expectedBestRunId,
+        expectedBestMarginMatched: first.expectedBestMarginMatched,
+        expectedBestRunMatched: first.expectedBestRunMatched,
         issueCounts: orderedIssueCounts(caseResults),
         packageIssueCount: caseResults.reduce(
           (sum, result) => sum + result.packageIssues.length,
@@ -1430,7 +1887,7 @@ export function evaluateHarnessBenchmark(
         run.assistantText ??
         benchmarkCase.assistantText ??
         latestRunAssistantText(run);
-      const runId = run.id ?? `${benchmarkCase.id ?? "case"}-${runIndex + 1}`;
+      const runId = benchmarkRunId(benchmarkCase, run, runIndex);
       const transcript = transcriptForRun({
         assistantText,
         benchmarkCase,
@@ -1518,11 +1975,19 @@ export function evaluateHarnessBenchmark(
 
       results.push({
         budget,
+        bestRunRank: 0,
+        bestRunDivergenceMargin: 0,
         blockingIssueCount: issues.filter((issue) => issue.block).length,
+        caseBestRunId: "",
         caseId: benchmarkCase.id,
         caseName: benchmarkCase.name,
         complianceScore: Math.max(0, 100 - score),
         divergenceScore: score,
+        expectedBestMinDivergenceMargin:
+          benchmarkCase.expectedBestMinDivergenceMargin,
+        expectedBestMarginMatched: undefined,
+        expectedBestRunId: benchmarkCase.expectedBestRunId,
+        expectedBestRunMatched: undefined,
         expectedIssueCodes,
         expectedIssueDistance,
         expectedPackageIssueCodes,
@@ -1544,20 +2009,8 @@ export function evaluateHarnessBenchmark(
     }
   }
 
-  results.sort((left, right) => {
-    if (right.complianceScore !== left.complianceScore) {
-      return right.complianceScore - left.complianceScore;
-    }
-    if (left.divergenceScore !== right.divergenceScore) {
-      return left.divergenceScore - right.divergenceScore;
-    }
-    return (
-      compareText(left.caseId ?? "", right.caseId ?? "") ||
-      compareText(left.caseName, right.caseName) ||
-      compareText(left.runId, right.runId) ||
-      compareText(left.model, right.model)
-    );
-  });
+  annotateCaseBestRunResults(results);
+  results.sort(compareRunResults);
 
   return {
     caseSummaries: summarizeCases(results),
@@ -1621,6 +2074,36 @@ export function formatHarnessBenchmarkMarkdown(
         issueCodeText(result.issueCodes),
       )} | ${result.packageDivergenceScore} | ${result.expectedIssueDistance} |`,
     );
+  }
+
+  const expectedBestRows = report.caseSummaries.filter(
+    (summary) => summary.expectedBestRunId !== undefined,
+  );
+  if (expectedBestRows.length > 0) {
+    lines.push(
+      "",
+      "## Expected Best Runs",
+      "",
+      "| Case | Expected | Actual | Matched | Margin | Required Margin | Margin Matched |",
+      "| --- | --- | --- | --- | ---: | ---: | --- |",
+    );
+    for (const summary of expectedBestRows) {
+      lines.push(
+        `| ${markdownCell(summary.caseName)} | ${markdownCell(
+          summary.expectedBestRunId ?? "",
+        )} | ${markdownCell(summary.actualBestRunId)} | ${
+          summary.expectedBestRunMatched ? "yes" : "no"
+        } | ${summary.bestRunDivergenceMargin} | ${
+          summary.expectedBestMinDivergenceMargin ?? ""
+        } | ${
+          summary.expectedBestMarginMatched === undefined
+            ? ""
+            : summary.expectedBestMarginMatched
+              ? "yes"
+              : "no"
+        } |`,
+      );
+    }
   }
 
   const packageIssueRows = report.results.flatMap((result) =>
