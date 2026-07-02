@@ -316,6 +316,7 @@ const HARNESS_BENCHMARK_ISSUE_CODE_ORDER: HarnessBenchmarkIssueCode[] = [
   "learning_capture",
   "skill_routing",
   "evidence_routing",
+  "implementation_quality",
   "workflow_drift",
   "model_escalation",
 ];

@@ -141,7 +141,11 @@
               }
             ]
           },
-          "expectedIssueCodes": ["memory_search", "evidence_routing"]
+          "expectedIssueCodes": [
+            "memory_search",
+            "evidence_routing",
+            "implementation_quality"
+          ]
         }
       ]
     },
@@ -668,7 +672,7 @@
             },
             { "role": "toolResult", "text": "draft PR" }
           ],
-          "expectedIssueCodes": ["memory_search"],
+          "expectedIssueCodes": ["memory_search", "implementation_quality"],
           "expectedPackageIssueCodes": [
             "package_run_forbidden_tool_before_anchor"
           ]
