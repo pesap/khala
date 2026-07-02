@@ -48,6 +48,7 @@ export interface HarnessBenchmarkCiFailure {
   current?: number;
   baseline?: number;
   max?: number;
+  min?: number;
 }
 
 class CliExit extends Error {
@@ -299,6 +300,32 @@ export function evaluateHarnessBenchmarkCiFailures(params: {
         tag,
       });
     }
+
+    for (const summary of params.report.caseSummaries) {
+      if (!summary.tags.includes(tag)) continue;
+      if (summary.expectedBestRunMatched !== false) continue;
+      failures.push({
+        caseName: summary.caseName,
+        code: "must_pass_tag_failed",
+        message: `must-pass tag '${tag}' expected ${summary.caseName}/${summary.expectedBestRunId} to rank first, but ${summary.actualBestRunId} ranked first`,
+        runId: summary.expectedBestRunId,
+        tag,
+      });
+    }
+    for (const summary of params.report.caseSummaries) {
+      if (!summary.tags.includes(tag)) continue;
+      if (summary.expectedBestRunMatched === false) continue;
+      if (summary.expectedBestMarginMatched !== false) continue;
+      failures.push({
+        caseName: summary.caseName,
+        code: "must_pass_tag_failed",
+        current: summary.bestRunDivergenceMargin,
+        min: summary.expectedBestMinDivergenceMargin,
+        message: `must-pass tag '${tag}' expected ${summary.caseName}/${summary.expectedBestRunId} to beat the next run by divergence margin ${summary.expectedBestMinDivergenceMargin}, but margin was ${summary.bestRunDivergenceMargin}`,
+        runId: summary.expectedBestRunId,
+        tag,
+      });
+    }
   }
 
   if (params.args.maxDivergence !== undefined) {
@@ -362,15 +389,33 @@ function filterSuite(
     }
   }
 
-  const cases = selectedCases.map((benchmarkCase) => ({
-    ...benchmarkCase,
-    runs:
+  const cases = selectedCases.map((benchmarkCase) => {
+    const runs =
       modelFilter.size === 0
         ? benchmarkCase.runs
         : benchmarkCase.runs.filter((run) =>
             modelFilter.has(run.model ?? "unknown-model"),
-          ),
-  }));
+          );
+    const expectedBestRunWasFilteredOut =
+      modelFilter.size > 0 &&
+      benchmarkCase.expectedBestRunId !== undefined &&
+      !runs.some(
+        (run, runIndex) =>
+          (run.id ?? `${benchmarkCase.id ?? "case"}-${runIndex + 1}`) ===
+          benchmarkCase.expectedBestRunId,
+      );
+
+    return {
+      ...benchmarkCase,
+      expectedBestRunId: expectedBestRunWasFilteredOut
+        ? undefined
+        : benchmarkCase.expectedBestRunId,
+      expectedBestMinDivergenceMargin: expectedBestRunWasFilteredOut
+        ? undefined
+        : benchmarkCase.expectedBestMinDivergenceMargin,
+      runs,
+    };
+  });
 
   const emptyCases = cases.filter(
     (benchmarkCase) => benchmarkCase.runs.length === 0,

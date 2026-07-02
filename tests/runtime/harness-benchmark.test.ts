@@ -186,6 +186,8 @@ test("harness preflight reports package, expected-code, and recovery key problem
     cases: [
       {
         expectedIssueCodes: ["not_a_real_issue" as never],
+        expectedBestRunId: "missing-run",
+        expectedBestMinDivergenceMargin: -1,
         id: "case-a",
         name: "Problem case",
         packageContract: {
@@ -239,6 +241,8 @@ test("harness preflight reports package, expected-code, and recovery key problem
       "run_without_assistant_output",
       "duplicate_run_id",
       "run_without_assistant_output",
+      "unknown_expected_best_run_id",
+      "invalid_expected_best_margin",
       "duplicate_case_id",
     ],
   );
@@ -603,6 +607,509 @@ test("harness benchmark enforces temporal package assertions", () => {
   );
 });
 
+test("harness benchmark enforces evidence-before-mutation package assertions", () => {
+  const report = evaluateHarnessBenchmark({
+    cases: [
+      {
+        harnessLimits: { substantialToolCallThreshold: 99 },
+        name: "Implementation reads relevant source before patching",
+        packageContract: {
+          requiredEvidenceBefore: [
+            {
+              before: {
+                argumentIncludes: ["src/settings.ts"],
+                name: "apply_patch",
+              },
+              evidence: {
+                argumentIncludes: ["src/settings.ts"],
+                name: "read",
+                resultIncludes: ["existing compiler options"],
+              },
+            },
+          ],
+        },
+        runs: [
+          {
+            assistantText:
+              "I inspected the existing compiler options, then patched src/settings.ts.",
+            id: "evidence-before-edit",
+            messages: [
+              {
+                role: "user",
+                text: "Update the compiler settings in src/settings.ts.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "read",
+                },
+              },
+              {
+                role: "toolResult",
+                text: "existing compiler options live in buildCompilerOptions",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+            ],
+          },
+          {
+            assistantText:
+              "I patched src/settings.ts, then inspected the compiler settings.",
+            id: "edit-before-evidence",
+            messages: [
+              {
+                role: "user",
+                text: "Update the compiler settings in src/settings.ts.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "read",
+                },
+              },
+              {
+                role: "toolResult",
+                text: "existing compiler options live in buildCompilerOptions",
+              },
+            ],
+          },
+        ],
+        userText: "Update the compiler settings in src/settings.ts.",
+      },
+    ],
+  });
+
+  const evidenceBeforeEdit = report.results.find(
+    (result) => result.runId === "evidence-before-edit",
+  );
+  const editBeforeEvidence = report.results.find(
+    (result) => result.runId === "edit-before-evidence",
+  );
+
+  assert.ok(evidenceBeforeEdit);
+  assert.deepEqual(evidenceBeforeEdit.packageIssues, []);
+  assert.equal(evidenceBeforeEdit.packageDivergenceScore, 0);
+
+  assert.ok(editBeforeEvidence);
+  assert.deepEqual(
+    editBeforeEvidence.packageIssues.map((issue) => issue.code),
+    ["package_run_required_evidence_missing_before_anchor"],
+  );
+  assert.ok(
+    editBeforeEvidence.packageDivergenceScore >
+      evidenceBeforeEdit.packageDivergenceScore,
+  );
+  assert.match(
+    formatHarnessBenchmarkMarkdown(report),
+    /package_run_required_evidence_missing_before_anchor/,
+  );
+});
+
+test("harness benchmark enforces evidence-after-mutation package assertions", () => {
+  const report = evaluateHarnessBenchmark({
+    cases: [
+      {
+        harnessLimits: { substantialToolCallThreshold: 99 },
+        name: "Implementation validates after patching",
+        packageContract: {
+          requiredEvidenceAfter: [
+            {
+              after: {
+                argumentIncludes: ["src/settings.ts"],
+                name: "apply_patch",
+              },
+              evidence: {
+                argumentIncludes: ["npm run test", "src/settings.test.ts"],
+                name: "exec_command",
+                resultIncludes: ["tests passed"],
+              },
+            },
+          ],
+        },
+        runs: [
+          {
+            assistantText:
+              "I patched src/settings.ts, then ran the targeted settings tests.",
+            id: "validation-after-edit",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and validate the settings tests.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "npm run test -- src/settings.test.ts",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "settings tests passed" },
+            ],
+          },
+          {
+            assistantText:
+              "I ran the settings tests first, then patched src/settings.ts.",
+            id: "validation-before-edit",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and validate the settings tests.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "npm run test -- src/settings.test.ts",
+                  },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "settings tests passed" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+            ],
+          },
+          {
+            assistantText: "I patched src/settings.ts.",
+            id: "edit-without-validation",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and validate the settings tests.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+            ],
+          },
+        ],
+        userText: "Update src/settings.ts and validate the settings tests.",
+      },
+    ],
+  });
+
+  const validationAfterEdit = report.results.find(
+    (result) => result.runId === "validation-after-edit",
+  );
+  const validationBeforeEdit = report.results.find(
+    (result) => result.runId === "validation-before-edit",
+  );
+  const editWithoutValidation = report.results.find(
+    (result) => result.runId === "edit-without-validation",
+  );
+
+  assert.ok(validationAfterEdit);
+  assert.deepEqual(validationAfterEdit.packageIssues, []);
+  assert.equal(validationAfterEdit.packageDivergenceScore, 0);
+
+  assert.ok(validationBeforeEdit);
+  assert.deepEqual(
+    validationBeforeEdit.packageIssues.map((issue) => issue.code),
+    ["package_run_required_evidence_missing_after_anchor"],
+  );
+
+  assert.ok(editWithoutValidation);
+  assert.deepEqual(
+    editWithoutValidation.packageIssues.map((issue) => issue.code),
+    ["package_run_required_evidence_missing_after_anchor"],
+  );
+  assert.ok(
+    validationAfterEdit.complianceScore > validationBeforeEdit.complianceScore,
+  );
+  assert.ok(
+    validationAfterEdit.complianceScore > editWithoutValidation.complianceScore,
+  );
+  assert.match(
+    formatHarnessBenchmarkMarkdown(report),
+    /package_run_required_evidence_missing_after_anchor/,
+  );
+});
+
+test("harness benchmark enforces assistant-only package text assertions", () => {
+  const report = evaluateHarnessBenchmark({
+    cases: [
+      {
+        harnessLimits: { substantialToolCallThreshold: 99 },
+        name: "Implementation summary carries scoped proof",
+        packageContract: {
+          requiredAssistantIncludes: [
+            "src/settings.ts",
+            "npm run test -- src/settings.test.ts",
+          ],
+        },
+        runs: [
+          {
+            assistantText:
+              "Changed src/settings.ts and verified with npm run test -- src/settings.test.ts.",
+            id: "proof-in-summary",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and report the validation.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "npm run test -- src/settings.test.ts",
+                  },
+                  name: "exec_command",
+                },
+              },
+              {
+                role: "toolResult",
+                text: "npm run test -- src/settings.test.ts passed",
+              },
+            ],
+          },
+          {
+            assistantText: "Done.",
+            id: "proof-only-in-tools",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and report the validation.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "npm run test -- src/settings.test.ts",
+                  },
+                  name: "exec_command",
+                },
+              },
+              {
+                role: "toolResult",
+                text: "npm run test -- src/settings.test.ts passed",
+              },
+            ],
+          },
+        ],
+        userText: "Update src/settings.ts and report the validation.",
+      },
+    ],
+  });
+
+  const proofInSummary = report.results.find(
+    (result) => result.runId === "proof-in-summary",
+  );
+  const proofOnlyInTools = report.results.find(
+    (result) => result.runId === "proof-only-in-tools",
+  );
+
+  assert.ok(proofInSummary);
+  assert.deepEqual(proofInSummary.packageIssues, []);
+  assert.ok(proofOnlyInTools);
+  assert.deepEqual(
+    proofOnlyInTools.packageIssues.map((issue) => issue.code),
+    [
+      "package_run_missing_required_assistant_text",
+      "package_run_missing_required_assistant_text",
+    ],
+  );
+  assert.ok(proofInSummary.complianceScore > proofOnlyInTools.complianceScore);
+  assert.match(
+    formatHarnessBenchmarkMarkdown(report),
+    /package_run_missing_required_assistant_text/,
+  );
+});
+
+test("harness benchmark enforces scoped mutation package assertions", () => {
+  const report = evaluateHarnessBenchmark({
+    cases: [
+      {
+        harnessLimits: { substantialToolCallThreshold: 99 },
+        name: "Implementation keeps mutations scoped to the target file",
+        packageContract: {
+          allowedMutationToolCalls: [
+            {
+              argumentIncludes: ["src/settings.ts"],
+              name: "apply_patch",
+            },
+          ],
+        },
+        runs: [
+          {
+            assistantText:
+              "Changed src/settings.ts and verified with the targeted settings tests.",
+            id: "scoped-edit",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and validate the settings tests.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    cmd: "npm run test -- src/settings.test.ts",
+                  },
+                  name: "exec_command",
+                },
+              },
+              {
+                role: "toolResult",
+                text: "npm run test -- src/settings.test.ts passed",
+              },
+            ],
+          },
+          {
+            assistantText:
+              "Changed src/settings.ts and also touched README.md.",
+            id: "drive-by-apply-patch",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and validate the settings tests.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "README.md" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched README.md" },
+            ],
+          },
+          {
+            assistantText:
+              "Changed src/settings.ts and touched README.md with a shell command.",
+            id: "drive-by-shell-mutation",
+            messages: [
+              {
+                role: "user",
+                text: "Update src/settings.ts and validate the settings tests.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "src/settings.ts" },
+                  name: "apply_patch",
+                },
+              },
+              { role: "toolResult", text: "patched src/settings.ts" },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { cmd: "touch README.md" },
+                  name: "exec_command",
+                },
+              },
+              { role: "toolResult", text: "touched README.md" },
+            ],
+          },
+        ],
+        userText: "Update src/settings.ts and validate the settings tests.",
+      },
+    ],
+  });
+
+  const scopedEdit = report.results.find(
+    (result) => result.runId === "scoped-edit",
+  );
+  const driveByApplyPatch = report.results.find(
+    (result) => result.runId === "drive-by-apply-patch",
+  );
+  const driveByShellMutation = report.results.find(
+    (result) => result.runId === "drive-by-shell-mutation",
+  );
+
+  assert.ok(scopedEdit);
+  assert.deepEqual(scopedEdit.packageIssues, []);
+  assert.equal(scopedEdit.packageDivergenceScore, 0);
+
+  assert.ok(driveByApplyPatch);
+  assert.deepEqual(
+    driveByApplyPatch.packageIssues.map((issue) => issue.code),
+    ["package_run_unscoped_mutation_tool_call"],
+  );
+  assert.equal(driveByApplyPatch.packageDivergenceScore, 14);
+
+  assert.ok(driveByShellMutation);
+  assert.deepEqual(
+    driveByShellMutation.packageIssues.map((issue) => issue.code),
+    ["package_run_unscoped_mutation_tool_call"],
+  );
+  assert.equal(driveByShellMutation.packageDivergenceScore, 14);
+  assert.ok(scopedEdit.complianceScore > driveByApplyPatch.complianceScore);
+  assert.ok(scopedEdit.complianceScore > driveByShellMutation.complianceScore);
+  assert.match(
+    formatHarnessBenchmarkMarkdown(report),
+    /package_run_unscoped_mutation_tool_call/,
+  );
+});
+
 test("harness budget estimates are deterministic and advisory", () => {
   assert.equal(estimateTextTokens("abcd"), 1);
   assert.equal(estimateTextTokens("abcde"), 2);
@@ -645,6 +1152,151 @@ test("harness budget estimates are deterministic and advisory", () => {
 
   assert.ok(report.results[0].budget.totalTokens > 0);
   assert.match(formatHarnessBenchmarkMarkdown(report), /Budget Warnings/);
+});
+
+test("harness benchmark reports expected best run mismatches", () => {
+  const report = evaluateHarnessBenchmark({
+    cases: [
+      {
+        expectedBestRunId: "expected-winner",
+        harnessLimits: { substantialToolCallThreshold: 99 },
+        id: "winner-case",
+        name: "Expected best must rank first",
+        runs: [
+          {
+            assistantText: "I reviewed the change for regressions.",
+            id: "expected-winner",
+            messages: [
+              { role: "user", text: "Review this change for regressions." },
+            ],
+            model: "candidate/example",
+          },
+          {
+            assistantText: "Findings first, then residual risk and verdict.",
+            id: "actual-winner",
+            messages: [
+              { role: "user", text: "Review this change for regressions." },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: { path: "skills/design-quality-review/SKILL.md" },
+                  name: "read",
+                },
+              },
+              {
+                role: "toolResult",
+                text: "Code review skill loaded with prioritized actionable findings and verdict instructions.",
+              },
+              {
+                role: "assistant",
+                toolCall: {
+                  arguments: {
+                    query:
+                      "Review this change regressions design-quality-review skill",
+                  },
+                  name: "khala_search_memory",
+                },
+              },
+              {
+                role: "toolResult",
+                text: "Memory: review tasks need design-quality-review skill.",
+              },
+            ],
+            model: "candidate/example",
+          },
+        ],
+        tags: ["golden"],
+        userText: "Review this change for regressions.",
+      },
+    ],
+  });
+
+  const summary = report.caseSummaries.find(
+    (caseSummary) => caseSummary.caseId === "winner-case",
+  );
+  const expectedWinner = report.results.find(
+    (result) => result.runId === "expected-winner",
+  );
+
+  assert.ok(summary);
+  assert.equal(summary.expectedBestRunId, "expected-winner");
+  assert.equal(summary.actualBestRunId, "actual-winner");
+  assert.equal(summary.expectedBestRunMatched, false);
+  assert.ok(expectedWinner);
+  assert.equal(expectedWinner.bestRunRank, 2);
+  assert.equal(expectedWinner.caseBestRunId, "actual-winner");
+  assert.match(formatHarnessBenchmarkMarkdown(report), /Expected Best Runs/);
+
+  const failures = evaluateHarnessBenchmarkCiFailures({
+    args: parseHarnessBenchmarkCliArgs([
+      "--must-pass-tag",
+      "golden",
+      "suite.json",
+    ]),
+    report,
+  });
+  assert.ok(
+    failures.some((failure) =>
+      failure.message.includes(
+        "expected Expected best must rank first/expected-winner to rank first",
+      ),
+    ),
+  );
+});
+
+test("harness benchmark reports weak expected best run margins", () => {
+  const report = evaluateHarnessBenchmark({
+    cases: [
+      {
+        expectedBestRunId: "a-expected-winner",
+        expectedBestMinDivergenceMargin: 1,
+        id: "margin-case",
+        name: "Expected best must beat tied alternatives",
+        runs: [
+          {
+            assistantText: "Done.",
+            id: "a-expected-winner",
+            messages: [{ role: "user", text: "Say done." }],
+            model: "candidate/example",
+          },
+          {
+            assistantText: "Done.",
+            id: "b-tied-run",
+            messages: [{ role: "user", text: "Say done." }],
+            model: "candidate/example",
+          },
+        ],
+        tags: ["golden"],
+        userText: "Say done.",
+      },
+    ],
+  });
+
+  const summary = report.caseSummaries.find(
+    (caseSummary) => caseSummary.caseId === "margin-case",
+  );
+
+  assert.ok(summary);
+  assert.equal(summary.expectedBestRunMatched, true);
+  assert.equal(summary.bestRunDivergenceMargin, 0);
+  assert.equal(summary.expectedBestMinDivergenceMargin, 1);
+  assert.equal(summary.expectedBestMarginMatched, false);
+
+  const failures = evaluateHarnessBenchmarkCiFailures({
+    args: parseHarnessBenchmarkCliArgs([
+      "--must-pass-tag",
+      "golden",
+      "suite.json",
+    ]),
+    report,
+  });
+  assert.ok(
+    failures.some((failure) =>
+      failure.message.includes(
+        "beat the next run by divergence margin 1, but margin was 0",
+      ),
+    ),
+  );
 });
 
 test("harness benchmark CI gates pass and fail expected threshold cases", () => {
@@ -747,7 +1399,7 @@ test("checked-in harness sandbox fixture parses and produces ranked results", as
 
   assert.equal(report.suiteName, "Khala Harness Sandbox Seed Suite");
   assert.equal(report.caseCount, 5);
-  assert.equal(report.runCount, 10);
+  assert.equal(report.runCount, 14);
   assert.ok(
     report.results.some((result) =>
       result.issueCodes.includes("skill_routing"),
@@ -763,9 +1415,55 @@ test("checked-in harness sandbox fixture parses and produces ranked results", as
     "expected at least one seed run to diverge from the package contract",
   );
   assert.ok(
+    report.results.some((result) =>
+      result.packageIssues.some(
+        (issue) =>
+          issue.code === "package_run_required_evidence_missing_before_anchor",
+      ),
+    ),
+    "expected at least one seed run to miss required evidence before mutation",
+  );
+  assert.ok(
+    report.results.some((result) =>
+      result.packageIssues.some(
+        (issue) =>
+          issue.code === "package_run_required_evidence_missing_after_anchor",
+      ),
+    ),
+    "expected at least one seed run to miss required evidence after mutation",
+  );
+  assert.ok(
+    report.results.some((result) =>
+      result.packageIssues.some(
+        (issue) => issue.code === "package_run_missing_required_assistant_text",
+      ),
+    ),
+    "expected at least one seed run to miss required assistant summary text",
+  );
+  assert.ok(
+    report.results.some((result) =>
+      result.packageIssues.some(
+        (issue) => issue.code === "package_run_unscoped_mutation_tool_call",
+      ),
+    ),
+    "expected at least one seed run to mutate outside the package scope",
+  );
+  assert.ok(
     report.results.some((result) => result.complianceScore === 100),
     "expected at least one fully compliant seed run",
   );
+  const typeScriptSummary = report.caseSummaries.find(
+    (summary) => summary.caseId === "typescript-mutation-routing",
+  );
+  assert.equal(
+    typeScriptSummary?.expectedBestRunId,
+    "typescript-focused-route",
+  );
+  assert.equal(typeScriptSummary?.expectedBestMinDivergenceMargin, 14);
+  assert.equal(typeScriptSummary?.actualBestRunId, "typescript-focused-route");
+  assert.ok((typeScriptSummary?.bestRunDivergenceMargin ?? 0) >= 14);
+  assert.equal(typeScriptSummary?.expectedBestRunMatched, true);
+  assert.equal(typeScriptSummary?.expectedBestMarginMatched, true);
 });
 
 test("pi drift runner requires explicit user-selected models", () => {

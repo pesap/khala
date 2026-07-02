@@ -80,6 +80,12 @@ interface WorkflowContractDecision {
   reason: string;
 }
 
+interface ImplementationQualityDecision {
+  required: boolean;
+  satisfied: boolean;
+  reason: string;
+}
+
 export interface HarnessTurnIssue {
   code:
     | "tool_efficiency"
@@ -87,6 +93,7 @@ export interface HarnessTurnIssue {
     | "learning_capture"
     | "skill_routing"
     | "evidence_routing"
+    | "implementation_quality"
     | "workflow_drift"
     | "model_escalation";
   title: string;
@@ -4175,6 +4182,244 @@ export function evaluateWorkflowContract(params: {
   };
 }
 
+function localArtifactTargetMatches(candidate: string, target: string): boolean {
+  return localEvidenceArgumentsTouchTarget({ path: candidate }, target);
+}
+
+function mutationTargetsFromToolCall(name: string, args: unknown): string[] {
+  const targets =
+    name === "bash"
+      ? localArtifactTargetsFromText(extractCommandArgument(args))
+      : localArtifactTargetsFromToolArguments(args);
+  return [...new Set(targets)];
+}
+
+function targetBasename(target: string): string {
+  return target.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? target;
+}
+
+function targetStem(target: string): string {
+  return targetBasename(target)
+    .replace(/\.(?:test|spec)\.[^.]+$/i, "")
+    .replace(/\.[^.]+$/i, "")
+    .toLowerCase();
+}
+
+function mutationTargetIsAllowedByRequestedScope(
+  mutationTarget: string,
+  requestedTargets: readonly string[],
+): boolean {
+  if (
+    requestedTargets.some((requestedTarget) =>
+      localArtifactTargetMatches(mutationTarget, requestedTarget),
+    )
+  ) {
+    return true;
+  }
+
+  const normalizedMutation = normalizeLocalArtifactDedupeKey(mutationTarget);
+  const requestedBasenames = new Set(
+    requestedTargets.map((target) => targetBasename(target).toLowerCase()),
+  );
+  if (
+    /(?:^|\/)(?:package-lock\.json|pnpm-lock\.ya?ml|yarn\.lock|bun\.lockb?)$/i.test(
+      normalizedMutation,
+    ) &&
+    requestedBasenames.has("package.json")
+  ) {
+    return true;
+  }
+
+  if (/(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(normalizedMutation)) {
+    const mutationStem = targetStem(normalizedMutation);
+    return requestedTargets.some((target) => {
+      if (!/\.[cm]?[jt]sx?$/i.test(target)) return false;
+      const requestedStem = targetStem(target);
+      return (
+        mutationStem === requestedStem ||
+        mutationStem.endsWith(`.${requestedStem}`) ||
+        mutationStem.endsWith(`-${requestedStem}`)
+      );
+    });
+  }
+
+  return false;
+}
+
+function userRequestedNewLocalArtifact(userText: string, target: string): boolean {
+  const basename = escapeRegExp(targetBasename(target));
+  return new RegExp(
+    `\\b(?:create|scaffold|generate)\\b[\\s\\S]{0,80}\\b${basename}\\b|\\bnew\\s+(?:file\\s+)?${basename}\\b`,
+    "i",
+  ).test(userText);
+}
+
+function mutationTargetRequiresPreEvidence(
+  userText: string,
+  target: string,
+): boolean {
+  if (userRequestedNewLocalArtifact(userText, target)) return false;
+  return true;
+}
+
+function mutationTargetRequiresValidation(target: string): boolean {
+  return /(?:^|\/)(?:package(?:-lock)?\.json|pnpm-lock\.ya?ml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig[^/]*\.json|deno\.jsonc?|biome\.jsonc?|eslint\.config\.[cm]?js|vite\.config\.[cm]?[jt]s|vitest\.config\.[cm]?[jt]s|Dockerfile|docker-compose\.ya?ml)$|(?:^|\/)[^/]+\.(?:[cm]?[jt]sx?|py|rs|go|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|php|jsonc?|ya?ml|toml|sql|sh|bash|zsh|fish)$/i.test(
+    target,
+  );
+}
+
+function localEvidenceToolCallTouchesTarget(
+  item: ToolCallContent,
+  target: string,
+): boolean {
+  if (typeof item.name !== "string") return false;
+  if (!toolCallIsLocalEvidence(item.name, item.arguments)) return false;
+  if (item.name === "bash") {
+    return bashLocalEvidenceTouchesTarget(
+      extractCommandArgument(item.arguments),
+      target,
+    );
+  }
+  return localEvidenceArgumentsTouchTarget(item.arguments, target);
+}
+
+function successfulLocalEvidenceBefore(
+  scopedMessages: readonly AgentEndEventMessage[],
+  beforeMessageIndex: number,
+  target: string,
+): boolean {
+  for (const [messageIndex, message] of scopedMessages.entries()) {
+    if (messageIndex >= beforeMessageIndex) break;
+    for (const item of messageContentItems(message.content)) {
+      if (item.type !== "toolCall") continue;
+      if (!localEvidenceToolCallTouchesTarget(item, target)) continue;
+      if (shellSafeEvidenceResultSucceeded(item, scopedMessages[messageIndex + 1])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function successfulValidationAfter(
+  scopedMessages: readonly AgentEndEventMessage[],
+  afterMessageIndex: number,
+): boolean {
+  for (const [messageIndex, message] of scopedMessages.entries()) {
+    if (messageIndex <= afterMessageIndex) continue;
+    for (const item of messageContentItems(message.content)) {
+      if (item.type !== "toolCall") continue;
+      if (typeof item.name !== "string") continue;
+      if (!toolCallIsCommandEvidence(item.name, item.arguments)) continue;
+      const command = extractCommandArgument(item.arguments);
+      if (!commandLooksLikeVerification(command)) continue;
+      if (commandToolResultSucceeded(command, scopedMessages[messageIndex + 1])) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function evaluateImplementationQuality(params: {
+  messages: AgentEndEventMessage[];
+  userText: string;
+}): ImplementationQualityDecision {
+  const scopedMessages = scopedMessagesAfterLatestUser(params.messages);
+  const successfulMutations: Array<{
+    messageIndex: number;
+    name: string;
+    targets: string[];
+  }> = [];
+
+  for (const [messageIndex, message] of scopedMessages.entries()) {
+    for (const item of messageContentItems(message.content)) {
+      if (item.type !== "toolCall") continue;
+      if (typeof item.name !== "string") continue;
+      if (!toolCallIsMutationEvidence(item.name, item.arguments)) continue;
+      if (!mutationToolResultSucceeded(item, scopedMessages[messageIndex + 1])) {
+        continue;
+      }
+      successfulMutations.push({
+        messageIndex,
+        name: item.name,
+        targets: mutationTargetsFromToolCall(item.name, item.arguments),
+      });
+    }
+  }
+
+  const localMutationTargets = [
+    ...new Set(successfulMutations.flatMap((mutation) => mutation.targets)),
+  ];
+  if (localMutationTargets.length === 0) {
+    return {
+      required: false,
+      satisfied: true,
+      reason: "turn did not perform successful local file mutations",
+    };
+  }
+
+  const requestedTargets = localArtifactTargetsFromText(params.userText);
+  if (requestedTargets.length > 0) {
+    for (const target of localMutationTargets) {
+      if (mutationTargetIsAllowedByRequestedScope(target, requestedTargets)) {
+        continue;
+      }
+      return {
+        required: true,
+        satisfied: false,
+        reason: `mutated ${target} outside the requested local target scope (${requestedTargets.join(", ")})`,
+      };
+    }
+  }
+
+  for (const mutation of successfulMutations) {
+    for (const target of mutation.targets) {
+      if (!mutationTargetRequiresPreEvidence(params.userText, target)) continue;
+      if (
+        successfulLocalEvidenceBefore(
+          scopedMessages,
+          mutation.messageIndex,
+          target,
+        )
+      ) {
+        continue;
+      }
+      return {
+        required: true,
+        satisfied: false,
+        reason: `mutated ${target} before collecting matching local source evidence`,
+      };
+    }
+  }
+
+  const validationTargets = localMutationTargets.filter(
+    mutationTargetRequiresValidation,
+  );
+  if (validationTargets.length > 0) {
+    const lastCodeMutationIndex = Math.max(
+      ...successfulMutations
+        .filter((mutation) =>
+          mutation.targets.some(mutationTargetRequiresValidation),
+        )
+        .map((mutation) => mutation.messageIndex),
+    );
+    if (!successfulValidationAfter(scopedMessages, lastCodeMutationIndex)) {
+      return {
+        required: true,
+        satisfied: false,
+        reason: `mutated code or configuration without successful validation after the final mutation (${validationTargets.join(", ")})`,
+      };
+    }
+  }
+
+  return {
+    required: true,
+    satisfied: true,
+    reason: "implementation stayed scoped, evidence-backed, and validated",
+  };
+}
+
 export function memorySearchNeedReason(params: {
   messages: AgentEndEventMessage[];
   userText: string;
@@ -5141,6 +5386,36 @@ export function evaluateHarnessTurn(params: {
         `The latest turn needs matching evidence (${evidenceRouting.reason}).`,
         "Use the cheapest matching evidence path first: local read/search tools for local artifacts, khala_search_memory for stored lessons, and focused web/search/researcher tools for external, current, URL, or documentation facts.",
         "Do not answer from memory alone, unrelated local reads, or unrun commands when the turn requires source-backed, command-backed, current, or artifact-specific verification.",
+      ].join("\n"),
+    });
+  }
+
+  const implementationQuality = evaluateImplementationQuality({
+    messages: params.messages,
+    userText: params.userText,
+  });
+  if (implementationQuality.required && !implementationQuality.satisfied) {
+    issues.push({
+      code: "implementation_quality",
+      title: "IMPLEMENTATION QUALITY REQUIRED",
+      block,
+      remediation: {
+        action: "repair_scoped_validated_implementation",
+        cheapestTool: "matching local read/search plus focused validation command",
+        retry:
+          "Inspect the target before mutating it, revert or explain unrelated mutations, run validation after the final code/config mutation, then retry the final response with scoped proof.",
+        avoid: [
+          "drive-by edits",
+          "editing target files before reading them",
+          "stale pre-change validation",
+          "unvalidated code or config mutations",
+        ],
+      },
+      message: [
+        "IMPLEMENTATION QUALITY REQUIRED",
+        "",
+        `The implementation path was not best-solution quality (${implementationQuality.reason}).`,
+        "Keep mutations scoped to concrete requested targets, inspect matching local evidence before edits, and run validation after the final code or configuration mutation.",
       ].join("\n"),
     });
   }
