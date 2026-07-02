@@ -262,6 +262,14 @@ function inferWorkflowLesson(input: AssessInput): { kind: LearningKind; trigger:
         "Use matching evidence before answering: local read/search for local artifacts and focused web/search/researcher tools for external or current facts.",
     };
   }
+  if ((input.policyWarnings ?? []).some((line) => /harness issue: implementation_quality/i.test(line))) {
+    return {
+      kind: "tool_rule",
+      trigger: "implementation task with local file or code mutations",
+      lesson:
+        "Keep mutations scoped, inspect matching local evidence before editing existing targets, and run validation after the final code or configuration mutation before finalizing.",
+    };
+  }
   if ((input.policyWarnings ?? []).some((line) => /harness issue: model_escalation/i.test(line))) {
     return {
       kind: "tool_rule",

@@ -23,6 +23,7 @@ import {
   evaluateEvidenceRouting,
   evaluateHarnessTurn,
   evaluateLearningCapture,
+  evaluateImplementationQuality,
   evaluateMemorySearchRouting,
   evaluateModelEscalation,
   evaluateSkillRouting,
@@ -9848,6 +9849,91 @@ test("requires khala_learn for durable learning capture", () => {
       required: true,
       satisfied: false,
       reason: "user explicitly requested durable memory capture",
+    },
+  );
+});
+
+test("implementation quality requires scoped evidence-backed validated mutations", () => {
+  assert.deepEqual(
+    evaluateImplementationQuality({
+      messages: [
+        textMessage("user", "Update tsconfig.typecheck.json."),
+        assistantToolCall("read", { path: "tsconfig.typecheck.json" }),
+        toolResult("existing compilerOptions include extensions"),
+        assistantToolCall("apply_patch", { path: "tsconfig.typecheck.json" }),
+        toolResult("patched tsconfig.typecheck.json"),
+        assistantToolCall("bash", { command: "npm run typecheck" }),
+        toolResult("npm run typecheck completed successfully"),
+      ],
+      userText: "Update tsconfig.typecheck.json.",
+    }),
+    {
+      required: true,
+      satisfied: true,
+      reason: "implementation stayed scoped, evidence-backed, and validated",
+    },
+  );
+
+  assert.deepEqual(
+    evaluateImplementationQuality({
+      messages: [
+        textMessage("user", "Update tsconfig.typecheck.json."),
+        assistantToolCall("apply_patch", { path: "tsconfig.typecheck.json" }),
+        toolResult("patched tsconfig.typecheck.json"),
+        assistantToolCall("bash", { command: "npm run typecheck" }),
+        toolResult("npm run typecheck completed successfully"),
+      ],
+      userText: "Update tsconfig.typecheck.json.",
+    }),
+    {
+      required: true,
+      satisfied: false,
+      reason:
+        "mutated tsconfig.typecheck.json before collecting matching local source evidence",
+    },
+  );
+
+  assert.deepEqual(
+    evaluateImplementationQuality({
+      messages: [
+        textMessage("user", "Update tsconfig.typecheck.json."),
+        assistantToolCall("read", { path: "tsconfig.typecheck.json" }),
+        toolResult("existing compilerOptions include extensions"),
+        assistantToolCall("bash", { command: "npm run typecheck" }),
+        toolResult("npm run typecheck completed successfully"),
+        assistantToolCall("apply_patch", { path: "tsconfig.typecheck.json" }),
+        toolResult("patched tsconfig.typecheck.json"),
+      ],
+      userText: "Update tsconfig.typecheck.json.",
+    }),
+    {
+      required: true,
+      satisfied: false,
+      reason:
+        "mutated code or configuration without successful validation after the final mutation (tsconfig.typecheck.json)",
+    },
+  );
+
+  assert.deepEqual(
+    evaluateImplementationQuality({
+      messages: [
+        textMessage("user", "Update tsconfig.typecheck.json."),
+        assistantToolCall("read", { path: "tsconfig.typecheck.json" }),
+        toolResult("existing compilerOptions include extensions"),
+        assistantToolCall("apply_patch", { path: "tsconfig.typecheck.json" }),
+        toolResult("patched tsconfig.typecheck.json"),
+        assistantToolCall("apply_patch", { path: "README.md" }),
+        toolResult("patched README.md"),
+        assistantToolCall("bash", { command: "npm run typecheck" }),
+        toolResult("npm run typecheck completed successfully"),
+      ],
+      userText: "Update tsconfig.typecheck.json.",
+    }),
+    {
+      required: true,
+      satisfied: false,
+      reason:
+        "mutated README.md outside the requested local target scope (tsconfig.typecheck.json)",
     },
   );
 });

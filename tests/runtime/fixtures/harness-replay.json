@@ -48,7 +48,8 @@
         "tool_efficiency",
         "memory_search",
         "skill_routing",
-        "evidence_routing"
+        "evidence_routing",
+        "implementation_quality"
       ]
     },
     {
@@ -1449,9 +1450,14 @@
           "text": "patched tests/runtime/fixtures/harness-replay.json"
         }
       ],
-      "expectedIssueCodes": ["memory_search", "workflow_drift"],
+      "expectedIssueCodes": [
+        "memory_search",
+        "implementation_quality",
+        "workflow_drift"
+      ],
       "expectedIssueActions": [
         "run_focused_memory_search",
+        "repair_scoped_validated_implementation",
         "resume_ordered_workflow_step"
       ],
       "expectedIssueMessageIncludes": [
@@ -1543,9 +1549,14 @@
           "text": "patched tests/runtime/fixtures/harness-replay.json"
         }
       ],
-      "expectedIssueCodes": ["memory_search", "workflow_drift"],
+      "expectedIssueCodes": [
+        "memory_search",
+        "implementation_quality",
+        "workflow_drift"
+      ],
       "expectedIssueActions": [
         "run_focused_memory_search",
+        "repair_scoped_validated_implementation",
         "resume_ordered_workflow_step"
       ],
       "expectedIssueMessageIncludes": [
@@ -1593,9 +1604,14 @@
           "text": "patched tests/runtime/fixtures/harness-replay.json"
         }
       ],
-      "expectedIssueCodes": ["memory_search", "workflow_drift"],
+      "expectedIssueCodes": [
+        "memory_search",
+        "implementation_quality",
+        "workflow_drift"
+      ],
       "expectedIssueActions": [
         "run_focused_memory_search",
+        "repair_scoped_validated_implementation",
         "resume_ordered_workflow_step"
       ],
       "expectedIssueMessageIncludes": [
