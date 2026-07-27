@@ -1,0 +1,71 @@
+{
+  "name": "@pesap/khala",
+  "version": "1.0.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Khala coding-agent extension with prompts and themes",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "bin": {
+    "khala": "./bin/khala.js"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/src/index.js",
+      "./dist/extensions/pi-review/review.js"
+    ],
+    "prompts": [
+      "./prompts"
+    ],
+    "themes": [
+      "./themes"
+    ]
+  },
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "extensions",
+    "prompts",
+    "system-prompts",
+    "templates",
+    "themes",
+    "assets",
+    "src/khala-config.ts",
+    "src/khala-setup.ts"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc",
+    "check": "biome check src extensions/pi-review && tsc --noEmit",
+    "dev": "tsc --watch",
+    "prepack": "npm run clean && npm run build",
+    "test": "npm run build && node --test test/khala.test.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "brace-expansion": "5.0.8"
+    },
+    "brace-expansion": "5.0.8"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.7.0",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
+    "nanoid": "6.0.0",
+    "typebox": "1.1.38"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.4",
+    "typescript": "5.9.3"
+  }
+}

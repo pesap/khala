@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 100 100">
+  <defs>
+    <radialGradient id="khala" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#E0FFFF"/>
+      <stop offset="40%" stop-color="#00FFFF"/>
+      <stop offset="100%" stop-color="#0000FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="50" cy="50" r="45" fill="none" stroke="#00BFFF" stroke-width="1.5" stroke-dasharray="3 7" opacity="0.8"/>
+  <circle cx="50" cy="50" r="35" fill="none" stroke="#00FFFF" stroke-width="0.5" opacity="0.5"/>
+  <path d="M 50 10 C 80 20 90 45 90 50 C 70 45 60 55 50 65 C 40 55 30 45 10 50 C 10 45 20 20 50 10 Z" fill="#F1C40F" stroke="#E67E22" stroke-width="1"/>
+  <path d="M 50 90 C 65 80 75 60 75 55 C 60 60 55 65 50 75 C 45 65 40 60 25 55 C 25 60 35 80 50 90 Z" fill="#D4AF37" stroke="#DAA520" stroke-width="1"/>
+  <circle cx="50" cy="47" r="28" fill="url(#khala)"/>
+  <polygon points="50,22 62,47 50,75 38,47" fill="#FFFFFF" opacity="0.9"/>
+  <polygon points="50,28 56,47 50,65 44,47" fill="#B0E0E6"/>
+</svg>

@@ -1,0 +1,1433 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import test from "node:test";
+import createExtension, { createExecutorViewHandler } from "../dist/src/index.js";
+import { runKhalaDemo } from "../dist/src/khala-demo.js";
+import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
+import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
+import { readCurrentMission, readMandate } from "../dist/src/khala-archive-projections.js";
+import { enqueueConclaveWake } from "../dist/src/khala-conclave.js";
+import { createExecutorStarter } from "../dist/src/executor.js";
+import {
+	createExecutorRecord,
+	listExecutorRecords,
+	readExecutorRecord,
+	updateExecutorRecord,
+	writeExecutorRecord,
+} from "../dist/src/khala-executor-registry.js";
+import { KhalaSessionList } from "../dist/src/khala-session-list.js";
+import { toggleKhalaPopup } from "../dist/src/khala-popup.js";
+import { createSessionSource } from "../dist/src/khala-sessions.js";
+import { listSignals, readSignal } from "../dist/src/khala-signal.js";
+import { isSignal } from "../dist/src/khala-model.js";
+import { registerKhalaObserver } from "../dist/src/khala-observer.js";
+import { registerKhalaWork } from "../dist/src/khala-work.js";
+import { buildKhalaTriagePrompt, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
+
+function createPiStub(commands, tools = new Map(), flags = new Map()) {
+	return {
+		registerCommand(name, command) {
+			commands.set(name, command);
+		},
+		registerFlag() {},
+		registerShortcut() {},
+		registerTool(tool) {
+			tools.set(tool.name, tool);
+		},
+		on() {},
+		getFlag(name) {
+			return flags.get(name);
+		},
+		appendEntry() {},
+	};
+}
+
+test("/khala creates and exposes a persisted project Conclave when absent", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-test-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	const userSessionPath = join(root, "user.jsonl");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+
+	try {
+		const commands = new Map();
+		createExtension(createPiStub(commands));
+		const notifications = [];
+		const context = {
+			cwd: projectPath,
+			mode: "print",
+			sessionManager: {
+				getSessionFile() {
+					return userSessionPath;
+				},
+				getBranch() {
+					return [];
+				},
+			},
+			ui: {
+				notify(message) {
+					notifications.push(message);
+				},
+			},
+		};
+
+		await commands.get("khala").handler("", context);
+
+		assert.equal(notifications.length, 1);
+		const [projectDirectory] = readdirSync(join(agentDir, "khala", "conclaves"));
+		const mappingPath = join(agentDir, "khala", "conclaves", projectDirectory, "session.json");
+		const mapping = JSON.parse(readFileSync(mappingPath, "utf8"));
+		const { sessionPath } = mapping;
+		assert.equal(typeof sessionPath, "string");
+		assert.equal(mapping.userSessionPath, userSessionPath);
+		const entries = readFileSync(sessionPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		assert.ok(entries.some((entry) => entry.customType === "khala-conclave"));
+		assert.ok(entries.some((entry) => entry.name === "Khala Conclave"));
+
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "execution-1",
+				workId: "work-1",
+				executorName: "Artanis",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "tmux",
+			}),
+		);
+		appendArchiveRecord(projectPath, {
+			type: "submission",
+			workId: "work-1",
+			payload: {
+				workId: "work-1",
+				projectPath,
+				status: "queued",
+				work: {
+					title: "Improve session roster",
+					objective: "Make active sessions easier to scan.",
+					context: "",
+					scope: "Khala session list",
+					acceptanceCriteria: ["Active work is visible."],
+					constraints: [],
+					plan: ["Render active work titles."],
+					validation: ["Run the session tests."],
+				},
+				archivePath: join(root, "archive.jsonl"),
+			},
+		});
+
+		const source = createSessionSource(
+			{
+				cwd: projectPath,
+				sessionManager: {
+					getSessionFile() {
+						return sessionPath;
+					},
+				},
+			},
+			() => sessionPath,
+			() => mapping.userSessionPath,
+		);
+		const sessions = source.getActiveSessions(sessionPath);
+		const userSession = sessions.find((session) => session.id === "user");
+		const conclaveSession = sessions.find((session) => session.id === "conclave");
+		const executorSession = sessions.find((session) => session.id === "executor:execution-1");
+		assert.equal(userSession?.sessionPath, userSessionPath);
+		assert.equal(userSession?.isCurrent, false);
+		assert.equal(userSession?.displayOnly, false);
+		assert.equal(userSession?.action, "context switch");
+		assert.equal(userSession?.sessionPathLabel, relative(projectPath, userSessionPath));
+		assert.equal(conclaveSession?.sessionPath, sessionPath);
+		assert.equal(conclaveSession?.isCurrent, true);
+		assert.equal(conclaveSession?.displayOnly, false);
+		assert.equal(conclaveSession?.state, "input");
+		assert.equal(conclaveSession?.stateLabel, "Input Required");
+		assert.equal(conclaveSession?.action, "context switch");
+		assert.equal(executorSession?.displayOnly, true);
+		assert.equal(executorSession?.sessionPath, "");
+		assert.equal(executorSession?.sessionPathLabel, "separate Pi process");
+		assert.equal(executorSession?.sandboxPath, join(root, "sandbox"));
+		assert.equal(executorSession?.sandboxPathLabel, relative(projectPath, join(root, "sandbox")));
+		assert.equal(executorSession?.state, "working");
+		assert.equal(executorSession?.task, "Improve session roster");
+
+		updateExecutorRecord(projectPath, "execution-1", { status: "failed" });
+		const failedExecutor = source
+			.getActiveSessions(sessionPath)
+			.find((session) => session.id === "executor:execution-1");
+		assert.equal(failedExecutor, undefined);
+
+		updateExecutorRecord(projectPath, "execution-1", { status: "finished" });
+		const finishedExecutor = source
+			.getActiveSessions(sessionPath)
+			.find((session) => session.id === "executor:execution-1");
+		assert.equal(finishedExecutor, undefined);
+
+		const unavailableSource = createSessionSource(
+			{
+				cwd: projectPath,
+				sessionManager: {
+					getSessionFile() {
+						return undefined;
+					},
+				},
+			},
+			() => sessionPath,
+			() => undefined,
+		);
+		const unavailableUser = unavailableSource.getActiveSessions("").find((session) => session.id === "user");
+		assert.equal(unavailableUser?.sessionPathLabel, "unavailable");
+		assert.equal(unavailableUser?.isCurrent, false);
+		const idleUserSource = createSessionSource(
+			{
+				cwd: projectPath,
+				isIdle() {
+					return true;
+				},
+				sessionManager: {
+					getSessionFile() {
+						return userSessionPath;
+					},
+				},
+			},
+			() => undefined,
+			() => userSessionPath,
+		);
+		const idleUser = idleUserSource.getActiveSessions(userSessionPath).find((session) => session.id === "user");
+		assert.equal(idleUser?.state, "input");
+
+		const busyUserSource = createSessionSource(
+			{
+				cwd: projectPath,
+				isIdle() {
+					return false;
+				},
+				sessionManager: {
+					getSessionFile() {
+						return userSessionPath;
+					},
+				},
+			},
+			() => undefined,
+			() => userSessionPath,
+		);
+		const busyUser = busyUserSource.getActiveSessions(userSessionPath).find((session) => session.id === "user");
+		assert.equal(busyUser?.state, "working");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("stale Executor pane targets are marked failed without exposing launcher errors", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-stale-pane-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "stale-execution",
+				workId: "stale-work",
+				executorName: "Zeratul",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "tmux",
+				target: "dead-server:stale-pane",
+			}),
+		);
+		const notifications = [];
+		const handler = createExecutorViewHandler(
+			{
+				cwd: projectPath,
+				ui: { notify(message) { notifications.push(message); } },
+			},
+			async () => {
+				throw new Error("tmux server is gone");
+			},
+		);
+		assert.ok(handler);
+		await handler({
+			id: "executor:stale-execution",
+			name: "Zeratul",
+			identity: "stale-execution",
+			launcher: "tmux",
+			target: "dead-server:stale-pane",
+		});
+		assert.equal(readExecutorRecord(projectPath, "stale-execution")?.status, "failed");
+		assert.deepEqual(notifications, ["The Zeratul Executor pane is no longer available."]);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Conclave storage appends submission state to the configured Archive", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-archive-test-"));
+	const agentDir = join(root, "agent");
+	const archiveRoot = join(root, "archive");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(join(agentDir, "khala.json"), JSON.stringify({ archiveRoot }));
+	try {
+		const storage = createFileConclaveStorage();
+		const work = {
+			title: "Archive test",
+			objective: "Verify Archive persistence.",
+			context: "Test context",
+			scope: "Test scope",
+			acceptanceCriteria: ["The Archive contains every state."],
+			constraints: [],
+			plan: ["Append state records."],
+			validation: ["Read the Archive."],
+		};
+		const submitted = storage.submit({ workId: "work-archive", projectPath, work });
+		assert.equal(submitted.archivePath, getArchivePath(projectPath));
+		assert.ok(submitted.archivePath.startsWith(archiveRoot));
+		assert.equal(storage.claimSubmission(projectPath, "work-archive"), true);
+		storage.markSubmissionQueued(projectPath, "work-archive");
+		assert.equal(storage.claimSubmission(projectPath, "work-archive"), true);
+		storage.markSubmissionLaunched(projectPath, "work-archive", { sandboxPath: "/tmp/sandbox" });
+		assert.equal(storage.getPendingSubmission(projectPath, "work-archive"), undefined);
+		assert.equal(storage.requeueSubmission(projectPath, "work-archive"), true);
+		assert.equal(storage.getPendingSubmission(projectPath, "work-archive")?.status, "queued");
+		assert.equal(storage.claimSubmission(projectPath, "work-archive"), true);
+		storage.markSubmissionLaunched(projectPath, "work-archive", { sandboxPath: "/tmp/retry-sandbox" });
+		assert.equal(storage.getPendingSubmission(projectPath, "work-archive"), undefined);
+		const records = listArchiveRecords(projectPath);
+		assert.deepEqual(
+			records.filter((record) => record.type === "submission").map((record) => record.payload.status),
+			["queued", "launching", "queued", "launching", "launched", "queued", "launching", "launched"],
+		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Khala demo queues three live dummy Work submissions", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-demo-test-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		const result = await runKhalaDemo(projectPath, async (request) => storage.submit(request));
+		assert.equal(result.workIds.length, 3);
+		assert.equal(result.archivePath, getArchivePath(projectPath));
+		const submissions = listArchiveRecords(projectPath).filter((record) => record.type === "submission");
+		assert.equal(submissions.length, 3);
+		assert.deepEqual(
+			submissions.map((record) => record.payload.work.title),
+			["Khala live role demo: Direct Success", "Khala live role demo: Retry Success", "Khala live role demo: Retry Failure"],
+		);
+		assert.ok(submissions.every((record) => record.payload.work.context.includes("Dummy Executor Prompt:")));
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Executor Archive reads stay bound to the marker Project and execution", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-archive-reader-test-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	const foreignProjectPath = join(root, "foreign-project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "work-bound",
+			executionId: "execution-bound",
+			payload: {
+				signalId: "bound-signal",
+				workId: "work-bound",
+				executionId: "execution-bound",
+				executorName: "Bound Executor",
+				kind: "progress",
+				summary: "bound project",
+				evidence: ["bound evidence"],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "work-other",
+			executionId: "execution-other",
+			payload: {
+				signalId: "other-signal",
+				workId: "work-other",
+				executionId: "execution-other",
+				executorName: "Other Executor",
+				kind: "progress",
+				summary: "other execution",
+				evidence: ["other evidence"],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(foreignProjectPath, {
+			type: "signal",
+			workId: "work-bound",
+			executionId: "execution-bound",
+			payload: {
+				signalId: "foreign-signal",
+				workId: "work-bound",
+				executionId: "execution-bound",
+				executorName: "Bound Executor",
+				kind: "progress",
+				summary: "foreign project",
+				evidence: ["foreign evidence"],
+				observedAt: new Date().toISOString(),
+			},
+		});
+
+		const commands = new Map();
+		const tools = new Map();
+		const flags = new Map([["khala-project-path", projectPath]]);
+		createExtension(createPiStub(commands, tools, flags));
+		const archiveTool = tools.get("khala_read_archive");
+		const executorContext = {
+			cwd: join(root, "sandbox"),
+			sessionManager: {
+				getBranch() {
+					return [
+						{
+							type: "custom",
+							customType: "khala-executor",
+							data: {
+								workId: "work-bound",
+								executionId: "execution-bound",
+								executorName: "Bound Executor",
+								projectPath,
+							},
+						},
+					];
+				},
+			},
+		};
+
+		const result = await archiveTool.execute(
+			"archive",
+			{ executionId: "execution-bound" },
+			null,
+			null,
+			executorContext,
+		);
+		assert.deepEqual(result.details.records.map((record) => record.payload.summary), ["bound project"]);
+		assert.throws(
+			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
+			/An Executor may only read its bound execution/,
+		);
+
+		flags.set("khala-project-path", foreignProjectPath);
+		assert.throws(
+			() => archiveTool.execute("archive", { executionId: "execution-bound" }, null, null, executorContext),
+			/An Executor may only read its bound execution/,
+		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Executor launch preserves startup failures when sandbox cleanup also fails", async () => {
+	const sandbox = { path: "/tmp/khala-cleanup-sandbox", name: "cleanup-sandbox" };
+	for (const failureSource of ["callback", "launcher"]) {
+		const startupError = new Error(`${failureSource} failure`);
+		const cleanupError = new Error("cleanup failure");
+		let cleanupAttempted = false;
+		let launcherAttempted = false;
+		const vcsProvider = {
+			async createSandbox() {
+				return sandbox;
+			},
+			async removeSandbox() {
+				cleanupAttempted = true;
+				throw cleanupError;
+			},
+		};
+		const launcher = {
+			async launch() {
+				launcherAttempted = true;
+				throw startupError;
+			},
+			async focus() {},
+			async close() {},
+		};
+		const starter = createExecutorStarter(vcsProvider, launcher);
+		const request = {
+			projectPath: "/tmp/khala-project",
+			workId: "work-cleanup",
+			executionId: "execution-cleanup",
+			name: "Cleanup test",
+			executorName: "Cleanup Executor",
+			mission: "",
+			systemPrompt: "",
+			onSandboxCreated: failureSource === "callback" ? () => {
+				throw startupError;
+			} : undefined,
+		};
+
+		await assert.rejects(starter(request), (error) => {
+			assert.equal(error, startupError);
+			assert.equal(error.cleanupError, cleanupError);
+			return true;
+		});
+		assert.equal(cleanupAttempted, true);
+		assert.equal(launcherAttempted, failureSource === "launcher");
+	}
+});
+
+test("role-specific tools record only authorized Archive mutations", async () =>{
+	const root = mkdtempSync(join(tmpdir(), "khala-tools-test-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const commands = new Map();
+		const tools = new Map();
+		createExtension(createPiStub(commands, tools));
+		assert.ok(tools.has("khala_submit_work"));
+		assert.ok(tools.has("khala_launch_execution"));
+		assert.ok(tools.has("khala_signal"));
+		assert.ok(tools.has("khala_verdict"));
+		assert.ok(tools.has("khala_counsel"));
+		assert.equal(tools.has("khala_launch_work"), false);
+
+		const foreignProjectPath = join(root, "foreign-project");
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "execution-foreign",
+				workId: "work-foreign",
+				executorName: "Foreign Executor",
+				projectPath: foreignProjectPath,
+				sandboxPath: join(root, "foreign-sandbox"),
+				launcher: "demo",
+			}),
+		);
+		const signalTool = tools.get("khala_signal");
+		assert.throws(
+			() =>
+				signalTool.execute(
+					"signal",
+					{ kind: "progress", summary: "Unexpected cross-project signal.", evidence: [] },
+					null,
+					null,
+					{
+						cwd: projectPath,
+						sessionManager: {
+							getBranch() {
+								return [
+									{
+										type: "custom",
+										customType: "khala-executor",
+										data: {
+											workId: "work-foreign",
+											executionId: "execution-foreign",
+											executorName: "Foreign Executor",
+											projectPath: foreignProjectPath,
+										},
+									},
+								];
+							},
+							getSessionFile() {
+								return undefined;
+							},
+						},
+					},
+				),
+			/session sandbox does not match/,
+		);
+
+		const source = appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "work-counsel",
+			executionId: "execution-counsel",
+			payload: {
+				signalId: "signal-counsel",
+				workId: "work-counsel",
+				executionId: "execution-counsel",
+				executorName: "Counsel Executor",
+				kind: "progress",
+				summary: "Observed evidence.",
+				evidence: ["Source evidence."],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		const verdictSignal = appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "work-verdict",
+			executionId: "execution-verdict",
+			payload: {
+				signalId: "signal-verdict",
+				workId: "work-verdict",
+				executionId: "execution-verdict",
+				executorName: "Failure Lane",
+				kind: "blocked",
+				summary: "Validation failed.",
+				evidence: ["The deterministic check failed."],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "execution-verdict",
+				workId: "work-verdict",
+				executorName: "Failure Lane",
+				projectPath,
+				sandboxPath: join(root, "failure-sandbox"),
+				launcher: "tmux",
+			}),
+		);
+		const counselTool = tools.get("khala_counsel");
+		const preserverContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-role", data: { role: "preserver" } }];
+				},
+				getSessionFile() {
+					return join(root, "preserver.jsonl");
+				},
+			},
+		};
+		await counselTool.execute("counsel", {
+			workId: "work-counsel",
+			executionId: "execution-counsel",
+			sourceRecordIds: [source.recordId],
+			observations: ["Observed evidence."],
+			recommendations: ["Continue review."],
+			uncertainties: [],
+		}, null, null, preserverContext);
+		const counselRecords = listArchiveRecords(projectPath).filter((record) => record.type === "counsel");
+		assert.equal(counselRecords.length, 1);
+		assert.equal(counselRecords[0]?.executionId, "execution-counsel");
+		const verdictTool = tools.get("khala_verdict");
+		const conclaveContext = {
+			...preserverContext,
+			sessionManager: {
+				...preserverContext.sessionManager,
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+			},
+		};
+		await verdictTool.execute(
+			"verdict",
+			{
+				workId: "work-verdict",
+				executionId: "execution-verdict",
+				signalId: "signal-verdict",
+				decision: "reject",
+				reason: "The validation evidence shows this execution cannot be accepted.",
+			},
+			null,
+			null,
+			conclaveContext,
+		);
+		assert.equal(readExecutorRecord(projectPath, "execution-verdict")?.status, "failed");
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "verdict").length, 1);
+		assert.equal(verdictSignal.payload.signalId, "signal-verdict");
+		assert.equal(
+			isSignal({
+				signalId: "signal-invalid-kind",
+				workId: "work-invalid-signal",
+				executionId: "execution-invalid-signal",
+				executorName: "Invalid Executor",
+				kind: "unknown",
+				summary: "Malformed signal.",
+				evidence: [],
+				observedAt: new Date().toISOString(),
+			}),
+			false,
+		);
+
+		const retryStorage = createFileConclaveStorage();
+		const retryWork = {
+			title: "Retry test",
+			objective: "Verify retry requeue.",
+			context: "Test context",
+			scope: "Test scope",
+			acceptanceCriteria: ["The submission is requeued."],
+			constraints: [],
+			plan: ["Issue retry."],
+			validation: ["Read the pending submission."],
+		};
+		retryStorage.submit({ workId: "work-retry", projectPath, work: retryWork });
+		assert.equal(retryStorage.claimSubmission(projectPath, "work-retry"), true);
+		retryStorage.markSubmissionLaunched(projectPath, "work-retry", { sandboxPath: join(root, "retry-sandbox") });
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "work-retry",
+			executionId: "execution-retry",
+			payload: {
+				signalId: "signal-retry",
+				workId: "work-retry",
+				executionId: "execution-retry",
+				executorName: "Retry Executor",
+				kind: "blocked",
+				summary: "Retryable failure.",
+				evidence: ["The first attempt was blocked."],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "execution-retry",
+				workId: "work-retry",
+				executorName: "Retry Executor",
+				projectPath,
+				sandboxPath: join(root, "retry-sandbox"),
+				launcher: "demo",
+			}),
+		);
+		const retryResult = await verdictTool.execute(
+			"retry-verdict",
+			{
+				workId: "work-retry",
+				executionId: "execution-retry",
+				signalId: "signal-retry",
+				decision: "retry",
+				reason: "Retry the blocked execution.",
+			},
+			null,
+			null,
+			conclaveContext,
+		);
+		assert.match(retryResult.content[0].text, /requeued/);
+		assert.equal(retryStorage.getPendingSubmission(projectPath, "work-retry")?.status, "queued");
+
+		const userContext = {
+			...preserverContext,
+			sessionManager: {
+			...preserverContext.sessionManager,
+			getBranch() {
+				return [];
+			},
+		},
+		};
+		assert.throws(
+			() =>
+				counselTool.execute(
+					"counsel",
+					{
+						workId: "work-counsel",
+						sourceRecordIds: [source.recordId],
+						observations: [],
+						recommendations: [],
+						uncertainties: [],
+					},
+					null,
+					null,
+					userContext,
+				),
+			/Preserver session/,
+		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("KhalaSessionList renders one flat session list, scrolls, and blocks display-only confirmation", () => {
+	const theme = {
+		fg(_color, text) {
+			return text;
+		},
+		bg(_color, text) {
+			return text;
+		},
+	};
+	const makeSession = (id, displayOnly, isCurrent = false) => ({
+		id,
+		name: id,
+		role: displayOnly ? "Executor" : "Conclave",
+		state: displayOnly ? "working" : "input",
+		stateLabel: "Active",
+		action: displayOnly ? "display only" : "context switch",
+		displayOnly,
+		isCurrent,
+		task: id === "user" ? "current project" : `Task ${id}`,
+		...(id === "executor-1"
+			? { latestSignal: { kind: "progress", summary: "checking fixtures", observedAt: "2026-01-01T00:00:00.000Z" } }
+			: {}),
+	});
+	const sessions = [
+		makeSession("user", false, true),
+		makeSession("conclave", false),
+		makeSession("executor-1", true),
+		makeSession("executor-2", true),
+		makeSession("executor-3", true),
+	];
+	const list = new KhalaSessionList(sessions, theme);
+	const selected = [];
+	const confirmed = [];
+	list.onSelectionChange = (session) => selected.push(session.id);
+	list.onSelect = (session) => confirmed.push(session.id);
+
+	const initialRender = list.render(80).join("\n");
+	assert.doesNotMatch(initialRender, /CURRENT CONTEXT|AGENTS · DISPLAY ONLY/);
+	assert.match(initialRender, /user/);
+	assert.match(initialRender, /conclave/);
+	assert.match(initialRender, /executor-1/);
+	assert.match(initialRender, /progress/);
+	assert.match(initialRender, /sessions 1-4\/5/);
+
+	list.handleInput("\u001b[B");
+	list.handleInput("\u001b[B");
+	list.handleInput("\u001b[B");
+	list.handleInput("\u001b[B");
+	assert.equal(list.getSelectedSession()?.id, "executor-3");
+	assert.match(list.render(80).join("\n"), /sessions 2-5\/5/);
+	list.handleInput("\r");
+	assert.deepEqual(confirmed, []);
+	assert.deepEqual(selected, ["conclave", "executor-1", "executor-2", "executor-3"]);
+
+	list.updateSessions([sessions[0], sessions[1], makeSession("executor-new", true)]);
+	assert.equal(list.getSelectedSession()?.id, "user");
+	list.updateSessions(sessions.slice(0, 2));
+	assert.equal(list.getSelectedSession()?.id, "user");
+	assert.doesNotMatch(list.render(80).join("\n"), /AGENTS/);
+});
+
+test("Khala popup refreshes its session roster while open", async () => {
+	const theme = {
+		fg(_color, text) {
+			return text;
+		},
+		bg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const userSession = {
+		id: "user",
+		name: "You",
+		role: "User",
+		state: "input",
+		stateLabel: "Input Required",
+		action: "context switch",
+		displayOnly: false,
+		isCurrent: true,
+		task: "current project",
+		skills: [],
+		sessionPath: "/tmp/user.jsonl",
+		sessionPathLabel: "../../user.jsonl",
+	};
+	const executorSession = {
+		id: "executor:1",
+		name: "Executor",
+		role: "Executor",
+		state: "working",
+		stateLabel: "Active",
+		action: "display only",
+		displayOnly: true,
+		isCurrent: false,
+		task: "Work work-1",
+		skills: ["signals"],
+		sessionPath: "",
+		sessionPathLabel: "separate Pi process",
+		latestSignal: { kind: "progress", summary: "checking", observedAt: "2026-01-01T00:00:00.000Z" },
+	};
+	let sessions = [userSession];
+	let component;
+	let finish;
+	let customOptions;
+	const source = {
+		getActiveSessions() {
+			return sessions;
+		},
+	};
+	const context = {
+		mode: "tui",
+		sessionManager: {
+			getSessionFile() {
+				return userSession.sessionPath;
+			},
+		},
+		ui: {
+			custom(factory, options) {
+				customOptions = options;
+				return new Promise((resolve) => {
+					finish = resolve;
+					component = factory({ requestRender() {} }, theme, {}, finish);
+				});
+			},
+		},
+	};
+
+	const popupPromise = toggleKhalaPopup(context, source);
+	sessions = [userSession, executorSession];
+	await new Promise((resolve) => setTimeout(resolve, 1100));
+	const renderedPopup = component.render(80).join("\n");
+	assert.doesNotMatch(renderedPopup, /CURRENT CONTEXT|AGENTS · DISPLAY ONLY/);
+	assert.match(renderedPopup, /Executor/);
+	assert.match(renderedPopup, /progress/);
+	component.handleInput("\u001b");
+	finish?.(null);
+	await popupPromise;
+	assert.equal(customOptions, undefined);
+});
+
+
+test("Archive reads fail closed with safe, line-aware corruption errors", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-corrupt-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const archivePath = getArchivePath(projectPath);
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "safe-work",
+			payload: {
+				signalId: "safe-signal",
+				workId: "safe-work",
+				executionId: "safe-execution",
+				executorName: "Safe Executor",
+				kind: "progress",
+				summary: "safe",
+				evidence: ["safe evidence"],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		writeFileSync(archivePath, `${readFileSync(archivePath, "utf8")}not-json-secret-payload\n`);
+		assert.throws(
+			() => listArchiveRecords(projectPath),
+			(error) => error.name === "KhalaArchiveReadError" && error.lineNumber === 2 && !error.message.includes("secret-payload"),
+		);
+		writeFileSync(
+			archivePath,
+			`${JSON.stringify({
+				recordId: "invalid-payload",
+				type: "signal",
+				projectPath,
+				workId: "safe-work",
+				recordedAt: new Date().toISOString(),
+				payload: { secret: "not displayed" },
+			})}\n`,
+		);
+		assert.throws(
+			() => listArchiveRecords(projectPath),
+			(error) => error.name === "KhalaArchiveReadError" && error.lineNumber === 1 && !error.message.includes("not displayed"),
+		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("trusted projects use their archive root consistently", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-trusted-"));
+	const agentDir = join(root, "agent");
+	const globalRoot = join(root, "global-archive");
+	const trustedRoot = join(root, "trusted-archive");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	mkdirSync(join(projectPath, ".pi"), { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(join(agentDir, "khala.json"), JSON.stringify({ archiveRoot: globalRoot }));
+	writeFileSync(join(projectPath, ".pi", "khala.json"), JSON.stringify({ archiveRoot: trustedRoot }));
+	try {
+		const globalPath = getArchivePath(projectPath, false);
+		const trustedPath = getArchivePath(projectPath, true);
+		assert.notEqual(globalPath, trustedPath);
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "global",
+			payload: {
+				signalId: "global-signal",
+				workId: "global",
+				executionId: "global-execution",
+				executorName: "Global Executor",
+				kind: "progress",
+				summary: "global",
+				evidence: ["global evidence"],
+				observedAt: new Date().toISOString(),
+			},
+		}, false);
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "trusted",
+			payload: {
+				signalId: "trusted-signal",
+				workId: "trusted",
+				executionId: "trusted-execution",
+				executorName: "Trusted Executor",
+				kind: "progress",
+				summary: "trusted",
+				evidence: ["trusted evidence"],
+				observedAt: new Date().toISOString(),
+			},
+		}, true);
+		assert.equal(listArchiveRecords(projectPath, false)[0].workId, "global");
+		assert.equal(listArchiveRecords(projectPath, true)[0].workId, "trusted");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("typed Archive projections expose validated lifecycle records", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-projection-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "projection-execution",
+				workId: "projection-work",
+				executorName: "Projection Executor",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "test",
+			}),
+		);
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "projection-work",
+			executionId: "projection-execution",
+			payload: {
+				signalId: "projection-signal",
+				workId: "projection-work",
+				executionId: "projection-execution",
+				executorName: "Projection Executor",
+				kind: "progress",
+				summary: "Projection is covered.",
+				evidence: ["test"],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "execution").length, 1);
+		assert.equal(listExecutorRecords(projectPath)[0].executionId, "projection-execution");
+		assert.equal(listSignals(projectPath)[0].signalId, "projection-signal");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Signals require running executions and Verdict replays are idempotent", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-fences-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const commands = new Map();
+		const tools = new Map();
+		createExtension(createPiStub(commands, tools));
+		const signalTool = tools.get("khala_signal");
+		const execution = createExecutorRecord({
+			executionId: "fence-execution",
+			workId: "fence-work",
+			executorName: "Fence Executor",
+			projectPath,
+			sandboxPath: join(root, "sandbox"),
+			launcher: "test",
+		});
+		writeExecutorRecord(execution);
+		updateExecutorRecord(projectPath, execution.executionId, { status: "failed" });
+		const executorContext = {
+			cwd: execution.sandboxPath,
+			sessionManager: {
+				getBranch() {
+					return [
+						{ type: "custom", customType: "khala-role", data: { role: "executor" } },
+					{ type: "custom", customType: "khala-executor", data: { workId: execution.workId, executionId: execution.executionId, executorName: execution.executorName, projectPath } },
+					];
+				},
+				getSessionFile() {
+					return undefined;
+				},
+			},
+		};
+		assert.throws(
+			() => signalTool.execute("fenced", { kind: "progress", summary: "late", evidence: [] }, null, null, executorContext),
+			/Only a running Executor execution/,
+		);
+
+		writeExecutorRecord(execution);
+		assert.throws(
+			() => signalTool.execute("empty-signal", { kind: "progress", summary: " ", evidence: [" "] }, null, null, executorContext),
+			/non-empty summary and at least one evidence item/,
+		);
+		const signalResult = await signalTool.execute(
+			"sandbox-signal",
+			{ kind: "progress", summary: "sandbox identity is valid", evidence: ["registered sandbox"] },
+			null,
+			null,
+			executorContext,
+		);
+		assert.match(signalResult.content[0].text, /recorded/);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "signal").length, 1);
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: execution.workId,
+			executionId: execution.executionId,
+			payload: {
+				signalId: "idempotent-signal",
+				workId: execution.workId,
+				executionId: execution.executionId,
+				executorName: execution.executorName,
+				kind: "blocked",
+				summary: "blocked",
+				evidence: ["evidence"],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		const verdictTool = tools.get("khala_verdict");
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+			},
+		};
+		const input = { workId: execution.workId, executionId: execution.executionId, signalId: "idempotent-signal", decision: "finish", reason: "verified" };
+		assert.throws(
+			() => verdictTool.execute("empty-verdict", { ...input, reason: " " }, null, null, conclaveContext),
+			/non-empty reason/,
+		);
+		const first = await verdictTool.execute("first", input, null, null, conclaveContext);
+		const second = await verdictTool.execute("second", input, null, null, conclaveContext);
+		assert.equal(first.details.verdictId, second.details.verdictId);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "verdict").length, 1);
+		assert.throws(() => verdictTool.execute("conflict", { ...input, decision: "reject" }, null, null, conclaveContext), /conflicting Verdict/);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("pre-launch starter failures remove the created sandbox", async () => {
+	const removed = [];
+	const vcs = {
+		async createSandbox() {
+			return { path: "/tmp/khala-failed-sandbox", name: "failed-sandbox" };
+		},
+		async removeSandbox(sandbox) {
+			removed.push(sandbox.path);
+		},
+	};
+	const launcher = {
+		async launch() {
+			throw new Error("launcher failed");
+		},
+		async focus() {},
+		async close() {},
+	};
+	const starter = createExecutorStarter(vcs, launcher);
+	await assert.rejects(
+		() => starter({ projectPath: "/tmp/project", workId: "work", executionId: "execution", name: "name", executorName: "Executor", mission: "mission", systemPrompt: "prompt" }),
+		/launcher failed/,
+	);
+	assert.deepEqual(removed, ["/tmp/khala-failed-sandbox"]);
+});
+
+test("pi-review pure selector helpers preserve target policy", async () => {
+	const { createBranchSelectorItems, createCommitSelectorItems, filterReviewSelectorItems, sortReviewBranches } = await import("../dist/extensions/pi-review/review.js");
+	assert.deepEqual(sortReviewBranches(["feature", "main", "current"], "current", "main"), ["main", "feature"]);
+	assert.deepEqual(createBranchSelectorItems(["main"], "main")[0].description, "(default)");
+	assert.equal(createCommitSelectorItems([{ sha: "123456789", title: "Fix" }])[0].label, "1234567 Fix");
+	assert.equal(filterReviewSelectorItems(createBranchSelectorItems(["main", "feature"], "main"), "feat").length, 1);
+});
+
+
+test("Khala triage parses approval, starts a Work draft, and requires a Conclave report", async () => {
+	assert.deepEqual(parseKhalaTriageArgs('--approve issue 123 --extra "focus on auth"'), {
+		approve: true,
+		target: "issue 123",
+		extraInstruction: "focus on auth",
+	});
+	assert.match(
+		buildKhalaTriagePrompt({ target: "issue 123", approve: true }),
+		/Work <work-id> was sent to the Project Conclave for admission and launch\./,
+	);
+
+	const commands = new Map();
+	const entries = [];
+	const messages = [];
+	const notifications = [];
+	registerKhalaTriage({
+		registerCommand(name, command) {
+			commands.set(name, command);
+		},
+		appendEntry(type, data) {
+			entries.push({ type, data });
+		},
+		sendUserMessage(message) {
+			messages.push(message);
+		},
+	});
+	await commands.get("khala-triage").handler("--approve issue 123", {
+		cwd: "/tmp/project",
+		hasUI: true,
+		ui: {
+			notify(message) {
+				notifications.push(message);
+			},
+		},
+	});
+	assert.equal(commands.has("triage"), true);
+	assert.equal(entries[0].type, "khala-work");
+	assert.equal(entries[0].data.status, "draft");
+	assert.equal(typeof entries[0].data.workId, "string");
+	assert.match(messages[0], /issue 123/);
+	assert.match(messages[0], /--approve/);
+	assert.deepEqual(notifications, ["Starting Khala triage for issue 123."]);
+});
+
+test("Conclave wake chains recover after a rejected wake", async () => {
+	const calls = [];
+	const runtime = { wakeChain: Promise.reject(new Error("previous wake failed")) };
+	await enqueueConclaveWake(runtime, async () => {
+		calls.push("first");
+		throw new Error("current wake failed");
+	}).catch(() => undefined);
+	await enqueueConclaveWake(runtime, async () => {
+		calls.push("second");
+	});
+	assert.deepEqual(calls, ["first", "second"]);
+});
+
+test("Mandate admission is Conclave-only, idempotent, and preserves the source submission", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-admission-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		const work = {
+			title: "Admission test",
+			objective: "Validate durable admission.",
+			context: "The required repository context is known.",
+			scope: "The temporary test project.",
+			acceptanceCriteria: ["A Mandate is recorded."],
+			constraints: [],
+			plan: ["Read the Archive."],
+			validation: ["Assert the projection."],
+		};
+		storage.submit({ workId: "admission-work", projectPath, work });
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+				getSessionFile() {
+					return join(root, "conclave.jsonl");
+				},
+			},
+		};
+		const admitTool = tools.get("khala_admit_work");
+		const first = await admitTool.execute("admit", { workId: "admission-work" }, null, null, conclaveContext);
+		const second = await admitTool.execute("admit-again", { workId: "admission-work" }, null, null, conclaveContext);
+		assert.equal(first.details.mandateId, second.details.mandateId);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mandate").length, 1);
+		assert.equal(storage.getSubmission(projectPath, "admission-work").submission.status, "admitted");
+		assert.equal(readMandate(projectPath, first.details.mandateId).terms.objective, work.objective);
+
+		storage.submit({
+			workId: "missing-context",
+			projectPath,
+			work: { ...work, context: "", title: "Missing context" },
+		});
+		const rejected = await admitTool.execute("missing", { workId: "missing-context" }, null, null, conclaveContext);
+		assert.equal(rejected.isError, true);
+		assert.match(rejected.details.reason, /Learning/);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Mandate, immutable Mission, retry successor, and Finish fences form one lifecycle", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-mission-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		const work = {
+			title: "Mission test",
+			objective: "Exercise Mission lifecycle.",
+			context: "Known context.",
+			scope: "Temporary project.",
+			acceptanceCriteria: ["The successor finishes."],
+			constraints: [],
+			plan: ["Run the lifecycle."],
+			validation: ["Read durable records."],
+		};
+		storage.submit({ workId: "mission-work", projectPath, work });
+		const tools = new Map();
+		let starts = 0;
+		const dependencies = {
+			workTemplate: "template",
+			executorSystemPrompt: "executor prompt",
+			isDedicatedConclaveSession: () => true,
+			submitWork: async (request) => storage.submit(request),
+			getSubmission: storage.getSubmission,
+			getPendingSubmission: storage.getPendingSubmission,
+			claimSubmission: storage.claimSubmission,
+			markSubmissionQueued: storage.markSubmissionQueued,
+			markSubmissionLaunched: storage.markSubmissionLaunched,
+			createExecutorStarter: () => async (request) => {
+				starts += 1;
+				const sandbox = { path: join(root, `sandbox-${starts}`), name: `sandbox-${starts}` };
+				request.onSandboxCreated?.(sandbox, "test");
+				assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, starts === 1 ? 1 : 2);
+				assert.match(request.mission, /Mandate:/);
+				return { id: `session-${starts}`, sandbox };
+			},
+		};
+		registerKhalaWork(createPiStub(new Map(), tools), dependencies);
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+				getSessionFile() {
+					return join(root, "conclave.jsonl");
+				},
+			},
+		};
+		await tools.get("khala_admit_work").execute("admit", { workId: "mission-work" }, null, null, conclaveContext);
+		const launch = await tools.get("khala_launch_execution").execute("launch", { workId: "mission-work" }, null, null, conclaveContext);
+		assert.equal(launch.details.status, "launched");
+		const firstMission = readCurrentMission(projectPath, "mission-work").mission;
+		const firstExecution = readExecutorRecord(projectPath, launch.details.executionId);
+		assert.equal(firstExecution.purpose.missionId, firstMission.missionId);
+		assert.equal(firstExecution.participantId, firstMission.assignedParticipantId);
+		assert.match(firstExecution.status, /running/);
+		const duplicate = await tools.get("khala_launch_execution").execute("duplicate", { workId: "mission-work" }, null, null, conclaveContext);
+		assert.equal(duplicate.details.executionId, launch.details.executionId);
+		assert.equal(starts, 1);
+
+		const runtimeTools = new Map();
+		createExtension(createPiStub(new Map(), runtimeTools));
+		const executorContext = {
+			cwd: firstExecution.sandboxPath,
+			sessionManager: {
+				getBranch() {
+					return [
+						{ type: "custom", customType: "khala-role", data: { role: "executor" } },
+						{ type: "custom", customType: "khala-executor", data: { workId: "mission-work", executionId: firstExecution.executionId, executorName: firstExecution.executorName, projectPath, missionId: firstMission.missionId, participantId: firstExecution.participantId } },
+					];
+				},
+				getSessionFile() {
+					return undefined;
+				},
+			},
+		};
+		const signal = await runtimeTools.get("khala_signal").execute("signal", { kind: "blocked", summary: "Retry is required.", evidence: ["test evidence"] }, null, null, executorContext);
+		const successorAssignment = { ...work, plan: ["Run the corrected lifecycle."] };
+		const retry = await runtimeTools.get("khala_verdict").execute("retry", { workId: "mission-work", executionId: firstExecution.executionId, signalId: signal.details.signalId, decision: "retry", reason: "The first execution is intentionally retryable.", successorAssignment }, null, null, conclaveContext);
+		assert.equal(retry.details.missionId, firstMission.missionId);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 2);
+		assert.equal(readCurrentMission(projectPath, "mission-work").mission.predecessorMissionId, firstMission.missionId);
+		assert.equal(readCurrentMission(projectPath, "mission-work").mission.mandateId, firstMission.mandateId);
+		assert.equal(readExecutorRecord(projectPath, firstExecution.executionId).status, "failed");
+
+		const secondLaunch = await tools.get("khala_launch_execution").execute("launch-successor", { workId: "mission-work" }, null, null, conclaveContext);
+		assert.equal(secondLaunch.details.status, "launched");
+		assert.equal(starts, 2);
+		const secondMission = readCurrentMission(projectPath, "mission-work").mission;
+		const secondExecution = readExecutorRecord(projectPath, secondLaunch.details.executionId);
+		const secondExecutorContext = {
+			cwd: secondExecution.sandboxPath,
+			sessionManager: {
+				getBranch() {
+					return [
+						{ type: "custom", customType: "khala-role", data: { role: "executor" } },
+						{ type: "custom", customType: "khala-executor", data: { workId: "mission-work", executionId: secondExecution.executionId, executorName: secondExecution.executorName, projectPath, missionId: secondMission.missionId, participantId: secondExecution.participantId } },
+					];
+				},
+				getSessionFile() {
+					return undefined;
+				},
+			},
+		};
+		const finishedSignal = await runtimeTools.get("khala_signal").execute("finished-signal", { kind: "finished", summary: "The successor passed.", evidence: ["validation passed"] }, null, null, secondExecutorContext);
+		await runtimeTools.get("khala_verdict").execute("finish", { workId: "mission-work", executionId: secondExecution.executionId, signalId: finishedSignal.details.signalId, decision: "finish", reason: "Acceptance criteria passed." }, null, null, conclaveContext);
+		assert.equal(readCurrentMission(projectPath, "mission-work").state, "finished");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Observer review executions remain submission-scoped and recover their queue claim", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-observer-lifecycle-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		storage.submit({
+			workId: "observer-work",
+			projectPath,
+			work: {
+				title: "Observer test",
+				objective: "Gather context.",
+				context: "",
+				scope: "Temporary project.",
+				acceptanceCriteria: ["Learning is recorded."],
+				constraints: [],
+				plan: ["Inspect files."],
+				validation: ["Cite sources."],
+			},
+		});
+		const tools = new Map();
+		let starterCalls = 0;
+		registerKhalaObserver(createPiStub(new Map(), tools), {
+			observerSystemPrompt: "observer prompt",
+			isDedicatedConclaveSession: () => true,
+			getSubmission: storage.getSubmission,
+			getPendingSubmission: storage.getPendingSubmission,
+			markSubmissionReviewing: storage.markSubmissionReviewing,
+			markSubmissionQueued: storage.markSubmissionQueued,
+			createObserverStarter: () => async (request) => {
+				starterCalls += 1;
+				assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "reviewing");
+				request.onSandboxCreated?.({ path: join(root, "observer-sandbox"), name: "observer-sandbox" }, "test");
+				return { id: "observer-session", sandbox: { path: join(root, "observer-sandbox"), name: "observer-sandbox" } };
+			},
+		});
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+			getBranch() {
+				return [{ type: "custom", customType: "khala-conclave", data: {} }];
+			},
+			getSessionFile() {
+				return join(root, "conclave.jsonl");
+			},
+		},
+		};
+		const result = await tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, conclaveContext);
+		assert.equal(result.details.workId, "observer-work");
+		assert.equal(starterCalls, 1);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 0);
+		const observer = listExecutorRecords(projectPath).find((execution) => execution.kind === "observer");
+		assert.equal(observer.purpose.kind, "observation");
+		assert.equal(observer.missionId, undefined);
+		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "reviewing");
+		storage.markSubmissionQueued(projectPath, "observer-work", observer.executionId);
+		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "queued");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
