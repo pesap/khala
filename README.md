@@ -1,23 +1,27 @@
-<div align="center">
+<div>
+  
+<img src="assets/khala-sigil.svg" alt="forge" align="left" width="192px" height="192px"/>
+<img align="left" width="0" height="192px" hspace="10"/>
 
-<img src="assets/khala-sigil.svg" alt="Khala sigil" width="150">
+### khala
+> Govern coding work with a Conclave, execute it in isolated sandboxes, and keep the evidence.
+>
+> [![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
+> [![CI](https://github.com/pesap/khala/actions/workflows/ci.yaml/badge.svg)](https://github.com/pesap/khala/actions/workflows/ci.yaml)
+> [![Release](https://img.shields.io/github/v/release/pesap/forge)](https://github.com/pesap/forge/releases)
+> [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT.txt)
+> [![Latest commit](https://img.shields.io/github/last-commit/pesap/khala?style=flat-square)](https://github.com/pesap/khala/commits/main)
+<br/>
+<br/>
+<br/>
 
-# Khala
-
-### Govern coding work with a Conclave, execute it in isolated sandboxes, and keep the evidence.
-
-[Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Documentation](#documentation) · [Contribute](#contribute)
-
-[![License](https://img.shields.io/badge/license-MIT-8abeb7?style=flat-square)]
-[![Latest commit](https://img.shields.io/github/last-commit/pesap/scratch?style=flat-square)](https://github.com/pesap/scratch/commits/main)
-
-<!-- Add assets/khala-hero.png generated from docs/art-prompts.md here. -->
-
-</div>
-
----
-
-## Introduction
+<p align="center">
+  <a href="#why-khala">Why Khala</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="#development">Development</a>
+</p>
 
 Khala is a [Pi coding-agent](https://github.com/earendil-works/pi) extension for
 coordinating serious repository work across specialized agent roles.
