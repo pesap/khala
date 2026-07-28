@@ -107,7 +107,9 @@ async function recordLearning(
 	await wake(projectPath, learning, projectTrusted);
 	if (
 		execution.target !== undefined &&
-		(execution.launcher === LauncherName.zellij || execution.launcher === LauncherName.tmux)
+		(execution.launcher === LauncherName.zellij ||
+			execution.launcher === LauncherName.tmux ||
+			execution.launcher === LauncherName.herdr)
 	) {
 		try {
 			await closeObserver(execution.launcher, execution.target);

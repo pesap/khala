@@ -90,7 +90,8 @@ for an entity; the complete history remains available for review and recovery.
 - Observers record repository Learning before an Executor starts when context is
   incomplete.
 - Preservers can add source-backed Counsel without changing execution state.
-- Zellij and tmux launchers are supported.
+- Zellij, tmux, and Herdr launchers are supported.
+- The packaged Herdr skill teaches agents to inspect and control Herdr panes safely.
 - Git worktrees provide Executor isolation.
 - The Archive is stored as inspectable JSONL rather than hidden in a service.
 
@@ -121,7 +122,7 @@ pi -e .
 ```
 
 Khala is a Pi package. The package manifest registers the extension, prompts,
-and theme resources.
+themes, and the Herdr skill.
 
 ## Quick start
 
@@ -171,8 +172,10 @@ individual values in `.pi/khala.json`.
 }
 ```
 
-`launcher` is `zellij` or `tmux` and defaults to `zellij`. Commands are passed
-as argument arrays, not shell strings. Run the setup wizard to choose
+`launcher` is `zellij`, `tmux`, or `herdr` and defaults to `zellij`. The Herdr
+launcher must run inside a Herdr-managed pane (`HERDR_ENV=1`); it creates a
+sibling pane without taking focus. Configured commands remain argument arrays;
+Herdr quotes them for its `pane run` shell command. Run the setup wizard to choose
 `conclaveModel` and `observerModel` from the models reported by
 `pi --list-models`. `observerModel` selects the read-only repository
 observation model. The project `archiveRoot`

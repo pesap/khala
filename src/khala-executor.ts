@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createExecutorStarter, type ExecutorStarter, type PiCommand } from "./executor.js";
 import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
+import { createHerdrLauncher } from "./launch-herdr.js";
 import { createTmuxLauncher } from "./launch-tmux.js";
 import { createZellijLauncher } from "./launch-zellij.js";
 import type { Launcher } from "./launcher.js";
@@ -14,6 +15,7 @@ type LauncherFactory = () => Launcher;
 const LAUNCHER_FACTORIES: Record<LauncherNameValue, LauncherFactory> = {
 	[LauncherName.tmux]: createTmuxLauncher,
 	[LauncherName.zellij]: createZellijLauncher,
+	[LauncherName.herdr]: createHerdrLauncher,
 };
 
 // Concrete providers are composed here once; Work and UI flows depend only on ExecutorStarterFactory.

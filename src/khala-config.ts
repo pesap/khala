@@ -7,6 +7,7 @@ import type { PiCommand } from "./executor.js";
 const LauncherName = {
 	zellij: "zellij",
 	tmux: "tmux",
+	herdr: "herdr",
 } as const;
 type LauncherNameValue = (typeof LauncherName)[keyof typeof LauncherName];
 
@@ -163,7 +164,7 @@ function isRecord(value: unknown): value is ConfigValues {
 function readLauncher(config: ConfigValues, key: string): LauncherNameValue | undefined {
 	const value = config[key];
 	let launcher: LauncherNameValue | undefined;
-	if (value === LauncherName.zellij || value === LauncherName.tmux) {
+	if (value === LauncherName.zellij || value === LauncherName.tmux || value === LauncherName.herdr) {
 		launcher = value;
 	}
 	return launcher;

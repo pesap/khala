@@ -89,7 +89,11 @@ function getExecutorView(executor: Pick<ExecutorRecord, "launcher" | "target">):
 	if (executor.target === undefined || executor.target.length === 0) {
 		return;
 	}
-	if (executor.launcher !== LauncherName.zellij && executor.launcher !== LauncherName.tmux) {
+	if (
+		executor.launcher !== LauncherName.zellij &&
+		executor.launcher !== LauncherName.tmux &&
+		executor.launcher !== LauncherName.herdr
+	) {
 		return;
 	}
 	return { launcher: executor.launcher, target: executor.target };

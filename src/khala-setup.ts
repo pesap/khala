@@ -398,7 +398,11 @@ async function chooseScope(options: SetupOptions): Promise<ConfigScopeValue> {
 
 async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 	console.log(`\n${bold("Settings")} ${dim("Press Enter to accept the default.")}`);
-	const launcher = await askChoice("Launcher", [LauncherName.zellij, LauncherName.tmux], current.launcher);
+	const launcher = await askChoice(
+		"Launcher",
+		[LauncherName.zellij, LauncherName.tmux, LauncherName.herdr],
+		current.launcher,
+	);
 	const worktreeRoot = await askLine("Worktree root (leave blank for ~/worktrees)", current.worktreeRoot, "");
 	const worktreeBranchPrefix = normalizeBranchPrefix(
 		await askLine(
