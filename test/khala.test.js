@@ -44,6 +44,26 @@ function createPiStub(commands, tools = new Map(), flags = new Map()) {
 	};
 }
 
+test("package lifecycle builds every declared extension and exposes Khala commands", () => {
+	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	assert.equal(manifest.scripts.prepare, "npm run clean && npm run build");
+	assert.equal(manifest.dependencies.typescript, "5.9.3");
+	assert.equal(manifest.devDependencies.typescript, undefined);
+	assert.deepEqual(manifest.pi.extensions, [
+		"./dist/src/index.js",
+		"./dist/extensions/pi-review/review.js",
+	]);
+	for (const extensionPath of manifest.pi.extensions) {
+		assert.ok(readFileSync(new URL(`../${extensionPath}`, import.meta.url)).length > 0);
+	}
+
+	const commands = new Map();
+	createExtension(createPiStub(commands));
+	for (const command of ["khala", "khala-work", "khala-triage"]) {
+		assert.ok(commands.has(command), `/${command} should be registered`);
+	}
+});
+
 test("/khala creates and exposes a persisted project Conclave when absent", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-test-"));
 	const agentDir = join(root, "agent");

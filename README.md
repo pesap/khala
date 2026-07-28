@@ -101,20 +101,20 @@ Khala requires Node.js 22.19.0 or newer.
 ### From GitHub
 
 ```sh
-pi install github:pesap/scratch
+pi install git:github.com/pesap/khala
 ```
 
-Run `npx --yes github:pesap/scratch` once to configure the launcher, worktree,
+Run `npx --yes github:pesap/khala` once to configure the launcher, worktree,
 Pi commands, and Archive paths. The wizard writes global settings to
-`~/.pi/agent/khala.json`; use `npx --yes github:pesap/scratch --project` for a
-project override. Use `npx --yes github:pesap/scratch --dry-run` to preview the
+`~/.pi/agent/khala.json`; use `npx --yes github:pesap/khala --project` for a
+project override. Use `npx --yes github:pesap/khala --dry-run` to preview the
 resulting configuration.
 
 ### From a checkout
 
 ```sh
-git clone https://github.com/pesap/scratch.git
-cd scratch
+git clone https://github.com/pesap/khala.git
+cd khala
 npm install
 npm run build
 pi -e .

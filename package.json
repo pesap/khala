@@ -45,6 +45,7 @@
     "build": "tsc",
     "check": "biome check src extensions/pi-review && tsc --noEmit",
     "dev": "tsc --watch",
+    "prepare": "npm run clean && npm run build",
     "prepack": "npm run clean && npm run build",
     "test": "npm run build && node --test test/khala.test.js"
   },
@@ -62,10 +63,10 @@
     "@earendil-works/pi-coding-agent": "0.82.1",
     "@earendil-works/pi-tui": "0.82.1",
     "nanoid": "6.0.0",
-    "typebox": "1.1.38"
+    "typebox": "1.1.38",
+    "typescript": "5.9.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.4",
-    "typescript": "5.9.3"
+    "@biomejs/biome": "2.5.4"
   }
 }
