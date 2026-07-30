@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import createExtension, { createExecutorViewHandler } from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
@@ -459,6 +460,25 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			executorContext,
 		);
 		assert.deepEqual(result.details.records.map((record) => record.type), ["counsel", "signal"]);
+		initTheme();
+		const plainTheme = {
+			fg(_color, text) {
+				return text;
+			},
+			bold(text) {
+				return text;
+			},
+		};
+		const collapsed = archiveTool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {});
+		const collapsedText = collapsed.render(120).join("\n");
+		assert.match(collapsedText, /Khala Archive: 2 record\(s\)/);
+		assert.match(collapsedText, /to expand/);
+		assert.doesNotMatch(collapsedText, /bound evidence/);
+		const expanded = archiveTool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
+		const expandedText = expanded.render(120).join("\n");
+		assert.match(expandedText, /Records:/);
+		assert.match(expandedText, /signal/);
+		assert.doesNotMatch(expandedText, /bound evidence/);
 		const unscopedResult = await archiveTool.execute("archive", {}, null, null, executorContext);
 		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), ["counsel", "signal"]);
 		const userContext = {
@@ -1100,6 +1120,47 @@ test("Archive reads fail closed with safe, line-aware corruption errors", () => 
 			() => listArchiveRecords(projectPath),
 			(error) => error.name === "KhalaArchiveReadError" && error.lineNumber === 1 && !error.message.includes("not displayed"),
 		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("schema-less pull-request records remain readable after schema versioning", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-legacy-archive-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const archivePath = getArchivePath(projectPath);
+		mkdirSync(dirname(archivePath), { recursive: true });
+		writeFileSync(
+			archivePath,
+			`${JSON.stringify({
+				recordId: "legacy-pull-request",
+				type: "pull-request",
+				projectPath,
+				workId: "legacy-work",
+				recordedAt: new Date().toISOString(),
+				payload: {
+					pullRequestId: "legacy-pr",
+					workId: "legacy-work",
+					missionId: "legacy-mission",
+					executionId: "legacy-execution",
+					status: "draft",
+					changedFiles: [],
+					diffSummary: "",
+					validationResults: [],
+					reviewFeedback: [],
+					unresolvedGaps: [],
+					recordedAt: new Date().toISOString(),
+				},
+			})}\n`,
+		);
+
+		const records = listArchiveRecords(projectPath);
+		assert.equal(records.length, 1);
+		assert.equal(records[0].type, "pull-request");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

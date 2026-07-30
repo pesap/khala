@@ -455,10 +455,20 @@ function isArchiveRecord(value: unknown): value is KhalaArchiveRecord {
 	) {
 		return false;
 	}
-	if (record.schemaVersion === 2) {
+	if (record.schemaVersion === 2 || isImplicitV2ArchiveRecordType(record.type)) {
 		return isArchivePayloadV2(record.type, record.payload);
 	}
 	return isArchivePayloadLegacy(record.type, record.payload);
+}
+
+function isImplicitV2ArchiveRecordType(type: ArchiveRecordType): boolean {
+	return (
+		type === "verdict-delivery" ||
+		type === "mandate" ||
+		type === "mission" ||
+		type === "pull-request" ||
+		type === "work-outcome"
+	);
 }
 
 function isArchivePayloadLegacy(type: ArchiveRecordType, payload: unknown): boolean {
