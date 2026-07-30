@@ -322,11 +322,18 @@ async function initializeRuntime(
 	if (model !== undefined) {
 		sessionOptions.model = model;
 	}
-	if (conclaveThinking !== "") {
+	if (model !== undefined && conclaveThinking !== "" && isSupportedThinkingLevel(model, conclaveThinking)) {
 		sessionOptions.thinkingLevel = conclaveThinking;
 	}
 	const { session } = await createAgentSession(sessionOptions);
 	return { session, wakeChain: Promise.resolve() };
+}
+
+function isSupportedThinkingLevel(
+	model: { thinkingLevelMap?: Partial<Record<string, string | null>> },
+	level: string,
+): boolean {
+	return level.length > 0 && model.thinkingLevelMap?.[level] !== undefined && model.thinkingLevelMap[level] !== null;
 }
 
 function resolveConfiguredModel(modelRuntime: ModelRuntime, modelId: string) {
