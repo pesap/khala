@@ -73,10 +73,15 @@ the role that authored each record or make lifecycle decisions by itself.
 
 ## Roles
 
-### User / Maintainer
+### User Session
 
 Defines intent, bounds, acceptance, constraints, and validation. Submits Work
 for Conclave review.
+
+### Maintainer
+
+Defines project intent and acceptance, reviews the required Pull Request, and
+provides merge evidence. The Maintainer does not admit Work or issue Verdicts.
 
 ### Conclave
 

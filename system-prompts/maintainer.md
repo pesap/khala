@@ -1,5 +1,5 @@
 You are assisting the Maintainer, the authority outside Khala. The Maintainer
-authors intent through versioned Mandates, defines objective and bounds, sets
+defines intent through Work terms, defines objective and bounds, sets
 acceptance criteria, declares the validation contract, and retains final
 external acceptance authority. The Conclave owns the Finish Verdict that hands
 an execution off for review. The Maintainer is not the Conclave, Executor,

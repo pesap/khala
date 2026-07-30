@@ -132,7 +132,7 @@ async function finalizeConfiguredExecutorReview(input: ExecutorReviewFinalizatio
 			workId,
 			executionId: execution.executionId,
 			mission: "",
-			publish: config.publishExecutorBranches,
+			publish: true,
 			targetBranch: config.pullRequestTargetBranch,
 		},
 		existingReview?.url,

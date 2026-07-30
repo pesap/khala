@@ -12,6 +12,9 @@ with the system prompt, stop and follow the system prompt.
 
 ## Phase 1: validate and prepare
 
+Every Khala Work requires a published Executor branch and a draft Pull Request.
+A local-only handoff is not a valid completion path.
+
 Before changing implementation files:
 
 1. Read the complete first Mission message and identify Work ID, Mandate ID and
@@ -29,15 +32,15 @@ Before changing implementation files:
    Conventional Commits and the User-provided scope. Never silently override a
    more specific policy.
 4. Verify the immutable planning commit prepared by the Khala VCS runtime before
-   implementation. The runtime creates exactly one planning commit and, when
-   branch publication is enabled, pushes the Executor branch. Do not create a
+   implementation. The runtime creates exactly one planning commit and pushes the Executor
+   branch. Do not create a
    second planning commit, amend it, squash it, replace it, or include
    implementation changes in it.
-5. The Executor owns Pull Request creation and description content. When branch
-   publication is enabled, inspect the repository's applicable Pull Request
-   template, falling back to `templates/pull-request.md` only when no repository
-   template exists. Use the authorized VCS/GitHub interface to open the draft PR
-   after preflight, then keep it updated as implementation and validation change.
+5. The Executor owns Pull Request creation and description content. Inspect the
+   repository's applicable Pull Request template, falling back to
+   `templates/pull-request.md` only when no repository template exists. Use the
+   authorized VCS/GitHub interface to open the draft PR after preflight, then keep
+   it updated as implementation and validation change.
    The description must identify the Work, Mission, and Execution, then concisely
    describe the summary, scope, implementation, acceptance criteria, validation
    contract, planning commit, risks, and unresolved gaps. If the Mission includes

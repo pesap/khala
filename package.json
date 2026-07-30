@@ -5,6 +5,7 @@
     "access": "public"
   },
   "description": "Khala coding-agent extension with prompts and themes",
+  "license": "MIT",
   "keywords": [
     "pi-package"
   ],

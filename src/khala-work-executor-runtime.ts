@@ -113,12 +113,12 @@ function startExecutor(input: {
 		previousReview = latestPullRequestForMission(context.cwd, mission.predecessorMissionId, projectTrusted);
 	}
 	const reviewWorkflow: {
-		publish: boolean;
+		publish: true;
 		targetBranch?: string;
 		previousPullRequestUrl?: string;
 		commitConvention?: string;
 	} = {
-		publish: config.publishExecutorBranches,
+		publish: true,
 		commitConvention: resolveCommitConvention(submission.work.constraints, config.commitConvention),
 	};
 	let missionMessage = formatExecutorPlan(submission.work, attemptNumber, learning, {
