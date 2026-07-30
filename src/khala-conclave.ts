@@ -348,4 +348,4 @@ function resolveConfiguredModel(modelRuntime: ModelRuntime, modelId: string) {
 }
 
 export type { ConclaveCoordinator };
-export { createConclaveCoordinator, enqueueConclaveWake };
+export { createConclaveCoordinator, enqueueConclaveWake, isSupportedThinkingLevel };

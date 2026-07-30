@@ -233,18 +233,24 @@ async function discoverModelCapabilities(
 				continue;
 			}
 			const model = runtime.getModel(modelId.slice(0, separator), modelId.slice(separator + 1));
-			const thinkingLevels: ThinkingLevel[] = [];
-			for (const [level, mappedLevel] of Object.entries(model?.thinkingLevelMap ?? {})) {
-				if (mappedLevel !== null && mappedLevel !== undefined) {
-					thinkingLevels.push(level as ThinkingLevel);
-				}
-			}
-			capabilities[modelId] = { thinkingLevels };
+			capabilities[modelId] = { thinkingLevels: getSupportedThinkingLevels(model) };
 		}
 	} catch {
 		// Missing metadata must preserve Pi defaults rather than guessing capabilities.
 	}
 	return capabilities;
+}
+
+function getSupportedThinkingLevels(
+	model: { thinkingLevelMap?: Partial<Record<string, string | null>> } | undefined,
+): ThinkingLevel[] {
+	const levels: ThinkingLevel[] = [];
+	for (const [level, mappedLevel] of Object.entries(model?.thinkingLevelMap ?? {})) {
+		if (mappedLevel !== null && mappedLevel !== undefined) {
+			levels.push(level as ThinkingLevel);
+		}
+	}
+	return levels;
 }
 
 function modelChoices(models: readonly string[]): string[] {
@@ -421,12 +427,19 @@ function thinkingValue(label: string): string {
 	return label === THINKING_DEFAULT_LABEL ? "" : label;
 }
 
-async function askThinking(label: string, current: string, capability: ModelCapability | undefined): Promise<string> {
+function thinkingChoices(capability: ModelCapability | undefined): readonly string[] {
 	const levels = capability?.thinkingLevels ?? [];
 	if (levels.length === 0) {
+		return [];
+	}
+	return [THINKING_DEFAULT_LABEL, ...levels];
+}
+
+async function askThinking(label: string, current: string, capability: ModelCapability | undefined): Promise<string> {
+	const choices = thinkingChoices(capability);
+	if (choices.length === 0) {
 		return "";
 	}
-	const choices = [THINKING_DEFAULT_LABEL, ...levels];
 	const defaultValue = choices.includes(current) ? current : THINKING_DEFAULT_LABEL;
 	const selected = await askChoice(label, choices, thinkingLabel(defaultValue));
 	return thinkingValue(selected);
@@ -644,4 +657,4 @@ if (process.argv[1]?.endsWith("khala-setup.js") || process.argv[1]?.endsWith("kh
 	await main();
 }
 
-export { main as runKhalaSetup, parseCommand };
+export { getSupportedThinkingLevels, main as runKhalaSetup, parseCommand, thinkingChoices };
