@@ -78,9 +78,5 @@ function readRolePrompt(packageRoot: string, role: KhalaRoleValue): string {
 	return readFileSync(join(packageRoot, "system-prompts", ROLE_DEFINITIONS[role].fileName), "utf8").trim();
 }
 
-function capitalize(value: string): string {
-	return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
 export type { KhalaRoleValue, RoleDefinition };
-export { capitalize, isRoleData, KhalaRole, ROLE_DEFINITIONS, ROLE_NAMES, readRolePrompt, readSessionRole };
+export { isRoleData, KhalaRole, ROLE_DEFINITIONS, ROLE_NAMES, readRolePrompt, readSessionRole };

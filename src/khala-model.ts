@@ -74,7 +74,6 @@ const KhalaWorkEntryStatus = {
 	queued: "queued",
 	launched: "launched",
 } as const;
-type KhalaWorkEntryStatusValue = (typeof KhalaWorkEntryStatus)[keyof typeof KhalaWorkEntryStatus];
 
 const KhalaWorkLaunchStatus = {
 	queued: "queued",
@@ -82,7 +81,6 @@ const KhalaWorkLaunchStatus = {
 	launched: "launched",
 	rejected: "rejected",
 } as const;
-type KhalaWorkLaunchStatusValue = (typeof KhalaWorkLaunchStatus)[keyof typeof KhalaWorkLaunchStatus];
 
 type KhalaWorkSubmission = Readonly<{
 	workId: string;
@@ -98,14 +96,6 @@ type KhalaWorkSubmission = Readonly<{
 }>;
 
 // --- Mandates and Missions --------------------------------------------------
-
-type ParticipantRole = "user-session" | "maintainer" | "conclave" | "executor" | "observer" | "preserver";
-
-type ParticipantIdentity = Readonly<{
-	participantId: string;
-	role: ParticipantRole;
-	label: string;
-}>;
 
 type MandateRecord = Readonly<{
 	mandateId: string;
@@ -403,10 +393,6 @@ type GuardRecord = Record<string, unknown> &
 
 function isStringArray(value: unknown): value is readonly string[] {
 	return Array.isArray(value) && value.every((item) => typeof item === "string");
-}
-
-function isNonEmptyStringArray(value: unknown): value is readonly string[] {
-	return isStringArray(value) && value.length > 0 && value.every((item) => item.trim().length > 0);
 }
 
 function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
@@ -886,15 +872,11 @@ export type {
 	KhalaArchiveAppend,
 	KhalaArchiveRecord,
 	KhalaWork,
-	KhalaWorkEntryStatusValue,
-	KhalaWorkLaunchStatusValue,
 	KhalaWorkSubmission,
 	LearningRecord,
 	MandateRecord,
 	MissionAssignment,
 	MissionRecord,
-	ParticipantIdentity,
-	ParticipantRole,
 	PullRequestRecord,
 	PullRequestStatusValue,
 	SignalKind,
@@ -917,7 +899,6 @@ export {
 	isLearningRecord,
 	isMandateRecord,
 	isMissionRecord,
-	isNonEmptyStringArray,
 	isPullRequestRecord,
 	isSignal,
 	isStringArray,
