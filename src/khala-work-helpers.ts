@@ -1,3 +1,4 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Work validation and lifecycle helper projections share the same authoritative input boundary.
 import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
@@ -9,6 +10,7 @@ import { formatError } from "./khala-error.js";
 import { listLearningRecords } from "./khala-learning.js";
 import type { KhalaWork, KhalaWorkSubmission, LearningRecord, MandateRecord, MissionRecord } from "./khala-model.js";
 import { KhalaWorkEntryStatus, KhalaWorkLaunchStatus, WorkSubmissionStatus } from "./khala-model.js";
+import { materializeMissingRetrySuccessor, materializeReviewRequestedSuccessor } from "./khala-verdict-recovery.js";
 import type {
 	KhalaAdmissionResult,
 	KhalaWorkDependencies,
@@ -48,7 +50,15 @@ function prepareExecutionLaunch(
 	if (submission.work.context.trim().length === 0 && learning.length === 0) {
 		return rejectedWorkLaunch("Work context is missing; the Conclave must launch an Observer first.");
 	}
-	const currentProjection = readCurrentMission(context.cwd, workId, projectTrusted);
+	let currentProjection = readCurrentMission(context.cwd, workId, projectTrusted);
+	if (currentProjection?.state === "finished") {
+		materializeReviewRequestedSuccessor(context.cwd, projectTrusted, workId);
+		currentProjection = readCurrentMission(context.cwd, workId, projectTrusted);
+	}
+	if (currentProjection?.state === "retry-pending" && currentProjection.terminalVerdict !== undefined) {
+		materializeMissingRetrySuccessor(context.cwd, projectTrusted, currentProjection.terminalVerdict);
+		currentProjection = readCurrentMission(context.cwd, workId, projectTrusted);
+	}
 	if (currentProjection?.state === "retry-pending") {
 		return rejectedWorkLaunch(
 			`Mission ${currentProjection.mission.missionId} has an incomplete Retry; recovery is required.`,

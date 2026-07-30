@@ -1,3 +1,4 @@
+// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Mission projection validates mutually exclusive durable lifecycle paths in one read.
 import { listArchiveRecords } from "./khala-archive.js";
 import {
 	type CounselRecord,
@@ -7,16 +8,22 @@ import {
 	isLearningRecord,
 	isMandateRecord,
 	isMissionRecord,
+	isPullRequestRecord,
 	isSignal,
 	isVerdict,
+	isVerdictDelivery,
+	isWorkOutcomeRecord,
 	isWorkSubmission,
 	type KhalaArchiveRecord,
 	type KhalaWorkSubmission,
 	type LearningRecord,
 	type MandateRecord,
 	type MissionRecord,
+	type PullRequestRecord,
 	type SignalRecord,
+	type VerdictDeliveryRecord,
 	type VerdictRecord,
+	type WorkOutcomeRecord,
 } from "./khala-model.js";
 
 type MissionProjectionState = "current" | "superseded" | "finished" | "rejected" | "retry-pending";
@@ -45,6 +52,26 @@ function listLearningRecordsFromArchive(projectPath: string, projectTrusted = fa
 
 function listVerdictRecords(projectPath: string, projectTrusted = false): VerdictRecord[] {
 	return projectRecords(projectPath, "verdict", isVerdict, projectTrusted);
+}
+
+function listVerdictDeliveryRecords(projectPath: string, projectTrusted = false): VerdictDeliveryRecord[] {
+	return projectRecords(projectPath, "verdict-delivery", isVerdictDelivery, projectTrusted);
+}
+
+function listLatestVerdictDeliveryRecords(projectPath: string, projectTrusted = false): VerdictDeliveryRecord[] {
+	const latest = new Map<string, VerdictDeliveryRecord>();
+	for (const record of listVerdictDeliveryRecords(projectPath, projectTrusted)) {
+		latest.set(record.verdictId, record);
+	}
+	return [...latest.values()];
+}
+
+function listPullRequestRecords(projectPath: string, projectTrusted = false): PullRequestRecord[] {
+	return projectRecords(projectPath, "pull-request", isPullRequestRecord, projectTrusted);
+}
+
+function listWorkOutcomeRecords(projectPath: string, projectTrusted = false): WorkOutcomeRecord[] {
+	return projectRecords(projectPath, "work-outcome", isWorkOutcomeRecord, projectTrusted);
 }
 
 function listCounselRecords(projectPath: string, projectTrusted = false): CounselRecord[] {
@@ -94,12 +121,49 @@ function readMission(projectPath: string, missionId: string, projectTrusted = fa
 	return mission;
 }
 
-function projectMissions(projectPath: string, projectTrusted = false): MissionProjection[] {
-	const missions = listMissionRecords(projectPath, projectTrusted);
-	const verdicts = listVerdictRecords(projectPath, projectTrusted);
+type MissionProjectionMaps = Readonly<{
+	successors: Map<string, MissionRecord>;
+	terminalVerdicts: Map<string, VerdictRecord>;
+	retryVerdicts: Map<string, VerdictRecord>;
+}>;
+
+function validateMissionRelationships(missions: MissionRecord[], verdicts: VerdictRecord[]): MissionProjectionMaps {
+	const missionsById = new Map<string, MissionRecord>();
+	for (const mission of missions) {
+		if (missionsById.has(mission.missionId)) {
+			throw new Error(`Mission ${mission.missionId} is duplicated in the Archive.`);
+		}
+		missionsById.set(mission.missionId, mission);
+	}
+	const verdictsById = new Map<string, VerdictRecord>();
+	for (const verdict of verdicts) {
+		if (verdictsById.has(verdict.verdictId)) {
+			throw new Error(`Verdict ${verdict.verdictId} is duplicated in the Archive.`);
+		}
+		verdictsById.set(verdict.verdictId, verdict);
+	}
 	const successors = new Map<string, MissionRecord>();
 	for (const mission of missions) {
 		if (mission.predecessorMissionId !== undefined) {
+			const predecessor = missionsById.get(mission.predecessorMissionId);
+			if (predecessor === undefined || predecessor.workId !== mission.workId) {
+				throw new Error(`Mission ${mission.missionId} has an invalid predecessor Mission.`);
+			}
+			if (mission.causedByVerdictId === undefined) {
+				throw new Error(`Mission ${mission.missionId} is missing its causal Retry Verdict.`);
+			}
+			const cause = verdictsById.get(mission.causedByVerdictId);
+			if (
+				cause === undefined ||
+				cause.decision !== "retry" ||
+				cause.workId !== mission.workId ||
+				cause.missionId !== predecessor.missionId
+			) {
+				throw new Error(`Mission ${mission.missionId} has an invalid causal Retry Verdict.`);
+			}
+			if (successors.has(mission.predecessorMissionId)) {
+				throw new Error(`Mission ${mission.predecessorMissionId} has duplicate successor Missions.`);
+			}
 			successors.set(mission.predecessorMissionId, mission);
 		}
 	}
@@ -107,18 +171,44 @@ function projectMissions(projectPath: string, projectTrusted = false): MissionPr
 	const retryVerdicts = new Map<string, VerdictRecord>();
 	for (const verdict of verdicts) {
 		if (verdict.missionId !== undefined) {
+			const mission = missionsById.get(verdict.missionId);
+			if (mission === undefined || mission.workId !== verdict.workId) {
+				throw new Error(`Verdict ${verdict.verdictId} references an invalid Mission.`);
+			}
 			if (verdict.decision === "finish" || verdict.decision === "reject") {
+				if (terminalVerdicts.has(verdict.missionId)) {
+					throw new Error(`Mission ${verdict.missionId} has duplicate terminal Verdicts.`);
+				}
 				terminalVerdicts.set(verdict.missionId, verdict);
 			}
 			if (verdict.decision === "retry") {
+				if (retryVerdicts.has(verdict.missionId)) {
+					throw new Error(`Mission ${verdict.missionId} has duplicate Retry Verdicts.`);
+				}
 				retryVerdicts.set(verdict.missionId, verdict);
 			}
 		}
 	}
+	for (const [missionId, retry] of retryVerdicts) {
+		if (terminalVerdicts.has(missionId) && retry.sourcePullRequestId === undefined) {
+			throw new Error(`Mission ${missionId} has both Retry and terminal Verdicts.`);
+		}
+	}
+	return { successors, terminalVerdicts, retryVerdicts };
+}
+
+function projectMissions(projectPath: string, projectTrusted = false): MissionProjection[] {
+	const missions = listMissionRecords(projectPath, projectTrusted);
+	const verdicts = listVerdictRecords(projectPath, projectTrusted);
+	const { successors, terminalVerdicts, retryVerdicts } = validateMissionRelationships(missions, verdicts);
 	return missions.map((mission) => {
 		const successor = successors.get(mission.missionId);
 		if (successor !== undefined) {
 			return { mission, state: "superseded", successorMissionId: successor.missionId };
+		}
+		const retry = retryVerdicts.get(mission.missionId);
+		if (retry !== undefined) {
+			return { mission, state: "retry-pending", terminalVerdict: retry };
 		}
 		const terminal = terminalVerdicts.get(mission.missionId);
 		if (terminal?.decision === "finish") {
@@ -126,10 +216,6 @@ function projectMissions(projectPath: string, projectTrusted = false): MissionPr
 		}
 		if (terminal?.decision === "reject") {
 			return { mission, state: "rejected", terminalVerdict: terminal };
-		}
-		const retry = retryVerdicts.get(mission.missionId);
-		if (retry !== undefined) {
-			return { mission, state: "retry-pending", terminalVerdict: retry };
 		}
 		return { mission, state: "current" };
 	});
@@ -176,12 +262,16 @@ export {
 	findArchiveRecords,
 	listCounselRecords,
 	listExecutionRecords,
+	listLatestVerdictDeliveryRecords,
 	listLearningRecordsFromArchive,
 	listMandateRecords,
 	listMissionRecords,
+	listPullRequestRecords,
 	listSignalRecords,
 	listSubmissionRecords,
+	listVerdictDeliveryRecords,
 	listVerdictRecords,
+	listWorkOutcomeRecords,
 	projectMissions,
 	readCurrentMission,
 	readLatestMandate,

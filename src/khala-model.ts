@@ -13,9 +13,12 @@ type ArchiveRecordType =
 	| "signal"
 	| "counsel"
 	| "verdict"
+	| "verdict-delivery"
 	| "learning"
 	| "mandate"
-	| "mission";
+	| "mission"
+	| "pull-request"
+	| "work-outcome";
 
 type KhalaArchiveRecord = Readonly<{
 	recordId: string;
@@ -193,7 +196,90 @@ type VerdictRecord = Readonly<{
 	reason: string;
 	verdictId: string;
 	issuedAt: string;
+	sourcePullRequestId?: string;
 	successorAssignment?: MissionAssignment;
+}>;
+
+// --- Verdict delivery -------------------------------------------------------
+
+const VerdictDeliveryStatus = {
+	pending: "pending",
+	delivered: "delivered",
+	failed: "failed",
+} as const;
+type VerdictDeliveryStatusValue = (typeof VerdictDeliveryStatus)[keyof typeof VerdictDeliveryStatus];
+
+type VerdictDeliveryRecord = Readonly<{
+	deliveryId: string;
+	verdictId: string;
+	workId: string;
+	executionId: string;
+	decision: VerdictDecision;
+	message: string;
+	status: VerdictDeliveryStatusValue;
+	target?: string;
+	launcher?: string;
+	error?: string;
+	createdAt: string;
+	deliveredAt?: string;
+}>;
+
+// --- Pull requests and Work Outcomes ---------------------------------------
+
+const PullRequestStatus = {
+	reviewable: "reviewable",
+	draft: "draft",
+	open: "open",
+	changesRequested: "changes-requested",
+	merged: "merged",
+	closed: "closed",
+} as const;
+type PullRequestStatusValue = (typeof PullRequestStatus)[keyof typeof PullRequestStatus];
+
+type PullRequestRecord = Readonly<{
+	pullRequestId: string;
+	workId: string;
+	missionId: string;
+	executionId: string;
+	status: PullRequestStatusValue;
+	url?: string;
+	number?: number;
+	sourceBranch?: string;
+	targetBranch?: string;
+	planningCommit?: string;
+	headCommit?: string;
+	mergeCommit?: string;
+	changedFiles: readonly string[];
+	diffSummary: string;
+	validationResults: readonly string[];
+	reviewFeedback: readonly string[];
+	unresolvedGaps: readonly string[];
+	reviewer?: string;
+	relatedPullRequestUrl?: string;
+	remoteConfirmedAt?: string;
+	recordedAt: string;
+}>;
+
+type WorkOutcomeRecord = Readonly<{
+	outcomeId: string;
+	workId: string;
+	mandateId: string;
+	missionId: string;
+	executionId: string;
+	pullRequestId: string;
+	pullRequestUrl?: string;
+	pullRequestNumber?: number;
+	sourceBranch?: string;
+	targetBranch?: string;
+	finalHeadCommit: string;
+	mergeCommit: string;
+	changedFiles: readonly string[];
+	diffSummary: string;
+	validationResults: readonly string[];
+	reviewFeedback: readonly string[];
+	unresolvedGaps: readonly string[];
+	acceptingActor: string;
+	acceptedAt: string;
 }>;
 
 // --- Counsel (payload: "counsel") -------------------------------------------
@@ -264,12 +350,40 @@ type GuardRecord = Record<string, unknown> &
 		reason?: unknown;
 		verdictId?: unknown;
 		issuedAt?: unknown;
+		sourcePullRequestId?: unknown;
 		successorAssignment?: unknown;
+		deliveryId?: unknown;
+		message?: unknown;
+		deliveredAt?: unknown;
+		error?: unknown;
+		pullRequestId?: unknown;
+		url?: unknown;
+		number?: unknown;
+		sourceBranch?: unknown;
+		targetBranch?: unknown;
+		planningCommit?: unknown;
+		headCommit?: unknown;
+		mergeCommit?: unknown;
+		changedFiles?: unknown;
+		diffSummary?: unknown;
+		validationResults?: unknown;
+		reviewFeedback?: unknown;
+		unresolvedGaps?: unknown;
+		reviewer?: unknown;
+		relatedPullRequestUrl?: unknown;
+		remoteConfirmedAt?: unknown;
+		outcomeId?: unknown;
+		pullRequestUrl?: unknown;
+		pullRequestNumber?: unknown;
+		finalHeadCommit?: unknown;
+		acceptingActor?: unknown;
+		acceptedAt?: unknown;
 		learningId?: unknown;
 		observerName?: unknown;
 		topic?: unknown;
 		sourcePaths?: unknown;
 		createdAt?: unknown;
+		recordedAt?: unknown;
 		sourceSubmissionRecordId?: unknown;
 		terms?: unknown;
 		revision?: unknown;
@@ -302,9 +416,12 @@ function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 		value === "signal" ||
 		value === "counsel" ||
 		value === "verdict" ||
+		value === "verdict-delivery" ||
 		value === "learning" ||
 		value === "mandate" ||
-		value === "mission"
+		value === "mission" ||
+		value === "pull-request" ||
+		value === "work-outcome"
 	);
 }
 
@@ -385,10 +502,19 @@ function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean 
 	if (type === "learning") {
 		return isLearningRecord(payload);
 	}
+	if (type === "verdict-delivery") {
+		return isVerdictDelivery(payload);
+	}
 	if (type === "mandate") {
 		return isMandateRecord(payload);
 	}
-	return isMissionRecord(payload);
+	if (type === "mission") {
+		return isMissionRecord(payload);
+	}
+	if (type === "pull-request") {
+		return isPullRequestRecord(payload);
+	}
+	return isWorkOutcomeRecord(payload);
 }
 
 function isKhalaWork(value: unknown): value is KhalaWork {
@@ -550,6 +676,7 @@ function isVerdict(value: unknown): value is VerdictRecord {
 		typeof record.reason === "string" &&
 		typeof record.verdictId === "string" &&
 		typeof record.issuedAt === "string" &&
+		(record.sourcePullRequestId === undefined || typeof record.sourcePullRequestId === "string") &&
 		(record.successorAssignment === undefined || isKhalaWork(record.successorAssignment))
 	);
 }
@@ -567,6 +694,104 @@ function isV2Verdict(value: unknown): value is VerdictRecord {
 		return false;
 	}
 	return record.decision !== "retry" || isKhalaWork(record.successorAssignment);
+}
+
+function isVerdictDeliveryStatus(value: unknown): value is VerdictDeliveryStatusValue {
+	return value === "pending" || value === "delivered" || value === "failed";
+}
+
+function isVerdictDelivery(value: unknown): value is VerdictDeliveryRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		typeof record.deliveryId === "string" &&
+		typeof record.verdictId === "string" &&
+		typeof record.workId === "string" &&
+		typeof record.executionId === "string" &&
+		isVerdictDecision(record.decision) &&
+		typeof record.message === "string" &&
+		isVerdictDeliveryStatus(record.status) &&
+		(record.target === undefined || typeof record.target === "string") &&
+		(record.launcher === undefined || typeof record.launcher === "string") &&
+		(record.error === undefined || typeof record.error === "string") &&
+		typeof record.createdAt === "string" &&
+		(record.deliveredAt === undefined || typeof record.deliveredAt === "string")
+	);
+}
+
+function isPullRequestStatus(value: unknown): value is PullRequestStatusValue {
+	return (
+		value === "reviewable" ||
+		value === "draft" ||
+		value === "open" ||
+		value === "changes-requested" ||
+		value === "merged" ||
+		value === "closed"
+	);
+}
+
+function isPullRequestRecord(value: unknown): value is PullRequestRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		typeof record.pullRequestId === "string" &&
+		typeof record.workId === "string" &&
+		typeof record.missionId === "string" &&
+		typeof record.executionId === "string" &&
+		isPullRequestStatus(record.status) &&
+		(record.url === undefined || typeof record.url === "string") &&
+		(record.number === undefined ||
+			(typeof record.number === "number" && Number.isInteger(record.number) && record.number > 0)) &&
+		(record.sourceBranch === undefined || typeof record.sourceBranch === "string") &&
+		(record.targetBranch === undefined || typeof record.targetBranch === "string") &&
+		(record.planningCommit === undefined || typeof record.planningCommit === "string") &&
+		(record.headCommit === undefined || typeof record.headCommit === "string") &&
+		(record.mergeCommit === undefined || typeof record.mergeCommit === "string") &&
+		isStringArray(record.changedFiles) &&
+		typeof record.diffSummary === "string" &&
+		isStringArray(record.validationResults) &&
+		isStringArray(record.reviewFeedback) &&
+		isStringArray(record.unresolvedGaps) &&
+		(record.reviewer === undefined || typeof record.reviewer === "string") &&
+		(record.relatedPullRequestUrl === undefined || typeof record.relatedPullRequestUrl === "string") &&
+		(record.remoteConfirmedAt === undefined || typeof record.remoteConfirmedAt === "string") &&
+		typeof record.recordedAt === "string"
+	);
+}
+
+function isWorkOutcomeRecord(value: unknown): value is WorkOutcomeRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		typeof record.outcomeId === "string" &&
+		typeof record.workId === "string" &&
+		typeof record.mandateId === "string" &&
+		typeof record.missionId === "string" &&
+		typeof record.executionId === "string" &&
+		typeof record.pullRequestId === "string" &&
+		(record.pullRequestUrl === undefined || typeof record.pullRequestUrl === "string") &&
+		(record.pullRequestNumber === undefined ||
+			(typeof record.pullRequestNumber === "number" &&
+				Number.isInteger(record.pullRequestNumber) &&
+				record.pullRequestNumber > 0)) &&
+		(record.sourceBranch === undefined || typeof record.sourceBranch === "string") &&
+		(record.targetBranch === undefined || typeof record.targetBranch === "string") &&
+		typeof record.finalHeadCommit === "string" &&
+		typeof record.mergeCommit === "string" &&
+		isStringArray(record.changedFiles) &&
+		typeof record.diffSummary === "string" &&
+		isStringArray(record.validationResults) &&
+		isStringArray(record.reviewFeedback) &&
+		isStringArray(record.unresolvedGaps) &&
+		typeof record.acceptingActor === "string" &&
+		typeof record.acceptedAt === "string"
+	);
 }
 
 function isCounselRecord(value: unknown): value is CounselRecord {
@@ -660,10 +885,15 @@ export type {
 	MissionRecord,
 	ParticipantIdentity,
 	ParticipantRole,
+	PullRequestRecord,
+	PullRequestStatusValue,
 	SignalKind,
 	SignalRecord,
 	VerdictDecision,
+	VerdictDeliveryRecord,
+	VerdictDeliveryStatusValue,
 	VerdictRecord,
+	WorkOutcomeRecord,
 	WorkSubmissionRequest,
 	WorkSubmissionStatusValue,
 };
@@ -678,6 +908,7 @@ export {
 	isMandateRecord,
 	isMissionRecord,
 	isNonEmptyStringArray,
+	isPullRequestRecord,
 	isSignal,
 	isStringArray,
 	isV2ExecutorRecord,
@@ -685,8 +916,12 @@ export {
 	isV2Verdict,
 	isV2WorkSubmission,
 	isVerdict,
+	isVerdictDelivery,
+	isWorkOutcomeRecord,
 	isWorkSubmission,
 	KhalaWorkEntryStatus,
 	KhalaWorkLaunchStatus,
+	PullRequestStatus,
+	VerdictDeliveryStatus,
 	WorkSubmissionStatus,
 };
