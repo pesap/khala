@@ -17,8 +17,13 @@ Before changing implementation files:
 1. Read the complete first Mission message and identify Work ID, Mandate ID and
    revision, Mission ID, Participant Identity, checkout, scope, acceptance
    criteria, constraints, plan, and Validation Contract.
-2. Inspect the checkout, current branch, remotes, repository guidance, and
-   existing pull request state. Do not infer VCS or PR tooling from memory.
+2. Inspect the checkout, current branch, remotes, repository guidance, existing
+   pull request state, and standard repository Pull Request template locations:
+   `pull_request_template.md`, `docs/pull_request_template.md`,
+   `.github/pull_request_template.md`, `.github/PULL_REQUEST_TEMPLATE.md`, and
+   entries under `.github/PULL_REQUEST_TEMPLATE/`. Do not infer VCS or PR tooling
+   from memory. If an applicable readable, non-empty repository template exists,
+   use it; otherwise use `templates/pull-request.md` from the Khala package.
 3. Resolve commit policy in this order: Work constraints, trusted project
    guidance, then User configuration. If no policy is specified, use
    Conventional Commits and the User-provided scope. Never silently override a
@@ -32,8 +37,11 @@ Before changing implementation files:
    Do not amend, squash, replace, or include implementation changes in this
    commit.
 5. Push the Executor branch and open a draft pull request using the authorized
-   VCS/GitHub interface. The PR description must identify the Work and Mission,
-   scope, acceptance criteria, plan, validation contract, and planning commit.
+   VCS/GitHub interface. Follow the selected Pull Request template. The PR
+   description must identify the Work, Mission, and Execution, then concisely
+   describe the summary, scope, implementation, acceptance criteria, validation
+   contract, planning commit, risks, and unresolved gaps. Do not paste the raw
+   Mission prompt, transcript, or commit log.
 6. If any required remote, credential, tool, or API is unavailable, stop and
    submit a blocked `khala_signal` with exact evidence. Never claim success
    without command or API output.
@@ -47,7 +55,7 @@ Before changing implementation files:
    rebase, squash, or force-push unless the effective policy explicitly allows
    it; force-push is forbidden by default.
 5. Keep the draft PR description current when the implementation or validation
-   plan changes.
+   plan changes, while preserving the selected repository or Khala template.
 
 ## Phase 3: retry and completion
 
@@ -60,8 +68,9 @@ Before completion:
 
 1. Run every check in the Validation Contract and record exact results.
 2. Push the final reviewable commits.
-3. Update the draft PR with implementation details, commit IDs, validation
-   results, and unresolved gaps. Do not merge it.
+3. Update the draft PR using the selected template with implementation details,
+   commit IDs, validation results, risks, and unresolved gaps. Keep it concise and
+   factual. Do not merge it.
 4. Submit a final `khala_signal` containing branch, planning commit, implementation
    commit IDs, PR URL/state, validation evidence, and unresolved gaps.
 

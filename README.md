@@ -264,6 +264,7 @@ placeholder prompts are intentionally not included.
   image specifications for the Khala artwork.
 - [Context](CONTEXT.md) — project vocabulary and authority boundaries.
 - [Work template](templates/khala-work.md) — the structured request format.
+- [Pull Request template](templates/pull-request.md) — the bundled Executor PR description format.
 - [System prompts](system-prompts/) — role behavior and constraints.
 - [Governed pi-review design](docs/design-governed-pi-review.md) — future Work/Executor/Signal flow.
 - [Reusable Learning design](docs/design-reusable-observer-learning.md) — future cross-Work evidence rules.
