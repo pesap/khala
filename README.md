@@ -18,6 +18,7 @@
 <p align="center">
   <a href="#why-khala">Why Khala</a> ·
   <a href="#features">Features</a> ·
+  <a href="#pi-tools">Pi Tools</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#documentation">Documentation</a> ·
   <a href="#development">Development</a>
@@ -123,15 +124,31 @@ for an entity; the complete history remains available for review and recovery.
 - `/khala-demo` launches a three-lane lifecycle demonstration.
 - `/khala` or `Ctrl+I` opens the session monitor.
 - The bundled `pi-review` extension adds `/review` and `/end-review` for scoped code reviews.
-- `khala_signal` records Executor progress, blocked, and finished evidence.
-- `khala_verdict` records Conclave decisions; Retry materializes a successor Mission.
 - Observers record repository Learning before an Executor starts when context is
   incomplete.
-- Preservers can add source-backed Counsel without changing execution state.
 - Zellij, tmux, and Herdr launchers are supported.
 - The packaged Herdr skill teaches agents to inspect and control Herdr panes safely.
 - Git worktrees provide Executor isolation.
 - The Archive is stored as inspectable JSONL rather than hidden in a service.
+
+## Pi tools
+
+Khala exposes these custom Pi tools. Role restrictions are enforced at runtime;
+normal User Sessions have no explicit Khala role marker.
+
+| Tool | Purpose | Authorized role |
+| --- | --- | --- |
+| `khala_submit_work` | Submit a complete Work to the project Conclave; an active WorkPacket is optional. | User Session or Maintainer |
+| `khala_read_archive` | Read authoritative Archive records visible to the current role. | Role-filtered |
+| `khala_admit_work` | Admit a Work Submission and create Mandate revision one. | Conclave |
+| `khala_launch_observer` | Launch a read-only Observer to gather missing Work context. | Conclave |
+| `khala_record_learning` | Record evidence-backed repository learning. | Observer |
+| `khala_launch_execution` | Materialize and launch the admitted Mission in an isolated Executor session. | Conclave |
+| `khala_signal` | Submit evidence-bearing progress, blocked, or finished execution evidence. | Executor |
+| `khala_verdict` | Record a Continue, Retry, Finish, or Reject decision for a Signal. | Conclave |
+| `khala_counsel` | Record source-backed advisory Counsel. | Preserver |
+| `khala_record_pull_request_review` | Record structured Maintainer review, merge, or closure evidence. | Maintainer |
+| `khala_record_work_outcome` | Record the durable acceptance statement after a verified Pull Request merge. | Conclave |
 
 ## Install
 
@@ -168,8 +185,8 @@ themes, and the Herdr skill.
 2. Run `/khala-triage <github-issue>` or `/khala-work`.
 3. For triage, answer blocking questions and confirm the generated WorkPacket. Use
    `/khala-triage --approve <github-issue>` for independent submission.
-4. For a manual Work, fill in the template. `Objective`, `Scope`, `Acceptance criteria`,
-   `Plan`, and `Validation` are required.
+4. For a manual Work, fill in the template, or ask the LLM to call `khala_submit_work` directly.
+   `Objective`, `Scope`, `Acceptance criteria`, `Plan`, and `Validation` are required.
 5. The Work is sent to the Project Conclave for admission and launch.
 6. Open `/khala` to watch the Conclave and the isolated Executor.
 7. Inspect the Archive when you need the authoritative lifecycle history.

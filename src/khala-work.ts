@@ -1,4 +1,14 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	AgentToolResult,
+	ExtensionAPI,
+	ExtensionCommandContext,
+	ExtensionContext,
+	Theme,
+	ToolDefinition,
+	ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
+import { keyHint } from "@earendil-works/pi-coding-agent";
+import { type Component, Text } from "@earendil-works/pi-tui";
 import { nanoid } from "nanoid";
 import { type Static, Type } from "typebox";
 import { KhalaEntryType } from "./khala-entry-types.js";
@@ -6,16 +16,18 @@ import type { ExecutorStarterFactory } from "./khala-executor.js";
 import {
 	type KhalaWork,
 	KhalaWorkEntryStatus,
-	type KhalaWorkLaunchStatus,
+	KhalaWorkLaunchStatus,
 	type KhalaWorkSubmission,
 } from "./khala-model.js";
 import { KhalaRole, readSessionRole } from "./khala-role.js";
-import { queueWork, rejectedWorkLaunch, toKhalaWork, validateWork } from "./khala-work-helpers.js";
+import { deriveWorkTitle, queueWork, rejectedWorkLaunch, toKhalaWork, validateWork } from "./khala-work-helpers.js";
 import { admitWork, launchExecution } from "./khala-work-lifecycle.js";
 
 const WORK_PARAMETERS = Type.Object({
-	workId: Type.Optional(Type.String()),
-	title: Type.Optional(Type.String()),
+	workId: Type.Optional(
+		Type.String({ description: "Stable Work ID; uses the active template draft ID or generates one when omitted." }),
+	),
+	title: Type.Optional(Type.String({ description: "Short Work title; derived from objective when omitted." })),
 	objective: Type.String(),
 	context: Type.Optional(Type.String()),
 	scope: Type.String(),
@@ -124,18 +136,7 @@ function registerKhalaWork(pi: ExtensionAPI, dependencies: KhalaWorkDependencies
 			return Promise.resolve();
 		},
 	});
-	pi.registerTool({
-		name: "khala_submit_work",
-		label: "Submit Khala Work",
-		description: "Submit a completed Khala Work to the dedicated project Conclave.",
-		promptSnippet: "Submit completed Khala Work",
-		executionMode: "sequential",
-		parameters: WORK_PARAMETERS,
-		execute: (...args) => {
-			const [, params, , , context] = args;
-			return submitValidatedWork(pi, params, context, dependencies);
-		},
-	});
+	pi.registerTool(createSubmitWorkTool(pi, dependencies));
 	pi.registerTool({
 		name: "khala_admit_work",
 		label: "Admit Khala Work",
@@ -192,7 +193,99 @@ function submitValidatedWork(
 	if (validationErrors.length > 0) {
 		return Promise.resolve(rejectedWorkLaunch(`Khala Work is incomplete:\n- ${validationErrors.join("\n- ")}`));
 	}
-	return queueWork(pi, work, context, dependencies);
+	return queueWork({ pi, work, explicitWorkId: params.workId, context, dependencies });
+}
+
+function createSubmitWorkTool(
+	pi: ExtensionAPI,
+	dependencies: KhalaWorkDependencies,
+): ToolDefinition<typeof WORK_PARAMETERS, KhalaWorkLaunchResult["details"]> {
+	return {
+		name: "khala_submit_work",
+		label: "Submit Khala Work",
+		description:
+			"Submit a complete Khala Work directly to the project Conclave. This tool is Pi-native and does not require an active /khala-work draft.",
+		promptSnippet: "Submit completed Khala Work directly to the project Conclave",
+		executionMode: "sequential",
+		parameters: WORK_PARAMETERS,
+		execute: (...args) => {
+			const [, params, , , context] = args;
+			return submitValidatedWork(pi, params, context, dependencies);
+		},
+		renderCall: (args, theme) => renderSubmitWorkCall(args, theme),
+		renderResult: (result, options, theme, context) => renderSubmitWorkResult(result, options, theme, context.args),
+	};
+}
+
+function renderSubmitWorkCall(args: KhalaWorkInput, theme: Theme): Component {
+	const { title: rawTitle, objective: rawObjective } = args;
+	let suppliedTitle = "";
+	if (typeof rawTitle === "string") {
+		suppliedTitle = rawTitle.trim();
+	}
+	let objective = "";
+	if (typeof rawObjective === "string") {
+		objective = rawObjective;
+	}
+	const title = suppliedTitle || deriveWorkTitle(rawTitle, objective);
+	return new Text(theme.fg("toolTitle", theme.bold("khala_submit_work ")) + theme.fg("muted", `"${title}"`), 0, 0);
+}
+
+function renderSubmitWorkResult(
+	result: AgentToolResult<KhalaWorkLaunchResult["details"]>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	params: KhalaWorkInput,
+): Component {
+	if (options.isPartial) {
+		return new Text(theme.fg("warning", "Submitting Khala Work..."), 0, 0);
+	}
+	const { details, content } = result;
+	if (details === undefined) {
+		const [text] = content;
+		let fallback = "";
+		if (text?.type === "text") {
+			fallback = text.text;
+		}
+		return new Text(fallback, 0, 0);
+	}
+	if (details.status === KhalaWorkLaunchStatus.rejected) {
+		return new Text(theme.fg("error", `Work submission rejected: ${details.reason}`), 0, 0);
+	}
+	const work = toKhalaWork(params);
+	let text = `${theme.fg("success", "Work queued")} ${theme.fg("muted", `"${work.title}"`)} ${theme.fg("dim", `(${details.workId})`)}`;
+	if (options.expanded) {
+		text += `\n${renderExpandedWork(work, details, theme)}`;
+	} else {
+		text += `\n${theme.fg("dim", `… ${keyHint("app.tools.expand", "to expand")}`)}`;
+	}
+	return new Text(text, 0, 0);
+}
+
+function renderExpandedWork(work: KhalaWork, details: KhalaWorkLaunchResult["details"], theme: Theme): string {
+	if (details.status !== KhalaWorkLaunchStatus.queued) {
+		return "";
+	}
+	const sections = [
+		`Work ID: ${details.workId}`,
+		`Archive: ${details.archivePath}`,
+		`Objective:\n${work.objective}`,
+		`Context:\n${work.context || "(none stated)"}`,
+		`Scope:\n${work.scope}`,
+		renderWorkList("Acceptance criteria", work.acceptanceCriteria),
+		renderWorkList("Constraints", work.constraints),
+		renderWorkList("Plan", work.plan),
+		renderWorkList("Validation", work.validation),
+	];
+	return sections.map((section) => theme.fg("muted", section)).join("\n");
+}
+
+function renderWorkList(label: string, values: readonly string[]): string {
+	let body = "(none stated)";
+	if (values.length > 0) {
+		body = values.map((value) => `- ${value}`).join("\n");
+	}
+	return `${label}:\n${body}`;
 }
 
 export type {

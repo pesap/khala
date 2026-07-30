@@ -209,22 +209,23 @@ function admittedSubmissionState(submission: KhalaWorkSubmission, mandateId: str
 	return { ...next, status: WorkSubmissionStatus.admitted, mandateId };
 }
 
-function queueWork(
-	pi: ExtensionAPI,
-	work: KhalaWork,
-	context: ExtensionContext,
-	dependencies: KhalaWorkDependencies,
-): Promise<KhalaWorkLaunchResult> {
-	const draft = readLatestWorkDraft(context);
-	if (draft === null) {
-		return Promise.resolve(rejectedWorkLaunch("There is no active Khala Work draft to submit."));
-	}
+function queueWork(input: {
+	pi: ExtensionAPI;
+	work: KhalaWork;
+	explicitWorkId: string | undefined;
+	context: ExtensionContext;
+	dependencies: KhalaWorkDependencies;
+}): Promise<KhalaWorkLaunchResult> {
+	// The editor command still supplies a draft ID when one exists, but direct
+	// LLM tool calls must remain usable without session-local Work state.
+	const { pi, work, explicitWorkId, context, dependencies } = input;
+	const workId = explicitWorkId?.trim() || readLatestWorkDraft(context)?.workId || nanoid();
 	return dependencies
-		.submitWork({ workId: draft.workId, projectPath: context.cwd, work, projectTrusted: isProjectTrusted(context) })
+		.submitWork({ workId, projectPath: context.cwd, work, projectTrusted: isProjectTrusted(context) })
 		.then((queued): KhalaWorkLaunchResult => {
 			pi.appendEntry(KhalaEntryType.work, {
 				status: KhalaWorkEntryStatus.queued,
-				workId: draft.workId,
+				workId,
 				title: work.title,
 				archivePath: queued.archivePath,
 			});
@@ -235,7 +236,7 @@ function queueWork(
 						text: `Work "${work.title}" was sent to the dedicated project Conclave and queued for admission.`,
 					},
 				],
-				details: { status: KhalaWorkLaunchStatus.queued, workId: draft.workId, archivePath: queued.archivePath },
+				details: { status: KhalaWorkLaunchStatus.queued, workId, archivePath: queued.archivePath },
 			};
 		})
 		.catch(

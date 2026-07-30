@@ -46,9 +46,13 @@ The User or Maintainer defines a complete Work contract:
 - implementation plan;
 - validation contract.
 
-`khala_submit_work` sends the Work to the project Conclave. The Conclave intake
-path registers a Work Submission in the project Archive with status `queued`.
-The User authored the terms; the Conclave registered the submission.
+`khala_submit_work` sends the Work to the project Conclave. It is a Pi-native
+LLM tool and can be called directly without an active `/khala-work` draft. If no
+Work ID is supplied, it reuses the active template draft ID when present and
+otherwise generates one. The editor command remains
+available for users who want the structured template. The Conclave intake path
+registers a Work Submission in the project Archive with status `queued`. The
+User or Maintainer authored the terms; the Conclave registered the submission.
 
 A Work Submission is a proposal, not yet an authoritative Mandate.
 
