@@ -23,6 +23,12 @@ class TmuxLauncher extends Launcher {
 	override close(target: string): Promise<void> {
 		return closeTmux(target);
 	}
+
+	override async send(target: string, message: string): Promise<void> {
+		await tmux(["set-buffer", "--", message]);
+		await tmux(["paste-buffer", "-t", target]);
+		await tmux(["send-keys", "-t", target, "Enter"]);
+	}
 }
 
 function createTmuxLauncher(): Launcher {

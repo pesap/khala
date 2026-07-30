@@ -1,8 +1,9 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: The session projection intentionally keeps all role and review state in one roster pass.
 import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
 import type { ExtensionContext, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
-import { listSubmissionRecords } from "./khala-archive-projections.js";
+import { listPullRequestRecords, listSubmissionRecords } from "./khala-archive-projections.js";
 import { LauncherName, type LauncherNameValue } from "./khala-config.js";
 import { listExecutorRecords } from "./khala-executor-registry.js";
 import { type ExecutorRecord, ExecutorStatus } from "./khala-model.js";
@@ -232,12 +233,26 @@ function buildSessionList(
 	}
 
 	const signals = listSignals(context.cwd, projectTrusted);
+	const reviewableExecutions = new Set(
+		listPullRequestRecords(context.cwd, projectTrusted)
+			.filter(
+				(record) =>
+					record.status === "reviewable" ||
+					record.status === "draft" ||
+					record.status === "open" ||
+					record.status === "changes-requested",
+			)
+			.map((record) => record.executionId),
+	);
 	const workTitles = new Map<string, string>();
 	for (const submission of listSubmissionRecords(context.cwd, projectTrusted)) {
 		workTitles.set(submission.workId, submission.work.title);
 	}
 	for (const executor of listExecutorRecords(context.cwd, projectTrusted).filter(
-		(candidate) => candidate.status === ExecutorStatus.starting || candidate.status === ExecutorStatus.running,
+		(candidate) =>
+			candidate.status === ExecutorStatus.starting ||
+			candidate.status === ExecutorStatus.running ||
+			(candidate.status === ExecutorStatus.finished && reviewableExecutions.has(candidate.executionId)),
 	)) {
 		const [latestSignal] = signals
 			.filter((signal) => signal.executionId === executor.executionId)

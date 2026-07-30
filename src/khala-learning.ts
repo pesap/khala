@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import { type Static, Type } from "typebox";
@@ -26,6 +27,7 @@ type ObserverBinding = Readonly<{
 	executionId: string;
 	observerName: string;
 	projectPath: string;
+	projectTrusted?: boolean;
 }>;
 
 function registerKhalaLearning(pi: ExtensionAPI, wake: LearningWake, closeObserver: ExecutorCloser): void {
@@ -41,6 +43,7 @@ function registerKhalaLearning(pi: ExtensionAPI, wake: LearningWake, closeObserv
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: Learning recording keeps authorization, durability, wake, and cleanup atomic.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Learning recording keeps authorization, durability, wake, and cleanup atomic.
 async function recordLearning(
 	params: LearningInput,
 	context: ExtensionContext,
@@ -54,19 +57,21 @@ async function recordLearning(
 	if (binding === undefined) {
 		throw new Error("This session is not bound to a Khala Observer execution.");
 	}
-	if (
-		binding.projectPath !== context.cwd ||
-		binding.workId !== params.workId ||
-		binding.executionId !== params.executionId
-	) {
+	const projectPath = resolve(binding.projectPath);
+	if (binding.workId !== params.workId || binding.executionId !== params.executionId) {
 		throw new Error("Learning must reference the current Observer Work and execution.");
 	}
-	const projectPath = context.cwd;
-	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+	let projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+	const { projectTrusted: boundProjectTrusted } = binding;
+	if (boundProjectTrusted !== undefined) {
+		projectTrusted = boundProjectTrusted;
+	}
 	const execution = readExecutorRecord(projectPath, binding.executionId, projectTrusted);
 	const sessionPath = context.sessionManager.getSessionFile();
 	if (
 		execution === undefined ||
+		resolve(execution.projectPath) !== projectPath ||
+		resolve(execution.sandboxPath) !== resolve(context.cwd) ||
 		execution.kind !== "observer" ||
 		execution.purpose?.kind !== "observation" ||
 		execution.status !== "running" ||
@@ -136,6 +141,7 @@ function readObserverBinding(context: ExtensionContext): ObserverBinding | undef
 				executionId?: unknown;
 				observerName?: unknown;
 				projectPath?: unknown;
+				projectTrusted?: unknown;
 			};
 			if (
 				typeof data.workId === "string" &&
@@ -149,6 +155,9 @@ function readObserverBinding(context: ExtensionContext): ObserverBinding | undef
 					observerName: data.observerName,
 					projectPath: data.projectPath,
 				};
+				if (typeof data.projectTrusted === "boolean") {
+					binding = { ...binding, projectTrusted: data.projectTrusted };
+				}
 				break;
 			}
 		}

@@ -1,5 +1,10 @@
+// biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Launch preparation carries durable Mission, review, and sandbox callbacks together.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+const COMMIT_CONVENTION_PATTERN = /^commit convention:\s*(.+)$/i;
+
 import type { readMandate } from "./khala-archive-projections.js";
+import { loadKhalaConfig } from "./khala-config.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import { type ExecutorRuntimeUpdate, updateExecutorRecord } from "./khala-executor-registry.js";
 import {
@@ -9,6 +14,7 @@ import {
 	type LearningRecord,
 	type MissionRecord,
 } from "./khala-model.js";
+import { latestPullRequestForMission, type ReviewPreparationInput, recordReviewPreparation } from "./khala-review.js";
 import type { KhalaWorkDependencies, KhalaWorkLaunchResult } from "./khala-work.js";
 import { formatExecutorPlan } from "./khala-work-format.js";
 import { launchedResult } from "./khala-work-helpers.js";
@@ -100,22 +106,89 @@ function startExecutor(input: {
 		executorName,
 		attemptNumber,
 	} = input;
+	const config = loadKhalaConfig(context.cwd, projectTrusted);
+	let previousReview: ReturnType<typeof latestPullRequestForMission>;
+	if (mission.predecessorMissionId !== undefined) {
+		previousReview = latestPullRequestForMission(context.cwd, mission.predecessorMissionId, projectTrusted);
+	}
+	const reviewWorkflow: {
+		publish: boolean;
+		targetBranch?: string;
+		previousPullRequestUrl?: string;
+		commitConvention?: string;
+	} = {
+		publish: config.publishExecutorBranches,
+		commitConvention: resolveCommitConvention(submission.work.constraints, config.commitConvention),
+	};
+	let missionMessage = formatExecutorPlan(submission.work, attemptNumber, learning, {
+		workId,
+		mandateId: mandate.mandateId,
+		mandateRevision: mandate.revision,
+		missionId: mission.missionId,
+	});
+	if (previousReview !== undefined) {
+		missionMessage += [
+			"",
+			"Prior Pull Request review handoff:",
+			`Pull Request: ${previousReview.url ?? "not published"}`,
+			`Status: ${previousReview.status}`,
+			`Review feedback: ${previousReview.reviewFeedback.join("; ") || "none recorded"}`,
+			`Validation results: ${previousReview.validationResults.join("; ") || "none recorded"}`,
+		].join("\n");
+	}
+	if (config.pullRequestTargetBranch.length > 0) {
+		reviewWorkflow.targetBranch = config.pullRequestTargetBranch;
+	}
+	if (previousReview?.url !== undefined) {
+		reviewWorkflow.previousPullRequestUrl = previousReview.url;
+	}
 	return dependencies.createExecutorStarter(context)({
 		projectPath: context.cwd,
 		workId,
 		executionId,
 		name: submission.work.title,
 		executorName,
-		mission: formatExecutorPlan(submission.work, attemptNumber, learning, {
-			workId,
-			mandateId: mandate.mandateId,
-			mandateRevision: mandate.revision,
-			missionId: mission.missionId,
-		}),
+		mission: missionMessage,
 		systemPrompt: dependencies.executorSystemPrompt,
 		missionId: mission.missionId,
 		mandateId: mandate.mandateId,
 		participantId,
+		projectTrusted,
+		reviewWorkflow,
+		onReviewPrepared: (preparation) => {
+			const reviewInput: {
+				projectPath: string;
+				projectTrusted: boolean;
+				workId: string;
+				missionId: string;
+				executionId: string;
+				sourceBranch: string;
+				targetBranch: string;
+				planningCommit: string;
+				url?: string;
+				number?: number;
+				previousPullRequestUrl?: string;
+			} = {
+				projectPath: context.cwd,
+				projectTrusted,
+				workId,
+				missionId: mission.missionId,
+				executionId,
+				sourceBranch: preparation.sourceBranch,
+				targetBranch: preparation.targetBranch,
+				planningCommit: preparation.planningCommit,
+			};
+			if (preparation.url !== undefined) {
+				reviewInput.url = preparation.url;
+			}
+			if (preparation.number !== undefined) {
+				reviewInput.number = preparation.number;
+			}
+			if (reviewWorkflow.previousPullRequestUrl !== undefined) {
+				reviewInput.previousPullRequestUrl = reviewWorkflow.previousPullRequestUrl;
+			}
+			recordReviewPreparation(reviewInput as ReviewPreparationInput);
+		},
 		onSandboxCreated: (sandbox, launcherName) =>
 			updateExecutorRecord(
 				context.cwd,
@@ -126,4 +199,14 @@ function startExecutor(input: {
 	});
 }
 
-export { completeExecutorLaunch, startExecutor };
+function resolveCommitConvention(constraints: readonly string[], configured: string): string {
+	for (const constraint of constraints) {
+		const match = COMMIT_CONVENTION_PATTERN.exec(constraint.trim());
+		if (match?.[1] !== undefined && match[1].trim().length > 0) {
+			return match[1].trim();
+		}
+	}
+	return configured;
+}
+
+export { completeExecutorLaunch, resolveCommitConvention, startExecutor };

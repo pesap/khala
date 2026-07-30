@@ -1,9 +1,10 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Verdict persistence keeps validation, retry, and terminal transaction logic together.
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import { appendArchiveRecord, appendArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import { type MissionProjection, readCurrentMission, readMandate } from "./khala-archive-projections.js";
-import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
+import { readExecutorRecord, updateExecutorRecord, writeExecutorRecord } from "./khala-executor-registry.js";
 import {
 	ExecutorStatus,
 	type ExecutorStatusValue,
@@ -11,6 +12,7 @@ import {
 	type MissionRecord,
 	type VerdictRecord,
 } from "./khala-model.js";
+import { markPullRequestReviewable } from "./khala-review.js";
 import type { readSignal } from "./khala-signal.js";
 import type { NormalizedVerdictInput, RequeueSubmission, VerdictInput } from "./khala-verdict.js";
 
@@ -113,19 +115,36 @@ function persistVerdict(input: {
 	if (missionId !== undefined) {
 		schemaVersion = 2;
 	}
+	if (verdict.decision === "finish" || verdict.decision === "reject") {
+		const result = withArchiveLock(context.cwd, projectTrusted, () => {
+			const execution = readExecutorRecord(context.cwd, verdict.executionId, projectTrusted);
+			if (execution?.status !== ExecutorStatus.running) {
+				throw new Error("The Execution changed before its terminal Verdict could be committed.");
+			}
+			appendArchiveRecord(
+				context.cwd,
+				{ schemaVersion, type: "verdict", workId: verdict.workId, executionId: verdict.executionId, payload: verdict },
+				projectTrusted,
+			);
+			writeExecutorRecord({ ...execution, status: terminalExecutorStatus(verdict.decision) }, projectTrusted);
+			return verdictResult(verdict, false);
+		});
+		if (verdict.decision === "finish" && missionId !== undefined) {
+			markPullRequestReviewable({
+				projectPath: context.cwd,
+				projectTrusted,
+				workId: verdict.workId,
+				missionId,
+				executionId: verdict.executionId,
+			});
+		}
+		return result;
+	}
 	appendArchiveRecord(
 		context.cwd,
 		{ schemaVersion, type: "verdict", workId: verdict.workId, executionId: verdict.executionId, payload: verdict },
 		projectTrusted,
 	);
-	if (verdict.decision === "finish" || verdict.decision === "reject") {
-		updateExecutorRecord(
-			context.cwd,
-			verdict.executionId,
-			{ status: terminalExecutorStatus(verdict.decision) },
-			projectTrusted,
-		);
-	}
 	if (verdict.decision === "retry") {
 		updateExecutorRecord(context.cwd, verdict.executionId, { status: ExecutorStatus.failed }, projectTrusted);
 		return verdictResult(verdict, requeueSubmission(context.cwd, verdict.workId, projectTrusted));

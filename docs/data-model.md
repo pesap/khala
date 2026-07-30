@@ -12,7 +12,7 @@ Each line contains:
 | --- | --- |
 | `recordId` | Unique identifier for the historical line. |
 | `schemaVersion` | `2` on current writes; absent or `1` means legacy history. |
-| `type` | `submission`, `mandate`, `mission`, `execution`, `signal`, `verdict`, `counsel`, or `learning`. |
+| `type` | `submission`, `mandate`, `mission`, `execution`, `signal`, `verdict`, `verdict-delivery`, `counsel`, `learning`, `pull-request`, or `work-outcome`. |
 | `projectPath` | Resolved project identity. |
 | `workId` | Work lifecycle identifier. |
 | `executionId` | Optional execution binding. |
@@ -44,7 +44,8 @@ Work Submission
             └─ Mandate revision 1
                  └─ immutable Mission
                       └─ runtime Execution(s)
-                           └─ Signal ──► Verdict
+                           └─ Signal ──► Verdict ──► Verdict Delivery
+                                      └─ Pull Request ──► Work Outcome
 ```
 
 A Work Submission is not authoritative Work until the dedicated project
@@ -119,6 +120,11 @@ rejected. Continue leaves the current runtime active. Finish closes the current 
 successfully for external review; it does not establish Work acceptance. Reject
 closes it as failed. Retry requires a complete successor assignment and
 materializes a successor Mission; it does not requeue the old submission.
+
+A Verdict Delivery is durable pending/delivered/failed transport evidence for
+an active Executor. A Pull Request record captures branch, review, validation,
+and merge evidence; `Finish` promotes it to reviewable state. Only a verified
+merged Pull Request can be used to create a Work Outcome.
 
 Counsel remains Preserver-only advisory input. Learning remains Observer-only,
 Work-scoped evidence. Neither can authorize a lifecycle transition.

@@ -5,12 +5,13 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import type { Sandbox, SandboxRequest } from "./executor.js";
-import { VCSProvider } from "./vcs.js";
+import { type ReviewFinalization, type ReviewPreparation, type ReviewWorkflowRequest, VCSProvider } from "./vcs.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_SANDBOX_NAME_LENGTH = 48;
 const NAME_RADIX = 36;
 const RANDOM_SUFFIX_LENGTH = 8;
+const PULL_REQUEST_NUMBER_PATTERN = /\/pull\/(\d+)(?:$|[?#])/;
 
 // PATH_MAX is 4096 on Linux; most filesystems cap path components at 255 bytes.
 const MAX_PATH_LENGTH = 4096;
@@ -60,6 +61,72 @@ class GitWorktreeProvider extends VCSProvider {
 		await git(sandbox.projectPath, ["branch", "-D", `${this.#branchPrefix}${sandbox.name}`]);
 	}
 
+	override async prepareReview(request: ReviewWorkflowRequest): Promise<ReviewPreparation> {
+		const sourceBranch = await git(request.sandbox.path, ["branch", "--show-current"]);
+		const targetBranch = request.targetBranch?.trim() || (await defaultTargetBranch(request.sandbox.path));
+		const subject = planningCommitSubject(request);
+		const bodyParts = [`Work: ${request.workId}`, `Execution: ${request.executionId}`];
+		if (request.previousPullRequestUrl !== undefined) {
+			bodyParts.push(`Related Pull Request: ${request.previousPullRequestUrl}`);
+		}
+		bodyParts.push("", request.mission);
+		const body = bodyParts.join("\n");
+		await git(request.sandbox.path, ["commit", "--allow-empty", "-m", subject, "-m", body]);
+		const planningCommit = await git(request.sandbox.path, ["rev-parse", "HEAD"]);
+		let url: string | undefined;
+		if (request.publish) {
+			await git(request.sandbox.path, ["push", "--set-upstream", "origin", sourceBranch]);
+			url = await gh([
+				"pr",
+				"create",
+				"--draft",
+				"--base",
+				targetBranch,
+				"--head",
+				sourceBranch,
+				"--title",
+				request.name,
+				"--body",
+				body,
+			]);
+		}
+		const result: {
+			sourceBranch: string;
+			targetBranch: string;
+			planningCommit: string;
+			url?: string;
+			number?: number;
+		} = {
+			sourceBranch,
+			targetBranch,
+			planningCommit,
+		};
+		if (url !== undefined) {
+			result.url = url;
+			const number = parsePullRequestNumber(url);
+			if (number !== undefined) {
+				result.number = number;
+			}
+		}
+		return result;
+	}
+
+	override async finalizeReview(
+		request: ReviewWorkflowRequest,
+		url?: string,
+		body?: string,
+	): Promise<ReviewFinalization> {
+		const headCommit = await git(request.sandbox.path, ["rev-parse", "HEAD"]);
+		if (request.publish) {
+			const sourceBranch = await git(request.sandbox.path, ["branch", "--show-current"]);
+			await git(request.sandbox.path, ["push", "origin", sourceBranch]);
+			if (url !== undefined && body !== undefined) {
+				await gh(["pr", "edit", url, "--body", body]);
+			}
+		}
+		return { headCommit };
+	}
+
 	protected generateSandboxName(name: string): string {
 		const slug = name
 			.trim()
@@ -89,6 +156,62 @@ function assertWorktreeRootDoesNotContainProject(worktreeRoot: string, projectRo
 	if (pathFromRoot === "" || !isOutsideRoot) {
 		throw new Error(`The active project is already inside the configured worktree root: ${worktreeRoot}`);
 	}
+}
+
+function planningCommitSubject(request: ReviewWorkflowRequest): string {
+	const convention = request.commitConvention?.trim() ?? "project";
+	if (convention === "conventional") {
+		return `chore(khala): record Mission ${request.executionId} plan`;
+	}
+	if (convention === "project") {
+		return `Khala: record Mission ${request.executionId} plan`;
+	}
+	return `${convention} record Mission ${request.executionId} plan`;
+}
+
+async function defaultTargetBranch(cwd: string): Promise<string> {
+	try {
+		const remoteHead = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+		if (remoteHead.startsWith("origin/")) {
+			return remoteHead.slice("origin/".length);
+		}
+	} catch {
+		// Repositories without origin/HEAD use the conventional branch fallback below.
+	}
+	const branchChecks = await Promise.all(
+		["main", "master"].map(async (branch) => {
+			try {
+				await git(cwd, ["show-ref", "--verify", `refs/heads/${branch}`]);
+				return branch;
+			} catch {
+				// The branch is not present; the next fallback is checked concurrently.
+				// biome-ignore lint/complexity/noUselessUndefined: The callback must resolve with an explicit optional branch.
+				return undefined;
+			}
+		}),
+	);
+	return branchChecks.find((branch): branch is string => branch !== undefined) ?? "main";
+}
+
+async function gh(args: string[]): Promise<string> {
+	try {
+		const result = await execFileAsync("gh", args, { encoding: "utf8" });
+		return result.stdout.trim();
+	} catch (error) {
+		if (error instanceof Error) {
+			// biome-ignore lint/style/useErrorCause: Preserve the existing repository error style for Node strip-only compatibility.
+			throw new Error(`gh ${args.join(" ")} failed: ${error.message}`);
+		}
+		throw error;
+	}
+}
+
+function parsePullRequestNumber(url: string): number | undefined {
+	const match = PULL_REQUEST_NUMBER_PATTERN.exec(url);
+	if (match === null) {
+		return;
+	}
+	return Number(match[1]);
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

@@ -15,14 +15,20 @@ import { createFileConclaveStorage } from "./khala-conclave-storage-file.js";
 import { loadKhalaConfig } from "./khala-config.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import { formatError } from "./khala-error.js";
-import type { LearningRecord, SignalRecord, WorkSubmissionRequest } from "./khala-model.js";
+import { sendConfiguredExecutorMessage } from "./khala-executor.js";
+import { readExecutorRecord } from "./khala-executor-registry.js";
+import type { LearningRecord, SignalRecord, VerdictRecord, WorkSubmissionRequest } from "./khala-model.js";
 import { resolvePackageRoot } from "./khala-package.js";
+import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delivery.js";
+import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
 type ConclaveCoordinator = Readonly<{
 	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => Promise<{ archivePath: string }>;
 	resume: (projectPath: string, projectTrusted?: boolean) => void;
 	wakeSignal: (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void>;
 	wakeLearning: (projectPath: string, learning: LearningRecord, projectTrusted?: boolean) => Promise<void>;
+	wakeReview: (projectPath: string, workId: string, projectTrusted?: boolean) => Promise<void>;
+	deliverVerdict: (projectPath: string, verdict: VerdictRecord, projectTrusted?: boolean) => Promise<void>;
 	getSubmission: ConclaveStorage["getSubmission"];
 	getPendingSubmission: ConclaveStorage["getPendingSubmission"];
 	claimSubmission: ConclaveStorage["claimSubmission"];
@@ -64,6 +70,23 @@ function createConclaveCoordinator(
 	};
 	const wakeSignal = (projectPath: string, signal: SignalRecord, projectTrusted = false): Promise<void> =>
 		wakeConclave({ projectPath: resolve(projectPath), projectTrusted, signal, extensionPath, storage, runtimes });
+	const wakeReview = (projectPath: string, workId: string, projectTrusted = false): Promise<void> =>
+		wakeConclave({
+			projectPath: resolve(projectPath),
+			projectTrusted,
+			workId,
+			review: true,
+			extensionPath,
+			storage,
+			runtimes,
+		});
+	const deliverVerdict = async (projectPath: string, verdict: VerdictRecord, projectTrusted = false): Promise<void> => {
+		const resolvedProjectPath = resolve(projectPath);
+		const execution = readExecutorRecord(resolvedProjectPath, verdict.executionId, projectTrusted);
+		await persistVerdictDelivery(resolvedProjectPath, verdict, projectTrusted, execution, (executor, message) =>
+			sendConfiguredExecutorMessage(executor, message),
+		);
+	};
 	const wakeLearning = (projectPath: string, learning: LearningRecord, projectTrusted = false): Promise<void> => {
 		storage.markSubmissionQueued(resolve(projectPath), learning.workId, learning.executionId, projectTrusted);
 		return wakeConclave({
@@ -77,6 +100,7 @@ function createConclaveCoordinator(
 	};
 	const resume = (projectPath: string, projectTrusted = false): void => {
 		const resolvedProjectPath = resolve(projectPath);
+		recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
 		for (const submission of storage.getPendingSubmissions(resolvedProjectPath, projectTrusted)) {
 			wakeConclave({
 				projectPath: resolvedProjectPath,
@@ -102,6 +126,8 @@ function createConclaveCoordinator(
 		resume,
 		wakeSignal,
 		wakeLearning,
+		wakeReview,
+		deliverVerdict,
 		getSubmission: storage.getSubmission,
 		getPendingSubmission: storage.getPendingSubmission,
 		claimSubmission: storage.claimSubmission,
@@ -122,6 +148,7 @@ interface WakeRequest {
 	archivePath?: string;
 	signal?: SignalRecord;
 	learning?: LearningRecord;
+	review?: boolean;
 	extensionPath: string;
 	storage: ConclaveStorage;
 	runtimes: Map<string, Promise<ConclaveRuntime>>;
@@ -146,6 +173,13 @@ async function wakeConclave(request: WakeRequest): Promise<void> {
 					"Check whether this learning is relevant and whether equivalent learning already exists in the Archive.",
 					"If it is sufficient, call khala_admit_work, then call khala_launch_execution; otherwise do not launch the Executor yet.",
 				].join("\n");
+			} else if (request.review === true) {
+				prompt = [
+					"A Maintainer Pull Request review event has arrived.",
+					`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
+					`The review concerns Work ${request.workId}.`,
+					"If changes were requested, preserve the review evidence and launch the successor Mission. If the Pull Request was merged, verify the merge evidence and record the Work Outcome through khala_record_work_outcome.",
+				].join("\n");
 			} else if (request.signal === undefined) {
 				prompt = [
 					"A new Work Submission is waiting for this Project Conclave.",
@@ -164,6 +198,7 @@ async function wakeConclave(request: WakeRequest): Promise<void> {
 					`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
 					`The Signal concerns Work ${request.signal.workId}, execution ${request.signal.executionId}.`,
 					"Evaluate the evidence and issue the appropriate durable Verdict through khala_verdict.",
+					"If the Verdict is Retry, immediately call khala_launch_execution for the Work so the successor Mission is materialized and launched or returns an explicit recoverable error.",
 				].join("\n");
 			}
 			await runtime.session.prompt(prompt);
@@ -245,6 +280,7 @@ async function initializeRuntime(
 ): Promise<ConclaveRuntime> {
 	const sessionManager = storage.loadConclaveSession(projectPath, undefined, projectTrusted);
 	const config = loadKhalaConfig(projectPath, projectTrusted);
+	const { conclaveThinking } = config;
 	const modelRuntime = await ModelRuntime.create({
 		authPath: join(getAgentDir(), "auth.json"),
 		modelsPath: join(getAgentDir(), "models.json"),
@@ -280,10 +316,14 @@ async function initializeRuntime(
 			"khala_admit_work",
 			"khala_launch_execution",
 			"khala_verdict",
+			"khala_record_work_outcome",
 		],
 	};
 	if (model !== undefined) {
 		sessionOptions.model = model;
+	}
+	if (conclaveThinking !== "") {
+		sessionOptions.thinkingLevel = conclaveThinking;
 	}
 	const { session } = await createAgentSession(sessionOptions);
 	return { session, wakeChain: Promise.resolve() };

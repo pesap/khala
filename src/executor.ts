@@ -1,5 +1,6 @@
+// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Executor startup composes sandbox, review preparation, launcher, and cleanup fences in one transaction.
 import type { LaunchedSession, Launcher } from "./launcher.js";
-import type { VCSProvider as VcsProviderType } from "./vcs.js";
+import type { ReviewPreparation, VCSProvider as VcsProviderType } from "./vcs.js";
 
 // The request stays provider-neutral so Git worktrees, branch sandboxes, and remote VCS implementations can share it.
 interface SandboxRequest {
@@ -29,8 +30,16 @@ interface ExecutorRequest {
 	missionId?: string;
 	mandateId?: string;
 	participantId?: string;
+	projectTrusted?: boolean;
 	kind?: KhalaAgentKind;
 	onSandboxCreated?: (sandbox: Sandbox, launcherName: string) => void;
+	reviewWorkflow?: Readonly<{
+		publish: boolean;
+		targetBranch?: string;
+		previousPullRequestUrl?: string;
+		commitConvention?: string;
+	}>;
+	onReviewPrepared?: (preparation: ReviewPreparation, sandbox: Sandbox) => Promise<void> | void;
 }
 
 type ExecutorStarter = (request: ExecutorRequest) => Promise<LaunchedSession>;
@@ -44,6 +53,7 @@ function createExecutorStarter(
 	launcherName = "configured",
 	model?: string,
 	skillPaths: readonly string[] = [],
+	thinkingLevel?: string,
 ): ExecutorStarter {
 	return async (request) => {
 		const sandbox = await vcsProvider.createSandbox({
@@ -52,6 +62,39 @@ function createExecutorStarter(
 		});
 		try {
 			request.onSandboxCreated?.(sandbox, launcherName);
+			if (request.reviewWorkflow !== undefined) {
+				const reviewRequest: {
+					sandbox: Sandbox;
+					name: string;
+					workId: string;
+					executionId: string;
+					mission: string;
+					publish: boolean;
+					targetBranch?: string;
+					previousPullRequestUrl?: string;
+					commitConvention?: string;
+				} = {
+					sandbox,
+					name: request.name,
+					workId: request.workId,
+					executionId: request.executionId,
+					mission: request.mission,
+					publish: request.reviewWorkflow.publish,
+				};
+				if (request.reviewWorkflow.previousPullRequestUrl !== undefined) {
+					reviewRequest.previousPullRequestUrl = request.reviewWorkflow.previousPullRequestUrl;
+				}
+				if (request.reviewWorkflow.commitConvention !== undefined) {
+					reviewRequest.commitConvention = request.reviewWorkflow.commitConvention;
+				}
+				if (request.reviewWorkflow.targetBranch !== undefined) {
+					reviewRequest.targetBranch = request.reviewWorkflow.targetBranch;
+				}
+				const preparation = await vcsProvider.prepareReview(reviewRequest);
+				if (preparation !== undefined) {
+					await request.onReviewPrepared?.(preparation, sandbox);
+				}
+			}
 			const [command, ...commandArgs] = piCommand;
 			const modelArguments: string[] = [];
 			if (model !== undefined) {
@@ -65,7 +108,7 @@ function createExecutorStarter(
 				sandbox,
 				name: request.name,
 				command,
-				args: [...commandArgs, ...modelArguments, ...skillArguments, ...buildPiArguments(request)],
+				args: [...commandArgs, ...modelArguments, ...skillArguments, ...buildPiArguments(request, thinkingLevel)],
 			});
 		} catch (error) {
 			try {
@@ -95,7 +138,7 @@ function attachCleanupDiagnostic(error: unknown, cleanupError: unknown): void {
 	}
 }
 
-function buildPiArguments(request: ExecutorRequest): string[] {
+function buildPiArguments(request: ExecutorRequest, thinkingLevel?: string): string[] {
 	const args = [
 		"--system-prompt",
 		request.systemPrompt,
@@ -109,6 +152,16 @@ function buildPiArguments(request: ExecutorRequest): string[] {
 		"--khala-project-path",
 		request.projectPath,
 	];
+	if (thinkingLevel !== undefined && thinkingLevel.length > 0) {
+		args.push("--thinking", thinkingLevel);
+	}
+	if (request.projectTrusted !== undefined) {
+		let trustedValue = "false";
+		if (request.projectTrusted) {
+			trustedValue = "true";
+		}
+		args.push("--khala-project-trusted", trustedValue);
+	}
 	if (request.kind === "observer") {
 		args.push("--khala-agent-kind", "observer");
 	}

@@ -103,6 +103,7 @@ async function launchObserver(
 			systemPrompt: dependencies.observerSystemPrompt,
 			kind: "observer",
 			participantId: `observer:${executionId}`,
+			projectTrusted,
 			onSandboxCreated: (sandbox, launcherName) =>
 				updateExecutorRecord(
 					context.cwd,

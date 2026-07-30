@@ -1,9 +1,14 @@
+// biome-ignore-all lint/complexity/useMaxParams: Verdict recording keeps role, signal, storage, and delivery dependencies explicit.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { listVerdictRecords } from "./khala-archive-projections.js";
 import type { KhalaWork, VerdictRecord } from "./khala-model.js";
 import { readSignal } from "./khala-signal.js";
-import { materializeMissingRetrySuccessor, normalizeAssignment } from "./khala-verdict-recovery.js";
+import {
+	materializeMissingRetrySuccessor,
+	normalizeAssignment,
+	recoverTerminalExecutionStates,
+} from "./khala-verdict-recovery.js";
 import { isSameVerdict, normalizeVerdictParams, processNewVerdict, verdictResult } from "./khala-verdict-support.js";
 
 const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -35,11 +40,13 @@ type MissionAssignmentInput = Static<typeof MISSION_ASSIGNMENT_PARAMETERS>;
 type NormalizedVerdictInput = Omit<VerdictInput, "successorAssignment"> & { successorAssignment?: KhalaWork };
 type ConclaveSessionCheck = (context: ExtensionContext) => boolean;
 type RequeueSubmission = (projectPath: string, workId: string, projectTrusted?: boolean) => boolean;
+type VerdictDelivery = (projectPath: string, verdict: VerdictRecord, projectTrusted?: boolean) => Promise<void>;
 
 function registerKhalaVerdict(
 	pi: ExtensionAPI,
 	isConclave: ConclaveSessionCheck,
 	requeueSubmission: RequeueSubmission,
+	deliverVerdict: VerdictDelivery = async () => undefined,
 ): void {
 	pi.registerTool({
 		name: "khala_verdict",
@@ -49,7 +56,7 @@ function registerKhalaVerdict(
 		parameters: VERDICT_PARAMETERS,
 		execute: (...args) => {
 			const [, params, , , context] = args;
-			return recordVerdict(params, context, isConclave, requeueSubmission);
+			return recordVerdict(params, context, isConclave, requeueSubmission, deliverVerdict);
 		},
 	});
 }
@@ -59,6 +66,7 @@ function recordVerdict(
 	context: ExtensionContext,
 	isConclave: ConclaveSessionCheck,
 	requeueSubmission: RequeueSubmission,
+	deliverVerdict: VerdictDelivery,
 ) {
 	if (!isConclave(context)) {
 		throw new Error("Only the dedicated project Conclave may issue a Verdict.");
@@ -74,6 +82,7 @@ function recordVerdict(
 	const normalizedAssignment = normalizeAssignment(params.successorAssignment);
 	const normalizedParams = normalizeVerdictParams(params, reason, normalizedAssignment);
 	const projectTrusted = isProjectTrusted(context);
+	recoverTerminalExecutionStates(context.cwd, projectTrusted);
 	const signal = readSignal(context.cwd, params.signalId, projectTrusted);
 	if (signal === undefined || signal.workId !== params.workId || signal.executionId !== params.executionId) {
 		throw new Error("The Verdict must reference an existing Signal from the same Work execution.");
@@ -87,13 +96,24 @@ function recordVerdict(
 				existing.successorAssignment !== undefined
 			) {
 				const materialized = materializeMissingRetrySuccessor(context.cwd, projectTrusted, existing);
-				return verdictResult(existing, materialized);
+				return deliverVerdict(context.cwd, existing, projectTrusted).then(() => verdictResult(existing, materialized));
 			}
-			return verdictResult(existing, false);
+			return deliverVerdict(context.cwd, existing, projectTrusted).then(() => verdictResult(existing, false));
 		}
 		throw new Error("A conflicting Verdict already exists for this Signal.");
 	}
-	return processNewVerdict({ params, context, signal, projectTrusted, requeueSubmission, normalizedParams, reason });
+	return processNewVerdict({
+		params,
+		context,
+		signal,
+		projectTrusted,
+		requeueSubmission,
+		normalizedParams,
+		reason,
+	}).then(async (result) => {
+		await deliverVerdict(context.cwd, result.details, projectTrusted);
+		return result;
+	});
 }
 
 function isProjectTrusted(context: ExtensionContext): boolean {
@@ -132,5 +152,5 @@ function readLatestVerdict(
 	return latest;
 }
 
-export type { MissionAssignmentInput, NormalizedVerdictInput, RequeueSubmission, VerdictInput };
+export type { MissionAssignmentInput, NormalizedVerdictInput, RequeueSubmission, VerdictDelivery, VerdictInput };
 export { readLatestVerdict, recordVerdict, registerKhalaVerdict };

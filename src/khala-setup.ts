@@ -1,4 +1,6 @@
 /* biome-ignore-all lint/suspicious/noConsole: This file is the standalone CLI output surface. */
+/* biome-ignore-all lint/style/noTernary: Setup projections keep default labels concise. */
+/* biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: The setup wizard keeps its interactive transaction together. */
 /* biome-ignore-all lint/style/noContinue: The command parser uses early iteration exits. */
 /* biome-ignore-all lint/style/noExcessiveLinesPerFile: The standalone wizard is shipped as one CLI module. */
 
@@ -24,7 +26,11 @@ interface SetupOptions {
 }
 
 type StoredConfig = {
-	[K in keyof KhalaConfig]: K extends "piCommand" | "observerPiCommand" ? string[] : string;
+	[K in keyof KhalaConfig]: K extends "piCommand" | "observerPiCommand"
+		? string[]
+		: K extends "publishExecutorBranches"
+			? boolean
+			: string;
 };
 
 const ANSI = {
@@ -311,6 +317,12 @@ function toStoredConfig(config: KhalaConfig): StoredConfig {
 		observerPiCommand: [...config.observerPiCommand],
 		conclaveModel: config.conclaveModel,
 		observerModel: config.observerModel,
+		conclaveThinking: config.conclaveThinking,
+		executorThinking: config.executorThinking,
+		observerThinking: config.observerThinking,
+		publishExecutorBranches: config.publishExecutorBranches,
+		pullRequestTargetBranch: config.pullRequestTargetBranch,
+		commitConvention: config.commitConvention,
 		archiveRoot: config.archiveRoot,
 	};
 }
@@ -336,6 +348,15 @@ async function askLine(label: string, defaultValue: string, initialValue = defau
 	return unwrapPrompt(result).trim() || defaultValue;
 }
 
+async function askOptionalLine(label: string, currentValue: string): Promise<string> {
+	const result = await clackText({
+		message: label,
+		initialValue: currentValue,
+		defaultValue: "",
+	});
+	return unwrapPrompt(result).trim();
+}
+
 function normalizeBranchPrefix(prefix: string): string {
 	if (prefix.endsWith("/")) {
 		return prefix;
@@ -351,6 +372,25 @@ async function askChoice(label: string, choices: readonly string[], defaultValue
 		maxItems: 10,
 	});
 	return unwrapPrompt(result);
+}
+
+const THINKING_DEFAULT_LABEL = "Pi default";
+
+function thinkingLabel(level: string): string {
+	return level.length > 0 ? level : THINKING_DEFAULT_LABEL;
+}
+
+function thinkingValue(label: string): string {
+	return label === THINKING_DEFAULT_LABEL ? "" : label;
+}
+
+async function askThinking(label: string, current: string): Promise<string> {
+	const selected = await askChoice(
+		label,
+		[THINKING_DEFAULT_LABEL, "off", "minimal", "low", "medium", "high", "xhigh", "max"],
+		thinkingLabel(current),
+	);
+	return thinkingValue(selected);
 }
 
 async function askConfirmation(): Promise<boolean> {
@@ -377,7 +417,13 @@ function printState(scope: ConfigScopeValue, configPath: string, config: StoredC
 	console.log(row("=", "Pi command", commandText(config.piCommand)));
 	console.log(row("=", "observer command", commandText(config.observerPiCommand)));
 	console.log(row("=", "Conclave model", config.conclaveModel || "(Pi default)"));
+	console.log(row("=", "Conclave thinking", config.conclaveThinking || "(Pi default)"));
+	console.log(row("=", "Executor thinking", config.executorThinking || "(Pi default)"));
 	console.log(row("=", "Observer model", config.observerModel || "(Pi default)"));
+	console.log(row("=", "Observer thinking", config.observerThinking || "(Pi default)"));
+	console.log(row("=", "publish branches", config.publishExecutorBranches ? "enabled" : "disabled"));
+	console.log(row("=", "PR target branch", config.pullRequestTargetBranch || "(repository default)"));
+	console.log(row("=", "commit convention", config.commitConvention));
 	console.log(row("=", "archive root", config.archiveRoot));
 }
 
@@ -430,6 +476,22 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		}
 		observerModel = await searchModel("Observer model", models, observerDefault);
 	}
+	const conclaveThinking = await askThinking("Conclave thinking level", current.conclaveThinking);
+	const executorThinking = await askThinking("Executor thinking level", current.executorThinking);
+	const observerThinking = await askThinking("Observer thinking level", current.observerThinking);
+	const publishChoice = await confirm({
+		message: "Push Executor branches and open draft PRs before implementation?",
+		initialValue: current.publishExecutorBranches,
+	});
+	const publishExecutorBranches = unwrapPrompt(publishChoice);
+	const pullRequestTargetBranch = await askOptionalLine(
+		"PR target branch (leave blank for repository default)",
+		current.pullRequestTargetBranch,
+	);
+	const commitConvention = await askLine(
+		"Commit convention (project, conventional, or custom prefix)",
+		current.commitConvention,
+	);
 	const archiveRoot = await askLine("Archive root", current.archiveRoot);
 	return {
 		launcher,
@@ -439,6 +501,12 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		observerPiCommand,
 		conclaveModel,
 		observerModel,
+		conclaveThinking,
+		executorThinking,
+		observerThinking,
+		publishExecutorBranches,
+		pullRequestTargetBranch,
+		commitConvention,
 		archiveRoot,
 	};
 }

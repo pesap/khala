@@ -57,7 +57,9 @@ and makes the lifecycle visible and recoverable.
 
 The target user-facing lifecycle is short. The Archive keeps the detailed
 history behind it; see the [detailed lifecycle](docs/lifecycle.md). PR review,
-merge integration, and Work Outcome recording are not yet runtime-enforced.
+merge integration, and Work Outcome recording are runtime-enforced when the
+Maintainer review tools are used; external branch publication and PR creation
+remain explicitly opt-in in Khala configuration.
 
 ```mermaid
 sequenceDiagram
@@ -204,6 +206,12 @@ individual values in `.pi/khala.json`.
   "observerPiCommand": ["pi", "--extension", "/path/to/khala"],
   "conclaveModel": "provider/model",
   "observerModel": "provider/model",
+  "conclaveThinking": "medium",
+  "executorThinking": "high",
+  "observerThinking": "medium",
+  "publishExecutorBranches": false,
+  "pullRequestTargetBranch": "main",
+  "commitConvention": "project",
   "archiveRoot": "~/.pi/agent/khala/conclaves"
 }
 ```
@@ -213,8 +221,13 @@ launcher must run inside a Herdr-managed pane (`HERDR_ENV=1`); it creates a
 sibling pane without taking focus. Configured commands remain argument arrays;
 Herdr quotes them for its `pane run` shell command. Run the setup wizard to choose
 `conclaveModel` and `observerModel` from the models reported by
-`pi --list-models`. `observerModel` selects the read-only repository
-observation model. The project `archiveRoot`
+`pi --list-models`. The `conclaveThinking`, `executorThinking`, and
+`observerThinking` values accept Pi's supported thinking levels or an empty
+string for the Pi default. `publishExecutorBranches` enables the Git push and
+`gh pr create --draft` workflow; it is disabled by default. `commitConvention`
+can be `project`, `conventional`, or a custom commit prefix, and a Work
+constraint beginning with `commit convention:` overrides it. `observerModel`
+selects the read-only repository observation model. The project `archiveRoot`
 override is used only when Pi marks the project trusted; untrusted projects use
 the global Archive root. All reads and writes for one trusted session use the
 same selected root.

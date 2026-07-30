@@ -60,15 +60,15 @@ uncertainties. It is advisory and cannot change lifecycle state.
 
 The target Conclave-authored record linking a Work Submission and its Missions
 to an externally accepted result. Acceptance requires Maintainer-authorized PR
-merge evidence; a `Finish` Verdict alone is only an execution handoff. Work
-Outcome persistence is not yet implemented in the current Archive schema.
+merge evidence; a `Finish` Verdict alone is only an execution handoff. The
+Conclave records a Work Outcome only after verified merge evidence.
 
 ### Archive
 
 Khala's durable authority. The Archive persists submissions, Mandates,
-Missions, Executions, Signals, Verdicts, Learning, and Counsel. It records
-history; it does not replace the role that authored each record or make
-lifecycle decisions by itself.
+Missions, Executions, Signals, Verdicts, Verdict Deliveries, Pull Requests,
+Work Outcomes, Learning, and Counsel. It records history; it does not replace
+the role that authored each record or make lifecycle decisions by itself.
 
 ## Roles
 
@@ -102,9 +102,11 @@ Counsel, but cannot admit Work, launch executions, or issue Verdicts.
 
 ```text
 User      → Work terms
-Conclave  → Work Submission, Mandate, Verdict, and Work Outcome (target)
-Observer  → Learning
+Conclave  → Work Submission, Mandate, Verdict, and Work Outcome
+Maintainer → Pull Request review and merge evidence
+Khala runtime → Verdict Delivery and Pull Request handoff evidence
 Executor  → Signal
+Observer  → Learning
 Preserver → Counsel
 Archive   → persists every record
 ```
@@ -113,7 +115,7 @@ The role that authors a record is not necessarily the role that evaluates it.
 The Conclave evaluates Learning, Signals, and Counsel; the Archive preserves
 all of them.
 
-## Canonical lifecycle (target)
+## Canonical lifecycle
 
 ```text
 Work Submission

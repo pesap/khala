@@ -37,6 +37,10 @@ class HerdrLauncher extends Launcher {
 	override close(target: string): Promise<void> {
 		return closeHerdr(target);
 	}
+
+	override async send(target: string, message: string): Promise<void> {
+		await herdr(["agent", "prompt", target, message]);
+	}
 }
 
 function createHerdrLauncher(): Launcher {

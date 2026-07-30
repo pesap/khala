@@ -241,14 +241,13 @@ Execution, Signal, Verdict, Learning, Counsel, and Outcome records.
 
 ## Current implementation boundary
 
-The current implementation already provides the Archive, Work Submission,
-Observer Learning, Preserver Counsel, Mandate, Mission, Execution, Signal, and
-Verdict records. The following are lifecycle improvements described by this
-document rather than claims about existing runtime enforcement:
+The current implementation provides the Archive, Work Submission, Observer
+Learning, Preserver Counsel, Mandate, Mission, Execution, Signal, Verdict,
+Verdict Delivery, Pull Request, and Work Outcome records. It also provides
+role fences, Retry recovery, reviewable-state projection, structured Maintainer
+review, and Conclave Outcome recording.
 
-- durable delivery of a Verdict back to an active Executor;
-- automatic or explicitly recoverable successor launch after Retry;
-- runtime role enforcement for Work submission;
-- a distinct reviewable-PR state after Executor completion;
-- structured external PR review and merge evidence;
-- a Work Outcome record linking the submission to the merged result.
+Git branch publication and draft PR creation are implemented by the Git
+provider but remain explicitly opt-in through configuration. When disabled,
+Executor planning and review handoff remain local and are still recorded in the
+Archive.

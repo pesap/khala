@@ -31,6 +31,13 @@ class ZellijLauncher extends Launcher {
 	override close(target: string): Promise<void> {
 		return closeZellij(target);
 	}
+
+	override async send(target: string, message: string): Promise<void> {
+		const tabId = getZellijTabId(target);
+		await zellij(["action", "go-to-tab-by-id", tabId]);
+		await zellij(["action", "write-chars", message]);
+		await zellij(["action", "write", "13"]);
+	}
 }
 
 function createZellijLauncher(): Launcher {

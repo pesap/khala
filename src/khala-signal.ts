@@ -16,12 +16,14 @@ const SIGNAL_PARAMETERS = Type.Object({
 });
 type SignalInput = Static<typeof SIGNAL_PARAMETERS>;
 type SignalWake = (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void> | void;
+type SignalFinalize = (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void> | void;
 
 type ExecutorMarker = Readonly<{
 	workId?: unknown;
 	executionId?: unknown;
 	executorName?: unknown;
 	projectPath?: unknown;
+	projectTrusted?: unknown;
 	missionId?: unknown;
 	participantId?: unknown;
 	mandateId?: unknown;
@@ -32,12 +34,13 @@ type ExecutorBinding = Readonly<{
 	executionId: string;
 	executorName: string;
 	projectPath: string;
+	projectTrusted?: boolean;
 	missionId?: string;
 	participantId?: string;
 	mandateId?: string;
 }>;
 
-function registerKhalaSignal(pi: ExtensionAPI, wake: SignalWake): void {
+function registerKhalaSignal(pi: ExtensionAPI, wake: SignalWake, finalize?: SignalFinalize): void {
 	pi.registerTool({
 		name: "khala_signal",
 		label: "Submit Khala Signal",
@@ -46,12 +49,12 @@ function registerKhalaSignal(pi: ExtensionAPI, wake: SignalWake): void {
 		parameters: SIGNAL_PARAMETERS,
 		execute: (...args) => {
 			const [, params, , , context] = args;
-			return submitSignal(params, context, wake);
+			return submitSignal(params, context, wake, finalize);
 		},
 	});
 }
 
-function submitSignal(params: SignalInput, context: ExtensionContext, wake: SignalWake) {
+function submitSignal(params: SignalInput, context: ExtensionContext, wake: SignalWake, finalize?: SignalFinalize) {
 	const execution = validateSignalExecution(context);
 	const { binding, projectPath, projectTrusted, missionId, participantId } = execution;
 
@@ -77,11 +80,42 @@ function submitSignal(params: SignalInput, context: ExtensionContext, wake: Sign
 		projectTrusted,
 	);
 	updateExecutorRecord(projectPath, signal.executionId, { lastSignalAt: signal.observedAt }, projectTrusted);
-	Promise.resolve(wake(projectPath, signal, projectTrusted)).catch(() => undefined);
-	return Promise.resolve({
-		content: [{ type: "text" as const, text: `Signal ${signal.signalId} recorded and the Conclave was woken.` }],
-		details: signal,
-	});
+	let finalizationError: string | undefined;
+	let wakeError: string | undefined;
+	let finalization = Promise.resolve();
+	if (finalize !== undefined) {
+		finalization = Promise.resolve(finalize(projectPath, signal, projectTrusted)).catch((error: unknown) => {
+			if (error instanceof Error) {
+				finalizationError = error.message;
+			} else {
+				finalizationError = String(error);
+			}
+		});
+	}
+	return finalization
+		.then(() => wake(projectPath, signal, projectTrusted))
+		.catch((error: unknown) => {
+			if (error instanceof Error) {
+				wakeError = error.message;
+			} else {
+				wakeError = String(error);
+			}
+		})
+		.then(() => {
+			let text = `Signal ${signal.signalId} recorded.`;
+			if (wakeError === undefined) {
+				text += " The Conclave was woken.";
+			} else {
+				text += ` Conclave wake failed: ${wakeError}`;
+			}
+			if (finalizationError !== undefined) {
+				text += ` Review evidence update failed: ${finalizationError}`;
+			}
+			return {
+				content: [{ type: "text" as const, text }],
+				details: signal,
+			};
+		});
 }
 
 type SignalExecution = Readonly<{
@@ -101,7 +135,11 @@ function validateSignalExecution(context: ExtensionContext): SignalExecution {
 		throw new Error("This session is not bound to a registered Khala Executor execution.");
 	}
 	const projectPath = resolve(binding.projectPath);
-	const projectTrusted = isProjectTrusted(context);
+	let projectTrusted = isProjectTrusted(context);
+	const { projectTrusted: boundProjectTrusted } = binding;
+	if (boundProjectTrusted !== undefined) {
+		projectTrusted = boundProjectTrusted;
+	}
 	const registry = readExecutorRecord(projectPath, binding.executionId, projectTrusted);
 	if (registry === undefined || resolve(registry.projectPath) !== projectPath) {
 		throw new Error("The Executor marker does not match its registered Project execution.");
@@ -209,6 +247,7 @@ function parseExecutorBinding(input: unknown): ExecutorBinding | undefined {
 		executionId: string;
 		executorName: string;
 		projectPath: string;
+		projectTrusted?: boolean;
 		missionId?: string;
 		participantId?: string;
 		mandateId?: string;
@@ -218,6 +257,9 @@ function parseExecutorBinding(input: unknown): ExecutorBinding | undefined {
 		executorName: data.executorName,
 		projectPath: data.projectPath,
 	};
+	if (typeof data.projectTrusted === "boolean") {
+		binding.projectTrusted = data.projectTrusted;
+	}
 	if (typeof data.missionId === "string") {
 		binding.missionId = data.missionId;
 	}

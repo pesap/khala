@@ -1,7 +1,10 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Extension registration keeps role and lifecycle wiring together.
+// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Extension hooks compose role, lifecycle, and durable delivery fences.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
 import { registerKhalaArchiveRead } from "./khala-archive-tool.js";
 import { createConclaveCoordinator } from "./khala-conclave.js";
 import { registerKhalaCounsel } from "./khala-counsel.js";
@@ -12,14 +15,16 @@ import {
 	createConfiguredObserverStarter,
 	createExecutorCloser,
 	createExecutorViewer,
+	finalizeConfiguredExecutorReview,
 } from "./khala-executor.js";
-import { updateExecutorRecord } from "./khala-executor-registry.js";
+import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
 import { KHALA_TOGGLE_SHORTCUT } from "./khala-keybindings.js";
 import { registerKhalaLearning } from "./khala-learning.js";
 import { ExecutorStatus } from "./khala-model.js";
 import { registerKhalaObserver } from "./khala-observer.js";
 import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
 import { toggleKhalaPopup } from "./khala-popup.js";
+import { registerKhalaReview } from "./khala-review.js";
 import { KhalaRole, readRolePrompt, readSessionRole } from "./khala-role.js";
 import type { KhalaSession } from "./khala-sessions.js";
 import { createSessionSource } from "./khala-sessions.js";
@@ -135,6 +140,7 @@ function registerKhalaFlags(pi: ExtensionAPI): void {
 	pi.registerFlag("khala-work-id", { description: "Internal Khala Work ID", type: "string" });
 	pi.registerFlag("khala-execution-id", { description: "Internal Khala Executor execution ID", type: "string" });
 	pi.registerFlag("khala-project-path", { description: "Internal Khala project path", type: "string" });
+	pi.registerFlag("khala-project-trusted", { description: "Internal Khala project trust marker", type: "string" });
 	pi.registerFlag("khala-agent-kind", { description: "Internal Khala agent kind", type: "string" });
 	pi.registerFlag("khala-mission-id", { description: "Internal Khala Mission ID", type: "string" });
 	pi.registerFlag("khala-mandate-id", { description: "Internal Khala Mandate ID", type: "string" });
@@ -146,8 +152,21 @@ function registerKhalaFlags(pi: ExtensionAPI): void {
 }
 
 function registerKhalaTools(pi: ExtensionAPI): void {
-	registerKhalaSignal(pi, async (projectPath, signal, projectTrusted) =>
-		conclaveCoordinator.wakeSignal(projectPath, signal, projectTrusted),
+	registerKhalaSignal(
+		pi,
+		async (projectPath, signal, projectTrusted) => conclaveCoordinator.wakeSignal(projectPath, signal, projectTrusted),
+		async (projectPath, signal, projectTrusted) => {
+			const execution = readExecutorRecord(projectPath, signal.executionId, projectTrusted);
+			if (execution !== undefined) {
+				await finalizeConfiguredExecutorReview({
+					execution,
+					workId: signal.workId,
+					projectTrusted: projectTrusted ?? false,
+					summary: signal.summary,
+					evidence: signal.evidence,
+				});
+			}
+		},
 	);
 	registerKhalaLearning(
 		pi,
@@ -165,7 +184,15 @@ function registerKhalaTools(pi: ExtensionAPI): void {
 	});
 	registerKhalaArchiveRead(pi, readSessionRole);
 	registerKhalaCounsel(pi, (context) => readSessionRole(context) === KhalaRole.preserver);
-	registerKhalaVerdict(pi, isDedicatedConclaveSession, conclaveCoordinator.requeueSubmission);
+	registerKhalaVerdict(
+		pi,
+		isDedicatedConclaveSession,
+		conclaveCoordinator.requeueSubmission,
+		conclaveCoordinator.deliverVerdict,
+	);
+	registerKhalaReview(pi, isDedicatedConclaveSession, (projectPath, workId, projectTrusted) =>
+		conclaveCoordinator.wakeReview(projectPath, workId, projectTrusted),
+	);
 	registerConclaveRecovery(pi);
 }
 
@@ -203,9 +230,22 @@ function registerKhalaSessionEvents(
 			const projectPath = pi.getFlag("khala-project-path");
 			const executionId = pi.getFlag("khala-execution-id");
 			if (typeof projectPath === "string" && typeof executionId === "string") {
-				const verdict = readLatestVerdict(projectPath, executionId, isTrustedProject(context));
+				const trustedFlag = pi.getFlag("khala-project-trusted");
+				let projectTrusted = isTrustedProject(context);
+				if (typeof trustedFlag === "string") {
+					projectTrusted = trustedFlag === "true";
+				} else if (typeof trustedFlag === "boolean") {
+					projectTrusted = trustedFlag;
+				}
+				const verdict = readLatestVerdict(projectPath, executionId, projectTrusted);
 				if (verdict !== undefined) {
 					systemPrompt += `\n\nA durable Conclave Verdict is recorded for this execution: ${verdict.decision}. Reason: ${verdict.reason}`;
+				}
+				const pendingDeliveries = listLatestVerdictDeliveryRecords(projectPath, projectTrusted).filter(
+					(delivery) => delivery.executionId === executionId && delivery.status !== "delivered",
+				);
+				for (const delivery of pendingDeliveries) {
+					systemPrompt += `\n\nPending durable Verdict delivery: ${delivery.message}`;
 				}
 			}
 		}
@@ -237,6 +277,13 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 		}
 		return entry.customType === KhalaEntryType.executor;
 	});
+	const trustedFlag = pi.getFlag("khala-project-trusted");
+	let projectTrusted = isTrustedProject(context);
+	if (typeof trustedFlag === "string") {
+		projectTrusted = trustedFlag === "true";
+	} else if (typeof trustedFlag === "boolean") {
+		projectTrusted = trustedFlag;
+	}
 	if (!hasMarker) {
 		const missionId = pi.getFlag("khala-mission-id");
 		const mandateId = pi.getFlag("khala-mandate-id");
@@ -246,11 +293,12 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 			executionId: string;
 			executorName: string;
 			projectPath: string;
+			projectTrusted: boolean;
 			kind: string;
 			missionId?: string;
 			mandateId?: string;
 			participantId?: string;
-		} = { workId, executionId, executorName, projectPath, kind: agentKind };
+		} = { workId, executionId, executorName, projectPath, projectTrusted, kind: agentKind };
 		if (typeof missionId === "string") {
 			marker = { ...marker, missionId };
 		}
@@ -268,7 +316,7 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 	}
 	const sessionPath = context.sessionManager.getSessionFile();
 	if (sessionPath !== undefined) {
-		updateExecutorRecord(projectPath, executionId, { sessionPath }, isTrustedProject(context));
+		updateExecutorRecord(projectPath, executionId, { sessionPath }, projectTrusted);
 	}
 }
 
