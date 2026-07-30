@@ -1,0 +1,26 @@
+{
+  "positive": [
+    "Review the UX of this CLI command tree.",
+    "Design flags and help output for a new terminal tool.",
+    "Make this command-line error message more useful.",
+    "How should my CLI handle stdout, stderr, and exit codes?",
+    "Improve onboarding for this developer CLI.",
+    "Add accessible output modes for a CLI with colors and spinners.",
+    "Should this CLI have an interactive mode or only flags?",
+    "Design --json output and human output for this command.",
+    "Audit this CLI for screen-reader accessibility.",
+    "Make subcommands consistent and discoverable."
+  ],
+  "negative": [
+    "Write a Bash script to deploy my app.",
+    "Implement a React web form UX review.",
+    "Debug this ncurses full-screen TUI layout.",
+    "Explain Linux file descriptors generally.",
+    "Create a Python parser for JSON logs.",
+    "Review this REST API schema.",
+    "Fix a shell quoting bug in this script.",
+    "Design a graphical desktop settings panel.",
+    "Write Dockerfile best practices.",
+    "Compare zsh and fish prompt themes."
+  ]
+}

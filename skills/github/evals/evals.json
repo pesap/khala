@@ -1,0 +1,35 @@
+{
+  "skill_name": "github",
+  "evals": [
+    {
+      "id": "pr-reply-thread",
+      "prompt": "A reviewer left a GitHub PR review comment asking for a null-check. Reply in-thread after confirming the fix and avoid posting a general PR comment.",
+      "expected_output": "An action plan or command sequence that finds the review comment ID and posts an in-thread reply instead of a general PR comment.",
+      "assertions": [
+        "The response prefers an in-thread review reply over a general PR comment",
+        "The response uses GitHub CLI or gh api rather than generic prose only",
+        "The response distinguishes review comments from issue comments or loose PR comments"
+      ]
+    },
+    {
+      "id": "ci-triage",
+      "prompt": "Investigate a failed GitHub Actions run and tell me the first actionable failure before proposing YAML changes.",
+      "expected_output": "A triage flow that inspects runs/logs first and extracts the earliest actionable failing step before suggesting workflow edits.",
+      "assertions": [
+        "The response inspects workflow runs/logs before recommending workflow edits",
+        "The response prioritizes the first actionable failure rather than downstream noise",
+        "The response uses gh run commands or equivalent GitHub evidence collection"
+      ]
+    },
+    {
+      "id": "pr-creation",
+      "prompt": "Create a GitHub PR for the current branch, but only if one does not already exist, and use the project template.",
+      "expected_output": "A command flow that checks for an existing PR first, then uses an explicit PR body template when creating one.",
+      "assertions": [
+        "The response checks for an existing PR for the same head branch before creating one",
+        "The response prefers a repo-local template or explicit body-file injection",
+        "The response avoids creating duplicate PRs"
+      ]
+    }
+  ]
+}

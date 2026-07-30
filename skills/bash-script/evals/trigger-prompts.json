@@ -1,0 +1,34 @@
+{
+  "positive": [
+    "Write a robust Bash deployment script.",
+    "Review this shell script for CI safety.",
+    "Convert this ad hoc command sequence into a reusable bash script.",
+    "Add strict mode, logging, and cleanup to this .sh file.",
+    "Make this setup script idempotent.",
+    "Should this automation be Bash or Python?",
+    "Fix quoting and argument handling in this bash script.",
+    "Create a team-friendly shell script for local dev setup.",
+    "Add a spinner for this long-running shell script but keep CI output clean.",
+    "Make this Bash installer interactive for humans and non-interactive for automation.",
+    "Clean up this bash script so it is easier for teammates to maintain.",
+    "Review heredocs, sudo redirection, and function structure in this shell script.",
+    "Audit this script for BashPitfalls-style bugs.",
+    "Fix this loop that does for f in $(ls) and breaks on spaces."
+  ],
+  "negative": [
+    "Write a Python CLI for this workflow.",
+    "Debug this zsh prompt plugin.",
+    "Parse this large YAML config in a shell script.",
+    "Design a business workflow engine.",
+    "Write Dockerfile best practices.",
+    "Optimize this Node.js build script.",
+    "Explain this one-line command only.",
+    "Review Linux kernel shell internals.",
+    "Make a full-screen TUI application with complex state.",
+    "Add desktop notifications to a web app.",
+    "Refactor this TypeScript CLI into clean functions.",
+    "Explain sudo permissions generally, no script involved.",
+    "List Bash pitfalls from memory without writing or reviewing a script.",
+    "Compare PowerShell and Bash for Windows administration."
+  ]
+}

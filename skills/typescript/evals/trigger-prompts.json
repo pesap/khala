@@ -1,0 +1,26 @@
+{
+  "positive": [
+    "Review these .d.ts declarations for TypeScript best practices.",
+    "Make our TypeScript CI fail before deploy when type errors exist.",
+    "Speed up tsc in our monorepo pipeline without losing type safety.",
+    "Should this callback parameter be optional in our public type?",
+    "Replace unsafe any usage with better TypeScript types.",
+    "Our pre-commit hook runs eslint, stylelint, tsc, and jest too slowly.",
+    "Design overloads for this TypeScript library API.",
+    "Split tsconfig for fast PR checks and release declaration builds.",
+    "Can we use skipLibCheck in CI safely?",
+    "Add project references and incremental TypeScript builds."
+  ],
+  "negative": [
+    "Optimize webpack bundle chunk sizes for browser caching.",
+    "Write a plain JavaScript debounce function with no type annotations.",
+    "Review this React component's visual layout.",
+    "Debug a production Node memory leak unrelated to compiler settings.",
+    "Configure CircleCI to deploy Docker images only.",
+    "Explain Java generics and overload resolution.",
+    "Make a Bash pre-commit script more portable.",
+    "Audit OAuth authorization logic for security flaws.",
+    "Design a REST API resource model.",
+    "Fix CSS specificity in this stylesheet."
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "skill_name": "data-model",
+  "evals": [
+    {
+      "id": "model-selection",
+      "prompt": "Choose between a dataclass, a Pydantic v2 BaseModel, and BaseSettings for three different boundaries: trusted internal state, external API payload, and environment config.",
+      "expected_output": "A boundary-aware recommendation that maps each case to the correct model type and explains why.",
+      "assertions": [
+        "The response distinguishes trusted internal data from external validated data and config",
+        "The response recommends BaseSettings or pydantic-settings for env/config use cases",
+        "The response does not treat all three boundaries as the same kind of model"
+      ]
+    },
+    {
+      "id": "pydantic-v2-pattern",
+      "prompt": "Rewrite this loose API schema as a Pydantic v2 model with field constraints, descriptions, and safe serialization guidance.",
+      "expected_output": "A Pydantic v2 model using Annotated field patterns, constraints, and relevant serialization guidance.",
+      "assertions": [
+        "The response uses Pydantic v2 patterns rather than deprecated v1 APIs",
+        "The response uses Annotated and Field for constrained modeled fields",
+        "The response includes serialization implications or alias/exclude guidance when relevant"
+      ]
+    },
+    {
+      "id": "schema-evolution",
+      "prompt": "We need to evolve this model without breaking old payloads. Suggest a safe migration approach.",
+      "expected_output": "A migration-aware recommendation covering renamed fields, defaults, deprecated keys, or compatibility strategy.",
+      "assertions": [
+        "The response addresses backward compatibility or migration impact",
+        "The response suggests deterministic defaults or key translation where appropriate",
+        "The response avoids hand-wavy advice with no model-contract implications"
+      ]
+    }
+  ]
+}

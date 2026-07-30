@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "name": "declaration-review",
+      "prompt": "Review a declaration file that uses String, any callback returns, optional callback params, and broad overloads.",
+      "assertions": [
+        "flags boxed primitive types",
+        "recommends void for ignored callback returns",
+        "explains optional callback parameter semantics",
+        "orders or replaces overloads with optionals/unions where appropriate"
+      ]
+    },
+    {
+      "name": "ci-type-gate",
+      "prompt": "Add a TypeScript check to CI before deploy.",
+      "assertions": [
+        "uses tsc --noEmit or package script equivalent",
+        "places check before deploy/merge gate",
+        "uses the repository package manager install mode",
+        "states validation command"
+      ]
+    },
+    {
+      "name": "ci-speed-review",
+      "prompt": "Our TypeScript CI is too slow in a monorepo.",
+      "assertions": [
+        "separates type-check from emit where relevant",
+        "recommends project references and tsc -b for multi-package repos",
+        "mentions .tsbuildinfo caching and safe cache keys",
+        "calls out skipLibCheck tradeoff instead of treating it as free"
+      ]
+    },
+    {
+      "name": "precommit-speed",
+      "prompt": "Make pre-commit checks faster without removing type safety.",
+      "assertions": [
+        "keeps type checking instead of dropping it blindly",
+        "uses linter caches",
+        "runs independent checks concurrently",
+        "uses tsc --noEmit --incremental when supported",
+        "warns that slow hooks lead to bypassing"
+      ]
+    }
+  ]
+}

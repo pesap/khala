@@ -1,0 +1,49 @@
+{
+  "skill_name": "triage",
+  "evals": [
+    {
+      "id": "external-reporter-normalized-request",
+      "prompt": "Triage this external GitHub issue into a workon-ready packet without overwriting the reporter's original body.",
+      "expected_output": "A triage flow that preserves the source issue, produces gateway facts, proposes a linked normalized work request, and asks approval before forge changes.",
+      "assertions": [
+        "Preserves the reporter-authored issue body",
+        "Uses TriageGatewayInput facts before readiness claims",
+        "Includes canonical workon-ready headings in the normalized packet",
+        "Asks explicit approval before issue, label, or comment mutation"
+      ]
+    },
+    {
+      "id": "needs-info-gate",
+      "prompt": "A bug report says 'it broke' with no reproduction steps. Triage it for agent pickup.",
+      "expected_output": "A non-ready recommendation that requests concrete missing evidence and proposes the appropriate non-ready label instead of workon-ready.",
+      "assertions": [
+        "Routes insufficient evidence to needs-info or additional-info-needed",
+        "Does not propose workon-ready",
+        "Asks specific reporter questions",
+        "Avoids implementing or guessing a root cause"
+      ]
+    },
+    {
+      "id": "broad-feature-split-check",
+      "prompt": "Triage a feature request that asks for a new plugin system, auth integration, UI, and migration docs in one issue.",
+      "expected_output": "A split recommendation or split table when review size is too broad, with approval requested before creating split issues.",
+      "assertions": [
+        "Recognizes review-size risk",
+        "Proposes splitting only because the scope is too broad",
+        "Keeps each proposed packet independently reviewable",
+        "Asks approval before creating or updating issues"
+      ]
+    },
+    {
+      "id": "improve-drift-check",
+      "prompt": "Prepare an improve-labeled packet for cleanup work in extensions/commands and tests/commands.",
+      "expected_output": "A canonical packet with a parser-valid git diff drift check and validation commands under Work Plan.",
+      "assertions": [
+        "Uses canonical workon-ready headings",
+        "Includes a backtick-wrapped git diff --stat or git diff --name-only drift check with baseline and concrete paths",
+        "Keeps validation commands under Work Plan",
+        "Uses plain markdown bullets for acceptance criteria"
+      ]
+    }
+  ]
+}

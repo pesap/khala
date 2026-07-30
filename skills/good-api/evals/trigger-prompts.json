@@ -1,0 +1,22 @@
+{
+  "positive": [
+    "Review this SDK API for ergonomics and learnability.",
+    "Is this API too hard for beginners but still flexible?",
+    "Design a better CLI surface for common and advanced users.",
+    "Does this convenience wrapper hide too much of the underlying model?",
+    "Compare these two API designs for gradual adoption.",
+    "Our users can do the first example but get stuck on the second integration. What should change?",
+    "Evaluate this library interface for composability and expert escape hatches.",
+    "How should we layer simple defaults over low-level primitives?"
+  ],
+  "negative": [
+    "Fix this failing API request in production.",
+    "Optimize this endpoint latency.",
+    "Write OpenAPI docs for this existing route.",
+    "Check whether this auth scheme is secure.",
+    "Rename these functions to match project style.",
+    "Generate TypeScript types from this schema.",
+    "Add retries to this API client implementation.",
+    "Debug why the server returns HTTP 500."
+  ]
+}

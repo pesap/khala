@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "review_layered_sdk",
+      "prompt": "Review an SDK that has createSimpleSubscription(...) for beginners and separate Customer/Product/Price/Subscription primitives for advanced users.",
+      "assertions": [
+        "identifies beginner, novice, and expert users",
+        "evaluates flexible, gradual, and convenient dimensions",
+        "checks whether the simple wrapper exposes or documents underlying primitives",
+        "flags semantic surprises between simple and advanced layers"
+      ]
+    },
+    {
+      "name": "diagnose_second_use_case_friction",
+      "prompt": "Users finish our quickstart but struggle when adding a second payment method. Diagnose the API design issue.",
+      "assertions": [
+        "frames the issue as ladder steepness or gradualness",
+        "asks what concepts are newly required",
+        "recommends reducing integration discontinuity",
+        "does not over-focus on naming style"
+      ]
+    }
+  ]
+}

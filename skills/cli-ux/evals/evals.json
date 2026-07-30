@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "cli_review",
+      "prompt": "Review a CLI that prints colored tables and spinners by default, has no --json mode, returns 0 for validation errors, and only supports interactive prompts.",
+      "assertions": [
+        "flags accessibility risks from colors, tables, and spinners",
+        "requires non-interactive flags or config for automation",
+        "recommends meaningful non-zero exit codes for failures",
+        "recommends structured output such as --json",
+        "separates stdout data from stderr diagnostics"
+      ]
+    },
+    {
+      "name": "new_cli_design",
+      "prompt": "Design the command structure, help output, and onboarding for a project scaffolding CLI.",
+      "assertions": [
+        "starts from install and first useful command journey",
+        "includes -h/--help on main command and subcommands",
+        "uses consistent verbs/nouns and guessable flags",
+        "includes examples before exhaustive reference detail",
+        "includes shell completion and man page/documentation considerations"
+      ]
+    },
+    {
+      "name": "accessible_output",
+      "prompt": "A CLI uses emoji-only statuses, ASCII art banners, and progress spinners. Make it accessible while keeping human-friendly output.",
+      "assertions": [
+        "does not rely on emoji or color alone",
+        "honors NO_COLOR, TERM=dumb, non-TTY, and CI",
+        "provides --plain, --no-animation, or equivalent controls",
+        "recommends linear screen-reader-friendly output",
+        "keeps optional enhanced output gated behind capability checks"
+      ]
+    }
+  ]
+}
