@@ -150,12 +150,24 @@ function existingMissionExecutionResult(
 	}
 	if (existing.status === ExecutorStatus.starting) {
 		return {
-			content: [{ type: "text", text: `Mission ${mission.missionId} is already starting.` }],
+			content: [
+				{
+					type: "text",
+					text: [
+						`Work ID: ${workId}`,
+						`Mission ID: ${mission.missionId}`,
+						`Execution ID: ${existing.executionId}`,
+						"Status: launch already starting",
+						`Executor: ${existing.executorName}`,
+					].join("\n"),
+				},
+			],
 			details: {
 				status: KhalaWorkLaunchStatus.starting,
 				workId,
 				executionId: existing.executionId,
 				missionId: mission.missionId,
+				executorName: existing.executorName,
 			},
 		};
 	}

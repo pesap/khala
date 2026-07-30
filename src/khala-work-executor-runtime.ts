@@ -107,6 +107,7 @@ function startExecutor(input: {
 		attemptNumber,
 	} = input;
 	const config = loadKhalaConfig(context.cwd, projectTrusted);
+	const targetBranch = config.pullRequestTargetBranch.trim();
 	let previousReview: ReturnType<typeof latestPullRequestForMission>;
 	if (mission.predecessorMissionId !== undefined) {
 		previousReview = latestPullRequestForMission(context.cwd, mission.predecessorMissionId, projectTrusted);
@@ -136,8 +137,16 @@ function startExecutor(input: {
 			`Validation results: ${previousReview.validationResults.join("; ") || "none recorded"}`,
 		].join("\n");
 	}
-	if (config.pullRequestTargetBranch.length > 0) {
-		reviewWorkflow.targetBranch = config.pullRequestTargetBranch;
+	if (targetBranch.length > 0) {
+		missionMessage += [
+			"",
+			"Khala Pull Request configuration:",
+			`Target branch: ${targetBranch}`,
+			"Use this branch as the Pull Request base when creating the draft.",
+		].join("\n");
+	}
+	if (targetBranch.length > 0) {
+		reviewWorkflow.targetBranch = targetBranch;
 	}
 	if (previousReview?.url !== undefined) {
 		reviewWorkflow.previousPullRequestUrl = previousReview.url;

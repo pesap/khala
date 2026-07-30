@@ -480,7 +480,7 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 	const executorThinking = await askThinking("Executor thinking level", current.executorThinking);
 	const observerThinking = await askThinking("Observer thinking level", current.observerThinking);
 	const publishChoice = await confirm({
-		message: "Push Executor branches and open draft PRs before implementation?",
+		message: "Push Executor branches for Executor-managed draft Pull Requests?",
 		initialValue: current.publishExecutorBranches,
 	});
 	const publishExecutorBranches = unwrapPrompt(publishChoice);

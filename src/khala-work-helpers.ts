@@ -167,7 +167,12 @@ function admissionResult(mandate: MandateRecord): KhalaAdmissionResult {
 		content: [
 			{
 				type: "text",
-				text: `Work ${mandate.workId} admitted under Mandate ${mandate.mandateId} revision ${mandate.revision}.`,
+				text: [
+					`Work ID: ${mandate.workId}`,
+					`Mandate ID: ${mandate.mandateId} revision ${mandate.revision}`,
+					"Status: admitted",
+					"Executor: not assigned; Mission launch is pending.",
+				].join("\n"),
 			},
 		],
 		details: { workId: mandate.workId, mandateId: mandate.mandateId, revision: mandate.revision, status: "admitted" },
@@ -188,7 +193,13 @@ function launchedResult(input: {
 		content: [
 			{
 				type: "text",
-				text: `Executor ${input.executorName} launched for Work ${input.workId} in ${input.destination}.`,
+				text: [
+					`Work ID: ${input.workId}`,
+					`Mission ID: ${input.mission.missionId}`,
+					`Execution ID: ${input.executionId}`,
+					`Executor: ${input.executorName}`,
+					`Status: launched in ${input.destination}`,
+				].join("\n"),
 			},
 		],
 		details: {
@@ -233,7 +244,11 @@ function queueWork(input: {
 				content: [
 					{
 						type: "text" as const,
-						text: `Work "${work.title}" was sent to the dedicated project Conclave and queued for admission.`,
+						text: [
+							`Work "${work.title}" queued for Conclave admission.`,
+							`Work ID: ${workId}`,
+							"Executor: not assigned; admission and launch are pending.",
+						].join("\n"),
 					},
 				],
 				details: { status: KhalaWorkLaunchStatus.queued, workId, archivePath: queued.archivePath },

@@ -1,13 +1,13 @@
+<!-- Work: <!-- Khala Work ID --> -->
+<!-- Mission: <!-- Khala Mission ID --> -->
+<!-- Execution: <!-- Khala Execution ID --> -->
+<!-- Related issue or request: <!-- Link when applicable --> -->
+
+Closes <!-- Fill issue number -->
+
 ## Summary
 
 <!-- Describe what changed and why. Keep this concise and specific. -->
-
-## Work
-
-- Work: <!-- Khala Work ID -->
-- Mission: <!-- Khala Mission ID -->
-- Execution: <!-- Khala Execution ID -->
-- Related issue or request: <!-- Link when applicable -->
 
 ## Scope
 
@@ -17,7 +17,7 @@
 
 <!-- Summarize the meaningful implementation changes. Do not paste a commit log. -->
 
-## Validation
+## Test strategy
 
 <!-- List the checks run and their results. Include commands when useful. -->
 

@@ -73,58 +73,36 @@ class GitWorktreeProvider extends VCSProvider {
 		const body = bodyParts.join("\n");
 		await git(request.sandbox.path, ["commit", "--allow-empty", "-m", subject, "-m", body]);
 		const planningCommit = await git(request.sandbox.path, ["rev-parse", "HEAD"]);
-		let url: string | undefined;
 		if (request.publish) {
+			// The Executor owns Pull Request creation after it has inspected the
+			// repository template and assembled the factual description.
 			await git(request.sandbox.path, ["push", "--set-upstream", "origin", sourceBranch]);
-			url = await gh([
-				"pr",
-				"create",
-				"--draft",
-				"--base",
-				targetBranch,
-				"--head",
-				sourceBranch,
-				"--title",
-				request.name,
-				"--body",
-				body,
-			]);
 		}
-		const result: {
-			sourceBranch: string;
-			targetBranch: string;
-			planningCommit: string;
-			url?: string;
-			number?: number;
-		} = {
-			sourceBranch,
-			targetBranch,
-			planningCommit,
-		};
-		if (url !== undefined) {
-			result.url = url;
-			const number = parsePullRequestNumber(url);
-			if (number !== undefined) {
-				result.number = number;
-			}
-		}
-		return result;
+		return { sourceBranch, targetBranch, planningCommit };
 	}
 
-	override async finalizeReview(
-		request: ReviewWorkflowRequest,
-		url?: string,
-		body?: string,
-	): Promise<ReviewFinalization> {
+	override async finalizeReview(request: ReviewWorkflowRequest, url?: string): Promise<ReviewFinalization> {
 		const headCommit = await git(request.sandbox.path, ["rev-parse", "HEAD"]);
-		if (request.publish) {
-			const sourceBranch = await git(request.sandbox.path, ["branch", "--show-current"]);
-			await git(request.sandbox.path, ["push", "origin", sourceBranch]);
-			if (url !== undefined && body !== undefined) {
-				await gh(["pr", "edit", url, "--body", body]);
-			}
+		if (!request.publish) {
+			return { headCommit };
 		}
-		return { headCommit };
+		const sourceBranch = await git(request.sandbox.path, ["branch", "--show-current"]);
+		await git(request.sandbox.path, ["push", "origin", sourceBranch]);
+		if (url !== undefined) {
+			const number = parsePullRequestNumber(url);
+			if (number === undefined) {
+				return { headCommit, url };
+			}
+			return { headCommit, url, number };
+		}
+		const discovered = await findPullRequest(sourceBranch);
+		if (discovered === undefined) {
+			return { headCommit };
+		}
+		if (discovered.number === undefined) {
+			return { headCommit, url: discovered.url };
+		}
+		return { headCommit, url: discovered.url, number: discovered.number };
 	}
 
 	protected generateSandboxName(name: string): string {
@@ -211,7 +189,38 @@ function parsePullRequestNumber(url: string): number | undefined {
 	if (match === null) {
 		return;
 	}
-	return Number(match[1]);
+	const number = Number(match[1]);
+	if (!Number.isSafeInteger(number) || number <= 0) {
+		return;
+	}
+	return number;
+}
+
+type PullRequestLookup = Readonly<{ url: string; number?: number }>;
+
+async function findPullRequest(sourceBranch: string): Promise<PullRequestLookup | undefined> {
+	const output = await gh(["pr", "list", "--head", sourceBranch, "--json", "url,number", "--limit", "1"]);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(output);
+	} catch {
+		return;
+	}
+	if (!Array.isArray(parsed)) {
+		return;
+	}
+	const [first] = parsed;
+	if (typeof first !== "object" || first === null) {
+		return;
+	}
+	const record = first as { url?: unknown; number?: unknown };
+	if (typeof record.url !== "string" || record.url.length === 0) {
+		return;
+	}
+	if (typeof record.number === "number" && Number.isSafeInteger(record.number) && record.number > 0) {
+		return { url: record.url, number: record.number };
+	}
+	return { url: record.url };
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

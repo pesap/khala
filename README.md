@@ -242,7 +242,7 @@ shell command. Run the setup wizard to choose
 `pi --list-models`. The `conclaveThinking`, `executorThinking`, and
 `observerThinking` values accept Pi's supported thinking levels or an empty
 string for the Pi default. `publishExecutorBranches` enables the Git push and
-`gh pr create --draft` workflow; it is disabled by default. `commitConvention`
+Executor-managed draft Pull Request workflow; it is disabled by default. `commitConvention`
 can be `project`, `conventional`, or a custom commit prefix, and a Work
 constraint beginning with `commit convention:` overrides it. `observerModel`
 selects the read-only repository observation model. The project `archiveRoot`

@@ -28,23 +28,25 @@ Before changing implementation files:
    guidance, then User configuration. If no policy is specified, use
    Conventional Commits and the User-provided scope. Never silently override a
    more specific policy.
-4. Create exactly one immutable planning commit before implementation:
-
-   ```bash
-   git commit --allow-empty -m "<policy-compliant planning subject>" -m "<Work, Mission, plan, acceptance, and validation details>"
-   ```
-
-   Do not amend, squash, replace, or include implementation changes in this
-   commit.
-5. Push the Executor branch and open a draft pull request using the authorized
-   VCS/GitHub interface. Follow the selected Pull Request template. The PR
-   description must identify the Work, Mission, and Execution, then concisely
+4. Verify the immutable planning commit prepared by the Khala VCS runtime before
+   implementation. The runtime creates exactly one planning commit and, when
+   branch publication is enabled, pushes the Executor branch. Do not create a
+   second planning commit, amend it, squash it, replace it, or include
+   implementation changes in it.
+5. The Executor owns Pull Request creation and description content. When branch
+   publication is enabled, inspect the repository's applicable Pull Request
+   template, falling back to `templates/pull-request.md` only when no repository
+   template exists. Use the authorized VCS/GitHub interface to open the draft PR
+   after preflight, then keep it updated as implementation and validation change.
+   The description must identify the Work, Mission, and Execution, then concisely
    describe the summary, scope, implementation, acceptance criteria, validation
-   contract, planning commit, risks, and unresolved gaps. Do not paste the raw
-   Mission prompt, transcript, or commit log.
-6. If any required remote, credential, tool, or API is unavailable, stop and
-   submit a blocked `khala_signal` with exact evidence. Never claim success
-   without command or API output.
+   contract, planning commit, risks, and unresolved gaps. If the Mission includes
+   a Khala Pull Request target branch, pass it as the PR base. Do not paste the raw
+   Mission prompt, transcript, or commit log into the description.
+6. If the runtime did not publish the branch or the required remote, credential,
+   tool, or API is unavailable, stop and submit a blocked `khala_signal` with
+   exact evidence. Never claim a PR exists or successful publication without
+   command or API output.
 
 ## Phase 2: implement and publish
 
@@ -70,7 +72,8 @@ Before completion:
 2. Push the final reviewable commits.
 3. Update the draft PR using the selected template with implementation details,
    commit IDs, validation results, risks, and unresolved gaps. Keep it concise and
-   factual. Do not merge it.
+   factual. Do not merge it. Include the resulting PR URL and state in the final
+   evidence.
 4. Submit a final `khala_signal` containing branch, planning commit, implementation
    commit IDs, PR URL/state, validation evidence, and unresolved gaps.
 

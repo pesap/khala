@@ -251,7 +251,8 @@ Verdict Delivery, Pull Request, and Work Outcome records. It also provides
 role fences, Retry recovery, reviewable-state projection, structured Maintainer
 review, and Conclave Outcome recording.
 
-Git branch publication and draft PR creation are implemented by the Git
-provider but remain explicitly opt-in through configuration. When disabled,
-Executor planning and review handoff remain local and are still recorded in the
-Archive.
+Git branch publication is implemented by the Git provider and remains
+explicitly opt-in through configuration. When enabled, the Executor creates and
+maintains the draft Pull Request after inspecting the applicable repository
+template. When disabled, Executor planning and review handoff remain local and
+are still recorded in the Archive.

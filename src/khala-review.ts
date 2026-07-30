@@ -73,6 +73,8 @@ type ReviewFinalizationInput = Readonly<{
 	headCommit: string;
 	summary: string;
 	evidence: readonly string[];
+	url?: string;
+	number?: number;
 }>;
 
 function registerKhalaReview(
@@ -174,6 +176,8 @@ function recordReviewFinalization(input: ReviewFinalizationInput): PullRequestRe
 	}
 	const next: PullRequestRecord = {
 		...existing,
+		...(input.url === undefined ? {} : { url: input.url, remoteConfirmedAt: new Date().toISOString() }),
+		...(input.number === undefined ? {} : { number: input.number }),
 		headCommit: input.headCommit,
 		diffSummary: input.summary,
 		validationResults: input.evidence,

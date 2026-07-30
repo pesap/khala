@@ -7,7 +7,6 @@ import type {
 	ToolDefinition,
 	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import { keyHint } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { nanoid } from "nanoid";
 import { type Static, Type } from "typebox";
@@ -22,6 +21,7 @@ import {
 import { KhalaRole, readSessionRole } from "./khala-role.js";
 import { deriveWorkTitle, queueWork, rejectedWorkLaunch, toKhalaWork, validateWork } from "./khala-work-helpers.js";
 import { admitWork, launchExecution } from "./khala-work-lifecycle.js";
+import { renderExpandHint, renderSubmitWorkStatus } from "./khala-work-render.js";
 
 const WORK_PARAMETERS = Type.Object({
 	workId: Type.Optional(
@@ -96,6 +96,7 @@ type KhalaWorkLaunchResult =
 				workId: string;
 				executionId: string;
 				missionId: string;
+				executorName: string;
 			};
 	  }
 	| {
@@ -123,7 +124,6 @@ type KhalaAdmissionResult =
 			details: { workId: string; mandateId: string; revision: number; status: "admitted" };
 	  }
 	| { content: [{ type: "text"; text: string }]; details: { status: "rejected"; reason: string }; isError: true };
-
 function registerKhalaWork(pi: ExtensionAPI, dependencies: KhalaWorkDependencies): void {
 	pi.registerCommand("khala-work", {
 		description: "Load the Khala Work template into the Pi editor.",
@@ -253,11 +253,11 @@ function renderSubmitWorkResult(
 		return new Text(theme.fg("error", `Work submission rejected: ${details.reason}`), 0, 0);
 	}
 	const work = toKhalaWork(params);
-	let text = `${theme.fg("success", "Work queued")} ${theme.fg("muted", `"${work.title}"`)} ${theme.fg("dim", `(${details.workId})`)}`;
-	if (options.expanded) {
+	let text = renderSubmitWorkStatus(details, work, theme);
+	if (options.expanded && details.status === KhalaWorkLaunchStatus.queued) {
 		text += `\n${renderExpandedWork(work, details, theme)}`;
-	} else {
-		text += `\n${theme.fg("dim", `… ${keyHint("app.tools.expand", "to expand")}`)}`;
+	} else if (!options.expanded) {
+		text += `\n${renderExpandHint(theme)}`;
 	}
 	return new Text(text, 0, 0);
 }
