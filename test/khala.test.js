@@ -558,7 +558,7 @@ test("Executor launch keeps the role prompt separate from the first Mission mess
 	assert.equal(launchRequest.args.at(-1), "Execute the first Mission message.");
 });
 
-test("Herdr launcher assigns a new pane to the Executor worktree", async () => {
+test("Herdr launcher opens the Executor worktree in a new Herdr workspace", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-herdr-launch-test-"));
 	const bin = join(root, "bin");
 	const herdrPath = join(bin, "herdr");
@@ -566,7 +566,7 @@ test("Herdr launcher assigns a new pane to the Executor worktree", async () => {
 	mkdirSync(bin);
 	writeFileSync(
 		herdrPath,
-		`#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(process.env.KHALA_HERDR_LOG, JSON.stringify(args) + "\\n");\nif (args[0] === "pane" && args[1] === "split") process.stdout.write(JSON.stringify({ result: { pane: { pane_id: "w-test:p-test" } } }));\n`,
+		`#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(process.env.KHALA_HERDR_LOG, JSON.stringify(args) + "\\n");\nif (args[0] === "worktree" && args[1] === "open") process.stdout.write(JSON.stringify({ result: { root_pane: { pane_id: "w-test:p-test" } } }));\n`,
 	);
 	chmodSync(herdrPath, 0o755);
 	const previousPath = process.env.PATH;
@@ -589,14 +589,14 @@ test("Herdr launcher assigns a new pane to the Executor worktree", async () => {
 			.split("\n")
 			.map((line) => JSON.parse(line));
 		assert.deepEqual(records[0], [
-			"pane",
-			"split",
-			"--current",
-			"--direction",
-			"right",
+			"worktree",
+			"open",
 			"--cwd",
+			sandbox.projectPath,
+			"--path",
 			sandbox.path,
 			"--no-focus",
+			"--json",
 		]);
 		assert.equal(records[1][0], "pane");
 		assert.equal(records[1][1], "run");

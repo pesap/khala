@@ -234,9 +234,10 @@ individual values in `.pi/khala.json`.
 ```
 
 `launcher` is `zellij`, `tmux`, or `herdr` and defaults to `zellij`. The Herdr
-launcher must run inside a Herdr-managed pane (`HERDR_ENV=1`); it creates a
-sibling pane without taking focus. Configured commands remain argument arrays;
-Herdr quotes them for its `pane run` shell command. Run the setup wizard to choose
+launcher must run inside a Herdr-managed pane (`HERDR_ENV=1`); it opens the
+already-created Executor worktree as a Herdr workspace without taking focus.
+Configured commands remain argument arrays; Herdr quotes them for its `pane run`
+shell command. Run the setup wizard to choose
 `conclaveModel` and `observerModel` from the models reported by
 `pi --list-models`. The `conclaveThinking`, `executorThinking`, and
 `observerThinking` values accept Pi's supported thinking levels or an empty

@@ -11,9 +11,10 @@ type HerdrEnvironment = Readonly<{
 	HERDR_ENV?: string;
 }>;
 
-type HerdrPaneSplitResponse = Readonly<{
+type HerdrWorktreeOpenResponse = Readonly<{
 	result?: Readonly<{
-		pane?: Readonly<{
+		// biome-ignore lint/style/useNamingConvention: Match Herdr's JSON response field.
+		root_pane?: Readonly<{
 			// biome-ignore lint/style/useNamingConvention: Match Herdr's JSON response field.
 			pane_id?: unknown;
 		}>;
@@ -51,17 +52,19 @@ async function launchHerdr(request: LaunchRequest): Promise<string> {
 	if (!isHerdrEnvironment()) {
 		throw new Error("The Herdr launcher requires an active Herdr-managed pane.");
 	}
+	// The VCS provider has already created the checkout. Open it through Herdr so the
+	// resulting workspace retains Git worktree provenance instead of becoming a plain pane.
 	const response = await herdr([
-		"pane",
-		"split",
-		"--current",
-		"--direction",
-		"right",
+		"worktree",
+		"open",
 		"--cwd",
+		request.sandbox.projectPath,
+		"--path",
 		request.sandbox.path,
 		"--no-focus",
+		"--json",
 	]);
-	const paneId = readPaneId(response);
+	const paneId = readRootPaneId(response);
 	try {
 		await herdr(["pane", "run", paneId, buildShellCommand(request)]);
 	} catch (error) {
@@ -96,7 +99,7 @@ function isHerdrEnvironment(): boolean {
 	return herdrEnvironment.HERDR_ENV?.trim() === "1";
 }
 
-function readPaneId(output: string): string {
+function readRootPaneId(output: string): string {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(output);
@@ -105,15 +108,15 @@ function readPaneId(output: string): string {
 			throw error;
 		}
 		// biome-ignore lint/style/useErrorCause: Report a stable launcher diagnostic instead of parser internals.
-		throw new Error("Herdr pane split returned invalid JSON.");
+		throw new Error("Herdr worktree open returned invalid JSON.");
 	}
 	if (typeof parsed !== "object" || parsed === null) {
-		throw new Error("Herdr pane split returned no pane.");
+		throw new Error("Herdr worktree open returned no root pane.");
 	}
-	const response = parsed as HerdrPaneSplitResponse;
-	const paneId = response.result?.pane?.pane_id;
+	const response = parsed as HerdrWorktreeOpenResponse;
+	const paneId = response.result?.root_pane?.pane_id;
 	if (typeof paneId !== "string" || paneId.length === 0) {
-		throw new Error("Herdr pane split returned no pane ID.");
+		throw new Error("Herdr worktree open returned no root pane ID.");
 	}
 	return paneId;
 }
