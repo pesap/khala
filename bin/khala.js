@@ -14,10 +14,11 @@ const isInstalledPackage = packageRootPath.split(sep).includes("node_modules");
 const isSourceCheckout = !isInstalledPackage && existsSync(new URL(".git", packageRoot)) && existsSync(sourcePath);
 let args;
 
-if (existsSync(compiledPath)) {
-  args = [compiledPath, ...userArgs];
-} else if (isSourceCheckout) {
+if (isSourceCheckout) {
+  // Prefer the checkout source so `node bin/khala.js` cannot silently run stale dist output.
   args = ["--experimental-strip-types", "--loader", loaderPath, sourcePath, ...userArgs];
+} else if (existsSync(compiledPath)) {
+  args = [compiledPath, ...userArgs];
 } else {
   console.error(
     "khala: compiled setup entry is missing; reinstall @pesap/khala or run `npm run build` in a source checkout.",

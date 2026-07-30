@@ -1,6 +1,9 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createExecutorStarter, type ExecutorStarter, type PiCommand } from "./executor.js";
 import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
+import { resolvePackageRoot } from "./khala-package.js";
 import { createHerdrLauncher } from "./launch-herdr.js";
 import { createTmuxLauncher } from "./launch-tmux.js";
 import { createZellijLauncher } from "./launch-zellij.js";
@@ -44,12 +47,19 @@ function createConfiguredStarter(
 			piCommand = removeModelSelection(observerPiCommand);
 		}
 	}
+	const packageRoot = resolvePackageRoot(dirname(fileURLToPath(import.meta.url)));
+	const khalaSkillPath = join(packageRoot, "skills", "khala");
+	const skillPaths: string[] = [khalaSkillPath];
+	if (!observer) {
+		skillPaths.push(join(packageRoot, "skills", "khala-executor"));
+	}
 	return createExecutorStarter(
 		createGitWorktreeProvider(config.worktreeRoot, config.worktreeBranchPrefix),
 		launcher,
 		piCommand,
 		launcherName,
 		model,
+		skillPaths,
 	);
 }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
@@ -10,6 +11,8 @@ import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-fi
 import { readCurrentMission, readMandate } from "../dist/src/khala-archive-projections.js";
 import { enqueueConclaveWake } from "../dist/src/khala-conclave.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
+import { createHerdrLauncher } from "../dist/src/launch-herdr.js";
+import { createGitWorktreeProvider } from "../dist/src/vcs-git-worktree.js";
 import {
 	createExecutorRecord,
 	listExecutorRecords,
@@ -53,8 +56,12 @@ test("package lifecycle builds every declared extension and exposes Khala comman
 		"./dist/src/index.js",
 		"./dist/extensions/pi-review/review.js",
 	]);
+	assert.deepEqual(manifest.pi.skills, ["./skills"]);
 	for (const extensionPath of manifest.pi.extensions) {
 		assert.ok(readFileSync(new URL(`../${extensionPath}`, import.meta.url)).length > 0);
+	}
+	for (const skillName of ["khala", "khala-executor"]) {
+		assert.ok(readFileSync(new URL(`../skills/${skillName}/SKILL.md`, import.meta.url)).length > 0);
 	}
 
 	const commands = new Map();
@@ -361,6 +368,19 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
 		appendArchiveRecord(projectPath, {
+			type: "counsel",
+			workId: "work-bound",
+			payload: {
+				workId: "work-bound",
+				sourceRecordIds: ["bound-source"],
+				observations: ["The assignment is visible."],
+				recommendations: ["Read the bound records."],
+				uncertainties: [],
+				counselId: "bound-counsel",
+				createdAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
 			type: "signal",
 			workId: "work-bound",
 			executionId: "execution-bound",
@@ -438,7 +458,25 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			executorContext,
 		);
-		assert.deepEqual(result.details.records.map((record) => record.payload.summary), ["bound project"]);
+		assert.deepEqual(result.details.records.map((record) => record.type), ["counsel", "signal"]);
+		const unscopedResult = await archiveTool.execute("archive", {}, null, null, executorContext);
+		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		const userContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [];
+				},
+			},
+		};
+		const userExecutionResult = await archiveTool.execute(
+			"archive",
+			{ workId: "work-bound", executionId: "execution-bound" },
+			null,
+			null,
+			userContext,
+		);
+		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal"]);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
@@ -451,6 +489,130 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Executor launch keeps the role prompt separate from the first Mission message", async () => {
+	const sandbox = { path: "/tmp/khala-prompt-sandbox", name: "prompt-sandbox", projectPath: "/tmp/project" };
+	let launchRequest;
+	const starter = createExecutorStarter(
+		{
+			async createSandbox() {
+				return sandbox;
+			},
+			async removeSandbox() {},
+		},
+		{
+			async launch(request) {
+				launchRequest = request;
+				return { id: sandbox.name, sandbox };
+			},
+			async focus() {},
+			async close() {},
+		},
+		["pi"],
+		undefined,
+		undefined,
+		["/tmp/khala", "/tmp/khala-executor"],
+	);
+	await starter({
+		projectPath: "/tmp/project",
+		workId: "work-prompt",
+		executionId: "execution-prompt",
+		name: "Prompt separation",
+		executorName: "Executor",
+		mission: "Execute the first Mission message.",
+		systemPrompt: "Permanent Executor rules.",
+	});
+	assert.deepEqual(launchRequest.args.slice(0, 8), [
+		"--skill",
+		"/tmp/khala",
+		"--skill",
+		"/tmp/khala-executor",
+		"--system-prompt",
+		"Permanent Executor rules.",
+		"--khala-system-prompt-provided",
+		"--name",
+	]);
+	assert.equal(launchRequest.args.at(-1), "Execute the first Mission message.");
+});
+
+test("Herdr launcher assigns a new pane to the Executor worktree", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-herdr-launch-test-"));
+	const bin = join(root, "bin");
+	const herdrPath = join(bin, "herdr");
+	const logPath = join(root, "herdr.jsonl");
+	mkdirSync(bin);
+	writeFileSync(
+		herdrPath,
+		`#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(process.env.KHALA_HERDR_LOG, JSON.stringify(args) + "\\n");\nif (args[0] === "pane" && args[1] === "split") process.stdout.write(JSON.stringify({ result: { pane: { pane_id: "w-test:p-test" } } }));\n`,
+	);
+	chmodSync(herdrPath, 0o755);
+	const previousPath = process.env.PATH;
+	const previousHerdrEnvironment = process.env.HERDR_ENV;
+	const previousLogPath = process.env.KHALA_HERDR_LOG;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	process.env.HERDR_ENV = "1";
+	process.env.KHALA_HERDR_LOG = logPath;
+	const sandbox = { path: join(root, "worktree"), name: "executor-worktree", projectPath: root };
+	try {
+		const launched = await createHerdrLauncher().launch({
+			sandbox,
+			name: sandbox.name,
+			command: "pi",
+			args: ["--name", "Executor"],
+		});
+		assert.equal(launched.target, "w-test:p-test");
+		const records = readFileSync(logPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		assert.deepEqual(records[0], [
+			"pane",
+			"split",
+			"--current",
+			"--direction",
+			"right",
+			"--cwd",
+			sandbox.path,
+			"--no-focus",
+		]);
+		assert.equal(records[1][0], "pane");
+		assert.equal(records[1][1], "run");
+		assert.equal(records[1][2], launched.target);
+		assert.match(records[1][3], /^'pi' '--name' 'Executor'$/);
+		await createHerdrLauncher().close(launched.target);
+	} finally {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		if (previousHerdrEnvironment === undefined) delete process.env.HERDR_ENV;
+		else process.env.HERDR_ENV = previousHerdrEnvironment;
+		if (previousLogPath === undefined) delete process.env.KHALA_HERDR_LOG;
+		else process.env.KHALA_HERDR_LOG = previousLogPath;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Git worktree cleanup removes the Executor branch from the project repository", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worktree-test-"));
+	const repo = join(root, "project");
+	const worktreeRoot = join(root, "worktrees");
+	mkdirSync(repo);
+	execFileSync("git", ["init", "-q", repo]);
+	execFileSync("git", ["-C", repo, "config", "user.email", "test@example.invalid"]);
+	execFileSync("git", ["-C", repo, "config", "user.name", "Khala Test"]);
+	writeFileSync(join(repo, "README.md"), "test\\n");
+	execFileSync("git", ["-C", repo, "add", "README.md"]);
+	execFileSync("git", ["-C", repo, "commit", "-qm", "initial"]);
+	const provider = createGitWorktreeProvider(worktreeRoot, "khala-test/");
+	let sandbox;
+	try {
+		sandbox = await provider.createSandbox({ projectPath: repo, name: "cleanup" });
+		assert.equal(sandbox.projectPath, repo);
+		assert.equal(execFileSync("git", ["-C", sandbox.path, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim(), sandbox.path);
+	} finally {
+		if (sandbox !== undefined) await provider.removeSandbox(sandbox);
 		rmSync(root, { recursive: true, force: true });
 	}
 });

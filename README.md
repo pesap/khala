@@ -55,24 +55,60 @@ and makes the lifecycle visible and recoverable.
 
 ## How it works
 
-```text
-User Session
-     │
-     │  submit Work
-     ▼
-Project Archive ───────────────┐
-     │                         │
-     ▼                         │
-  Conclave                     │ reads authoritative history
-     │                         │
-     ├── missing context ──► Observer ──► Learning ───┐
-     │                                                │
-     └── validated Work ───► Executor ──► Signal ─────┘
-                                                   │
-                                                   ▼
-                                             Verdict
-                                      continue · retry · finish · reject
+The target user-facing lifecycle is short. The Archive keeps the detailed
+history behind it; see the [detailed lifecycle](docs/lifecycle.md). PR review,
+merge integration, and Work Outcome recording are not yet runtime-enforced.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Conclave
+    participant O as Observer
+    participant E as Executor
+    participant H as Maintainer
+    participant A as Archive
+
+    U->>C: Submit Work
+    C->>A: Register Work Submission
+
+    opt Context is missing
+        C->>O: Gather context
+        O->>A: Save Learning
+        A-->>C: Learning is available
+    end
+
+    C->>A: Save Mandate and Mission
+    C->>E: Launch Mission
+
+    loop Mission execution
+        E->>A: Save Signal
+        A-->>C: Signal is available
+
+        alt Continue
+            C-->>E: Continue current Mission
+        else Retry
+            C->>A: Save successor Mission
+            C->>E: Launch successor Mission
+        else Finish handoff
+            C-->>E: Hand off implementation for review
+            E->>H: Reviewable PR is ready
+        end
+    end
+
+    alt Changes requested
+        H->>C: Review feedback
+        C->>A: Save successor Mission
+        C->>E: Launch successor Execution
+    else PR merged
+        H->>C: Merged PR
+        C->>A: Save accepted Work Outcome
+    end
 ```
+
+The normal path is `Work → Mission → Execution → Reviewable PR → Accepted
+Outcome`. Observer Learning, Preserver Counsel, Continue, and Retry are side
+paths used when context, guidance, or recovery requires them. A merged PR is
+acceptance; a merely closed PR is not.
 
 The Archive is append-only. Current state is a projection of the latest record
 for an entity; the complete history remains available for review and recovery.
@@ -149,7 +185,7 @@ does not modify application source.
 | Observer      | Record Learning only                        | Gathers missing repository context in a read-only sandbox. |
 | Executor      | Record Signals only                         | Performs one exact mission in an isolated sandbox.         |
 | Preserver     | Record Counsel only                         | Provides bounded, source-backed repository advice.         |
-| Maintainer    | Define intent and bounds                    | Provides project-level direction for the system.           |
+| Maintainer    | Define intent, bounds, review, and acceptance | Provides project-level direction for the system.           |
 
 The role system prompts live in `system-prompts/` and are injected into clean
 role sessions. They are not user-invoked slash prompts.
@@ -188,6 +224,10 @@ placeholder prompts are intentionally not included.
 
 ## Documentation
 
+- [Glossary](docs/glossary.md) — Canonical Khala domain terms, roles, and
+  record authorship.
+- [Lifecycle](docs/lifecycle.md) — Detailed Work, Mission, Execution, review,
+  Retry, and acceptance flow.
 - [Data model](docs/data-model.md) — Archive envelope, records, lifecycle
   statuses, validation, and append-only state.
 - [Art direction and generation prompts](docs/art-prompts.md) — prompts and

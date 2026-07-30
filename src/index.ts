@@ -139,6 +139,10 @@ function registerKhalaFlags(pi: ExtensionAPI): void {
 	pi.registerFlag("khala-mission-id", { description: "Internal Khala Mission ID", type: "string" });
 	pi.registerFlag("khala-mandate-id", { description: "Internal Khala Mandate ID", type: "string" });
 	pi.registerFlag("khala-participant-id", { description: "Internal Khala participant ID", type: "string" });
+	pi.registerFlag("khala-system-prompt-provided", {
+		description: "Internal Khala marker that the role prompt was passed through --system-prompt",
+		type: "boolean",
+	});
 }
 
 function registerKhalaTools(pi: ExtensionAPI): void {
@@ -189,7 +193,12 @@ function registerKhalaSessionEvents(
 			return;
 		}
 		const rolePrompt = readRolePrompt(packageRoot, role);
-		let systemPrompt = `${event.systemPrompt}\n\n${rolePrompt}`;
+		const systemPromptProvided = pi.getFlag("khala-system-prompt-provided") === true;
+		const { systemPrompt: eventSystemPrompt } = event;
+		let systemPrompt = eventSystemPrompt;
+		if (!systemPromptProvided) {
+			systemPrompt = `${systemPrompt}\n\n${rolePrompt}`;
+		}
 		if (role === KhalaRole.executor) {
 			const projectPath = pi.getFlag("khala-project-path");
 			const executionId = pi.getFlag("khala-execution-id");

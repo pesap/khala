@@ -1,4 +1,6 @@
-import { join, resolve } from "node:path";
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Conclave runtime wiring keeps lifecycle coordination in one module.
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
@@ -14,6 +16,7 @@ import { loadKhalaConfig } from "./khala-config.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import { formatError } from "./khala-error.js";
 import type { LearningRecord, SignalRecord, WorkSubmissionRequest } from "./khala-model.js";
+import { resolvePackageRoot } from "./khala-package.js";
 
 type ConclaveCoordinator = Readonly<{
 	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => Promise<{ archivePath: string }>;
@@ -256,6 +259,7 @@ async function initializeRuntime(
 		cwd: projectPath,
 		agentDir: getAgentDir(),
 		additionalExtensionPaths: [extensionPath],
+		additionalSkillPaths: [join(resolvePackageRoot(dirname(fileURLToPath(import.meta.url))), "skills", "khala")],
 	});
 	// createAgentSession does not reload a caller-provided resource loader. The
 	// reload is required to register Khala's custom launch and verdict tools.

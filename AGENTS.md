@@ -79,6 +79,10 @@ tmux send-keys -t pi-test Escape               # special keys (also C-o for ctrl
 tmux kill-session -t pi-test
 ```
 
+## Khala Launcher Options
+
+The setup CLI accepts `zellij`, `tmux`, and `herdr` for the `launcher` setting. Herdr launches require Khala to run inside a Herdr-managed pane with `HERDR_ENV=1`; the launcher creates a sibling pane without taking focus. Keep this option reflected in the setup wizard, configuration validation, executor launcher registry, README, and package skill registration when changing launcher support.
+
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.

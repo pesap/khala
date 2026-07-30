@@ -52,12 +52,12 @@ class GitWorktreeProvider extends VCSProvider {
 		}
 
 		await git(projectRoot, ["worktree", "add", "-b", `${this.#branchPrefix}${name}`, sandboxPath, "HEAD"]);
-		return { path: sandboxPath, name };
+		return { path: sandboxPath, name, projectPath: projectRoot };
 	}
 
 	override async removeSandbox(sandbox: Sandbox): Promise<void> {
 		await git(sandbox.path, ["worktree", "remove", "--force", sandbox.path]);
-		await git(this.#worktreeRoot, ["branch", "-D", `${this.#branchPrefix}${sandbox.name}`]);
+		await git(sandbox.projectPath, ["branch", "-D", `${this.#branchPrefix}${sandbox.name}`]);
 	}
 
 	protected generateSandboxName(name: string): string {

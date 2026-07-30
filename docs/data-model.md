@@ -115,9 +115,10 @@ superseded state.
 A Verdict is Conclave-only judgment for one Signal. It records the Mission,
 governing Mandate, issuing Conclave participant, and decision. Exact replays
 return the existing durable Verdict without appending; conflicting replays are
-rejected. Continue leaves the current runtime active. Finish and Reject close
-it. Retry requires a complete successor assignment and materializes a successor
-Mission; it does not requeue the old submission.
+rejected. Continue leaves the current runtime active. Finish closes the current execution
+successfully for external review; it does not establish Work acceptance. Reject
+closes it as failed. Retry requires a complete successor assignment and
+materializes a successor Mission; it does not requeue the old submission.
 
 Counsel remains Preserver-only advisory input. Learning remains Observer-only,
 Work-scoped evidence. Neither can authorize a lifecycle transition.

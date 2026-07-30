@@ -7,10 +7,12 @@ interface SandboxRequest {
 	name: string;
 }
 
-// The launcher only needs a working directory. VCS details remain owned by the provider that created it.
+// The launcher uses only the working directory; the project root is retained for provider cleanup.
 interface Sandbox {
 	path: string;
 	name: string;
+	// VCS providers use the repository root to remove provider-owned branches after worktree removal.
+	projectPath: string;
 }
 
 type PiCommand = readonly [command: string, ...args: string[]];
@@ -34,13 +36,14 @@ interface ExecutorRequest {
 type ExecutorStarter = (request: ExecutorRequest) => Promise<LaunchedSession>;
 
 // The starter composes the two providers without deciding how either repository isolation or terminal launching works.
-// biome-ignore lint/complexity/useMaxParams: The optional model is kept as a final compatibility parameter for configured starters.
+// biome-ignore lint/complexity/useMaxParams: Configured starters pass launcher, model, and skill settings as separate integration parameters.
 function createExecutorStarter(
 	vcsProvider: VcsProviderType,
 	launcher: Launcher,
 	piCommand: PiCommand = ["pi"],
 	launcherName = "configured",
 	model?: string,
+	skillPaths: readonly string[] = [],
 ): ExecutorStarter {
 	return async (request) => {
 		const sandbox = await vcsProvider.createSandbox({
@@ -54,11 +57,15 @@ function createExecutorStarter(
 			if (model !== undefined) {
 				modelArguments.push("--model", model);
 			}
+			const skillArguments: string[] = [];
+			for (const skillPath of skillPaths) {
+				skillArguments.push("--skill", skillPath);
+			}
 			return await launcher.launch({
 				sandbox,
 				name: request.name,
 				command,
-				args: [...commandArgs, ...modelArguments, ...buildPiArguments(request)],
+				args: [...commandArgs, ...modelArguments, ...skillArguments, ...buildPiArguments(request)],
 			});
 		} catch (error) {
 			try {
@@ -92,6 +99,7 @@ function buildPiArguments(request: ExecutorRequest): string[] {
 	const args = [
 		"--system-prompt",
 		request.systemPrompt,
+		"--khala-system-prompt-provided",
 		"--name",
 		request.executorName,
 		"--khala-work-id",

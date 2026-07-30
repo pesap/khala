@@ -78,3 +78,22 @@ test("source checkout retains its TypeScript developer fallback", () => {
 		cleanup();
 	}
 });
+
+test("source checkout prefers current TypeScript over stale compiled setup", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-bin-stale-"));
+	const packagePath = join(root, "khala");
+	const cleanup = createFixture(root, packagePath);
+	try {
+		mkdirSync(join(packagePath, ".git"));
+		mkdirSync(join(packagePath, "src"));
+		mkdirSync(join(packagePath, "dist", "src"), { recursive: true });
+		writeFileSync(join(packagePath, "src", "khala-setup.ts"), 'console.log("source-current");\n');
+		writeFileSync(join(packagePath, "dist", "src", "khala-setup.js"), 'console.log("compiled-stale");\n');
+		const result = runBin(packagePath, [], { ...process.env, NODE_NO_WARNINGS: "1" });
+
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(result.stdout.trim(), "source-current");
+	} finally {
+		cleanup();
+	}
+});

@@ -1,0 +1,69 @@
+---
+name: khala-executor
+description: Execute one validated Khala Mission from preflight through reviewable pull request completion. Use when running as a Khala Executor or implementing a Work assigned by a Khala Mission.
+---
+
+# Khala Executor Workflow
+
+This skill defines the detailed implementation procedure for the current Khala
+Mission. The Executor system prompt remains authoritative for role, identity,
+authority boundaries, isolation, and hard-stop rules. If this skill conflicts
+with the system prompt, stop and follow the system prompt.
+
+## Phase 1: validate and prepare
+
+Before changing implementation files:
+
+1. Read the complete first Mission message and identify Work ID, Mandate ID and
+   revision, Mission ID, Participant Identity, checkout, scope, acceptance
+   criteria, constraints, plan, and Validation Contract.
+2. Inspect the checkout, current branch, remotes, repository guidance, and
+   existing pull request state. Do not infer VCS or PR tooling from memory.
+3. Resolve commit policy in this order: Work constraints, trusted project
+   guidance, then User configuration. If no policy is specified, use
+   Conventional Commits and the User-provided scope. Never silently override a
+   more specific policy.
+4. Create exactly one immutable planning commit before implementation:
+
+   ```bash
+   git commit --allow-empty -m "<policy-compliant planning subject>" -m "<Work, Mission, plan, acceptance, and validation details>"
+   ```
+
+   Do not amend, squash, replace, or include implementation changes in this
+   commit.
+5. Push the Executor branch and open a draft pull request using the authorized
+   VCS/GitHub interface. The PR description must identify the Work and Mission,
+   scope, acceptance criteria, plan, validation contract, and planning commit.
+6. If any required remote, credential, tool, or API is unavailable, stop and
+   submit a blocked `khala_signal` with exact evidence. Never claim success
+   without command or API output.
+
+## Phase 2: implement and publish
+
+1. Implement only the current Mission in the isolated checkout.
+2. Keep unrelated changes out of the branch.
+3. Create small, reviewable commits using the resolved commit policy.
+4. Push reviewable commits as meaningful slices are completed. Do not amend,
+   rebase, squash, or force-push unless the effective policy explicitly allows
+   it; force-push is forbidden by default.
+5. Keep the draft PR description current when the implementation or validation
+   plan changes.
+
+## Phase 3: retry and completion
+
+For a retry, first inspect the existing PR description and messages, commits,
+validation evidence, accomplished work, and stated failure reason. Summarize
+what is already complete and what failed before continuing. Preserve the PR when
+appropriate; follow the Conclave's successor-Mission policy otherwise.
+
+Before completion:
+
+1. Run every check in the Validation Contract and record exact results.
+2. Push the final reviewable commits.
+3. Update the draft PR with implementation details, commit IDs, validation
+   results, and unresolved gaps. Do not merge it.
+4. Submit a final `khala_signal` containing branch, planning commit, implementation
+   commit IDs, PR URL/state, validation evidence, and unresolved gaps.
+
+A Signal reports evidence; it does not issue a Verdict or authorize work beyond
+the current Mission.

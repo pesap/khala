@@ -10,7 +10,7 @@ const ARCHIVE_READ_PARAMETERS = Type.Object({
 	executionId: Type.Optional(Type.String()),
 });
 type SessionRoleReader = (context: ExtensionContext) => KhalaRoleValue | null;
-type ExecutorBinding = Readonly<{ executionId: string; projectPath: string }>;
+type ExecutorBinding = Readonly<{ executionId: string; projectPath: string; workId: string }>;
 
 function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRoleReader): void {
 	pi.registerTool({
@@ -24,12 +24,13 @@ function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRole
 			const role = readSessionRole(context);
 			let projectPath = context.cwd;
 			let boundExecutionId: string | undefined;
+			let boundWorkId: string | undefined;
 			if (role === KhalaRole.executor) {
 				const binding = readExecutorBinding(context);
 				const configuredProjectPath = pi.getFlag("khala-project-path");
 				if (
 					binding === undefined ||
-					params.executionId !== binding.executionId ||
+					(params.executionId !== undefined && params.executionId !== binding.executionId) ||
 					typeof configuredProjectPath !== "string" ||
 					resolve(configuredProjectPath) !== resolve(binding.projectPath)
 				) {
@@ -37,26 +38,20 @@ function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRole
 				}
 				projectPath = resolve(binding.projectPath);
 				boundExecutionId = binding.executionId;
+				boundWorkId = binding.workId;
 			}
 			if (role === null && params.workId === undefined) {
 				throw new Error("A User Session must specify a workId when reading the Archive.");
 			}
 			const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
-			const records = listArchiveRecords(projectPath, projectTrusted).filter((record) => {
-				if (
-					boundExecutionId !== undefined &&
-					(resolve(record.projectPath) !== projectPath || record.executionId !== boundExecutionId)
-				) {
-					return false;
-				}
-				if (params.workId !== undefined && record.workId !== params.workId) {
-					return false;
-				}
-				if (params.executionId !== undefined && record.executionId !== params.executionId) {
-					return false;
-				}
-				return true;
-			});
+			const records = listArchiveRecords(projectPath, projectTrusted).filter((record) =>
+				isVisibleArchiveRecord(record, {
+					params,
+					projectPath,
+					boundWorkId,
+					boundExecutionId,
+				}),
+			);
 			return Promise.resolve({
 				content: [{ type: "text" as const, text: JSON.stringify(records, null, 2) }],
 				details: { records },
@@ -65,13 +60,46 @@ function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRole
 	});
 }
 
+function isVisibleArchiveRecord(
+	record: ReturnType<typeof listArchiveRecords>[number],
+	options: Readonly<{
+		params: { workId?: string; executionId?: string };
+		projectPath: string;
+		boundWorkId: string | undefined;
+		boundExecutionId: string | undefined;
+	}>,
+): boolean {
+	const { params, projectPath, boundWorkId, boundExecutionId } = options;
+	if (boundExecutionId !== undefined) {
+		// Executors may inspect their Work assignment as well as records emitted by their execution.
+		if (resolve(record.projectPath) !== projectPath || record.workId !== boundWorkId) {
+			return false;
+		}
+		if (record.executionId !== undefined && record.executionId !== boundExecutionId) {
+			return false;
+		}
+	}
+	if (params.workId !== undefined && record.workId !== params.workId) {
+		return false;
+	}
+	if (boundExecutionId === undefined && params.executionId !== undefined && record.executionId !== params.executionId) {
+		return false;
+	}
+	return true;
+}
+
 function readExecutorBinding(context: ExtensionContext): ExecutorBinding | undefined {
 	let binding: ExecutorBinding | undefined;
 	for (const entry of [...context.sessionManager.getBranch()].reverse()) {
 		if (entry.type === "custom" && entry.customType === KhalaEntryType.executor) {
-			const data = entry.data as { executionId?: unknown; projectPath?: unknown };
-			if (typeof data.executionId === "string" && typeof data.projectPath === "string" && data.projectPath.length > 0) {
-				binding = { executionId: data.executionId, projectPath: data.projectPath };
+			const data = entry.data as { executionId?: unknown; projectPath?: unknown; workId?: unknown };
+			if (
+				typeof data.executionId === "string" &&
+				typeof data.projectPath === "string" &&
+				typeof data.workId === "string" &&
+				data.projectPath.length > 0
+			) {
+				binding = { executionId: data.executionId, projectPath: data.projectPath, workId: data.workId };
 				break;
 			}
 		}
