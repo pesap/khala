@@ -239,9 +239,11 @@ already-created Executor worktree as a Herdr workspace without taking focus.
 Configured commands remain argument arrays; Herdr quotes them for its `pane run`
 shell command. Run the setup wizard to choose
 `conclaveModel` and `observerModel` from the models reported by
-`pi --list-models`. The `conclaveThinking`, `executorThinking`, and
-`observerThinking` values accept Pi's supported thinking levels or an empty
-string for the Pi default. `publishExecutorBranches` enables the Git push and
+`pi --list-models`. Setup derives thinking choices from each model's Pi
+metadata. The `conclaveThinking`, `executorThinking`, and `observerThinking`
+values are independent and accept only levels marked supported by the relevant
+model, or an empty string for the Pi default. Missing metadata preserves Pi's
+default. `publishExecutorBranches` enables the Git push and
 `gh pr create --draft` workflow; it is disabled by default. `commitConvention`
 can be `project`, `conventional`, or a custom commit prefix, and a Work
 constraint beginning with `commit convention:` overrides it. `observerModel`

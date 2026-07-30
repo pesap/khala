@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
 import { autocomplete, text as clackText, confirm, isCancel, select } from "@clack/prompts";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
 	ConfigScope,
 	type ConfigScopeValue,
@@ -53,7 +54,13 @@ const MODEL_TRAILING_COLUMNS_WITH_IMAGES = 4;
 const SETUP_CANCELLED_MESSAGE = "Setup cancelled.";
 const CANCEL_EXIT_CODE = 130;
 
-type ModelDiscovery = Readonly<{ models: string[]; reason?: string }>;
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+type ModelCapability = Readonly<{ thinkingLevels: readonly ThinkingLevel[] }>;
+type ModelDiscovery = Readonly<{
+	models: string[];
+	capabilities: Readonly<Record<string, ModelCapability>>;
+	reason?: string;
+}>;
 
 // Keep the wizard's own styling small; Clack owns the interactive prompt behavior.
 function style(code: string, text: string): string {
@@ -191,23 +198,53 @@ function parseModelListOutput(stdout: string): string[] {
 	return [...new Set(models)];
 }
 
-function discoverConfiguredModels(command: readonly string[]): ModelDiscovery {
+async function discoverConfiguredModels(command: readonly string[]): Promise<ModelDiscovery> {
 	const [program, ...arguments_] = command;
 	if (program === undefined) {
-		return { models: [], reason: "the configured Pi command is empty" };
+		return { models: [], capabilities: {}, reason: "the configured Pi command is empty" };
 	}
 	const result = spawnSync(program, [...arguments_, "--list-models"], { encoding: "utf8" });
 	if (result.error !== undefined) {
-		return { models: [], reason: result.error.message };
+		return { models: [], capabilities: {}, reason: result.error.message };
 	}
 	if (result.status !== 0) {
-		return { models: [], reason: `Pi exited with status ${result.status ?? 1}` };
+		return { models: [], capabilities: {}, reason: `Pi exited with status ${result.status ?? 1}` };
 	}
 	const models = parseModelListOutput(result.stdout ?? "");
 	if (models.length === 0) {
-		return { models, reason: "Pi returned no configured models" };
+		return { models, capabilities: {}, reason: "Pi returned no configured models" };
 	}
-	return { models };
+	return { models, capabilities: await discoverModelCapabilities(models) };
+}
+
+async function discoverModelCapabilities(
+	models: readonly string[],
+): Promise<Readonly<Record<string, ModelCapability>>> {
+	const capabilities: Record<string, ModelCapability> = {};
+	try {
+		const runtime = await ModelRuntime.create({
+			authPath: `${getAgentDir()}/auth.json`,
+			modelsPath: `${getAgentDir()}/models.json`,
+			allowModelNetwork: false,
+		});
+		for (const modelId of models) {
+			const separator = modelId.indexOf("/");
+			if (separator <= 0 || separator === modelId.length - 1) {
+				continue;
+			}
+			const model = runtime.getModel(modelId.slice(0, separator), modelId.slice(separator + 1));
+			const thinkingLevels: ThinkingLevel[] = [];
+			for (const [level, mappedLevel] of Object.entries(model?.thinkingLevelMap ?? {})) {
+				if (mappedLevel !== null && mappedLevel !== undefined) {
+					thinkingLevels.push(level as ThinkingLevel);
+				}
+			}
+			capabilities[modelId] = { thinkingLevels };
+		}
+	} catch {
+		// Missing metadata must preserve Pi defaults rather than guessing capabilities.
+	}
+	return capabilities;
 }
 
 function modelChoices(models: readonly string[]): string[] {
@@ -384,12 +421,14 @@ function thinkingValue(label: string): string {
 	return label === THINKING_DEFAULT_LABEL ? "" : label;
 }
 
-async function askThinking(label: string, current: string): Promise<string> {
-	const selected = await askChoice(
-		label,
-		[THINKING_DEFAULT_LABEL, "off", "minimal", "low", "medium", "high", "xhigh", "max"],
-		thinkingLabel(current),
-	);
+async function askThinking(label: string, current: string, capability: ModelCapability | undefined): Promise<string> {
+	const levels = capability?.thinkingLevels ?? [];
+	if (levels.length === 0) {
+		return "";
+	}
+	const choices = [THINKING_DEFAULT_LABEL, ...levels];
+	const defaultValue = choices.includes(current) ? current : THINKING_DEFAULT_LABEL;
+	const selected = await askChoice(label, choices, thinkingLabel(defaultValue));
 	return thinkingValue(selected);
 }
 
@@ -458,11 +497,11 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		),
 	);
 	const piCommand = parseCommand(await askLine("Pi command", commandText(current.piCommand)), "Pi command");
-	const discovery = discoverConfiguredModels(piCommand);
+	const discovery = await discoverConfiguredModels(piCommand);
 	if (discovery.reason !== undefined) {
 		console.log(`\n${yellow(`Model discovery unavailable: ${discovery.reason}`)}`);
 	}
-	const { models } = discovery;
+	const { models, capabilities } = discovery;
 	const observerPiCommand = parseCommand(
 		await askLine("Observer command (e.g. pi, claude, or codex)", commandText(current.observerPiCommand)),
 		"Observer command",
@@ -476,9 +515,13 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		}
 		observerModel = await searchModel("Observer model", models, observerDefault);
 	}
-	const conclaveThinking = await askThinking("Conclave thinking level", current.conclaveThinking);
-	const executorThinking = await askThinking("Executor thinking level", current.executorThinking);
-	const observerThinking = await askThinking("Observer thinking level", current.observerThinking);
+	const conclaveCapability = capabilities[conclaveModel];
+	const observerCapability = capabilities[observerModel];
+	// Executors use Pi's default model selection, represented by the configured command's discovered capabilities.
+	const executorCapability = conclaveCapability;
+	const conclaveThinking = await askThinking("Conclave thinking level", current.conclaveThinking, conclaveCapability);
+	const executorThinking = await askThinking("Executor thinking level", current.executorThinking, executorCapability);
+	const observerThinking = await askThinking("Observer thinking level", current.observerThinking, observerCapability);
 	const publishChoice = await confirm({
 		message: "Push Executor branches and open draft PRs before implementation?",
 		initialValue: current.publishExecutorBranches,
@@ -556,7 +599,8 @@ async function configure(options: SetupOptions): Promise<void> {
 	if (interactive) {
 		next = await editConfig(currentConfig);
 	} else {
-		next = chooseNonInteractiveModels(currentConfig, discoverConfiguredModels(currentConfig.piCommand).models);
+		const discovery = await discoverConfiguredModels(currentConfig.piCommand);
+		next = chooseNonInteractiveModels(currentConfig, discovery.models);
 	}
 	printState(scope, configPath, next, Object.keys(existing).length > 0);
 	if (options.dryRun) {
