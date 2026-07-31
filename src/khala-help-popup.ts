@@ -30,7 +30,7 @@ class KhalaHelpPopup implements Component {
 		this.container.addChild(new Text(renderRoleLegend(theme), 1, 0));
 		this.container.addChild(new Text(theme.fg("muted", "Session status"), 1, 0));
 		this.container.addChild(new Text(renderStatusLegend(theme), 1, 0));
-		this.container.addChild(new Text(theme.fg("dim", "ctrl+i  close Khala"), 1, 0));
+		this.container.addChild(new Text(theme.fg("dim", "alt+k  close Khala"), 1, 0));
 		this.container.addChild(new DynamicBorder((line: string) => theme.fg("borderAccent", line)));
 	}
 

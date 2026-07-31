@@ -122,7 +122,7 @@ for an entity; the complete history remains available for review and recovery.
 - `/khala-triage` (also `/triage`) turns an issue into a WorkPacket, resolves uncertainty interactively, and sends approved Work to the Project Conclave.
 - A dedicated, persisted project Conclave reviews and admits submitted Work under Mandate revision one.
 - `/khala-demo` launches a three-lane lifecycle demonstration.
-- `/khala` or `Ctrl+I` opens the session monitor.
+- `/khala` or `Alt+K` opens the session monitor.
 - The bundled `pi-review` extension adds `/review` and `/end-review` for scoped code reviews.
 - Observers record repository Learning before an Executor starts when context is
   incomplete.

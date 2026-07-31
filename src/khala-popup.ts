@@ -105,7 +105,7 @@ class KhalaPopup implements Component {
 		this.container.addChild(this.summary);
 		this.container.addChild(this.sessionList);
 		this.container.addChild(
-			new Text(theme.fg("dim", "↑↓ select  ·  enter switch/view  ·  ? help  ·  esc / ctrl+i close"), 1, 0),
+			new Text(theme.fg("dim", "↑↓ select  ·  enter switch/view  ·  ? help  ·  esc / alt+k close"), 1, 0),
 		);
 		this.container.addChild(new DynamicBorder((line: string) => theme.fg("borderAccent", line)));
 	}
