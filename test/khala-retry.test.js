@@ -4,8 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { formatRetryHandoff } from "../src/khala-work-executor-runtime.js";
-import { createGitWorktreeProvider } from "../src/vcs-git-worktree.js";
+import { formatRetryHandoff } from "../dist/src/khala-work-executor-runtime.js";
+import { createGitWorktreeProvider } from "../dist/src/vcs-git-worktree.js";
 
 function git(cwd, args) {
 	execFileSync("git", ["-C", cwd, ...args], { stdio: "ignore" });

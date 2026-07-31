@@ -1,7 +1,14 @@
 import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
-import { hasErrorCode, type LaunchedSession, Launcher, type LaunchRequest } from "./launcher.js";
+import {
+	hasErrorCode,
+	type LaunchedSession,
+	Launcher,
+	type LaunchRequest,
+	prepareStartupRequest,
+	waitForStartup,
+} from "./launcher.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,12 +23,12 @@ type ZellijEnvironment = Readonly<{
 // command is passed as argv after `--`, so shell quoting never changes it.
 class ZellijLauncher extends Launcher {
 	override async launch(request: LaunchRequest): Promise<LaunchedSession> {
-		const target = await launchZellij(request);
-		return {
-			id: request.sandbox.name,
-			sandbox: request.sandbox,
-			target,
-		};
+		const target = await launchZellij(prepareStartupRequest(request));
+		let ready: Promise<void> | undefined;
+		if (request.startup !== undefined) {
+			ready = waitForStartup(request.startup.markerPath);
+		}
+		return { id: request.sandbox.name, sandbox: request.sandbox, target, ready };
 	}
 
 	override focus(target: string): Promise<void> {

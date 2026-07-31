@@ -1,7 +1,10 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Extension registration keeps role and lifecycle wiring together.
 // biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Extension hooks compose role, lifecycle, and durable delivery fences.
-import { readFileSync } from "node:fs";
+// biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Extension hooks compose role, lifecycle, and durable delivery fences.
+// biome-ignore-all lint/style/noProcessEnv: Executor bootstrap state is provided through its process environment.
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
@@ -326,6 +329,16 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 	const sessionPath = context.sessionManager.getSessionFile();
 	if (sessionPath !== undefined) {
 		updateExecutorRecord(projectPath, executionId, { sessionPath }, projectTrusted);
+	}
+	// biome-ignore lint/style/useNamingConvention: Match the bootstrap environment contract.
+	const startupEnvironment = process.env as Readonly<{ KHALA_STARTUP_MARKER?: string }>;
+	const startupMarker = startupEnvironment.KHALA_STARTUP_MARKER;
+	if (typeof startupMarker === "string" && startupMarker.length > 0) {
+		try {
+			writeFileSync(startupMarker, "ready", "utf8");
+		} catch {
+			// The launcher timeout remains actionable if the sandbox disappears during startup.
+		}
 	}
 }
 
