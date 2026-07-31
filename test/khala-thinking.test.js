@@ -4,18 +4,30 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { buildPiArguments } from "../src/executor.ts";
-import { isSupportedThinkingLevel } from "../src/khala-conclave.ts";
 import { loadKhalaConfig } from "../src/khala-config.ts";
-import { getSupportedThinkingLevels, thinkingChoices } from "../src/khala-setup.ts";
+import { resolveConfiguredExecutorModelId, thinkingChoices } from "../src/khala-setup.ts";
+import { getSupportedThinkingLevels, isSupportedThinkingLevel } from "../src/khala-thinking.ts";
 
-test("thinking capabilities come from model metadata and unsupported models offer no choices", () => {
-	const model = { thinkingLevelMap: { off: "off", low: "low", medium: null, high: undefined } };
-	assert.deepEqual(getSupportedThinkingLevels(model), ["off", "low"]);
+test("thinking capabilities follow Pi metadata semantics", () => {
+	const model = { reasoning: true, thinkingLevelMap: { off: "off", low: "low", medium: null, high: undefined } };
+	assert.deepEqual(getSupportedThinkingLevels(model), ["off", "minimal", "low", "high"]);
+	assert.deepEqual(getSupportedThinkingLevels({ reasoning: true }), ["off", "minimal", "low", "medium", "high"]);
+	assert.deepEqual(getSupportedThinkingLevels({ reasoning: false }), ["off"]);
 	assert.deepEqual(thinkingChoices({ thinkingLevels: ["low"] }), ["Pi default", "low"]);
 	assert.deepEqual(thinkingChoices(undefined), []);
 	assert.equal(isSupportedThinkingLevel(model, "low"), true);
 	assert.equal(isSupportedThinkingLevel(model, "medium"), false);
-	assert.equal(isSupportedThinkingLevel({}, "low"), false);
+	assert.equal(isSupportedThinkingLevel({ reasoning: true }, "medium"), true);
+	assert.equal(isSupportedThinkingLevel({ reasoning: false }, "low"), false);
+});
+
+test("executor capability resolution does not inherit the Conclave model", () => {
+	assert.equal(
+		resolveConfiguredExecutorModelId(["pi", "--model", "provider/executor"], "provider/default"),
+		"provider/executor",
+	);
+	assert.equal(resolveConfiguredExecutorModelId(["pi"], "provider/default"), "provider/default");
+	assert.equal(resolveConfiguredExecutorModelId(["pi", "--models", "provider/*"], "provider/default"), undefined);
 });
 
 test("role-specific thinking settings load independently", () => {

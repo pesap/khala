@@ -19,6 +19,7 @@ import { sendConfiguredExecutorMessage } from "./khala-executor.js";
 import { readExecutorRecord } from "./khala-executor-registry.js";
 import type { LearningRecord, SignalRecord, VerdictRecord, WorkSubmissionRequest } from "./khala-model.js";
 import { resolvePackageRoot } from "./khala-package.js";
+import { isSupportedThinkingLevel } from "./khala-thinking.js";
 import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delivery.js";
 import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
@@ -329,13 +330,6 @@ async function initializeRuntime(
 	return { session, wakeChain: Promise.resolve() };
 }
 
-function isSupportedThinkingLevel(
-	model: { thinkingLevelMap?: Partial<Record<string, string | null>> },
-	level: string,
-): boolean {
-	return level.length > 0 && model.thinkingLevelMap?.[level] !== undefined && model.thinkingLevelMap[level] !== null;
-}
-
 function resolveConfiguredModel(modelRuntime: ModelRuntime, modelId: string) {
 	if (modelId.length === 0) {
 		return;
@@ -348,4 +342,4 @@ function resolveConfiguredModel(modelRuntime: ModelRuntime, modelId: string) {
 }
 
 export type { ConclaveCoordinator };
-export { createConclaveCoordinator, enqueueConclaveWake, isSupportedThinkingLevel };
+export { createConclaveCoordinator, enqueueConclaveWake };

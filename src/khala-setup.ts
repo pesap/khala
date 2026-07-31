@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
 import { autocomplete, text as clackText, confirm, isCancel, select } from "@clack/prompts";
-import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
 	ConfigScope,
 	type ConfigScopeValue,
@@ -18,6 +18,8 @@ import {
 	LauncherName,
 	loadKhalaConfig,
 } from "./khala-config.js";
+import type { ThinkingLevel } from "./khala-thinking.js";
+import { getSupportedThinkingLevels } from "./khala-thinking.js";
 
 interface SetupOptions {
 	scope?: ConfigScopeValue;
@@ -50,11 +52,11 @@ const MODEL_TRAILING_COLUMNS_WITH_IMAGES = 4;
 const SETUP_CANCELLED_MESSAGE = "Setup cancelled.";
 const CANCEL_EXIT_CODE = 130;
 
-type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type ModelCapability = Readonly<{ thinkingLevels: readonly ThinkingLevel[] }>;
 type ModelDiscovery = Readonly<{
 	models: string[];
 	capabilities: Readonly<Record<string, ModelCapability>>;
+	executorCapability?: ModelCapability;
 	reason?: string;
 }>;
 
@@ -210,7 +212,13 @@ async function discoverConfiguredModels(command: readonly string[]): Promise<Mod
 	if (models.length === 0) {
 		return { models, capabilities: {}, reason: "Pi returned no configured models" };
 	}
-	return { models, capabilities: await discoverModelCapabilities(models) };
+	const capabilities = await discoverModelCapabilities(models);
+	const executorModelId = resolveConfiguredExecutorModelId(command, getGlobalDefaultModelId());
+	const executorCapability = executorModelId === undefined ? undefined : capabilities[executorModelId];
+	if (executorCapability === undefined) {
+		return { models, capabilities };
+	}
+	return { models, capabilities, executorCapability };
 }
 
 async function discoverModelCapabilities(
@@ -237,16 +245,42 @@ async function discoverModelCapabilities(
 	return capabilities;
 }
 
-function getSupportedThinkingLevels(
-	model: { thinkingLevelMap?: Partial<Record<string, string | null>> } | undefined,
-): ThinkingLevel[] {
-	const levels: ThinkingLevel[] = [];
-	for (const [level, mappedLevel] of Object.entries(model?.thinkingLevelMap ?? {})) {
-		if (mappedLevel !== null && mappedLevel !== undefined) {
-			levels.push(level as ThinkingLevel);
+function resolveConfiguredExecutorModelId(command: readonly string[], defaultModelId?: string): string | undefined {
+	let provider: string | undefined;
+	let model: string | undefined;
+	let hasScopedModels = false;
+	for (let index = 0; index < command.length; index += 1) {
+		const argument = command[index];
+		const value = command[index + 1];
+		if (argument === "--provider") {
+			provider = value;
+			index += 1;
+		} else if (argument === "--model") {
+			model = value;
+			index += 1;
+		} else if (argument === "--models") {
+			hasScopedModels = true;
+			index += 1;
 		}
 	}
-	return levels;
+	if (model !== undefined) {
+		if (provider !== undefined) {
+			return `${provider}/${model}`;
+		}
+		return model.includes("/") ? model : undefined;
+	}
+	if (hasScopedModels) {
+		return;
+	}
+	return defaultModelId;
+}
+
+function getGlobalDefaultModelId(): string | undefined {
+	const settings = SettingsManager.create(process.cwd(), getAgentDir(), { projectTrusted: false }).getGlobalSettings();
+	if (settings.defaultProvider === undefined || settings.defaultModel === undefined) {
+		return;
+	}
+	return `${settings.defaultProvider}/${settings.defaultModel}`;
 }
 
 function modelChoices(models: readonly string[]): string[] {
@@ -509,7 +543,7 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 	if (discovery.reason !== undefined) {
 		console.log(`\n${yellow(`Model discovery unavailable: ${discovery.reason}`)}`);
 	}
-	const { models, capabilities } = discovery;
+	const { models, capabilities, executorCapability } = discovery;
 	const observerPiCommand = parseCommand(
 		await askLine("Observer command (e.g. pi, claude, or codex)", commandText(current.observerPiCommand)),
 		"Observer command",
@@ -525,8 +559,6 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 	}
 	const conclaveCapability = capabilities[conclaveModel];
 	const observerCapability = capabilities[observerModel];
-	// Executors use Pi's default model selection, represented by the configured command's discovered capabilities.
-	const executorCapability = conclaveCapability;
 	const conclaveThinking = await askThinking("Conclave thinking level", current.conclaveThinking, conclaveCapability);
 	const executorThinking = await askThinking("Executor thinking level", current.executorThinking, executorCapability);
 	const observerThinking = await askThinking("Observer thinking level", current.observerThinking, observerCapability);
@@ -646,4 +678,4 @@ if (process.argv[1]?.endsWith("khala-setup.js") || process.argv[1]?.endsWith("kh
 	await main();
 }
 
-export { getSupportedThinkingLevels, main as runKhalaSetup, parseCommand, thinkingChoices };
+export { main as runKhalaSetup, parseCommand, resolveConfiguredExecutorModelId, thinkingChoices };
