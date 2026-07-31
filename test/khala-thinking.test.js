@@ -6,6 +6,7 @@ import test from "node:test";
 import { buildPiArguments } from "../src/executor.ts";
 import { loadKhalaConfig } from "../src/khala-config.ts";
 import { resolveConfiguredExecutorModelId, thinkingChoices } from "../src/khala-setup.ts";
+import { runOracle } from "../src/khala-oracle.ts";
 import { getSupportedThinkingLevels, isSupportedThinkingLevel } from "../src/khala-thinking.ts";
 
 test("thinking capabilities follow Pi metadata semantics", () => {
@@ -39,6 +40,7 @@ test("role-specific thinking settings load independently", () => {
 			join(root, "khala.json"),
 			JSON.stringify({
 				conclaveModel: "provider/model",
+				oracleModel: "provider/oracle",
 				conclaveThinking: "high",
 				executorThinking: "low",
 				observerThinking: "minimal",
@@ -46,9 +48,21 @@ test("role-specific thinking settings load independently", () => {
 		);
 		const config = loadKhalaConfig();
 		assert.equal(config.conclaveModel, "provider/model");
+		assert.equal(config.oracleModel, "provider/oracle");
 		assert.equal(config.conclaveThinking, "high");
 		assert.equal(config.executorThinking, "low");
 		assert.equal(config.observerThinking, "minimal");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle refuses to run without a configured model", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-config-"));
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	try {
+		await assert.rejects(runOracle(root, "Review packet", undefined), /must be configured/);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
@@ -62,6 +76,7 @@ test("legacy config without thinking fields preserves Pi defaults", () => {
 		writeFileSync(join(root, "khala.json"), JSON.stringify({ conclaveModel: "provider/model" }));
 		const config = loadKhalaConfig();
 		assert.equal(config.conclaveThinking, "");
+		assert.equal(config.oracleModel, "");
 		assert.equal(config.executorThinking, "");
 		assert.equal(config.observerThinking, "");
 	} finally {

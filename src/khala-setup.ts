@@ -389,6 +389,7 @@ function toStoredConfig(config: KhalaConfig): StoredConfig {
 		piCommand: [...config.piCommand],
 		observerPiCommand: [...config.observerPiCommand],
 		conclaveModel: config.conclaveModel,
+		oracleModel: config.oracleModel,
 		observerModel: config.observerModel,
 		conclaveThinking: config.conclaveThinking,
 		executorThinking: config.executorThinking,
@@ -498,6 +499,7 @@ function printState(scope: ConfigScopeValue, configPath: string, config: StoredC
 	console.log(row("=", "Pi command", commandText(config.piCommand)));
 	console.log(row("=", "observer command", commandText(config.observerPiCommand)));
 	console.log(row("=", "Conclave model", config.conclaveModel || "(Pi default)"));
+	console.log(row("=", "Oracle model", config.oracleModel || "(required)"));
 	console.log(row("=", "Conclave thinking", config.conclaveThinking || "(Pi default)"));
 	console.log(row("=", "Executor thinking", config.executorThinking || "(Pi default)"));
 	console.log(row("=", "Observer model", config.observerModel || "(Pi default)"));
@@ -548,9 +550,14 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		await askLine("Observer command (e.g. pi, claude, or codex)", commandText(current.observerPiCommand)),
 		"Observer command",
 	);
-	let { conclaveModel, observerModel } = current;
+	let { conclaveModel, oracleModel, observerModel } = current;
 	if (models.length > 0) {
 		conclaveModel = await searchModel("Conclave model", models, current.conclaveModel);
+		let oracleDefault = current.oracleModel;
+		if (oracleDefault.length === 0) {
+			oracleDefault = conclaveModel;
+		}
+		oracleModel = await searchModel("Oracle model", models, oracleDefault);
 		let observerDefault = current.observerModel;
 		if (observerDefault.length === 0) {
 			observerDefault = conclaveModel;
@@ -578,6 +585,7 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		piCommand,
 		observerPiCommand,
 		conclaveModel,
+		oracleModel,
 		observerModel,
 		conclaveThinking,
 		executorThinking,
@@ -596,14 +604,17 @@ function chooseNonInteractiveModels(config: StoredConfig, models: readonly strin
 	if (first === undefined) {
 		return config;
 	}
-	let { conclaveModel, observerModel } = config;
+	let { conclaveModel, oracleModel, observerModel } = config;
 	if (!models.includes(conclaveModel)) {
 		conclaveModel = first;
+	}
+	if (!models.includes(oracleModel)) {
+		oracleModel = conclaveModel;
 	}
 	if (!models.includes(observerModel)) {
 		observerModel = conclaveModel;
 	}
-	return { ...config, conclaveModel, observerModel };
+	return { ...config, conclaveModel, oracleModel, observerModel };
 }
 
 async function configure(options: SetupOptions): Promise<void> {
@@ -617,7 +628,7 @@ async function configure(options: SetupOptions): Promise<void> {
 	const currentConfig = toStoredConfig(loadKhalaConfig(projectPath, scope === ConfigScope.project));
 	const interactive = isInteractive(options);
 	console.log(`\n${titleLine("Khala setup")}`);
-	console.log(dim("Configure the durable state, worktree, and launcher settings used by Khala."));
+	console.log(dim("Configure the durable state, worktree, launcher, and model settings used by Khala."));
 	if (Object.keys(existing).length > 0 && interactive) {
 		const choice = await askChoice(
 			"Existing configuration",

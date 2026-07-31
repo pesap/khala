@@ -26,6 +26,7 @@ interface KhalaConfig {
 	piCommand: PiCommand;
 	observerPiCommand: PiCommand;
 	conclaveModel: string;
+	oracleModel: string;
 	observerModel: string;
 	conclaveThinking: ThinkingLevel | "";
 	executorThinking: ThinkingLevel | "";
@@ -46,6 +47,7 @@ const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	piCommand: ["pi"],
 	observerPiCommand: ["pi"],
 	conclaveModel: "",
+	oracleModel: "",
 	observerModel: "",
 	conclaveThinking: "",
 	executorThinking: "",
@@ -89,6 +91,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	const configuredPiCommand = readPiCommand(values, "piCommand");
 	const configuredObserverPiCommand = readPiCommand(values, "observerPiCommand");
 	const configuredConclaveModel = readConfigString(values, "conclaveModel");
+	const configuredOracleModel = readConfigString(values, "oracleModel");
 	const configuredObserverModel = readConfigString(values, "observerModel");
 	const configuredConclaveThinking = readThinkingLevel(values, "conclaveThinking");
 	const configuredExecutorThinking = readThinkingLevel(values, "executorThinking");
@@ -103,6 +106,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		piCommand: defaultPiCommand,
 		observerPiCommand: defaultObserverPiCommand,
 		conclaveModel: defaultConclaveModel,
+		oracleModel: defaultOracleModel,
 		observerModel: defaultObserverModel,
 		conclaveThinking: defaultConclaveThinking,
 		executorThinking: defaultExecutorThinking,
@@ -117,6 +121,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	let piCommand = defaultPiCommand;
 	let observerPiCommand = defaultObserverPiCommand;
 	let conclaveModel = defaultConclaveModel;
+	let oracleModel = defaultOracleModel;
 	let observerModel = defaultObserverModel;
 	let conclaveThinking = defaultConclaveThinking;
 	let executorThinking = defaultExecutorThinking;
@@ -144,6 +149,9 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	}
 	if (configuredConclaveModel !== undefined) {
 		conclaveModel = configuredConclaveModel;
+	}
+	if (configuredOracleModel !== undefined) {
+		oracleModel = configuredOracleModel;
 	}
 	if (configuredObserverModel !== undefined) {
 		observerModel = configuredObserverModel;
@@ -173,6 +181,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		piCommand,
 		observerPiCommand,
 		conclaveModel,
+		oracleModel,
 		observerModel,
 		conclaveThinking,
 		executorThinking,

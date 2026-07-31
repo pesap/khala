@@ -22,6 +22,7 @@ import { KHALA_TOGGLE_SHORTCUT } from "./khala-keybindings.js";
 import { registerKhalaLearning } from "./khala-learning.js";
 import { ExecutorStatus } from "./khala-model.js";
 import { registerKhalaObserver } from "./khala-observer.js";
+import { registerKhalaOracle } from "./khala-oracle.js";
 import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
 import { toggleKhalaPopup } from "./khala-popup.js";
 import { registerKhalaReview } from "./khala-review.js";
@@ -183,6 +184,7 @@ function registerKhalaTools(pi: ExtensionAPI): void {
 		isDedicatedConclaveSession,
 	});
 	registerKhalaArchiveRead(pi, readSessionRole);
+	registerKhalaOracle(pi);
 	registerKhalaCounsel(pi, (context) => readSessionRole(context) === KhalaRole.preserver);
 	registerKhalaVerdict(
 		pi,

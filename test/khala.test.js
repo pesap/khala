@@ -27,6 +27,7 @@ import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
 import { isSignal } from "../dist/src/khala-model.js";
 import { registerKhalaObserver } from "../dist/src/khala-observer.js";
+import { buildOracleArguments, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
 import { buildKhalaTriagePrompt, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
 
@@ -70,6 +71,74 @@ test("package lifecycle builds every declared extension and exposes Khala comman
 	for (const command of ["khala", "khala-work", "khala-triage"]) {
 		assert.ok(commands.has(command), `/${command} should be registered`);
 	}
+});
+
+test("Khala Oracle runs a bounded fresh review and renders advisory output", async () => {
+	const commands = new Map();
+	const tools = new Map();
+	let receivedCwd;
+	let receivedPrompt;
+	let receivedSignal;
+	registerKhalaOracle(createPiStub(commands, tools), async (cwd, prompt, signal) => {
+		receivedCwd = cwd;
+		receivedPrompt = prompt;
+		receivedSignal = signal;
+		return {
+			output: [
+				"Findings:",
+				"- Severity: major",
+				"  Evidence: src/example.ts:10",
+				"- Severity: minor",
+				"Validation gaps:",
+				"- Focused test is missing.",
+				"Open questions:",
+				"- none",
+				"Verdict: revise",
+			].join("\n"),
+			model: "test-model",
+			durationMs: 42,
+		};
+	});
+	const oracle = tools.get("khala_oracle");
+	const signal = new AbortController().signal;
+	const result = await oracle.execute(
+		"oracle",
+		{ prompt: "  Review this bounded packet.  " },
+		signal,
+		null,
+		{ cwd: "/tmp/project" },
+	);
+	assert.equal(receivedCwd, "/tmp/project");
+	assert.equal(receivedPrompt, "Review this bounded packet.");
+	assert.equal(receivedSignal, signal);
+	assert.equal(result.details.verdict, "revise");
+	assert.equal(result.details.majors, 1);
+	assert.equal(result.details.minors, 1);
+	assert.equal(result.details.validationGaps, 1);
+	assert.deepEqual(buildOracleArguments("packet", "test-model").slice(0, 7), [
+		"--no-session",
+		"--no-tools",
+		"--no-extensions",
+		"--model",
+		"test-model",
+		"--thinking",
+		"high",
+	]);
+	initTheme();
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const collapsed = oracle.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {});
+	assert.match(collapsed.render(120).join("\n"), /→ revise/);
+	assert.match(collapsed.render(120).join("\n"), /1 major/);
+	const expanded = oracle.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
+	assert.match(expanded.render(120).join("\n"), /Findings/);
+	assert.match(expanded.render(120).join("\n"), /src\/example.ts:10/);
 });
 
 test("/khala creates and exposes a persisted project Conclave when absent", async () => {
@@ -784,6 +853,7 @@ test("role-specific tools record only authorized Archive mutations", async () =>
 		assert.ok(tools.has("khala_signal"));
 		assert.ok(tools.has("khala_verdict"));
 		assert.ok(tools.has("khala_counsel"));
+		assert.ok(tools.has("khala_oracle"));
 		assert.equal(tools.has("khala_launch_work"), false);
 
 		const foreignProjectPath = join(root, "foreign-project");

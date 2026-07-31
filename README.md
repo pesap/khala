@@ -133,11 +133,14 @@ for an entity; the complete history remains available for review and recovery.
 
 ## Pi tools
 
+`khala_oracle` runs a bounded fresh-context read-only review. Its findings are advisory and do not mutate Khala state.
+
 Khala exposes these custom Pi tools. Role restrictions are enforced at runtime;
 normal User Sessions have no explicit Khala role marker.
 
 | Tool | Purpose | Authorized role |
 | --- | --- | --- |
+| `khala_oracle` | Run a bounded fresh-context read-only review; results are advisory. | Any Session |
 | `khala_submit_work` | Submit a complete Work to the project Conclave; an active WorkPacket is optional. | User Session or Maintainer |
 | `khala_read_archive` | Read authoritative Archive records visible to the current role. | Role-filtered |
 | `khala_admit_work` | Admit a Work Submission and create Mandate revision one. | Conclave |
@@ -222,6 +225,7 @@ individual values in `.pi/khala.json`.
   "piCommand": ["pi", "--extension", "/path/to/khala"],
   "observerPiCommand": ["pi", "--extension", "/path/to/khala"],
   "conclaveModel": "provider/model",
+  "oracleModel": "provider/model",
   "observerModel": "provider/model",
   "conclaveThinking": "medium",
   "executorThinking": "high",
@@ -237,16 +241,17 @@ launcher must run inside a Herdr-managed pane (`HERDR_ENV=1`); it opens the
 already-created Executor worktree as a Herdr workspace without taking focus.
 Configured commands remain argument arrays; Herdr quotes them for its `pane run`
 shell command. Run the setup wizard to choose
-`conclaveModel` and `observerModel` from the models reported by
-`pi --list-models`. Setup derives thinking choices from each model's Pi
-metadata. The `conclaveThinking`, `executorThinking`, and `observerThinking`
-values are independent and accept only levels marked supported by the relevant
+`conclaveModel`, `oracleModel`, and `observerModel` from the models reported by
+`pi --list-models`. Setup derives thinking choices for the Conclave, Executor,
+and Observer settings from each model's Pi metadata. The `conclaveThinking`,
+`executorThinking`, and `observerThinking` values are independent and accept only levels marked supported by the relevant
 model, or an empty string for the Pi default. Missing metadata preserves Pi's
 default. Khala Work always enables Git push and the Executor-managed draft Pull
 Request workflow. `commitConvention`
 can be `project`, `conventional`, or a custom commit prefix, and a Work
-constraint beginning with `commit convention:` overrides it. `observerModel`
-selects the read-only repository observation model. The project `archiveRoot`
+constraint beginning with `commit convention:` overrides it. `oracleModel` is
+required and selects the fresh-context review model, while `observerModel` selects the
+read-only repository observation model. The project `archiveRoot`
 override is used only when Pi marks the project trusted; untrusted projects use
 the global Archive root. All reads and writes for one trusted session use the
 same selected root.
