@@ -4,16 +4,20 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { KhalaEntryType } from "./khala-entry-types.js";
 
 const KhalaRole = {
+	user: "user",
 	conclave: "conclave",
 	executor: "executor",
 	observer: "observer",
-	maintainer: "maintainer",
 	preserver: "preserver",
 } as const;
 type KhalaRoleValue = (typeof KhalaRole)[keyof typeof KhalaRole];
 type RoleDefinition = Readonly<{ fileName: string; description: string }>;
 
 const ROLE_DEFINITIONS: Readonly<Record<KhalaRoleValue, RoleDefinition>> = {
+	[KhalaRole.user]: {
+		fileName: "user.md",
+		description: "Create a clean session with the Khala User system prompt.",
+	},
 	[KhalaRole.conclave]: {
 		fileName: "conclave.md",
 		description: "Create a clean session with the Khala Conclave system prompt.",
@@ -25,10 +29,6 @@ const ROLE_DEFINITIONS: Readonly<Record<KhalaRoleValue, RoleDefinition>> = {
 	[KhalaRole.observer]: {
 		fileName: "observer.md",
 		description: "Create a clean session with the Khala Observer system prompt.",
-	},
-	[KhalaRole.maintainer]: {
-		fileName: "maintainer.md",
-		description: "Create a clean session with the Khala Maintainer system prompt.",
 	},
 	[KhalaRole.preserver]: {
 		fileName: "preserver.md",
@@ -63,6 +63,10 @@ function readSessionRole(context: ExtensionContext): KhalaRoleValue | null {
 	return null;
 }
 
+function isUserSessionRole(role: KhalaRoleValue | null): boolean {
+	return role === null || role === KhalaRole.user;
+}
+
 function isRoleData(data: unknown): data is { role: KhalaRoleValue } {
 	if (typeof data !== "object" || data === null || !("role" in data)) {
 		return false;
@@ -79,4 +83,4 @@ function readRolePrompt(packageRoot: string, role: KhalaRoleValue): string {
 }
 
 export type { KhalaRoleValue, RoleDefinition };
-export { isRoleData, KhalaRole, ROLE_DEFINITIONS, ROLE_NAMES, readRolePrompt, readSessionRole };
+export { isRoleData, isUserSessionRole, KhalaRole, ROLE_DEFINITIONS, ROLE_NAMES, readRolePrompt, readSessionRole };

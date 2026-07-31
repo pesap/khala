@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, initTheme } from "@earendil-works/pi-coding-agent";
 import createExtension, { createExecutorViewHandler } from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
@@ -21,6 +21,7 @@ import {
 	updateExecutorRecord,
 	writeExecutorRecord,
 } from "../dist/src/khala-executor-registry.js";
+import { canRecordPullRequestReview } from "../dist/src/khala-review.js";
 import { KhalaSessionList } from "../dist/src/khala-session-list.js";
 import { toggleKhalaPopup } from "../dist/src/khala-popup.js";
 import { createSessionSource } from "../dist/src/khala-sessions.js";
@@ -29,9 +30,9 @@ import { isSignal } from "../dist/src/khala-model.js";
 import { registerKhalaObserver } from "../dist/src/khala-observer.js";
 import { buildOracleArguments, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
-import { buildKhalaTriagePrompt, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
+import { buildKhalaTriageTemplateInvocation, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
 
-function createPiStub(commands, tools = new Map(), flags = new Map()) {
+function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}) {
 	return {
 		registerCommand(name, command) {
 			commands.set(name, command);
@@ -41,11 +42,15 @@ function createPiStub(commands, tools = new Map(), flags = new Map()) {
 		registerTool(tool) {
 			tools.set(tool.name, tool);
 		},
-		on() {},
+		on(name, handler) {
+			hooks.events?.set(name, handler);
+		},
 		getFlag(name) {
 			return flags.get(name);
 		},
-		appendEntry() {},
+		appendEntry(type, data) {
+			hooks.appendEntry?.(type, data);
+		},
 	};
 }
 
@@ -58,6 +63,7 @@ test("package lifecycle builds every declared extension and exposes Khala comman
 		"./dist/src/index.js",
 		"./dist/extensions/pi-review/review.js",
 	]);
+	assert.deepEqual(manifest.pi.prompts, ["./prompts"]);
 	assert.deepEqual(manifest.pi.skills, ["./skills"]);
 	for (const extensionPath of manifest.pi.extensions) {
 		assert.ok(readFileSync(new URL(`../${extensionPath}`, import.meta.url)).length > 0);
@@ -70,6 +76,94 @@ test("package lifecycle builds every declared extension and exposes Khala comman
 	createExtension(createPiStub(commands));
 	for (const command of ["khala", "khala-work", "khala-triage"]) {
 		assert.ok(commands.has(command), `/${command} should be registered`);
+	}
+});
+
+test("Pi discovers and loads the Khala triage prompt as a dynamic template resource", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-prompt-template-test-"));
+	try {
+		const events = new Map();
+		createExtension(createPiStub(new Map(), new Map(), new Map(), { events }));
+		const discovered = events.get("resources_discover")({ type: "resources_discover", cwd: root, reason: "startup" });
+		assert.deepEqual(discovered.promptPaths, [join(process.cwd(), "templates", "khala-triage-prompt.md")]);
+
+		const loader = new DefaultResourceLoader({
+			cwd: root,
+			agentDir: join(root, "agent"),
+			additionalPromptTemplatePaths: discovered.promptPaths,
+		});
+		await loader.reload();
+		const template = loader.getPrompts().prompts.find((prompt) => prompt.name === "khala-triage-prompt");
+		assert.ok(template);
+		assert.match(template.content, /\$\{1:-the issue or request identified in the current conversation\}/);
+		assert.match(template.content, /\$\{2:-confirm\}/);
+		assert.match(template.content, /\$\{@:3\}/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Users can communicate review feedback without gaining Conclave authority", () => {
+	assert.equal(canRecordPullRequestReview(null), true);
+	assert.equal(canRecordPullRequestReview("user"), true);
+	assert.equal(canRecordPullRequestReview("executor"), false);
+	assert.equal(canRecordPullRequestReview("conclave"), false);
+});
+
+test("launched Executor status uses the Executor name after marker registration", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-status-test-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	const branch = [];
+	const events = new Map();
+	const statuses = [];
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const flags = new Map([
+			["khala-work-id", "status-work"],
+			["khala-execution-id", "status-execution"],
+			["khala-project-path", projectPath],
+		]);
+		const pi = createPiStub(new Map(), new Map(), flags, {
+			events,
+			appendEntry(type, data) {
+				branch.push({ type: "custom", customType: type, data });
+			},
+		});
+		createExtension(pi);
+		const context = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return branch;
+				},
+				getSessionFile() {
+					return undefined;
+				},
+				getSessionName() {
+					return "Adun";
+				},
+			},
+			ui: {
+				theme: {
+					fg(_color, text) {
+						return text;
+					},
+				},
+				setStatus(_id, status) {
+					statuses.push(status);
+				},
+			},
+		};
+
+		events.get("session_start")({}, context);
+
+		assert.equal(statuses.length, 1);
+		assert.match(statuses[0], /khala ⁝ Adun/);
+		assert.doesNotMatch(statuses[0], /user/);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 
@@ -566,33 +660,34 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			userContext,
 		);
 		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal"]);
-		const maintainerContext = {
+		const userRoleContext = {
 			cwd: projectPath,
 			sessionManager: {
 				getBranch() {
-					return [{ type: "custom", customType: "khala-role", data: { role: "maintainer" } }];
+					return [{ type: "custom", customType: "khala-role", data: { role: "user" } }];
 				},
 			},
 		};
-		const maintainerResult = await archiveTool.execute("archive", {}, null, null, maintainerContext);
-		assert.deepEqual(maintainerResult.details.records.map((record) => record.type), ["counsel", "signal", "signal"]);
-		assert.deepEqual(maintainerResult.details.records.map((record) => record.workId), ["work-bound", "work-bound", "work-other"]);
-		const maintainerWorkResult = await archiveTool.execute(
+		assert.throws(
+			() => archiveTool.execute("archive", {}, null, null, userRoleContext),
+			/A User must specify a workId/,
+		);
+		const userRoleWorkResult = await archiveTool.execute(
 			"archive",
 			{ workId: "work-bound" },
 			null,
 			null,
-			maintainerContext,
+			userRoleContext,
 		);
-		assert.deepEqual(maintainerWorkResult.details.records.map((record) => record.type), ["counsel", "signal"]);
-		const maintainerExecutionResult = await archiveTool.execute(
+		assert.deepEqual(userRoleWorkResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		const userRoleExecutionResult = await archiveTool.execute(
 			"archive",
-			{ executionId: "execution-other" },
+			{ workId: "work-other", executionId: "execution-other" },
 			null,
 			null,
-			maintainerContext,
+			userRoleContext,
 		);
-		assert.deepEqual(maintainerExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		assert.deepEqual(userRoleExecutionResult.details.records.map((record) => record.type), ["signal"]);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
@@ -609,8 +704,8 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 	}
 });
 
-test("Maintainers can submit Work intent without lifecycle authority", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-maintainer-intent-"));
+test("Users can submit Work intent without lifecycle authority", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-user-intent-"));
 	const projectPath = join(root, "project");
 	try {
 		const commands = new Map();
@@ -633,22 +728,22 @@ test("Maintainers can submit Work intent without lifecycle authority", async () 
 			markSubmissionQueued: () => {},
 			markSubmissionLaunched: () => {},
 		});
-		const maintainerContext = {
+		const userContext = {
 			cwd: projectPath,
 			sessionManager: {
 				getEntries() {
 					return [];
 				},
 				getBranch() {
-					return [{ type: "custom", customType: "khala-role", data: { role: "maintainer" } }];
+					return [{ type: "custom", customType: "khala-role", data: { role: "user" } }];
 				},
 			},
 		};
 		const result = await tools.get("khala_submit_work").execute(
-			"maintainer-submit",
+			"user-submit",
 			{
 				objective: "Gather repository context before Conclave admission.",
-				context: "The Maintainer supplied initial context.",
+				context: "The User supplied initial context.",
 				scope: "Only inspect the current repository context.",
 				acceptanceCriteria: ["The Conclave receives the Work."],
 				constraints: [],
@@ -657,11 +752,11 @@ test("Maintainers can submit Work intent without lifecycle authority", async () 
 			},
 			null,
 			null,
-			maintainerContext,
+			userContext,
 		);
 		assert.equal(result.details.status, "queued");
 		assert.equal(submitted.projectPath, projectPath);
-		assert.equal(submitted.work.context, "The Maintainer supplied initial context.");
+		assert.equal(submitted.work.context, "The User supplied initial context.");
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -1546,9 +1641,13 @@ test("Khala triage parses approval, starts a Work draft, and requires a Conclave
 		target: "issue 123",
 		extraInstruction: "focus on auth",
 	});
-	assert.match(
-		buildKhalaTriagePrompt({ target: "issue 123", approve: true }),
-		/Work <work-id> was sent to the Project Conclave for admission and launch\./,
+	assert.equal(
+		buildKhalaTriageTemplateInvocation({ target: "issue 123", approve: true }),
+		"/khala-triage-prompt 'issue 123' approve",
+	);
+	assert.throws(
+		() => buildKhalaTriageTemplateInvocation({ target: `issue '123' "quoted"`, approve: false }),
+		/cannot contain both single and double quotes/,
 	);
 
 	const commands = new Map();
@@ -1580,7 +1679,7 @@ test("Khala triage parses approval, starts a Work draft, and requires a Conclave
 	assert.equal(entries[0].data.status, "draft");
 	assert.equal(typeof entries[0].data.workId, "string");
 	assert.match(messages[0], /issue 123/);
-	assert.match(messages[0], /--approve/);
+	assert.equal(messages[0], "/khala-triage-prompt 'issue 123' approve");
 	assert.deepEqual(notifications, ["Starting Khala triage for issue 123."]);
 });
 
@@ -1804,25 +1903,25 @@ test("Observer review executions remain submission-scoped and recover their queu
 				return { id: "observer-session", sandbox: { path: join(root, "observer-sandbox"), name: "observer-sandbox" } };
 			},
 		});
-		const maintainerContext = {
+		const userContext = {
 			cwd: projectPath,
 			sessionManager: {
 				getBranch() {
-					return [{ type: "custom", customType: "khala-role", data: { role: "maintainer" } }];
+					return [{ type: "custom", customType: "khala-role", data: { role: "user" } }];
 				},
 				getSessionFile() {
-					return join(root, "maintainer.jsonl");
+					return join(root, "user.jsonl");
 				},
 			},
 		};
-		const archiveRecordCountBeforeMaintainerLaunch = listArchiveRecords(projectPath).length;
+		const archiveRecordCountBeforeUserLaunch = listArchiveRecords(projectPath).length;
 		await assert.rejects(
-			tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, maintainerContext),
+			tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, userContext),
 			/Only the dedicated project Conclave may launch an Observer/,
 		);
 		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "queued");
 		assert.equal(listExecutorRecords(projectPath).length, 0);
-		assert.equal(listArchiveRecords(projectPath).length, archiveRecordCountBeforeMaintainerLaunch);
+		assert.equal(listArchiveRecords(projectPath).length, archiveRecordCountBeforeUserLaunch);
 		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "learning").length, 0);
 
 		const conclaveContext = {

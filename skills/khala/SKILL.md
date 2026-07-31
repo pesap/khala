@@ -31,11 +31,11 @@ Work submission → Conclave review → optional Observer → Mandate → Missio
 
 ## Role boundaries
 
-- **User/Maintainer** authors intent, scope, acceptance, constraints, and
-  validation. They may read authoritative Archive records and submit Work as
-  intent ingress, but do not admit Work, launch agents, issue Verdicts, or make
-  lifecycle decisions. They do not impersonate durable Archive
-  records.
+- **User** authors intent, scope, acceptance, constraints, and validation. They
+  may read authoritative Archive records, submit Work as intent ingress, and
+  record Pull Request review or merge evidence, but do not admit Work, launch
+  agents, issue Verdicts, or make lifecycle decisions. They do not impersonate
+  durable Archive records.
 - **Conclave** reads authoritative records, admits Work, materializes Missions,
   launches Observers or Executors, and issues Verdicts.
 - **Observer** is read-only and submission-scoped. It records exactly one

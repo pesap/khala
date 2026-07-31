@@ -18,7 +18,7 @@ import {
 	KhalaWorkLaunchStatus,
 	type KhalaWorkSubmission,
 } from "./khala-model.js";
-import { KhalaRole, readSessionRole } from "./khala-role.js";
+import { isUserSessionRole, readSessionRole } from "./khala-role.js";
 import { deriveWorkTitle, queueWork, rejectedWorkLaunch, toKhalaWork, validateWork } from "./khala-work-helpers.js";
 import { admitWork, launchExecution } from "./khala-work-lifecycle.js";
 import { renderExpandHint, renderSubmitWorkStatus } from "./khala-work-render.js";
@@ -185,8 +185,8 @@ function submitValidatedWork(
 	dependencies: KhalaWorkDependencies,
 ): Promise<KhalaWorkLaunchResult> {
 	const role = readSessionRole(context);
-	if (role !== null && role !== KhalaRole.maintainer) {
-		return Promise.resolve(rejectedWorkLaunch("Only a User or Maintainer session may submit Work."));
+	if (!isUserSessionRole(role)) {
+		return Promise.resolve(rejectedWorkLaunch("Only a User may submit Work."));
 	}
 	const work = toKhalaWork(params);
 	const validationErrors = validateWork(work);

@@ -16,7 +16,7 @@ import {
 } from "./khala-archive-projections.js";
 import { readExecutorRecord } from "./khala-executor-registry.js";
 import type { PullRequestRecord, PullRequestStatusValue, WorkOutcomeRecord } from "./khala-model.js";
-import { KhalaRole, readSessionRole } from "./khala-role.js";
+import { isUserSessionRole, type KhalaRoleValue, readSessionRole } from "./khala-role.js";
 
 const PULL_REQUEST_REVIEW_PARAMETERS = Type.Object({
 	workId: Type.String(),
@@ -85,7 +85,7 @@ function registerKhalaReview(
 	pi.registerTool({
 		name: "khala_record_pull_request_review",
 		label: "Record Pull Request Review",
-		description: "Record structured Maintainer review, merge, or closure evidence for a Khala Pull Request.",
+		description: "Record User review, merge, or closure evidence for a Khala Pull Request.",
 		promptSnippet: "Record Pull Request review or merge evidence",
 		executionMode: "sequential",
 		parameters: PULL_REQUEST_REVIEW_PARAMETERS,
@@ -188,8 +188,9 @@ function recordReviewFinalization(input: ReviewFinalizationInput): PullRequestRe
 }
 
 function recordPullRequestReview(input: PullRequestReviewInput, context: ExtensionContext, wake: ReviewWake) {
-	if (readSessionRole(context) !== KhalaRole.maintainer) {
-		throw new Error("Only a Maintainer session may record Pull Request review or merge evidence.");
+	const sessionRole = readSessionRole(context);
+	if (!canRecordPullRequestReview(sessionRole)) {
+		throw new Error("Only a User may record Pull Request review or merge evidence.");
 	}
 	const status = input.status as PullRequestStatusValue;
 	if (
@@ -483,6 +484,10 @@ function normalizeArray(values: readonly string[]): string[] {
 	return values.map((value) => value.trim()).filter((value) => value.length > 0);
 }
 
+function canRecordPullRequestReview(sessionRole: KhalaRoleValue | null): boolean {
+	return isUserSessionRole(sessionRole);
+}
+
 function isProjectTrusted(context: ExtensionContext): boolean {
 	return typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
 }
@@ -490,6 +495,7 @@ function isProjectTrusted(context: ExtensionContext): boolean {
 export type { PullRequestReviewInput, ReviewFinalizationInput, ReviewPreparationInput, WorkOutcomeInput };
 export {
 	appendPullRequestRecord,
+	canRecordPullRequestReview,
 	latestPullRequest,
 	latestPullRequestForMission,
 	markPullRequestReviewable,

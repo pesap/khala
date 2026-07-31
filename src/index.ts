@@ -131,10 +131,17 @@ function registerConclaveRecovery(pi: ExtensionAPI): void {
 }
 
 function createExtension(pi: ExtensionAPI): void {
+	registerKhalaDynamicResources(pi);
 	registerKhalaFlags(pi);
 	registerKhalaTools(pi);
 	const showKhalaPopup = registerPopupControls(pi);
 	registerKhalaSessionEvents(pi, showKhalaPopup);
+}
+
+function registerKhalaDynamicResources(pi: ExtensionAPI): void {
+	pi.on("resources_discover", () => ({
+		promptPaths: [join(packageRoot, "templates", "khala-triage-prompt.md")],
+	}));
 }
 
 function registerKhalaFlags(pi: ExtensionAPI): void {
@@ -203,8 +210,8 @@ function registerKhalaSessionEvents(
 	showKhalaPopup: (context: ExtensionContext) => Promise<void>,
 ): void {
 	pi.on("session_start", (_event, context) => {
-		setKhalaStatus(context, readSessionRole(context));
 		registerLaunchedAgent(pi, context);
+		setKhalaStatus(context, readSessionRole(context));
 		if (!isDedicatedConclaveSession(context)) {
 			conclaveCoordinator.resume(context.cwd, isTrustedProject(context));
 		}

@@ -176,7 +176,7 @@ async function wakeConclave(request: WakeRequest): Promise<void> {
 				].join("\n");
 			} else if (request.review === true) {
 				prompt = [
-					"A Maintainer Pull Request review event has arrived.",
+					"A User Pull Request review event has arrived.",
 					`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
 					`The review concerns Work ${request.workId}.`,
 					"If changes were requested, preserve the review evidence and launch the successor Mission. If the Pull Request was merged, verify the merge evidence and record the Work Outcome through khala_record_work_outcome.",

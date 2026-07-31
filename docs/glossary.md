@@ -13,10 +13,10 @@ context, scope, acceptance criteria, constraints, plan, and validation.
 ### Work Submission
 
 A Work proposal registered by the project Conclave and awaiting review. The
-User or Maintainer authors the Work and submits it as intent ingress; the
-Conclave registers a queued submission record in the Archive for review. This
-submission does not admit the Work or authorize lifecycle actions. A submission
-is not authoritative Work until the Conclave admits it.
+User authors the Work and submits it as intent ingress; the Conclave registers a
+queued submission record in the Archive for review. This submission does not
+admit the Work or authorize lifecycle actions. A submission is not authoritative
+Work until the Conclave admits it.
 
 ### Mandate
 
@@ -60,9 +60,9 @@ uncertainties. It is advisory and cannot change lifecycle state.
 ### Work Outcome
 
 The target Conclave-authored record linking a Work Submission and its Missions
-to an externally accepted result. Acceptance requires Maintainer-authorized PR
-merge evidence; a `Finish` Verdict alone is only an execution handoff. The
-Conclave records a Work Outcome only after verified merge evidence.
+to an externally accepted result. Acceptance requires User-authorized PR merge
+evidence; a `Finish` Verdict alone is only an execution handoff. The Conclave
+records a Work Outcome only after verified merge evidence.
 
 ### Archive
 
@@ -73,15 +73,11 @@ the role that authored each record or make lifecycle decisions by itself.
 
 ## Roles
 
-### User Session
+### User
 
-Defines intent, bounds, acceptance, constraints, and validation. Submits Work
-for Conclave review.
-
-### Maintainer
-
-Defines project intent and acceptance, reviews the required Pull Request, and
-provides merge evidence. The Maintainer does not admit Work or issue Verdicts.
+Defines intent, bounds, acceptance, constraints, and validation; submits Work,
+reviews Pull Requests, and communicates feedback or merge evidence to the
+Conclave. The User does not admit Work or issue Verdicts.
 
 ### Conclave
 
@@ -107,9 +103,8 @@ Counsel, but cannot admit Work, launch executions, or issue Verdicts.
 ## Record authorship
 
 ```text
-User      → Work terms
+User      → Work terms, Pull Request review, and merge evidence
 Conclave  → Work Submission, Mandate, Verdict, and Work Outcome
-Maintainer → Pull Request review and merge evidence
 Khala runtime → Verdict Delivery and Pull Request handoff evidence
 Executor  → Signal
 Observer  → Learning
@@ -133,6 +128,6 @@ Work Submission
   → Signal
   → Conclave Verdict
   → Continue, Retry, Finish, or Reject
-  → Maintainer review and merge
+  → User review and merge
   → Work Outcome
 ```

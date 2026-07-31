@@ -41,7 +41,7 @@ and makes the lifecycle visible and recoverable.
 
 ## Why Khala
 
-- Bounded roles. User Sessions, the Conclave, Observers, and Executors have
+- Bounded roles. Users, the Conclave, Observers, and Executors have
   different authority and different tools.
 - Isolated execution. Executors work in Git worktrees instead of the caller's
   checkout.
@@ -59,7 +59,7 @@ and makes the lifecycle visible and recoverable.
 The user-facing lifecycle is short. The Archive keeps the detailed history
 behind it; see the [detailed lifecycle](docs/lifecycle.md). Every Khala Work
 publishes its Executor branch and creates a draft Pull Request before the
-Executor can hand the implementation off for Maintainer review.
+Executor can hand the implementation off for User review.
 
 ```mermaid
 sequenceDiagram
@@ -67,7 +67,7 @@ sequenceDiagram
     participant C as Conclave
     participant O as Observer
     participant E as Executor
-    participant H as Maintainer
+    participant H as User
     participant A as Archive
 
     U->>C: Submit Work
@@ -136,12 +136,12 @@ for an entity; the complete history remains available for review and recovery.
 `khala_oracle` runs a bounded fresh-context read-only review. Its findings are advisory and do not mutate Khala state.
 
 Khala exposes these custom Pi tools. Role restrictions are enforced at runtime;
-normal User Sessions have no explicit Khala role marker.
+normal User sessions have no explicit Khala role marker.
 
 | Tool | Purpose | Authorized role |
 | --- | --- | --- |
 | `khala_oracle` | Run a bounded fresh-context read-only review; results are advisory. | Any Session |
-| `khala_submit_work` | Submit a complete Work to the project Conclave; an active WorkPacket is optional. | User Session or Maintainer |
+| `khala_submit_work` | Submit a complete Work to the project Conclave; an active WorkPacket is optional. | User |
 | `khala_read_archive` | Read authoritative Archive records visible to the current role. | Role-filtered |
 | `khala_admit_work` | Admit a Work Submission and create Mandate revision one. | Conclave |
 | `khala_launch_observer` | Launch a read-only Observer to gather missing Work context. | Conclave |
@@ -150,7 +150,7 @@ normal User Sessions have no explicit Khala role marker.
 | `khala_signal` | Submit evidence-bearing progress, blocked, or finished execution evidence. | Executor |
 | `khala_verdict` | Record a Continue, Retry, Finish, or Reject decision for a Signal. | Conclave |
 | `khala_counsel` | Record source-backed advisory Counsel. | Preserver |
-| `khala_record_pull_request_review` | Record structured Maintainer review, merge, or closure evidence. | Maintainer |
+| `khala_record_pull_request_review` | Record User review, merge, or closure evidence for a Pull Request. | User |
 | `khala_record_work_outcome` | Record the durable acceptance statement after a verified Pull Request merge. | Conclave |
 
 ## Install
@@ -202,12 +202,11 @@ does not modify application source.
 
 | Role          | Authority                                   | Responsibility                                             |
 | ------------- | ------------------------------------------- | ---------------------------------------------------------- |
-| User Session  | Submit Work and observe                     | Defines intent and chooses when to request coordination.   |
+| User          | Submit Work and review evidence             | Defines intent, communicates feedback, and provides acceptance evidence. |
 | Conclave      | Launch Observer/Executor and issue Verdicts | Governs the project Work lifecycle.                        |
 | Observer      | Record Learning only                        | Gathers missing repository context in a read-only sandbox. |
 | Executor      | Record Signals only                         | Performs one exact mission in an isolated sandbox.         |
 | Preserver     | Record Counsel only                         | Provides bounded, source-backed repository advice.         |
-| Maintainer    | Define intent, bounds, review, and acceptance | Provides project-level direction for the system.           |
 
 The role system prompts live in `system-prompts/` and are injected into clean
 role sessions. They are not user-invoked slash prompts.
@@ -291,8 +290,7 @@ models.
 
 ## Contributing
 
-Keep changes focused and preserve the authority boundaries between User Sessions,
-the Conclave, Observers, Executors, and the Archive. Add regressions to the
+Keep changes focused and preserve the authority boundaries between Users, the Conclave, Observers, Executors, and the Archive. Add regressions to the
 existing test suite, run `npm run check`, and run the relevant tests before
 opening a pull request.
 

@@ -12,7 +12,7 @@ Work
   → Mandate and immutable Mission
   → isolated Executor Execution
   → reviewable Pull Request
-  → Maintainer review and merge
+  → User review and merge
   → Conclave Work Outcome
 ```
 
@@ -23,7 +23,7 @@ but it does not author evidence or make decisions by itself.
 
 | Role | Authors | Does not own |
 | --- | --- | --- |
-| User / Maintainer | Work terms, scope, acceptance, constraints, validation | Mandates or Verdicts in a User Session |
+| User | Work terms, scope, acceptance, validation, and review evidence | Mandates or Verdicts |
 | Conclave | Work Submission registration, Mandates, Verdicts, Work Outcomes | Executor implementation evidence |
 | Observer | Work-scoped Learning | Admission or lifecycle decisions |
 | Executor | Signals and implementation evidence | Mandates, Verdicts, or acceptance |
@@ -38,7 +38,7 @@ Learning is sufficient for admission.
 
 ### 1. Author and submit Work
 
-The User Session or Maintainer defines a complete Work contract:
+The User defines a complete Work contract:
 
 - objective and context;
 - scope and constraints;
@@ -52,7 +52,7 @@ Work ID is supplied, it reuses the active template draft ID when present and
 otherwise generates one. The editor command remains
 available for users who want the structured template. The Conclave intake path
 registers a Work Submission in the project Archive with status `queued`. The
-User or Maintainer authored the terms; the Conclave registered the submission.
+User authored the terms; the Conclave registered the submission.
 
 A Work Submission is a proposal, not yet an authoritative Mandate.
 
@@ -175,19 +175,19 @@ predecessor.
 Finish means the Executor's implementation is complete enough to hand off for
 external review. It does **not** mean the Work has been accepted or merged.
 
-The resulting PR remains available for Maintainer review. If review requests
-changes, the Conclave creates a successor Mission/Execution rather than silently
-changing the completed Mission.
+The resulting PR remains available for User review. If review requests changes,
+the Conclave creates a successor Mission/Execution rather than silently changing
+the completed Mission.
 
 #### Reject
 
 Reject closes the Execution without acceptance when the evidence cannot satisfy
 the Mission, the assignment is invalid, or the Work must not continue.
 
-### 7. Maintainer review and merge
+### 7. User review and merge
 
-The Maintainer, optionally assisted by GitHub Copilot or another reviewer,
-reviews the required draft PR against the original Work and Mandate.
+The User, optionally assisted by GitHub Copilot or another reviewer, reviews the
+required draft PR against the original Work and Mandate.
 
 Review outcomes are distinct:
 
@@ -216,8 +216,8 @@ Outcome should reference:
 - accepting actor and timestamp.
 
 The Outcome is the durable statement that the Work was accepted. The Archive
-preserves the evidence; the Conclave authors the Outcome; the Maintainer owns
-the external acceptance decision.
+preserves the evidence; the Conclave authors the Outcome; the User owns the
+external acceptance decision.
 
 ## Simplified state model
 
@@ -248,7 +248,7 @@ Execution, Signal, Verdict, Learning, Counsel, and Outcome records.
 The current implementation provides the Archive, Work Submission, Observer
 Learning, Preserver Counsel, Mandate, Mission, Execution, Signal, Verdict,
 Verdict Delivery, Pull Request, and Work Outcome records. It also provides
-role fences, Retry recovery, reviewable-state projection, structured Maintainer
+role fences, Retry recovery, reviewable-state projection, structured User
 review, and Conclave Outcome recording.
 
 Git branch publication is mandatory for Khala Work execution. The Executor

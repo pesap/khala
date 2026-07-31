@@ -13,7 +13,7 @@ import { type Static, Type } from "typebox";
 import { listArchiveRecords } from "./khala-archive.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import type { KhalaArchiveRecord } from "./khala-model.js";
-import { KhalaRole, type KhalaRoleValue } from "./khala-role.js";
+import { isUserSessionRole, KhalaRole, type KhalaRoleValue } from "./khala-role.js";
 
 const ARCHIVE_READ_PARAMETERS = Type.Object({
 	workId: Type.Optional(Type.String()),
@@ -72,8 +72,8 @@ function executeArchiveRead(
 		boundExecutionId = binding.executionId;
 		boundWorkId = binding.workId;
 	}
-	if (role === null && params.workId === undefined) {
-		throw new Error("A User Session must specify a workId when reading the Archive.");
+	if (isUserSessionRole(role) && params.workId === undefined) {
+		throw new Error("A User must specify a workId when reading the Archive.");
 	}
 	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
 	const records = listArchiveRecords(projectPath, projectTrusted).filter((record) =>

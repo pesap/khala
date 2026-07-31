@@ -105,7 +105,7 @@ function materializeReviewRequestedSuccessor(projectPath: string, projectTrusted
 			governingMandateId: mandate.mandateId,
 			issuedByParticipantId: conclaveParticipantId(projectPath),
 			decision: "retry",
-			reason: `Maintainer requested changes: ${review.reviewFeedback.join("; ") || "review feedback was recorded."}`,
+			reason: `User requested changes: ${review.reviewFeedback.join("; ") || "review feedback was recorded."}`,
 			retryHandoff: createReviewRetryHandoff(review, mandate.terms.validation),
 			verdictId: nanoid(),
 			issuedAt: new Date().toISOString(),
@@ -179,7 +179,7 @@ function createReviewRetryHandoff(review: PullRequestRecord, validation: readonl
 		requiredChanges = ["Resolve the recorded review findings."];
 	}
 	return {
-		failedCriteria: ["Address the recorded Maintainer review feedback."],
+		failedCriteria: ["Address the recorded User review feedback."],
 		completedWork: ["Preserve the predecessor implementation and its existing validation evidence."],
 		requiredChanges,
 		nonGoals: ["Do not broaden the Work beyond the recorded review feedback."],
