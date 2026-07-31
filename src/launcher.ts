@@ -91,8 +91,8 @@ function waitForStartup(markerPath: string): Promise<void> {
 			}
 		};
 		watcher = watch(dirname(markerPath), { persistent: false }, inspect);
-		inspect();
 		timeout = setTimeout(() => inspect(), STARTUP_TIMEOUT_MS);
+		inspect();
 	});
 }
 
