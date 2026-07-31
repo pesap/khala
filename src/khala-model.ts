@@ -175,6 +175,14 @@ type SignalRecord = Readonly<{
 
 type VerdictDecision = "continue" | "retry" | "finish" | "reject";
 
+type RetryHandoff = Readonly<{
+	failedCriteria: readonly string[];
+	completedWork: readonly string[];
+	requiredChanges: readonly string[];
+	nonGoals: readonly string[];
+	validation: readonly string[];
+}>;
+
 type VerdictRecord = Readonly<{
 	workId: string;
 	executionId: string;
@@ -187,6 +195,7 @@ type VerdictRecord = Readonly<{
 	verdictId: string;
 	issuedAt: string;
 	sourcePullRequestId?: string;
+	retryHandoff?: RetryHandoff;
 	successorAssignment?: MissionAssignment;
 }>;
 
@@ -341,6 +350,7 @@ type GuardRecord = Record<string, unknown> &
 		verdictId?: unknown;
 		issuedAt?: unknown;
 		sourcePullRequestId?: unknown;
+		retryHandoff?: unknown;
 		successorAssignment?: unknown;
 		deliveryId?: unknown;
 		message?: unknown;
@@ -393,6 +403,10 @@ type GuardRecord = Record<string, unknown> &
 
 function isStringArray(value: unknown): value is readonly string[] {
 	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isNonEmptyStringArray(value: unknown): value is readonly string[] {
+	return isStringArray(value) && value.length > 0 && value.every((item) => item.trim().length > 0);
 }
 
 function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
@@ -673,7 +687,28 @@ function isVerdict(value: unknown): value is VerdictRecord {
 		typeof record.verdictId === "string" &&
 		typeof record.issuedAt === "string" &&
 		(record.sourcePullRequestId === undefined || typeof record.sourcePullRequestId === "string") &&
+		(record.retryHandoff === undefined || isRetryHandoff(record.retryHandoff)) &&
 		(record.successorAssignment === undefined || isKhalaWork(record.successorAssignment))
+	);
+}
+
+function isRetryHandoff(value: unknown): value is RetryHandoff {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as {
+		failedCriteria?: unknown;
+		completedWork?: unknown;
+		requiredChanges?: unknown;
+		nonGoals?: unknown;
+		validation?: unknown;
+	};
+	return (
+		isNonEmptyStringArray(record.failedCriteria) &&
+		isNonEmptyStringArray(record.completedWork) &&
+		isNonEmptyStringArray(record.requiredChanges) &&
+		isNonEmptyStringArray(record.nonGoals) &&
+		isNonEmptyStringArray(record.validation)
 	);
 }
 
@@ -879,6 +914,7 @@ export type {
 	MissionRecord,
 	PullRequestRecord,
 	PullRequestStatusValue,
+	RetryHandoff,
 	SignalKind,
 	SignalRecord,
 	VerdictDecision,

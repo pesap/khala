@@ -38,9 +38,10 @@ Before changing implementation files:
    implementation changes in it.
 5. The Executor owns Pull Request creation and description content. Inspect the
    repository's applicable Pull Request template, falling back to
-   `templates/pull-request.md` only when no repository template exists. Use the
-   authorized VCS/GitHub interface to open the draft PR after preflight, then keep
-   it updated as implementation and validation change.
+   `templates/pull-request.md` only when no repository template exists. On a retry,
+   create the successor draft with the supplied `Supersedes #N` relationship and
+   keep its factual description updated. Do not close the predecessor manually;
+   runtime finalization owns that transition.
    The description must identify the Work, Mission, and Execution, then concisely
    describe the summary, scope, implementation, acceptance criteria, validation
    contract, planning commit, risks, and unresolved gaps. If the Mission includes
@@ -65,9 +66,11 @@ Before changing implementation files:
 ## Phase 3: retry and completion
 
 For a retry, first inspect the existing PR description and messages, commits,
-validation evidence, accomplished work, and stated failure reason. Summarize
-what is already complete and what failed before continuing. Preserve the PR when
-appropriate; follow the Conclave's successor-Mission policy otherwise.
+validation evidence, accomplished work, and the durable `Retry Contract` in the
+Mission. Summarize what is already complete and what failed before continuing.
+Preserve completed work, implement only the required changes, and follow the
+Conclave's successor-Mission policy. A retry creates a successor PR; it does not
+continue the predecessor branch or PR.
 
 Before completion:
 
@@ -75,8 +78,8 @@ Before completion:
 2. Push the final reviewable commits.
 3. Update the draft PR using the selected template with implementation details,
    commit IDs, validation results, risks, and unresolved gaps. Keep it concise and
-   factual. Do not merge it. Include the resulting PR URL and state in the final
-   evidence.
+   factual. Do not merge or close PRs. Include the resulting successor PR URL and
+   state in the final evidence.
 4. Submit a final `khala_signal` containing branch, planning commit, implementation
    commit IDs, PR URL/state, validation evidence, and unresolved gaps.
 

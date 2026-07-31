@@ -125,18 +125,31 @@ async function finalizeConfiguredExecutorReview(input: ExecutorReviewFinalizatio
 	const config = loadKhalaConfig(execution.projectPath, projectTrusted);
 	const provider = createGitWorktreeProvider(config.worktreeRoot, config.worktreeBranchPrefix);
 	const existingReview = latestPullRequest(execution.projectPath, execution.executionId, projectTrusted);
-	const preparation = await provider.finalizeReview(
-		{
-			sandbox: { path: execution.sandboxPath, name: execution.executorName, projectPath: execution.projectPath },
-			name: execution.executorName,
-			workId,
-			executionId: execution.executionId,
-			mission: "",
-			publish: true,
-			targetBranch: config.pullRequestTargetBranch,
-		},
-		existingReview?.url,
-	);
+	let reviewRequest: {
+		sandbox: { path: string; name: string; projectPath: string };
+		name: string;
+		workId: string;
+		executionId: string;
+		mission: string;
+		publish: boolean;
+		targetBranch: string;
+		supersedesPullRequestUrl?: string;
+	} = {
+		sandbox: { path: execution.sandboxPath, name: execution.executorName, projectPath: execution.projectPath },
+		name: execution.executorName,
+		workId,
+		executionId: execution.executionId,
+		mission: "",
+		publish: true,
+		targetBranch: config.pullRequestTargetBranch,
+	};
+	if (existingReview?.relatedPullRequestUrl !== undefined) {
+		reviewRequest = {
+			...reviewRequest,
+			supersedesPullRequestUrl: existingReview.relatedPullRequestUrl,
+		};
+	}
+	const preparation = await provider.finalizeReview(reviewRequest, existingReview?.url);
 	if (preparation !== undefined) {
 		let finalization: ReviewFinalizationInput = {
 			projectPath: execution.projectPath,
@@ -152,7 +165,14 @@ async function finalizeConfiguredExecutorReview(input: ExecutorReviewFinalizatio
 		if (preparation.number !== undefined) {
 			finalization = { ...finalization, number: preparation.number };
 		}
-		recordReviewFinalization(finalization);
+		const recordedReview = recordReviewFinalization(finalization);
+		if (
+			recordedReview !== undefined &&
+			existingReview?.relatedPullRequestUrl !== undefined &&
+			preparation.url !== undefined
+		) {
+			await provider.supersedePullRequest(existingReview.relatedPullRequestUrl, preparation.url);
+		}
 	}
 }
 

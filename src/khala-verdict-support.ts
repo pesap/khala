@@ -10,6 +10,7 @@ import {
 	type ExecutorStatusValue,
 	type KhalaWork,
 	type MissionRecord,
+	type RetryHandoff,
 	type VerdictRecord,
 } from "./khala-model.js";
 import { markPullRequestReviewable } from "./khala-review.js";
@@ -40,6 +41,7 @@ function processNewVerdict(input: {
 		projectPath: context.cwd,
 		projectTrusted,
 		normalizedAssignment: normalizedParams.successorAssignment,
+		normalizedRetryHandoff: normalizedParams.retryHandoff,
 	});
 	const { missionId, missionProjection } = missionContext;
 	const verdict = createVerdictRecord({
@@ -48,6 +50,7 @@ function processNewVerdict(input: {
 		missionId,
 		missionProjection,
 		normalizedAssignment: normalizedParams.successorAssignment,
+		normalizedRetryHandoff: normalizedParams.retryHandoff,
 		projectPath: context.cwd,
 	});
 
@@ -73,6 +76,7 @@ function validateMissionVerdict(input: {
 	projectPath: string;
 	projectTrusted: boolean;
 	normalizedAssignment: KhalaWork | undefined;
+	normalizedRetryHandoff: RetryHandoff | undefined;
 }): MissionVerdictContext {
 	if (input.execution.purpose?.kind !== "mission") {
 		return {};
@@ -93,8 +97,13 @@ function validateMissionVerdict(input: {
 	if (mandate === undefined) {
 		throw new Error("The governing Mandate is unavailable for this Verdict.");
 	}
-	if (input.params.decision === "retry" && !isCompleteAssignment(input.normalizedAssignment)) {
-		throw new Error("Retry requires a complete successor Mission assignment.");
+	if (input.params.decision === "retry") {
+		if (!isCompleteAssignment(input.normalizedAssignment)) {
+			throw new Error("Retry requires a complete successor Mission assignment.");
+		}
+		if (!isCompleteRetryHandoff(input.normalizedRetryHandoff)) {
+			throw new Error("Retry requires a complete retry handoff.");
+		}
 	}
 	return { missionId, missionProjection };
 }
@@ -215,13 +224,31 @@ function materializeRetryVerdict(
 function normalizeVerdictParams(
 	params: VerdictInput,
 	reason: string,
+	retryHandoff: RetryHandoff | undefined,
 	successorAssignment: KhalaWork | undefined,
 ): NormalizedVerdictInput {
 	const normalized: NormalizedVerdictInput = { ...params, reason };
+	if (retryHandoff !== undefined) {
+		normalized.retryHandoff = retryHandoff;
+	}
 	if (successorAssignment !== undefined) {
 		normalized.successorAssignment = successorAssignment;
 	}
 	return normalized;
+}
+
+function createVerdictFields(
+	retryHandoff: RetryHandoff | undefined,
+	successorAssignment: KhalaWork | undefined,
+): { retryHandoff?: RetryHandoff; successorAssignment?: KhalaWork } {
+	const fields: { retryHandoff?: RetryHandoff; successorAssignment?: KhalaWork } = {};
+	if (retryHandoff !== undefined) {
+		fields.retryHandoff = retryHandoff;
+	}
+	if (successorAssignment !== undefined) {
+		fields.successorAssignment = successorAssignment;
+	}
+	return fields;
 }
 
 function createVerdictRecord(input: {
@@ -230,6 +257,7 @@ function createVerdictRecord(input: {
 	missionId: string | undefined;
 	missionProjection: MissionProjection | undefined;
 	normalizedAssignment: KhalaWork | undefined;
+	normalizedRetryHandoff: RetryHandoff | undefined;
 	projectPath: string;
 }): VerdictRecord {
 	const base = {
@@ -241,21 +269,16 @@ function createVerdictRecord(input: {
 		verdictId: nanoid(),
 		issuedAt: new Date().toISOString(),
 	};
+	const verdictFields = createVerdictFields(input.normalizedRetryHandoff, input.normalizedAssignment);
 	if (input.missionId !== undefined && input.missionProjection !== undefined) {
 		const missionFields = {
 			missionId: input.missionId,
 			governingMandateId: input.missionProjection.mission.mandateId,
 			issuedByParticipantId: conclaveParticipantId(input.projectPath),
 		};
-		if (input.normalizedAssignment !== undefined) {
-			return { ...base, ...missionFields, successorAssignment: input.normalizedAssignment };
-		}
-		return { ...base, ...missionFields };
+		return { ...base, ...missionFields, ...verdictFields };
 	}
-	if (input.normalizedAssignment !== undefined) {
-		return { ...base, successorAssignment: input.normalizedAssignment };
-	}
-	return base;
+	return { ...base, ...verdictFields };
 }
 
 function terminalExecutorStatus(decision: VerdictRecord["decision"]): ExecutorStatusValue {
@@ -263,6 +286,22 @@ function terminalExecutorStatus(decision: VerdictRecord["decision"]): ExecutorSt
 		return ExecutorStatus.finished;
 	}
 	return ExecutorStatus.failed;
+}
+
+function isCompleteRetryHandoff(handoff: RetryHandoff | undefined): handoff is RetryHandoff {
+	return (
+		handoff !== undefined &&
+		handoff.failedCriteria.length > 0 &&
+		handoff.failedCriteria.every((item) => item.trim().length > 0) &&
+		handoff.completedWork.length > 0 &&
+		handoff.completedWork.every((item) => item.trim().length > 0) &&
+		handoff.requiredChanges.length > 0 &&
+		handoff.requiredChanges.every((item) => item.trim().length > 0) &&
+		handoff.nonGoals.length > 0 &&
+		handoff.nonGoals.every((item) => item.trim().length > 0) &&
+		handoff.validation.length > 0 &&
+		handoff.validation.every((item) => item.trim().length > 0)
+	);
 }
 
 function isCompleteAssignment(assignment: KhalaWork | undefined): assignment is KhalaWork {
@@ -288,6 +327,7 @@ function isSameVerdict(existing: VerdictRecord, input: NormalizedVerdictInput): 
 		existing.signalId === input.signalId &&
 		existing.decision === input.decision &&
 		existing.reason === input.reason &&
+		JSON.stringify(existing.retryHandoff) === JSON.stringify(input.retryHandoff) &&
 		JSON.stringify(existing.successorAssignment) === JSON.stringify(input.successorAssignment)
 	);
 }

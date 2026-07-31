@@ -8,7 +8,7 @@ type ReviewWorkflowRequest = Readonly<{
 	mission: string;
 	publish: boolean;
 	targetBranch?: string;
-	previousPullRequestUrl?: string;
+	supersedesPullRequestUrl?: string;
 	commitConvention?: string;
 }>;
 
@@ -32,6 +32,7 @@ abstract class VCSProvider {
 	abstract removeSandbox(sandbox: Sandbox): Promise<void>;
 	abstract prepareReview(request: ReviewWorkflowRequest): Promise<ReviewPreparation | undefined>;
 	abstract finalizeReview(request: ReviewWorkflowRequest, url?: string): Promise<ReviewFinalization | undefined>;
+	abstract supersedePullRequest(previousUrl: string, successorUrl: string): Promise<void>;
 	protected abstract generateSandboxName(name: string): string;
 }
 
