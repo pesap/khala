@@ -19,6 +19,7 @@ import { sendConfiguredExecutorMessage } from "./khala-executor.js";
 import { readExecutorRecord } from "./khala-executor-registry.js";
 import type { LearningRecord, SignalRecord, VerdictRecord, WorkSubmissionRequest } from "./khala-model.js";
 import { resolvePackageRoot } from "./khala-package.js";
+import { isSupportedThinkingLevel } from "./khala-thinking.js";
 import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delivery.js";
 import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
@@ -322,7 +323,7 @@ async function initializeRuntime(
 	if (model !== undefined) {
 		sessionOptions.model = model;
 	}
-	if (conclaveThinking !== "") {
+	if (model !== undefined && conclaveThinking !== "" && isSupportedThinkingLevel(model, conclaveThinking)) {
 		sessionOptions.thinkingLevel = conclaveThinking;
 	}
 	const { session } = await createAgentSession(sessionOptions);

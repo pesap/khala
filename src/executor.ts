@@ -182,4 +182,4 @@ function buildPiArguments(request: ExecutorRequest, thinkingLevel?: string): str
 
 export type { VCSProvider } from "./vcs.js";
 export type { ExecutorRequest, ExecutorStarter, KhalaAgentKind, PiCommand, Sandbox, SandboxRequest };
-export { createExecutorStarter };
+export { buildPiArguments, createExecutorStarter };
