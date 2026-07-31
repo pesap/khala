@@ -54,14 +54,14 @@ function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}
 	};
 }
 
-test("package lifecycle builds every declared extension and exposes Khala commands", () => {
+test("package manifest declares source extensions and exposes Khala commands", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-	assert.equal(manifest.scripts.prepare, "npm run clean && npm run build");
-	assert.equal(manifest.dependencies.typescript, "5.9.3");
-	assert.equal(manifest.devDependencies.typescript, undefined);
+	assert.equal(manifest.scripts.prepare, undefined);
+	assert.equal(manifest.dependencies.typescript, undefined);
+	assert.equal(manifest.devDependencies.typescript, "5.9.3");
 	assert.deepEqual(manifest.pi.extensions, [
-		"./dist/src/index.js",
-		"./dist/extensions/pi-review/review.js",
+		"./src/index.ts",
+		"./extensions/pi-review/review.ts",
 	]);
 	assert.deepEqual(manifest.pi.prompts, ["./prompts"]);
 	assert.deepEqual(manifest.pi.skills, ["./skills"]);
