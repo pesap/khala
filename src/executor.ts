@@ -1,5 +1,7 @@
 // biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Executor startup composes sandbox, review preparation, launcher, and cleanup fences in one transaction.
-import type { LaunchedSession, Launcher } from "./launcher.js";
+// biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Executor startup composes sandbox, review preparation, launcher, and cleanup fences in one transaction.
+import { join } from "node:path";
+import type { LaunchedSession, Launcher, StartupRequest } from "./launcher.js";
 import type { ReviewPreparation, VCSProvider as VcsProviderType } from "./vcs.js";
 
 // The request stays provider-neutral so Git worktrees, branch sandboxes, and remote VCS implementations can share it.
@@ -96,6 +98,7 @@ function createExecutorStarter(
 				}
 			}
 			const [command, ...commandArgs] = piCommand;
+			const startup: StartupRequest = { markerPath: join(sandbox.path, `.khala-startup-${request.executionId}`) };
 			const modelArguments: string[] = [];
 			if (model !== undefined) {
 				modelArguments.push("--model", model);
@@ -104,12 +107,28 @@ function createExecutorStarter(
 			for (const skillPath of skillPaths) {
 				skillArguments.push("--skill", skillPath);
 			}
-			return await launcher.launch({
+			const launched = await launcher.launch({
 				sandbox,
 				name: request.name,
 				command,
 				args: [...commandArgs, ...modelArguments, ...skillArguments, ...buildPiArguments(request, thinkingLevel)],
+				startup,
 			});
+			if (launched.ready !== undefined) {
+				try {
+					await launched.ready;
+				} catch (error) {
+					if (launched.target !== undefined) {
+						try {
+							await launcher.close(launched.target);
+						} catch (cleanupError) {
+							attachCleanupDiagnostic(error, cleanupError);
+						}
+					}
+					throw error;
+				}
+			}
+			return launched;
 		} catch (error) {
 			try {
 				await vcsProvider.removeSandbox(sandbox);
@@ -127,12 +146,21 @@ function attachCleanupDiagnostic(error: unknown, cleanupError: unknown): void {
 	}
 	// Keep the startup or launcher failure as the public error; this non-enumerable field is diagnostic only.
 	try {
-		Object.defineProperty(error, "cleanupError", {
+		const existing = (error as Error & { cleanupErrors?: unknown[] }).cleanupErrors ?? [];
+		Object.defineProperty(error, "cleanupErrors", {
 			configurable: true,
 			enumerable: false,
-			value: cleanupError,
+			value: [...existing, cleanupError],
 			writable: false,
 		});
+		if (!("cleanupError" in error)) {
+			Object.defineProperty(error, "cleanupError", {
+				configurable: true,
+				enumerable: false,
+				value: cleanupError,
+				writable: false,
+			});
+		}
 	} catch {
 		// A non-extensible primary error must still be rethrown unchanged.
 	}

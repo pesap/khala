@@ -1,19 +1,26 @@
 import { execFile } from "node:child_process";
 import { platform } from "node:os";
 import { promisify } from "node:util";
-import { hasErrorCode, type LaunchedSession, Launcher, type LaunchRequest } from "./launcher.js";
+import {
+	hasErrorCode,
+	type LaunchedSession,
+	Launcher,
+	type LaunchRequest,
+	prepareStartupRequest,
+	waitForStartup,
+} from "./launcher.js";
 
 const execFileAsync = promisify(execFile);
 
 // Tmux owns terminal placement only. The launched command is already prepared by the shared executor layer.
 class TmuxLauncher extends Launcher {
 	override async launch(request: LaunchRequest): Promise<LaunchedSession> {
-		const target = await launchTmux(request);
-		return {
-			id: request.sandbox.name,
-			sandbox: request.sandbox,
-			target,
-		};
+		const target = await launchTmux(prepareStartupRequest(request));
+		let ready: Promise<void> | undefined;
+		if (request.startup !== undefined) {
+			ready = waitForStartup(request.startup.markerPath);
+		}
+		return { id: request.sandbox.name, sandbox: request.sandbox, target, ready };
 	}
 
 	override focus(target: string): Promise<void> {

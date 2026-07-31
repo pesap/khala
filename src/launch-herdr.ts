@@ -2,7 +2,14 @@ import { execFile } from "node:child_process";
 import { platform } from "node:os";
 import process from "node:process";
 import { promisify } from "node:util";
-import { hasErrorCode, type LaunchedSession, Launcher, type LaunchRequest } from "./launcher.js";
+import {
+	hasErrorCode,
+	type LaunchedSession,
+	Launcher,
+	type LaunchRequest,
+	prepareStartupRequest,
+	waitForStartup,
+} from "./launcher.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,12 +30,12 @@ type HerdrWorktreeOpenResponse = Readonly<{
 
 class HerdrLauncher extends Launcher {
 	override async launch(request: LaunchRequest): Promise<LaunchedSession> {
-		const paneId = await launchHerdr(request);
-		return {
-			id: request.sandbox.name,
-			sandbox: request.sandbox,
-			target: paneId,
-		};
+		const paneId = await launchHerdr(prepareStartupRequest(request));
+		let ready: Promise<void> | undefined;
+		if (request.startup !== undefined) {
+			ready = waitForStartup(request.startup.markerPath);
+		}
+		return { id: request.sandbox.name, sandbox: request.sandbox, target: paneId, ready };
 	}
 
 	override focus(target: string): Promise<void> {
