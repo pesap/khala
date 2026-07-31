@@ -1,0 +1,252 @@
+{
+  "skill": "infrasys",
+  "version": "2.2.0",
+  "trigger_evals": {
+    "positive_train": [
+      {
+        "prompt": "Inspect this infrasys System, list generators and buses, and show me what time series are attached.",
+        "expected_trigger": true,
+        "expected_references": ["references/REFERENCE.md"]
+      },
+      {
+        "prompt": "Add a new component type, attach it to the system, and verify to_json/from_json round-trip integrity.",
+        "expected_trigger": true,
+        "expected_references": ["references/REFERENCE.md"]
+      },
+      {
+        "prompt": "Convert the time series storage from Arrow to HDF5.",
+        "expected_trigger": true,
+        "expected_references": ["references/TIME_SERIES.md"]
+      },
+      {
+        "prompt": "Model a piecewise heat rate curve for a thermal generator.",
+        "expected_trigger": true,
+        "expected_references": ["references/COST_CURVES.md"]
+      },
+      {
+        "prompt": "The old snapshot won't load anymore, debug deserialization.",
+        "expected_trigger": true,
+        "expected_references": ["references/SERIALIZATION_MIGRATION.md"]
+      },
+      {
+        "prompt": "Tag geographic info on several generators and buses.",
+        "expected_trigger": true,
+        "expected_references": ["references/SUPPLEMENTAL_ATTRIBUTES.md"]
+      }
+    ],
+    "positive_validation": [
+      {
+        "prompt": "What components does this system have?",
+        "expected_trigger": true,
+        "expected_references": ["references/REFERENCE.md"]
+      },
+      {
+        "prompt": "I changed gen.bus references after loading, now parent lookups seem wrong.",
+        "expected_trigger": true,
+        "expected_references": ["references/REFERENCE.md"]
+      },
+      {
+        "prompt": "Add weather data to the model as time series.",
+        "expected_trigger": true,
+        "expected_references": ["references/TIME_SERIES.md"]
+      },
+      {
+        "prompt": "Implement a custom System upgrade path using data_format_version.",
+        "expected_trigger": true,
+        "expected_references": ["references/SERIALIZATION_MIGRATION.md"]
+      }
+    ],
+    "implicit": [
+      {
+        "prompt": "What's in this system?",
+        "expected_trigger": true,
+        "expected_references": ["references/REFERENCE.md"],
+        "notes": "Vague but implies system inspection"
+      },
+      {
+        "prompt": "Add weather data to the model",
+        "expected_trigger": true,
+        "expected_references": ["references/TIME_SERIES.md"],
+        "notes": "No mention of time series but implies it"
+      },
+      {
+        "prompt": "The old snapshot won't load anymore",
+        "expected_trigger": true,
+        "expected_references": ["references/SERIALIZATION_MIGRATION.md"],
+        "notes": "Debugging language, no API names"
+      },
+      {
+        "prompt": "I need to tag geographic info on several generators",
+        "expected_trigger": true,
+        "expected_references": ["references/SUPPLEMENTAL_ATTRIBUTES.md"],
+        "notes": "Cross-cutting metadata implies supplemental attributes"
+      },
+      {
+        "prompt": "How do I represent a non-linear cost function?",
+        "expected_trigger": true,
+        "expected_references": ["references/COST_CURVES.md"],
+        "notes": "Domain question, no infrasys API names"
+      },
+      {
+        "prompt": "Build a grid model with generators and buses",
+        "expected_trigger": true,
+        "expected_references": ["references/REFERENCE.md"],
+        "notes": "Domain synonym: grid model = infrasys System"
+      },
+      {
+        "prompt": "My power system model needs fuel accounting",
+        "expected_trigger": true,
+        "expected_references": ["references/COST_CURVES.md"],
+        "notes": "Domain synonym: power system model + fuel = FuelCurve"
+      },
+      {
+        "prompt": "How do I share metadata across multiple components?",
+        "expected_trigger": true,
+        "expected_references": ["references/SUPPLEMENTAL_ATTRIBUTES.md"],
+        "notes": "Generic phrasing for supplemental attributes"
+      }
+    ],
+    "negative_train": [
+      {
+        "prompt": "My task is generic architecture brainstorming, not tied to infrasys APIs.",
+        "expected_trigger": false
+      },
+      {
+        "prompt": "Help me choose between web frameworks for a UI app.",
+        "expected_trigger": false
+      },
+      {
+        "prompt": "Design the r2x-core plugin registration lifecycle.",
+        "expected_trigger": false,
+        "notes": "r2x-core skill, not infrasys"
+      },
+      {
+        "prompt": "Write a REST API endpoint for user authentication.",
+        "expected_trigger": false
+      },
+      {
+        "prompt": "How should I structure my Django models?",
+        "expected_trigger": false
+      },
+      {
+        "prompt": "Optimize a SQL query for a Postgres database.",
+        "expected_trigger": false
+      }
+    ],
+    "negative_validation": [
+      {
+        "prompt": "Build a React dashboard for visualizing grid data.",
+        "expected_trigger": false
+      },
+      {
+        "prompt": "Configure CI/CD pipeline for the repo.",
+        "expected_trigger": false
+      },
+      {
+        "prompt": "Review the r2x-core datastore ingestion rules.",
+        "expected_trigger": false,
+        "notes": "r2x-core skill, not infrasys"
+      },
+      {
+        "prompt": "Summarize a product roadmap with no system-modeling context.",
+        "expected_trigger": false
+      }
+    ],
+    "borderline": [
+      {
+        "prompt": "Fix deserialization of old snapshots and migrate schema safely.",
+        "expected_trigger": true,
+        "expected_references": ["references/SERIALIZATION_MIGRATION.md"],
+        "notes": "Trigger + specific reference"
+      },
+      {
+        "prompt": "Model production variable costs and convert incremental to input-output forms.",
+        "expected_trigger": true,
+        "expected_references": ["references/COST_CURVES.md"]
+      },
+      {
+        "prompt": "Attach scenario-tagged time series to generators with HDF5 backend.",
+        "expected_trigger": true,
+        "expected_references": ["references/TIME_SERIES.md"]
+      },
+      {
+        "prompt": "Add geographic metadata shared across buses and generators.",
+        "expected_trigger": true,
+        "expected_references": ["references/SUPPLEMENTAL_ATTRIBUTES.md"]
+      }
+    ]
+  },
+  "output_quality_evals": [
+    {
+      "prompt": "Add a Generator component with active_power and rating fields to a new System.",
+      "area": "system-component",
+      "assertions": [
+        "output contains Component subclass definition with typed fields",
+        "output contains system.add_component call",
+        "output uses Pydantic Field with constraints (ge, gt, etc.)",
+        "output does NOT use dict or untyped container for component data"
+      ]
+    },
+    {
+      "prompt": "Serialize a system and verify the round-trip.",
+      "area": "serialization",
+      "assertions": [
+        "output contains to_json and from_json calls",
+        "output contains assertion or verification of loaded data",
+        "output mentions checking component retrieval after reload",
+        "output does NOT skip the round-trip verification step"
+      ]
+    },
+    {
+      "prompt": "Attach a time series to a generator with scenario tags.",
+      "area": "time-series",
+      "assertions": [
+        "output uses add_time_series with feature kwargs",
+        "output stores returned TimeSeriesKey in a variable",
+        "output shows retrieval via get_time_series_by_key (preferred) or get_time_series",
+        "output does NOT discard the returned key"
+      ]
+    },
+    {
+      "prompt": "Model a quadratic heat rate curve for a gas turbine and wrap it as a FuelCurve.",
+      "area": "cost-curves",
+      "assertions": [
+        "output uses QuadraticFunctionData or PiecewiseLinearData",
+        "output wraps in InputOutputCurve (or IncrementalCurve with conversion)",
+        "output uses FuelCurve (not CostCurve) since heat rate is fuel-space",
+        "output sets power_units explicitly",
+        "output sets fuel_cost field"
+      ]
+    },
+    {
+      "prompt": "Share a GeographicInfo attribute across three buses.",
+      "area": "supplemental-attributes",
+      "assertions": [
+        "output defines SupplementalAttribute subclass with typed fields",
+        "output creates ONE attribute instance and attaches to multiple components",
+        "output does NOT create three separate attribute instances",
+        "output validates both query directions (component->attrs, attr->components)"
+      ]
+    },
+    {
+      "prompt": "Migrate a serialized system from v1 to v2 where a field was renamed.",
+      "area": "serialization-migration",
+      "assertions": [
+        "output uses handle_data_format_upgrade or upgrade_handler",
+        "output gates transform by from_version and component type",
+        "output uses pop/setdefault for safe field rename",
+        "output mentions idempotency (safe if run twice)"
+      ]
+    },
+    {
+      "prompt": "Debug why get_component raises for a generator that exists.",
+      "area": "debugging",
+      "assertions": [
+        "output inspects with list_components_by_name to check for duplicates",
+        "output uses show_components with show_uuid=True",
+        "output considers ambiguous name as root cause",
+        "output does NOT call non-existent list_components API"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "skill_name": "benchmark",
+  "output_quality_evals": [
+    {
+      "id": "bench-harness-design",
+      "prompt": "Design a benchmark harness for comparing two Python implementations of the same algorithm.",
+      "assertions": [
+        "states benchmark question and winner criterion",
+        "separates deterministic common inputs from implementation scripts",
+        "includes smoke, dry-run, and full-run commands",
+        "uses runner metrics for runtime and memory",
+        "requires correctness checks before ranking speed"
+      ]
+    },
+    {
+      "id": "torc-summary-debug",
+      "prompt": "The generated benchmark README has timing but no memory column; diagnose the harness.",
+      "assertions": [
+        "checks Torc resource monitoring and DB fields before blaming scripts",
+        "inspects summarizer mapping from job names to memory metrics",
+        "does not fabricate missing metrics",
+        "suggests a smallest reproducible run"
+      ]
+    },
+    {
+      "id": "generated-results-docs",
+      "prompt": "Update benchmark docs after a new run without overwriting manual README sections.",
+      "assertions": [
+        "uses generated result markers",
+        "preserves manual README content outside markers",
+        "records source run path and UTC generation time",
+        "writes or references summary.csv"
+      ]
+    }
+  ]
+}

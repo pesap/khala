@@ -5,6 +5,7 @@ import { createExecutorStarter, type ExecutorStarter, type PiCommand } from "./e
 import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
 import type { ExecutorRecord } from "./khala-model.js";
 import { resolvePackageRoot } from "./khala-package.js";
+import type { ReviewFinalizationInput } from "./khala-review.js";
 import { latestPullRequest, recordReviewFinalization } from "./khala-review.js";
 import { createHerdrLauncher } from "./launch-herdr.js";
 import { createTmuxLauncher } from "./launch-tmux.js";
@@ -124,36 +125,54 @@ async function finalizeConfiguredExecutorReview(input: ExecutorReviewFinalizatio
 	const config = loadKhalaConfig(execution.projectPath, projectTrusted);
 	const provider = createGitWorktreeProvider(config.worktreeRoot, config.worktreeBranchPrefix);
 	const existingReview = latestPullRequest(execution.projectPath, execution.executionId, projectTrusted);
-	const reviewBody = [`Work: ${workId}`, `Execution: ${execution.executionId}`];
-	if (existingReview !== undefined) {
-		reviewBody.push(`Mission: ${existingReview.missionId}`);
-	}
+	let reviewRequest: {
+		sandbox: { path: string; name: string; projectPath: string };
+		name: string;
+		workId: string;
+		executionId: string;
+		mission: string;
+		publish: boolean;
+		targetBranch: string;
+		supersedesPullRequestUrl?: string;
+	} = {
+		sandbox: { path: execution.sandboxPath, name: execution.executorName, projectPath: execution.projectPath },
+		name: execution.executorName,
+		workId,
+		executionId: execution.executionId,
+		mission: "",
+		publish: true,
+		targetBranch: config.pullRequestTargetBranch,
+	};
 	if (existingReview?.relatedPullRequestUrl !== undefined) {
-		reviewBody.push(`Related Pull Request: ${existingReview.relatedPullRequestUrl}`);
+		reviewRequest = {
+			...reviewRequest,
+			supersedesPullRequestUrl: existingReview.relatedPullRequestUrl,
+		};
 	}
-	reviewBody.push("", summary, ...evidence);
-	const preparation = await provider.finalizeReview(
-		{
-			sandbox: { path: execution.sandboxPath, name: execution.executorName, projectPath: execution.projectPath },
-			name: execution.executorName,
-			workId,
-			executionId: execution.executionId,
-			mission: "",
-			publish: config.publishExecutorBranches,
-			targetBranch: config.pullRequestTargetBranch,
-		},
-		existingReview?.url,
-		reviewBody.join("\n"),
-	);
+	const preparation = await provider.finalizeReview(reviewRequest, existingReview?.url);
 	if (preparation !== undefined) {
-		recordReviewFinalization({
+		let finalization: ReviewFinalizationInput = {
 			projectPath: execution.projectPath,
 			projectTrusted,
 			executionId: execution.executionId,
 			headCommit: preparation.headCommit,
 			summary,
 			evidence,
-		});
+		};
+		if (preparation.url !== undefined) {
+			finalization = { ...finalization, url: preparation.url };
+		}
+		if (preparation.number !== undefined) {
+			finalization = { ...finalization, number: preparation.number };
+		}
+		const recordedReview = recordReviewFinalization(finalization);
+		if (
+			recordedReview !== undefined &&
+			existingReview?.relatedPullRequestUrl !== undefined &&
+			preparation.url !== undefined
+		) {
+			await provider.supersedePullRequest(existingReview.relatedPullRequestUrl, preparation.url);
+		}
 	}
 }
 

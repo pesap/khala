@@ -74,7 +74,6 @@ const KhalaWorkEntryStatus = {
 	queued: "queued",
 	launched: "launched",
 } as const;
-type KhalaWorkEntryStatusValue = (typeof KhalaWorkEntryStatus)[keyof typeof KhalaWorkEntryStatus];
 
 const KhalaWorkLaunchStatus = {
 	queued: "queued",
@@ -82,7 +81,6 @@ const KhalaWorkLaunchStatus = {
 	launched: "launched",
 	rejected: "rejected",
 } as const;
-type KhalaWorkLaunchStatusValue = (typeof KhalaWorkLaunchStatus)[keyof typeof KhalaWorkLaunchStatus];
 
 type KhalaWorkSubmission = Readonly<{
 	workId: string;
@@ -98,14 +96,6 @@ type KhalaWorkSubmission = Readonly<{
 }>;
 
 // --- Mandates and Missions --------------------------------------------------
-
-type ParticipantRole = "user-session" | "maintainer" | "conclave" | "executor" | "observer" | "preserver";
-
-type ParticipantIdentity = Readonly<{
-	participantId: string;
-	role: ParticipantRole;
-	label: string;
-}>;
 
 type MandateRecord = Readonly<{
 	mandateId: string;
@@ -185,6 +175,14 @@ type SignalRecord = Readonly<{
 
 type VerdictDecision = "continue" | "retry" | "finish" | "reject";
 
+type RetryHandoff = Readonly<{
+	failedCriteria: readonly string[];
+	completedWork: readonly string[];
+	requiredChanges: readonly string[];
+	nonGoals: readonly string[];
+	validation: readonly string[];
+}>;
+
 type VerdictRecord = Readonly<{
 	workId: string;
 	executionId: string;
@@ -197,6 +195,7 @@ type VerdictRecord = Readonly<{
 	verdictId: string;
 	issuedAt: string;
 	sourcePullRequestId?: string;
+	retryHandoff?: RetryHandoff;
 	successorAssignment?: MissionAssignment;
 }>;
 
@@ -351,6 +350,7 @@ type GuardRecord = Record<string, unknown> &
 		verdictId?: unknown;
 		issuedAt?: unknown;
 		sourcePullRequestId?: unknown;
+		retryHandoff?: unknown;
 		successorAssignment?: unknown;
 		deliveryId?: unknown;
 		message?: unknown;
@@ -687,7 +687,28 @@ function isVerdict(value: unknown): value is VerdictRecord {
 		typeof record.verdictId === "string" &&
 		typeof record.issuedAt === "string" &&
 		(record.sourcePullRequestId === undefined || typeof record.sourcePullRequestId === "string") &&
+		(record.retryHandoff === undefined || isRetryHandoff(record.retryHandoff)) &&
 		(record.successorAssignment === undefined || isKhalaWork(record.successorAssignment))
+	);
+}
+
+function isRetryHandoff(value: unknown): value is RetryHandoff {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as {
+		failedCriteria?: unknown;
+		completedWork?: unknown;
+		requiredChanges?: unknown;
+		nonGoals?: unknown;
+		validation?: unknown;
+	};
+	return (
+		isNonEmptyStringArray(record.failedCriteria) &&
+		isNonEmptyStringArray(record.completedWork) &&
+		isNonEmptyStringArray(record.requiredChanges) &&
+		isNonEmptyStringArray(record.nonGoals) &&
+		isNonEmptyStringArray(record.validation)
 	);
 }
 
@@ -886,17 +907,14 @@ export type {
 	KhalaArchiveAppend,
 	KhalaArchiveRecord,
 	KhalaWork,
-	KhalaWorkEntryStatusValue,
-	KhalaWorkLaunchStatusValue,
 	KhalaWorkSubmission,
 	LearningRecord,
 	MandateRecord,
 	MissionAssignment,
 	MissionRecord,
-	ParticipantIdentity,
-	ParticipantRole,
 	PullRequestRecord,
 	PullRequestStatusValue,
+	RetryHandoff,
 	SignalKind,
 	SignalRecord,
 	VerdictDecision,
@@ -917,7 +935,6 @@ export {
 	isLearningRecord,
 	isMandateRecord,
 	isMissionRecord,
-	isNonEmptyStringArray,
 	isPullRequestRecord,
 	isSignal,
 	isStringArray,

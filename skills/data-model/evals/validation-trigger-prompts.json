@@ -1,0 +1,46 @@
+{
+  "skill_name": "data-model",
+  "split": "validation",
+  "evals": [
+    {
+      "id": "pos-5",
+      "query": "Fix the serialization aliases on this API response model and keep backward compatibility.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-6",
+      "query": "This stringly typed config object should become something safer and typed.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-7",
+      "query": "Model this infrasys component with the right field constraints and descriptions.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-8",
+      "query": "We have too many nullable string blobs; should these become nested models?",
+      "should_trigger": true
+    },
+    {
+      "id": "neg-5",
+      "query": "Reply to this GitHub review comment in-thread.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-6",
+      "query": "Improve the caching strategy in our GitHub Actions workflow.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-7",
+      "query": "Investigate why the service is timing out in production.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-8",
+      "query": "Create a new command-line interface for this tool.",
+      "should_trigger": false
+    }
+  ]
+}

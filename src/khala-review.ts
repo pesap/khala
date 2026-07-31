@@ -63,7 +63,7 @@ type ReviewPreparationInput = Readonly<{
 	planningCommit: string;
 	url?: string;
 	number?: number;
-	previousPullRequestUrl?: string;
+	supersedesPullRequestUrl?: string;
 }>;
 
 type ReviewFinalizationInput = Readonly<{
@@ -73,6 +73,8 @@ type ReviewFinalizationInput = Readonly<{
 	headCommit: string;
 	summary: string;
 	evidence: readonly string[];
+	url?: string;
+	number?: number;
 }>;
 
 function registerKhalaReview(
@@ -118,7 +120,7 @@ function recordReviewPreparation(input: ReviewPreparationInput): PullRequestReco
 		executionId: input.executionId,
 		status: "draft",
 		...(input.url === undefined ? {} : { url: input.url, number: input.number }),
-		...(input.previousPullRequestUrl === undefined ? {} : { relatedPullRequestUrl: input.previousPullRequestUrl }),
+		...(input.supersedesPullRequestUrl === undefined ? {} : { relatedPullRequestUrl: input.supersedesPullRequestUrl }),
 		...(input.url === undefined ? {} : { remoteConfirmedAt: new Date().toISOString() }),
 		sourceBranch: input.sourceBranch,
 		targetBranch: input.targetBranch,
@@ -174,6 +176,8 @@ function recordReviewFinalization(input: ReviewFinalizationInput): PullRequestRe
 	}
 	const next: PullRequestRecord = {
 		...existing,
+		...(input.url === undefined ? {} : { url: input.url, remoteConfirmedAt: new Date().toISOString() }),
+		...(input.number === undefined ? {} : { number: input.number }),
 		headCommit: input.headCommit,
 		diffSummary: input.summary,
 		validationResults: input.evidence,

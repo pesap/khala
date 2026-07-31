@@ -1,7 +1,7 @@
 # Khala Lifecycle
 
-This document describes Khala's target lifecycle in detail. The README shows the
-short user-facing version; this document explains the durable records, role
+This document describes Khala's runtime lifecycle in detail. The README shows
+the short user-facing version; this document explains the durable records, role
 boundaries, review loop, and Retry semantics.
 
 ## The high-level model
@@ -38,7 +38,7 @@ Learning is sufficient for admission.
 
 ### 1. Author and submit Work
 
-The User or Maintainer defines a complete Work contract:
+The User Session or Maintainer defines a complete Work contract:
 
 - objective and context;
 - scope and constraints;
@@ -187,7 +187,7 @@ the Mission, the assignment is invalid, or the Work must not continue.
 ### 7. Maintainer review and merge
 
 The Maintainer, optionally assisted by GitHub Copilot or another reviewer,
-reviews the PR against the original Work and Mandate.
+reviews the required draft PR against the original Work and Mandate.
 
 Review outcomes are distinct:
 
@@ -251,7 +251,8 @@ Verdict Delivery, Pull Request, and Work Outcome records. It also provides
 role fences, Retry recovery, reviewable-state projection, structured Maintainer
 review, and Conclave Outcome recording.
 
-Git branch publication and draft PR creation are implemented by the Git
-provider but remain explicitly opt-in through configuration. When disabled,
-Executor planning and review handoff remain local and are still recorded in the
-Archive.
+Git branch publication is mandatory for Khala Work execution. The Executor
+pushes the branch and creates or maintains the draft Pull Request after
+inspecting the applicable repository template. If publication, remote access,
+or Pull Request creation is unavailable, the Executor reports a blocked Signal
+instead of handing off a local-only implementation.

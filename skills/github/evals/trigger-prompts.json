@@ -1,0 +1,86 @@
+{
+  "skill_name": "github",
+  "notes": "Trigger eval prompts for the GitHub skill. Mix explicit and implicit GitHub CLI/Actions tasks.",
+  "evals": [
+    {
+      "id": "pos-1",
+      "query": "Check why CI failed on my PR and tell me the first actionable error.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-2",
+      "query": "Please reply to this GitHub review comment in-thread once you confirm the fix.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-3",
+      "query": "Can you inspect the open PR for branch feature/cache-cleanup and see if one already exists before opening a new one?",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-4",
+      "query": "Our GitHub Actions matrix is too slow and expensive; reduce duplicate work with minimal YAML churn.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-5",
+      "query": "Open an issue in GitHub with the right labels and link it to the parent issue.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-6",
+      "query": "Inspect the latest workflow runs and summarize which job is flaky.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-7",
+      "query": "Create the PR from this branch using the project template and do not duplicate an existing one.",
+      "should_trigger": true
+    },
+    {
+      "id": "pos-8",
+      "query": "Optimize our artifact retention and caching in .github/workflows/ci.yml.",
+      "should_trigger": true
+    },
+    {
+      "id": "neg-1",
+      "query": "Please optimize this GitLab pipeline cache setup.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-2",
+      "query": "Write a Python script that reads a JSON file and uploads rows to Postgres.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-3",
+      "query": "Review the business logic in this PR diff for race conditions and edge cases.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-4",
+      "query": "Debug why pytest is failing locally when I run the suite.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-5",
+      "query": "Set up OAuth for our GitHub App integration.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-6",
+      "query": "Can you create a Jira ticket and link it to the epic?",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-7",
+      "query": "Refactor this workflow engine code to be easier to maintain.",
+      "should_trigger": false
+    },
+    {
+      "id": "neg-8",
+      "query": "Run the linter and fix formatting issues in the repo.",
+      "should_trigger": false
+    }
+  ]
+}

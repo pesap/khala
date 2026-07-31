@@ -30,7 +30,6 @@ interface KhalaConfig {
 	conclaveThinking: ThinkingLevel | "";
 	executorThinking: ThinkingLevel | "";
 	observerThinking: ThinkingLevel | "";
-	publishExecutorBranches: boolean;
 	pullRequestTargetBranch: string;
 	commitConvention: string;
 	archiveRoot: string;
@@ -51,7 +50,6 @@ const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	conclaveThinking: "",
 	executorThinking: "",
 	observerThinking: "",
-	publishExecutorBranches: false,
 	pullRequestTargetBranch: "",
 	commitConvention: "project",
 };
@@ -95,8 +93,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	const configuredConclaveThinking = readThinkingLevel(values, "conclaveThinking");
 	const configuredExecutorThinking = readThinkingLevel(values, "executorThinking");
 	const configuredObserverThinking = readThinkingLevel(values, "observerThinking");
-	// biome-ignore lint/security/noSecrets: This is a configuration key, not a credential.
-	const configuredPublishExecutorBranches = readConfigBoolean(values, "publishExecutorBranches");
 	const configuredPullRequestTargetBranch = readConfigText(values, "pullRequestTargetBranch");
 	const configuredCommitConvention = readConfigString(values, "commitConvention");
 	const configuredArchiveRoot = readConfigString(values, "archiveRoot");
@@ -111,7 +107,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		conclaveThinking: defaultConclaveThinking,
 		executorThinking: defaultExecutorThinking,
 		observerThinking: defaultObserverThinking,
-		publishExecutorBranches: defaultPublishExecutorBranches,
 		pullRequestTargetBranch: defaultPullRequestTargetBranch,
 		commitConvention: defaultCommitConvention,
 		archiveRoot: defaultArchiveRoot,
@@ -126,7 +121,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	let conclaveThinking = defaultConclaveThinking;
 	let executorThinking = defaultExecutorThinking;
 	let observerThinking = defaultObserverThinking;
-	let publishExecutorBranches = defaultPublishExecutorBranches;
 	let pullRequestTargetBranch = defaultPullRequestTargetBranch;
 	let commitConvention = defaultCommitConvention;
 	let archiveRoot = defaultArchiveRoot;
@@ -163,9 +157,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	if (configuredObserverThinking !== undefined) {
 		observerThinking = configuredObserverThinking;
 	}
-	if (configuredPublishExecutorBranches !== undefined) {
-		publishExecutorBranches = configuredPublishExecutorBranches;
-	}
 	if (configuredPullRequestTargetBranch !== undefined) {
 		pullRequestTargetBranch = configuredPullRequestTargetBranch;
 	}
@@ -186,7 +177,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		conclaveThinking,
 		executorThinking,
 		observerThinking,
-		publishExecutorBranches,
 		pullRequestTargetBranch,
 		commitConvention,
 		archiveRoot,
@@ -237,15 +227,6 @@ function readThinkingLevel(config: ConfigValues, key: string): ThinkingLevel | "
 	}
 	if (typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel)) {
 		return value as ThinkingLevel;
-	}
-	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy the strict optional return contract.
-	return undefined;
-}
-
-function readConfigBoolean(config: ConfigValues, key: string): boolean | undefined {
-	const value = config[key];
-	if (typeof value === "boolean") {
-		return value;
 	}
 	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy the strict optional return contract.
 	return undefined;

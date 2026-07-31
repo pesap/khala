@@ -13,9 +13,10 @@ context, scope, acceptance criteria, constraints, plan, and validation.
 ### Work Submission
 
 A Work proposal registered by the project Conclave and awaiting review. The
-User or Maintainer authors the Work; the Conclave registers the submission in
-the Archive and queues it for review. A submission is not authoritative Work
-until the Conclave admits it.
+User or Maintainer authors the Work and submits it as intent ingress; the
+Conclave registers a queued submission record in the Archive for review. This
+submission does not admit the Work or authorize lifecycle actions. A submission
+is not authoritative Work until the Conclave admits it.
 
 ### Mandate
 
@@ -72,10 +73,15 @@ the role that authored each record or make lifecycle decisions by itself.
 
 ## Roles
 
-### User / Maintainer
+### User Session
 
 Defines intent, bounds, acceptance, constraints, and validation. Submits Work
 for Conclave review.
+
+### Maintainer
+
+Defines project intent and acceptance, reviews the required Pull Request, and
+provides merge evidence. The Maintainer does not admit Work or issue Verdicts.
 
 ### Conclave
 

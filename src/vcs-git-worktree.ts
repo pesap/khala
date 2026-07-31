@@ -12,11 +12,9 @@ const MAX_SANDBOX_NAME_LENGTH = 48;
 const NAME_RADIX = 36;
 const RANDOM_SUFFIX_LENGTH = 8;
 const PULL_REQUEST_NUMBER_PATTERN = /\/pull\/(\d+)(?:$|[?#])/;
-
 // PATH_MAX is 4096 on Linux; most filesystems cap path components at 255 bytes.
 const MAX_PATH_LENGTH = 4096;
 const MAX_COMPONENT_LENGTH = 255;
-
 // Git worktrees are created from HEAD so the executor never inherits uncommitted changes from the active checkout.
 class GitWorktreeProvider extends VCSProvider {
 	readonly #worktreeRoot: string;
@@ -66,65 +64,52 @@ class GitWorktreeProvider extends VCSProvider {
 		const targetBranch = request.targetBranch?.trim() || (await defaultTargetBranch(request.sandbox.path));
 		const subject = planningCommitSubject(request);
 		const bodyParts = [`Work: ${request.workId}`, `Execution: ${request.executionId}`];
-		if (request.previousPullRequestUrl !== undefined) {
-			bodyParts.push(`Related Pull Request: ${request.previousPullRequestUrl}`);
+		if (request.supersedesPullRequestUrl !== undefined) {
+			bodyParts.push(`Supersedes Pull Request: ${request.supersedesPullRequestUrl}`);
 		}
 		bodyParts.push("", request.mission);
 		const body = bodyParts.join("\n");
 		await git(request.sandbox.path, ["commit", "--allow-empty", "-m", subject, "-m", body]);
 		const planningCommit = await git(request.sandbox.path, ["rev-parse", "HEAD"]);
-		let url: string | undefined;
 		if (request.publish) {
+			// The Executor owns Pull Request creation after it has inspected the
+			// repository template and assembled the factual description.
 			await git(request.sandbox.path, ["push", "--set-upstream", "origin", sourceBranch]);
-			url = await gh([
-				"pr",
-				"create",
-				"--draft",
-				"--base",
-				targetBranch,
-				"--head",
-				sourceBranch,
-				"--title",
-				request.name,
-				"--body",
-				body,
-			]);
 		}
-		const result: {
-			sourceBranch: string;
-			targetBranch: string;
-			planningCommit: string;
-			url?: string;
-			number?: number;
-		} = {
-			sourceBranch,
-			targetBranch,
-			planningCommit,
-		};
-		if (url !== undefined) {
-			result.url = url;
-			const number = parsePullRequestNumber(url);
-			if (number !== undefined) {
-				result.number = number;
-			}
-		}
-		return result;
+		return { sourceBranch, targetBranch, planningCommit };
 	}
 
-	override async finalizeReview(
-		request: ReviewWorkflowRequest,
-		url?: string,
-		body?: string,
-	): Promise<ReviewFinalization> {
+	override async finalizeReview(request: ReviewWorkflowRequest, url?: string): Promise<ReviewFinalization> {
 		const headCommit = await git(request.sandbox.path, ["rev-parse", "HEAD"]);
-		if (request.publish) {
-			const sourceBranch = await git(request.sandbox.path, ["branch", "--show-current"]);
-			await git(request.sandbox.path, ["push", "origin", sourceBranch]);
-			if (url !== undefined && body !== undefined) {
-				await gh(["pr", "edit", url, "--body", body]);
+		if (!request.publish) {
+			return { headCommit };
+		}
+		const sourceBranch = await git(request.sandbox.path, ["branch", "--show-current"]);
+		await git(request.sandbox.path, ["push", "origin", sourceBranch]);
+		let finalization: ReviewFinalization;
+		if (url === undefined) {
+			const discovered = await findPullRequest(sourceBranch);
+			if (discovered === undefined) {
+				return { headCommit };
+			}
+			if (discovered.number === undefined) {
+				finalization = { headCommit, url: discovered.url };
+			} else {
+				finalization = { headCommit, url: discovered.url, number: discovered.number };
+			}
+		} else {
+			const number = parsePullRequestNumber(url);
+			if (number === undefined) {
+				finalization = { headCommit, url };
+			} else {
+				finalization = { headCommit, url, number };
 			}
 		}
-		return { headCommit };
+		return finalization;
+	}
+
+	override async supersedePullRequest(previousUrl: string, successorUrl: string): Promise<void> {
+		await closeSupersededPullRequest(previousUrl, successorUrl);
 	}
 
 	protected generateSandboxName(name: string): string {
@@ -193,6 +178,58 @@ async function defaultTargetBranch(cwd: string): Promise<string> {
 	return branchChecks.find((branch): branch is string => branch !== undefined) ?? "main";
 }
 
+async function closeSupersededPullRequest(previousUrl: string, successorUrl: string): Promise<void> {
+	if (previousUrl === successorUrl) {
+		throw new Error("A Pull Request cannot supersede itself.");
+	}
+	const previous = parsePullRequestState(await gh(["pr", "view", previousUrl, "--json", "state,body,comments"]));
+	const successorLink = `Superseded by ${successorUrl}.`;
+	if (previous.state === "OPEN") {
+		if (
+			!(previous.body.includes(successorUrl) || previous.comments.some((comment) => comment.includes(successorUrl)))
+		) {
+			await gh(["pr", "comment", previousUrl, "--body", successorLink]);
+		}
+		await gh(["pr", "close", previousUrl]);
+		return;
+	}
+	if (
+		previous.state === "CLOSED" &&
+		(previous.body.includes(successorUrl) || previous.comments.some((comment) => comment.includes(successorUrl)))
+	) {
+		return;
+	}
+	throw new Error(`Predecessor Pull Request ${previousUrl} is not open or already linked to ${successorUrl}.`);
+}
+
+type PullRequestState = Readonly<{ state: string; body: string; comments: readonly string[] }>;
+
+function parsePullRequestState(output: string): PullRequestState {
+	let parsed: unknown = null;
+	try {
+		parsed = JSON.parse(output);
+	} catch {
+		parsed = null;
+	}
+	if (parsed === null) {
+		throw new Error("GitHub returned invalid Pull Request state JSON.");
+	}
+	if (typeof parsed !== "object" || parsed === null) {
+		throw new Error("GitHub returned invalid Pull Request state.");
+	}
+	const record = parsed as { state?: unknown; body?: unknown; comments?: unknown };
+	if (typeof record.state !== "string" || typeof record.body !== "string" || !Array.isArray(record.comments)) {
+		throw new Error("GitHub returned incomplete Pull Request state.");
+	}
+	const comments: string[] = [];
+	for (const comment of record.comments) {
+		if (typeof comment === "object" && comment !== null && typeof (comment as { body?: unknown }).body === "string") {
+			comments.push((comment as { body: string }).body);
+		}
+	}
+	return { state: record.state, body: record.body, comments };
+}
+
 async function gh(args: string[]): Promise<string> {
 	try {
 		const result = await execFileAsync("gh", args, { encoding: "utf8" });
@@ -211,7 +248,38 @@ function parsePullRequestNumber(url: string): number | undefined {
 	if (match === null) {
 		return;
 	}
-	return Number(match[1]);
+	const number = Number(match[1]);
+	if (!Number.isSafeInteger(number) || number <= 0) {
+		return;
+	}
+	return number;
+}
+
+type PullRequestLookup = Readonly<{ url: string; number?: number }>;
+
+async function findPullRequest(sourceBranch: string): Promise<PullRequestLookup | undefined> {
+	const output = await gh(["pr", "list", "--head", sourceBranch, "--json", "url,number", "--limit", "1"]);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(output);
+	} catch {
+		return;
+	}
+	if (!Array.isArray(parsed)) {
+		return;
+	}
+	const [first] = parsed;
+	if (typeof first !== "object" || first === null) {
+		return;
+	}
+	const record = first as { url?: unknown; number?: unknown };
+	if (typeof record.url !== "string" || record.url.length === 0) {
+		return;
+	}
+	if (typeof record.number === "number" && Number.isSafeInteger(record.number) && record.number > 0) {
+		return { url: record.url, number: record.number };
+	}
+	return { url: record.url };
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

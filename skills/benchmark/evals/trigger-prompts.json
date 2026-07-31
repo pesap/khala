@@ -1,0 +1,26 @@
+{
+  "positive": [
+    "Create a reproducible benchmark harness for comparing these three algorithms.",
+    "Copy the PTDF benchmark design and make a new benchmark workflow for this package.",
+    "Set up a Torc benchmark that records runtime and peak memory for each implementation.",
+    "I need a summary.csv and generated README results table for benchmark runs.",
+    "Design a warm-start benchmark that separates dependency setup from measured jobs.",
+    "Compare the NumPy and SciPy approaches with correctness checks before picking a winner.",
+    "Add a smoke-sized parameter matrix and a full-sized matrix for this benchmark.",
+    "Make these benchmark scripts emit machine-readable JSON and preserve raw results.",
+    "Help me document benchmark prerequisites, runtime settings, and result paths.",
+    "Diagnose why this benchmark summarizer is missing Torc memory metrics."
+  ],
+  "negative": [
+    "Optimize this function without adding a benchmark harness.",
+    "Run a generic pytest suite and fix failures.",
+    "Submit this Torc workflow to Slurm on Kestrel.",
+    "Explain uv script metadata for a one-off utility.",
+    "Review this Rust crate for unsafe blocks and panics.",
+    "Create a GitHub issue from this bug report.",
+    "Write marketing copy about our performance improvements.",
+    "Design a statistical A/B test for product conversion.",
+    "Debug a Pyomo infeasibility in the storage model.",
+    "Add JSON output to this CLI without any performance comparison."
+  ]
+}

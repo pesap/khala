@@ -497,6 +497,33 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			userContext,
 		);
 		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		const maintainerContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-role", data: { role: "maintainer" } }];
+				},
+			},
+		};
+		const maintainerResult = await archiveTool.execute("archive", {}, null, null, maintainerContext);
+		assert.deepEqual(maintainerResult.details.records.map((record) => record.type), ["counsel", "signal", "signal"]);
+		assert.deepEqual(maintainerResult.details.records.map((record) => record.workId), ["work-bound", "work-bound", "work-other"]);
+		const maintainerWorkResult = await archiveTool.execute(
+			"archive",
+			{ workId: "work-bound" },
+			null,
+			null,
+			maintainerContext,
+		);
+		assert.deepEqual(maintainerWorkResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		const maintainerExecutionResult = await archiveTool.execute(
+			"archive",
+			{ executionId: "execution-other" },
+			null,
+			null,
+			maintainerContext,
+		);
+		assert.deepEqual(maintainerExecutionResult.details.records.map((record) => record.type), ["signal"]);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
@@ -509,6 +536,64 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Maintainers can submit Work intent without lifecycle authority", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-maintainer-intent-"));
+	const projectPath = join(root, "project");
+	try {
+		const commands = new Map();
+		const tools = new Map();
+		let submitted;
+		registerKhalaWork(createPiStub(commands, tools), {
+			workTemplate: "",
+			executorSystemPrompt: "",
+			createExecutorStarter: () => {
+				throw new Error("not used");
+			},
+			isDedicatedConclaveSession: () => false,
+			submitWork: async (request) => {
+				submitted = request;
+				return { archivePath: join(root, "archive.jsonl") };
+			},
+			getSubmission: () => undefined,
+			getPendingSubmission: () => undefined,
+			claimSubmission: () => false,
+			markSubmissionQueued: () => {},
+			markSubmissionLaunched: () => {},
+		});
+		const maintainerContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getEntries() {
+					return [];
+				},
+				getBranch() {
+					return [{ type: "custom", customType: "khala-role", data: { role: "maintainer" } }];
+				},
+			},
+		};
+		const result = await tools.get("khala_submit_work").execute(
+			"maintainer-submit",
+			{
+				objective: "Gather repository context before Conclave admission.",
+				context: "The Maintainer supplied initial context.",
+				scope: "Only inspect the current repository context.",
+				acceptanceCriteria: ["The Conclave receives the Work."],
+				constraints: [],
+				plan: ["Review the submitted context."],
+				validation: ["Confirm the Work is queued."],
+			},
+			null,
+			null,
+			maintainerContext,
+		);
+		assert.equal(result.details.status, "queued");
+		assert.equal(submitted.projectPath, projectPath);
+		assert.equal(submitted.work.context, "The Maintainer supplied initial context.");
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -1576,7 +1661,7 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 		};
 		const signal = await runtimeTools.get("khala_signal").execute("signal", { kind: "blocked", summary: "Retry is required.", evidence: ["test evidence"] }, null, null, executorContext);
 		const successorAssignment = { ...work, plan: ["Run the corrected lifecycle."] };
-		const retry = await runtimeTools.get("khala_verdict").execute("retry", { workId: "mission-work", executionId: firstExecution.executionId, signalId: signal.details.signalId, decision: "retry", reason: "The first execution is intentionally retryable.", successorAssignment }, null, null, conclaveContext);
+		const retry = await runtimeTools.get("khala_verdict").execute("retry", { workId: "mission-work", executionId: firstExecution.executionId, signalId: signal.details.signalId, decision: "retry", reason: "The first execution is intentionally retryable.", retryHandoff: { failedCriteria: ["The first execution must be retried."], completedWork: ["The first execution lifecycle was recorded."], requiredChanges: ["Run the corrected lifecycle."], nonGoals: ["Do not change the lifecycle contract."], validation: ["Read durable records."] }, successorAssignment }, null, null, conclaveContext);
 		assert.equal(retry.details.missionId, firstMission.missionId);
 		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 2);
 		assert.equal(readCurrentMission(projectPath, "mission-work").mission.predecessorMissionId, firstMission.missionId);
@@ -1636,7 +1721,8 @@ test("Observer review executions remain submission-scoped and recover their queu
 		let starterCalls = 0;
 		registerKhalaObserver(createPiStub(new Map(), tools), {
 			observerSystemPrompt: "observer prompt",
-			isDedicatedConclaveSession: () => true,
+			isDedicatedConclaveSession: (context) =>
+				context.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "khala-conclave"),
 			getSubmission: storage.getSubmission,
 			getPendingSubmission: storage.getPendingSubmission,
 			markSubmissionReviewing: storage.markSubmissionReviewing,
@@ -1648,16 +1734,37 @@ test("Observer review executions remain submission-scoped and recover their queu
 				return { id: "observer-session", sandbox: { path: join(root, "observer-sandbox"), name: "observer-sandbox" } };
 			},
 		});
+		const maintainerContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-role", data: { role: "maintainer" } }];
+				},
+				getSessionFile() {
+					return join(root, "maintainer.jsonl");
+				},
+			},
+		};
+		const archiveRecordCountBeforeMaintainerLaunch = listArchiveRecords(projectPath).length;
+		await assert.rejects(
+			tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, maintainerContext),
+			/Only the dedicated project Conclave may launch an Observer/,
+		);
+		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "queued");
+		assert.equal(listExecutorRecords(projectPath).length, 0);
+		assert.equal(listArchiveRecords(projectPath).length, archiveRecordCountBeforeMaintainerLaunch);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "learning").length, 0);
+
 		const conclaveContext = {
 			cwd: projectPath,
 			sessionManager: {
-			getBranch() {
-				return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+				getSessionFile() {
+					return join(root, "conclave.jsonl");
+				},
 			},
-			getSessionFile() {
-				return join(root, "conclave.jsonl");
-			},
-		},
 		};
 		const result = await tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, conclaveContext);
 		assert.equal(result.details.workId, "observer-work");

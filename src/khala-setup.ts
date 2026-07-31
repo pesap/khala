@@ -27,11 +27,7 @@ interface SetupOptions {
 }
 
 type StoredConfig = {
-	[K in keyof KhalaConfig]: K extends "piCommand" | "observerPiCommand"
-		? string[]
-		: K extends "publishExecutorBranches"
-			? boolean
-			: string;
+	[K in keyof KhalaConfig]: K extends "piCommand" | "observerPiCommand" ? string[] : string;
 };
 
 const ANSI = {
@@ -363,7 +359,6 @@ function toStoredConfig(config: KhalaConfig): StoredConfig {
 		conclaveThinking: config.conclaveThinking,
 		executorThinking: config.executorThinking,
 		observerThinking: config.observerThinking,
-		publishExecutorBranches: config.publishExecutorBranches,
 		pullRequestTargetBranch: config.pullRequestTargetBranch,
 		commitConvention: config.commitConvention,
 		archiveRoot: config.archiveRoot,
@@ -473,7 +468,7 @@ function printState(scope: ConfigScopeValue, configPath: string, config: StoredC
 	console.log(row("=", "Executor thinking", config.executorThinking || "(Pi default)"));
 	console.log(row("=", "Observer model", config.observerModel || "(Pi default)"));
 	console.log(row("=", "Observer thinking", config.observerThinking || "(Pi default)"));
-	console.log(row("=", "publish branches", config.publishExecutorBranches ? "enabled" : "disabled"));
+	console.log(row("=", "PR publication", "mandatory"));
 	console.log(row("=", "PR target branch", config.pullRequestTargetBranch || "(repository default)"));
 	console.log(row("=", "commit convention", config.commitConvention));
 	console.log(row("=", "archive root", config.archiveRoot));
@@ -535,11 +530,6 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 	const conclaveThinking = await askThinking("Conclave thinking level", current.conclaveThinking, conclaveCapability);
 	const executorThinking = await askThinking("Executor thinking level", current.executorThinking, executorCapability);
 	const observerThinking = await askThinking("Observer thinking level", current.observerThinking, observerCapability);
-	const publishChoice = await confirm({
-		message: "Push Executor branches and open draft PRs before implementation?",
-		initialValue: current.publishExecutorBranches,
-	});
-	const publishExecutorBranches = unwrapPrompt(publishChoice);
 	const pullRequestTargetBranch = await askOptionalLine(
 		"PR target branch (leave blank for repository default)",
 		current.pullRequestTargetBranch,
@@ -560,7 +550,6 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		conclaveThinking,
 		executorThinking,
 		observerThinking,
-		publishExecutorBranches,
 		pullRequestTargetBranch,
 		commitConvention,
 		archiveRoot,

@@ -1,9 +1,7 @@
 // biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Mission projection validates mutually exclusive durable lifecycle paths in one read.
 import { listArchiveRecords } from "./khala-archive.js";
 import {
-	type CounselRecord,
 	type ExecutorRecord,
-	isCounselRecord,
 	isExecutorRecord,
 	isLearningRecord,
 	isMandateRecord,
@@ -72,15 +70,6 @@ function listPullRequestRecords(projectPath: string, projectTrusted = false): Pu
 
 function listWorkOutcomeRecords(projectPath: string, projectTrusted = false): WorkOutcomeRecord[] {
 	return projectRecords(projectPath, "work-outcome", isWorkOutcomeRecord, projectTrusted);
-}
-
-function listCounselRecords(projectPath: string, projectTrusted = false): CounselRecord[] {
-	return listArchiveRecords(projectPath, projectTrusted).flatMap((record) => {
-		if (record.type === "counsel" && isCounselRecord(record.payload)) {
-			return [record.payload];
-		}
-		return [];
-	});
 }
 
 function listMandateRecords(projectPath: string, projectTrusted = false): MandateRecord[] {
@@ -260,7 +249,6 @@ function projectRecords<T>(
 export type { MissionProjection, MissionProjectionState };
 export {
 	findArchiveRecords,
-	listCounselRecords,
 	listExecutionRecords,
 	listLatestVerdictDeliveryRecords,
 	listLearningRecordsFromArchive,

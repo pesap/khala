@@ -36,7 +36,7 @@ interface ExecutorRequest {
 	reviewWorkflow?: Readonly<{
 		publish: boolean;
 		targetBranch?: string;
-		previousPullRequestUrl?: string;
+		supersedesPullRequestUrl?: string;
 		commitConvention?: string;
 	}>;
 	onReviewPrepared?: (preparation: ReviewPreparation, sandbox: Sandbox) => Promise<void> | void;
@@ -71,7 +71,7 @@ function createExecutorStarter(
 					mission: string;
 					publish: boolean;
 					targetBranch?: string;
-					previousPullRequestUrl?: string;
+					supersedesPullRequestUrl?: string;
 					commitConvention?: string;
 				} = {
 					sandbox,
@@ -81,8 +81,8 @@ function createExecutorStarter(
 					mission: request.mission,
 					publish: request.reviewWorkflow.publish,
 				};
-				if (request.reviewWorkflow.previousPullRequestUrl !== undefined) {
-					reviewRequest.previousPullRequestUrl = request.reviewWorkflow.previousPullRequestUrl;
+				if (request.reviewWorkflow.supersedesPullRequestUrl !== undefined) {
+					reviewRequest.supersedesPullRequestUrl = request.reviewWorkflow.supersedesPullRequestUrl;
 				}
 				if (request.reviewWorkflow.commitConvention !== undefined) {
 					reviewRequest.commitConvention = request.reviewWorkflow.commitConvention;

@@ -8,7 +8,7 @@
 >
 > [![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
 > [![CI](https://github.com/pesap/khala/actions/workflows/ci.yaml/badge.svg)](https://github.com/pesap/khala/actions/workflows/ci.yaml)
-> [![Release](https://img.shields.io/github/v/release/pesap/forge)](https://github.com/pesap/forge/releases)
+> [![Release](https://img.shields.io/github/v/release/pesap/khala)](https://github.com/pesap/khala/releases)
 > [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT.txt)
 > [![Latest commit](https://img.shields.io/github/last-commit/pesap/khala?style=flat-square)](https://github.com/pesap/khala/commits/main)
 <br/>
@@ -56,11 +56,10 @@ and makes the lifecycle visible and recoverable.
 
 ## How it works
 
-The target user-facing lifecycle is short. The Archive keeps the detailed
-history behind it; see the [detailed lifecycle](docs/lifecycle.md). PR review,
-merge integration, and Work Outcome recording are runtime-enforced when the
-Maintainer review tools are used; external branch publication and PR creation
-remain explicitly opt-in in Khala configuration.
+The user-facing lifecycle is short. The Archive keeps the detailed history
+behind it; see the [detailed lifecycle](docs/lifecycle.md). Every Khala Work
+publishes its Executor branch and creates a draft Pull Request before the
+Executor can hand the implementation off for Maintainer review.
 
 ```mermaid
 sequenceDiagram
@@ -80,8 +79,9 @@ sequenceDiagram
         A-->>C: Learning is available
     end
 
-    C->>A: Save Mandate and Mission
-    C->>E: Launch Mission
+    C->>A: Save Mandate
+    C->>A: Save immutable Mission
+    C->>E: Launch Execution
 
     loop Mission execution
         E->>A: Save Signal
@@ -108,10 +108,10 @@ sequenceDiagram
     end
 ```
 
-The normal path is `Work → Mission → Execution → Reviewable PR → Accepted
-Outcome`. Observer Learning, Preserver Counsel, Continue, and Retry are side
-paths used when context, guidance, or recovery requires them. A merged PR is
-acceptance; a merely closed PR is not.
+The normal path is `Work Submission → Mandate → Mission → Execution →
+Reviewable PR → Merged PR → Work Outcome`. Observer Learning, Preserver
+Counsel, Continue, and Retry are side paths used when context, guidance, or
+recovery requires them. A merged PR is acceptance; a merely closed PR is not.
 
 The Archive is append-only. Current state is a projection of the latest record
 for an entity; the complete history remains available for review and recovery.
@@ -226,7 +226,6 @@ individual values in `.pi/khala.json`.
   "conclaveThinking": "medium",
   "executorThinking": "high",
   "observerThinking": "medium",
-  "publishExecutorBranches": false,
   "pullRequestTargetBranch": "main",
   "commitConvention": "project",
   "archiveRoot": "~/.pi/agent/khala/conclaves"
@@ -243,8 +242,8 @@ shell command. Run the setup wizard to choose
 metadata. The `conclaveThinking`, `executorThinking`, and `observerThinking`
 values are independent and accept only levels marked supported by the relevant
 model, or an empty string for the Pi default. Missing metadata preserves Pi's
-default. `publishExecutorBranches` enables the Git push and
-`gh pr create --draft` workflow; it is disabled by default. `commitConvention`
+default. Khala Work always enables Git push and the Executor-managed draft Pull
+Request workflow. `commitConvention`
 can be `project`, `conventional`, or a custom commit prefix, and a Work
 constraint beginning with `commit convention:` overrides it. `observerModel`
 selects the read-only repository observation model. The project `archiveRoot`
@@ -263,15 +262,9 @@ placeholder prompts are intentionally not included.
   Retry, and acceptance flow.
 - [Data model](docs/data-model.md) — Archive envelope, records, lifecycle
   statuses, validation, and append-only state.
-- [Art direction and generation prompts](docs/art-prompts.md) — prompts and
-  image specifications for the Khala artwork.
-- [Context](CONTEXT.md) — project vocabulary and authority boundaries.
 - [Work template](templates/khala-work.md) — the structured request format.
 - [Pull Request template](templates/pull-request.md) — the bundled Executor PR description format.
 - [System prompts](system-prompts/) — role behavior and constraints.
-- [Governed pi-review design](docs/design-governed-pi-review.md) — future Work/Executor/Signal flow.
-- [Reusable Learning design](docs/design-reusable-observer-learning.md) — future cross-Work evidence rules.
-- [Archive diagnostics design](docs/design-archive-diagnostics-recovery.md) — future read-only health tooling.
 - [Bundled Pi extensions](extensions/) — extensions shipped with Khala, including `pi-review`.
 
 ## Development

@@ -8,7 +8,7 @@ type ReviewWorkflowRequest = Readonly<{
 	mission: string;
 	publish: boolean;
 	targetBranch?: string;
-	previousPullRequestUrl?: string;
+	supersedesPullRequestUrl?: string;
 	commitConvention?: string;
 }>;
 
@@ -22,6 +22,8 @@ type ReviewPreparation = Readonly<{
 
 type ReviewFinalization = Readonly<{
 	headCommit: string;
+	url?: string;
+	number?: number;
 }>;
 
 // biome-ignore lint/style/useNamingConvention: VCSProvider is the user-facing domain term.
@@ -29,11 +31,8 @@ abstract class VCSProvider {
 	abstract createSandbox(request: SandboxRequest): Promise<Sandbox>;
 	abstract removeSandbox(sandbox: Sandbox): Promise<void>;
 	abstract prepareReview(request: ReviewWorkflowRequest): Promise<ReviewPreparation | undefined>;
-	abstract finalizeReview(
-		request: ReviewWorkflowRequest,
-		url?: string,
-		body?: string,
-	): Promise<ReviewFinalization | undefined>;
+	abstract finalizeReview(request: ReviewWorkflowRequest, url?: string): Promise<ReviewFinalization | undefined>;
+	abstract supersedePullRequest(previousUrl: string, successorUrl: string): Promise<void>;
 	protected abstract generateSandboxName(name: string): string;
 }
 

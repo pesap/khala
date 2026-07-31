@@ -17,6 +17,7 @@ import {
 	type KhalaWork,
 	type MissionRecord,
 	type PullRequestRecord,
+	type RetryHandoff,
 	type SignalRecord,
 	type VerdictRecord,
 } from "./khala-model.js";
@@ -105,6 +106,7 @@ function materializeReviewRequestedSuccessor(projectPath: string, projectTrusted
 			issuedByParticipantId: conclaveParticipantId(projectPath),
 			decision: "retry",
 			reason: `Maintainer requested changes: ${review.reviewFeedback.join("; ") || "review feedback was recorded."}`,
+			retryHandoff: createReviewRetryHandoff(review, mandate.terms.validation),
 			verdictId: nanoid(),
 			issuedAt: new Date().toISOString(),
 			sourcePullRequestId: review.pullRequestId,
@@ -137,8 +139,13 @@ function materializeMissingRetrySuccessor(
 	projectTrusted: boolean,
 	verdict: VerdictRecord,
 ): boolean {
-	const { missionId, governingMandateId, successorAssignment } = verdict;
-	if (missionId === undefined || governingMandateId === undefined || successorAssignment === undefined) {
+	const { missionId, governingMandateId, retryHandoff, successorAssignment } = verdict;
+	if (
+		missionId === undefined ||
+		governingMandateId === undefined ||
+		retryHandoff === undefined ||
+		successorAssignment === undefined
+	) {
 		return false;
 	}
 	return withArchiveLock(projectPath, projectTrusted, () => {
@@ -164,6 +171,20 @@ function materializeMissingRetrySuccessor(
 		);
 		return true;
 	});
+}
+
+function createReviewRetryHandoff(review: PullRequestRecord, validation: readonly string[]): RetryHandoff {
+	let requiredChanges = review.reviewFeedback;
+	if (requiredChanges.length === 0) {
+		requiredChanges = ["Resolve the recorded review findings."];
+	}
+	return {
+		failedCriteria: ["Address the recorded Maintainer review feedback."],
+		completedWork: ["Preserve the predecessor implementation and its existing validation evidence."],
+		requiredChanges,
+		nonGoals: ["Do not broaden the Work beyond the recorded review feedback."],
+		validation,
+	};
 }
 
 const PARTICIPANT_HASH_LENGTH = 16;

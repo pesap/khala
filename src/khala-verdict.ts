@@ -2,7 +2,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { listVerdictRecords } from "./khala-archive-projections.js";
-import type { KhalaWork, VerdictRecord } from "./khala-model.js";
+import type { KhalaWork, RetryHandoff, VerdictRecord } from "./khala-model.js";
 import { readSignal } from "./khala-signal.js";
 import {
 	materializeMissingRetrySuccessor,
@@ -22,6 +22,13 @@ const MISSION_ASSIGNMENT_PARAMETERS = Type.Object({
 	plan: Type.Array(Type.String()),
 	validation: Type.Array(Type.String()),
 });
+const RETRY_HANDOFF_PARAMETERS = Type.Object({
+	failedCriteria: Type.Array(Type.String()),
+	completedWork: Type.Array(Type.String()),
+	requiredChanges: Type.Array(Type.String()),
+	nonGoals: Type.Array(Type.String()),
+	validation: Type.Array(Type.String()),
+});
 const VERDICT_PARAMETERS = Type.Object({
 	workId: Type.String(),
 	executionId: Type.String(),
@@ -33,11 +40,15 @@ const VERDICT_PARAMETERS = Type.Object({
 		Type.Literal("reject"),
 	]),
 	reason: Type.String(),
+	retryHandoff: Type.Optional(RETRY_HANDOFF_PARAMETERS),
 	successorAssignment: Type.Optional(MISSION_ASSIGNMENT_PARAMETERS),
 });
 type VerdictInput = Static<typeof VERDICT_PARAMETERS>;
 type MissionAssignmentInput = Static<typeof MISSION_ASSIGNMENT_PARAMETERS>;
-type NormalizedVerdictInput = Omit<VerdictInput, "successorAssignment"> & { successorAssignment?: KhalaWork };
+type NormalizedVerdictInput = Omit<VerdictInput, "retryHandoff" | "successorAssignment"> & {
+	retryHandoff?: RetryHandoff;
+	successorAssignment?: KhalaWork;
+};
 type ConclaveSessionCheck = (context: ExtensionContext) => boolean;
 type RequeueSubmission = (projectPath: string, workId: string, projectTrusted?: boolean) => boolean;
 type VerdictDelivery = (projectPath: string, verdict: VerdictRecord, projectTrusted?: boolean) => Promise<void>;
@@ -80,7 +91,8 @@ function recordVerdict(
 		throw new Error("A Verdict requires a non-empty reason.");
 	}
 	const normalizedAssignment = normalizeAssignment(params.successorAssignment);
-	const normalizedParams = normalizeVerdictParams(params, reason, normalizedAssignment);
+	const normalizedRetryHandoff = normalizeRetryHandoff(params.retryHandoff);
+	const normalizedParams = normalizeVerdictParams(params, reason, normalizedRetryHandoff, normalizedAssignment);
 	const projectTrusted = isProjectTrusted(context);
 	recoverTerminalExecutionStates(context.cwd, projectTrusted);
 	const signal = readSignal(context.cwd, params.signalId, projectTrusted);
@@ -90,6 +102,7 @@ function recordVerdict(
 	const existing = readVerdictForSignal(context.cwd, params.signalId, projectTrusted);
 	if (existing !== undefined) {
 		if (isSameVerdict(existing, normalizedParams)) {
+			assertReplayableRetry(existing);
 			if (
 				existing.decision === "retry" &&
 				existing.missionId !== undefined &&
@@ -114,6 +127,12 @@ function recordVerdict(
 		await deliverVerdict(context.cwd, result.details, projectTrusted);
 		return result;
 	});
+}
+
+function assertReplayableRetry(verdict: VerdictRecord): void {
+	if (verdict.decision === "retry" && verdict.retryHandoff === undefined) {
+		throw new Error(`Retry Verdict ${verdict.verdictId} is missing its durable retry handoff.`);
+	}
 }
 
 function isProjectTrusted(context: ExtensionContext): boolean {
@@ -152,5 +171,18 @@ function readLatestVerdict(
 	return latest;
 }
 
+function normalizeRetryHandoff(handoff: VerdictInput["retryHandoff"]): RetryHandoff | undefined {
+	if (handoff === undefined) {
+		return;
+	}
+	return {
+		failedCriteria: handoff.failedCriteria.map((item) => item.trim()),
+		completedWork: handoff.completedWork.map((item) => item.trim()),
+		requiredChanges: handoff.requiredChanges.map((item) => item.trim()),
+		nonGoals: handoff.nonGoals.map((item) => item.trim()),
+		validation: handoff.validation.map((item) => item.trim()),
+	};
+}
+
 export type { MissionAssignmentInput, NormalizedVerdictInput, RequeueSubmission, VerdictDelivery, VerdictInput };
-export { readLatestVerdict, recordVerdict, registerKhalaVerdict };
+export { normalizeRetryHandoff, readLatestVerdict, recordVerdict, registerKhalaVerdict };

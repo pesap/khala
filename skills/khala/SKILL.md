@@ -32,7 +32,10 @@ Work submission → Conclave review → optional Observer → Mandate → Missio
 ## Role boundaries
 
 - **User/Maintainer** authors intent, scope, acceptance, constraints, and
-  validation. They do not impersonate durable Archive records.
+  validation. They may read authoritative Archive records and submit Work as
+  intent ingress, but do not admit Work, launch agents, issue Verdicts, or make
+  lifecycle decisions. They do not impersonate durable Archive
+  records.
 - **Conclave** reads authoritative records, admits Work, materializes Missions,
   launches Observers or Executors, and issues Verdicts.
 - **Observer** is read-only and submission-scoped. It records exactly one
@@ -45,7 +48,8 @@ Work submission → Conclave review → optional Observer → Mandate → Missio
 
 ## Tool map
 
-- `khala_submit_work`: submit a complete Work to the Project Conclave.
+- `khala_submit_work`: submit a complete Work to the Project Conclave; this is
+  intent ingress, not lifecycle admission.
 - `khala_launch_observer`: Conclave-only read-only context gathering.
 - `khala_record_learning`: Observer-only one-record handoff.
 - `khala_admit_work`: Conclave-only Mandate admission.

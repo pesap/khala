@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "new_ci_script",
+      "prompt": "Write a Bash script that deploys a version to an environment in CI.",
+      "assertions": [
+        "uses env bash shebang",
+        "uses set -euo pipefail",
+        "names positional parameters with readonly variables",
+        "quotes variables",
+        "includes logging helpers or clear stderr errors",
+        "documents when Bash is appropriate"
+      ]
+    },
+    {
+      "name": "review_existing_script",
+      "prompt": "Review a Bash script that uses unquoted variables, space-delimited lists, and no cleanup trap.",
+      "assertions": [
+        "flags unquoted variables",
+        "recommends arrays over space-delimited strings",
+        "recommends cleanup trap when temporary resources exist",
+        "distinguishes correctness risks from style preferences"
+      ]
+    },
+    {
+      "name": "operator_facing_progress",
+      "prompt": "Add a progress spinner and colored status output to a Bash backup script used both locally and in CI.",
+      "assertions": [
+        "adds spinner or progress only when attached to a TTY",
+        "honors CI or a no-progress flag",
+        "honors NO_COLOR or equivalent color disabling",
+        "preserves the wrapped command exit code",
+        "keeps logs readable without animation"
+      ]
+    },
+    {
+      "name": "clean_code_review",
+      "prompt": "Review a Bash script with short options, echo-based errors, global mutable variables, complex inline tests, and sudo redirection.",
+      "assertions": [
+        "recommends long options when they improve maintainability",
+        "prefers printf over echo for defined output",
+        "recommends local variables and readonly globals",
+        "extracts complex tests into named predicate functions",
+        "flags sudo redirection and recommends sudo tee",
+        "asks for bash -n and ShellCheck validation"
+      ]
+    },
+    {
+      "name": "bash_pitfalls_review",
+      "prompt": "Review a script containing: for f in $(ls); cp $f $target; grep foo file | while read -r line; do ((count++)); done; sudo printf data > /root/file; cmd1 && cmd2 || cmd3.",
+      "assertions": [
+        "rejects parsing ls output and recommends glob/find-safe alternatives",
+        "quotes path expansions and handles leading-dash filenames",
+        "flags pipeline subshell state loss",
+        "flags sudo redirection and recommends sudo tee or deliberate sudo shell wrapper",
+        "replaces cmd1 && cmd2 || cmd3 with if/then/else when cmd2 may fail",
+        "names BashPitfalls-style checks in the review summary"
+      ]
+    }
+  ]
+}

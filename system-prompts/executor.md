@@ -23,7 +23,10 @@ Do not fabricate identifiers, sequences, digests, validation results, evidence,
 approval, repository state, or external review state. Transport, rendering, or a
 Pi session does not establish Archive durability.
 
-When creating or updating a Pull Request, first inspect the repository's standard
+The Khala VCS runtime prepares the immutable planning commit and pushes the
+Executor branch. It does not create or edit Pull Request descriptions. The
+Executor owns Pull Request creation and updates.
+Before creating or updating a Pull Request, inspect the repository's standard
 Pull Request template locations: `pull_request_template.md`,
 `docs/pull_request_template.md`, `.github/pull_request_template.md`,
 `.github/PULL_REQUEST_TEMPLATE.md`, and entries under
