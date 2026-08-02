@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { DefaultResourceLoader, initTheme } from "@earendil-works/pi-coding-agent";
 import createExtension, { createExecutorViewHandler } from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
-import { readCurrentMission, readMandate } from "../dist/src/khala-archive-projections.js";
+import { readMandate } from "../dist/src/khala-archive-projections.js";
 import { enqueueConclaveWake } from "../dist/src/khala-conclave.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
 import { createHerdrLauncher } from "../dist/src/launch-herdr.js";
@@ -22,12 +22,8 @@ import {
 	writeExecutorRecord,
 } from "../dist/src/khala-executor-registry.js";
 import { canRecordPullRequestReview } from "../dist/src/khala-review.js";
-import { KhalaSessionList } from "../dist/src/khala-session-list.js";
-import { toggleKhalaPopup } from "../dist/src/khala-popup.js";
-import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
 import { isSignal } from "../dist/src/khala-model.js";
-import { registerKhalaObserver } from "../dist/src/khala-observer.js";
 import { buildOracleArguments, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
 import { buildKhalaTriageTemplateInvocation, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
@@ -64,11 +60,14 @@ test("package manifest declares source extensions and exposes Khala commands", (
 		"./extensions/pi-review/review.ts",
 	]);
 	assert.deepEqual(manifest.pi.prompts, ["./prompts"]);
-	assert.deepEqual(manifest.pi.skills, ["./skills"]);
+	assert.deepEqual(manifest.pi.skills, ["./skills/khala", "./skills/khala-executor", "./skills/herdr"]);
 	for (const extensionPath of manifest.pi.extensions) {
 		assert.ok(readFileSync(new URL(`../${extensionPath}`, import.meta.url)).length > 0);
 	}
-	for (const skillName of ["khala", "khala-executor"]) {
+	const pullRequestTemplate = readFileSync(new URL("../templates/pull-request.md", import.meta.url), "utf8");
+	assert.equal(pullRequestTemplate.includes("<!-- Work: <!--"), false);
+	assert.doesNotMatch(pullRequestTemplate.replaceAll(/<!--.*?-->/gs, ""), /Closes\s*$/m);
+	for (const skillName of ["khala", "khala-executor", "herdr"]) {
 		assert.ok(readFileSync(new URL(`../skills/${skillName}/SKILL.md`, import.meta.url)).length > 0);
 	}
 
@@ -235,186 +234,7 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	assert.match(expanded.render(120).join("\n"), /src\/example.ts:10/);
 });
 
-test("/khala creates and exposes a persisted project Conclave when absent", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-test-"));
-	const agentDir = join(root, "agent");
-	const projectPath = join(root, "project");
-	const userSessionPath = join(root, "user.jsonl");
-	process.env.PI_CODING_AGENT_DIR = agentDir;
-
-	try {
-		const commands = new Map();
-		createExtension(createPiStub(commands));
-		const notifications = [];
-		const context = {
-			cwd: projectPath,
-			mode: "print",
-			sessionManager: {
-				getSessionFile() {
-					return userSessionPath;
-				},
-				getBranch() {
-					return [];
-				},
-			},
-			ui: {
-				notify(message) {
-					notifications.push(message);
-				},
-			},
-		};
-
-		await commands.get("khala").handler("", context);
-
-		assert.equal(notifications.length, 1);
-		const [projectDirectory] = readdirSync(join(agentDir, "khala", "conclaves"));
-		const mappingPath = join(agentDir, "khala", "conclaves", projectDirectory, "session.json");
-		const mapping = JSON.parse(readFileSync(mappingPath, "utf8"));
-		const { sessionPath } = mapping;
-		assert.equal(typeof sessionPath, "string");
-		assert.equal(mapping.userSessionPath, userSessionPath);
-		const entries = readFileSync(sessionPath, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
-		assert.ok(entries.some((entry) => entry.customType === "khala-conclave"));
-		assert.ok(entries.some((entry) => entry.name === "Khala Conclave"));
-
-		writeExecutorRecord(
-			createExecutorRecord({
-				executionId: "execution-1",
-				workId: "work-1",
-				executorName: "Artanis",
-				projectPath,
-				sandboxPath: join(root, "sandbox"),
-				launcher: "tmux",
-			}),
-		);
-		appendArchiveRecord(projectPath, {
-			type: "submission",
-			workId: "work-1",
-			payload: {
-				workId: "work-1",
-				projectPath,
-				status: "queued",
-				work: {
-					title: "Improve session roster",
-					objective: "Make active sessions easier to scan.",
-					context: "",
-					scope: "Khala session list",
-					acceptanceCriteria: ["Active work is visible."],
-					constraints: [],
-					plan: ["Render active work titles."],
-					validation: ["Run the session tests."],
-				},
-				archivePath: join(root, "archive.jsonl"),
-			},
-		});
-
-		const source = createSessionSource(
-			{
-				cwd: projectPath,
-				sessionManager: {
-					getSessionFile() {
-						return sessionPath;
-					},
-				},
-			},
-			() => sessionPath,
-			() => mapping.userSessionPath,
-		);
-		const sessions = source.getActiveSessions(sessionPath);
-		const userSession = sessions.find((session) => session.id === "user");
-		const conclaveSession = sessions.find((session) => session.id === "conclave");
-		const executorSession = sessions.find((session) => session.id === "executor:execution-1");
-		assert.equal(userSession?.sessionPath, userSessionPath);
-		assert.equal(userSession?.isCurrent, false);
-		assert.equal(userSession?.displayOnly, false);
-		assert.equal(userSession?.action, "context switch");
-		assert.equal(userSession?.sessionPathLabel, relative(projectPath, userSessionPath));
-		assert.equal(conclaveSession?.sessionPath, sessionPath);
-		assert.equal(conclaveSession?.isCurrent, true);
-		assert.equal(conclaveSession?.displayOnly, false);
-		assert.equal(conclaveSession?.state, "input");
-		assert.equal(conclaveSession?.stateLabel, "Input Required");
-		assert.equal(conclaveSession?.action, "context switch");
-		assert.equal(executorSession?.displayOnly, true);
-		assert.equal(executorSession?.sessionPath, "");
-		assert.equal(executorSession?.sessionPathLabel, "separate Pi process");
-		assert.equal(executorSession?.sandboxPath, join(root, "sandbox"));
-		assert.equal(executorSession?.sandboxPathLabel, relative(projectPath, join(root, "sandbox")));
-		assert.equal(executorSession?.state, "working");
-		assert.equal(executorSession?.task, "Improve session roster");
-
-		updateExecutorRecord(projectPath, "execution-1", { status: "failed" });
-		const failedExecutor = source
-			.getActiveSessions(sessionPath)
-			.find((session) => session.id === "executor:execution-1");
-		assert.equal(failedExecutor, undefined);
-
-		updateExecutorRecord(projectPath, "execution-1", { status: "finished" });
-		const finishedExecutor = source
-			.getActiveSessions(sessionPath)
-			.find((session) => session.id === "executor:execution-1");
-		assert.equal(finishedExecutor, undefined);
-
-		const unavailableSource = createSessionSource(
-			{
-				cwd: projectPath,
-				sessionManager: {
-					getSessionFile() {
-						return undefined;
-					},
-				},
-			},
-			() => sessionPath,
-			() => undefined,
-		);
-		const unavailableUser = unavailableSource.getActiveSessions("").find((session) => session.id === "user");
-		assert.equal(unavailableUser?.sessionPathLabel, "unavailable");
-		assert.equal(unavailableUser?.isCurrent, false);
-		const idleUserSource = createSessionSource(
-			{
-				cwd: projectPath,
-				isIdle() {
-					return true;
-				},
-				sessionManager: {
-					getSessionFile() {
-						return userSessionPath;
-					},
-				},
-			},
-			() => undefined,
-			() => userSessionPath,
-		);
-		const idleUser = idleUserSource.getActiveSessions(userSessionPath).find((session) => session.id === "user");
-		assert.equal(idleUser?.state, "input");
-
-		const busyUserSource = createSessionSource(
-			{
-				cwd: projectPath,
-				isIdle() {
-					return false;
-				},
-				sessionManager: {
-					getSessionFile() {
-						return userSessionPath;
-					},
-				},
-			},
-			() => undefined,
-			() => userSessionPath,
-		);
-		const busyUser = busyUserSource.getActiveSessions(userSessionPath).find((session) => session.id === "user");
-		assert.equal(busyUser?.state, "working");
-	} finally {
-		delete process.env.PI_CODING_AGENT_DIR;
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("stale Executor pane targets are marked failed without exposing launcher errors", async () => {
+test("Executor pane view failures preserve durable execution state", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-stale-pane-"));
 	const agentDir = join(root, "agent");
 	const projectPath = join(root, "project");
@@ -449,8 +269,8 @@ test("stale Executor pane targets are marked failed without exposing launcher er
 			launcher: "tmux",
 			target: "dead-server:stale-pane",
 		});
-		assert.equal(readExecutorRecord(projectPath, "stale-execution")?.status, "failed");
-		assert.deepEqual(notifications, ["The Zeratul Executor pane is no longer available."]);
+		assert.equal(readExecutorRecord(projectPath, "stale-execution")?.status, "running");
+		assert.deepEqual(notifications, ["The Zeratul Executor pane could not be focused."]);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
@@ -720,7 +540,7 @@ test("Users can submit Work intent without lifecycle authority", async () => {
 			isDedicatedConclaveSession: () => false,
 			submitWork: async (request) => {
 				submitted = request;
-				return { archivePath: join(root, "archive.jsonl") };
+				return { archivePath: join(root, "archive.jsonl"), wakeStatus: "woken" };
 			},
 			getSubmission: () => undefined,
 			getPendingSubmission: () => undefined,
@@ -755,6 +575,8 @@ test("Users can submit Work intent without lifecycle authority", async () => {
 			userContext,
 		);
 		assert.equal(result.details.status, "queued");
+		assert.match(result.content[0].text, /Conclave processing completed/);
+		assert.doesNotMatch(result.content[0].text, /admission and launch are pending/);
 		assert.equal(submitted.projectPath, projectPath);
 		assert.equal(submitted.work.context, "The User supplied initial context.");
 	} finally {
@@ -1186,149 +1008,6 @@ test("role-specific tools record only authorized Archive mutations", async () =>
 	}
 });
 
-test("KhalaSessionList renders one flat session list, scrolls, and blocks display-only confirmation", () => {
-	const theme = {
-		fg(_color, text) {
-			return text;
-		},
-		bg(_color, text) {
-			return text;
-		},
-	};
-	const makeSession = (id, displayOnly, isCurrent = false) => ({
-		id,
-		name: id,
-		role: displayOnly ? "Executor" : "Conclave",
-		state: displayOnly ? "working" : "input",
-		stateLabel: "Active",
-		action: displayOnly ? "display only" : "context switch",
-		displayOnly,
-		isCurrent,
-		task: id === "user" ? "current project" : `Task ${id}`,
-		...(id === "executor-1"
-			? { latestSignal: { kind: "progress", summary: "checking fixtures", observedAt: "2026-01-01T00:00:00.000Z" } }
-			: {}),
-	});
-	const sessions = [
-		makeSession("user", false, true),
-		makeSession("conclave", false),
-		makeSession("executor-1", true),
-		makeSession("executor-2", true),
-		makeSession("executor-3", true),
-	];
-	const list = new KhalaSessionList(sessions, theme);
-	const selected = [];
-	const confirmed = [];
-	list.onSelectionChange = (session) => selected.push(session.id);
-	list.onSelect = (session) => confirmed.push(session.id);
-
-	const initialRender = list.render(80).join("\n");
-	assert.doesNotMatch(initialRender, /CURRENT CONTEXT|AGENTS · DISPLAY ONLY/);
-	assert.match(initialRender, /user/);
-	assert.match(initialRender, /conclave/);
-	assert.match(initialRender, /executor-1/);
-	assert.match(initialRender, /progress/);
-	assert.match(initialRender, /sessions 1-4\/5/);
-
-	list.handleInput("\u001b[B");
-	list.handleInput("\u001b[B");
-	list.handleInput("\u001b[B");
-	list.handleInput("\u001b[B");
-	assert.equal(list.getSelectedSession()?.id, "executor-3");
-	assert.match(list.render(80).join("\n"), /sessions 2-5\/5/);
-	list.handleInput("\r");
-	assert.deepEqual(confirmed, []);
-	assert.deepEqual(selected, ["conclave", "executor-1", "executor-2", "executor-3"]);
-
-	list.updateSessions([sessions[0], sessions[1], makeSession("executor-new", true)]);
-	assert.equal(list.getSelectedSession()?.id, "user");
-	list.updateSessions(sessions.slice(0, 2));
-	assert.equal(list.getSelectedSession()?.id, "user");
-	assert.doesNotMatch(list.render(80).join("\n"), /AGENTS/);
-});
-
-test("Khala popup refreshes its session roster while open", async () => {
-	const theme = {
-		fg(_color, text) {
-			return text;
-		},
-		bg(_color, text) {
-			return text;
-		},
-		bold(text) {
-			return text;
-		},
-	};
-	const userSession = {
-		id: "user",
-		name: "You",
-		role: "User",
-		state: "input",
-		stateLabel: "Input Required",
-		action: "context switch",
-		displayOnly: false,
-		isCurrent: true,
-		task: "current project",
-		skills: [],
-		sessionPath: "/tmp/user.jsonl",
-		sessionPathLabel: "../../user.jsonl",
-	};
-	const executorSession = {
-		id: "executor:1",
-		name: "Executor",
-		role: "Executor",
-		state: "working",
-		stateLabel: "Active",
-		action: "display only",
-		displayOnly: true,
-		isCurrent: false,
-		task: "Work work-1",
-		skills: ["signals"],
-		sessionPath: "",
-		sessionPathLabel: "separate Pi process",
-		latestSignal: { kind: "progress", summary: "checking", observedAt: "2026-01-01T00:00:00.000Z" },
-	};
-	let sessions = [userSession];
-	let component;
-	let finish;
-	let customOptions;
-	const source = {
-		getActiveSessions() {
-			return sessions;
-		},
-	};
-	const context = {
-		mode: "tui",
-		sessionManager: {
-			getSessionFile() {
-				return userSession.sessionPath;
-			},
-		},
-		ui: {
-			custom(factory, options) {
-				customOptions = options;
-				return new Promise((resolve) => {
-					finish = resolve;
-					component = factory({ requestRender() {} }, theme, {}, finish);
-				});
-			},
-		},
-	};
-
-	const popupPromise = toggleKhalaPopup(context, source);
-	sessions = [userSession, executorSession];
-	await new Promise((resolve) => setTimeout(resolve, 1100));
-	const renderedPopup = component.render(80).join("\n");
-	assert.doesNotMatch(renderedPopup, /CURRENT CONTEXT|AGENTS · DISPLAY ONLY/);
-	assert.match(renderedPopup, /Executor/);
-	assert.match(renderedPopup, /progress/);
-	component.handleInput("\u001b");
-	finish?.(null);
-	await popupPromise;
-	assert.equal(customOptions, undefined);
-});
-
-
 test("Archive reads fail closed with safe, line-aware corruption errors", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-corrupt-"));
 	const agentDir = join(root, "agent");
@@ -1560,6 +1239,7 @@ test("Signals require running executions and Verdict replays are idempotent", as
 			executorContext,
 		);
 		assert.match(signalResult.content[0].text, /recorded/);
+		assert.doesNotMatch(signalResult.content[0].text, /Review evidence update failed/);
 		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "signal").length, 1);
 		appendArchiveRecord(projectPath, {
 			type: "signal",
@@ -1625,15 +1305,6 @@ test("pre-launch starter failures remove the created sandbox", async () => {
 	);
 	assert.deepEqual(removed, ["/tmp/khala-failed-sandbox"]);
 });
-
-test("pi-review pure selector helpers preserve target policy", async () => {
-	const { createBranchSelectorItems, createCommitSelectorItems, filterReviewSelectorItems, sortReviewBranches } = await import("../dist/extensions/pi-review/review.js");
-	assert.deepEqual(sortReviewBranches(["feature", "main", "current"], "current", "main"), ["main", "feature"]);
-	assert.deepEqual(createBranchSelectorItems(["main"], "main")[0].description, "(default)");
-	assert.equal(createCommitSelectorItems([{ sha: "123456789", title: "Fix" }])[0].label, "1234567 Fix");
-	assert.equal(filterReviewSelectorItems(createBranchSelectorItems(["main", "feature"], "main"), "feat").length, 1);
-});
-
 
 test("Khala triage parses approval, starts a Work draft, and requires a Conclave report", async () => {
 	assert.deepEqual(parseKhalaTriageArgs('--approve issue 123 --extra "focus on auth"'), {
@@ -1743,208 +1414,6 @@ test("Mandate admission is Conclave-only, idempotent, and preserves the source s
 		const rejected = await admitTool.execute("missing", { workId: "missing-context" }, null, null, conclaveContext);
 		assert.equal(rejected.isError, true);
 		assert.match(rejected.details.reason, /Learning/);
-	} finally {
-		delete process.env.PI_CODING_AGENT_DIR;
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("Mandate, immutable Mission, retry successor, and Finish fences form one lifecycle", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-mission-"));
-	const agentDir = join(root, "agent");
-	const projectPath = join(root, "project");
-	process.env.PI_CODING_AGENT_DIR = agentDir;
-	try {
-		const storage = createFileConclaveStorage();
-		const work = {
-			title: "Mission test",
-			objective: "Exercise Mission lifecycle.",
-			context: "Known context.",
-			scope: "Temporary project.",
-			acceptanceCriteria: ["The successor finishes."],
-			constraints: [],
-			plan: ["Run the lifecycle."],
-			validation: ["Read durable records."],
-		};
-		storage.submit({ workId: "mission-work", projectPath, work });
-		const tools = new Map();
-		let starts = 0;
-		const dependencies = {
-			workTemplate: "template",
-			executorSystemPrompt: "executor prompt",
-			isDedicatedConclaveSession: () => true,
-			submitWork: async (request) => storage.submit(request),
-			getSubmission: storage.getSubmission,
-			getPendingSubmission: storage.getPendingSubmission,
-			claimSubmission: storage.claimSubmission,
-			markSubmissionQueued: storage.markSubmissionQueued,
-			markSubmissionLaunched: storage.markSubmissionLaunched,
-			createExecutorStarter: () => async (request) => {
-				starts += 1;
-				const sandbox = { path: join(root, `sandbox-${starts}`), name: `sandbox-${starts}` };
-				request.onSandboxCreated?.(sandbox, "test");
-				assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, starts === 1 ? 1 : 2);
-				assert.match(request.mission, /Mandate:/);
-				return { id: `session-${starts}`, sandbox };
-			},
-		};
-		registerKhalaWork(createPiStub(new Map(), tools), dependencies);
-		const conclaveContext = {
-			cwd: projectPath,
-			sessionManager: {
-				getBranch() {
-					return [{ type: "custom", customType: "khala-conclave", data: {} }];
-				},
-				getSessionFile() {
-					return join(root, "conclave.jsonl");
-				},
-			},
-		};
-		await tools.get("khala_admit_work").execute("admit", { workId: "mission-work" }, null, null, conclaveContext);
-		const launch = await tools.get("khala_launch_execution").execute("launch", { workId: "mission-work" }, null, null, conclaveContext);
-		assert.equal(launch.details.status, "launched");
-		const firstMission = readCurrentMission(projectPath, "mission-work").mission;
-		const firstExecution = readExecutorRecord(projectPath, launch.details.executionId);
-		assert.equal(firstExecution.purpose.missionId, firstMission.missionId);
-		assert.equal(firstExecution.participantId, firstMission.assignedParticipantId);
-		assert.match(firstExecution.status, /running/);
-		const duplicate = await tools.get("khala_launch_execution").execute("duplicate", { workId: "mission-work" }, null, null, conclaveContext);
-		assert.equal(duplicate.details.executionId, launch.details.executionId);
-		assert.equal(starts, 1);
-
-		const runtimeTools = new Map();
-		createExtension(createPiStub(new Map(), runtimeTools));
-		const executorContext = {
-			cwd: firstExecution.sandboxPath,
-			sessionManager: {
-				getBranch() {
-					return [
-						{ type: "custom", customType: "khala-role", data: { role: "executor" } },
-						{ type: "custom", customType: "khala-executor", data: { workId: "mission-work", executionId: firstExecution.executionId, executorName: firstExecution.executorName, projectPath, missionId: firstMission.missionId, participantId: firstExecution.participantId } },
-					];
-				},
-				getSessionFile() {
-					return undefined;
-				},
-			},
-		};
-		const signal = await runtimeTools.get("khala_signal").execute("signal", { kind: "blocked", summary: "Retry is required.", evidence: ["test evidence"] }, null, null, executorContext);
-		const successorAssignment = { ...work, plan: ["Run the corrected lifecycle."] };
-		const retry = await runtimeTools.get("khala_verdict").execute("retry", { workId: "mission-work", executionId: firstExecution.executionId, signalId: signal.details.signalId, decision: "retry", reason: "The first execution is intentionally retryable.", retryHandoff: { failedCriteria: ["The first execution must be retried."], completedWork: ["The first execution lifecycle was recorded."], requiredChanges: ["Run the corrected lifecycle."], nonGoals: ["Do not change the lifecycle contract."], validation: ["Read durable records."] }, successorAssignment }, null, null, conclaveContext);
-		assert.equal(retry.details.missionId, firstMission.missionId);
-		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 2);
-		assert.equal(readCurrentMission(projectPath, "mission-work").mission.predecessorMissionId, firstMission.missionId);
-		assert.equal(readCurrentMission(projectPath, "mission-work").mission.mandateId, firstMission.mandateId);
-		assert.equal(readExecutorRecord(projectPath, firstExecution.executionId).status, "failed");
-
-		const secondLaunch = await tools.get("khala_launch_execution").execute("launch-successor", { workId: "mission-work" }, null, null, conclaveContext);
-		assert.equal(secondLaunch.details.status, "launched");
-		assert.equal(starts, 2);
-		const secondMission = readCurrentMission(projectPath, "mission-work").mission;
-		const secondExecution = readExecutorRecord(projectPath, secondLaunch.details.executionId);
-		const secondExecutorContext = {
-			cwd: secondExecution.sandboxPath,
-			sessionManager: {
-				getBranch() {
-					return [
-						{ type: "custom", customType: "khala-role", data: { role: "executor" } },
-						{ type: "custom", customType: "khala-executor", data: { workId: "mission-work", executionId: secondExecution.executionId, executorName: secondExecution.executorName, projectPath, missionId: secondMission.missionId, participantId: secondExecution.participantId } },
-					];
-				},
-				getSessionFile() {
-					return undefined;
-				},
-			},
-		};
-		const finishedSignal = await runtimeTools.get("khala_signal").execute("finished-signal", { kind: "finished", summary: "The successor passed.", evidence: ["validation passed"] }, null, null, secondExecutorContext);
-		await runtimeTools.get("khala_verdict").execute("finish", { workId: "mission-work", executionId: secondExecution.executionId, signalId: finishedSignal.details.signalId, decision: "finish", reason: "Acceptance criteria passed." }, null, null, conclaveContext);
-		assert.equal(readCurrentMission(projectPath, "mission-work").state, "finished");
-	} finally {
-		delete process.env.PI_CODING_AGENT_DIR;
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("Observer review executions remain submission-scoped and recover their queue claim", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-observer-lifecycle-"));
-	const agentDir = join(root, "agent");
-	const projectPath = join(root, "project");
-	process.env.PI_CODING_AGENT_DIR = agentDir;
-	try {
-		const storage = createFileConclaveStorage();
-		storage.submit({
-			workId: "observer-work",
-			projectPath,
-			work: {
-				title: "Observer test",
-				objective: "Gather context.",
-				context: "",
-				scope: "Temporary project.",
-				acceptanceCriteria: ["Learning is recorded."],
-				constraints: [],
-				plan: ["Inspect files."],
-				validation: ["Cite sources."],
-			},
-		});
-		const tools = new Map();
-		let starterCalls = 0;
-		registerKhalaObserver(createPiStub(new Map(), tools), {
-			observerSystemPrompt: "observer prompt",
-			isDedicatedConclaveSession: (context) =>
-				context.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "khala-conclave"),
-			getSubmission: storage.getSubmission,
-			getPendingSubmission: storage.getPendingSubmission,
-			markSubmissionReviewing: storage.markSubmissionReviewing,
-			markSubmissionQueued: storage.markSubmissionQueued,
-			createObserverStarter: () => async (request) => {
-				starterCalls += 1;
-				assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "reviewing");
-				request.onSandboxCreated?.({ path: join(root, "observer-sandbox"), name: "observer-sandbox" }, "test");
-				return { id: "observer-session", sandbox: { path: join(root, "observer-sandbox"), name: "observer-sandbox" } };
-			},
-		});
-		const userContext = {
-			cwd: projectPath,
-			sessionManager: {
-				getBranch() {
-					return [{ type: "custom", customType: "khala-role", data: { role: "user" } }];
-				},
-				getSessionFile() {
-					return join(root, "user.jsonl");
-				},
-			},
-		};
-		const archiveRecordCountBeforeUserLaunch = listArchiveRecords(projectPath).length;
-		await assert.rejects(
-			tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, userContext),
-			/Only the dedicated project Conclave may launch an Observer/,
-		);
-		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "queued");
-		assert.equal(listExecutorRecords(projectPath).length, 0);
-		assert.equal(listArchiveRecords(projectPath).length, archiveRecordCountBeforeUserLaunch);
-		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "learning").length, 0);
-
-		const conclaveContext = {
-			cwd: projectPath,
-			sessionManager: {
-				getBranch() {
-					return [{ type: "custom", customType: "khala-conclave", data: {} }];
-				},
-				getSessionFile() {
-					return join(root, "conclave.jsonl");
-				},
-			},
-		};
-		const result = await tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, conclaveContext);
-		assert.equal(result.details.workId, "observer-work");
-		assert.equal(starterCalls, 1);
-		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 0);
-		const observer = listExecutorRecords(projectPath).find((execution) => execution.kind === "observer");
-		assert.equal(observer.purpose.kind, "observation");
-		assert.equal(observer.missionId, undefined);
-		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "reviewing");
-		storage.markSubmissionQueued(projectPath, "observer-work", observer.executionId);
-		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "queued");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

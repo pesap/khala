@@ -83,7 +83,7 @@ function submitSignal(params: SignalInput, context: ExtensionContext, wake: Sign
 	let finalizationError: string | undefined;
 	let wakeError: string | undefined;
 	let finalization = Promise.resolve();
-	if (finalize !== undefined) {
+	if (finalize !== undefined && signal.kind === "finished") {
 		finalization = Promise.resolve(finalize(projectPath, signal, projectTrusted)).catch((error: unknown) => {
 			if (error instanceof Error) {
 				finalizationError = error.message;
@@ -103,17 +103,21 @@ function submitSignal(params: SignalInput, context: ExtensionContext, wake: Sign
 		})
 		.then(() => {
 			let text = `Signal ${signal.signalId} recorded.`;
+			let isError = false;
 			if (wakeError === undefined) {
 				text += " The Conclave was woken.";
 			} else {
+				isError = true;
 				text += ` Conclave wake failed: ${wakeError}`;
 			}
 			if (finalizationError !== undefined) {
+				isError = true;
 				text += ` Review evidence update failed: ${finalizationError}`;
 			}
 			return {
 				content: [{ type: "text" as const, text }],
 				details: signal,
+				isError,
 			};
 		});
 }

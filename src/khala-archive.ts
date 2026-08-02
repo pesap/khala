@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { nanoid } from "nanoid";
@@ -176,6 +176,7 @@ function parseArchiveLine(line: string, path: string, lineNumber: number): Khala
 	return value;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Lock acquisition distinguishes active, stale, and crash-recovery states atomically.
 function withArchiveLock<T>(projectPath: string, projectTrusted: boolean, operation: () => T): T {
 	const directory = getConclaveDirectory(projectPath, projectTrusted);
 	mkdirSync(directory, { recursive: true });
@@ -183,17 +184,26 @@ function withArchiveLock<T>(projectPath: string, projectTrusted: boolean, operat
 	const deadline = Date.now() + ARCHIVE_LOCK_TIMEOUT_MS;
 	let acquired = false;
 	while (!acquired) {
+		let created = false;
 		try {
 			mkdirSync(lockPath);
-			writeFileSync(join(lockPath, "owner"), `${process.pid}\n`, "utf8");
-			acquired = true;
+			created = true;
 		} catch (error) {
 			if (readErrorCode(error) !== "EEXIST") {
-				rmSync(lockPath, { recursive: true, force: true });
 				throw error;
 			}
 			if (isStaleArchiveLock(lockPath)) {
-				rmSync(lockPath, { recursive: true, force: true });
+				// Rename first so a concurrent acquirer cannot recreate the lock while
+				// this process is recursively deleting the stale directory.
+				const quarantinePath = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+				try {
+					renameSync(lockPath, quarantinePath);
+					rmSync(quarantinePath, { recursive: true, force: true });
+				} catch (recoveryError) {
+					if (readErrorCode(recoveryError) !== "EEXIST" && readErrorCode(recoveryError) !== "ENOENT") {
+						throw recoveryError;
+					}
+				}
 			} else if (Date.now() >= deadline) {
 				throw createArchiveReadError(
 					"The Khala Archive is busy; retry the operation.",
@@ -203,6 +213,15 @@ function withArchiveLock<T>(projectPath: string, projectTrusted: boolean, operat
 				);
 			} else {
 				Atomics.wait(new Int32Array(new SharedArrayBuffer(ARCHIVE_LOCK_BUFFER_SIZE)), 0, 0, ARCHIVE_LOCK_RETRY_MS);
+			}
+		}
+		if (created) {
+			try {
+				writeFileSync(join(lockPath, "owner"), `${process.pid}\n`, "utf8");
+				acquired = true;
+			} catch (error) {
+				rmSync(lockPath, { recursive: true, force: true });
+				throw error;
 			}
 		}
 	}
@@ -217,7 +236,7 @@ function isStaleArchiveLock(lockPath: string): boolean {
 	try {
 		const owner = readFileSync(join(lockPath, "owner"), "utf8").trim();
 		if (!ARCHIVE_OWNER_PATTERN.test(owner)) {
-			return false;
+			return isLockDirectoryStale(lockPath);
 		}
 		try {
 			process.kill(Number(owner), 0);
@@ -225,6 +244,17 @@ function isStaleArchiveLock(lockPath: string): boolean {
 		} catch (error) {
 			return readErrorCode(error) === "ESRCH";
 		}
+	} catch (error) {
+		if (readErrorCode(error) !== "ENOENT") {
+			return false;
+		}
+		return isLockDirectoryStale(lockPath);
+	}
+}
+
+function isLockDirectoryStale(lockPath: string): boolean {
+	try {
+		return Date.now() - statSync(lockPath).mtimeMs >= ARCHIVE_LOCK_TIMEOUT_MS;
 	} catch {
 		return false;
 	}

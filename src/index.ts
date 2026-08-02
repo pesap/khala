@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
 import { registerKhalaArchiveRead } from "./khala-archive-tool.js";
-import { createConclaveCoordinator } from "./khala-conclave.js";
+import { type ConclaveCoordinator, createConclaveCoordinator } from "./khala-conclave.js";
 import { registerKhalaCounsel } from "./khala-counsel.js";
 import { registerKhalaDemo } from "./khala-demo.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
@@ -23,7 +23,6 @@ import {
 import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
 import { KHALA_TOGGLE_SHORTCUT } from "./khala-keybindings.js";
 import { registerKhalaLearning } from "./khala-learning.js";
-import { ExecutorStatus } from "./khala-model.js";
 import { registerKhalaObserver } from "./khala-observer.js";
 import { registerKhalaOracle } from "./khala-oracle.js";
 import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
@@ -40,7 +39,6 @@ import { registerKhalaWork } from "./khala-work.js";
 
 const baseDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolvePackageRoot(baseDir);
-const conclaveCoordinator = createConclaveCoordinator(resolveExtensionPath(baseDir));
 
 function isTrustedProject(context: ExtensionContext): boolean {
 	return typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
@@ -66,13 +64,17 @@ function createExecutorViewHandler(
 		try {
 			await viewExecutor(session.launcher, session.target);
 		} catch {
-			updateExecutorRecord(context.cwd, session.identity, { status: ExecutorStatus.failed }, isTrustedProject(context));
-			context.ui.notify(`The ${session.name} Executor pane is no longer available.`, "warning");
+			// Viewing is a UI operation. A failed focus/attach must not rewrite the
+			// durable execution state or hide a still-live Executor from recovery.
+			context.ui.notify(`The ${session.name} Executor pane could not be focused.`, "warning");
 		}
 	};
 }
 
-function registerPopupControls(pi: ExtensionAPI): (context: ExtensionContext) => Promise<void> {
+function registerPopupControls(
+	pi: ExtensionAPI,
+	conclaveCoordinator: ConclaveCoordinator,
+): (context: ExtensionContext) => Promise<void> {
 	const showPopup = (context: ExtensionContext, onSwitch?: (path: string) => Promise<unknown>): Promise<void> => {
 		let userSessionPath: string | undefined;
 		if (!isDedicatedConclaveSession(context)) {
@@ -105,7 +107,7 @@ function registerPopupControls(pi: ExtensionAPI): (context: ExtensionContext) =>
 	return showPopup;
 }
 
-function registerConclaveRecovery(pi: ExtensionAPI): void {
+function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
 	pi.registerCommand("khala-recreate", {
 		description: "Recover the project Conclave and resume pending Work.",
 		handler: (args, context) => {
@@ -126,7 +128,7 @@ function registerConclaveRecovery(pi: ExtensionAPI): void {
 			if (sessionPath === undefined) {
 				context.ui.notify("Khala could not create the project Conclave.", "error");
 			} else {
-				context.ui.notify("Project Conclave is ready; pending Work was resumed.", "info");
+				context.ui.notify("Project Conclave is ready; pending Work recovery was scheduled.", "info");
 			}
 			return Promise.resolve();
 		},
@@ -134,11 +136,12 @@ function registerConclaveRecovery(pi: ExtensionAPI): void {
 }
 
 function createExtension(pi: ExtensionAPI): void {
+	const conclaveCoordinator = createConclaveCoordinator(resolveExtensionPath(baseDir));
 	registerKhalaDynamicResources(pi);
 	registerKhalaFlags(pi);
-	registerKhalaTools(pi);
-	const showKhalaPopup = registerPopupControls(pi);
-	registerKhalaSessionEvents(pi, showKhalaPopup);
+	registerKhalaTools(pi, conclaveCoordinator);
+	const showKhalaPopup = registerPopupControls(pi, conclaveCoordinator);
+	registerKhalaSessionEvents(pi, showKhalaPopup, conclaveCoordinator);
 }
 
 function registerKhalaDynamicResources(pi: ExtensionAPI): void {
@@ -162,7 +165,7 @@ function registerKhalaFlags(pi: ExtensionAPI): void {
 	});
 }
 
-function registerKhalaTools(pi: ExtensionAPI): void {
+function registerKhalaTools(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
 	registerKhalaSignal(
 		pi,
 		async (projectPath, signal, projectTrusted) => conclaveCoordinator.wakeSignal(projectPath, signal, projectTrusted),
@@ -205,12 +208,13 @@ function registerKhalaTools(pi: ExtensionAPI): void {
 	registerKhalaReview(pi, isDedicatedConclaveSession, (projectPath, workId, projectTrusted) =>
 		conclaveCoordinator.wakeReview(projectPath, workId, projectTrusted),
 	);
-	registerConclaveRecovery(pi);
+	registerConclaveRecovery(pi, conclaveCoordinator);
 }
 
 function registerKhalaSessionEvents(
 	pi: ExtensionAPI,
 	showKhalaPopup: (context: ExtensionContext) => Promise<void>,
+	conclaveCoordinator: ConclaveCoordinator,
 ): void {
 	pi.on("session_start", (_event, context) => {
 		registerLaunchedAgent(pi, context);
@@ -219,7 +223,8 @@ function registerKhalaSessionEvents(
 			conclaveCoordinator.resume(context.cwd, isTrustedProject(context));
 		}
 	});
-	registerConfiguredKhalaWork(pi);
+	pi.on("session_shutdown", () => conclaveCoordinator.dispose());
+	registerConfiguredKhalaWork(pi, conclaveCoordinator);
 	registerKhalaTriage(pi);
 	registerKhalaDemo(pi, {
 		ensureConclaveSession: conclaveCoordinator.ensureConclaveSession,
@@ -342,7 +347,7 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 	}
 }
 
-function registerConfiguredKhalaWork(pi: ExtensionAPI): void {
+function registerConfiguredKhalaWork(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
 	registerKhalaWork(pi, {
 		workTemplate: readFileSync(join(packageRoot, "templates", "khala-work.md"), "utf8").trim(),
 		executorSystemPrompt: readRolePrompt(packageRoot, "executor"),

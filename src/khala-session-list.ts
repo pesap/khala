@@ -1,5 +1,5 @@
-import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { KeybindingsManager, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { type KhalaSession, KhalaSessionState, type KhalaSessionStateValue } from "./khala-sessions.js";
 
 const SESSION_COLUMN_WIDTH = 20;
@@ -19,9 +19,12 @@ class KhalaSessionList implements Component {
 	private readonly theme: Theme;
 	private selectedIndex: number;
 
-	constructor(sessions: readonly KhalaSession[], theme: Theme) {
+	private readonly keybindings: KeybindingsManager;
+
+	constructor(sessions: readonly KhalaSession[], theme: Theme, keybindings: KeybindingsManager) {
 		this.sessions = sessions;
 		this.theme = theme;
+		this.keybindings = keybindings;
 		const currentIndex = sessions.findIndex((session) => session.isCurrent);
 		this.selectedIndex = 0;
 		if (currentIndex >= 0) {
@@ -46,12 +49,11 @@ class KhalaSessionList implements Component {
 	}
 
 	handleInput(data: string): void {
-		const keybindings = getKeybindings();
-		if (keybindings.matches(data, "tui.select.up")) {
+		if (this.keybindings.matches(data, "tui.select.up")) {
 			this.moveSelection(-1);
-		} else if (keybindings.matches(data, "tui.select.down")) {
+		} else if (this.keybindings.matches(data, "tui.select.down")) {
 			this.moveSelection(1);
-		} else if (keybindings.matches(data, "tui.select.confirm")) {
+		} else if (this.keybindings.matches(data, "tui.select.confirm")) {
 			const session = this.getSelectedSession();
 			if (session === undefined) {
 				return;
@@ -63,7 +65,7 @@ class KhalaSessionList implements Component {
 				return;
 			}
 			this.onSelect?.(session);
-		} else if (keybindings.matches(data, "tui.select.cancel")) {
+		} else if (this.keybindings.matches(data, "tui.select.cancel")) {
 			this.onCancel?.();
 		}
 	}
@@ -135,10 +137,11 @@ class KhalaSessionList implements Component {
 		const statusText = `${session.stateLabel} · ${getSessionAction(session)}`;
 		const status = this.theme.fg(getSessionColor(session.state), truncateToWidth(statusText, statusWidth, ""));
 		const line = `${cursor}${label}${labelSpacing}${task}${taskSpacing}${" ".repeat(STATUS_PADDING_WIDTH)}${status}`;
+		const fittedLine = truncateToWidth(line, Math.max(MIN_WIDTH, width), "…");
 		if (isSelected) {
-			return this.theme.bg("selectedBg", this.theme.fg("text", line));
+			return this.theme.bg("selectedBg", this.theme.fg("text", fittedLine));
 		}
-		return line;
+		return fittedLine;
 	}
 }
 
@@ -156,7 +159,7 @@ function getSessionAction(session: KhalaSession): string {
 }
 
 function renderRoleLegend(theme: Theme): string {
-	return `${theme.fg("dim", "Role strip")}  ${theme.fg("muted", "▌ User")}  ${theme.fg("accent", "▌ Conclave")}  ${theme.fg("warning", "▌ Executioner")}  ${theme.fg("mdLink", "▌ Observer")}  ${theme.fg("mdLink", "▌ Preserver")}`;
+	return `${theme.fg("dim", "Role strip")}  ${theme.fg("muted", "▌ User")}  ${theme.fg("accent", "▌ Conclave")}  ${theme.fg("warning", "▌ Executor")}  ${theme.fg("mdLink", "▌ Observer")}  ${theme.fg("mdLink", "▌ Preserver")}`;
 }
 
 function renderStatusLegend(theme: Theme): string {

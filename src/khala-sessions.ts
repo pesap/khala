@@ -3,11 +3,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
 import type { ExtensionContext, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
-import { listPullRequestRecords, listSubmissionRecords } from "./khala-archive-projections.js";
+import { createArchiveSnapshot } from "./khala-archive-projections.js";
 import { LauncherName, type LauncherNameValue } from "./khala-config.js";
-import { listExecutorRecords } from "./khala-executor-registry.js";
 import { type ExecutorRecord, ExecutorStatus } from "./khala-model.js";
-import { listSignals } from "./khala-signal.js";
 
 const KhalaSessionState = {
 	input: "input",
@@ -232,9 +230,13 @@ function buildSessionList(
 		});
 	}
 
-	const signals = listSignals(context.cwd, projectTrusted);
+	const archive = createArchiveSnapshot(context.cwd, projectTrusted);
+	const latestPullRequests = new Map<string, ReturnType<typeof archive.listPullRequests>[number]>();
+	for (const pullRequest of archive.listPullRequests()) {
+		latestPullRequests.set(pullRequest.executionId, pullRequest);
+	}
 	const reviewableExecutions = new Set(
-		listPullRequestRecords(context.cwd, projectTrusted)
+		[...latestPullRequests.values()]
 			.filter(
 				(record) =>
 					record.status === "reviewable" ||
@@ -245,18 +247,34 @@ function buildSessionList(
 			.map((record) => record.executionId),
 	);
 	const workTitles = new Map<string, string>();
-	for (const submission of listSubmissionRecords(context.cwd, projectTrusted)) {
+	for (const submission of archive.listSubmissions()) {
 		workTitles.set(submission.workId, submission.work.title);
 	}
-	for (const executor of listExecutorRecords(context.cwd, projectTrusted).filter(
+	const latestSignals = new Map<string, ReturnType<typeof archive.listSignals>[number]>();
+	for (const signal of archive.listSignals()) {
+		const current = latestSignals.get(signal.executionId);
+		if (current === undefined || signal.observedAt > current.observedAt) {
+			latestSignals.set(signal.executionId, signal);
+		}
+	}
+	const latestExecutions = new Map<string, ExecutorRecord>();
+	const latestExecutionsByWork = new Map<string, ExecutorRecord>();
+	for (const execution of archive.listExecutions()) {
+		latestExecutions.set(execution.executionId, execution);
+		const current = latestExecutionsByWork.get(execution.workId);
+		if (current === undefined || execution.startedAt >= current.startedAt) {
+			latestExecutionsByWork.set(execution.workId, execution);
+		}
+	}
+	for (const executor of [...latestExecutions.values()].filter(
 		(candidate) =>
 			candidate.status === ExecutorStatus.starting ||
 			candidate.status === ExecutorStatus.running ||
+			(candidate.status === ExecutorStatus.failed &&
+				latestExecutionsByWork.get(candidate.workId)?.executionId === candidate.executionId) ||
 			(candidate.status === ExecutorStatus.finished && reviewableExecutions.has(candidate.executionId)),
 	)) {
-		const [latestSignal] = signals
-			.filter((signal) => signal.executionId === executor.executionId)
-			.sort((left, right) => right.observedAt.localeCompare(left.observedAt));
+		const latestSignal = latestSignals.get(executor.executionId);
 		const state = getExecutorSessionState(executor.status, latestSignal?.kind);
 		const isObserver = executor.kind === "observer";
 		let idPrefix = "executor";

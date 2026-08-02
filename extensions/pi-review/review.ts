@@ -149,6 +149,8 @@ type ReviewTarget =
 			reference: string;
 			prNumber: number;
 			baseBranch: string;
+			baseSha: string;
+			headSha: string;
 			title: string;
 			mergeBaseSha?: string;
 	  }
@@ -568,6 +570,9 @@ async function hasPendingChanges(pi: ExtensionAPI): Promise<boolean> {
 interface GitHubPullRequestInfo {
 	prNumber: number;
 	baseBranch: string;
+	baseSha: string;
+	headSha: string;
+	baseRepository: string;
 	title: string;
 	headBranch: string;
 }
@@ -605,7 +610,7 @@ async function getPrInfo(pi: ExtensionAPI, reference: string): Promise<GitHubPul
 		"view",
 		reference,
 		"--json",
-		"number,baseRefName,title,headRefName",
+		"number,baseRefName,baseRefOid,baseRepository,title,headRefName,headRefOid",
 	]);
 	if (code !== 0) {
 		throw new Error(`Unable to fetch pull request '${reference}': ${stderr.trim() || "gh pr view failed"}`);
@@ -616,17 +621,28 @@ async function getPrInfo(pi: ExtensionAPI, reference: string): Promise<GitHubPul
 		throw new Error(`GitHub returned an invalid pull request for '${reference}'`);
 	}
 	const record = data as Record<string, unknown>;
+	const baseRepository = record["baseRepository"];
+	const baseRepositoryName =
+		typeof baseRepository === "object" && baseRepository !== null
+			? (baseRepository as Record<string, unknown>)["nameWithOwner"]
+			: undefined;
 	if (
 		typeof record["number"] !== "number" ||
 		typeof record["baseRefName"] !== "string" ||
+		typeof record["baseRefOid"] !== "string" ||
+		typeof baseRepositoryName !== "string" ||
 		typeof record["title"] !== "string" ||
-		typeof record["headRefName"] !== "string"
+		typeof record["headRefName"] !== "string" ||
+		typeof record["headRefOid"] !== "string"
 	) {
 		throw new Error(`GitHub returned incomplete pull request data for '${reference}'`);
 	}
 	return {
 		prNumber: record["number"],
 		baseBranch: record["baseRefName"],
+		baseSha: record["baseRefOid"],
+		headSha: record["headRefOid"],
+		baseRepository: baseRepositoryName,
 		title: record["title"],
 		headBranch: record["headRefName"],
 	};
@@ -635,6 +651,34 @@ async function getPrInfo(pi: ExtensionAPI, reference: string): Promise<GitHubPul
 /**
  * Checkout a PR using GitHub CLI.
  */
+async function getCurrentRepository(pi: ExtensionAPI): Promise<string> {
+	const { stdout, stderr, code } = await pi.exec("gh", [
+		"repo",
+		"view",
+		"--json",
+		"nameWithOwner",
+		"--jq",
+		".nameWithOwner",
+	]);
+	if (code !== 0 || !stdout.trim()) {
+		throw new Error(`Unable to determine the current GitHub repository: ${stderr.trim() || "gh repo view failed"}`);
+	}
+	return stdout.trim();
+}
+
+function repositoryFromPrReference(reference: string): string | undefined {
+	if (/^[1-9][0-9]*$/.test(reference)) {
+		return;
+	}
+	const urlValue = reference.startsWith("https://") ? reference : `https://${reference}`;
+	const url = new URL(urlValue);
+	const parts = url.pathname.split("/").filter((part) => part.length > 0);
+	if (parts.length < 4) {
+		return;
+	}
+	return `${parts[0]}/${parts[1]}`;
+}
+
 async function checkoutPr(pi: ExtensionAPI, reference: string): Promise<void> {
 	const { stdout, stderr, code } = await pi.exec("gh", ["pr", "checkout", reference]);
 	if (code !== 0) {
@@ -710,8 +754,34 @@ async function resolveReviewTarget(pi: ExtensionAPI, cwd: string, target: Review
 			}
 			return { ...target, sha: stdout.trim() };
 		}
-		case "pullRequest":
-			return { ...target, mergeBaseSha: await getMergeBase(pi, target.baseBranch) };
+		case "pullRequest": {
+			let baseResolution = await pi.exec("git", ["rev-parse", "--verify", `${target.baseSha}^{commit}`]);
+			if (baseResolution.code !== 0 || !baseResolution.stdout.trim()) {
+				const baseFetch = await pi.exec("git", ["fetch", "--no-tags", "origin", `refs/heads/${target.baseBranch}`]);
+				if (baseFetch.code !== 0) {
+					throw new Error(
+						`Unable to fetch authoritative Pull Request base ${target.baseSha}: ${baseFetch.stderr.trim() || "git fetch failed"}`,
+					);
+				}
+				baseResolution = await pi.exec("git", ["rev-parse", "--verify", `${target.baseSha}^{commit}`]);
+			}
+			if (baseResolution.code !== 0 || !baseResolution.stdout.trim()) {
+				throw new Error(
+					`Unable to resolve authoritative Pull Request base ${target.baseSha}: ${baseResolution.stderr.trim() || "git rev-parse failed"}`,
+				);
+			}
+			const headResolution = await pi.exec("git", ["rev-parse", "--verify", `${target.headSha}^{commit}`]);
+			if (headResolution.code !== 0 || !headResolution.stdout.trim()) {
+				throw new Error(
+					`Unable to resolve authoritative Pull Request head ${target.headSha}: ${headResolution.stderr.trim() || "git rev-parse failed"}`,
+				);
+			}
+			const { stdout: mergeBase, stderr, code } = await pi.exec("git", ["merge-base", target.headSha, target.baseSha]);
+			if (code !== 0 || !mergeBase.trim()) {
+				throw new Error(`Unable to resolve the Pull Request merge base: ${stderr.trim() || "git merge-base failed"}`);
+			}
+			return { ...target, mergeBaseSha: mergeBase.trim() };
+		}
 		case "folder":
 			return { ...target, paths: await resolveReviewPaths(cwd, target.paths) };
 	}
@@ -846,6 +916,21 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		try {
 			ctx.ui.notify(`Fetching pull request ${reference} info...`, "info");
 			prInfo = await getPrInfo(pi, reference);
+			const currentRepository = await getCurrentRepository(pi);
+			const referencedRepository = repositoryFromPrReference(reference);
+			if (
+				referencedRepository !== undefined &&
+				referencedRepository.toLowerCase() !== currentRepository.toLowerCase()
+			) {
+				throw new Error(
+					`Pull Request repository '${referencedRepository}' does not match the current repository '${currentRepository}'.`,
+				);
+			}
+			if (prInfo.baseRepository.toLowerCase() !== currentRepository.toLowerCase()) {
+				throw new Error(
+					`Pull Request base repository '${prInfo.baseRepository}' does not match the current repository '${currentRepository}'.`,
+				);
+			}
 		} catch (error) {
 			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			return null;
@@ -881,12 +966,32 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		const reviewBranch = await getCurrentBranch(pi);
 		const reviewHead = await getHeadSha(pi);
 		reviewCheckoutState = { originalBranch, originalHead, originalStatus, reviewBranch, reviewHead };
+		if (reviewHead !== prInfo.headSha) {
+			let restored = false;
+			let restoreError: string | undefined;
+			try {
+				restored = await restoreReviewCheckout(ctx);
+			} catch (error) {
+				restoreError = error instanceof Error ? error.message : String(error);
+			}
+			let message = `Checked out PR head ${reviewHead} does not match GitHub head ${prInfo.headSha}.`;
+			if (!restored) {
+				message += " Restore the original checkout manually before continuing.";
+			}
+			if (restoreError !== undefined) {
+				message += ` Automatic restoration failed: ${restoreError}`;
+			}
+			ctx.ui.notify(message, "error");
+			return null;
+		}
 		ctx.ui.notify(`Checked out PR #${prInfo.prNumber} (${prInfo.headBranch})`, "info");
 		return {
 			type: "pullRequest",
 			reference,
 			prNumber: prInfo.prNumber,
 			baseBranch: prInfo.baseBranch,
+			baseSha: prInfo.baseSha,
+			headSha: prInfo.headSha,
 			title: prInfo.title,
 		};
 	}
@@ -1796,4 +1901,11 @@ Instructions:
 	});
 }
 
-export { createBranchSelectorItems, createCommitSelectorItems, filterReviewSelectorItems, sortReviewBranches };
+export {
+	createBranchSelectorItems,
+	createCommitSelectorItems,
+	filterReviewSelectorItems,
+	repositoryFromPrReference,
+	resolveReviewTarget,
+	sortReviewBranches,
+};

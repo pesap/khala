@@ -2,10 +2,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { nanoid } from "nanoid";
 import { withArchiveLock } from "./khala-archive.js";
 import { readCurrentMission, type readMandate } from "./khala-archive-projections.js";
-import { formatError } from "./khala-error.js";
+import { formatAttachedCleanupDiagnostic, formatError } from "./khala-error.js";
 import {
 	createExecutorRecord,
 	listExecutorRecords,
+	readExecutorRecord,
 	updateExecutorRecord,
 	writeExecutorRecord,
 } from "./khala-executor-registry.js";
@@ -211,9 +212,9 @@ async function runExecutorLaunch(input: {
 		executorName,
 		attemptNumber,
 	} = input;
-	let launcherSucceeded = false;
+	let launched: Awaited<ReturnType<typeof startExecutor>> | undefined;
 	try {
-		const launched = await startExecutor({
+		launched = await startExecutor({
 			context,
 			dependencies,
 			projectTrusted,
@@ -227,8 +228,7 @@ async function runExecutorLaunch(input: {
 			executorName,
 			attemptNumber,
 		});
-		launcherSucceeded = true;
-		return completeExecutorLaunch({
+		return await completeExecutorLaunch({
 			pi,
 			workId,
 			context,
@@ -242,10 +242,17 @@ async function runExecutorLaunch(input: {
 			launched,
 		});
 	} catch (error) {
-		if (!launcherSucceeded) {
+		const current = readExecutorRecord(context.cwd, executionId, projectTrusted);
+		let cleanupMessage = formatAttachedCleanupDiagnostic(error);
+		if (current?.status === ExecutorStatus.starting || current?.status === ExecutorStatus.running) {
+			try {
+				await launched?.cleanup?.();
+			} catch (cleanupFailure) {
+				cleanupMessage += ` Cleanup also failed: ${formatError(cleanupFailure)}`;
+			}
 			updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.failed }, projectTrusted);
 		}
-		return rejectedWorkLaunch(`Executor launch failed: ${formatError(error)}`);
+		return rejectedWorkLaunch(`Executor launch failed: ${formatError(error)}${cleanupMessage}`);
 	}
 }
 

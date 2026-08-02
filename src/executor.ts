@@ -8,6 +8,7 @@ import type { ReviewPreparation, VCSProvider as VcsProviderType } from "./vcs.js
 interface SandboxRequest {
 	projectPath: string;
 	name: string;
+	baseBranch?: string;
 }
 
 // The launcher uses only the working directory; the project root is retained for provider cleanup.
@@ -58,10 +59,12 @@ function createExecutorStarter(
 	thinkingLevel?: string,
 ): ExecutorStarter {
 	return async (request) => {
-		const sandbox = await vcsProvider.createSandbox({
-			projectPath: request.projectPath,
-			name: request.name,
-		});
+		const sandboxRequest: SandboxRequest = { projectPath: request.projectPath, name: request.name };
+		if (request.reviewWorkflow?.targetBranch !== undefined) {
+			sandboxRequest.baseBranch = request.reviewWorkflow.targetBranch;
+		}
+		const sandbox = await vcsProvider.createSandbox(sandboxRequest);
+		let launcherClosed = true;
 		try {
 			request.onSandboxCreated?.(sandbox, launcherName);
 			if (request.reviewWorkflow !== undefined) {
@@ -114,6 +117,7 @@ function createExecutorStarter(
 				args: [...commandArgs, ...modelArguments, ...skillArguments, ...buildPiArguments(request, thinkingLevel)],
 				startup,
 			});
+			launcherClosed = launched.target === undefined;
 			if (launched.ready !== undefined) {
 				try {
 					await launched.ready;
@@ -121,6 +125,7 @@ function createExecutorStarter(
 					if (launched.target !== undefined) {
 						try {
 							await launcher.close(launched.target);
+							launcherClosed = true;
 						} catch (cleanupError) {
 							attachCleanupDiagnostic(error, cleanupError);
 						}
@@ -128,12 +133,49 @@ function createExecutorStarter(
 					throw error;
 				}
 			}
-			return launched;
+			let sandboxRemoved = false;
+			const cleanup = async () => {
+				const cleanupErrors: unknown[] = [];
+				if (!launcherClosed && launched.target !== undefined) {
+					try {
+						await launcher.close(launched.target);
+						launcherClosed = true;
+					} catch (cleanupError) {
+						cleanupErrors.push(cleanupError);
+					}
+				}
+				if (launcherClosed && !sandboxRemoved) {
+					try {
+						await vcsProvider.removeSandbox(sandbox);
+						sandboxRemoved = true;
+					} catch (cleanupError) {
+						cleanupErrors.push(cleanupError);
+					}
+				}
+				if (cleanupErrors.length > 0) {
+					const cleanupMessages: string[] = [];
+					for (const cleanupError of cleanupErrors) {
+						if (cleanupError instanceof Error) {
+							cleanupMessages.push(cleanupError.message);
+						} else {
+							cleanupMessages.push(String(cleanupError));
+						}
+					}
+					const cleanupFailure = new Error(`Executor launch cleanup failed: ${cleanupMessages.join("; ")}`);
+					for (const cleanupError of cleanupErrors) {
+						attachCleanupDiagnostic(cleanupFailure, cleanupError);
+					}
+					throw cleanupFailure;
+				}
+			};
+			return { ...launched, cleanup };
 		} catch (error) {
-			try {
-				await vcsProvider.removeSandbox(sandbox);
-			} catch (cleanupError) {
-				attachCleanupDiagnostic(error, cleanupError);
+			if (launcherClosed) {
+				try {
+					await vcsProvider.removeSandbox(sandbox);
+				} catch (cleanupError) {
+					attachCleanupDiagnostic(error, cleanupError);
+				}
 			}
 			throw error;
 		}
@@ -191,7 +233,12 @@ function buildPiArguments(request: ExecutorRequest, thinkingLevel?: string): str
 		args.push("--khala-project-trusted", trustedValue);
 	}
 	if (request.kind === "observer") {
-		args.push("--khala-agent-kind", "observer");
+		args.push(
+			"--tools",
+			"read,grep,find,ls,khala_read_archive,khala_record_learning",
+			"--khala-agent-kind",
+			"observer",
+		);
 	}
 	if (request.missionId !== undefined) {
 		args.push("--khala-mission-id", request.missionId);

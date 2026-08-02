@@ -26,7 +26,9 @@
       "./themes"
     ],
     "skills": [
-      "./skills"
+      "./skills/khala",
+      "./skills/khala-executor",
+      "./skills/herdr"
     ]
   },
   "exports": {
@@ -41,7 +43,9 @@
     "templates",
     "themes",
     "assets",
-    "skills",
+    "skills/khala",
+    "skills/khala-executor",
+    "skills/herdr",
     "src"
   ],
   "scripts": {
@@ -50,7 +54,7 @@
     "check": "biome check src extensions/pi-review && tsc --noEmit",
     "dev": "tsc --watch",
     "prepack": "npm run clean && npm run build",
-    "test": "npm run build && node --test test/khala.test.js"
+    "test": "npm run build && node --test test/*.js"
   },
   "engines": {
     "node": ">=22.19.0"

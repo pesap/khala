@@ -1,6 +1,7 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Configuration parsing keeps inheritance and diagnostics in one module.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { PiCommand } from "./executor.js";
 
@@ -40,6 +41,7 @@ type ConfigValues = Record<string, unknown>;
 
 // The config shape follows the package's GitHub release version; it does not carry a separate persisted version.
 const CONFIG_FILE_NAME = "khala.json";
+const PI_COMMAND_SUFFIX_PATTERN = /\.(cmd|exe)$/i;
 const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	worktreeRoot: join(homedir(), "worktrees"),
 	worktreeBranchPrefix: "khala/",
@@ -85,11 +87,11 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		return base;
 	}
 
-	const configuredWorktreeRoot = readConfigString(values, "worktreeRoot");
-	const configuredBranchPrefix = readConfigString(values, "worktreeBranchPrefix");
+	const configuredWorktreeRoot = readRequiredConfigString(values, "worktreeRoot");
+	const configuredBranchPrefix = readRequiredConfigString(values, "worktreeBranchPrefix");
 	const configuredLauncher = readLauncher(values, "launcher");
 	const configuredPiCommand = readPiCommand(values, "piCommand");
-	const configuredObserverPiCommand = readPiCommand(values, "observerPiCommand");
+	const configuredObserverPiCommand = readObserverPiCommand(values, "observerPiCommand");
 	const configuredConclaveModel = readConfigString(values, "conclaveModel");
 	const configuredOracleModel = readConfigString(values, "oracleModel");
 	const configuredObserverModel = readConfigString(values, "observerModel");
@@ -97,8 +99,8 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	const configuredExecutorThinking = readThinkingLevel(values, "executorThinking");
 	const configuredObserverThinking = readThinkingLevel(values, "observerThinking");
 	const configuredPullRequestTargetBranch = readConfigText(values, "pullRequestTargetBranch");
-	const configuredCommitConvention = readConfigString(values, "commitConvention");
-	const configuredArchiveRoot = readConfigString(values, "archiveRoot");
+	const configuredCommitConvention = readRequiredConfigString(values, "commitConvention");
+	const configuredArchiveRoot = readRequiredConfigString(values, "archiveRoot");
 	const {
 		worktreeRoot: defaultWorktreeRoot,
 		worktreeBranchPrefix: defaultBranchPrefix,
@@ -141,7 +143,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	if (configuredPiCommand !== undefined) {
 		piCommand = configuredPiCommand;
 		if (configuredObserverPiCommand === undefined) {
-			observerPiCommand = configuredPiCommand;
+			observerPiCommand = assertObserverPiCommand(configuredPiCommand);
 		}
 	}
 	if (configuredObserverPiCommand !== undefined) {
@@ -219,17 +221,22 @@ function isRecord(value: unknown): value is ConfigValues {
 }
 
 function readLauncher(config: ConfigValues, key: string): LauncherNameValue | undefined {
-	const value = config[key];
-	let launcher: LauncherNameValue | undefined;
-	if (value === LauncherName.zellij || value === LauncherName.tmux || value === LauncherName.herdr) {
-		launcher = value;
+	if (!(key in config)) {
+		return;
 	}
-	return launcher;
+	const value = config[key];
+	if (value === LauncherName.zellij || value === LauncherName.tmux || value === LauncherName.herdr) {
+		return value;
+	}
+	throw new Error(`Khala config field '${key}' must be one of: zellij, tmux, herdr.`);
 }
 
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function readThinkingLevel(config: ConfigValues, key: string): ThinkingLevel | "" | undefined {
+	if (!(key in config)) {
+		return;
+	}
 	const value = config[key];
 	if (value === "") {
 		return "";
@@ -237,8 +244,7 @@ function readThinkingLevel(config: ConfigValues, key: string): ThinkingLevel | "
 	if (typeof value === "string" && THINKING_LEVELS.includes(value as ThinkingLevel)) {
 		return value as ThinkingLevel;
 	}
-	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy the strict optional return contract.
-	return undefined;
+	throw new Error(`Khala config field '${key}' must be a supported thinking level or an empty string.`);
 }
 
 function readConfigString(config: ConfigValues, key: string): string | undefined {
@@ -250,30 +256,62 @@ function readConfigString(config: ConfigValues, key: string): string | undefined
 }
 
 function readConfigText(config: ConfigValues, key: string): string | undefined {
-	const value = config[key];
-	let result: string | undefined;
-	if (typeof value === "string") {
-		result = value;
+	if (!(key in config)) {
+		return;
 	}
-	return result;
+	const value = config[key];
+	if (typeof value !== "string") {
+		throw new Error(`Khala config field '${key}' must be a string.`);
+	}
+	return value;
+}
+
+function readRequiredConfigString(config: ConfigValues, key: string): string | undefined {
+	const value = readConfigString(config, key);
+	if (key in config && value === undefined) {
+		throw new Error(`Khala config field '${key}' must be a non-empty string.`);
+	}
+	return value;
+}
+
+function readObserverPiCommand(config: ConfigValues, key: string): PiCommand | undefined {
+	const command = readPiCommand(config, key);
+	if (command === undefined) {
+		return;
+	}
+	return assertObserverPiCommand(command);
+}
+
+function assertObserverPiCommand(command: readonly string[]): PiCommand {
+	const [programPath, ...arguments_] = command;
+	const program = basename(programPath ?? "")
+		.replace(PI_COMMAND_SUFFIX_PATTERN, "")
+		.toLowerCase();
+	if (program !== "pi") {
+		throw new Error("Khala Observer only supports the Pi command; configure observerPiCommand to a pi executable.");
+	}
+	return [programPath ?? "pi", ...arguments_];
 }
 
 function readPiCommand(config: ConfigValues, key: string): PiCommand | undefined {
+	if (!(key in config)) {
+		return;
+	}
 	const value = config[key];
 	if (typeof value === "string" && value.trim().length > 0) {
 		return [value];
 	}
 	if (!Array.isArray(value) || value.length === 0) {
-		return;
+		throw new Error(`Khala config field '${key}' must be a non-empty command array or string.`);
 	}
 	const [command, ...parts] = value as unknown[];
 	if (typeof command !== "string" || command.trim().length === 0) {
-		return;
+		throw new Error(`Khala config field '${key}' must start with a non-empty command.`);
 	}
 	const args: string[] = [];
 	for (const part of parts) {
 		if (typeof part !== "string" || part.trim().length === 0) {
-			return;
+			throw new Error(`Khala config field '${key}' command arguments must be non-empty strings.`);
 		}
 		args.push(part);
 	}
@@ -281,4 +319,4 @@ function readPiCommand(config: ConfigValues, key: string): PiCommand | undefined
 }
 
 export type { ConfigScopeValue, KhalaConfig, LauncherNameValue };
-export { ConfigScope, getKhalaConfigPath, LauncherName, loadKhalaConfig, THINKING_LEVELS };
+export { assertObserverPiCommand, ConfigScope, getKhalaConfigPath, LauncherName, loadKhalaConfig, THINKING_LEVELS };

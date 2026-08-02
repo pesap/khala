@@ -13,7 +13,6 @@ import { getConclaveDirectory } from "./khala-conclave-directory.js";
 import type { ConclaveStorage } from "./khala-conclave-storage.js";
 import { createFileConclaveStorage } from "./khala-conclave-storage-file.js";
 import { loadKhalaConfig } from "./khala-config.js";
-import { KhalaEntryType } from "./khala-entry-types.js";
 import { formatError } from "./khala-error.js";
 import { sendConfiguredExecutorMessage } from "./khala-executor.js";
 import { readExecutorRecord } from "./khala-executor-registry.js";
@@ -23,8 +22,13 @@ import { isSupportedThinkingLevel } from "./khala-thinking.js";
 import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delivery.js";
 import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
+type ConclaveWakeStatus = "woken" | "deferred" | "error";
 type ConclaveCoordinator = Readonly<{
-	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => Promise<{ archivePath: string }>;
+	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => Promise<{
+		archivePath: string;
+		wakeStatus: ConclaveWakeStatus;
+		wakeError?: string;
+	}>;
 	resume: (projectPath: string, projectTrusted?: boolean) => void;
 	wakeSignal: (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void>;
 	wakeLearning: (projectPath: string, learning: LearningRecord, projectTrusted?: boolean) => Promise<void>;
@@ -44,6 +48,7 @@ type ConclaveCoordinator = Readonly<{
 		userSessionPath?: string,
 		projectTrusted?: boolean,
 	) => string | undefined;
+	dispose: () => Promise<void>;
 }>;
 interface ConclaveRuntime {
 	session: AgentSession;
@@ -55,22 +60,46 @@ function createConclaveCoordinator(
 	storage: ConclaveStorage = createFileConclaveStorage(),
 ): ConclaveCoordinator {
 	const runtimes = new Map<string, Promise<ConclaveRuntime>>();
-	const submit = (request: WorkSubmissionRequest & { projectTrusted?: boolean }): Promise<{ archivePath: string }> => {
+	let disposed = false;
+	const submit = async (
+		request: WorkSubmissionRequest & { projectTrusted?: boolean },
+	): Promise<{
+		archivePath: string;
+		wakeStatus: ConclaveWakeStatus;
+		wakeError?: string;
+	}> => {
 		const projectPath = resolve(request.projectPath);
 		const queued = storage.submit({ ...request, projectPath });
+		try {
+			await wakeConclave({
+				projectPath,
+				projectTrusted: request.projectTrusted ?? false,
+				workId: request.workId,
+				archivePath: queued.archivePath,
+				extensionPath,
+				storage,
+				runtimes,
+				disposed: () => disposed,
+			});
+			return { ...queued, wakeStatus: "woken" };
+		} catch (error) {
+			return {
+				...queued,
+				wakeStatus: "error",
+				wakeError: formatError(error),
+			};
+		}
+	};
+	const wakeSignal = (projectPath: string, signal: SignalRecord, projectTrusted = false): Promise<void> =>
 		wakeConclave({
-			projectPath,
-			projectTrusted: request.projectTrusted ?? false,
-			workId: request.workId,
-			archivePath: queued.archivePath,
+			projectPath: resolve(projectPath),
+			projectTrusted,
+			signal,
 			extensionPath,
 			storage,
 			runtimes,
+			disposed: () => disposed,
 		});
-		return Promise.resolve(queued);
-	};
-	const wakeSignal = (projectPath: string, signal: SignalRecord, projectTrusted = false): Promise<void> =>
-		wakeConclave({ projectPath: resolve(projectPath), projectTrusted, signal, extensionPath, storage, runtimes });
 	const wakeReview = (projectPath: string, workId: string, projectTrusted = false): Promise<void> =>
 		wakeConclave({
 			projectPath: resolve(projectPath),
@@ -80,6 +109,7 @@ function createConclaveCoordinator(
 			extensionPath,
 			storage,
 			runtimes,
+			disposed: () => disposed,
 		});
 	const deliverVerdict = async (projectPath: string, verdict: VerdictRecord, projectTrusted = false): Promise<void> => {
 		const resolvedProjectPath = resolve(projectPath);
@@ -97,13 +127,14 @@ function createConclaveCoordinator(
 			extensionPath,
 			storage,
 			runtimes,
+			disposed: () => disposed,
 		});
 	};
 	const resume = (projectPath: string, projectTrusted = false): void => {
 		const resolvedProjectPath = resolve(projectPath);
 		recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
 		for (const submission of storage.getPendingSubmissions(resolvedProjectPath, projectTrusted)) {
-			wakeConclave({
+			scheduleConclaveWake({
 				projectPath: resolvedProjectPath,
 				projectTrusted,
 				workId: submission.workId,
@@ -111,6 +142,7 @@ function createConclaveCoordinator(
 				extensionPath,
 				storage,
 				runtimes,
+				disposed: () => disposed,
 			});
 		}
 	};
@@ -139,6 +171,19 @@ function createConclaveCoordinator(
 		getConclaveSessionPath: storage.getConclaveSessionPath,
 		getConclaveUserSessionPath: storage.getConclaveUserSessionPath,
 		ensureConclaveSession,
+		dispose: async () => {
+			disposed = true;
+			const runtimesToDispose = [...runtimes.values()];
+			runtimes.clear();
+			await Promise.all(
+				runtimesToDispose.map((runtimePromise) =>
+					runtimePromise.then(
+						(runtime) => runtime.session.dispose(),
+						() => undefined,
+					),
+				),
+			);
+		},
 	};
 }
 
@@ -153,66 +198,72 @@ interface WakeRequest {
 	extensionPath: string;
 	storage: ConclaveStorage;
 	runtimes: Map<string, Promise<ConclaveRuntime>>;
+	disposed?: () => boolean;
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Wake prompts are explicit lifecycle contracts and must remain auditable together.
 async function wakeConclave(request: WakeRequest): Promise<void> {
+	if (request.disposed?.() === true) {
+		throw new Error("The Khala Conclave coordinator has been disposed; run /khala-recreate to recover it.");
+	}
+	const runtime = await getRuntime(
+		request.projectPath,
+		request.projectTrusted,
+		request.extensionPath,
+		request.storage,
+		request.runtimes,
+	);
+	const wake = enqueueConclaveWake(runtime, async () => {
+		let prompt: string;
+		if (request.learning !== undefined) {
+			prompt = [
+				"A Khala Observer recorded new learning.",
+				`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
+				`The learning concerns Work ${request.learning.workId}, observation ${request.learning.executionId}.`,
+				"Check whether this learning is relevant and whether equivalent learning already exists in the Archive.",
+				"If it is sufficient, call khala_admit_work, then call khala_launch_execution; otherwise do not launch the Executor yet.",
+			].join("\n");
+		} else if (request.review === true) {
+			prompt = [
+				"A User Pull Request review event has arrived.",
+				`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
+				`The review concerns Work ${request.workId}.`,
+				"If changes were requested, preserve the review evidence and launch the successor Mission. If the Pull Request was merged, verify the merge evidence and record the Work Outcome through khala_record_work_outcome.",
+			].join("\n");
+		} else if (request.signal === undefined) {
+			prompt = [
+				"A new Work Submission is waiting for this Project Conclave.",
+				`Read the authoritative Archive at ${request.archivePath}.`,
+				`Process exactly submission ${request.workId}.`,
+				"Validate it against the current Work and Mission rules before acting.",
+				"If the Work has no context, first check the Archive for relevant learning.",
+				"If no sufficient learning exists, call khala_launch_observer with the queued workId.",
+				"If the Work is valid and has sufficient context or learning, call khala_admit_work, then call khala_launch_execution with the queued workId.",
+				"If the authoritative submission is already admitted, skip admission and recover or launch its current Mission; if it is reviewing, wait for the current Observer attempt.",
+				"If it is invalid or stale, do not launch an agent; record the reason in your response.",
+			].join("\n");
+		} else {
+			prompt = [
+				"A new Executor Signal has arrived.",
+				`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
+				`The Signal concerns Work ${request.signal.workId}, execution ${request.signal.executionId}.`,
+				"Evaluate the evidence and issue the appropriate durable Verdict through khala_verdict.",
+				"If the Verdict is Retry, immediately call khala_launch_execution for the Work so the successor Mission is materialized and launched or returns an explicit recoverable error.",
+			].join("\n");
+		}
+		await runtime.session.prompt(prompt);
+	});
 	try {
-		const runtime = await getRuntime(
-			request.projectPath,
-			request.projectTrusted,
-			request.extensionPath,
-			request.storage,
-			request.runtimes,
-		);
-		const wake = enqueueConclaveWake(runtime, async () => {
-			let prompt: string;
-			if (request.learning !== undefined) {
-				prompt = [
-					"A Khala Observer recorded new learning.",
-					`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
-					`The learning concerns Work ${request.learning.workId}, observation ${request.learning.executionId}.`,
-					"Check whether this learning is relevant and whether equivalent learning already exists in the Archive.",
-					"If it is sufficient, call khala_admit_work, then call khala_launch_execution; otherwise do not launch the Executor yet.",
-				].join("\n");
-			} else if (request.review === true) {
-				prompt = [
-					"A User Pull Request review event has arrived.",
-					`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
-					`The review concerns Work ${request.workId}.`,
-					"If changes were requested, preserve the review evidence and launch the successor Mission. If the Pull Request was merged, verify the merge evidence and record the Work Outcome through khala_record_work_outcome.",
-				].join("\n");
-			} else if (request.signal === undefined) {
-				prompt = [
-					"A new Work Submission is waiting for this Project Conclave.",
-					`Read the authoritative Archive at ${request.archivePath}.`,
-					`Process exactly submission ${request.workId}.`,
-					"Validate it against the current Work and Mission rules before acting.",
-					"If the Work has no context, first check the Archive for relevant learning.",
-					"If no sufficient learning exists, call khala_launch_observer with the queued workId.",
-					"If the Work is valid and has sufficient context or learning, call khala_admit_work, then call khala_launch_execution with the queued workId.",
-					"If the authoritative submission is already admitted, skip admission and recover or launch its current Mission; if it is reviewing, wait for the current Observer attempt.",
-					"If it is invalid or stale, do not launch an agent; record the reason in your response.",
-				].join("\n");
-			} else {
-				prompt = [
-					"A new Executor Signal has arrived.",
-					`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
-					`The Signal concerns Work ${request.signal.workId}, execution ${request.signal.executionId}.`,
-					"Evaluate the evidence and issue the appropriate durable Verdict through khala_verdict.",
-					"If the Verdict is Retry, immediately call khala_launch_execution for the Work so the successor Mission is materialized and launched or returns an explicit recoverable error.",
-				].join("\n");
-			}
-			await runtime.session.prompt(prompt);
-		});
 		await wake;
 	} catch (error) {
-		const runtime = await getExistingRuntime(request.projectPath, request.projectTrusted, request.runtimes);
-		if (runtime !== undefined) {
-			runtime.session.sessionManager.appendCustomEntry(KhalaEntryType.conclaveError, {
+		const runtimeForError = await getExistingRuntime(request.projectPath, request.projectTrusted, request.runtimes);
+		if (runtimeForError !== undefined) {
+			runtimeForError.session.sessionManager.appendCustomEntry("khala-conclave-error", {
 				workId: request.workId,
 				error: formatError(error),
 			});
 		}
+		throw error;
 	}
 }
 
@@ -257,6 +308,10 @@ async function getExistingRuntime(
 		// biome-ignore lint/complexity/noUselessUndefined: Make the unavailable result explicit for strict return analysis.
 		return undefined;
 	}
+}
+
+function scheduleConclaveWake(request: WakeRequest): undefined {
+	wakeConclave(request).catch(() => undefined);
 }
 
 function enqueueConclaveWake(runtime: ConclaveRuntime, operation: () => Promise<void>): Promise<void> {

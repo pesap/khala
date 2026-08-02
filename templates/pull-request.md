@@ -1,9 +1,9 @@
-<!-- Work: <!-- Khala Work ID --> -->
-<!-- Mission: <!-- Khala Mission ID --> -->
-<!-- Execution: <!-- Khala Execution ID --> -->
-<!-- Related issue or request: <!-- Link when applicable --> -->
+<!-- Work: Khala Work ID -->
+<!-- Mission: Khala Mission ID -->
+<!-- Execution: Khala Execution ID -->
+<!-- Related issue or request: Link when applicable -->
 
-Closes <!-- Fill issue number -->
+<!-- Add "Closes #123" here when applicable. -->
 
 ## Summary
 

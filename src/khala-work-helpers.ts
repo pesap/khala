@@ -240,6 +240,25 @@ function queueWork(input: {
 				title: work.title,
 				archivePath: queued.archivePath,
 			});
+			const wakeStatus = queued.wakeStatus ?? "deferred";
+			let lifecycleMessage = "Executor: not assigned; admission and launch are pending.";
+			let wakeMessage = "Conclave wake is deferred; recovery is available with /khala-recreate.";
+			if (wakeStatus === "woken") {
+				lifecycleMessage = "Conclave processing completed; inspect /khala for the current lifecycle state.";
+				wakeMessage = "The Conclave completed the submission wake.";
+			} else if (wakeStatus === "error") {
+				wakeMessage =
+					`Conclave wake failed; recovery is available with /khala-recreate. ${queued.wakeError ?? ""}`.trim();
+			}
+			const details: Extract<KhalaWorkLaunchResult["details"], { status: typeof KhalaWorkLaunchStatus.queued }> = {
+				status: KhalaWorkLaunchStatus.queued,
+				workId,
+				archivePath: queued.archivePath,
+				wakeStatus,
+			};
+			if (queued.wakeError !== undefined) {
+				details.wakeError = queued.wakeError;
+			}
 			return {
 				content: [
 					{
@@ -247,11 +266,12 @@ function queueWork(input: {
 						text: [
 							`Work "${work.title}" queued for Conclave admission.`,
 							`Work ID: ${workId}`,
-							"Executor: not assigned; admission and launch are pending.",
+							lifecycleMessage,
+							wakeMessage,
 						].join("\n"),
 					},
 				],
-				details: { status: KhalaWorkLaunchStatus.queued, workId, archivePath: queued.archivePath },
+				details,
 			};
 		})
 		.catch(

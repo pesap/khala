@@ -1,11 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import { type Static, Type } from "typebox";
-import { errorWithCause, formatError } from "./khala-error.js";
+import type { ExecutorStarter } from "./executor.js";
+import { errorWithCause, formatAttachedCleanupDiagnostic, formatError } from "./khala-error.js";
 import type { ExecutorStarterFactory } from "./khala-executor.js";
 import {
 	createExecutorRecord,
 	listExecutorRecords,
+	readExecutorRecord,
 	updateExecutorRecord,
 	writeExecutorRecord,
 } from "./khala-executor-registry.js";
@@ -62,6 +64,7 @@ function registerKhalaObserver(pi: ExtensionAPI, dependencies: KhalaObserverDepe
 	});
 }
 
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Observer launch keeps durable claim, resource ownership, and compensation atomic.
 async function launchObserver(
 	params: ObserverInput,
 	context: ExtensionContext,
@@ -86,14 +89,14 @@ async function launchObserver(
 		},
 		ExecutorStatus.starting,
 	);
-	let launcherSucceeded = false;
+	let launched: Awaited<ReturnType<ExecutorStarter>> | undefined;
 	try {
 		// The submission is already marked reviewing. Keep initial execution
 		// materialization inside this recovery boundary so a failed Archive write
 		// can return the review claim to queued.
 		writeExecutorRecord(starting, projectTrusted);
 		const observerStarter = dependencies.createObserverStarter(context);
-		const launched = await observerStarter({
+		launched = await observerStarter({
 			projectPath: context.cwd,
 			workId: params.workId,
 			executionId,
@@ -112,22 +115,33 @@ async function launchObserver(
 					projectTrusted,
 				),
 		});
-		launcherSucceeded = true;
-		updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.running }, projectTrusted);
+		let runtimeUpdate: { status: typeof ExecutorStatus.running; target?: string } = {
+			status: ExecutorStatus.running,
+		};
 		if (launched.target !== undefined) {
-			updateExecutorRecord(context.cwd, executionId, { target: launched.target }, projectTrusted);
+			runtimeUpdate = { ...runtimeUpdate, target: launched.target };
 		}
+		updateExecutorRecord(context.cwd, executionId, runtimeUpdate, projectTrusted);
 		const destination = launched.target ?? launched.sandbox.path;
 		return {
 			content: [{ type: "text", text: `Observer ${observerName} launched for Work ${params.workId}.` }],
 			details: { workId: params.workId, executionId, observerName, destination, sandboxPath: launched.sandbox.path },
 		};
 	} catch (error) {
-		if (!launcherSucceeded) {
+		const current = readExecutorRecord(context.cwd, executionId, projectTrusted);
+		let cleanupError = formatAttachedCleanupDiagnostic(error);
+		if (current?.status === ExecutorStatus.starting || current?.status === ExecutorStatus.running) {
+			try {
+				await launched?.cleanup?.();
+			} catch (cleanupFailure) {
+				cleanupError = ` Cleanup also failed: ${formatError(cleanupFailure)}`;
+			}
 			updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.failed }, projectTrusted);
 		}
 		dependencies.markSubmissionQueued(context.cwd, params.workId, executionId, projectTrusted);
-		throw errorWithCause(`Observer launch failed: ${formatError(error)}`, error);
+		let message = `Observer launch failed: ${formatError(error)}`;
+		message += cleanupError;
+		throw errorWithCause(message, error);
 	}
 }
 

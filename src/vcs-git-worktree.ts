@@ -1,3 +1,4 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Git VCS and Pull Request publication share one provider boundary.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -15,7 +16,7 @@ const PULL_REQUEST_NUMBER_PATTERN = /\/pull\/(\d+)(?:$|[?#])/;
 // PATH_MAX is 4096 on Linux; most filesystems cap path components at 255 bytes.
 const MAX_PATH_LENGTH = 4096;
 const MAX_COMPONENT_LENGTH = 255;
-// Git worktrees are created from HEAD so the executor never inherits uncommitted changes from the active checkout.
+// Git worktrees are created from the same resolved PR target used by review preparation, so caller-only commits cannot leak into the PR.
 class GitWorktreeProvider extends VCSProvider {
 	readonly #worktreeRoot: string;
 	readonly #branchPrefix: string;
@@ -50,7 +51,9 @@ class GitWorktreeProvider extends VCSProvider {
 			throw new Error(`Sandbox path already exists: ${sandboxPath}`);
 		}
 
-		await git(projectRoot, ["worktree", "add", "-b", `${this.#branchPrefix}${name}`, sandboxPath, "HEAD"]);
+		const baseBranch = request.baseBranch?.trim() || (await defaultTargetBranch(projectRoot));
+		const baseRef = await resolveBranchRef(projectRoot, baseBranch);
+		await git(projectRoot, ["worktree", "add", "-b", `${this.#branchPrefix}${name}`, sandboxPath, baseRef]);
 		return { path: sandboxPath, name, projectPath: projectRoot };
 	}
 
@@ -90,7 +93,7 @@ class GitWorktreeProvider extends VCSProvider {
 		if (url === undefined) {
 			const discovered = await findPullRequest(sourceBranch);
 			if (discovered === undefined) {
-				return { headCommit };
+				throw new Error(`No published Pull Request was found for Executor branch '${sourceBranch}'.`);
 			}
 			if (discovered.number === undefined) {
 				finalization = { headCommit, url: discovered.url };
@@ -152,6 +155,20 @@ function planningCommitSubject(request: ReviewWorkflowRequest): string {
 		return `Khala: record Mission ${request.executionId} plan`;
 	}
 	return `${convention} record Mission ${request.executionId} plan`;
+}
+
+async function resolveBranchRef(cwd: string, branch: string): Promise<string> {
+	await git(cwd, ["check-ref-format", "--branch", branch]);
+	try {
+		await git(cwd, ["remote", "get-url", "origin"]);
+	} catch {
+		await git(cwd, ["rev-parse", "--verify", `${branch}^{commit}`]);
+		return branch;
+	}
+	const remoteBranch = `origin/${branch}`;
+	await git(cwd, ["fetch", "--no-tags", "origin", `refs/heads/${branch}:refs/remotes/${remoteBranch}`]);
+	await git(cwd, ["rev-parse", "--verify", `${remoteBranch}^{commit}`]);
+	return remoteBranch;
 }
 
 async function defaultTargetBranch(cwd: string): Promise<string> {

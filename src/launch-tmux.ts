@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { platform } from "node:os";
 import { promisify } from "node:util";
 import {
@@ -70,7 +70,11 @@ async function focusTmux(target: string): Promise<void> {
 	if (target.length === 0) {
 		throw new Error("The tmux Executor target is empty.");
 	}
-	await tmux(["switch-client", "-t", target]);
+	if ((await currentTmuxSession()) !== undefined) {
+		await tmux(["switch-client", "-t", target]);
+		return;
+	}
+	await tmuxInteractive(["attach-session", "-t", target]);
 }
 
 async function closeTmux(target: string): Promise<void> {
@@ -91,6 +95,34 @@ async function currentTmuxSession(): Promise<string | undefined> {
 		// Failing here means Pi is not inside a tmux session, so create a detached session instead.
 	}
 	return session;
+}
+
+async function tmuxInteractive(args: string[]): Promise<void> {
+	try {
+		await new Promise<void>((resolve, reject) => {
+			const child = spawn("tmux", args, { stdio: "inherit" });
+			child.once("error", reject);
+			child.once("close", (code) => {
+				if (code === 0) {
+					resolve();
+					return;
+				}
+				reject(new Error(`tmux exited with status ${code ?? 1}`));
+			});
+		});
+	} catch (error) {
+		if (error instanceof Error) {
+			const { message: errorMessage } = error;
+			let message = errorMessage;
+			if (hasErrorCode(error, "ENOENT")) {
+				message = "tmux was not found on PATH";
+			}
+			// The package targets ES2020, whose TypeScript lib omits ErrorOptions.cause.
+			// biome-ignore lint/style/useErrorCause: Preserve ES2020 compatibility.
+			throw new Error(`tmux ${args.join(" ")} failed: ${message}`);
+		}
+		throw error;
+	}
 }
 
 async function tmux(args: string[]): Promise<string> {

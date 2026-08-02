@@ -21,6 +21,8 @@ interface LaunchedSession {
 	sandbox: Sandbox;
 	target?: string;
 	ready?: Promise<void> | undefined;
+	/** Releases only resources created by this launch transaction. */
+	cleanup?: () => Promise<void>;
 }
 
 abstract class Launcher {

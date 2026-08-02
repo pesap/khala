@@ -149,30 +149,29 @@ async function finalizeConfiguredExecutorReview(input: ExecutorReviewFinalizatio
 			supersedesPullRequestUrl: existingReview.relatedPullRequestUrl,
 		};
 	}
-	const preparation = await provider.finalizeReview(reviewRequest, existingReview?.url);
-	if (preparation !== undefined) {
-		let finalization: ReviewFinalizationInput = {
-			projectPath: execution.projectPath,
-			projectTrusted,
-			executionId: execution.executionId,
-			headCommit: preparation.headCommit,
-			summary,
-			evidence,
-		};
-		if (preparation.url !== undefined) {
-			finalization = { ...finalization, url: preparation.url };
-		}
-		if (preparation.number !== undefined) {
-			finalization = { ...finalization, number: preparation.number };
-		}
-		const recordedReview = recordReviewFinalization(finalization);
-		if (
-			recordedReview !== undefined &&
-			existingReview?.relatedPullRequestUrl !== undefined &&
-			preparation.url !== undefined
-		) {
-			await provider.supersedePullRequest(existingReview.relatedPullRequestUrl, preparation.url);
-		}
+	let confirmedReviewUrl: string | undefined;
+	if (existingReview?.remoteConfirmedAt !== undefined) {
+		confirmedReviewUrl = existingReview.url;
+	}
+	const preparation = await provider.finalizeReview(reviewRequest, confirmedReviewUrl);
+	if (preparation === undefined || preparation.url === undefined || preparation.url.trim().length === 0) {
+		throw new Error("Executor Pull Request finalization did not produce a published Pull Request URL.");
+	}
+	let finalization: ReviewFinalizationInput = {
+		projectPath: execution.projectPath,
+		projectTrusted,
+		executionId: execution.executionId,
+		headCommit: preparation.headCommit,
+		summary,
+		evidence,
+		url: preparation.url,
+	};
+	if (preparation.number !== undefined) {
+		finalization = { ...finalization, number: preparation.number };
+	}
+	recordReviewFinalization(finalization);
+	if (existingReview?.relatedPullRequestUrl !== undefined) {
+		await provider.supersedePullRequest(existingReview.relatedPullRequestUrl, preparation.url);
 	}
 }
 

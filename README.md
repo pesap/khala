@@ -180,7 +180,7 @@ pi -e .
 ```
 
 Khala is a Pi package. The package manifest registers the extension, prompts,
-themes, and the Herdr skill.
+themes, and the Khala-owned role skills (`khala`, `khala-executor`, and `herdr`).
 
 ## Quick start
 
@@ -239,7 +239,8 @@ individual values in `.pi/khala.json`.
 launcher must run inside a Herdr-managed pane (`HERDR_ENV=1`); it opens the
 already-created Executor worktree as a Herdr workspace without taking focus.
 Configured commands remain argument arrays; Herdr quotes them for its `pane run`
-shell command. Run the setup wizard to choose
+shell command. Observer commands are restricted to Pi because Khala passes Pi
+capability flags that enforce read-only operation. Run the setup wizard to choose
 `conclaveModel`, `oracleModel`, and `observerModel` from the models reported by
 `pi --list-models`. Setup derives thinking choices for the Conclave, Executor,
 and Observer settings from each model's Pi metadata. The `conclaveThinking`,
@@ -280,8 +281,10 @@ npm run build
 npm test
 ```
 
-`npm run check` runs Biome and TypeScript validation. Tests use local stubs and
-do not require provider credentials or paid model calls.
+`npm run check` runs Biome and TypeScript validation. `npm test` discovers all
+tracked `test/*.js` non-e2e tests; they use local stubs and do not require
+provider credentials or paid model calls. CI uses `npm ci --ignore-scripts`,
+`npm run check`, and this safe test command.
 
 The most important architectural seam is `src/khala-model.ts`: it is the single
 source of truth for durable record shapes, discriminants, statuses, and guards.

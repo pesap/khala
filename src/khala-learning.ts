@@ -109,17 +109,20 @@ async function recordLearning(
 		projectTrusted,
 	);
 	updateExecutorRecord(projectPath, learning.executionId, { status: "finished" }, projectTrusted);
-	await wake(projectPath, learning, projectTrusted);
-	if (
-		execution.target !== undefined &&
-		(execution.launcher === LauncherName.zellij ||
-			execution.launcher === LauncherName.tmux ||
-			execution.launcher === LauncherName.herdr)
-	) {
-		try {
-			await closeObserver(execution.launcher, execution.target);
-		} catch {
-			// Learning is durable even when the ephemeral Observer pane is already gone.
+	try {
+		await wake(projectPath, learning, projectTrusted);
+	} finally {
+		if (
+			execution.target !== undefined &&
+			(execution.launcher === LauncherName.zellij ||
+				execution.launcher === LauncherName.tmux ||
+				execution.launcher === LauncherName.herdr)
+		) {
+			try {
+				await closeObserver(execution.launcher, execution.target);
+			} catch {
+				// Learning is durable even when the ephemeral Observer pane is already gone.
+			}
 		}
 	}
 	return {

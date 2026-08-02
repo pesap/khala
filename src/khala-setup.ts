@@ -11,6 +11,7 @@ import process, { stdin as input, stdout as output } from "node:process";
 import { autocomplete, text as clackText, confirm, isCancel, select } from "@clack/prompts";
 import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import {
+	assertObserverPiCommand,
 	ConfigScope,
 	type ConfigScopeValue,
 	getKhalaConfigPath,
@@ -547,9 +548,10 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 	}
 	const { models, capabilities, executorCapability } = discovery;
 	const observerPiCommand = parseCommand(
-		await askLine("Observer command (e.g. pi, claude, or codex)", commandText(current.observerPiCommand)),
+		await askLine("Observer command (Pi only)", commandText(current.observerPiCommand)),
 		"Observer command",
 	);
+	assertObserverPiCommand(observerPiCommand);
 	let { conclaveModel, oracleModel, observerModel } = current;
 	if (models.length > 0) {
 		conclaveModel = await searchModel("Conclave model", models, current.conclaveModel);
@@ -596,6 +598,19 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 	};
 }
 
+function validateSetupConfig(config: StoredConfig, interactive: boolean): void {
+	if (config.oracleModel.trim().length === 0) {
+		if (interactive) {
+			throw new Error("Setup requires a non-empty oracleModel; choose Reconfigure everything and select a model.");
+		}
+		throw new Error("Non-interactive setup requires a non-empty oracleModel; configure a model or run interactively.");
+	}
+	if (config.worktreeRoot.trim().length === 0 || config.worktreeBranchPrefix.trim().length === 0) {
+		throw new Error("Setup requires a non-empty worktree root and branch prefix.");
+	}
+	assertObserverPiCommand(config.observerPiCommand);
+}
+
 function chooseNonInteractiveModels(config: StoredConfig, models: readonly string[]): StoredConfig {
 	if (models.length === 0) {
 		return config;
@@ -636,6 +651,7 @@ async function configure(options: SetupOptions): Promise<void> {
 			"Keep current configuration",
 		);
 		if (choice === "Keep current configuration") {
+			validateSetupConfig(currentConfig, true);
 			console.log(`\n${green("Done.")} ${dim("Nothing changed.")}`);
 			return;
 		}
@@ -647,6 +663,7 @@ async function configure(options: SetupOptions): Promise<void> {
 		const discovery = await discoverConfiguredModels(currentConfig.piCommand);
 		next = chooseNonInteractiveModels(currentConfig, discovery.models);
 	}
+	validateSetupConfig(next, interactive);
 	printState(scope, configPath, next, Object.keys(existing).length > 0);
 	if (options.dryRun) {
 		console.log(`\n${yellow("Dry run.")} ${dim(`Run without --dry-run to write ${configPath}.`)}`);

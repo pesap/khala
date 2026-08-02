@@ -13,7 +13,7 @@ import {
 	type RetryHandoff,
 	type VerdictRecord,
 } from "./khala-model.js";
-import { markPullRequestReviewable } from "./khala-review.js";
+import { latestPullRequestForMission, markPullRequestReviewable } from "./khala-review.js";
 import type { readSignal } from "./khala-signal.js";
 import type { NormalizedVerdictInput, RequeueSubmission, VerdictInput } from "./khala-verdict.js";
 
@@ -126,6 +126,19 @@ function persistVerdict(input: {
 	}
 	if (verdict.decision === "finish" || verdict.decision === "reject") {
 		const result = withArchiveLock(context.cwd, projectTrusted, () => {
+			if (verdict.decision === "finish" && missionId !== undefined) {
+				const review = latestPullRequestForMission(context.cwd, missionId, projectTrusted);
+				if (
+					review?.url === undefined ||
+					review.url.trim().length === 0 ||
+					review.remoteConfirmedAt === undefined ||
+					review.status === "closed"
+				) {
+					throw new Error(
+						"Finish requires an active, remotely confirmed Pull Request before the Verdict can be committed.",
+					);
+				}
+			}
 			const execution = readExecutorRecord(context.cwd, verdict.executionId, projectTrusted);
 			if (execution?.status !== ExecutorStatus.running) {
 				throw new Error("The Execution changed before its terminal Verdict could be committed.");

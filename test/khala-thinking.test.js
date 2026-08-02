@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { buildPiArguments } from "../src/executor.ts";
-import { loadKhalaConfig } from "../src/khala-config.ts";
-import { resolveConfiguredExecutorModelId, thinkingChoices } from "../src/khala-setup.ts";
-import { runOracle } from "../src/khala-oracle.ts";
-import { getSupportedThinkingLevels, isSupportedThinkingLevel } from "../src/khala-thinking.ts";
+import { buildPiArguments } from "../dist/src/executor.js";
+import { loadKhalaConfig } from "../dist/src/khala-config.js";
+import { resolveConfiguredExecutorModelId, thinkingChoices } from "../dist/src/khala-setup.js";
+import { runOracle } from "../dist/src/khala-oracle.js";
+import { getSupportedThinkingLevels, isSupportedThinkingLevel } from "../dist/src/khala-thinking.js";
 
 test("thinking capabilities follow Pi metadata semantics", () => {
 	const model = { reasoning: true, thinkingLevelMap: { off: "off", low: "low", medium: null, high: undefined } };
@@ -69,6 +69,22 @@ test("Oracle refuses to run without a configured model", async () => {
 	}
 });
 
+test("invalid explicit configuration fails instead of silently using defaults", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-invalid-config-"));
+	process.env.PI_CODING_AGENT_DIR = root;
+	try {
+		writeFileSync(join(root, "khala.json"), JSON.stringify({ launcher: "not-a-launcher" }));
+		assert.throws(() => loadKhalaConfig(), /launcher.*zellij.*tmux.*herdr/);
+		writeFileSync(join(root, "khala.json"), JSON.stringify({ observerPiCommand: ["claude"] }));
+		assert.throws(() => loadKhalaConfig(), /Observer only supports the Pi command/);
+		writeFileSync(join(root, "khala.json"), JSON.stringify({ observerPiCommand: ["PI.CMD"] }));
+		assert.deepEqual(loadKhalaConfig().observerPiCommand, ["PI.CMD"]);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("legacy config without thinking fields preserves Pi defaults", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-thinking-legacy-"));
 	process.env.PI_CODING_AGENT_DIR = root;
@@ -97,7 +113,11 @@ test("child Pi arguments propagate only the configured role thinking level", () 
 	const executorArgs = buildPiArguments(request, "high");
 	assert.deepEqual(executorArgs.slice(-3), ["--thinking", "high", "do work"]);
 	const observerArgs = buildPiArguments({ ...request, kind: "observer" }, "low");
-	assert.deepEqual(observerArgs.slice(-5), ["--thinking", "low", "--khala-agent-kind", "observer", "do work"]);
+	assert.ok(observerArgs.includes("--tools"));
+	assert.ok(observerArgs.includes("read,grep,find,ls,khala_read_archive,khala_record_learning"));
+	const thinkingIndex = observerArgs.indexOf("--thinking");
+	assert.equal(observerArgs[thinkingIndex + 1], "low");
+	assert.deepEqual(observerArgs.slice(-3), ["--khala-agent-kind", "observer", "do work"]);
 	const defaultArgs = buildPiArguments(request, "");
 	assert.equal(defaultArgs.includes("--thinking"), false);
 });

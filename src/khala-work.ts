@@ -1,3 +1,4 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Work registration and render contracts share one public tool boundary.
 import type {
 	AgentToolResult,
 	ExtensionAPI,
@@ -53,7 +54,7 @@ type KhalaWorkDependencies = Readonly<{
 		projectPath: string;
 		work: KhalaWork;
 		projectTrusted?: boolean;
-	}) => Promise<{ archivePath: string }>;
+	}) => Promise<{ archivePath: string; wakeStatus?: "woken" | "deferred" | "error"; wakeError?: string }>;
 	getSubmission: (
 		projectPath: string,
 		workId: string,
@@ -87,7 +88,13 @@ type KhalaWorkDependencies = Readonly<{
 type KhalaWorkLaunchResult =
 	| {
 			content: [{ type: "text"; text: string }];
-			details: { status: typeof KhalaWorkLaunchStatus.queued; workId: string; archivePath: string };
+			details: {
+				status: typeof KhalaWorkLaunchStatus.queued;
+				workId: string;
+				archivePath: string;
+				wakeStatus?: "woken" | "deferred" | "error";
+				wakeError?: string;
+			};
 	  }
 	| {
 			content: [{ type: "text"; text: string }];

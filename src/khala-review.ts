@@ -73,7 +73,7 @@ type ReviewFinalizationInput = Readonly<{
 	headCommit: string;
 	summary: string;
 	evidence: readonly string[];
-	url?: string;
+	url: string;
 	number?: number;
 }>;
 
@@ -144,39 +144,42 @@ function markPullRequestReviewable(input: {
 	executionId: string;
 }): PullRequestRecord {
 	const existing = latestPullRequest(input.projectPath, input.executionId, input.projectTrusted);
-	if (existing !== undefined) {
-		if (
-			existing.status === "merged" ||
-			existing.status === "closed" ||
-			existing.status === "reviewable" ||
-			existing.status === "open" ||
-			existing.status === "changes-requested"
-		) {
-			return existing;
-		}
-		const reviewable = { ...existing, status: "reviewable" as const, recordedAt: new Date().toISOString() };
-		appendPullRequestRecord(input.projectPath, reviewable, input.projectTrusted);
-		return reviewable;
+	if (
+		existing === undefined ||
+		existing.url === undefined ||
+		existing.url.trim().length === 0 ||
+		existing.remoteConfirmedAt === undefined ||
+		existing.status === "closed"
+	) {
+		throw new Error(
+			"An active, remotely confirmed Pull Request must exist before the Execution can become reviewable.",
+		);
 	}
-	const prepared = recordReviewPreparation({
-		...input,
-		sourceBranch: "",
-		targetBranch: "",
-		planningCommit: "",
-	});
-	const reviewable = { ...prepared, status: "reviewable" as const, recordedAt: new Date().toISOString() };
+	if (
+		existing.status === "merged" ||
+		existing.status === "reviewable" ||
+		existing.status === "open" ||
+		existing.status === "changes-requested"
+	) {
+		return existing;
+	}
+	const reviewable = { ...existing, status: "reviewable" as const, recordedAt: new Date().toISOString() };
 	appendPullRequestRecord(input.projectPath, reviewable, input.projectTrusted);
 	return reviewable;
 }
 
-function recordReviewFinalization(input: ReviewFinalizationInput): PullRequestRecord | undefined {
+function recordReviewFinalization(input: ReviewFinalizationInput): PullRequestRecord {
 	const existing = latestPullRequest(input.projectPath, input.executionId, input.projectTrusted);
 	if (existing === undefined) {
-		return;
+		throw new Error(`No Pull Request preparation exists for Execution ${input.executionId}.`);
+	}
+	if (input.url === undefined || input.url.trim().length === 0) {
+		throw new Error("Pull Request finalization requires a published Pull Request URL.");
 	}
 	const next: PullRequestRecord = {
 		...existing,
-		...(input.url === undefined ? {} : { url: input.url, remoteConfirmedAt: new Date().toISOString() }),
+		url: input.url,
+		remoteConfirmedAt: new Date().toISOString(),
 		...(input.number === undefined ? {} : { number: input.number }),
 		headCommit: input.headCommit,
 		diffSummary: input.summary,
@@ -187,7 +190,7 @@ function recordReviewFinalization(input: ReviewFinalizationInput): PullRequestRe
 	return next;
 }
 
-function recordPullRequestReview(input: PullRequestReviewInput, context: ExtensionContext, wake: ReviewWake) {
+async function recordPullRequestReview(input: PullRequestReviewInput, context: ExtensionContext, wake: ReviewWake) {
 	const sessionRole = readSessionRole(context);
 	if (!canRecordPullRequestReview(sessionRole)) {
 		throw new Error("Only a User may record Pull Request review or merge evidence.");
@@ -234,7 +237,16 @@ function recordPullRequestReview(input: PullRequestReviewInput, context: Extensi
 	if (existing !== undefined && (existing.workId !== input.workId || existing.missionId !== input.missionId)) {
 		throw new Error("The Pull Request review does not match the registered Work Mission.");
 	}
-	let reviewUrl = input.url?.trim();
+	const suppliedUrl = input.url?.trim();
+	if (
+		existing?.remoteConfirmedAt !== undefined &&
+		suppliedUrl !== undefined &&
+		suppliedUrl.length > 0 &&
+		suppliedUrl !== existing.url
+	) {
+		throw new Error("User review evidence cannot replace the runtime-confirmed Pull Request URL.");
+	}
+	let reviewUrl = suppliedUrl;
 	if ((reviewUrl === undefined || reviewUrl.length === 0) && existing?.url !== undefined) {
 		reviewUrl = existing.url.trim();
 	}
@@ -307,13 +319,23 @@ function recordPullRequestReview(input: PullRequestReviewInput, context: Extensi
 		recordedAt: new Date().toISOString(),
 	};
 	appendPullRequestRecord(context.cwd, record, projectTrusted);
+	let wakeError: string | undefined;
 	if (status === "changes-requested" || status === "merged" || status === "closed") {
-		Promise.resolve(wake(context.cwd, input.workId, projectTrusted)).catch(() => undefined);
+		try {
+			await wake(context.cwd, input.workId, projectTrusted);
+		} catch (error) {
+			wakeError = error instanceof Error ? error.message : String(error);
+		}
 	}
-	return Promise.resolve({
-		content: [{ type: "text" as const, text: `Pull Request ${record.pullRequestId} recorded as ${record.status}.` }],
+	let text = `Pull Request ${record.pullRequestId} recorded as ${record.status}.`;
+	if (wakeError !== undefined) {
+		text += ` Conclave wake failed: ${wakeError}. Recovery is available with /khala-recreate.`;
+	}
+	return {
+		content: [{ type: "text" as const, text }],
 		details: record,
-	});
+		...(wakeError === undefined ? {} : { isError: true }),
+	};
 }
 
 function recordWorkOutcome(

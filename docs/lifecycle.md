@@ -17,7 +17,9 @@ Work
 ```
 
 The Archive persists every durable step. It is the system's memory and authority,
-but it does not author evidence or make decisions by itself.
+but it does not author evidence or make decisions by itself. Submission responses
+report whether the Conclave wake was accepted or failed; a durable queued
+submission remains recoverable with `/khala-recreate` when the runtime is unavailable.
 
 ## Roles and authorship
 
@@ -61,7 +63,10 @@ A Work Submission is a proposal, not yet an authoritative Mandate.
 The Conclave reads the authoritative Work Submission.
 
 If repository context is missing or insufficient, the Conclave launches a
-submission-scoped, read-only Observer with `khala_launch_observer`.
+submission-scoped, read-only Observer with `khala_launch_observer`. The child
+process is capability-restricted to `read`, `grep`, `find`, `ls`,
+`khala_read_archive`, and `khala_record_learning`; the prompt is not the only
+read-only control.
 
 The Observer:
 
@@ -124,7 +129,8 @@ The Executor submits `khala_signal` records. Signals have three meanings:
 - **finished**: the Executor believes the implementation is ready for review.
 
 A Signal is evidence, not approval. The Executor cannot issue a Verdict or
-accept its own Work.
+accept its own Work. Monitor focus failures are UI-only failures and do not
+rewrite or hide a live Execution.
 
 The intended control rule is:
 
@@ -175,7 +181,9 @@ predecessor.
 Finish means the Executor's implementation is complete enough to hand off for
 external review. It does **not** mean the Work has been accepted or merged.
 
-The resulting PR remains available for User review. If review requests changes,
+The resulting PR remains available for User review only after publication is
+confirmed and its URL is recorded. A failed publication/finalization leaves the
+Execution recoverable and never creates a reviewable placeholder. If review requests changes,
 the Conclave creates a successor Mission/Execution rather than silently changing
 the completed Mission.
 

@@ -25,12 +25,28 @@ import {
 } from "./khala-model.js";
 
 type MissionProjectionState = "current" | "superseded" | "finished" | "rejected" | "retry-pending";
+type ArchiveSnapshot = Readonly<{
+	listExecutions: () => ExecutorRecord[];
+	listSignals: () => SignalRecord[];
+	listPullRequests: () => PullRequestRecord[];
+	listSubmissions: () => KhalaWorkSubmission[];
+}>;
 type MissionProjection = Readonly<{
 	mission: MissionRecord;
 	state: MissionProjectionState;
 	successorMissionId?: string;
 	terminalVerdict?: VerdictRecord;
 }>;
+
+function createArchiveSnapshot(projectPath: string, projectTrusted = false): ArchiveSnapshot {
+	const records = listArchiveRecords(projectPath, projectTrusted);
+	return {
+		listExecutions: () => projectRecordsFromRecords(records, "execution", isExecutorRecord),
+		listSignals: () => projectRecordsFromRecords(records, "signal", isSignal),
+		listPullRequests: () => projectRecordsFromRecords(records, "pull-request", isPullRequestRecord),
+		listSubmissions: () => projectRecordsFromRecords(records, "submission", isWorkSubmission),
+	};
+}
 
 function listSubmissionRecords(projectPath: string, projectTrusted = false): KhalaWorkSubmission[] {
 	return projectRecords(projectPath, "submission", isWorkSubmission, projectTrusted);
@@ -238,7 +254,15 @@ function projectRecords<T>(
 	guard: (value: unknown) => value is T,
 	projectTrusted: boolean,
 ): T[] {
-	return listArchiveRecords(projectPath, projectTrusted).flatMap((record) => {
+	return projectRecordsFromRecords(listArchiveRecords(projectPath, projectTrusted), type, guard);
+}
+
+function projectRecordsFromRecords<T>(
+	records: readonly KhalaArchiveRecord[],
+	type: KhalaArchiveRecord["type"],
+	guard: (value: unknown) => value is T,
+): T[] {
+	return records.flatMap((record) => {
 		if (record.type === type && guard(record.payload)) {
 			return [record.payload];
 		}
@@ -246,8 +270,9 @@ function projectRecords<T>(
 	});
 }
 
-export type { MissionProjection, MissionProjectionState };
+export type { ArchiveSnapshot, MissionProjection, MissionProjectionState };
 export {
+	createArchiveSnapshot,
 	findArchiveRecords,
 	listExecutionRecords,
 	listLatestVerdictDeliveryRecords,
