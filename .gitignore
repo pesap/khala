@@ -557,6 +557,7 @@ $RECYCLE.BIN/
 .agent-native/**/.plan-state.json
 .pi/
 
-# Local audit notes
+# Local audit and planning notes
 TODO.md
 FINDINGS.md
+/plans/
