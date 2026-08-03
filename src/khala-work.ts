@@ -36,9 +36,18 @@ const WORK_PARAMETERS = Type.Object({
 	constraints: Type.Array(Type.String()),
 	plan: Type.Array(Type.String()),
 	validation: Type.Array(Type.String()),
+	costBudget: Type.Optional(
+		Type.Object({
+			conclaveMaxCostUsdPerTurn: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+			executorMaxCostUsdPerTurn: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+		}),
+	),
 });
 const ADMIT_WORK_PARAMETERS = Type.Object({ workId: Type.String() });
-const LAUNCH_EXECUTION_PARAMETERS = Type.Object({ workId: Type.String() });
+const LAUNCH_EXECUTION_PARAMETERS = Type.Object({
+	workId: Type.String(),
+	mode: Type.Optional(Type.Union([Type.Literal("materialize"), Type.Literal("launch")])),
+});
 type KhalaWorkInput = Static<typeof WORK_PARAMETERS>;
 type KhalaAdmitWorkInput = Static<typeof ADMIT_WORK_PARAMETERS>;
 type KhalaLaunchExecutionInput = Static<typeof LAUNCH_EXECUTION_PARAMETERS>;
@@ -80,9 +89,10 @@ type KhalaWorkDependencies = Readonly<{
 	markSubmissionLaunched: (
 		projectPath: string,
 		workId: string,
-		result: { target?: string | undefined; sandboxPath: string },
+		result: { sandboxPath: string },
 		projectTrusted?: boolean,
 	) => void;
+	pollBeforeDependentLaunch?: (projectPath: string, projectTrusted: boolean, workId?: string) => Promise<void>;
 }>;
 
 type KhalaWorkLaunchResult =
@@ -94,6 +104,25 @@ type KhalaWorkLaunchResult =
 				archivePath: string;
 				wakeStatus?: "woken" | "deferred" | "error";
 				wakeError?: string;
+			};
+	  }
+	| {
+			content: [{ type: "text"; text: string }];
+			details: {
+				status: typeof KhalaWorkLaunchStatus.materialized;
+				workId: string;
+				missionId: string;
+				mandateId: string;
+			};
+	  }
+	| {
+			content: [{ type: "text"; text: string }];
+			details: {
+				status: typeof KhalaWorkLaunchStatus.held;
+				workId: string;
+				missionId: string;
+				coordinationId: string;
+				reason: string;
 			};
 	  }
 	| {
@@ -159,8 +188,9 @@ function registerKhalaWork(pi: ExtensionAPI, dependencies: KhalaWorkDependencies
 	pi.registerTool({
 		name: "khala_launch_execution",
 		label: "Launch Khala Execution",
-		description: "Launch the authoritative admitted Work in an isolated Executor session.",
-		promptSnippet: "Launch the admitted Khala Mission",
+		description:
+			"Materialize an admitted Mission without an Executor when mode is materialize, or launch its headless Executor when mode is launch or omitted.",
+		promptSnippet: "Materialize or launch the admitted Khala Mission",
 		executionMode: "sequential",
 		parameters: LAUNCH_EXECUTION_PARAMETERS,
 		execute: (...args) => {
@@ -283,8 +313,23 @@ function renderExpandedWork(work: KhalaWork, details: KhalaWorkLaunchResult["det
 		renderWorkList("Constraints", work.constraints),
 		renderWorkList("Plan", work.plan),
 		renderWorkList("Validation", work.validation),
+		renderCostBudget(work),
 	];
 	return sections.map((section) => theme.fg("muted", section)).join("\n");
+}
+
+function renderCostBudget(work: KhalaWork): string {
+	if (work.costBudget === undefined) {
+		return "Cost budget: (global configuration)";
+	}
+	const values: string[] = [];
+	if (work.costBudget.conclaveMaxCostUsdPerTurn !== undefined) {
+		values.push(`Conclave max USD/turn: ${work.costBudget.conclaveMaxCostUsdPerTurn}`);
+	}
+	if (work.costBudget.executorMaxCostUsdPerTurn !== undefined) {
+		values.push(`Executor max USD/turn: ${work.costBudget.executorMaxCostUsdPerTurn}`);
+	}
+	return `Cost budget:\n${values.join("\\n")}`;
 }
 
 function renderWorkList(label: string, values: readonly string[]): string {

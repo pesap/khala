@@ -7,14 +7,12 @@ type SubmissionSnapshot = Readonly<{
 }>;
 
 type SubmissionLaunchResult = Readonly<{
-	target?: string | undefined;
 	sandboxPath: string;
 }>;
 
 /**
  * Project-scoped durable storage for Conclave state. Submission state is
- * append-only; v1 launch states remain readable while v2 admission and review
- * states are the only states written by current code.
+ * append-only and current admission/review states are written by the runtime.
  */
 interface ConclaveStorage {
 	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => { archivePath: string };

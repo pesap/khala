@@ -6,7 +6,7 @@ import process from "node:process";
 
 const [, , suppliedMarkerPath, command, ...args] = process.argv;
 if (suppliedMarkerPath === undefined || command === undefined) {
-	process.stderr.write("Khala executor bootstrap requires a marker and command.\n");
+	process.stderr.write("Khala Observer bootstrap requires a marker and command.\n");
 	process.exit(2);
 }
 const markerPath = suppliedMarkerPath;

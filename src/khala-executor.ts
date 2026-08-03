@@ -1,7 +1,13 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createExecutorStarter, type ExecutorStarter, type PiCommand } from "./executor.js";
+import {
+	createExecutorStarter,
+	type ExecutorStarter,
+	KHALA_HEADLESS_LAUNCHER,
+	type PiCommand,
+	sendHeadlessExecutorMessage,
+} from "./executor.js";
 import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
 import type { ExecutorRecord } from "./khala-model.js";
 import { resolvePackageRoot } from "./khala-package.js";
@@ -14,8 +20,8 @@ import type { Launcher } from "./launcher.js";
 import { createGitWorktreeProvider } from "./vcs-git-worktree.js";
 
 type ExecutorStarterFactory = (context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) => ExecutorStarter;
-type ExecutorViewer = (launcherName: LauncherNameValue, target: string) => Promise<void>;
-type ExecutorCloser = (launcherName: LauncherNameValue, target: string) => Promise<void>;
+type ObserverViewer = (launcherName: LauncherNameValue, target: string) => Promise<void>;
+type ObserverCloser = (launcherName: LauncherNameValue, target: string) => Promise<void>;
 type LauncherFactory = () => Launcher;
 
 const LAUNCHER_FACTORIES: Record<LauncherNameValue, LauncherFactory> = {
@@ -37,18 +43,22 @@ function createConfiguredStarter(
 	context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
 	observer: boolean,
 ): ExecutorStarter {
-	const config = loadKhalaConfig(context.cwd, context.isProjectTrusted());
+	const config = loadKhalaConfig(context.cwd, context.isProjectTrusted(), !observer);
 	const {
 		launcher: launcherName,
 		piCommand: executorPiCommand,
 		observerPiCommand,
 		observerModel,
+		executorModel,
 		executorThinking,
 		observerThinking,
 	} = config;
-	const launcher = LAUNCHER_FACTORIES[launcherName]();
+	let launcher: Launcher | undefined;
+	if (observer) {
+		launcher = LAUNCHER_FACTORIES[launcherName]();
+	}
 	let piCommand = executorPiCommand;
-	let model: string | undefined;
+	let model: string | undefined = executorModel;
 	let thinkingLevel: string | undefined = executorThinking || undefined;
 	if (observer) {
 		model = observerModel || undefined;
@@ -58,6 +68,9 @@ function createConfiguredStarter(
 		} else {
 			piCommand = removeModelSelection(observerPiCommand);
 		}
+	}
+	if (observer && model !== undefined) {
+		piCommand = removeModelSelection(piCommand);
 	}
 	if (thinkingLevel !== undefined) {
 		piCommand = removeThinkingSelection(piCommand);
@@ -104,11 +117,11 @@ function removeOptionSelection(command: PiCommand, option: string): PiCommand {
 	return [program, ...filteredArguments];
 }
 
-function createExecutorViewer(): ExecutorViewer {
+function createObserverViewer(): ObserverViewer {
 	return (launcherName, target) => LAUNCHER_FACTORIES[launcherName]().focus(target);
 }
 
-function createExecutorCloser(): ExecutorCloser {
+function createObserverCloser(): ObserverCloser {
 	return (launcherName, target) => LAUNCHER_FACTORIES[launcherName]().close(target);
 }
 
@@ -122,7 +135,7 @@ type ExecutorReviewFinalization = Readonly<{
 
 async function finalizeConfiguredExecutorReview(input: ExecutorReviewFinalization): Promise<void> {
 	const { execution, workId, projectTrusted, summary, evidence } = input;
-	const config = loadKhalaConfig(execution.projectPath, projectTrusted);
+	const config = loadKhalaConfig(execution.projectPath, projectTrusted, true);
 	const provider = createGitWorktreeProvider(config.worktreeRoot, config.worktreeBranchPrefix);
 	const existingReview = latestPullRequest(execution.projectPath, execution.executionId, projectTrusted);
 	let reviewRequest: {
@@ -176,22 +189,18 @@ async function finalizeConfiguredExecutorReview(input: ExecutorReviewFinalizatio
 }
 
 async function sendConfiguredExecutorMessage(execution: ExecutorRecord, message: string): Promise<void> {
-	const launcher = LAUNCHER_FACTORIES[execution.launcher as LauncherNameValue];
-	if (launcher === undefined) {
-		throw new Error(`Unsupported Executor launcher: ${execution.launcher}`);
+	if (execution.kind !== "executor" || execution.launcher !== KHALA_HEADLESS_LAUNCHER) {
+		throw new Error("Verdict delivery requires a headless Executor runtime.");
 	}
-	if (execution.target === undefined || execution.target.length === 0) {
-		throw new Error("The Executor has no active launcher target.");
-	}
-	await launcher().send(execution.target, message);
+	await sendHeadlessExecutorMessage(execution.executionId, message);
 }
 
-export type { ExecutorCloser, ExecutorReviewFinalization, ExecutorStarterFactory, ExecutorViewer };
+export type { ExecutorReviewFinalization, ExecutorStarterFactory, ObserverCloser, ObserverViewer };
 export {
 	createConfiguredExecutorStarter,
 	createConfiguredObserverStarter,
-	createExecutorCloser,
-	createExecutorViewer,
+	createObserverCloser,
+	createObserverViewer,
 	finalizeConfiguredExecutorReview,
 	sendConfiguredExecutorMessage,
 };

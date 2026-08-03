@@ -16,6 +16,7 @@ const PULL_REQUEST_NUMBER_PATTERN = /\/pull\/(\d+)(?:$|[?#])/;
 // PATH_MAX is 4096 on Linux; most filesystems cap path components at 255 bytes.
 const MAX_PATH_LENGTH = 4096;
 const MAX_COMPONENT_LENGTH = 255;
+const FULL_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
 // Git worktrees are created from the same resolved PR target used by review preparation, so caller-only commits cannot leak into the PR.
 class GitWorktreeProvider extends VCSProvider {
 	readonly #worktreeRoot: string;
@@ -52,8 +53,21 @@ class GitWorktreeProvider extends VCSProvider {
 		}
 
 		const baseBranch = request.baseBranch?.trim() || (await defaultTargetBranch(projectRoot));
-		const baseRef = await resolveBranchRef(projectRoot, baseBranch);
+		let baseRef: string;
+		if (request.baseCommit !== undefined) {
+			baseRef = await resolveExactCommit(projectRoot, request.baseCommit);
+		} else if (request.baseRef === undefined) {
+			baseRef = await resolveBranchRef(projectRoot, baseBranch);
+		} else {
+			baseRef = await resolveExactRef(projectRoot, request.baseRef);
+		}
 		await git(projectRoot, ["worktree", "add", "-b", `${this.#branchPrefix}${name}`, sandboxPath, baseRef]);
+		const actualHead = await git(sandboxPath, ["rev-parse", "HEAD"]);
+		if (request.baseCommit !== undefined && actualHead !== request.baseCommit) {
+			throw new Error(
+				`Sandbox ${sandboxPath} was created at ${actualHead}, not the required exact base ${request.baseCommit}.`,
+			);
+		}
 		return { path: sandboxPath, name, projectPath: projectRoot };
 	}
 
@@ -155,6 +169,26 @@ function planningCommitSubject(request: ReviewWorkflowRequest): string {
 		return `Khala: record Mission ${request.executionId} plan`;
 	}
 	return `${convention} record Mission ${request.executionId} plan`;
+}
+
+async function resolveExactCommit(cwd: string, commit: string): Promise<string> {
+	const exact = commit.trim();
+	if (!FULL_COMMIT_PATTERN.test(exact)) {
+		throw new Error(`An upstream sandbox requires a full 40-character commit, received '${commit}'.`);
+	}
+	const resolved = await git(cwd, ["rev-parse", "--verify", `${exact}^{commit}`]);
+	if (resolved !== exact) {
+		throw new Error(`The requested upstream base ${exact} was not verified exactly.`);
+	}
+	return exact;
+}
+
+function resolveExactRef(cwd: string, ref: string): Promise<string> {
+	const normalized = ref.trim();
+	if (normalized.length === 0) {
+		throw new Error("An exact sandbox base ref cannot be empty.");
+	}
+	return git(cwd, ["rev-parse", "--verify", `${normalized}^{commit}`]);
 }
 
 async function resolveBranchRef(cwd: string, branch: string): Promise<string> {

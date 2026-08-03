@@ -18,7 +18,9 @@ type ArchiveRecordType =
 	| "mandate"
 	| "mission"
 	| "pull-request"
-	| "work-outcome";
+	| "work-outcome"
+	| "coordination"
+	| "intervention";
 
 type KhalaArchiveRecord = Readonly<{
 	recordId: string;
@@ -41,6 +43,11 @@ type KhalaArchiveAppend = Readonly<{
 
 // --- Work and submissions (payload: "submission") ---------------------------
 
+type WorkCostBudget = Readonly<{
+	conclaveMaxCostUsdPerTurn?: number;
+	executorMaxCostUsdPerTurn?: number;
+}>;
+
 type KhalaWork = Readonly<{
 	title: string;
 	objective: string;
@@ -50,6 +57,7 @@ type KhalaWork = Readonly<{
 	constraints: readonly string[];
 	plan: readonly string[];
 	validation: readonly string[];
+	costBudget?: WorkCostBudget;
 }>;
 
 type WorkSubmissionRequest = Readonly<{
@@ -75,8 +83,11 @@ const KhalaWorkEntryStatus = {
 	launched: "launched",
 } as const;
 
+// `held` is a transient tool response only; it is not persisted lifecycle state.
 const KhalaWorkLaunchStatus = {
 	queued: "queued",
+	materialized: "materialized",
+	held: "held",
 	starting: "starting",
 	launched: "launched",
 	rejected: "rejected",
@@ -115,9 +126,25 @@ type MissionRecord = Readonly<{
 	mandateId: string;
 	predecessorMissionId?: string;
 	causedByVerdictId?: string;
+	causedByCoordinationId?: string;
 	assignment: MissionAssignment;
 	assignedParticipantId: string;
 	createdAt: string;
+}>;
+
+type ExecutorPromptIdentity = Readonly<{
+	packageVersion: string;
+	promptSha256: string;
+}>;
+
+type UpstreamExecutionBase = Readonly<{
+	kind: "upstream-execution";
+	workId: string;
+	missionId: string;
+	executionId: string;
+	remote: string;
+	branch: string;
+	headCommit: string;
 }>;
 
 type ExecutionPurpose =
@@ -148,7 +175,10 @@ type ExecutorRecord = Readonly<{
 	sandboxPath: string;
 	target?: string;
 	launcher: string;
+	piSessionId?: string;
 	sessionPath?: string;
+	promptIdentity?: ExecutorPromptIdentity;
+	upstreamBase?: UpstreamExecutionBase;
 	status: ExecutorStatusValue;
 	startedAt: string;
 	lastSignalAt?: string;
@@ -309,6 +339,119 @@ type LearningRecord = Readonly<{
 	createdAt: string;
 }>;
 
+// --- Supervision Archive records -------------------------------------------
+
+type CoordinationPhase = "decision" | "override" | "release" | "invalidation" | "resolution";
+type CoordinationRelation = "dependency" | "peer-conflict";
+type CoordinationResolution = "released" | "terminal-failure";
+type CoordinationClassification = Readonly<{
+	observedFiles: readonly string[];
+	observedModules: readonly string[];
+	observedApis: readonly string[];
+	observedContracts: readonly string[];
+}>;
+type CoordinationRemoteObservation = Readonly<{
+	remote: string;
+	branch: string;
+	headCommit: string | null;
+	observedAt: string;
+}>;
+type CoordinationDependent = Readonly<{
+	workId: string;
+	missionId: string;
+	executionId?: string;
+	supersededHead: string;
+}>;
+type CoordinationRecord = Readonly<{
+	coordinationId: string;
+	actionId: string;
+	phase: CoordinationPhase;
+	relation: CoordinationRelation;
+	workId: string;
+	missionId: string;
+	executionId?: string;
+	selectedWorkId: string;
+	selectedMissionId: string;
+	relatedWorkId: string;
+	relatedMissionId: string;
+	relatedExecutionId?: string;
+	selectedExecutionId?: string;
+	upstreamWorkId?: string;
+	upstreamMissionId?: string;
+	upstreamExecutionId?: string;
+	remote?: string;
+	branch?: string;
+	upstreamHead?: string;
+	replacementHead?: string | null;
+	affectedDependents?: readonly CoordinationDependent[];
+	remoteObservation?: CoordinationRemoteObservation;
+	causedByCoordinationId?: string;
+	userEntryId?: string;
+	releasedExecutionId?: string;
+	resolution?: CoordinationResolution;
+	resolutionEvidenceRecordId?: string;
+	classification?: CoordinationClassification;
+	reason: string;
+}>;
+
+type InterventionFailureCategory =
+	| "scope"
+	| "constraint"
+	| "acceptance"
+	| "plan"
+	| "validation"
+	| "no-progress"
+	| "unsafe-assumption"
+	| "budget"
+	| "dependency"
+	| "other";
+type InterventionMode = "correction" | "stop";
+type InterventionOutcomeKind = "resolved" | "partially-resolved" | "ignored" | "escalated";
+type InterventionIdentity = Readonly<{
+	interventionId: string;
+	workId: string;
+	mandateId: string;
+	missionId: string;
+	executionId: string;
+	conclaveParticipantId: string;
+	executorParticipantId: string;
+	piSessionId: string;
+	assessmentId: string;
+	failureSummary: string;
+	category: InterventionFailureCategory;
+	missionTerm: string;
+	message: string;
+	messageSha256?: string;
+	promptIdentity: ExecutorPromptIdentity;
+}>;
+type InterventionIssuanceRecord = Readonly<
+	InterventionIdentity & {
+		phase: "issuance";
+		actionId: string;
+		mode: InterventionMode;
+		piEntryIds: readonly string[];
+		sentAt: string;
+		transportResult: "confirmed";
+	}
+>;
+type InterventionOutcomeRecord = Readonly<
+	InterventionIdentity & {
+		phase: "outcome";
+		actionId: string;
+		outcome: InterventionOutcomeKind;
+		observedEntryIds: readonly string[];
+		reason: string;
+		resultingSignalId?: string;
+		resultingVerdictId?: string;
+		resultingCoordinationId?: string;
+		resultingExecutionId?: string;
+		failedExecutionRecordId?: string;
+	}
+>;
+type InterventionRecord = InterventionIssuanceRecord | InterventionOutcomeRecord;
+const GENERIC_INTERVENTION_SUMMARY_PATTERN = /^(unknown|n\/a|none|not applicable|no reason|unspecified)$/i;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+
 // --- Guards -----------------------------------------------------------------
 
 type GuardRecord = Record<string, unknown> &
@@ -321,6 +464,11 @@ type GuardRecord = Record<string, unknown> &
 		constraints?: unknown;
 		plan?: unknown;
 		validation?: unknown;
+		costBudget?: unknown;
+		conclaveMaxCostUsdPerTurn?: unknown;
+		executorMaxCostUsdPerTurn?: unknown;
+		packageVersion?: unknown;
+		promptSha256?: unknown;
 		workId?: unknown;
 		projectPath?: unknown;
 		status?: unknown;
@@ -335,6 +483,10 @@ type GuardRecord = Record<string, unknown> &
 		executorName?: unknown;
 		kind?: unknown;
 		launcher?: unknown;
+		piSessionId?: unknown;
+		sessionPath?: unknown;
+		promptIdentity?: unknown;
+		upstreamBase?: unknown;
 		startedAt?: unknown;
 		participantId?: unknown;
 		purpose?: unknown;
@@ -391,6 +543,7 @@ type GuardRecord = Record<string, unknown> &
 		admittedAt?: unknown;
 		predecessorMissionId?: unknown;
 		causedByVerdictId?: unknown;
+		causedByCoordinationId?: unknown;
 		assignment?: unknown;
 		assignedParticipantId?: unknown;
 		sourceRecordIds?: unknown;
@@ -399,6 +552,54 @@ type GuardRecord = Record<string, unknown> &
 		uncertainties?: unknown;
 		counselId?: unknown;
 		authorSession?: unknown;
+		coordinationId?: unknown;
+		actionId?: unknown;
+		phase?: unknown;
+		relation?: unknown;
+		selectedWorkId?: unknown;
+		selectedMissionId?: unknown;
+		relatedWorkId?: unknown;
+		relatedMissionId?: unknown;
+		relatedExecutionId?: unknown;
+		selectedExecutionId?: unknown;
+		upstreamWorkId?: unknown;
+		upstreamMissionId?: unknown;
+		upstreamExecutionId?: unknown;
+		remote?: unknown;
+		branch?: unknown;
+		upstreamHead?: unknown;
+		supersededHead?: unknown;
+		replacementHead?: unknown;
+		affectedDependents?: unknown;
+		remoteObservation?: unknown;
+		userEntryId?: unknown;
+		releasedExecutionId?: unknown;
+		resolution?: unknown;
+		resolutionEvidenceRecordId?: unknown;
+		classification?: unknown;
+		observedFiles?: unknown;
+		observedModules?: unknown;
+		observedApis?: unknown;
+		observedContracts?: unknown;
+		conclaveParticipantId?: unknown;
+		executorParticipantId?: unknown;
+		assessmentId?: unknown;
+		failureSummary?: unknown;
+		category?: unknown;
+		missionTerm?: unknown;
+		messageSha256?: unknown;
+		mode?: unknown;
+		piEntryIds?: unknown;
+		sentAt?: unknown;
+		transportResult?: unknown;
+		outcome?: unknown;
+		observedEntryIds?: unknown;
+		resultingSignalId?: unknown;
+		resultingVerdictId?: unknown;
+		resultingCoordinationId?: unknown;
+		resultingExecutionId?: unknown;
+		failedExecutionRecordId?: unknown;
+		interventionId?: unknown;
 	}>;
 
 function isStringArray(value: unknown): value is readonly string[] {
@@ -421,7 +622,9 @@ function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 		value === "mandate" ||
 		value === "mission" ||
 		value === "pull-request" ||
-		value === "work-outcome"
+		value === "work-outcome" ||
+		value === "coordination" ||
+		value === "intervention"
 	);
 }
 
@@ -494,6 +697,12 @@ function isArchivePayloadLegacy(type: ArchiveRecordType, payload: unknown): bool
 }
 
 function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean {
+	if (type === "coordination") {
+		return isCoordinationRecord(payload);
+	}
+	if (type === "intervention") {
+		return isInterventionRecord(payload);
+	}
 	if (type === "submission") {
 		return isV2WorkSubmission(payload);
 	}
@@ -540,7 +749,58 @@ function isKhalaWork(value: unknown): value is KhalaWork {
 		isStringArray(record.acceptanceCriteria) &&
 		isStringArray(record.constraints) &&
 		isStringArray(record.plan) &&
-		isStringArray(record.validation)
+		isStringArray(record.validation) &&
+		(record.costBudget === undefined || isWorkCostBudget(record.costBudget))
+	);
+}
+
+function isWorkCostBudget(value: unknown): value is WorkCostBudget {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	const hasConclave = record.conclaveMaxCostUsdPerTurn !== undefined;
+	const hasExecutor = record.executorMaxCostUsdPerTurn !== undefined;
+	return (
+		(hasConclave || hasExecutor) &&
+		(!hasConclave || isPositiveFiniteNumber(record.conclaveMaxCostUsdPerTurn)) &&
+		(!hasExecutor || isPositiveFiniteNumber(record.executorMaxCostUsdPerTurn))
+	);
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function isPromptIdentity(value: unknown): value is ExecutorPromptIdentity {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		isNonEmptyString(record.packageVersion) &&
+		typeof record.promptSha256 === "string" &&
+		SHA256_PATTERN.test(record.promptSha256)
+	);
+}
+
+function isUpstreamExecutionBase(value: unknown): value is UpstreamExecutionBase {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		record.kind === "upstream-execution" &&
+		isNonEmptyString(record.workId) &&
+		isNonEmptyString(record.missionId) &&
+		isNonEmptyString(record.executionId) &&
+		isNonEmptyString(record.remote) &&
+		isNonEmptyString(record.branch) &&
+		isNonEmptyString(record.headCommit)
 	);
 }
 
@@ -599,6 +859,10 @@ function isExecutorRecord(value: unknown): value is ExecutorRecord {
 		typeof record.projectPath === "string" &&
 		typeof record.sandboxPath === "string" &&
 		typeof record.launcher === "string" &&
+		(record.piSessionId === undefined || isNonEmptyString(record.piSessionId)) &&
+		(record.sessionPath === undefined || isNonEmptyString(record.sessionPath)) &&
+		(record.promptIdentity === undefined || isPromptIdentity(record.promptIdentity)) &&
+		(record.upstreamBase === undefined || isUpstreamExecutionBase(record.upstreamBase)) &&
 		(record.status === ExecutorStatus.starting ||
 			record.status === ExecutorStatus.running ||
 			record.status === ExecutorStatus.finished ||
@@ -631,10 +895,17 @@ function isV2ExecutorRecord(value: unknown): value is ExecutorRecord {
 		return false;
 	}
 	if (record.purpose.kind === "mission") {
-		if (record.kind === "observer") {
+		if (record.kind === "observer" || record.missionId !== record.purpose.missionId) {
 			return false;
 		}
-		return record.missionId === record.purpose.missionId;
+		if (record.status === ExecutorStatus.running) {
+			return (
+				isNonEmptyString(record.piSessionId) &&
+				isNonEmptyString(record.sessionPath) &&
+				isPromptIdentity(record.promptIdentity)
+			);
+		}
+		return true;
 	}
 	return record.kind === "observer" && record.missionId === undefined;
 }
@@ -794,6 +1065,244 @@ function isPullRequestRecord(value: unknown): value is PullRequestRecord {
 	);
 }
 
+function isCoordinationPhase(value: unknown): value is CoordinationPhase {
+	return (
+		value === "decision" ||
+		value === "override" ||
+		value === "release" ||
+		value === "invalidation" ||
+		value === "resolution"
+	);
+}
+
+function isCoordinationRelation(value: unknown): value is CoordinationRelation {
+	return value === "dependency" || value === "peer-conflict";
+}
+
+function isCoordinationClassification(value: unknown): value is CoordinationClassification {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		isStringArray(record.observedFiles) &&
+		isStringArray(record.observedModules) &&
+		isStringArray(record.observedApis) &&
+		isStringArray(record.observedContracts)
+	);
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Coordination guard validates phase-specific durable invariants in one fail-closed predicate.
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Coordination guard keeps phase-specific durable invariants together.
+function isCoordinationRecord(value: unknown): value is CoordinationRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	const common =
+		isNonEmptyString(record.coordinationId) &&
+		isNonEmptyString(record.actionId) &&
+		isCoordinationPhase(record.phase) &&
+		isCoordinationRelation(record.relation) &&
+		isNonEmptyString(record.workId) &&
+		isNonEmptyString(record.missionId) &&
+		isNonEmptyString(record.selectedWorkId) &&
+		isNonEmptyString(record.selectedMissionId) &&
+		isNonEmptyString(record.relatedWorkId) &&
+		isNonEmptyString(record.relatedMissionId) &&
+		isNonEmptyString(record.reason);
+	if (!common) {
+		return false;
+	}
+	if (
+		record.relation === "dependency" &&
+		!(
+			isNonEmptyString(record.upstreamWorkId) &&
+			isNonEmptyString(record.upstreamMissionId) &&
+			isNonEmptyString(record.remote) &&
+			isNonEmptyString(record.branch) &&
+			isNonEmptyString(record.relatedExecutionId) &&
+			record.relatedWorkId === record.upstreamWorkId &&
+			record.relatedMissionId === record.upstreamMissionId &&
+			record.relatedExecutionId === record.upstreamExecutionId &&
+			record.selectedWorkId === record.upstreamWorkId &&
+			record.selectedMissionId === record.upstreamMissionId &&
+			record.selectedExecutionId === record.upstreamExecutionId
+		)
+	) {
+		return false;
+	}
+	if (record.phase === "override" && !isNonEmptyString(record.userEntryId)) {
+		return false;
+	}
+	if (record.phase === "release" && !isNonEmptyString(record.upstreamHead)) {
+		return false;
+	}
+	if (record.phase === "invalidation") {
+		const hasObservedRefEvidence =
+			"replacementHead" in record &&
+			isCoordinationRemoteObservation(record.remoteObservation) &&
+			record.remoteObservation.remote === record.remote &&
+			record.remoteObservation.branch === record.branch &&
+			record.replacementHead === record.remoteObservation.headCommit &&
+			record.causedByCoordinationId === undefined;
+		const hasTransitiveCause =
+			!("replacementHead" in record) &&
+			record.remoteObservation === undefined &&
+			isNonEmptyString(record.causedByCoordinationId);
+		if (
+			!(
+				isNonEmptyString(record.upstreamHead) &&
+				isCoordinationDependents(record.affectedDependents) &&
+				(hasObservedRefEvidence || hasTransitiveCause)
+			)
+		) {
+			return false;
+		}
+	}
+	if (record.phase === "resolution" && record.resolution !== "released" && record.resolution !== "terminal-failure") {
+		return false;
+	}
+	if (
+		record.phase === "resolution" &&
+		record.resolution === "terminal-failure" &&
+		!isNonEmptyString(record.resolutionEvidenceRecordId)
+	) {
+		return false;
+	}
+	return (
+		(record.executionId === undefined || isNonEmptyString(record.executionId)) &&
+		(record.selectedExecutionId === undefined || isNonEmptyString(record.selectedExecutionId)) &&
+		(record.relatedExecutionId === undefined || isNonEmptyString(record.relatedExecutionId)) &&
+		(record.upstreamExecutionId === undefined || isNonEmptyString(record.upstreamExecutionId)) &&
+		(record.relation !== "peer-conflict" ||
+			(record.selectedWorkId === record.workId && record.selectedMissionId === record.missionId) ||
+			(record.selectedWorkId === record.relatedWorkId && record.selectedMissionId === record.relatedMissionId)) &&
+		(record.upstreamHead === undefined || isNonEmptyString(record.upstreamHead)) &&
+		(record.replacementHead === null ||
+			record.replacementHead === undefined ||
+			isNonEmptyString(record.replacementHead)) &&
+		(record.causedByCoordinationId === undefined ||
+			(record.phase === "invalidation" && isNonEmptyString(record.causedByCoordinationId))) &&
+		(record.userEntryId === undefined || isNonEmptyString(record.userEntryId)) &&
+		(record.releasedExecutionId === undefined || isNonEmptyString(record.releasedExecutionId)) &&
+		(record.resolutionEvidenceRecordId === undefined || isNonEmptyString(record.resolutionEvidenceRecordId)) &&
+		(record.classification === undefined || isCoordinationClassification(record.classification)) &&
+		(record.remoteObservation === undefined || isCoordinationRemoteObservation(record.remoteObservation)) &&
+		(record.affectedDependents === undefined || isCoordinationDependents(record.affectedDependents))
+	);
+}
+
+function isCoordinationDependents(value: unknown): value is readonly CoordinationDependent[] {
+	return (
+		Array.isArray(value) &&
+		value.every((item) => {
+			if (typeof item !== "object" || item === null) {
+				return false;
+			}
+			const record = item as GuardRecord;
+			return (
+				isNonEmptyString(record.workId) &&
+				isNonEmptyString(record.missionId) &&
+				(record.executionId === undefined || isNonEmptyString(record.executionId)) &&
+				isNonEmptyString(record.supersededHead)
+			);
+		})
+	);
+}
+
+function isCoordinationRemoteObservation(value: unknown): value is CoordinationRemoteObservation {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		isNonEmptyString(record.remote) &&
+		isNonEmptyString(record.branch) &&
+		(record.headCommit === null || isNonEmptyString(record.headCommit)) &&
+		isNonEmptyString(record.observedAt)
+	);
+}
+
+function isInterventionCategory(value: unknown): value is InterventionFailureCategory {
+	return (
+		value === "scope" ||
+		value === "constraint" ||
+		value === "acceptance" ||
+		value === "plan" ||
+		value === "validation" ||
+		value === "no-progress" ||
+		value === "unsafe-assumption" ||
+		value === "budget" ||
+		value === "dependency" ||
+		value === "other"
+	);
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Intervention guard validates issuance and runtime-loss outcome invariants together.
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Intervention guard keeps shared identity validation together.
+function isInterventionRecord(value: unknown): value is InterventionRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	const common =
+		isNonEmptyString(record.interventionId) &&
+		isNonEmptyString(record.workId) &&
+		isNonEmptyString(record.mandateId) &&
+		isNonEmptyString(record.missionId) &&
+		isNonEmptyString(record.executionId) &&
+		isNonEmptyString(record.conclaveParticipantId) &&
+		isNonEmptyString(record.executorParticipantId) &&
+		isNonEmptyString(record.piSessionId) &&
+		isNonEmptyString(record.assessmentId) &&
+		isNonEmptyString(record.failureSummary) &&
+		isInterventionCategory(record.category) &&
+		isNonEmptyString(record.missionTerm) &&
+		isNonEmptyString(record.message) &&
+		(record.messageSha256 === undefined ||
+			(typeof record.messageSha256 === "string" && SHA256_PATTERN.test(record.messageSha256))) &&
+		isPromptIdentity(record.promptIdentity) &&
+		isNonEmptyString(record.actionId);
+	if (
+		!common ||
+		(record.category === "other" && GENERIC_INTERVENTION_SUMMARY_PATTERN.test(String(record.failureSummary).trim()))
+	) {
+		return false;
+	}
+	if (record.phase === "issuance") {
+		return (
+			(record.mode === "correction" || record.mode === "stop") &&
+			isNonEmptyStringArray(record.piEntryIds) &&
+			isNonEmptyString(record.sentAt) &&
+			record.transportResult === "confirmed"
+		);
+	}
+	if (
+		record.phase !== "outcome" ||
+		(record.outcome !== "resolved" &&
+			record.outcome !== "partially-resolved" &&
+			record.outcome !== "ignored" &&
+			record.outcome !== "escalated") ||
+		!isNonEmptyString(record.reason)
+	) {
+		return false;
+	}
+	const hasRuntimeFailure = isNonEmptyString(record.failedExecutionRecordId);
+	const evidenceValid =
+		(hasRuntimeFailure &&
+			record.outcome === "escalated" &&
+			(!Array.isArray(record.observedEntryIds) || record.observedEntryIds.length === 0)) ||
+		(!hasRuntimeFailure && isNonEmptyStringArray(record.observedEntryIds));
+	return (
+		evidenceValid &&
+		(record.resultingSignalId === undefined || isNonEmptyString(record.resultingSignalId)) &&
+		(record.resultingVerdictId === undefined || isNonEmptyString(record.resultingVerdictId)) &&
+		(record.resultingCoordinationId === undefined || isNonEmptyString(record.resultingCoordinationId)) &&
+		(record.resultingExecutionId === undefined || isNonEmptyString(record.resultingExecutionId))
+	);
+}
+
 function isWorkOutcomeRecord(value: unknown): value is WorkOutcomeRecord {
 	if (typeof value !== "object" || value === null) {
 		return false;
@@ -888,22 +1397,219 @@ function isMissionRecord(value: unknown): value is MissionRecord {
 		typeof record.missionId === "string" &&
 		typeof record.workId === "string" &&
 		typeof record.mandateId === "string" &&
-		(record.predecessorMissionId === undefined || typeof record.predecessorMissionId === "string") &&
-		(record.causedByVerdictId === undefined || typeof record.causedByVerdictId === "string") &&
+		(record.predecessorMissionId === undefined || isNonEmptyString(record.predecessorMissionId)) &&
+		(record.causedByVerdictId === undefined || isNonEmptyString(record.causedByVerdictId)) &&
+		(record.causedByCoordinationId === undefined || isNonEmptyString(record.causedByCoordinationId)) &&
+		!(record.causedByVerdictId !== undefined && record.causedByCoordinationId !== undefined) &&
+		((record.predecessorMissionId === undefined &&
+			record.causedByVerdictId === undefined &&
+			record.causedByCoordinationId === undefined) ||
+			(record.predecessorMissionId !== undefined &&
+				(record.causedByVerdictId !== undefined) !== (record.causedByCoordinationId !== undefined))) &&
 		isKhalaWork(record.assignment) &&
 		typeof record.assignedParticipantId === "string" &&
 		typeof record.createdAt === "string"
 	);
 }
 
+function coordinationReplayIdentity(record: KhalaArchiveRecord, payload: CoordinationRecord): string {
+	const sides = [
+		{
+			workId: payload.workId,
+			missionId: payload.missionId,
+			executionId: payload.executionId,
+		},
+		{
+			workId: payload.relatedWorkId,
+			missionId: payload.relatedMissionId,
+			executionId: payload.relatedExecutionId,
+		},
+	].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+	let upstream: Readonly<Record<string, string | undefined>> | undefined;
+	if (payload.relation === "dependency") {
+		upstream = {
+			workId: payload.upstreamWorkId,
+			missionId: payload.upstreamMissionId,
+			executionId: payload.upstreamExecutionId,
+			remote: payload.remote,
+			branch: payload.branch,
+		};
+	}
+	return JSON.stringify({ projectPath: record.projectPath, relation: payload.relation, sides, upstream });
+}
+
+function interventionReplayIdentity(record: KhalaArchiveRecord, payload: InterventionRecord): string {
+	return JSON.stringify({
+		projectPath: record.projectPath,
+		workId: payload.workId,
+		mandateId: payload.mandateId,
+		missionId: payload.missionId,
+		executionId: payload.executionId,
+		conclaveParticipantId: payload.conclaveParticipantId,
+		executorParticipantId: payload.executorParticipantId,
+		piSessionId: payload.piSessionId,
+		assessmentId: payload.assessmentId,
+		failureSummary: payload.failureSummary,
+		category: payload.category,
+		missionTerm: payload.missionTerm,
+		message: payload.message,
+		promptIdentity: payload.promptIdentity,
+	});
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Replay validation must inspect all supervision phases in append order.
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Replay validation keeps append-order fences together.
+function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
+	const actions = new Map<string, string>();
+	const coordinationGroups = new Map<
+		string,
+		{ decision: boolean; released: boolean; resolved: boolean; identity: string }
+	>();
+	const interventionGroups = new Map<string, { issuance: boolean; outcome: boolean; identity: string }>();
+	const coordinationInvalidations = new Map<string, CoordinationRecord>();
+	for (const record of records) {
+		if (record.type === "coordination" && isCoordinationRecord(record.payload)) {
+			const coordination = record.payload;
+			if (
+				record.payload.workId !== record.workId ||
+				(record.executionId !== undefined && record.payload.executionId !== record.executionId)
+			) {
+				throw new Error(`Coordination ${record.payload.coordinationId} has inconsistent Archive bindings.`);
+			}
+			if (coordination.phase === "invalidation" && coordination.causedByCoordinationId !== undefined) {
+				const cause = coordinationInvalidations.get(coordination.causedByCoordinationId);
+				const adjacentDependent = cause?.affectedDependents?.some(
+					(dependent) =>
+						dependent.workId === coordination.upstreamWorkId &&
+						dependent.missionId === coordination.upstreamMissionId &&
+						dependent.executionId === coordination.upstreamExecutionId,
+				);
+				if (
+					cause === undefined ||
+					cause.workId !== coordination.upstreamWorkId ||
+					cause.missionId !== coordination.upstreamMissionId ||
+					cause.executionId !== coordination.upstreamExecutionId ||
+					adjacentDependent !== true
+				) {
+					throw new Error(
+						`Coordination ${record.payload.coordinationId} has an unrelated transitive invalidation cause.`,
+					);
+				}
+			}
+			const action = JSON.stringify({
+				envelope: {
+					schemaVersion: record.schemaVersion,
+					type: record.type,
+					projectPath: record.projectPath,
+					workId: record.workId,
+					executionId: record.executionId,
+				},
+				payload: record.payload,
+			});
+			const existingAction = actions.get(record.payload.actionId);
+			if (existingAction !== undefined && existingAction !== action) {
+				throw new Error(`Coordination action ${record.payload.actionId} was replayed with different evidence.`);
+			}
+			actions.set(record.payload.actionId, action);
+			const identity = coordinationReplayIdentity(record, record.payload);
+			let group = coordinationGroups.get(record.payload.coordinationId);
+			if (group === undefined) {
+				group = { decision: false, released: false, resolved: false, identity };
+				coordinationGroups.set(record.payload.coordinationId, group);
+			} else if (group.identity !== identity) {
+				throw new Error(`Coordination ${record.payload.coordinationId} changed its identity bindings.`);
+			}
+			if (record.payload.phase === "decision") {
+				if (group.decision) {
+					throw new Error(`Coordination ${record.payload.coordinationId} has duplicate decisions.`);
+				}
+				if (group.released || group.resolved) {
+					throw new Error(`Coordination ${record.payload.coordinationId} has an invalid decision order.`);
+				}
+				group.decision = true;
+			} else if (!group.decision || group.resolved || (group.released && record.payload.phase !== "resolution")) {
+				throw new Error(`Coordination ${record.payload.coordinationId} has an invalid phase order.`);
+			} else if (record.payload.phase === "release") {
+				if (group.released) {
+					throw new Error(`Coordination ${record.payload.coordinationId} has duplicate releases.`);
+				}
+				group.released = true;
+			} else if (record.payload.phase === "resolution") {
+				if (group.resolved || (record.payload.resolution === "released" && !group.released)) {
+					throw new Error(`Coordination ${record.payload.coordinationId} has an invalid resolution.`);
+				}
+				group.resolved = true;
+			}
+			if (record.payload.phase === "invalidation") {
+				coordinationInvalidations.set(record.payload.coordinationId, record.payload);
+			}
+		}
+		if (record.type === "intervention" && isInterventionRecord(record.payload)) {
+			if (
+				record.payload.workId !== record.workId ||
+				(record.executionId !== undefined && record.payload.executionId !== record.executionId)
+			) {
+				throw new Error(`Intervention ${record.payload.interventionId} has inconsistent Archive bindings.`);
+			}
+			const action = JSON.stringify({
+				envelope: {
+					schemaVersion: record.schemaVersion,
+					type: record.type,
+					projectPath: record.projectPath,
+					workId: record.workId,
+					executionId: record.executionId,
+				},
+				payload: record.payload,
+			});
+			const existingAction = actions.get(record.payload.actionId);
+			if (existingAction !== undefined && existingAction !== action) {
+				throw new Error(`Intervention action ${record.payload.actionId} was replayed with different evidence.`);
+			}
+			actions.set(record.payload.actionId, action);
+			const identity = interventionReplayIdentity(record, record.payload);
+			let group = interventionGroups.get(record.payload.interventionId);
+			if (group === undefined) {
+				group = { issuance: false, outcome: false, identity };
+				interventionGroups.set(record.payload.interventionId, group);
+			} else if (group.identity !== identity) {
+				throw new Error(`Intervention ${record.payload.interventionId} changed its identity bindings.`);
+			}
+			if (record.payload.phase === "issuance") {
+				if (group.issuance || group.outcome) {
+					throw new Error(`Intervention ${record.payload.interventionId} has invalid issuance order.`);
+				}
+				group.issuance = true;
+			} else if (!group.issuance || group.outcome) {
+				throw new Error(`Intervention ${record.payload.interventionId} has an invalid outcome order.`);
+			} else {
+				group.outcome = true;
+			}
+		}
+	}
+}
+
 export type {
 	ArchiveRecordType,
 	ArchiveSchemaVersion,
+	CoordinationClassification,
+	CoordinationDependent,
+	CoordinationPhase,
+	CoordinationRecord,
+	CoordinationRelation,
+	CoordinationRemoteObservation,
+	CoordinationResolution,
 	CounselRecord,
 	ExecutionPurpose,
 	ExecutorKind,
+	ExecutorPromptIdentity,
 	ExecutorRecord,
 	ExecutorStatusValue,
+	InterventionFailureCategory,
+	InterventionIssuanceRecord,
+	InterventionMode,
+	InterventionOutcomeKind,
+	InterventionOutcomeRecord,
+	InterventionRecord,
 	KhalaArchiveAppend,
 	KhalaArchiveRecord,
 	KhalaWork,
@@ -917,10 +1623,12 @@ export type {
 	RetryHandoff,
 	SignalKind,
 	SignalRecord,
+	UpstreamExecutionBase,
 	VerdictDecision,
 	VerdictDeliveryRecord,
 	VerdictDeliveryStatusValue,
 	VerdictRecord,
+	WorkCostBudget,
 	WorkOutcomeRecord,
 	WorkSubmissionRequest,
 	WorkSubmissionStatusValue,
@@ -928,27 +1636,34 @@ export type {
 export {
 	ExecutorStatus,
 	isArchiveRecord,
+	isCoordinationClassification,
+	isCoordinationRecord,
 	isCounselRecord,
 	isExecutionPurpose,
 	isExecutorRecord,
+	isInterventionRecord,
 	isKhalaWork,
 	isLearningRecord,
 	isMandateRecord,
 	isMissionRecord,
+	isPromptIdentity,
 	isPullRequestRecord,
 	isSignal,
 	isStringArray,
+	isUpstreamExecutionBase,
 	isV2ExecutorRecord,
 	isV2Signal,
 	isV2Verdict,
 	isV2WorkSubmission,
 	isVerdict,
 	isVerdictDelivery,
+	isWorkCostBudget,
 	isWorkOutcomeRecord,
 	isWorkSubmission,
 	KhalaWorkEntryStatus,
 	KhalaWorkLaunchStatus,
 	PullRequestStatus,
 	VerdictDeliveryStatus,
+	validateArchiveReplay,
 	WorkSubmissionStatus,
 };

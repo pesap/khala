@@ -35,6 +35,9 @@ class HerdrLauncher extends Launcher {
 		if (request.startup !== undefined) {
 			ready = waitForStartup(request.startup.markerPath);
 		}
+		if (ready === undefined) {
+			return { id: request.sandbox.name, sandbox: request.sandbox, target: paneId };
+		}
 		return { id: request.sandbox.name, sandbox: request.sandbox, target: paneId, ready };
 	}
 
@@ -44,10 +47,6 @@ class HerdrLauncher extends Launcher {
 
 	override close(target: string): Promise<void> {
 		return closeHerdr(target);
-	}
-
-	override async send(target: string, message: string): Promise<void> {
-		await herdr(["agent", "prompt", target, message]);
 	}
 }
 

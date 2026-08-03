@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import { withArchiveLock } from "./khala-archive.js";
-import { readMandate } from "./khala-archive-projections.js";
+import { readCurrentMission, readMandate } from "./khala-archive-projections.js";
 import { listLearningRecords } from "./khala-learning.js";
 import { type MandateRecord, WorkSubmissionStatus } from "./khala-model.js";
 import type {
@@ -17,6 +17,7 @@ import {
 	admissionResult,
 	admittedSubmissionState,
 	conclaveParticipantId,
+	ensureMission,
 	isProjectTrusted,
 	rejectedAdmission,
 	rejectedWorkLaunch,
@@ -73,6 +74,45 @@ function admitWork(
 	);
 }
 
+function materializeMission(
+	workId: string,
+	context: ExtensionContext,
+	dependencies: KhalaWorkDependencies,
+): KhalaWorkLaunchResult {
+	const projectTrusted = isProjectTrusted(context);
+	const snapshot = dependencies.getSubmission(context.cwd, workId, projectTrusted);
+	if (snapshot === undefined) {
+		return rejectedWorkLaunch(`No authoritative Work Submission exists for ID ${workId}.`);
+	}
+	if (snapshot.submission.status !== WorkSubmissionStatus.admitted || snapshot.submission.mandateId === undefined) {
+		return rejectedWorkLaunch(`Work Submission ${workId} must be admitted under a Mandate before materialization.`);
+	}
+	const mandate = readMandate(context.cwd, snapshot.submission.mandateId, projectTrusted);
+	if (mandate === undefined || mandate.workId !== workId) {
+		return rejectedWorkLaunch(`Mandate ${snapshot.submission.mandateId} is unavailable for Work ${workId}.`);
+	}
+	const current = readCurrentMission(context.cwd, workId, projectTrusted);
+	if (current !== undefined && current.state !== "current") {
+		return rejectedWorkLaunch(`Mission ${current.mission.missionId} is ${current.state} and cannot be materialized.`);
+	}
+	const mission = ensureMission({
+		projectPath: context.cwd,
+		projectTrusted,
+		workId,
+		mandate,
+		existingMission: current?.mission,
+	});
+	return {
+		content: [{ type: "text", text: `Mission ${mission.missionId} materialized without an Executor.` }],
+		details: {
+			status: "materialized",
+			workId,
+			missionId: mission.missionId,
+			mandateId: mission.mandateId,
+		},
+	};
+}
+
 function launchExecution(
 	pi: ExtensionAPI,
 	params: KhalaLaunchExecutionInput,
@@ -81,6 +121,9 @@ function launchExecution(
 ): Promise<KhalaWorkLaunchResult> {
 	if (!dependencies.isDedicatedConclaveSession(context)) {
 		return Promise.resolve(rejectedWorkLaunch("Only the dedicated project Conclave may launch an execution."));
+	}
+	if (params.mode === "materialize") {
+		return Promise.resolve(materializeMission(params.workId, context, dependencies));
 	}
 	return launchFromConclave(pi, params.workId, context, dependencies);
 }

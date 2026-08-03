@@ -21,6 +21,12 @@ const MISSION_ASSIGNMENT_PARAMETERS = Type.Object({
 	constraints: Type.Array(Type.String()),
 	plan: Type.Array(Type.String()),
 	validation: Type.Array(Type.String()),
+	costBudget: Type.Optional(
+		Type.Object({
+			conclaveMaxCostUsdPerTurn: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+			executorMaxCostUsdPerTurn: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+		}),
+	),
 });
 const RETRY_HANDOFF_PARAMETERS = Type.Object({
 	failedCriteria: Type.Array(Type.String()),

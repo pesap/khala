@@ -24,6 +24,7 @@ function formatExecutorPlan(
 		formatList("Constraints", work.constraints),
 		formatList("Plan", work.plan),
 		formatList("Validation", work.validation),
+		formatCostBudget(work),
 	];
 	if (attemptNumber !== undefined) {
 		sections.push(`\nExecution attempt:\n${attemptNumber}`);
@@ -54,6 +55,20 @@ function formatContext(context: string, learning: readonly LearningRecord[]): st
 		)
 		.join("\n");
 	return `\nContext gathered by Observer learning:\n${findings}`;
+}
+
+function formatCostBudget(work: KhalaWork): string {
+	if (work.costBudget === undefined) {
+		return "Cost budget: global configuration";
+	}
+	const values: string[] = [];
+	if (work.costBudget.conclaveMaxCostUsdPerTurn !== undefined) {
+		values.push(`Conclave max USD/turn: ${work.costBudget.conclaveMaxCostUsdPerTurn}`);
+	}
+	if (work.costBudget.executorMaxCostUsdPerTurn !== undefined) {
+		values.push(`Executor max USD/turn: ${work.costBudget.executorMaxCostUsdPerTurn}`);
+	}
+	return `Cost budget:\n${values.join("\\n")}`;
 }
 
 function formatList(label: string, values: readonly string[]): string {

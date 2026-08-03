@@ -1,8 +1,16 @@
 // biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Mission projection validates mutually exclusive durable lifecycle paths in one read.
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Durable projections remain one read-model boundary.
+// biome-ignore-all lint/style/noTernary: Projection branches keep optional prospective records explicit.
+// biome-ignore-all lint/style/noContinue: Projection filtering keeps inactive bindings out of the active result.
 import { listArchiveRecords } from "./khala-archive.js";
 import {
+	type CoordinationRecord,
 	type ExecutorRecord,
+	type InterventionIssuanceRecord,
+	type InterventionOutcomeRecord,
+	isCoordinationRecord,
 	isExecutorRecord,
+	isInterventionRecord,
 	isLearningRecord,
 	isMandateRecord,
 	isMissionRecord,
@@ -19,6 +27,7 @@ import {
 	type MissionRecord,
 	type PullRequestRecord,
 	type SignalRecord,
+	type UpstreamExecutionBase,
 	type VerdictDeliveryRecord,
 	type VerdictRecord,
 	type WorkOutcomeRecord,
@@ -26,10 +35,13 @@ import {
 
 type MissionProjectionState = "current" | "superseded" | "finished" | "rejected" | "retry-pending";
 type ArchiveSnapshot = Readonly<{
+	listRecords: () => readonly KhalaArchiveRecord[];
 	listExecutions: () => ExecutorRecord[];
 	listSignals: () => SignalRecord[];
 	listPullRequests: () => PullRequestRecord[];
 	listSubmissions: () => KhalaWorkSubmission[];
+	listCoordinations: () => CoordinationRecord[];
+	listInterventions: () => (InterventionIssuanceRecord | InterventionOutcomeRecord)[];
 }>;
 type MissionProjection = Readonly<{
 	mission: MissionRecord;
@@ -37,14 +49,35 @@ type MissionProjection = Readonly<{
 	successorMissionId?: string;
 	terminalVerdict?: VerdictRecord;
 }>;
+type CoordinationProjection = Readonly<{
+	coordinationId: string;
+	records: readonly CoordinationRecord[];
+	latest: CoordinationRecord;
+	active: boolean;
+	resolved: boolean;
+}>;
+type CoordinationHold = Readonly<{
+	coordination: CoordinationProjection;
+	workId: string;
+	missionId: string;
+}>;
+type InterventionProjection = Readonly<{
+	interventionId: string;
+	issuance: InterventionIssuanceRecord;
+	outcome?: InterventionOutcomeRecord;
+	outstanding: boolean;
+}>;
 
 function createArchiveSnapshot(projectPath: string, projectTrusted = false): ArchiveSnapshot {
 	const records = listArchiveRecords(projectPath, projectTrusted);
 	return {
+		listRecords: () => records,
 		listExecutions: () => projectRecordsFromRecords(records, "execution", isExecutorRecord),
 		listSignals: () => projectRecordsFromRecords(records, "signal", isSignal),
 		listPullRequests: () => projectRecordsFromRecords(records, "pull-request", isPullRequestRecord),
 		listSubmissions: () => projectRecordsFromRecords(records, "submission", isWorkSubmission),
+		listCoordinations: () => projectRecordsFromRecords(records, "coordination", isCoordinationRecord),
+		listInterventions: () => projectRecordsFromRecords(records, "intervention", isInterventionRecord),
 	};
 }
 
@@ -86,6 +119,215 @@ function listPullRequestRecords(projectPath: string, projectTrusted = false): Pu
 
 function listWorkOutcomeRecords(projectPath: string, projectTrusted = false): WorkOutcomeRecord[] {
 	return projectRecords(projectPath, "work-outcome", isWorkOutcomeRecord, projectTrusted);
+}
+
+function listCoordinationRecords(projectPath: string, projectTrusted = false): CoordinationRecord[] {
+	return projectRecords(projectPath, "coordination", isCoordinationRecord, projectTrusted);
+}
+
+function listInterventionRecords(
+	projectPath: string,
+	projectTrusted = false,
+): (InterventionIssuanceRecord | InterventionOutcomeRecord)[] {
+	return projectRecords(projectPath, "intervention", isInterventionRecord, projectTrusted);
+}
+
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Active base projection keeps merge, review, and Mission-state fences together.
+function projectActiveUpstreamBases(projectPath: string, projectTrusted = false): UpstreamExecutionBase[] {
+	const latestExecutions = new Map<string, ExecutorRecord>();
+	for (const execution of listExecutionRecords(projectPath, projectTrusted)) {
+		latestExecutions.set(execution.executionId, execution);
+	}
+	const missions = projectMissions(projectPath, projectTrusted);
+	const pullRequests = listPullRequestRecords(projectPath, projectTrusted);
+	const outcomes = listWorkOutcomeRecords(projectPath, projectTrusted);
+	const active: UpstreamExecutionBase[] = [];
+	for (const execution of latestExecutions.values()) {
+		const base = execution.upstreamBase;
+		if (base === undefined || execution.status === "failed") {
+			continue;
+		}
+		const mission = missions.find((projection) => projection.mission.missionId === execution.missionId);
+		if (
+			mission === undefined ||
+			mission.state === "superseded" ||
+			mission.state === "rejected" ||
+			mission.state === "retry-pending"
+		) {
+			continue;
+		}
+		const handoff = [...pullRequests]
+			.reverse()
+			.find((pullRequest) => pullRequest.executionId === execution.executionId);
+		const currentOrReviewable =
+			execution.status === "starting" ||
+			execution.status === "running" ||
+			(execution.status === "finished" && handoff?.status === "reviewable");
+		if (!currentOrReviewable || handoff?.status === "closed") {
+			continue;
+		}
+		const merged =
+			pullRequests.some(
+				(pullRequest) =>
+					pullRequest.workId === base.workId &&
+					pullRequest.missionId === base.missionId &&
+					pullRequest.executionId === base.executionId &&
+					pullRequest.status === "merged" &&
+					pullRequest.headCommit === base.headCommit &&
+					pullRequest.mergeCommit !== undefined,
+			) ||
+			outcomes.some(
+				(outcome) =>
+					outcome.workId === base.workId &&
+					outcome.missionId === base.missionId &&
+					outcome.executionId === base.executionId &&
+					outcome.finalHeadCommit === base.headCommit &&
+					outcome.mergeCommit.length > 0,
+			);
+		if (!merged) {
+			active.push(base);
+		}
+	}
+	return active.sort((left, right) =>
+		`${left.workId}\u0000${left.missionId}\u0000${left.executionId}`.localeCompare(
+			`${right.workId}\u0000${right.missionId}\u0000${right.executionId}`,
+		),
+	);
+}
+
+function activeCoordinationHolds(projectPath: string, projectTrusted = false): CoordinationHold[] {
+	const holds: CoordinationHold[] = [];
+	const missions = projectMissions(projectPath, projectTrusted);
+	for (const coordination of projectCoordinations(projectPath, projectTrusted)) {
+		const { latest } = coordination;
+		if (!coordination.active || latest.phase === "release" || latest.phase === "resolution") {
+			continue;
+		}
+		if (latest.relation === "dependency") {
+			holds.push(currentCoordinationHold(coordination, latest.workId, latest.missionId, missions));
+			continue;
+		}
+		let waitingWorkId = latest.workId;
+		let waitingMissionId = latest.missionId;
+		if (latest.selectedWorkId === latest.workId) {
+			waitingWorkId = latest.relatedWorkId;
+			waitingMissionId = latest.relatedMissionId;
+		}
+		holds.push(currentCoordinationHold(coordination, waitingWorkId, waitingMissionId, missions));
+	}
+	return holds;
+}
+
+function currentCoordinationHold(
+	coordination: CoordinationProjection,
+	workId: string,
+	missionId: string,
+	missions: readonly MissionProjection[],
+): CoordinationHold {
+	const current = missions
+		.filter((projection) => projection.mission.workId === workId && projection.state !== "superseded")
+		.at(-1)?.mission;
+	return { coordination, workId: current?.workId ?? workId, missionId: current?.missionId ?? missionId };
+}
+
+function projectCoordinations(projectPath: string, projectTrusted = false): CoordinationProjection[] {
+	const grouped = new Map<string, CoordinationRecord[]>();
+	for (const record of listCoordinationRecords(projectPath, projectTrusted)) {
+		const group = grouped.get(record.coordinationId) ?? [];
+		group.push(record);
+		grouped.set(record.coordinationId, group);
+	}
+	const projections = [...grouped.values()].map((records) => {
+		const latest = records.at(-1);
+		if (latest === undefined) {
+			throw new Error("Coordination projection encountered an empty record group.");
+		}
+		const resolved = latest.phase === "resolution";
+		return { coordinationId: latest.coordinationId, records, latest, active: !resolved, resolved };
+	});
+	validateCoordinationGraph(projections);
+	return projections;
+}
+
+function validateProspectiveCoordinationGraph(
+	records: readonly CoordinationRecord[],
+	prospective?: CoordinationRecord,
+): void {
+	const combined = [...records];
+	if (prospective !== undefined) {
+		combined.push(prospective);
+	}
+	const latestById = new Map<string, CoordinationRecord>();
+	for (const record of combined) {
+		latestById.set(record.coordinationId, record);
+	}
+	validateCoordinationGraph(
+		[...latestById.values()].map((latest) => ({
+			coordinationId: latest.coordinationId,
+			records: [latest],
+			latest,
+			active: latest.phase !== "resolution",
+			resolved: latest.phase === "resolution",
+		})),
+	);
+}
+
+function validateCoordinationGraph(projections: readonly CoordinationProjection[]): void {
+	const edges = new Map<string, string>();
+	for (const projection of projections) {
+		const { latest } = projection;
+		if (!projection.active || latest.relation !== "dependency" || latest.phase === "resolution") {
+			continue;
+		}
+		if (latest.workId === latest.relatedWorkId) {
+			throw new Error(`Coordination ${latest.coordinationId} creates a self-dependency.`);
+		}
+		const prior = edges.get(latest.workId);
+		if (prior !== undefined && prior !== latest.relatedWorkId) {
+			throw new Error(`Work ${latest.workId} has conflicting active upstream Coordinations.`);
+		}
+		edges.set(latest.workId, latest.relatedWorkId);
+	}
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const visit = (workId: string): void => {
+		if (visiting.has(workId)) {
+			throw new Error(`Active Coordination dependency cycle includes Work ${workId}.`);
+		}
+		if (visited.has(workId)) {
+			return;
+		}
+		visiting.add(workId);
+		const upstream = edges.get(workId);
+		if (upstream !== undefined) {
+			visit(upstream);
+		}
+		visiting.delete(workId);
+		visited.add(workId);
+	};
+	for (const workId of edges.keys()) {
+		visit(workId);
+	}
+}
+
+function projectInterventions(projectPath: string, projectTrusted = false): InterventionProjection[] {
+	const grouped = new Map<string, (InterventionIssuanceRecord | InterventionOutcomeRecord)[]>();
+	for (const record of listInterventionRecords(projectPath, projectTrusted)) {
+		const group = grouped.get(record.interventionId) ?? [];
+		group.push(record);
+		grouped.set(record.interventionId, group);
+	}
+	return [...grouped.values()].map((records) => {
+		const issuance = records.find((record): record is InterventionIssuanceRecord => record.phase === "issuance");
+		if (issuance === undefined) {
+			throw new Error("Intervention projection is missing its issuance.");
+		}
+		const outcome = records.find((record): record is InterventionOutcomeRecord => record.phase === "outcome");
+		if (outcome === undefined) {
+			return { interventionId: issuance.interventionId, issuance, outstanding: true };
+		}
+		return { interventionId: issuance.interventionId, issuance, outcome, outstanding: false };
+	});
 }
 
 function listMandateRecords(projectPath: string, projectTrusted = false): MandateRecord[] {
@@ -132,13 +374,26 @@ type MissionProjectionMaps = Readonly<{
 	retryVerdicts: Map<string, VerdictRecord>;
 }>;
 
-function validateMissionRelationships(missions: MissionRecord[], verdicts: VerdictRecord[]): MissionProjectionMaps {
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: Relationship validation keeps causal fences together.
+function validateMissionRelationships(
+	missions: MissionRecord[],
+	verdicts: VerdictRecord[],
+	coordinations: CoordinationRecord[],
+): MissionProjectionMaps {
 	const missionsById = new Map<string, MissionRecord>();
 	for (const mission of missions) {
 		if (missionsById.has(mission.missionId)) {
 			throw new Error(`Mission ${mission.missionId} is duplicated in the Archive.`);
 		}
 		missionsById.set(mission.missionId, mission);
+	}
+	const coordinationsById = new Map<string, CoordinationRecord[]>();
+	for (const coordination of coordinations) {
+		if (coordination.phase === "invalidation") {
+			const invalidations = coordinationsById.get(coordination.coordinationId) ?? [];
+			invalidations.push(coordination);
+			coordinationsById.set(coordination.coordinationId, invalidations);
+		}
 	}
 	const verdictsById = new Map<string, VerdictRecord>();
 	for (const verdict of verdicts) {
@@ -154,17 +409,34 @@ function validateMissionRelationships(missions: MissionRecord[], verdicts: Verdi
 			if (predecessor === undefined || predecessor.workId !== mission.workId) {
 				throw new Error(`Mission ${mission.missionId} has an invalid predecessor Mission.`);
 			}
-			if (mission.causedByVerdictId === undefined) {
-				throw new Error(`Mission ${mission.missionId} is missing its causal Retry Verdict.`);
-			}
-			const cause = verdictsById.get(mission.causedByVerdictId);
-			if (
-				cause === undefined ||
-				cause.decision !== "retry" ||
-				cause.workId !== mission.workId ||
-				cause.missionId !== predecessor.missionId
-			) {
-				throw new Error(`Mission ${mission.missionId} has an invalid causal Retry Verdict.`);
+			if (mission.causedByVerdictId !== undefined) {
+				const cause = verdictsById.get(mission.causedByVerdictId);
+				if (
+					cause === undefined ||
+					cause.decision !== "retry" ||
+					cause.workId !== mission.workId ||
+					cause.missionId !== predecessor.missionId
+				) {
+					throw new Error(`Mission ${mission.missionId} has an invalid causal Retry Verdict.`);
+				}
+			} else if (mission.causedByCoordinationId === undefined) {
+				throw new Error(`Mission ${mission.missionId} is missing its causal successor evidence.`);
+			} else {
+				const causes = coordinationsById.get(mission.causedByCoordinationId) ?? [];
+				const applicableCause = causes.find(
+					(cause) =>
+						cause.relation === "dependency" &&
+						cause.workId === mission.workId &&
+						cause.missionId === predecessor.missionId &&
+						cause.upstreamHead !== undefined &&
+						cause.affectedDependents?.some(
+							(dependent) =>
+								dependent.missionId === predecessor.missionId && dependent.supersededHead === cause.upstreamHead,
+						),
+				);
+				if (applicableCause === undefined) {
+					throw new Error(`Mission ${mission.missionId} has an invalid causal Coordination invalidation.`);
+				}
 			}
 			if (successors.has(mission.predecessorMissionId)) {
 				throw new Error(`Mission ${mission.predecessorMissionId} has duplicate successor Missions.`);
@@ -205,7 +477,12 @@ function validateMissionRelationships(missions: MissionRecord[], verdicts: Verdi
 function projectMissions(projectPath: string, projectTrusted = false): MissionProjection[] {
 	const missions = listMissionRecords(projectPath, projectTrusted);
 	const verdicts = listVerdictRecords(projectPath, projectTrusted);
-	const { successors, terminalVerdicts, retryVerdicts } = validateMissionRelationships(missions, verdicts);
+	const coordinations = listCoordinationRecords(projectPath, projectTrusted);
+	const { successors, terminalVerdicts, retryVerdicts } = validateMissionRelationships(
+		missions,
+		verdicts,
+		coordinations,
+	);
 	return missions.map((mission) => {
 		const successor = successors.get(mission.missionId);
 		if (successor !== undefined) {
@@ -270,11 +547,21 @@ function projectRecordsFromRecords<T>(
 	});
 }
 
-export type { ArchiveSnapshot, MissionProjection, MissionProjectionState };
+export type {
+	ArchiveSnapshot,
+	CoordinationHold,
+	CoordinationProjection,
+	InterventionProjection,
+	MissionProjection,
+	MissionProjectionState,
+};
 export {
+	activeCoordinationHolds,
 	createArchiveSnapshot,
 	findArchiveRecords,
+	listCoordinationRecords,
 	listExecutionRecords,
+	listInterventionRecords,
 	listLatestVerdictDeliveryRecords,
 	listLearningRecordsFromArchive,
 	listMandateRecords,
@@ -285,9 +572,14 @@ export {
 	listVerdictDeliveryRecords,
 	listVerdictRecords,
 	listWorkOutcomeRecords,
+	projectActiveUpstreamBases,
+	projectCoordinations,
+	projectInterventions,
 	projectMissions,
 	readCurrentMission,
 	readLatestMandate,
 	readMandate,
 	readMission,
+	validateCoordinationGraph,
+	validateProspectiveCoordinationGraph,
 };

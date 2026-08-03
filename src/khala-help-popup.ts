@@ -24,7 +24,7 @@ class KhalaHelpPopup implements Component {
 		this.container.addChild(new Text(theme.fg("accent", theme.bold("KHALA HELP")), 1, 0));
 		this.container.addChild(new Text(theme.fg("muted", "Navigation"), 1, 0));
 		this.container.addChild(
-			new Text("↑↓  select session\nenter  switch context or view Executor\nesc  close help\n?  close help", 1, 0),
+			new Text("↑↓  select session\nenter  switch context or view Observer\nesc  close help\n?  close help", 1, 0),
 		);
 		this.container.addChild(new Text(theme.fg("muted", "Session roles"), 1, 0));
 		this.container.addChild(new Text(renderRoleLegend(theme), 1, 0));

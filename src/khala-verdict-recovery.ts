@@ -197,7 +197,7 @@ function normalizeAssignment(assignment: MissionAssignmentInput | undefined): Kh
 	if (assignment === undefined) {
 		return;
 	}
-	return {
+	const normalized: KhalaWork = {
 		title: assignment.title.trim(),
 		objective: assignment.objective.trim(),
 		context: assignment.context.trim(),
@@ -207,6 +207,10 @@ function normalizeAssignment(assignment: MissionAssignmentInput | undefined): Kh
 		plan: assignment.plan.map((item) => item.trim()),
 		validation: assignment.validation.map((item) => item.trim()),
 	};
+	if (assignment.costBudget !== undefined) {
+		return { ...normalized, costBudget: assignment.costBudget };
+	}
+	return normalized;
 }
 
 export {

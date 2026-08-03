@@ -258,9 +258,6 @@ function markSubmissionLaunched(
 		const { submission } = snapshot;
 		if (submission.status === WorkSubmissionStatus.launching) {
 			const launched = { ...submission, status: WorkSubmissionStatus.launched, sandboxPath: result.sandboxPath };
-			if (result.target !== undefined) {
-				launched.target = result.target;
-			}
 			appendSubmissionState(projectPath, launched, projectTrusted, 1);
 		}
 		// Mission execution owns runtime location and status for v2 submissions.

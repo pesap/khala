@@ -27,3 +27,8 @@
 ## Validation (required)
 <!-- Checks that demonstrate the acceptance criteria. Add one or more. -->
 -
+
+## Cost budget (optional)
+<!-- Typed USD/turn overrides; prose budget instructions do not affect runtime. -->
+<!-- Conclave max USD/turn: -->
+<!-- Executor max USD/turn: -->

@@ -102,7 +102,7 @@ function registerKhalaDemo(pi: ExtensionAPI, dependencies: KhalaDemoDependencies
 					[
 						`Khala live demo ${result.demoId} launched.`,
 						`${result.workIds.length} dummy Work submissions sent to the Conclave.`,
-						"Watch the Conclave, Executor panes, Signals, and Verdicts in the Khala monitor.",
+						"Watch the Conclave, headless Executors, Signals, and Verdicts in the Khala monitor.",
 						"The demo does not add messages or entries to your current session.",
 						`Archive: ${result.archivePath}`,
 					].join("\n"),

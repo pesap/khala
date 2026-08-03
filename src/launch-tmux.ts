@@ -20,6 +20,9 @@ class TmuxLauncher extends Launcher {
 		if (request.startup !== undefined) {
 			ready = waitForStartup(request.startup.markerPath);
 		}
+		if (ready === undefined) {
+			return { id: request.sandbox.name, sandbox: request.sandbox, target };
+		}
 		return { id: request.sandbox.name, sandbox: request.sandbox, target, ready };
 	}
 
@@ -29,12 +32,6 @@ class TmuxLauncher extends Launcher {
 
 	override close(target: string): Promise<void> {
 		return closeTmux(target);
-	}
-
-	override async send(target: string, message: string): Promise<void> {
-		await tmux(["set-buffer", "--", message]);
-		await tmux(["paste-buffer", "-t", target]);
-		await tmux(["send-keys", "-t", target, "Enter"]);
 	}
 }
 

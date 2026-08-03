@@ -3,7 +3,13 @@ import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import { appendArchiveRecords, withArchiveLock } from "./khala-archive.js";
-import { readCurrentMission, readMandate } from "./khala-archive-projections.js";
+import {
+	activeCoordinationHolds,
+	listCoordinationRecords,
+	projectCoordinations,
+	readCurrentMission,
+	readMandate,
+} from "./khala-archive-projections.js";
 import type { SubmissionSnapshot } from "./khala-conclave-storage.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import { formatError } from "./khala-error.js";
@@ -78,7 +84,7 @@ function ensureMission(input: {
 	workId: string;
 	mandate: MandateRecord;
 	existingMission: MissionRecord | undefined;
-	assignedParticipantId: string;
+	assignedParticipantId?: string;
 }): MissionRecord {
 	if (input.existingMission !== undefined) {
 		return input.existingMission;
@@ -91,12 +97,13 @@ function ensureMission(input: {
 		if (current !== undefined) {
 			return current.mission;
 		}
+		const missionId = nanoid();
 		const mission: MissionRecord = {
-			missionId: nanoid(),
+			missionId,
 			workId: input.workId,
 			mandateId: input.mandate.mandateId,
 			assignment: input.mandate.terms,
-			assignedParticipantId: input.assignedParticipantId,
+			assignedParticipantId: input.assignedParticipantId ?? `executor:${missionId}`,
 			createdAt: new Date().toISOString(),
 		};
 		appendArchiveRecords(
@@ -109,7 +116,7 @@ function ensureMission(input: {
 }
 
 function toKhalaWork(params: KhalaWorkInput): KhalaWork {
-	return {
+	const work: KhalaWork = {
 		title: deriveWorkTitle(params.title, params.objective),
 		objective: params.objective.trim(),
 		context: params.context?.trim() ?? "",
@@ -119,6 +126,17 @@ function toKhalaWork(params: KhalaWorkInput): KhalaWork {
 		plan: params.plan.map((value) => value.trim()),
 		validation: params.validation.map((value) => value.trim()),
 	};
+	if (params.costBudget !== undefined) {
+		const costBudget: { conclaveMaxCostUsdPerTurn?: number; executorMaxCostUsdPerTurn?: number } = {};
+		if (params.costBudget.conclaveMaxCostUsdPerTurn !== undefined) {
+			costBudget.conclaveMaxCostUsdPerTurn = params.costBudget.conclaveMaxCostUsdPerTurn;
+		}
+		if (params.costBudget.executorMaxCostUsdPerTurn !== undefined) {
+			costBudget.executorMaxCostUsdPerTurn = params.costBudget.executorMaxCostUsdPerTurn;
+		}
+		return { ...work, costBudget };
+	}
+	return work;
 }
 
 function readLatestWorkDraft(context: ExtensionContext): KhalaWorkDraft | null {
@@ -144,6 +162,30 @@ function isKhalaWorkDraft(data: unknown): data is KhalaWorkDraft {
 
 function isProjectTrusted(context: ExtensionContext): boolean {
 	return typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+}
+
+function launchHold(projectPath: string, workId: string, missionId: string, projectTrusted: boolean) {
+	const active = activeCoordinationHolds(projectPath, projectTrusted).find(
+		(hold) => hold.workId === workId && hold.missionId === missionId,
+	);
+	if (active !== undefined) {
+		return active;
+	}
+	const records = listCoordinationRecords(projectPath, projectTrusted);
+	const latestRelevant = [...records]
+		.reverse()
+		.find((record) => record.relation === "dependency" && record.workId === workId);
+	if (latestRelevant?.phase !== "resolution" || latestRelevant.resolution !== "terminal-failure") {
+		return;
+	}
+	const coordination = projectCoordinations(projectPath, projectTrusted).find(
+		(candidate) => candidate.coordinationId === latestRelevant.coordinationId,
+	);
+	const current = readCurrentMission(projectPath, workId, projectTrusted);
+	if (coordination === undefined || current?.mission.missionId !== missionId) {
+		return;
+	}
+	return { coordination, workId, missionId };
 }
 
 function rejectedWorkLaunch(message: string): KhalaWorkLaunchResult {
@@ -290,6 +332,7 @@ function deriveWorkTitle(title: string | undefined, objective: string): string {
 	return `Khala Work: ${normalizedObjective.slice(0, 60)}`;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Work validation reports all contract errors in one actionable result.
 function validateWork(work: KhalaWork): string[] {
 	const errors: string[] = [];
 	for (const [label, value] of [
@@ -311,6 +354,22 @@ function validateWork(work: KhalaWork): string[] {
 	}
 	if (work.constraints.some((value) => value.trim().length === 0)) {
 		errors.push("constraints must contain non-empty items");
+	}
+	if (work.costBudget !== undefined) {
+		if (
+			work.costBudget.conclaveMaxCostUsdPerTurn === undefined &&
+			work.costBudget.executorMaxCostUsdPerTurn === undefined
+		) {
+			errors.push("cost budget must configure at least one actor");
+		}
+		for (const [label, value] of [
+			["Conclave cost budget", work.costBudget.conclaveMaxCostUsdPerTurn],
+			["Executor cost budget", work.costBudget.executorMaxCostUsdPerTurn],
+		] as const) {
+			if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+				errors.push(`${label} must be finite and greater than zero`);
+			}
+		}
 	}
 	return errors;
 }
@@ -335,6 +394,7 @@ export {
 	isKhalaWorkDraft,
 	isProjectTrusted,
 	launchedResult,
+	launchHold,
 	prepareExecutionLaunch,
 	queueWork,
 	readLatestWorkDraft,

@@ -62,7 +62,8 @@ async function deliverVerdict(
 	if (existing !== undefined && !pendingAppended) {
 		return existing;
 	}
-	if (execution === undefined || execution.target === undefined || execution.target.length === 0) {
+	const canSendHeadless = execution?.kind === "executor" && execution.launcher === "headless-rpc";
+	if (execution === undefined || !canSendHeadless) {
 		return pending;
 	}
 	try {
@@ -70,7 +71,6 @@ async function deliverVerdict(
 		const delivered: VerdictDeliveryRecord = {
 			...pending,
 			status: "delivered",
-			target: execution.target,
 			launcher: execution.launcher,
 			deliveredAt: new Date().toISOString(),
 		};
@@ -92,7 +92,6 @@ async function deliverVerdict(
 		const failed: VerdictDeliveryRecord = {
 			...pending,
 			status: "failed",
-			target: execution.target,
 			launcher: execution.launcher,
 			error: error instanceof Error ? error.message : String(error),
 		};

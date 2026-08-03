@@ -123,6 +123,16 @@ test("Executor finalization replaces an unconfirmed supplied URL with the publis
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PATH = `${bin}:${previousPath ?? ""}`;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(
+		join(agentDir, "khala.json"),
+		JSON.stringify({
+			conclaveModel: "provider/conclave",
+			conclaveMaxCostUsdPerTurn: 0.25,
+			executorModel: "provider/executor",
+			executorMaxCostUsdPerTurn: 1,
+		}),
+	);
 	try {
 		const execution = createExecutorRecord({
 			executionId: "execution-confirm-review",

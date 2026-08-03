@@ -17,7 +17,6 @@ import { appendArchiveRecord, getArchivePath, listArchiveRecords, withArchiveLoc
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { readCurrentMission } from "../dist/src/khala-archive-projections.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
-import { formatAttachedCleanupDiagnostic } from "../dist/src/khala-error.js";
 import {
 	createExecutorRecord,
 	listExecutorRecords,
@@ -356,11 +355,9 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 	}
 });
 
-test("startup readiness failure preserves the sandbox when launcher cleanup fails", async () => {
-	const readinessError = new Error("child did not become ready");
-	const closeError = new Error("target is still active");
+test("Executor startup failures before RPC creation remove the sandbox", async () => {
+	const sandbox = { path: "/tmp/khala-pre-rpc-sandbox", name: "pre-rpc", projectPath: "/tmp/khala-project" };
 	let sandboxRemovals = 0;
-	const sandbox = { path: "/tmp/khala-readiness-sandbox", name: "readiness", projectPath: "/tmp/project" };
 	const starter = createExecutorStarter(
 		{
 			async createSandbox() {
@@ -370,30 +367,26 @@ test("startup readiness failure preserves the sandbox when launcher cleanup fail
 				sandboxRemovals += 1;
 			},
 		},
-		{
-			async launch() {
-				return { id: "launched", sandbox, target: "live-target", ready: Promise.reject(readinessError) };
-			},
-			async focus() {},
-			async close() {
-				throw closeError;
-			},
-		},
+		undefined,
+		["pi"],
+		"headless-rpc",
+		"provider/executor",
 	);
 	await assert.rejects(
 		starter({
 			projectPath: sandbox.projectPath,
-			workId: "work-readiness",
-			executionId: "execution-readiness",
-			name: "Readiness test",
-			executorName: "Readiness Executor",
+			workId: "work-pre-rpc",
+			executionId: "execution-pre-rpc",
+			name: "Pre-RPC failure",
+			executorName: "Executor",
 			mission: "",
 			systemPrompt: "",
+			kind: "executor",
+			onSandboxCreated: () => { throw new Error("sandbox callback failed"); },
 		}),
-		(error) => error === readinessError && error.cleanupError === closeError,
+		/sandbox callback failed/,
 	);
-	assert.equal(formatAttachedCleanupDiagnostic(readinessError), ` Cleanup also failed: ${closeError.message}`);
-	assert.equal(sandboxRemovals, 0);
+	assert.equal(sandboxRemovals, 1);
 });
 
 test("post-launch cleanup retries only resources whose cleanup failed", async () => {
@@ -675,6 +668,16 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 	const agentDir = join(root, "agent");
 	const projectPath = join(root, "project");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(
+		join(agentDir, "khala.json"),
+		JSON.stringify({
+			conclaveModel: "provider/conclave",
+			conclaveMaxCostUsdPerTurn: 0.25,
+			executorModel: "provider/executor",
+			executorMaxCostUsdPerTurn: 1,
+		}),
+	);
 	try {
 		const storage = createFileConclaveStorage();
 		const work = {
@@ -713,6 +716,11 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 				}, sandbox);
 				assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, starts === 1 ? 1 : 2);
 				assert.match(request.mission, /Mandate:/);
+				updateExecutorRecord(
+					projectPath,
+					request.executionId,
+					{ piSessionId: `pi-${starts}`, sessionPath: join(root, `session-${starts}.jsonl`) },
+				);
 				return { id: `session-${starts}`, sandbox };
 			},
 		};
@@ -752,7 +760,7 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 					];
 				},
 				getSessionFile() {
-					return undefined;
+					return firstExecution.sessionPath;
 				},
 			},
 		};
@@ -780,7 +788,7 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 					];
 				},
 				getSessionFile() {
-					return undefined;
+					return secondExecution.sessionPath;
 				},
 			},
 		};

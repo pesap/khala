@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
 import { autocomplete, text as clackText, confirm, isCancel, select } from "@clack/prompts";
-import { getAgentDir, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
 	assertObserverPiCommand,
 	ConfigScope,
@@ -30,7 +30,11 @@ interface SetupOptions {
 }
 
 type StoredConfig = {
-	[K in keyof KhalaConfig]: K extends "piCommand" | "observerPiCommand" ? string[] : string;
+	[K in keyof KhalaConfig]: K extends "piCommand" | "observerPiCommand"
+		? string[]
+		: K extends "conclaveMaxCostUsdPerTurn" | "executorMaxCostUsdPerTurn"
+			? number
+			: string;
 };
 
 const ANSI = {
@@ -197,7 +201,7 @@ function parseModelListOutput(stdout: string): string[] {
 	return [...new Set(models)];
 }
 
-async function discoverConfiguredModels(command: readonly string[]): Promise<ModelDiscovery> {
+async function discoverConfiguredModels(command: readonly string[], executorModel: string): Promise<ModelDiscovery> {
 	const [program, ...arguments_] = command;
 	if (program === undefined) {
 		return { models: [], capabilities: {}, reason: "the configured Pi command is empty" };
@@ -214,8 +218,7 @@ async function discoverConfiguredModels(command: readonly string[]): Promise<Mod
 		return { models, capabilities: {}, reason: "Pi returned no configured models" };
 	}
 	const capabilities = await discoverModelCapabilities(models);
-	const executorModelId = resolveConfiguredExecutorModelId(command, getGlobalDefaultModelId());
-	const executorCapability = executorModelId === undefined ? undefined : capabilities[executorModelId];
+	const executorCapability = executorModel.length === 0 ? undefined : capabilities[executorModel];
 	if (executorCapability === undefined) {
 		return { models, capabilities };
 	}
@@ -246,44 +249,6 @@ async function discoverModelCapabilities(
 	return capabilities;
 }
 
-function resolveConfiguredExecutorModelId(command: readonly string[], defaultModelId?: string): string | undefined {
-	let provider: string | undefined;
-	let model: string | undefined;
-	let hasScopedModels = false;
-	for (let index = 0; index < command.length; index += 1) {
-		const argument = command[index];
-		const value = command[index + 1];
-		if (argument === "--provider") {
-			provider = value;
-			index += 1;
-		} else if (argument === "--model") {
-			model = value;
-			index += 1;
-		} else if (argument === "--models") {
-			hasScopedModels = true;
-			index += 1;
-		}
-	}
-	if (model !== undefined) {
-		if (provider !== undefined) {
-			return `${provider}/${model}`;
-		}
-		return model.includes("/") ? model : undefined;
-	}
-	if (hasScopedModels) {
-		return;
-	}
-	return defaultModelId;
-}
-
-function getGlobalDefaultModelId(): string | undefined {
-	const settings = SettingsManager.create(process.cwd(), getAgentDir(), { projectTrusted: false }).getGlobalSettings();
-	if (settings.defaultProvider === undefined || settings.defaultModel === undefined) {
-		return;
-	}
-	return `${settings.defaultProvider}/${settings.defaultModel}`;
-}
-
 function modelChoices(models: readonly string[]): string[] {
 	return [...new Set(models)];
 }
@@ -295,8 +260,7 @@ async function searchModel(label: string, models: readonly string[], defaultMode
 	}
 	let selectedDefault = defaultModel;
 	if (!choices.includes(selectedDefault)) {
-		const [first] = choices;
-		selectedDefault = first ?? "";
+		selectedDefault = "";
 	}
 	const result = await autocomplete({
 		message: label,
@@ -390,6 +354,9 @@ function toStoredConfig(config: KhalaConfig): StoredConfig {
 		piCommand: [...config.piCommand],
 		observerPiCommand: [...config.observerPiCommand],
 		conclaveModel: config.conclaveModel,
+		conclaveMaxCostUsdPerTurn: config.conclaveMaxCostUsdPerTurn,
+		executorModel: config.executorModel,
+		executorMaxCostUsdPerTurn: config.executorMaxCostUsdPerTurn,
 		oracleModel: config.oracleModel,
 		observerModel: config.observerModel,
 		conclaveThinking: config.conclaveThinking,
@@ -429,6 +396,27 @@ async function askOptionalLine(label: string, currentValue: string): Promise<str
 		defaultValue: "",
 	});
 	return unwrapPrompt(result).trim();
+}
+
+async function askCost(label: string, currentValue: number): Promise<number> {
+	const result = await clackText({
+		message: label,
+		initialValue: formatCost(currentValue),
+		defaultValue: formatCost(currentValue),
+		validate: (value) => {
+			const parsed = Number(value);
+			if (!Number.isFinite(parsed) || parsed <= 0) {
+				return "Enter a finite number greater than zero.";
+			}
+			// biome-ignore lint/complexity/noUselessUndefined: Clack's validator requires an explicit valid result.
+			return undefined;
+		},
+	});
+	return Number(unwrapPrompt(result));
+}
+
+function formatCost(value: number): string {
+	return Number.isFinite(value) && value > 0 ? String(value) : "";
 }
 
 function normalizeBranchPrefix(prefix: string): string {
@@ -499,7 +487,10 @@ function printState(scope: ConfigScopeValue, configPath: string, config: StoredC
 	console.log(row("=", "branch prefix", config.worktreeBranchPrefix));
 	console.log(row("=", "Pi command", commandText(config.piCommand)));
 	console.log(row("=", "observer command", commandText(config.observerPiCommand)));
-	console.log(row("=", "Conclave model", config.conclaveModel || "(Pi default)"));
+	console.log(row("=", "Conclave model", config.conclaveModel || "(required)"));
+	console.log(row("=", "Conclave max cost", formatCost(config.conclaveMaxCostUsdPerTurn)));
+	console.log(row("=", "Executor model", config.executorModel || "(required)"));
+	console.log(row("=", "Executor max cost", formatCost(config.executorMaxCostUsdPerTurn)));
 	console.log(row("=", "Oracle model", config.oracleModel || "(required)"));
 	console.log(row("=", "Conclave thinking", config.conclaveThinking || "(Pi default)"));
 	console.log(row("=", "Executor thinking", config.executorThinking || "(Pi default)"));
@@ -542,7 +533,7 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		),
 	);
 	const piCommand = parseCommand(await askLine("Pi command", commandText(current.piCommand)), "Pi command");
-	const discovery = await discoverConfiguredModels(piCommand);
+	const discovery = await discoverConfiguredModels(piCommand, current.executorModel);
 	if (discovery.reason !== undefined) {
 		console.log(`\n${yellow(`Model discovery unavailable: ${discovery.reason}`)}`);
 	}
@@ -552,9 +543,10 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		"Observer command",
 	);
 	assertObserverPiCommand(observerPiCommand);
-	let { conclaveModel, oracleModel, observerModel } = current;
+	let { conclaveModel, executorModel, oracleModel, observerModel } = current;
 	if (models.length > 0) {
 		conclaveModel = await searchModel("Conclave model", models, current.conclaveModel);
+		executorModel = await searchModel("Executor model", models, current.executorModel);
 		let oracleDefault = current.oracleModel;
 		if (oracleDefault.length === 0) {
 			oracleDefault = conclaveModel;
@@ -566,6 +558,14 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		}
 		observerModel = await searchModel("Observer model", models, observerDefault);
 	}
+	const conclaveMaxCostUsdPerTurn = await askCost(
+		"Conclave max cost per turn (USD)",
+		current.conclaveMaxCostUsdPerTurn,
+	);
+	const executorMaxCostUsdPerTurn = await askCost(
+		"Executor max cost per turn (USD)",
+		current.executorMaxCostUsdPerTurn,
+	);
 	const conclaveCapability = capabilities[conclaveModel];
 	const observerCapability = capabilities[observerModel];
 	const conclaveThinking = await askThinking("Conclave thinking level", current.conclaveThinking, conclaveCapability);
@@ -587,6 +587,9 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		piCommand,
 		observerPiCommand,
 		conclaveModel,
+		conclaveMaxCostUsdPerTurn,
+		executorModel,
+		executorMaxCostUsdPerTurn,
 		oracleModel,
 		observerModel,
 		conclaveThinking,
@@ -599,6 +602,21 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 }
 
 function validateSetupConfig(config: StoredConfig, interactive: boolean): void {
+	if (config.conclaveModel.trim().length === 0 || config.executorModel.trim().length === 0) {
+		throw new Error(
+			`${interactive ? "Setup" : "Non-interactive setup"} requires non-empty conclaveModel and executorModel; rerun setup and select both models.`,
+		);
+	}
+	if (
+		!Number.isFinite(config.conclaveMaxCostUsdPerTurn) ||
+		config.conclaveMaxCostUsdPerTurn <= 0 ||
+		!Number.isFinite(config.executorMaxCostUsdPerTurn) ||
+		config.executorMaxCostUsdPerTurn <= 0
+	) {
+		throw new Error(
+			`${interactive ? "Setup" : "Non-interactive setup"} requires positive finite Conclave and Executor cost thresholds; rerun setup and configure both values.`,
+		);
+	}
 	if (config.oracleModel.trim().length === 0) {
 		if (interactive) {
 			throw new Error("Setup requires a non-empty oracleModel; choose Reconfigure everything and select a model.");
@@ -612,24 +630,25 @@ function validateSetupConfig(config: StoredConfig, interactive: boolean): void {
 }
 
 function chooseNonInteractiveModels(config: StoredConfig, models: readonly string[]): StoredConfig {
-	if (models.length === 0) {
-		return config;
+	for (const [field, configured] of [
+		["conclaveModel", config.conclaveModel],
+		["executorModel", config.executorModel],
+		["oracleModel", config.oracleModel],
+		["observerModel", config.observerModel],
+	] as const) {
+		if (configured.trim().length === 0) {
+			if (field === "observerModel") {
+				continue;
+			}
+			throw new Error(`Non-interactive setup requires an explicit ${field}; no model fallback is available.`);
+		}
+		if (models.length > 0 && !models.includes(configured)) {
+			throw new Error(
+				`Configured ${field} '${configured}' was not discovered by Pi. Rerun setup after configuring that model or select another model.`,
+			);
+		}
 	}
-	const [first] = models;
-	if (first === undefined) {
-		return config;
-	}
-	let { conclaveModel, oracleModel, observerModel } = config;
-	if (!models.includes(conclaveModel)) {
-		conclaveModel = first;
-	}
-	if (!models.includes(oracleModel)) {
-		oracleModel = conclaveModel;
-	}
-	if (!models.includes(observerModel)) {
-		observerModel = conclaveModel;
-	}
-	return { ...config, conclaveModel, oracleModel, observerModel };
+	return config;
 }
 
 async function configure(options: SetupOptions): Promise<void> {
@@ -640,7 +659,7 @@ async function configure(options: SetupOptions): Promise<void> {
 	}
 	const configPath = getKhalaConfigPath(scope, projectPath);
 	const existing = readStoredValues(configPath);
-	const currentConfig = toStoredConfig(loadKhalaConfig(projectPath, scope === ConfigScope.project));
+	const currentConfig = toStoredConfig(loadKhalaConfig(projectPath, scope === ConfigScope.project, false));
 	const interactive = isInteractive(options);
 	console.log(`\n${titleLine("Khala setup")}`);
 	console.log(dim("Configure the durable state, worktree, launcher, and model settings used by Khala."));
@@ -660,7 +679,7 @@ async function configure(options: SetupOptions): Promise<void> {
 	if (interactive) {
 		next = await editConfig(currentConfig);
 	} else {
-		const discovery = await discoverConfiguredModels(currentConfig.piCommand);
+		const discovery = await discoverConfiguredModels(currentConfig.piCommand, currentConfig.executorModel);
 		next = chooseNonInteractiveModels(currentConfig, discovery.models);
 	}
 	validateSetupConfig(next, interactive);
@@ -706,4 +725,4 @@ if (process.argv[1]?.endsWith("khala-setup.js") || process.argv[1]?.endsWith("kh
 	await main();
 }
 
-export { main as runKhalaSetup, parseCommand, resolveConfiguredExecutorModelId, thinkingChoices };
+export { chooseNonInteractiveModels, main as runKhalaSetup, parseCommand, thinkingChoices };

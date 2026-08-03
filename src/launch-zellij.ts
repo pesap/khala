@@ -28,6 +28,9 @@ class ZellijLauncher extends Launcher {
 		if (request.startup !== undefined) {
 			ready = waitForStartup(request.startup.markerPath);
 		}
+		if (ready === undefined) {
+			return { id: request.sandbox.name, sandbox: request.sandbox, target };
+		}
 		return { id: request.sandbox.name, sandbox: request.sandbox, target, ready };
 	}
 
@@ -37,13 +40,6 @@ class ZellijLauncher extends Launcher {
 
 	override close(target: string): Promise<void> {
 		return closeZellij(target);
-	}
-
-	override async send(target: string, message: string): Promise<void> {
-		const tabId = getZellijTabId(target);
-		await zellij(["action", "go-to-tab-by-id", tabId]);
-		await zellij(["action", "write-chars", message]);
-		await zellij(["action", "write", "13"]);
 	}
 }
 

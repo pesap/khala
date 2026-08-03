@@ -6,7 +6,7 @@ import { appendArchiveRecord } from "./khala-archive.js";
 import { listLearningRecordsFromArchive } from "./khala-archive-projections.js";
 import { LauncherName } from "./khala-config.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
-import type { ExecutorCloser } from "./khala-executor.js";
+import type { ObserverCloser } from "./khala-executor.js";
 import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
 import type { LearningRecord } from "./khala-model.js";
 import { KhalaRole, readSessionRole } from "./khala-role.js";
@@ -30,7 +30,7 @@ type ObserverBinding = Readonly<{
 	projectTrusted?: boolean;
 }>;
 
-function registerKhalaLearning(pi: ExtensionAPI, wake: LearningWake, closeObserver: ExecutorCloser): void {
+function registerKhalaLearning(pi: ExtensionAPI, wake: LearningWake, closeObserver: ObserverCloser): void {
 	pi.registerTool({
 		name: "khala_record_learning",
 		label: "Record Khala Learning",
@@ -48,7 +48,7 @@ async function recordLearning(
 	params: LearningInput,
 	context: ExtensionContext,
 	wake: LearningWake,
-	closeObserver: ExecutorCloser,
+	closeObserver: ObserverCloser,
 ): Promise<{ content: [{ type: "text"; text: string }]; details: LearningRecord }> {
 	if (readSessionRole(context) !== KhalaRole.observer) {
 		throw new Error("Only a Khala Observer session may record Learning.");

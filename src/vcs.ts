@@ -10,6 +10,7 @@ type ReviewWorkflowRequest = Readonly<{
 	targetBranch?: string;
 	supersedesPullRequestUrl?: string;
 	commitConvention?: string;
+	baseCommit?: string;
 }>;
 
 type ReviewPreparation = Readonly<{

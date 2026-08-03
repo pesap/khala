@@ -1,10 +1,11 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Archive append and replay locking are one durability boundary.
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { nanoid } from "nanoid";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
 import type { ArchiveSchemaVersion, KhalaArchiveAppend, KhalaArchiveRecord } from "./khala-model.js";
-import { isArchiveRecord } from "./khala-model.js";
+import { isArchiveRecord, validateArchiveReplay } from "./khala-model.js";
 
 class KhalaArchiveReadError extends Error {
 	readonly path: string;
@@ -37,6 +38,7 @@ const ARCHIVE_LOCK_RETRY_MS = 10;
 const ARCHIVE_LOCK_TIMEOUT_MS = 5000;
 const ARCHIVE_LOCK_BUFFER_SIZE = 4;
 const ARCHIVE_OWNER_PATTERN = /^\d+$/;
+const localArchiveLockDepth = new Map<string, number>();
 type ArchivePayloadRecord = Record<string, unknown> &
 	Readonly<{
 		status?: unknown;
@@ -63,12 +65,95 @@ function appendArchiveRecords(
 	if (inputs.length === 0) {
 		return [];
 	}
+	return withArchiveLock(projectPath, projectTrusted, () =>
+		appendArchiveRecordsUnlocked(projectPath, inputs, projectTrusted),
+	);
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Replay deduplication is kept beside the append boundary.
+function appendArchiveRecordsUnlocked(
+	projectPath: string,
+	inputs: readonly KhalaArchiveAppend[],
+	projectTrusted = false,
+): readonly KhalaArchiveRecord[] {
+	if (inputs.length === 0) {
+		return [];
+	}
 	const resolvedProjectPath = resolve(projectPath);
 	const records = inputs.map((input) => createArchiveRecord(resolvedProjectPath, input));
 	const path = getArchivePath(resolvedProjectPath, projectTrusted);
-	mkdirSync(getConclaveDirectory(resolvedProjectPath, projectTrusted), { recursive: true });
-	appendFileSync(path, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
-	return records;
+	const existing = listArchiveRecords(resolvedProjectPath, projectTrusted);
+	for (const record of records) {
+		if (!isArchiveRecord(record)) {
+			throw new Error("Cannot append an invalid Khala Archive record.");
+		}
+	}
+	const knownActions = new Map<string, KhalaArchiveRecord>();
+	for (const record of existing) {
+		const actionId = readSupervisionActionId(record);
+		if (actionId !== undefined) {
+			knownActions.set(actionId, record);
+		}
+	}
+	const pending: KhalaArchiveRecord[] = [];
+	const returned: KhalaArchiveRecord[] = [];
+	for (const record of records) {
+		const actionId = readSupervisionActionId(record);
+		if (actionId === undefined) {
+			pending.push(record);
+			returned.push(record);
+		} else {
+			const previous = knownActions.get(actionId);
+			if (previous === undefined) {
+				knownActions.set(actionId, record);
+				pending.push(record);
+				returned.push(record);
+			} else if (sameReplayEvidence(previous, record)) {
+				returned.push(previous);
+			} else {
+				throw new Error(`Supervision action ${actionId} was replayed with different evidence.`);
+			}
+		}
+	}
+	validateArchiveReplay([...existing, ...pending]);
+	if (pending.length > 0) {
+		mkdirSync(getConclaveDirectory(resolvedProjectPath, projectTrusted), { recursive: true });
+		appendFileSync(path, `${pending.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
+	}
+	return returned;
+}
+
+function sameReplayEvidence(previous: KhalaArchiveRecord, next: KhalaArchiveRecord): boolean {
+	return (
+		previous.type === next.type &&
+		JSON.stringify(replayEnvelopeIdentity(previous)) === JSON.stringify(replayEnvelopeIdentity(next)) &&
+		JSON.stringify(previous.payload) === JSON.stringify(next.payload)
+	);
+}
+
+function replayEnvelopeIdentity(record: KhalaArchiveRecord): unknown {
+	return {
+		schemaVersion: record.schemaVersion,
+		type: record.type,
+		projectPath: record.projectPath,
+		workId: record.workId,
+		executionId: record.executionId,
+	};
+}
+
+function readSupervisionActionId(record: KhalaArchiveRecord): string | undefined {
+	if (record.type !== "coordination" && record.type !== "intervention") {
+		return;
+	}
+	if (typeof record.payload !== "object" || record.payload === null || !("actionId" in record.payload)) {
+		return;
+	}
+	const { actionId } = record.payload as { actionId?: unknown };
+	if (typeof actionId === "string") {
+		return actionId;
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy strict return analysis for an absent action.
+	return undefined;
 }
 
 function createArchiveRecord(projectPath: string, input: KhalaArchiveAppend): KhalaArchiveRecord {
@@ -136,17 +221,27 @@ function hasV2Fields(payload: ArchivePayloadRecord, fields: readonly string[]): 
 }
 
 function listArchiveRecords(projectPath: string, projectTrusted = false): readonly KhalaArchiveRecord[] {
+	return withArchiveLock(projectPath, projectTrusted, () => listArchiveRecordsUnlocked(projectPath, projectTrusted));
+}
+
+function listArchiveRecordsUnlocked(projectPath: string, projectTrusted = false): readonly KhalaArchiveRecord[] {
 	const path = getArchivePath(projectPath, projectTrusted);
 	const contents = readArchiveContents(path);
 	if (contents.length === 0) {
 		return [];
 	}
-	return contents.split("\n").flatMap((line, index, lines) => {
+	const records = contents.split("\n").flatMap((line, index, lines) => {
 		if (index === lines.length - 1 && line.length === 0) {
 			return [];
 		}
 		return [parseArchiveLine(line, path, index + 1)];
 	});
+	try {
+		validateArchiveReplay(records);
+	} catch (error) {
+		throw createArchiveReadError("Invalid Khala Archive replay state.", path, undefined, error);
+	}
+	return records;
 }
 
 function readArchiveContents(path: string): string {
@@ -179,6 +274,16 @@ function parseArchiveLine(line: string, path: string, lineNumber: number): Khala
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Lock acquisition distinguishes active, stale, and crash-recovery states atomically.
 function withArchiveLock<T>(projectPath: string, projectTrusted: boolean, operation: () => T): T {
 	const directory = getConclaveDirectory(projectPath, projectTrusted);
+	const lockKey = resolve(directory);
+	const heldDepth = localArchiveLockDepth.get(lockKey);
+	if (heldDepth !== undefined) {
+		localArchiveLockDepth.set(lockKey, heldDepth + 1);
+		try {
+			return operation();
+		} finally {
+			localArchiveLockDepth.set(lockKey, heldDepth);
+		}
+	}
 	mkdirSync(directory, { recursive: true });
 	const lockPath = join(directory, "archive.lock");
 	const deadline = Date.now() + ARCHIVE_LOCK_TIMEOUT_MS;
@@ -225,9 +330,11 @@ function withArchiveLock<T>(projectPath: string, projectTrusted: boolean, operat
 			}
 		}
 	}
+	localArchiveLockDepth.set(lockKey, 1);
 	try {
 		return operation();
 	} finally {
+		localArchiveLockDepth.delete(lockKey);
 		rmSync(lockPath, { recursive: true, force: true });
 	}
 }

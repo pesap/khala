@@ -1,9 +1,11 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Configuration parsing keeps inheritance and diagnostics in one module.
+// biome-ignore-all lint/security/noSecrets: Config field names resemble credential identifiers but contain no secrets.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { PiCommand } from "./executor.js";
+import type { KhalaWork } from "./khala-model.js";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -20,6 +22,11 @@ const ConfigScope = {
 } as const;
 type ConfigScopeValue = (typeof ConfigScope)[keyof typeof ConfigScope];
 
+type EffectiveWorkBudget = Readonly<{
+	conclaveMaxCostUsdPerTurn: number;
+	executorMaxCostUsdPerTurn: number;
+}>;
+
 interface KhalaConfig {
 	worktreeRoot: string;
 	worktreeBranchPrefix: string;
@@ -27,6 +34,9 @@ interface KhalaConfig {
 	piCommand: PiCommand;
 	observerPiCommand: PiCommand;
 	conclaveModel: string;
+	conclaveMaxCostUsdPerTurn: number;
+	executorModel: string;
+	executorMaxCostUsdPerTurn: number;
 	oracleModel: string;
 	observerModel: string;
 	conclaveThinking: ThinkingLevel | "";
@@ -49,6 +59,9 @@ const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	piCommand: ["pi"],
 	observerPiCommand: ["pi"],
 	conclaveModel: "",
+	conclaveMaxCostUsdPerTurn: 0,
+	executorModel: "",
+	executorMaxCostUsdPerTurn: 0,
 	oracleModel: "",
 	observerModel: "",
 	conclaveThinking: "",
@@ -62,10 +75,13 @@ function getDefaultConfig(): KhalaConfig {
 	return { ...DEFAULT_CONFIG, archiveRoot: join(getAgentDir(), "khala", "conclaves") };
 }
 
-function loadKhalaConfig(projectPath?: string, projectTrusted = false): KhalaConfig {
+function loadKhalaConfig(projectPath?: string, projectTrusted = false, requireSupervision = true): KhalaConfig {
 	let config = applyConfig(getDefaultConfig(), readConfigFile(getKhalaConfigPath(ConfigScope.global)));
 	if (projectPath !== undefined && projectTrusted) {
 		config = applyConfig(config, readConfigFile(getKhalaConfigPath(ConfigScope.project, projectPath)));
+	}
+	if (requireSupervision) {
+		validateRequiredSupervisionConfig(config);
 	}
 	return config;
 }
@@ -92,7 +108,10 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	const configuredLauncher = readLauncher(values, "launcher");
 	const configuredPiCommand = readPiCommand(values, "piCommand");
 	const configuredObserverPiCommand = readObserverPiCommand(values, "observerPiCommand");
-	const configuredConclaveModel = readConfigString(values, "conclaveModel");
+	const configuredConclaveModel = readRequiredConfigString(values, "conclaveModel");
+	const configuredConclaveMaxCostUsdPerTurn = readPositiveFiniteNumber(values, "conclaveMaxCostUsdPerTurn");
+	const configuredExecutorModel = readRequiredConfigString(values, "executorModel");
+	const configuredExecutorMaxCostUsdPerTurn = readPositiveFiniteNumber(values, "executorMaxCostUsdPerTurn");
 	const configuredOracleModel = readConfigString(values, "oracleModel");
 	const configuredObserverModel = readConfigString(values, "observerModel");
 	const configuredConclaveThinking = readThinkingLevel(values, "conclaveThinking");
@@ -108,6 +127,9 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		piCommand: defaultPiCommand,
 		observerPiCommand: defaultObserverPiCommand,
 		conclaveModel: defaultConclaveModel,
+		conclaveMaxCostUsdPerTurn: defaultConclaveMaxCostUsdPerTurn,
+		executorModel: defaultExecutorModel,
+		executorMaxCostUsdPerTurn: defaultExecutorMaxCostUsdPerTurn,
 		oracleModel: defaultOracleModel,
 		observerModel: defaultObserverModel,
 		conclaveThinking: defaultConclaveThinking,
@@ -123,6 +145,9 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	let piCommand = defaultPiCommand;
 	let observerPiCommand = defaultObserverPiCommand;
 	let conclaveModel = defaultConclaveModel;
+	let conclaveMaxCostUsdPerTurn = defaultConclaveMaxCostUsdPerTurn;
+	let executorModel = defaultExecutorModel;
+	let executorMaxCostUsdPerTurn = defaultExecutorMaxCostUsdPerTurn;
 	let oracleModel = defaultOracleModel;
 	let observerModel = defaultObserverModel;
 	let conclaveThinking = defaultConclaveThinking;
@@ -151,6 +176,15 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	}
 	if (configuredConclaveModel !== undefined) {
 		conclaveModel = configuredConclaveModel;
+	}
+	if (configuredConclaveMaxCostUsdPerTurn !== undefined) {
+		conclaveMaxCostUsdPerTurn = configuredConclaveMaxCostUsdPerTurn;
+	}
+	if (configuredExecutorModel !== undefined) {
+		executorModel = configuredExecutorModel;
+	}
+	if (configuredExecutorMaxCostUsdPerTurn !== undefined) {
+		executorMaxCostUsdPerTurn = configuredExecutorMaxCostUsdPerTurn;
 	}
 	if (configuredOracleModel !== undefined) {
 		oracleModel = configuredOracleModel;
@@ -183,6 +217,9 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		piCommand,
 		observerPiCommand,
 		conclaveModel,
+		conclaveMaxCostUsdPerTurn,
+		executorModel,
+		executorMaxCostUsdPerTurn,
 		oracleModel,
 		observerModel,
 		conclaveThinking,
@@ -255,6 +292,17 @@ function readConfigString(config: ConfigValues, key: string): string | undefined
 	return value;
 }
 
+function readPositiveFiniteNumber(config: ConfigValues, key: string): number | undefined {
+	if (!(key in config)) {
+		return;
+	}
+	const value = config[key];
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+		throw new Error(`Khala config field '${key}' must be a finite number greater than zero.`);
+	}
+	return value;
+}
+
 function readConfigText(config: ConfigValues, key: string): string | undefined {
 	if (!(key in config)) {
 		return;
@@ -267,11 +315,46 @@ function readConfigText(config: ConfigValues, key: string): string | undefined {
 }
 
 function readRequiredConfigString(config: ConfigValues, key: string): string | undefined {
-	const value = readConfigString(config, key);
-	if (key in config && value === undefined) {
+	const value = readConfigText(config, key);
+	if (key in config && (value === undefined || value.trim().length === 0)) {
 		throw new Error(`Khala config field '${key}' must be a non-empty string.`);
 	}
 	return value;
+}
+
+function resolveEffectiveWorkBudget(
+	work: Pick<KhalaWork, "costBudget">,
+	config: Pick<KhalaConfig, "conclaveMaxCostUsdPerTurn" | "executorMaxCostUsdPerTurn">,
+): EffectiveWorkBudget {
+	return {
+		conclaveMaxCostUsdPerTurn: work.costBudget?.conclaveMaxCostUsdPerTurn ?? config.conclaveMaxCostUsdPerTurn,
+		executorMaxCostUsdPerTurn: work.costBudget?.executorMaxCostUsdPerTurn ?? config.executorMaxCostUsdPerTurn,
+	};
+}
+
+function validateRequiredSupervisionConfig(config: KhalaConfig): void {
+	const missing: string[] = [];
+	if (config.conclaveModel.trim().length === 0) {
+		missing.push("conclaveModel");
+	}
+	if (!isPositiveFiniteNumber(config.conclaveMaxCostUsdPerTurn)) {
+		missing.push("conclaveMaxCostUsdPerTurn");
+	}
+	if (config.executorModel.trim().length === 0) {
+		missing.push("executorModel");
+	}
+	if (!isPositiveFiniteNumber(config.executorMaxCostUsdPerTurn)) {
+		missing.push("executorMaxCostUsdPerTurn");
+	}
+	if (missing.length > 0) {
+		throw new Error(
+			`Khala supervision configuration is incomplete or invalid (${missing.join(", ")}). Rerun setup with \`khala setup\`.`,
+		);
+	}
+}
+
+function isPositiveFiniteNumber(value: number): boolean {
+	return Number.isFinite(value) && value > 0;
 }
 
 function readObserverPiCommand(config: ConfigValues, key: string): PiCommand | undefined {
@@ -318,5 +401,14 @@ function readPiCommand(config: ConfigValues, key: string): PiCommand | undefined
 	return [command, ...args];
 }
 
-export type { ConfigScopeValue, KhalaConfig, LauncherNameValue };
-export { assertObserverPiCommand, ConfigScope, getKhalaConfigPath, LauncherName, loadKhalaConfig, THINKING_LEVELS };
+export type { ConfigScopeValue, EffectiveWorkBudget, KhalaConfig, LauncherNameValue };
+export {
+	assertObserverPiCommand,
+	ConfigScope,
+	getKhalaConfigPath,
+	LauncherName,
+	loadKhalaConfig,
+	resolveEffectiveWorkBudget,
+	THINKING_LEVELS,
+	validateRequiredSupervisionConfig,
+};

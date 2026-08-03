@@ -1,21 +1,31 @@
-// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Executor startup composes sandbox, review preparation, launcher, and cleanup fences in one transaction.
-// biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Executor startup composes sandbox, review preparation, launcher, and cleanup fences in one transaction.
+// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Executor startup composes sandbox, review preparation, RPC readiness, and cleanup fences in one transaction.
+// biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Executor startup composes sandbox, review preparation, RPC readiness, and cleanup fences in one transaction.
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Executor launch keeps sandbox and launcher ownership in one transaction boundary.
 import { join } from "node:path";
+import type { HeadlessRuntimeOptions, RpcSessionBinding } from "./executor-rpc.js";
+import {
+	HeadlessExecutorRuntime,
+	KHALA_HEADLESS_LAUNCHER,
+	registerHeadlessRuntime,
+	unregisterHeadlessRuntime,
+} from "./executor-rpc.js";
+import { getSupervisionController } from "./khala-supervision.js";
+import { validatePersistedExecutorSession } from "./khala-supervision-recovery.js";
 import type { LaunchedSession, Launcher, StartupRequest } from "./launcher.js";
 import type { ReviewPreparation, VCSProvider as VcsProviderType } from "./vcs.js";
 
-// The request stays provider-neutral so Git worktrees, branch sandboxes, and remote VCS implementations can share it.
 interface SandboxRequest {
 	projectPath: string;
 	name: string;
 	baseBranch?: string;
+	/** Exact published upstream commit used by a dependent Execution. */
+	baseCommit?: string;
+	baseRef?: string;
 }
 
-// The launcher uses only the working directory; the project root is retained for provider cleanup.
 interface Sandbox {
 	path: string;
 	name: string;
-	// VCS providers use the repository root to remove provider-owned branches after worktree removal.
 	projectPath: string;
 }
 
@@ -34,24 +44,80 @@ interface ExecutorRequest {
 	mandateId?: string;
 	participantId?: string;
 	projectTrusted?: boolean;
-	kind?: KhalaAgentKind;
+	kind: KhalaAgentKind;
 	onSandboxCreated?: (sandbox: Sandbox, launcherName: string) => void;
+	onRpcReady?: (binding: RpcSessionBinding) => Promise<void> | void;
+	onRpcEvent?: (event: unknown) => Promise<void> | void;
+	onRpcFailure?: (error: Error) => Promise<void> | void;
+	onReviewPrepared?: (preparation: ReviewPreparation, sandbox: Sandbox) => Promise<void> | void;
 	reviewWorkflow?: Readonly<{
 		publish: boolean;
 		targetBranch?: string;
 		supersedesPullRequestUrl?: string;
 		commitConvention?: string;
+		baseCommit?: string;
+		baseRef?: string;
 	}>;
-	onReviewPrepared?: (preparation: ReviewPreparation, sandbox: Sandbox) => Promise<void> | void;
 }
 
 type ExecutorStarter = (request: ExecutorRequest) => Promise<LaunchedSession>;
+type ExecutorRecoveryRequest = Readonly<{
+	executionId: string;
+	sessionId: string;
+	sessionPath: string;
+	cwd: string;
+	model: string;
+	mission: string;
+	command: string;
+	args: readonly string[];
+	onReady?: HeadlessRuntimeOptions["onReady"];
+	onRestart?: HeadlessRuntimeOptions["onRestart"];
+	onEvent?: HeadlessRuntimeOptions["onEvent"];
+	onFailure?: HeadlessRuntimeOptions["onFailure"];
+	spawnProcess?: HeadlessRuntimeOptions["spawnProcess"];
+}>;
+
+async function recoverHeadlessExecutor(request: ExecutorRecoveryRequest): Promise<HeadlessExecutorRuntime> {
+	validatePersistedExecutorSession(
+		{ sessionId: request.sessionId, sessionPath: request.sessionPath },
+		request.sessionPath,
+	);
+	let runtimeOptions: HeadlessRuntimeOptions = {
+		command: request.command,
+		args: request.args,
+		cwd: request.cwd,
+		model: request.model,
+		mission: request.mission,
+		executionId: request.executionId,
+		sessionId: request.sessionId,
+		sessionPath: request.sessionPath,
+	};
+	if (request.onReady !== undefined) {
+		runtimeOptions = { ...runtimeOptions, onReady: request.onReady };
+	}
+	if (request.onRestart !== undefined) {
+		runtimeOptions = { ...runtimeOptions, onRestart: request.onRestart };
+	}
+	if (request.onEvent !== undefined) {
+		runtimeOptions = { ...runtimeOptions, onEvent: request.onEvent };
+	}
+	if (request.onFailure !== undefined) {
+		runtimeOptions = { ...runtimeOptions, onFailure: request.onFailure };
+	}
+	if (request.spawnProcess !== undefined) {
+		runtimeOptions = { ...runtimeOptions, spawnProcess: request.spawnProcess };
+	}
+	const runtime = new HeadlessExecutorRuntime(runtimeOptions);
+	registerHeadlessRuntime(request.executionId, runtime);
+	await runtime.start();
+	return runtime;
+}
 
 // The starter composes the two providers without deciding how either repository isolation or terminal launching works.
 // biome-ignore lint/complexity/useMaxParams: Configured starters pass launcher, model, and skill settings as separate integration parameters.
 function createExecutorStarter(
 	vcsProvider: VcsProviderType,
-	launcher: Launcher,
+	launcher: Launcher | undefined,
 	piCommand: PiCommand = ["pi"],
 	launcherName = "configured",
 	model?: string,
@@ -63,10 +129,26 @@ function createExecutorStarter(
 		if (request.reviewWorkflow?.targetBranch !== undefined) {
 			sandboxRequest.baseBranch = request.reviewWorkflow.targetBranch;
 		}
+		if (request.reviewWorkflow?.baseCommit !== undefined) {
+			sandboxRequest.baseCommit = request.reviewWorkflow.baseCommit;
+		}
+		if (request.reviewWorkflow?.baseRef !== undefined) {
+			sandboxRequest.baseRef = request.reviewWorkflow.baseRef;
+		}
 		const sandbox = await vcsProvider.createSandbox(sandboxRequest);
+		// This flag means all live child/pane resources are closed. It starts true
+		// so failures before a runtime or Observer pane exists still remove the
+		// sandbox; successful launch flips it false and owns explicit cleanup.
 		let launcherClosed = true;
+		let sandboxRemoved = false;
+		let headlessRuntime: HeadlessExecutorRuntime | undefined;
+		let launched: LaunchedSession | undefined;
 		try {
-			request.onSandboxCreated?.(sandbox, launcherName);
+			let activeLauncherName = launcherName;
+			if (request.kind === "executor") {
+				activeLauncherName = KHALA_HEADLESS_LAUNCHER;
+			}
+			request.onSandboxCreated?.(sandbox, activeLauncherName);
 			if (request.reviewWorkflow !== undefined) {
 				const reviewRequest: {
 					sandbox: Sandbox;
@@ -78,6 +160,7 @@ function createExecutorStarter(
 					targetBranch?: string;
 					supersedesPullRequestUrl?: string;
 					commitConvention?: string;
+					baseCommit?: string;
 				} = {
 					sandbox,
 					name: request.name,
@@ -92,6 +175,9 @@ function createExecutorStarter(
 				if (request.reviewWorkflow.commitConvention !== undefined) {
 					reviewRequest.commitConvention = request.reviewWorkflow.commitConvention;
 				}
+				if (request.reviewWorkflow.baseCommit !== undefined) {
+					reviewRequest.baseCommit = request.reviewWorkflow.baseCommit;
+				}
 				if (request.reviewWorkflow.targetBranch !== undefined) {
 					reviewRequest.targetBranch = request.reviewWorkflow.targetBranch;
 				}
@@ -100,46 +186,124 @@ function createExecutorStarter(
 					await request.onReviewPrepared?.(preparation, sandbox);
 				}
 			}
-			const [command, ...commandArgs] = piCommand;
-			const startup: StartupRequest = { markerPath: join(sandbox.path, `.khala-startup-${request.executionId}`) };
-			const modelArguments: string[] = [];
-			if (model !== undefined) {
-				modelArguments.push("--model", model);
-			}
-			const skillArguments: string[] = [];
-			for (const skillPath of skillPaths) {
-				skillArguments.push("--skill", skillPath);
-			}
-			const launched = await launcher.launch({
-				sandbox,
-				name: request.name,
-				command,
-				args: [...commandArgs, ...modelArguments, ...skillArguments, ...buildPiArguments(request, thinkingLevel)],
-				startup,
-			});
-			launcherClosed = launched.target === undefined;
-			if (launched.ready !== undefined) {
-				try {
-					await launched.ready;
-				} catch (error) {
-					if (launched.target !== undefined) {
-						try {
-							await launcher.close(launched.target);
-							launcherClosed = true;
-						} catch (cleanupError) {
-							attachCleanupDiagnostic(error, cleanupError);
-						}
-					}
-					throw error;
+
+			if (request.kind === "executor") {
+				if (model === undefined || model.trim().length === 0) {
+					throw new Error("A configured executorModel is required for headless Executor launch.");
 				}
+				const [command, ...commandArgs] = piCommand;
+				const skillArguments: string[] = [];
+				for (const skillPath of skillPaths) {
+					skillArguments.push("--skill", skillPath);
+				}
+				const runtimeOptions: {
+					command: string;
+					args: string[];
+					cwd: string;
+					model: string;
+					mission: string;
+					executionId: string;
+					onReady?: (binding: RpcSessionBinding) => Promise<void> | void;
+					onEvent?: (event: unknown, runtime: HeadlessExecutorRuntime) => Promise<void> | void;
+					onFailure?: (error: Error) => Promise<void> | void;
+					onRestart?: (runtime: HeadlessExecutorRuntime) => Promise<void> | void;
+				} = {
+					command,
+					args: [...commandArgs, ...buildPiArguments(request, thinkingLevel, false), ...skillArguments],
+					cwd: sandbox.path,
+					model,
+					mission: request.mission,
+					executionId: request.executionId,
+				};
+				const supervision = getSupervisionController(request.projectPath, request.projectTrusted ?? false);
+				if (request.onRpcEvent !== undefined || supervision !== undefined) {
+					runtimeOptions.onEvent = (event, runtime) => {
+						const explicitResult = request.onRpcEvent?.(event);
+						const supervisedResult = supervision?.handleRuntimeEvent(
+							{
+								workId: request.workId,
+								missionId: request.missionId ?? "unknown-mission",
+								executionId: request.executionId,
+							},
+							event,
+							runtime,
+						);
+						return Promise.all([explicitResult, supervisedResult]).then(() => undefined);
+					};
+				}
+				if (request.onRpcReady !== undefined) {
+					runtimeOptions.onReady = request.onRpcReady;
+				}
+				if (supervision !== undefined) {
+					runtimeOptions.onRestart = (runtime) =>
+						supervision.handleRuntimeRestart(
+							{
+								workId: request.workId,
+								missionId: request.missionId ?? "unknown-mission",
+								executionId: request.executionId,
+							},
+							runtime,
+						);
+				}
+				if (request.onRpcFailure !== undefined || supervision !== undefined) {
+					runtimeOptions.onFailure = (error) => {
+						const explicitResult = request.onRpcFailure?.(error);
+						const supervisedResult = supervision?.handleRuntimeFailure(
+							{
+								workId: request.workId,
+								missionId: request.missionId ?? "unknown-mission",
+								executionId: request.executionId,
+							},
+							error,
+						);
+						return Promise.all([explicitResult, supervisedResult]).then(() => undefined);
+					};
+				}
+				headlessRuntime = new HeadlessExecutorRuntime(runtimeOptions);
+				registerHeadlessRuntime(request.executionId, headlessRuntime);
+				launched = await headlessRuntime.start();
+				launched = { ...launched, sandbox };
+				launcherClosed = false;
+			} else {
+				if (launcher === undefined) {
+					throw new Error("Observer launch requires a configured pane launcher.");
+				}
+				const [command, ...commandArgs] = piCommand;
+				const skillArguments: string[] = [];
+				for (const skillPath of skillPaths) {
+					skillArguments.push("--skill", skillPath);
+				}
+				const startup: StartupRequest = { markerPath: join(sandbox.path, `.khala-startup-${request.executionId}`) };
+				launched = await launcher.launch({
+					sandbox,
+					name: request.name,
+					command,
+					args: [...commandArgs, ...skillArguments, ...buildPiArguments(request, thinkingLevel)],
+					startup,
+				});
+				launcherClosed = launched.target === undefined;
+				await launched.ready;
 			}
-			let sandboxRemoved = false;
+			if (launched === undefined) {
+				throw new Error("Executor launch did not return a session.");
+			}
+			const runningLaunch = launched;
+
 			const cleanup = async () => {
 				const cleanupErrors: unknown[] = [];
-				if (!launcherClosed && launched.target !== undefined) {
+				if (launcher !== undefined && !launcherClosed && runningLaunch.target !== undefined) {
 					try {
-						await launcher.close(launched.target);
+						await launcher.close(runningLaunch.target);
 						launcherClosed = true;
+					} catch (cleanupError) {
+						cleanupErrors.push(cleanupError);
+					}
+				}
+				if (!launcherClosed && headlessRuntime !== undefined) {
+					try {
+						await headlessRuntime.closeProcess();
+						launcherClosed = true;
+						unregisterHeadlessRuntime(request.executionId);
 					} catch (cleanupError) {
 						cleanupErrors.push(cleanupError);
 					}
@@ -168,14 +332,31 @@ function createExecutorStarter(
 					throw cleanupFailure;
 				}
 			};
-			return { ...launched, cleanup };
+			return { ...runningLaunch, cleanup };
 		} catch (error) {
-			if (launcherClosed) {
+			if (headlessRuntime !== undefined) {
 				try {
-					await vcsProvider.removeSandbox(sandbox);
+					await headlessRuntime.closeProcess();
+					launcherClosed = true;
 				} catch (cleanupError) {
 					attachCleanupDiagnostic(error, cleanupError);
 				}
+				unregisterHeadlessRuntime(request.executionId);
+			}
+			if (launcher !== undefined && launched?.target !== undefined && !launcherClosed) {
+				try {
+					await launcher.close(launched.target);
+					launcherClosed = true;
+				} catch (cleanupError) {
+					attachCleanupDiagnostic(error, cleanupError);
+				}
+			}
+			try {
+				if (launcherClosed && !sandboxRemoved) {
+					await vcsProvider.removeSandbox(sandbox);
+				}
+			} catch (cleanupError) {
+				attachCleanupDiagnostic(error, cleanupError);
 			}
 			throw error;
 		}
@@ -186,7 +367,7 @@ function attachCleanupDiagnostic(error: unknown, cleanupError: unknown): void {
 	if (!(error instanceof Error)) {
 		return;
 	}
-	// Keep the startup or launcher failure as the public error; this non-enumerable field is diagnostic only.
+	// Keep the runtime or launcher failure as the public error; this non-enumerable field is diagnostic only.
 	try {
 		const existing = (error as Error & { cleanupErrors?: unknown[] }).cleanupErrors ?? [];
 		Object.defineProperty(error, "cleanupErrors", {
@@ -208,7 +389,7 @@ function attachCleanupDiagnostic(error: unknown, cleanupError: unknown): void {
 	}
 }
 
-function buildPiArguments(request: ExecutorRequest, thinkingLevel?: string): string[] {
+function buildPiArguments(request: ExecutorRequest, thinkingLevel?: string, includeMission = true): string[] {
 	const args = [
 		"--system-prompt",
 		request.systemPrompt,
@@ -249,12 +430,32 @@ function buildPiArguments(request: ExecutorRequest, thinkingLevel?: string): str
 	if (request.participantId !== undefined) {
 		args.push("--khala-participant-id", request.participantId);
 	}
-	if (request.mission.length > 0) {
+	if (includeMission && request.mission.length > 0) {
 		args.push(request.mission);
 	}
 	return args;
 }
 
+// biome-ignore lint/performance/noBarrelFile: RPC launch helpers remain available beside the starter contract for focused transport tests.
+export {
+	buildHeadlessPiArguments,
+	disposeHeadlessRuntimes,
+	getHeadlessRuntime,
+	HeadlessExecutorRuntime,
+	KHALA_HEADLESS_LAUNCHER,
+	readRpcSessionBinding,
+	registerHeadlessRuntime,
+	StrictJsonlReader,
+	sendHeadlessExecutorMessage,
+} from "./executor-rpc.js";
 export type { VCSProvider } from "./vcs.js";
-export type { ExecutorRequest, ExecutorStarter, KhalaAgentKind, PiCommand, Sandbox, SandboxRequest };
-export { buildPiArguments, createExecutorStarter };
+export type {
+	ExecutorRecoveryRequest,
+	ExecutorRequest,
+	ExecutorStarter,
+	KhalaAgentKind,
+	PiCommand,
+	Sandbox,
+	SandboxRequest,
+};
+export { buildPiArguments, createExecutorStarter, recoverHeadlessExecutor };

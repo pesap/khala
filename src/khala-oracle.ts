@@ -111,7 +111,7 @@ function runOracle(
 	if (signal?.aborted) {
 		return Promise.reject(new Error("Khala Oracle review was cancelled."));
 	}
-	const config = loadKhalaConfig(cwd, projectTrusted);
+	const config = loadKhalaConfig(cwd, projectTrusted, false);
 	if (config.oracleModel.length === 0) {
 		return Promise.reject(new Error("A Khala Oracle model must be configured before running a review."));
 	}

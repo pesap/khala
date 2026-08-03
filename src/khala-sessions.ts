@@ -1,11 +1,13 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: The session projection intentionally keeps all role and review state in one roster pass.
+// biome-ignore-all lint/style/noTernary: Optional monitor fields keep the existing row projection shape stable.
 import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
-import type { ExtensionContext, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, FileEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
-import { createArchiveSnapshot } from "./khala-archive-projections.js";
-import { LauncherName, type LauncherNameValue } from "./khala-config.js";
+import { createArchiveSnapshot, projectMissions } from "./khala-archive-projections.js";
+import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
 import { type ExecutorRecord, ExecutorStatus } from "./khala-model.js";
+import { type KhalaExecutionMonitor, projectExecutionMonitor } from "./khala-supervision-projection.js";
 
 const KhalaSessionState = {
 	input: "input",
@@ -37,6 +39,7 @@ interface KhalaSession {
 	sandboxPath?: string;
 	sandboxPathLabel?: string;
 	latestSignal?: { kind: string; summary: string; observedAt: string };
+	executionMonitor?: KhalaExecutionMonitor;
 }
 
 interface KhalaSessionSource {
@@ -82,9 +85,12 @@ function getExecutorSessionState(status: string, signalKind: string | undefined)
 	return KhalaSessionState.working;
 }
 
-type ExecutorView = Readonly<{ launcher: LauncherNameValue; target: string }>;
+type ObserverView = Readonly<{ launcher: LauncherNameValue; target: string }>;
 
-function getExecutorView(executor: Pick<ExecutorRecord, "launcher" | "target">): ExecutorView | undefined {
+function getObserverView(executor: Pick<ExecutorRecord, "kind" | "launcher" | "target">): ObserverView | undefined {
+	if (executor.kind !== "observer") {
+		return;
+	}
 	if (executor.target === undefined || executor.target.length === 0) {
 		return;
 	}
@@ -98,7 +104,7 @@ function getExecutorView(executor: Pick<ExecutorRecord, "launcher" | "target">):
 	return { launcher: executor.launcher, target: executor.target };
 }
 
-function getExecutorAction(view: ExecutorView | undefined): string {
+function getObserverAction(view: ObserverView | undefined): string {
 	if (view !== undefined) {
 		return "view pane";
 	}
@@ -231,6 +237,14 @@ function buildSessionList(
 	}
 
 	const archive = createArchiveSnapshot(context.cwd, projectTrusted);
+	let missions = [] as ReturnType<typeof projectMissions>[number]["mission"][];
+	try {
+		missions = projectMissions(context.cwd, projectTrusted).map((projection) => projection.mission);
+	} catch {
+		// The existing session list remains usable while an incomplete lifecycle projection is repaired.
+	}
+	const conclaveEntries = readConclaveEntries(conclavePath);
+	const config = readMonitorConfig(context.cwd, projectTrusted);
 	const latestPullRequests = new Map<string, ReturnType<typeof archive.listPullRequests>[number]>();
 	for (const pullRequest of archive.listPullRequests()) {
 		latestPullRequests.set(pullRequest.executionId, pullRequest);
@@ -287,7 +301,19 @@ function buildSessionList(
 			task = `Context for Work ${executor.workId}`;
 			skills = ["repository-observation", "learning"];
 		}
-		const view = getExecutorView(executor);
+		const view = getObserverView(executor);
+		let executionMonitor: KhalaExecutionMonitor | undefined;
+		if (!isObserver) {
+			executionMonitor = projectExecutionMonitor({
+				execution: executor,
+				workTitle: task,
+				missions,
+				signals: archive.listSignals(),
+				archiveRecords: archive.listRecords(),
+				conclaveEntries,
+				config,
+			});
+		}
 		let sessionPathLabel = "separate Pi process";
 		if (executor.sessionPath !== undefined) {
 			sessionPathLabel = formatSessionPath(executor.sessionPath, context.cwd);
@@ -298,7 +324,7 @@ function buildSessionList(
 			role,
 			state,
 			stateLabel: getSessionStateLabel(state),
-			action: getExecutorAction(view),
+			action: getObserverAction(view),
 			displayOnly: true,
 			age: latestSignal?.observedAt ?? executor.startedAt,
 			task,
@@ -310,9 +336,7 @@ function buildSessionList(
 			isCurrent: false,
 			sandboxPath: executor.sandboxPath,
 			sandboxPathLabel: formatSessionPath(executor.sandboxPath, context.cwd),
-			// biome-ignore lint/style/noTernary: Compact optional projection keeps the row shape stable.
 			...(view === undefined ? {} : { launcher: view.launcher, target: view.target }),
-			// biome-ignore lint/style/noTernary: Compact optional projection keeps the row shape stable.
 			...(latestSignal === undefined
 				? {}
 				: {
@@ -322,11 +346,51 @@ function buildSessionList(
 							observedAt: latestSignal.observedAt,
 						},
 					}),
+			...(executionMonitor === undefined ? {} : { executionMonitor }),
 		});
 	}
 
 	return sessions;
 }
 
+function readConclaveEntries(path: string | undefined): readonly FileEntry[] {
+	if (path === undefined || !existsSync(path)) {
+		return [];
+	}
+	try {
+		return parseSessionEntries(readFileSync(path, "utf8"));
+	} catch {
+		return [];
+	}
+}
+
+function readMonitorConfig(
+	projectPath: string,
+	projectTrusted: boolean,
+): Readonly<{
+	conclaveModel: string;
+	executorModel: string;
+	conclaveMaxCostUsdPerTurn: number;
+	executorMaxCostUsdPerTurn: number;
+}> {
+	try {
+		const config = loadKhalaConfig(projectPath, projectTrusted, false);
+		return {
+			conclaveModel: config.conclaveModel,
+			executorModel: config.executorModel,
+			conclaveMaxCostUsdPerTurn: config.conclaveMaxCostUsdPerTurn,
+			executorMaxCostUsdPerTurn: config.executorMaxCostUsdPerTurn,
+		};
+	} catch {
+		return {
+			conclaveModel: "",
+			executorModel: "",
+			conclaveMaxCostUsdPerTurn: 0,
+			executorMaxCostUsdPerTurn: 0,
+		};
+	}
+}
+
+export type { KhalaExecutionMonitor } from "./khala-supervision-projection.js";
 export type { KhalaSession, KhalaSessionSource, KhalaSessionStateValue };
 export { createSessionSource, KhalaSessionState };

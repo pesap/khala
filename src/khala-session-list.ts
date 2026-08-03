@@ -1,7 +1,10 @@
+// biome-ignore-all lint/style/noTernary: Compact optional session row fields are intentionally explicit.
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: The existing monitor list and its selected detail stay one scannable surface.
 import type { KeybindingsManager, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type KhalaSession, KhalaSessionState, type KhalaSessionStateValue } from "./khala-sessions.js";
 
+const COMMIT_ABBREVIATION_LENGTH = 12;
 const SESSION_COLUMN_WIDTH = 20;
 const MAX_VISIBLE_SESSION_ROWS = 4;
 const NAME_LABEL_OVERHEAD = 3;
@@ -37,6 +40,10 @@ class KhalaSessionList implements Component {
 		const startIndex = this.getVisibleStartIndex();
 		const visibleSessions = this.sessions.slice(startIndex, startIndex + MAX_VISIBLE_SESSION_ROWS);
 		lines.push(...visibleSessions.map((session) => this.renderSession(session, width)));
+		const selected = this.getSelectedSession();
+		if (selected?.executionMonitor !== undefined) {
+			lines.push(...renderExecutionDetails(selected, width, this.theme));
+		}
 		if (visibleSessions.length < this.sessions.length) {
 			const endIndex = startIndex + visibleSessions.length;
 			lines.push(this.theme.fg("dim", `sessions ${startIndex + 1}-${endIndex}/${this.sessions.length}`));
@@ -134,7 +141,10 @@ class KhalaSessionList implements Component {
 		}
 		const task = truncateToWidth(activity, taskWidth, "…");
 		const taskSpacing = " ".repeat(Math.max(MIN_WIDTH, taskWidth - visibleWidth(task)));
-		const statusText = `${session.stateLabel} · ${getSessionAction(session)}`;
+		let statusText = `${session.stateLabel} · ${getSessionAction(session)}`;
+		if (session.executionMonitor !== undefined) {
+			statusText = `headless ${session.executionMonitor.runtimeState} · supervision ${session.executionMonitor.supervisionState}`;
+		}
 		const status = this.theme.fg(getSessionColor(session.state), truncateToWidth(statusText, statusWidth, ""));
 		const line = `${cursor}${label}${labelSpacing}${task}${taskSpacing}${" ".repeat(STATUS_PADDING_WIDTH)}${status}`;
 		const fittedLine = truncateToWidth(line, Math.max(MIN_WIDTH, width), "…");
@@ -166,6 +176,103 @@ function renderStatusLegend(theme: Theme): string {
 	return `${theme.fg("dim", "Status")}  ${theme.fg("warning", "Input Required")}  ${theme.fg("accent", "Review Ready")}  ${theme.fg("error", "Possibly Stalled / Failed")}  ${theme.fg("success", "Active")}`;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The selected Executor detail deliberately keeps all minimum UX facts together.
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: The selected detail is one bounded factual monitor surface.
+function renderExecutionDetails(session: KhalaSession, width: number, theme: Theme): string[] {
+	const monitor = session.executionMonitor;
+	if (monitor === undefined) {
+		return [];
+	}
+	let runtimeSuffix = "";
+	if (monitor.incomplete) {
+		runtimeSuffix = "; incomplete evidence";
+	}
+	const lines: string[] = [
+		`Executor detail: ${session.identity}`,
+		`Runtime: headless ${monitor.runtimeState}${runtimeSuffix}`,
+		`Supervision: ${monitor.supervisionState}`,
+		`Models: Conclave ${monitor.models.conclave}; Executor ${monitor.models.executor}`,
+		`Limits: Conclave ${formatUsd(monitor.thresholds.conclaveUsd)}; Executor ${formatUsd(monitor.thresholds.executorUsd)}`,
+		`Latest cost: Conclave ${formatCost(monitor.latestTurnCost.conclave)}; Executor ${formatCost(monitor.latestTurnCost.executor)}`,
+	];
+	if (monitor.upstream !== undefined) {
+		const abbreviated = monitor.upstream.headCommit.slice(0, COMMIT_ABBREVIATION_LENGTH);
+		lines.push(`Upstream Work: ${monitor.upstream.workId}; base ${abbreviated}`);
+		let staleSuffix = "";
+		if (monitor.upstream.stale) {
+			staleSuffix = "; stale/invalidation";
+		}
+		lines.push(`Base evidence: ${monitor.upstream.headCommit}${staleSuffix}`);
+	}
+	if (monitor.latestSignificantAction !== undefined) {
+		lines.push(`Action: ${monitor.latestSignificantAction.summary}`);
+		lines.push(...monitor.latestSignificantAction.details.map((detail) => `Action evidence: ${detail}`));
+	}
+	if (monitor.steer !== undefined) {
+		lines.push(
+			`Steer: ${monitor.steer.status}; mode ${monitor.steer.mode}; category ${monitor.steer.category ?? "unavailable"}`,
+		);
+		lines.push(`Steer term: ${monitor.steer.missionTerm ?? "unavailable"}`);
+		lines.push(`Steer message: ${monitor.steer.message ?? "unavailable"}`);
+		lines.push(`Abort: ${monitor.steer.abort}; prompt: ${monitor.steer.prompt}`);
+		if (monitor.steer.observedEntryIds.length > 0) {
+			lines.push(`Observed Pi entries: ${monitor.steer.observedEntryIds.join(", ")}`);
+		}
+		if (monitor.steer.outcome !== undefined) {
+			lines.push(
+				`Intervention outcome: ${monitor.steer.outcome}; ${monitor.steer.outcomeReason ?? "reason unavailable"}`,
+			);
+		}
+	}
+	if (monitor.coordination !== undefined) {
+		lines.push(`Coordination: ${monitor.coordination.relation}; priority ${monitor.coordination.selectedWorkId}`);
+		lines.push(`Coordination reason: ${monitor.coordination.selectedReason}`);
+		if (monitor.coordination.stoppedWorkId !== undefined) {
+			lines.push(`Stopped Work: ${monitor.coordination.stoppedWorkId}`);
+		}
+		if (monitor.coordination.delayedWorkId !== undefined) {
+			lines.push(`Delayed Work: ${monitor.coordination.delayedWorkId}`);
+		}
+		if (monitor.coordination.requiredUpstreamCommit !== undefined) {
+			lines.push(`Required upstream commit: ${monitor.coordination.requiredUpstreamCommit}`);
+		}
+		if (monitor.coordination.invalidatedWorkIds.length > 0) {
+			lines.push(`Invalidated Work: ${monitor.coordination.invalidatedWorkIds.join(", ")}`);
+		}
+		if (monitor.coordination.terminalSchedulingFailure) {
+			lines.push("Coordination: terminal scheduling failure");
+		}
+		lines.push("Override by speaking in the Conclave session.");
+	}
+	if (monitor.grace !== undefined && monitor.supervisionState !== "connected") {
+		lines.push(
+			`Recovery: ${monitor.grace.kind}; failed checks ${monitor.grace.failedCheckCount}; deadline ${monitor.grace.deadlineAt}`,
+		);
+	}
+	return lines.flatMap((line) => wrapTextWithAnsi(theme.fg("dim", line), Math.max(1, width)));
+}
+
+function formatUsd(value: number | undefined): string {
+	if (value === undefined || !Number.isFinite(value) || value <= 0) {
+		return "unavailable";
+	}
+	return `$${value}`;
+}
+
+function formatCost(cost: {
+	costUsd?: number | undefined;
+	thresholdUsd?: number | undefined;
+	overrun: boolean;
+}): string {
+	const observed = formatUsd(cost.costUsd);
+	const threshold = formatUsd(cost.thresholdUsd);
+	let overrun = "";
+	if (cost.overrun) {
+		overrun = "; overrun, work continues";
+	}
+	return `${observed} / max ${threshold}${overrun}`;
+}
+
 function getRoleColor(role: string): ThemeColor {
 	const normalizedRole = role.toLowerCase();
 	if (normalizedRole === "conclave") {
@@ -193,4 +300,12 @@ function getSessionColor(state: KhalaSessionStateValue): ThemeColor {
 	return "success";
 }
 
-export { getRoleColor, getSessionAction, getSessionColor, KhalaSessionList, renderRoleLegend, renderStatusLegend };
+export {
+	getRoleColor,
+	getSessionAction,
+	getSessionColor,
+	KhalaSessionList,
+	renderExecutionDetails,
+	renderRoleLegend,
+	renderStatusLegend,
+};

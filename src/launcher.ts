@@ -20,7 +20,7 @@ interface LaunchedSession {
 	id: string;
 	sandbox: Sandbox;
 	target?: string;
-	ready?: Promise<void> | undefined;
+	ready?: Promise<void>;
 	/** Releases only resources created by this launch transaction. */
 	cleanup?: () => Promise<void>;
 }
@@ -29,9 +29,6 @@ abstract class Launcher {
 	abstract launch(request: LaunchRequest): Promise<LaunchedSession>;
 	abstract focus(target: string): Promise<void>;
 	abstract close(target: string): Promise<void>;
-	send(_target: string, _message: string): Promise<void> {
-		return Promise.reject(new Error("This launcher does not support sending messages to an active Executor."));
-	}
 }
 
 function hasErrorCode(error: object, code: string): boolean {
@@ -62,9 +59,7 @@ function waitForStartup(markerPath: string): Promise<void> {
 			if (timeout !== undefined) {
 				clearTimeout(timeout);
 			}
-			if (watcher !== undefined) {
-				watcher.close();
-			}
+			watcher?.close();
 			try {
 				unlinkSync(markerPath);
 			} catch {
@@ -79,7 +74,7 @@ function waitForStartup(markerPath: string): Promise<void> {
 		const inspect = () => {
 			if (!existsSync(markerPath)) {
 				if (Date.now() >= deadline) {
-					finish(new Error("Executor child did not become ready within 10 seconds."));
+					finish(new Error("Observer child did not become ready within 10 seconds."));
 				}
 				return;
 			}
@@ -89,11 +84,11 @@ function waitForStartup(markerPath: string): Promise<void> {
 				return;
 			}
 			if (marker.startsWith("exit:")) {
-				finish(new Error(`Executor child exited during startup: ${marker.slice("exit:".length)}`));
+				finish(new Error(`Observer child exited during startup: ${marker.slice("exit:".length)}`));
 			}
 		};
 		watcher = watch(dirname(markerPath), { persistent: false }, inspect);
-		timeout = setTimeout(() => inspect(), STARTUP_TIMEOUT_MS);
+		timeout = setTimeout(inspect, STARTUP_TIMEOUT_MS);
 		inspect();
 	});
 }

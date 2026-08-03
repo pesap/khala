@@ -18,7 +18,7 @@ function runBootstrap(markerPath, code) {
 	});
 }
 
-test("bootstrap reports child readiness without shell interpretation", async () => {
+test("Observer bootstrap reports child readiness without shell interpretation", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-startup-success-"));
 	const marker = join(root, "startup-marker");
 	try {
@@ -30,7 +30,7 @@ test("bootstrap reports child readiness without shell interpretation", async () 
 	}
 });
 
-test("bootstrap reports a child exit during startup", async () => {
+test("Observer bootstrap reports a child exit during startup", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-startup-failure-"));
 	const marker = join(root, "startup-marker");
 	try {
@@ -42,7 +42,7 @@ test("bootstrap reports a child exit during startup", async () => {
 	}
 });
 
-test("Zellij closes a created tab and removes the sandbox when the child exits", async () => {
+test("Zellij closes a created Observer tab and removes the sandbox when the child exits", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-zellij-startup-"));
 	const bin = join(root, "bin");
 	const zellij = join(bin, "zellij");
@@ -93,9 +93,10 @@ if (args.includes("new-tab")) {
 				workId: "work-zellij",
 				executionId: "execution-zellij",
 				name: "Zellij child failure",
-				executorName: "Executor",
+				executorName: "Observer",
 				mission: "",
 				systemPrompt: "",
+				kind: "observer",
 			}),
 			/exited during startup/,
 		);

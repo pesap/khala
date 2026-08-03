@@ -4,10 +4,12 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import { appendArchiveRecord, appendArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import { type MissionProjection, readCurrentMission, readMandate } from "./khala-archive-projections.js";
+import { resolveTerminalUpstreamCoordinations } from "./khala-coordination.js";
 import { readExecutorRecord, updateExecutorRecord, writeExecutorRecord } from "./khala-executor-registry.js";
 import {
 	ExecutorStatus,
 	type ExecutorStatusValue,
+	isWorkCostBudget,
 	type KhalaWork,
 	type MissionRecord,
 	type RetryHandoff,
@@ -143,12 +145,15 @@ function persistVerdict(input: {
 			if (execution?.status !== ExecutorStatus.running) {
 				throw new Error("The Execution changed before its terminal Verdict could be committed.");
 			}
-			appendArchiveRecord(
+			const verdictRecord = appendArchiveRecord(
 				context.cwd,
 				{ schemaVersion, type: "verdict", workId: verdict.workId, executionId: verdict.executionId, payload: verdict },
 				projectTrusted,
 			);
 			writeExecutorRecord({ ...execution, status: terminalExecutorStatus(verdict.decision) }, projectTrusted);
+			if (verdict.decision === "reject") {
+				resolveTerminalUpstreamCoordinations(context.cwd, verdict.executionId, verdictRecord.recordId, projectTrusted);
+			}
 			return verdictResult(verdict, false);
 		});
 		if (verdict.decision === "finish" && missionId !== undefined) {
@@ -329,7 +334,8 @@ function isCompleteAssignment(assignment: KhalaWork | undefined): assignment is 
 		assignment.plan.every((item) => item.trim().length > 0) &&
 		assignment.validation.length > 0 &&
 		assignment.validation.every((item) => item.trim().length > 0) &&
-		assignment.constraints.every((item) => item.trim().length > 0)
+		assignment.constraints.every((item) => item.trim().length > 0) &&
+		(assignment.costBudget === undefined || isWorkCostBudget(assignment.costBudget))
 	);
 }
 

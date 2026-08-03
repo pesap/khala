@@ -1,7 +1,8 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Extension registration keeps role and lifecycle wiring together.
+// biome-ignore-all lint/style/noProcessEnv: Observer startup readiness is passed through the child process environment.
 // biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Extension hooks compose role, lifecycle, and durable delivery fences.
 // biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Extension hooks compose role, lifecycle, and durable delivery fences.
-// biome-ignore-all lint/style/noProcessEnv: Executor bootstrap state is provided through its process environment.
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -9,20 +10,26 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
 import { registerKhalaArchiveRead } from "./khala-archive-tool.js";
-import { type ConclaveCoordinator, createConclaveCoordinator } from "./khala-conclave.js";
+import {
+	CONCLAVE_BASE_TOOL_ALLOWLIST,
+	CONCLAVE_TOOL_ALLOWLIST,
+	type ConclaveCoordinator,
+	createConclaveCoordinator,
+} from "./khala-conclave.js";
 import { registerKhalaCounsel } from "./khala-counsel.js";
 import { registerKhalaDemo } from "./khala-demo.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import {
 	createConfiguredExecutorStarter,
 	createConfiguredObserverStarter,
-	createExecutorCloser,
-	createExecutorViewer,
+	createObserverCloser,
+	createObserverViewer,
 	finalizeConfiguredExecutorReview,
 } from "./khala-executor.js";
-import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
+import { listExecutorRecords, readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
 import { KHALA_TOGGLE_SHORTCUT } from "./khala-keybindings.js";
 import { registerKhalaLearning } from "./khala-learning.js";
+import { ExecutorStatus } from "./khala-model.js";
 import { registerKhalaObserver } from "./khala-observer.js";
 import { registerKhalaOracle } from "./khala-oracle.js";
 import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
@@ -33,15 +40,154 @@ import type { KhalaSession } from "./khala-sessions.js";
 import { createSessionSource } from "./khala-sessions.js";
 import { registerKhalaSignal } from "./khala-signal.js";
 import { setKhalaStatus } from "./khala-status.js";
+import {
+	deterministicActionId,
+	deterministicAssessmentId,
+	getSupervisionController,
+	hideAlignedAssessmentResponse,
+	toolCallsFromMessage,
+} from "./khala-supervision.js";
+import { DIRECT_USER_SOURCE_ENTRY, registerKhalaSupervisionTools } from "./khala-supervision-tools.js";
 import { registerKhalaTriage } from "./khala-triage.js";
 import { readLatestVerdict, registerKhalaVerdict } from "./khala-verdict.js";
 import { registerKhalaWork } from "./khala-work.js";
 
 const baseDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolvePackageRoot(baseDir);
+const pendingDirectInteractiveInputs = new WeakMap<object, PendingDirectInteractiveInput[]>();
+const pendingDirectUserAssessments = new WeakMap<object, DirectUserAssessmentStart[]>();
+const CONCLAVE_CONTROL_TOOL_NAMES = new Set([
+	"khala_steer_execution",
+	"khala_coordinate_work",
+	"khala_record_intervention_outcome",
+]);
+
+type PendingDirectInteractiveInput = Readonly<{
+	sessionId: string;
+	contentSha256: string;
+	assessmentId?: string;
+	assessmentStartEntryId?: string;
+}>;
+
+type DirectUserAssessmentStart = Readonly<{
+	assessmentId: string;
+	workId: string;
+	missionId: string;
+	executionId: string;
+	firstSourceEntryId: string;
+	lastSourceEntryId: string;
+	sourceEntryIds: readonly string[];
+	actionIdNamespace: string;
+	actionIdPattern: string;
+	sourceKind: "direct-user";
+}>;
 
 function isTrustedProject(context: ExtensionContext): boolean {
 	return typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+}
+
+function sha256(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function messageContentSha256(content: unknown): string {
+	if (typeof content === "string") {
+		return sha256(content);
+	}
+	return sha256(JSON.stringify(content));
+}
+
+function isSlashCommand(text: string): boolean {
+	return text.trimStart().startsWith("/");
+}
+
+function currentIncompleteAssessment(context: ExtensionContext): { assessmentId: string; entryId: string } | undefined {
+	const entries = context.sessionManager.getBranch();
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (
+			entry?.type === "custom" &&
+			entry.customType === "khala-supervision-assessment-start" &&
+			typeof entry.data === "object" &&
+			entry.data !== null &&
+			(entry.data as { sourceKind?: unknown }).sourceKind !== "direct-user" &&
+			typeof (entry.data as { assessmentId?: unknown }).assessmentId === "string"
+		) {
+			const { assessmentId } = entry.data as { assessmentId: string };
+			const complete = entries.some(
+				(candidate) =>
+					candidate.type === "custom" &&
+					candidate.customType === "khala-supervision-assessment-complete" &&
+					typeof candidate.data === "object" &&
+					candidate.data !== null &&
+					(candidate.data as { assessmentId?: unknown }).assessmentId === assessmentId,
+			);
+			if (!complete) {
+				return { assessmentId, entryId: entry.id };
+			}
+		}
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy the non-void union return contract.
+	return undefined;
+}
+
+function createDirectUserAssessments(context: ExtensionContext, userEntryId: string): DirectUserAssessmentStart[] {
+	return listExecutorRecords(context.cwd, isTrustedProject(context)).flatMap((execution) => {
+		if (
+			execution.kind !== "executor" ||
+			execution.missionId === undefined ||
+			(execution.status !== ExecutorStatus.starting && execution.status !== ExecutorStatus.running)
+		) {
+			return [];
+		}
+		const assessmentId = deterministicAssessmentId(execution.executionId, userEntryId, userEntryId);
+		return [
+			{
+				assessmentId,
+				workId: execution.workId,
+				missionId: execution.missionId,
+				executionId: execution.executionId,
+				firstSourceEntryId: userEntryId,
+				lastSourceEntryId: userEntryId,
+				sourceEntryIds: [userEntryId],
+				actionIdNamespace: `action:${assessmentId}:`,
+				// biome-ignore lint/security/noSecrets: This is a documented deterministic ID pattern, not a credential.
+				actionIdPattern: "action-<sha256(assessmentId\\u0000actionKind\\u0000ordinal)>",
+				sourceKind: "direct-user" as const,
+			},
+		];
+	});
+}
+
+function settleStaleDirectUserAssessments(pi: ExtensionAPI, context: ExtensionContext): void {
+	const branch = context.sessionManager.getBranch();
+	const completed = new Set(
+		branch.flatMap((entry) => {
+			if (
+				entry.type !== "custom" ||
+				entry.customType !== "khala-supervision-assessment-complete" ||
+				typeof entry.data !== "object" ||
+				entry.data === null ||
+				typeof (entry.data as { assessmentId?: unknown }).assessmentId !== "string"
+			) {
+				return [];
+			}
+			return [(entry.data as { assessmentId: string }).assessmentId];
+		}),
+	);
+	for (const entry of branch) {
+		if (
+			entry.type === "custom" &&
+			entry.customType === "khala-supervision-assessment-start" &&
+			typeof entry.data === "object" &&
+			entry.data !== null &&
+			(entry.data as { sourceKind?: unknown }).sourceKind === "direct-user" &&
+			typeof (entry.data as { assessmentId?: unknown }).assessmentId === "string" &&
+			!completed.has((entry.data as { assessmentId: string }).assessmentId)
+		) {
+			pi.appendEntry("khala-supervision-assessment-complete", entry.data);
+		}
+	}
 }
 
 function isDedicatedConclaveSession(context: ExtensionContext): boolean {
@@ -50,23 +196,23 @@ function isDedicatedConclaveSession(context: ExtensionContext): boolean {
 		.some((entry) => entry.type === "custom" && entry.customType === KhalaEntryType.conclave);
 }
 
-function createExecutorViewHandler(
+function createObserverViewHandler(
 	context: ExtensionContext,
-	viewExecutor: ReturnType<typeof createExecutorViewer> | undefined,
+	viewObserver: ReturnType<typeof createObserverViewer> | undefined,
 ): ((session: KhalaSession) => Promise<void>) | undefined {
-	if (viewExecutor === undefined) {
+	if (viewObserver === undefined) {
 		return;
 	}
 	return async (session) => {
-		if (session.launcher === undefined || session.target === undefined) {
+		if (session.role !== "Observer" || session.launcher === undefined || session.target === undefined) {
 			return;
 		}
 		try {
-			await viewExecutor(session.launcher, session.target);
+			await viewObserver(session.launcher, session.target);
 		} catch {
 			// Viewing is a UI operation. A failed focus/attach must not rewrite the
-			// durable execution state or hide a still-live Executor from recovery.
-			context.ui.notify(`The ${session.name} Executor pane could not be focused.`, "warning");
+			// durable Observer execution state.
+			context.ui.notify(`The ${session.name} Observer pane could not be focused.`, "warning");
 		}
 	};
 }
@@ -81,9 +227,9 @@ function registerPopupControls(
 			userSessionPath = context.sessionManager.getSessionFile();
 		}
 		conclaveCoordinator.ensureConclaveSession(context.cwd, userSessionPath, isTrustedProject(context));
-		let viewExecutor: ReturnType<typeof createExecutorViewer> | undefined;
+		let viewObserver: ReturnType<typeof createObserverViewer> | undefined;
 		if (context.mode === "tui") {
-			viewExecutor = createExecutorViewer();
+			viewObserver = createObserverViewer();
 		}
 		return toggleKhalaPopup(
 			context,
@@ -93,7 +239,7 @@ function registerPopupControls(
 				conclaveCoordinator.getConclaveUserSessionPath,
 			),
 			onSwitch,
-			createExecutorViewHandler(context, viewExecutor),
+			createObserverViewHandler(context, viewObserver),
 		);
 	};
 	pi.registerCommand("khala", {
@@ -185,7 +331,7 @@ function registerKhalaTools(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoord
 	registerKhalaLearning(
 		pi,
 		(projectPath, learning, projectTrusted) => conclaveCoordinator.wakeLearning(projectPath, learning, projectTrusted),
-		createExecutorCloser(),
+		createObserverCloser(),
 	);
 	registerKhalaObserver(pi, {
 		createObserverStarter: createConfiguredObserverStarter,
@@ -208,6 +354,11 @@ function registerKhalaTools(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoord
 	registerKhalaReview(pi, isDedicatedConclaveSession, (projectPath, workId, projectTrusted) =>
 		conclaveCoordinator.wakeReview(projectPath, workId, projectTrusted),
 	);
+	registerKhalaSupervisionTools(pi, {
+		isDedicatedConclaveSession,
+		registerStopHandoffExpectation: (context, expectation) =>
+			getSupervisionController(context.cwd, isTrustedProject(context))?.registerStopHandoffExpectation(expectation),
+	});
 	registerConclaveRecovery(pi, conclaveCoordinator);
 }
 
@@ -217,6 +368,24 @@ function registerKhalaSessionEvents(
 	conclaveCoordinator: ConclaveCoordinator,
 ): void {
 	pi.on("session_start", (_event, context) => {
+		settleStaleDirectUserAssessments(pi, context);
+		const role = readSessionRole(context);
+		const dedicatedConclave = isDedicatedConclaveSession(context) && role === KhalaRole.conclave;
+		if (dedicatedConclave) {
+			pi.setActiveTools([...CONCLAVE_TOOL_ALLOWLIST]);
+		} else if (role === KhalaRole.executor) {
+			pi.setActiveTools(["read", "bash", "edit", "write", "grep", "find", "ls", "khala_read_archive", "khala_signal"]);
+		} else if (role === KhalaRole.conclave) {
+			pi.setActiveTools([...CONCLAVE_BASE_TOOL_ALLOWLIST]);
+		} else if (typeof pi.getActiveTools === "function") {
+			pi.setActiveTools(pi.getActiveTools().filter((name) => !CONCLAVE_CONTROL_TOOL_NAMES.has(name)));
+		}
+		const disableNonConclaveControls = (): void => {
+			if (!dedicatedConclave && typeof pi.getActiveTools === "function") {
+				pi.setActiveTools(pi.getActiveTools().filter((name) => !CONCLAVE_CONTROL_TOOL_NAMES.has(name)));
+			}
+		};
+		queueMicrotask(disableNonConclaveControls);
 		registerLaunchedAgent(pi, context);
 		setKhalaStatus(context, readSessionRole(context));
 		if (!isDedicatedConclaveSession(context)) {
@@ -230,6 +399,262 @@ function registerKhalaSessionEvents(
 		ensureConclaveSession: conclaveCoordinator.ensureConclaveSession,
 		submitWork: conclaveCoordinator.submit,
 		openMonitor: showKhalaPopup,
+	});
+	pi.on("input", (event, context) => {
+		if (event.source === "interactive" && isDedicatedConclaveSession(context)) {
+			const key = context.sessionManager as object;
+			if (isSlashCommand(event.text)) {
+				pendingDirectInteractiveInputs.delete(key);
+			} else {
+				const assessment = currentIncompleteAssessment(context);
+				const sessionId = context.sessionManager.getSessionId();
+				const pending = pendingDirectInteractiveInputs.get(key) ?? [];
+				let directInput: PendingDirectInteractiveInput = {
+					sessionId,
+					contentSha256: sha256(event.text),
+				};
+				if (assessment !== undefined) {
+					directInput = {
+						...directInput,
+						assessmentId: assessment.assessmentId,
+						assessmentStartEntryId: assessment.entryId,
+					};
+				}
+				pending.push(directInput);
+				pendingDirectInteractiveInputs.set(key, pending);
+				getSupervisionController(context.cwd, isTrustedProject(context))?.noteDirectUserInput();
+			}
+		}
+		return { action: "continue" };
+	});
+	pi.on("message_end", (event, context) => {
+		if (event.message.role === "user" && isDedicatedConclaveSession(context)) {
+			const key = context.sessionManager as object;
+			const pending = pendingDirectInteractiveInputs.get(key) ?? [];
+			const contentSha256 = messageContentSha256(event.message.content);
+			const pendingIndex = pending.findIndex(
+				(candidate) =>
+					candidate.sessionId === context.sessionManager.getSessionId() && candidate.contentSha256 === contentSha256,
+			);
+			if (pendingIndex >= 0) {
+				const candidate = pending[pendingIndex] as PendingDirectInteractiveInput;
+				const entries = context.sessionManager.getEntries();
+				const userEntry = entries.at(-1);
+				if (
+					userEntry?.type === "message" &&
+					userEntry.message.role === "user" &&
+					messageContentSha256(userEntry.message.content) === contentSha256
+				) {
+					if (candidate.assessmentId !== undefined && candidate.assessmentStartEntryId !== undefined) {
+						pi.appendEntry(DIRECT_USER_SOURCE_ENTRY, {
+							entryId: userEntry.id,
+							source: "interactive",
+							sessionId: candidate.sessionId,
+							contentSha256,
+							assessmentId: candidate.assessmentId,
+							assessmentStartEntryId: candidate.assessmentStartEntryId,
+						});
+					} else {
+						const directAssessments = createDirectUserAssessments(context, userEntry.id);
+						for (const assessment of directAssessments) {
+							pi.appendEntry("khala-supervision-assessment-start", assessment);
+							const assessmentStartEntry = context.sessionManager.getEntries().at(-1);
+							if (
+								assessmentStartEntry?.type !== "custom" ||
+								assessmentStartEntry.customType !== "khala-supervision-assessment-start"
+							) {
+								throw new Error("Direct User assessment start was not persisted.");
+							}
+							pi.appendEntry(DIRECT_USER_SOURCE_ENTRY, {
+								entryId: userEntry.id,
+								source: "interactive",
+								sessionId: candidate.sessionId,
+								contentSha256,
+								assessmentId: assessment.assessmentId,
+								assessmentStartEntryId: assessmentStartEntry.id,
+							});
+						}
+						if (directAssessments.length > 0) {
+							const pendingAssessments = pendingDirectUserAssessments.get(key) ?? [];
+							pendingDirectUserAssessments.set(key, [...pendingAssessments, ...directAssessments]);
+						}
+					}
+				}
+				pending.splice(pendingIndex, 1);
+				if (pending.length === 0) {
+					pendingDirectInteractiveInputs.delete(key);
+				} else {
+					pendingDirectInteractiveInputs.set(key, pending);
+				}
+			}
+		}
+
+		const entries = context.sessionManager.getEntries();
+		const previousEntry = entries.at(-1);
+		const assessmentInputIndex = [...entries]
+			.map((entry, index) => ({ entry, index }))
+			.reverse()
+			.find(
+				(candidate) =>
+					candidate.entry.type === "custom_message" &&
+					candidate.entry.customType === "khala-supervision-assessment-input",
+			)?.index;
+		let assessmentInput: (typeof entries)[number] | undefined;
+		if (assessmentInputIndex !== undefined) {
+			assessmentInput = entries[assessmentInputIndex];
+		}
+		let assessmentDetails: Record<string, unknown> | undefined;
+		if (
+			assessmentInput?.type === "custom_message" &&
+			typeof assessmentInput.details === "object" &&
+			assessmentInput.details !== null
+		) {
+			assessmentDetails = assessmentInput.details as Record<string, unknown>;
+		}
+		let assessmentEntries: typeof entries = [];
+		if (assessmentInputIndex !== undefined) {
+			assessmentEntries = entries.slice(assessmentInputIndex + 1);
+		}
+		const assessmentHasDirectUserInput = assessmentEntries.some(
+			(entry) => entry.type === "message" && entry.message.role === "user",
+		);
+		let activeAssessmentInput: typeof assessmentInput;
+		if (!assessmentHasDirectUserInput) {
+			activeAssessmentInput = assessmentInput;
+		}
+		const assessmentToolCalls = assessmentEntries.flatMap((entry) => {
+			if (entry.type !== "message" || entry.message.role !== "assistant") {
+				return [];
+			}
+			return toolCallsFromMessage(entry.message);
+		});
+		const significantAction = assessmentEntries.some((entry) => {
+			if (entry.type !== "message" || entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) {
+				return false;
+			}
+			return entry.message.content.some((content) => {
+				if (typeof content !== "object" || content === null || (content as { type?: unknown }).type !== "toolCall") {
+					return false;
+				}
+				const { name } = content as { name?: unknown };
+				return typeof name === "string" && name !== "khala_read_archive";
+			});
+		});
+		const { budgetOverrun } = assessmentDetails ?? {};
+		const visibilityContext: {
+			significantAction: boolean;
+			budgetOverrun: boolean;
+			toolCalls: typeof assessmentToolCalls;
+			assessmentInput?: NonNullable<typeof assessmentInput>;
+		} = {
+			significantAction,
+			budgetOverrun: budgetOverrun === true,
+			toolCalls: assessmentToolCalls,
+		};
+		if (activeAssessmentInput !== undefined) {
+			visibilityContext.assessmentInput = activeAssessmentInput;
+		}
+		const replacement = hideAlignedAssessmentResponse(event.message, previousEntry, visibilityContext);
+		if (replacement !== undefined) {
+			return { message: replacement };
+		}
+		return { message: event.message };
+	});
+	pi.on("context", (event, context) => {
+		if (!isDedicatedConclaveSession(context)) {
+			return;
+		}
+		const branch = context.sessionManager.getBranch();
+		const completed = new Set<string>();
+		for (const entry of branch) {
+			if (
+				entry.type === "custom" &&
+				entry.customType === "khala-supervision-assessment-complete" &&
+				typeof entry.data === "object" &&
+				entry.data !== null &&
+				typeof (entry.data as { assessmentId?: unknown }).assessmentId === "string"
+			) {
+				completed.add((entry.data as { assessmentId: string }).assessmentId);
+			}
+		}
+		const directAssessments = branch.flatMap((entry) => {
+			if (
+				entry.type !== "custom" ||
+				entry.customType !== "khala-supervision-assessment-start" ||
+				typeof entry.data !== "object" ||
+				entry.data === null ||
+				(entry.data as { sourceKind?: unknown }).sourceKind !== "direct-user"
+			) {
+				return [];
+			}
+			const assessment = entry.data as DirectUserAssessmentStart;
+			if (completed.has(assessment.assessmentId)) {
+				return [];
+			}
+			const marker = branch.find(
+				(candidate) =>
+					candidate.type === "custom" &&
+					candidate.customType === DIRECT_USER_SOURCE_ENTRY &&
+					typeof candidate.data === "object" &&
+					candidate.data !== null &&
+					(candidate.data as { assessmentId?: unknown }).assessmentId === assessment.assessmentId,
+			);
+			if (marker?.type !== "custom" || typeof marker.data !== "object" || marker.data === null) {
+				return [];
+			}
+			const userEntryId = (marker.data as { entryId?: unknown }).entryId;
+			if (typeof userEntryId !== "string") {
+				return [];
+			}
+			return [{ assessment, userEntryId }];
+		});
+		if (directAssessments.length === 0) {
+			return;
+		}
+		const guidance = directAssessments.flatMap(({ assessment, userEntryId }) => [
+			`Target Work ${assessment.workId}, Mission ${assessment.missionId}, Execution ${assessment.executionId}:`,
+			`userEntryId=${userEntryId}`,
+			`assessmentId=${assessment.assessmentId}`,
+			`coordinate-override actionId=${deterministicActionId(assessment.assessmentId, "coordinate-override")}`,
+		]);
+		return {
+			messages: [
+				...event.messages,
+				{
+					role: "custom" as const,
+					customType: "khala-direct-user-action-context",
+					content: [
+						"Runtime-verified direct User provenance for this turn follows.",
+						"Use only the matching target if the User explicitly changes peer-conflict priority.",
+						...guidance,
+					].join("\n"),
+					display: false,
+					timestamp: Date.now(),
+				},
+			],
+		};
+	});
+	pi.on("agent_settled", (_event, context) => {
+		const key = context.sessionManager as object;
+		const pending = pendingDirectUserAssessments.get(key);
+		if (pending === undefined) {
+			return;
+		}
+		pendingDirectUserAssessments.delete(key);
+		const branch = context.sessionManager.getBranch();
+		for (const assessment of pending) {
+			const alreadyComplete = branch.some(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "khala-supervision-assessment-complete" &&
+					typeof entry.data === "object" &&
+					entry.data !== null &&
+					(entry.data as { assessmentId?: unknown }).assessmentId === assessment.assessmentId,
+			);
+			if (!alreadyComplete) {
+				pi.appendEntry("khala-supervision-assessment-complete", assessment);
+			}
+		}
 	});
 	pi.on("before_agent_start", (event, context) => {
 		const role = readSessionRole(context);
@@ -332,10 +757,12 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 		}
 	}
 	const sessionPath = context.sessionManager.getSessionFile();
-	if (sessionPath !== undefined) {
-		updateExecutorRecord(projectPath, executionId, { sessionPath }, projectTrusted);
+	const sessionManagerWithId = context.sessionManager as unknown as { getSessionId?: () => string };
+	const sessionId = sessionManagerWithId.getSessionId?.();
+	if (sessionPath !== undefined && sessionId !== undefined && sessionId.length > 0) {
+		updateExecutorRecord(projectPath, executionId, { piSessionId: sessionId, sessionPath }, projectTrusted);
 	}
-	// biome-ignore lint/style/useNamingConvention: Match the bootstrap environment contract.
+	// biome-ignore lint/style/useNamingConvention: Match the Observer bootstrap environment contract.
 	const startupEnvironment = process.env as Readonly<{ KHALA_STARTUP_MARKER?: string }>;
 	const startupMarker = startupEnvironment.KHALA_STARTUP_MARKER;
 	if (typeof startupMarker === "string" && startupMarker.length > 0) {
@@ -359,7 +786,9 @@ function registerConfiguredKhalaWork(pi: ExtensionAPI, conclaveCoordinator: Conc
 		claimSubmission: conclaveCoordinator.claimSubmission,
 		markSubmissionQueued: conclaveCoordinator.markSubmissionQueued,
 		markSubmissionLaunched: conclaveCoordinator.markSubmissionLaunched,
+		pollBeforeDependentLaunch: (projectPath, projectTrusted, workId) =>
+			conclaveCoordinator.pollBeforeDependentLaunch(projectPath, projectTrusted, workId),
 	});
 }
 
-export { createExecutorViewHandler, createExtension as default };
+export { createExtension as default, createObserverViewHandler };

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { DefaultResourceLoader, initTheme } from "@earendil-works/pi-coding-agent";
-import createExtension, { createExecutorViewHandler } from "../dist/src/index.js";
+import createExtension from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
@@ -109,6 +109,87 @@ test("Users can communicate review feedback without gaining Conclave authority",
 	assert.equal(canRecordPullRequestReview("conclave"), false);
 });
 
+test("an idle direct User turn receives persisted override provenance for every active Execution", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-direct-user-test-"));
+	const projectPath = join(root, "project");
+	const events = new Map();
+	const branch = [
+		{ id: "role", type: "custom", customType: "khala-role", data: { role: "conclave" } },
+		{ id: "conclave", type: "custom", customType: "khala-conclave", data: { projectPath } },
+	];
+	let entryOrdinal = 0;
+	try {
+		writeExecutorRecord(
+			createExecutorRecord(
+				{
+					executionId: "direct-execution",
+					workId: "direct-work",
+					executorName: "Direct Executor",
+					kind: "executor",
+					participantId: "direct-participant",
+					purpose: { kind: "mission", missionId: "direct-mission" },
+					missionId: "direct-mission",
+					projectPath,
+					sandboxPath: join(root, "sandbox"),
+					launcher: "headless-rpc",
+					piSessionId: "direct-executor-session",
+					sessionPath: join(root, "executor.jsonl"),
+					promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+				},
+				"running",
+			),
+		);
+		const pi = createPiStub(new Map(), new Map(), new Map(), {
+			events,
+			appendEntry(customType, data) {
+				entryOrdinal += 1;
+				branch.push({ id: `custom-${entryOrdinal}`, type: "custom", customType, data });
+			},
+		});
+		createExtension(pi);
+		const sessionManager = {
+			getBranch: () => branch,
+			getEntries: () => branch,
+			getEntry: (id) => branch.find((entry) => entry.id === id),
+			getSessionId: () => "direct-conclave-session",
+			getSessionFile: () => join(root, "conclave.jsonl"),
+		};
+		const context = { cwd: projectPath, sessionManager };
+		const userMessage = { role: "user", content: "Prioritize direct-work over its peer conflict." };
+		events.get("input")({ source: "interactive", text: userMessage.content }, context);
+		branch.push({ id: "direct-user-entry", type: "message", message: userMessage });
+		events.get("message_end")({ message: userMessage }, context);
+
+		const assessment = branch.find(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === "khala-supervision-assessment-start" &&
+				entry.data.sourceKind === "direct-user",
+		);
+		assert.ok(assessment);
+		const marker = branch.find(
+			(entry) => entry.type === "custom" && entry.customType === "khala-conclave-direct-user-entry",
+		);
+		assert.equal(marker.data.entryId, "direct-user-entry");
+		assert.equal(marker.data.assessmentId, assessment.data.assessmentId);
+		const transformed = events.get("context")({ messages: [userMessage] }, context);
+		assert.match(transformed.messages.at(-1).content, /coordinate-override actionId=/);
+		assert.match(transformed.messages.at(-1).content, /userEntryId=direct-user-entry/);
+
+		events.get("agent_settled")({}, context);
+		assert.ok(
+			branch.some(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "khala-supervision-assessment-complete" &&
+					entry.data.assessmentId === assessment.data.assessmentId,
+			),
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("launched Executor status uses the Executor name after marker registration", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-status-test-"));
 	const agentDir = join(root, "agent");
@@ -117,11 +198,14 @@ test("launched Executor status uses the Executor name after marker registration"
 	const events = new Map();
 	const statuses = [];
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	const startupMarker = join(root, "observer-startup");
+	process.env.KHALA_STARTUP_MARKER = startupMarker;
 	try {
 		const flags = new Map([
 			["khala-work-id", "status-work"],
 			["khala-execution-id", "status-execution"],
 			["khala-project-path", projectPath],
+			["khala-agent-kind", "observer"],
 		]);
 		const pi = createPiStub(new Map(), new Map(), flags, {
 			events,
@@ -160,8 +244,10 @@ test("launched Executor status uses the Executor name after marker registration"
 		assert.equal(statuses.length, 1);
 		assert.match(statuses[0], /khala ⁝ Adun/);
 		assert.doesNotMatch(statuses[0], /user/);
+		assert.equal(readFileSync(startupMarker, "utf8"), "ready");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
+		delete process.env.KHALA_STARTUP_MARKER;
 		rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -232,49 +318,6 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	const expanded = oracle.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
 	assert.match(expanded.render(120).join("\n"), /Findings/);
 	assert.match(expanded.render(120).join("\n"), /src\/example.ts:10/);
-});
-
-test("Executor pane view failures preserve durable execution state", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-stale-pane-"));
-	const agentDir = join(root, "agent");
-	const projectPath = join(root, "project");
-	process.env.PI_CODING_AGENT_DIR = agentDir;
-	try {
-		writeExecutorRecord(
-			createExecutorRecord({
-				executionId: "stale-execution",
-				workId: "stale-work",
-				executorName: "Zeratul",
-				projectPath,
-				sandboxPath: join(root, "sandbox"),
-				launcher: "tmux",
-				target: "dead-server:stale-pane",
-			}),
-		);
-		const notifications = [];
-		const handler = createExecutorViewHandler(
-			{
-				cwd: projectPath,
-				ui: { notify(message) { notifications.push(message); } },
-			},
-			async () => {
-				throw new Error("tmux server is gone");
-			},
-		);
-		assert.ok(handler);
-		await handler({
-			id: "executor:stale-execution",
-			name: "Zeratul",
-			identity: "stale-execution",
-			launcher: "tmux",
-			target: "dead-server:stale-pane",
-		});
-		assert.equal(readExecutorRecord(projectPath, "stale-execution")?.status, "running");
-		assert.deepEqual(notifications, ["The Zeratul Executor pane could not be focused."]);
-	} finally {
-		delete process.env.PI_CODING_AGENT_DIR;
-		rmSync(root, { recursive: true, force: true });
-	}
 });
 
 test("Conclave storage appends submission state to the configured Archive", () => {
@@ -582,51 +625,6 @@ test("Users can submit Work intent without lifecycle authority", async () => {
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
-});
-
-test("Executor launch keeps the role prompt separate from the first Mission message", async () => {
-	const sandbox = { path: "/tmp/khala-prompt-sandbox", name: "prompt-sandbox", projectPath: "/tmp/project" };
-	let launchRequest;
-	const starter = createExecutorStarter(
-		{
-			async createSandbox() {
-				return sandbox;
-			},
-			async removeSandbox() {},
-		},
-		{
-			async launch(request) {
-				launchRequest = request;
-				return { id: sandbox.name, sandbox };
-			},
-			async focus() {},
-			async close() {},
-		},
-		["pi"],
-		undefined,
-		undefined,
-		["/tmp/khala", "/tmp/khala-executor"],
-	);
-	await starter({
-		projectPath: "/tmp/project",
-		workId: "work-prompt",
-		executionId: "execution-prompt",
-		name: "Prompt separation",
-		executorName: "Executor",
-		mission: "Execute the first Mission message.",
-		systemPrompt: "Permanent Executor rules.",
-	});
-	assert.deepEqual(launchRequest.args.slice(0, 8), [
-		"--skill",
-		"/tmp/khala",
-		"--skill",
-		"/tmp/khala-executor",
-		"--system-prompt",
-		"Permanent Executor rules.",
-		"--khala-system-prompt-provided",
-		"--name",
-	]);
-	assert.equal(launchRequest.args.at(-1), "Execute the first Mission message.");
 });
 
 test("Herdr launcher opens the Executor worktree in a new Herdr workspace", async () => {

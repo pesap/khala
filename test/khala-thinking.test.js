@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { buildPiArguments } from "../dist/src/executor.js";
 import { loadKhalaConfig } from "../dist/src/khala-config.js";
-import { resolveConfiguredExecutorModelId, thinkingChoices } from "../dist/src/khala-setup.js";
+import { thinkingChoices } from "../dist/src/khala-setup.js";
 import { runOracle } from "../dist/src/khala-oracle.js";
 import { getSupportedThinkingLevels, isSupportedThinkingLevel } from "../dist/src/khala-thinking.js";
 
@@ -22,15 +22,6 @@ test("thinking capabilities follow Pi metadata semantics", () => {
 	assert.equal(isSupportedThinkingLevel({ reasoning: false }, "low"), false);
 });
 
-test("executor capability resolution does not inherit the Conclave model", () => {
-	assert.equal(
-		resolveConfiguredExecutorModelId(["pi", "--model", "provider/executor"], "provider/default"),
-		"provider/executor",
-	);
-	assert.equal(resolveConfiguredExecutorModelId(["pi"], "provider/default"), "provider/default");
-	assert.equal(resolveConfiguredExecutorModelId(["pi", "--models", "provider/*"], "provider/default"), undefined);
-});
-
 test("role-specific thinking settings load independently", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-thinking-config-"));
 	process.env.PI_CODING_AGENT_DIR = root;
@@ -40,6 +31,9 @@ test("role-specific thinking settings load independently", () => {
 			join(root, "khala.json"),
 			JSON.stringify({
 				conclaveModel: "provider/model",
+				conclaveMaxCostUsdPerTurn: 0.25,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
 				oracleModel: "provider/oracle",
 				conclaveThinking: "high",
 				executorThinking: "low",
@@ -75,9 +69,27 @@ test("invalid explicit configuration fails instead of silently using defaults", 
 	try {
 		writeFileSync(join(root, "khala.json"), JSON.stringify({ launcher: "not-a-launcher" }));
 		assert.throws(() => loadKhalaConfig(), /launcher.*zellij.*tmux.*herdr/);
-		writeFileSync(join(root, "khala.json"), JSON.stringify({ observerPiCommand: ["claude"] }));
+		writeFileSync(
+			join(root, "khala.json"),
+			JSON.stringify({
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 0.25,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				observerPiCommand: ["claude"],
+			}),
+		);
 		assert.throws(() => loadKhalaConfig(), /Observer only supports the Pi command/);
-		writeFileSync(join(root, "khala.json"), JSON.stringify({ observerPiCommand: ["PI.CMD"] }));
+		writeFileSync(
+			join(root, "khala.json"),
+			JSON.stringify({
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 0.25,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				observerPiCommand: ["PI.CMD"],
+			}),
+		);
 		assert.deepEqual(loadKhalaConfig().observerPiCommand, ["PI.CMD"]);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
@@ -85,16 +97,12 @@ test("invalid explicit configuration fails instead of silently using defaults", 
 	}
 });
 
-test("legacy config without thinking fields preserves Pi defaults", () => {
+test("missing supervision configuration fails with setup guidance", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-thinking-legacy-"));
 	process.env.PI_CODING_AGENT_DIR = root;
 	try {
 		writeFileSync(join(root, "khala.json"), JSON.stringify({ conclaveModel: "provider/model" }));
-		const config = loadKhalaConfig();
-		assert.equal(config.conclaveThinking, "");
-		assert.equal(config.oracleModel, "");
-		assert.equal(config.executorThinking, "");
-		assert.equal(config.observerThinking, "");
+		assert.throws(() => loadKhalaConfig(), /Rerun setup/);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

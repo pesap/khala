@@ -1,13 +1,17 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Launch preparation and review handoff share one runtime boundary.
 // biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Launch preparation carries durable Mission, review, and sandbox callbacks together.
+import { createHash } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import packageMetadata from "../package.json" with { type: "json" };
 
 const COMMIT_CONVENTION_PATTERN = /^commit convention:\s*(.+)$/i;
 
 import type { readMandate } from "./khala-archive-projections.js";
-import { listVerdictRecords } from "./khala-archive-projections.js";
+import { listVerdictRecords, projectCoordinations } from "./khala-archive-projections.js";
 import { loadKhalaConfig } from "./khala-config.js";
+import { resolveCoordination } from "./khala-coordination.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
-import { type ExecutorRuntimeUpdate, updateExecutorRecord } from "./khala-executor-registry.js";
+import { updateExecutorRecord } from "./khala-executor-registry.js";
 import {
 	ExecutorStatus,
 	KhalaWorkEntryStatus,
@@ -15,6 +19,7 @@ import {
 	type LearningRecord,
 	type MissionRecord,
 	type RetryHandoff,
+	type UpstreamExecutionBase,
 } from "./khala-model.js";
 import {
 	latestPullRequest,
@@ -22,9 +27,11 @@ import {
 	type ReviewPreparationInput,
 	recordReviewPreparation,
 } from "./khala-review.js";
+import { registerSupervisedExecution } from "./khala-supervision.js";
 import type { KhalaWorkDependencies, KhalaWorkLaunchResult } from "./khala-work.js";
 import { formatExecutorPlan } from "./khala-work-format.js";
 import { launchedResult } from "./khala-work-helpers.js";
+import type { ReviewPreparation } from "./vcs.js";
 
 function completeExecutorLaunch(input: {
 	pi: ExtensionAPI;
@@ -37,41 +44,35 @@ function completeExecutorLaunch(input: {
 	executionId: string;
 	mission: MissionRecord;
 	executorName: string;
-	launched: { target?: string; sandbox: { path: string } };
+	launched: { sandbox: { path: string } };
 }): KhalaWorkLaunchResult {
-	const {
-		pi,
-		workId,
-		context,
-		dependencies,
-		projectTrusted,
-		submission,
-		mandate,
-		executionId,
-		mission,
-		executorName,
-		launched,
-	} = input;
-	let runtimeUpdate: ExecutorRuntimeUpdate = { status: ExecutorStatus.running };
-	if (launched.target !== undefined) {
-		runtimeUpdate = { ...runtimeUpdate, target: launched.target };
-	}
-	updateExecutorRecord(context.cwd, executionId, runtimeUpdate, projectTrusted);
-	const destination = launched.target ?? launched.sandbox.path;
-	dependencies.markSubmissionLaunched(
-		context.cwd,
-		workId,
-		{ target: launched.target, sandboxPath: launched.sandbox.path },
-		projectTrusted,
+	const { pi, workId, context, dependencies, projectTrusted, mandate, executionId, mission, executorName, launched } =
+		input;
+	updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.running }, projectTrusted);
+	const releasedCoordination = projectCoordinations(context.cwd, projectTrusted).find(
+		(candidate) =>
+			candidate.latest.phase === "release" &&
+			candidate.latest.workId === workId &&
+			candidate.latest.missionId === mission.missionId,
 	);
+	if (releasedCoordination !== undefined) {
+		resolveCoordination({
+			projectPath: context.cwd,
+			projectTrusted,
+			coordinationId: releasedCoordination.coordinationId,
+			actionId: `coordination-resolution-${executionId}`,
+			releasedExecutionId: executionId,
+		});
+	}
+	const destination = launched.sandbox.path;
+	dependencies.markSubmissionLaunched(context.cwd, workId, { sandboxPath: launched.sandbox.path }, projectTrusted);
 	pi.appendEntry(KhalaEntryType.work, {
 		status: KhalaWorkEntryStatus.launched,
 		workId,
 		executionId,
-		title: submission.work.title,
+		title: mission.assignment.title,
 		executorName,
 		sandboxPath: launched.sandbox.path,
-		target: launched.target,
 		missionId: mission.missionId,
 	});
 	return launchedResult({
@@ -98,13 +99,13 @@ function startExecutor(input: {
 	participantId: string;
 	executorName: string;
 	attemptNumber: number;
+	upstreamBase?: UpstreamExecutionBase;
 }) {
 	const {
 		context,
 		dependencies,
 		projectTrusted,
 		workId,
-		submission,
 		mandate,
 		learning,
 		executionId,
@@ -112,6 +113,7 @@ function startExecutor(input: {
 		participantId,
 		executorName,
 		attemptNumber,
+		upstreamBase,
 	} = input;
 	const config = loadKhalaConfig(context.cwd, projectTrusted);
 	const targetBranch = config.pullRequestTargetBranch.trim();
@@ -130,11 +132,12 @@ function startExecutor(input: {
 		targetBranch?: string;
 		supersedesPullRequestUrl?: string;
 		commitConvention?: string;
+		baseCommit?: string;
 	} = {
 		publish: true,
-		commitConvention: resolveCommitConvention(submission.work.constraints, config.commitConvention),
+		commitConvention: resolveCommitConvention(mission.assignment.constraints, config.commitConvention),
 	};
-	let missionMessage = formatExecutorPlan(submission.work, attemptNumber, learning, {
+	let missionMessage = formatExecutorPlan(mission.assignment, attemptNumber, learning, {
 		workId,
 		mandateId: mandate.mandateId,
 		mandateRevision: mandate.revision,
@@ -163,14 +166,40 @@ function startExecutor(input: {
 	if (targetBranch.length > 0) {
 		reviewWorkflow.targetBranch = targetBranch;
 	}
+	if (upstreamBase !== undefined) {
+		reviewWorkflow.baseCommit = upstreamBase.headCommit;
+		missionMessage += [
+			"",
+			"Immutable upstream Execution base:",
+			`Work: ${upstreamBase.workId}`,
+			`Mission: ${upstreamBase.missionId}`,
+			`Execution: ${upstreamBase.executionId}`,
+			`Remote: ${upstreamBase.remote}`,
+			`Branch: ${upstreamBase.branch}`,
+			`Exact head commit: ${upstreamBase.headCommit}`,
+			"Do not rebase this Execution in place.",
+		].join("\n");
+	}
 	if (previousReview?.url !== undefined) {
 		reviewWorkflow.supersedesPullRequestUrl = previousReview.url;
 	}
+	updateExecutorRecord(
+		context.cwd,
+		executionId,
+		{
+			promptIdentity: {
+				packageVersion: packageMetadata.version,
+				promptSha256: createHash("sha256").update(dependencies.executorSystemPrompt).digest("hex"),
+			},
+		},
+		projectTrusted,
+	);
+	registerSupervisedExecution(context.cwd, projectTrusted, mission, executionId);
 	return dependencies.createExecutorStarter(context)({
 		projectPath: context.cwd,
 		workId,
 		executionId,
-		name: submission.work.title,
+		name: mission.assignment.title,
 		executorName,
 		mission: missionMessage,
 		systemPrompt: dependencies.executorSystemPrompt,
@@ -178,8 +207,15 @@ function startExecutor(input: {
 		mandateId: mandate.mandateId,
 		participantId,
 		projectTrusted,
+		kind: "executor",
+		onRpcReady: ({ sessionId, sessionPath }) => {
+			updateExecutorRecord(context.cwd, executionId, { piSessionId: sessionId, sessionPath }, projectTrusted);
+		},
+		onRpcFailure: (_error) => {
+			updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.failed }, projectTrusted);
+		},
 		reviewWorkflow,
-		onReviewPrepared: (preparation) => {
+		onReviewPrepared: (preparation: ReviewPreparation) => {
 			const reviewInput: {
 				projectPath: string;
 				projectTrusted: boolean;
