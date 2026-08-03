@@ -2,16 +2,25 @@
 
 ## Conversational Style
 
-- Keep answers short and concise
-- No emojis in commits, issues, PR comments, or code
-- No fluff or cheerful filler text (e.g., "Thanks @user" not "Thanks so much @user!")
-- Technical prose only, be direct
-- When the user asks a question, answer it first before making edits or running implementation commands.
+- Keep answers short and concise. Be direct, no fluff (e.g., "Thanks @user" not "Thanks so much @user!").
+- No emojis in commits, issues, PR comments, or code.
+- When the user asks a question, answer it first before making edits or running commands.
 - When responding to user feedback or an analysis, explicitly say whether you agree or disagree before saying what you changed.
+
+## Design Philosophy
+
+- No backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations. When a new workflow replaces an old one, delete the old one.
+- Study how established products solve the problem before designing a solution. Adopt their proven patterns and conventions rather than inventing an approach from scratch.
+- Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration, and indirection.
+- Grow the system in layers. Start from the smallest version that works end to end, and add each new capability on top of a product that already works. Never trade a working product for unfinished complexity.
+- Keep components modular and concerns clearly separated.
+- Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
+- Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
+- Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
 
 ## Code Quality
 
-- Read files in full before wide-ranging changes, before editing files you have not fully inspected, and when asked to investigate or audit. Do not rely on search snippets for broad changes.
+- Read files in full and think through the change before writing code. Catch errors at design time, not at review time. Do not rely on search snippets for broad changes.
 - No `any` unless absolutely necessary.
 - Add meaningful comments for non-obvious architectural decisions, constraints, and trade-offs. Explain why the code is shaped that way, not what the code literally does.
 - Inline single-line helpers that have only one call site.
@@ -20,20 +29,32 @@
 - Never remove or downgrade code to fix type errors from outdated deps; upgrade the dep instead.
 - Use only erasable TypeScript syntax (Node strip-only mode) in code checked by the root config (`packages/*/src`, `packages/*/test`, `packages/coding-agent/examples`): no parameter properties, `enum`, `namespace`/`module`, `import =`, `export =`, or other constructs needing JS emit. Use explicit fields with constructor assignments.
 - Always ask before removing functionality or code that appears intentional.
-- Do not preserve backward compatibility unless the user asks for it.
 - Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
 - Never modify `packages/ai/src/models.generated.ts` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting `models.generated.ts` diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
 
-## Commands
+## Testing
 
-- After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
-- Never run `npm run build` or `npm test` unless requested by the user.
-- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
-- If you create or modify a test file, run it and iterate on test or implementation until it passes.
+- Write behavioral tests that verify observable behavior, not internal implementation details. Tests should survive refactoring.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
+- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
+- If you create or modify a test file, run it and iterate on test or implementation until it passes.
+
+## Commands
+
+- Run pre-commit before starting work and after each code change: `prek run`. Fix all failures before continuing.
+- After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
+- Never run `npm run build` or `npm test` unless requested by the user.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
-- Never commit unless the user asks.
+
+## Documentation
+
+- Add or update documentation for implemented features in the project's docs directory.
+- Documentation describes what exists now, not what used to exist or what might exist later.
+
+## Review Gates
+
+- After a significant slice of work, run an independent review before moving on. Launch a fresh Pi process with `pi -p` and a self-contained review packet covering the changes, acceptance criteria, and any edge cases to verify.
 
 ## Dependency and Install Security
 
