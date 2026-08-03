@@ -32,13 +32,40 @@ path. A Retry creates a successor Mission; it never rewrites its predecessor.
 ### Execution
 
 One runtime attempt to perform a Mission. An Execution has its own Participant
-Identity and isolated working environment.
+Identity, isolated working environment, persisted Pi session and prompt
+binding, and headless RPC supervision state.
+
+### Supervision state
+
+The projected relationship between a current Execution and its Conclave
+supervisor: `connected`, `recovering`, `unavailable`, or `settled`. It is a
+monitor projection, not an authority record or lifecycle decision.
+
+### Upstream base
+
+The immutable published remote, branch, and exact commit used to create a
+dependent Execution sandbox. It is causal evidence for Coordination release and
+revision invalidation; it is not the dependent Pull Request target branch.
 
 ### Signal
 
 Evidence reported by an Executor about its current Execution. A Signal can
 report progress, a block, or a claimed completion. A Signal is evidence, not a
 lifecycle decision.
+
+### Intervention
+
+A Conclave-issued, bounded correction or mandatory stop for one current
+Execution. It records its exact Mission term, deterministic action ID, delivery
+evidence, and one later observed outcome. An Intervention cannot change Mission
+authority and is not a Signal or Verdict.
+
+### Coordination
+
+Structured Conclave scheduling evidence relating current Work and Missions. A
+Coordination may record a dependency, a peer conflict, or a direct User
+priority override. Dependency holds preserve the selected upstream Execution
+and exact published base; User overrides are legal only for peer conflicts.
 
 ### Verdict
 

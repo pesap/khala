@@ -51,8 +51,9 @@ and makes the lifecycle visible and recoverable.
   launcher failures.
 - Recoverable lifecycle. Failed launches can return to the queue, and Retry
   creates a successor execution rather than rewriting history.
-- Observable by default. The Khala monitor shows the Conclave, Executors,
-  Observers, states, signals, sandboxes, and live launcher targets.
+- Observable by default. The minimum Khala monitor shows the Conclave, headless
+  Executors, Observer panes, states, Signals, sandboxes, supervision, and
+  recovery facts.
 
 ## How it works
 
@@ -146,9 +147,12 @@ normal User sessions have no explicit Khala role marker.
 | `khala_admit_work` | Admit a Work Submission and create Mandate revision one. | Conclave |
 | `khala_launch_observer` | Launch a read-only Observer to gather missing Work context. | Conclave |
 | `khala_record_learning` | Record evidence-backed repository learning. | Observer |
-| `khala_launch_execution` | Materialize and launch the admitted Mission in an isolated Executor session. | Conclave |
+| `khala_launch_execution` | Materialize an admitted Mission with `mode: "materialize"`, or launch its headless Executor with `mode: "launch"` (or omitted). | Conclave |
 | `khala_signal` | Submit evidence-bearing progress, blocked, or finished execution evidence. | Executor |
 | `khala_verdict` | Record a Continue, Retry, Finish, or Reject decision for a Signal. | Conclave |
+| `khala_steer_execution` | Send one bounded Mission-grounded correction or mandatory stop. | Conclave |
+| `khala_coordinate_work` | Record dependency, peer-conflict, or direct User override coordination. | Conclave |
+| `khala_record_intervention_outcome` | Close one issued Intervention with observed evidence. | Conclave |
 | `khala_counsel` | Record source-backed advisory Counsel. | Preserver |
 | `khala_record_pull_request_review` | Record User review, merge, or closure evidence for a Pull Request. | User |
 | `khala_record_work_outcome` | Record the durable acceptance statement after a verified Pull Request merge. | Conclave |
@@ -191,7 +195,8 @@ themes, and the Khala-owned role skills (`khala`, `khala-executor`, and `herdr`)
 4. For a manual Work, fill in the template, or ask the LLM to call `khala_submit_work` directly.
    `Objective`, `Scope`, `Acceptance criteria`, `Plan`, and `Validation` are required.
 5. The Work is sent to the Project Conclave for admission and launch.
-6. Open `/khala` to watch the Conclave and the isolated Executor.
+6. Open `/khala` to watch the Conclave, headless Executor state, Observer panes,
+   supervision, and recovery facts. Executors do not create panes.
 7. Inspect the Archive when you need the authoritative lifecycle history.
 
 For a deterministic walkthrough, run `/khala-demo`. It creates three dummy Work
@@ -224,6 +229,9 @@ individual values in `.pi/khala.json`.
   "piCommand": ["pi", "--extension", "/path/to/khala"],
   "observerPiCommand": ["pi", "--extension", "/path/to/khala"],
   "conclaveModel": "provider/model",
+  "conclaveMaxCostUsdPerTurn": 0.25,
+  "executorModel": "provider/model",
+  "executorMaxCostUsdPerTurn": 1.0,
   "oracleModel": "provider/model",
   "observerModel": "provider/model",
   "conclaveThinking": "medium",
@@ -235,29 +243,44 @@ individual values in `.pi/khala.json`.
 }
 ```
 
-`launcher` is `zellij`, `tmux`, or `herdr` and defaults to `zellij`. The Herdr
-launcher must run inside a Herdr-managed pane (`HERDR_ENV=1`); it opens the
-already-created Executor worktree as a Herdr workspace without taking focus.
-Configured commands remain argument arrays; Herdr quotes them for its `pane run`
-shell command. Observer commands are restricted to Pi because Khala passes Pi
-capability flags that enforce read-only operation. Run the setup wizard to choose
-`conclaveModel`, `oracleModel`, and `observerModel` from the models reported by
-`pi --list-models`. Setup derives thinking choices for the Conclave, Executor,
-and Observer settings from each model's Pi metadata. The `conclaveThinking`,
-`executorThinking`, and `observerThinking` values are independent and accept only levels marked supported by the relevant
-model, or an empty string for the Pi default. Missing metadata preserves Pi's
-default. Khala Work always enables Git push and the Executor-managed draft Pull
-Request workflow. `commitConvention`
-can be `project`, `conventional`, or a custom commit prefix, and a Work
-constraint beginning with `commit convention:` overrides it. `oracleModel` is
-required and selects the fresh-context review model, while `observerModel` selects the
-read-only repository observation model. The project `archiveRoot`
-override is used only when Pi marks the project trusted; untrusted projects use
-the global Archive root. All reads and writes for one trusted session use the
-same selected root.
+`launcher` is `zellij`, `tmux`, or `herdr` and defaults to `zellij`. These
+launchers retain pane creation and focus behavior for read-only Observers; a
+Mission Executor is always a headless RPC child and has no pane target. Herdr
+requires `HERDR_ENV=1` and keeps the caller focused. Configured commands remain
+argument arrays; Herdr quotes them for its `pane run` shell command. Observer
+commands are restricted to Pi because Khala passes read-only capability flags.
+
+Run the setup wizard to choose explicit models. The four supervision model/cost
+fields are required: `conclaveModel`, `conclaveMaxCostUsdPerTurn`,
+`executorModel`, and `executorMaxCostUsdPerTurn`. `oracleModel` is also required
+for Oracle. There is no model inference or silent fallback to Pi settings,
+`piCommand`, another role's model, or the first discovered model. A configured
+Executor model is passed explicitly to headless RPC. `observerModel` may be
+empty only when the Observer command supplies its own model.
+
+Trusted project precedence is typed and explicit: global `khala.json` is the
+base, and a trusted project's `.pi/khala.json` overrides matching fields. An
+untrusted project uses only global configuration. Typed `Work.costBudget`
+values override the corresponding merged Conclave or Executor cost field;
+unset Work values use that explicit configuration field. No fallback changes
+these precedence rules. Thinking levels are independent per role and may be
+empty only to request Pi's explicit thinking default. Missing supervision
+settings fail with setup guidance.
+
+Every Work enables Git push and the Executor-managed draft Pull Request
+workflow. The Executor must publish a reviewable Pull Request before Finish
+handoff. If model, RPC, Conclave, poll, or publication supervision fails, the
+monitor shows the affected state; Khala retries only within its bounded recovery
+policy, blocks dependent launches when required, and records a blocked/failure
+Signal rather than claiming success. Use `/khala-recreate` to recover a project
+Conclave after a runtime outage. Inspect the Archive for exact causal evidence.
 
 The package ships named Khala prompts and role system prompts. Generic packaged
-placeholder prompts are intentionally not included.
+placeholder prompts are intentionally not included. The Conclave's supervision
+controls are tool-only and restricted to the exact allowlist in
+`system-prompts/conclave.md`; it supervises multiple asynchronous Executors but
+never implements their code. Direct User overrides are spoken in the dedicated
+Conclave session and can change priority only for peer conflict.
 
 ## Documentation
 
@@ -267,6 +290,10 @@ placeholder prompts are intentionally not included.
   Retry, and acceptance flow.
 - [Data model](docs/data-model.md) — Archive envelope, records, lifecycle
   statuses, validation, and append-only state.
+- [Supervision tools](docs/supervision-tools.md) — bounded controls, action IDs,
+  User overrides, and failure semantics.
+- [Supervision monitor](docs/supervision-monitor.md) — minimum monitor and
+  headless Executor/Observer surfaces.
 - [Work template](templates/khala-work.md) — the structured request format.
 - [Pull Request template](templates/pull-request.md) — the bundled Executor PR description format.
 - [System prompts](system-prompts/) — role behavior and constraints.

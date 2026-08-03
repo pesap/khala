@@ -1,150 +1,129 @@
-# Khala Data Model
+# Khala data model
 
-`src/khala-model.ts` is the single source of truth for durable record shapes,
-discriminants, statuses, and guards. The Archive is an append-only, project-scoped
-JSONL log at `<archiveRoot>/<projectKey>/archive.jsonl`.
+`src/khala-model.ts` is the source of truth for current durable record shapes,
+discriminants, statuses, and guards. The Archive is an append-only project JSONL
+log at `<archiveRoot>/<projectKey>/archive.jsonl`.
 
 ## Archive envelope
 
-Each line contains:
-
-| Field | Purpose |
-| --- | --- |
-| `recordId` | Unique identifier for the historical line. |
-| `schemaVersion` | `2` on current writes; absent or `1` means legacy history. |
-| `type` | `submission`, `mandate`, `mission`, `execution`, `signal`, `verdict`, `verdict-delivery`, `counsel`, `learning`, `pull-request`, or `work-outcome`. |
-| `projectPath` | Resolved project identity. |
-| `workId` | Work lifecycle identifier. |
-| `executionId` | Optional execution binding. |
-| `recordedAt` | Append timestamp. |
-| `payload` | Type-specific guarded record. |
-
-Version-1 envelopes remain readable without fabricating Mandates, Missions,
-participants, or assignments. Current code writes version 2 records. A valid
-legacy queued submission may be admitted prospectively by creating a new Mandate
-that cites its real historical submission record; old launched or executed
-records are not backfilled.
-
-The Archive is history, not a mutable table. Current state is projected from the
-latest append-order record for an identifier. Physical append order is the
-authoritative tie-breaker; timestamps are not used to repair ordering.
-
-A short-lived process-aware local lock protects read-modify-append lifecycle
-operations. It prevents local interleaving but is not a distributed lock and
-is not crash-atomic. Batch appends are ordered and recovery-visible, not
-transactional across processes.
-
-## Lifecycle
+Every current record contains `recordId`, `schemaVersion: 2`, `type`, resolved
+`projectPath`, `workId`, `recordedAt`, and a guarded `payload`. `executionId`
+is present when the record is execution-bound. Current record types are:
 
 ```text
-Work Submission
-  └─ queued / reviewing / admitted / rejected
-       ├─ submission-scoped Observer Execution ──► Learning
-       └─ admitted Work
-            └─ Mandate revision 1
-                 └─ immutable Mission
-                      └─ runtime Execution(s)
-                           └─ Signal ──► Verdict ──► Verdict Delivery
-                                      └─ Pull Request ──► Work Outcome
+submission, mandate, mission, execution, signal, verdict,
+verdict-delivery, learning, counsel, pull-request, work-outcome,
+coordination, intervention
 ```
 
-A Work Submission is not authoritative Work until the dedicated project
-Conclave admits it. Admission copies the submitted terms into Mandate revision
-1 and records the source submission line and Conclave participant ID.
+Append order is the historical authority. Timestamps do not repair ordering.
+A local process-aware lock protects read-modify-append transitions; the log is
+not a distributed transaction. Corrupt JSON, blank records, invalid envelopes,
+and invalid typed payloads fail closed rather than projecting as empty state.
 
-A Mission pins exactly one Mandate revision and contains an immutable complete
-assignment. It has no mutable status field. Projections derive its state:
+## Work and lifecycle records
 
-- a successor referencing `predecessorMissionId` supersedes it;
-- Finish or Reject Verdicts make it terminal;
-- a Retry Verdict without its successor is `retry-pending` and requires recovery;
-- otherwise it is current and eligible for an Executor runtime.
+- **Submission**: `KhalaWork` terms (`title`, `objective`, `context`, `scope`,
+  `acceptanceCriteria`, `constraints`, `plan`, `validation`, optional typed
+  positive `costBudget`), project, Archive path, and current submission status
+  (`queued`, `reviewing`, `admitted`, or `rejected`).
+- **Mandate**: `mandateId`, `workId`, positive `revision`, source submission
+  `recordId`, immutable copied `terms`, admitting Conclave participant, and
+  `admittedAt`. Current admission creates revision one.
+- **Mission**: `missionId`, `workId`, `mandateId`, immutable complete `assignment`,
+  `assignedParticipantId`, `createdAt`, and optional causal
+  `predecessorMissionId`, `causedByVerdictId`, or `causedByCoordinationId`.
+  Mission has no mutable status; projections derive current, superseded,
+  finished, or retry-pending state.
+- **Execution**: `executionId`, Work and Mission identity, Executor name and
+  kind, participant and purpose, resolved project, sandbox, `launcher`, status
+  (`starting`, `running`, `finished`, or `failed`), and `startedAt`.
+  Executor records also bind `piSessionId`, `sessionPath`,
+  `promptIdentity { packageVersion, promptSha256 }`, and optional immutable
+  `upstreamBase { kind, workId, missionId, executionId, remote, branch,
+  headCommit }`. An Executor uses `launcher: "headless-rpc"`; Observer records
+  retain their configured zellij, tmux, or Herdr pane target.
+- **Signal**: `signalId`, exact Work/Execution identity, optional Mission and
+  participant, kind (`progress`, `blocked`, or `finished`), summary, nonempty
+  evidence where required, and `observedAt`.
+- **Verdict**: `verdictId`, source Signal, Work/Execution and optional Mission,
+  governing Mandate and issuing participant, decision (`continue`, `retry`,
+  `finish`, or `reject`), reason, time, and complete successor assignment for
+  Retry.
+- **Verdict Delivery**: durable pending, delivered, or failed transport
+  evidence for the headless Executor. Delivery is not a Verdict.
+- **Pull Request**: review identity, Work/Mission/Execution, status, URL/number,
+  source and target branches, planning/head commits, changed files, diff,
+  validation, feedback, unresolved gaps, and merge/publication evidence.
+- **Work Outcome**: verified merged Pull Request evidence, Work/Mandate/
+  Mission/Execution bindings, validation and review evidence, accepting actor,
+  and timestamp. It is the acceptance record; Finish is not acceptance.
 
-Retry appends the Verdict, failed predecessor Execution snapshot, and complete
-successor Mission in one ordered local batch. The successor uses the same
-assignment shape, may change its terms, and never rewrites the predecessor.
-Recovery detects missing successors, missing causal Verdicts, duplicate
-successors, and Missions with no materialized Execution.
+## Coordination and Intervention records
 
-## Records
+**Coordination** records append-only phases for dependency or peer conflict,
+including the two current Missions, selected priority, optional Execution
+identities, exact remote/branch/upstream head, classification, reason, User
+source entry when it is a direct override, release/invalidation evidence, and
+causal resolution. A dependency hold may omit the waiting primary Execution but
+must identify the selected upstream Execution. Direct invalidation carries an
+exact remote observation; transitive invalidation instead cites the preceding
+upstream invalidation and omits unobserved replacement/ref evidence. A null
+replacement means the exact ref was observed missing. The upstream base is the
+causal immutable remote, branch, and full commit used for a dependent sandbox;
+it is not the Pull Request target branch.
 
-### Work Submission
+**Intervention** records have an issuance and one outcome. Issuance binds the
+assessment and deterministic action ID, Work/Mandate/Mission/Execution,
+Conclave and Executor participants, Pi session and prompt identity, exact
+Mission term, category, bounded message, mode, persisted Pi entry IDs, and
+transport confirmation. Outcome binds observed entry IDs or the exact failed
+Execution record for runtime-loss escalation, plus resulting Signal, Verdict,
+Coordination, or successor references. Intervention records never replace
+Signals, Verdicts, or Coordination decisions.
 
-`KhalaWork` contains title, objective, context, scope, acceptance criteria,
-constraints, plan, and validation. Required semantic fields and list entries
-must be nonblank. Context may be empty only when sufficient Work-scoped
-Observer Learning resolves it before admission.
+## Pi and supervision bindings
 
-Legacy `launching` and `launched` submission states remain readable for v1
-archives. New code uses `queued`, `reviewing`, `admitted`, and `rejected`.
-Observer launch changes `queued` to `reviewing`; current completion or failure
-returns it to `queued`. Admission is distinct from runtime launch and Retry.
+A persisted Conclave session contains hidden mission context, assessment start
+and completion entries, source entry IDs, deterministic assessment/action ID
+namespace, action reservations/completions, outage checkpoints, budget facts,
+settlement handoffs, and direct User source entries. It is a control audit
+surface, not a transcript mirror.
 
-### Mandate
+Executor Pi sessions remain in their own JSONL files. Supervision stores stable
+entry IDs, bounded message hashes, usage/cost facts, source ranges, prompt
+identity, and causal references needed for assessment and recovery. It does not
+copy raw prompts, assistant transcripts, tool output, or pane output into the
+Archive. Runtime events and monitor rows are projections over these bindings.
 
-A `MandateRecord` contains `mandateId`, `workId`, positive `revision`, the
-source submission `recordId`, immutable submitted `terms`, local Conclave
-participant attribution, and admission time. Only revision 1 admission is
-currently exposed; no tool creates revision 2.
+Supervision state (`connected`, `recovering`, `unavailable`, `settled`) is a
+projection, not a lifecycle record. Recovery validates the exact persisted Pi
+session ID/path, catches up from the stable cursor, and fails only the affected
+Execution when the binding is missing, corrupt, or unrestartable.
 
-### Mission
+## Configuration and precedence
 
-A `MissionRecord` contains `missionId`, `workId`, `mandateId`, optional
-predecessor and causal Verdict IDs, immutable `assignment`, assigned local
-participant ID, and creation time. Runtime details and mutable status never
-belong in this record.
+`KhalaConfig` contains the explicit current fields:
 
-### Execution
+```text
+worktreeRoot, worktreeBranchPrefix, launcher,
+piCommand, observerPiCommand,
+conclaveModel, conclaveMaxCostUsdPerTurn,
+executorModel, executorMaxCostUsdPerTurn,
+oracleModel, observerModel,
+conclaveThinking, executorThinking, observerThinking,
+pullRequestTargetBranch, commitConvention, archiveRoot
+```
 
-An `ExecutorRecord` contains runtime bindings and an explicit purpose:
+Global `~/.pi/agent/khala.json` values are the base. A trusted project may
+provide typed overrides in `.pi/khala.json`; untrusted projects never read the
+project override. The four supervision model/cost fields
+(`conclaveModel`, `conclaveMaxCostUsdPerTurn`, `executorModel`,
+`executorMaxCostUsdPerTurn`) are required and have no Pi or role fallback.
+`oracleModel` is explicitly required by Oracle setup. `observerModel` is
+optional only when the configured Observer Pi command supplies its own model.
 
-- `{ kind: "mission", missionId }` for an Executor;
-- `{ kind: "observation", submissionRecordId }` for a submission-scoped Observer.
-
-New executions use `starting`, then `running`, `finished`, or `failed`. A
-sandbox callback binds runtime location; launcher success is required before
-`running`. Generic runtime updates cannot alter Work, purpose, Mission, Mandate,
-or participant identity. Participant IDs are stable local attribution labels,
-not authenticated identities.
-
-### Signal and Verdict
-
-A Signal is Executor-only evidence for its current Mission and participant.
-Signals cannot authorize a transition and are rejected after terminal or
-superseded state.
-
-A Verdict is Conclave-only judgment for one Signal. It records the Mission,
-governing Mandate, issuing Conclave participant, and decision. Exact replays
-return the existing durable Verdict without appending; conflicting replays are
-rejected. Continue leaves the current runtime active. Finish closes the current execution
-successfully for external review; it does not establish Work acceptance. Reject
-closes it as failed. Retry requires a complete successor assignment and
-materializes a successor Mission; it does not requeue the old submission.
-
-A Verdict Delivery is durable pending/delivered/failed transport evidence for
-an active Executor. A Pull Request record captures branch, review, validation,
-and merge evidence; `Finish` promotes it to reviewable state. Only a verified
-merged Pull Request can be used to create a Work Outcome.
-
-Counsel remains Preserver-only advisory input. Learning remains Observer-only,
-Work-scoped evidence. Neither can authorize a lifecycle transition.
-
-## Validation and read errors
-
-Every payload has a matching guard in `khala-model.ts`, and the envelope guard
-validates the declared payload type. Invalid typed payloads are corruption, not
-an empty projection. Typed projections in
-`src/khala-archive-projections.ts` centralize current-state queries; raw Archive
-inspection remains separate.
-
-A missing or zero-length Archive returns an empty list. An unreadable Archive,
-malformed JSON, blank/whitespace line, invalid envelope, unsupported schema, or
-invalid typed payload throws `KhalaArchiveReadError` with the Archive path and,
-when applicable, line number. Errors never include malformed payload contents.
-Only the empty final segment created by a normal trailing newline is ignored.
-Callers must fail closed rather than converting corruption or lock contention to
-empty state.
-
-Archive-root selection is explicit: Pi's trusted-project signal may enable a
-project `.pi/khala.json` override. Standalone and untrusted callers use the
-global root by default, and no automatic migration or fallback occurs.
+For Work budgets, typed `Work.costBudget` values override the merged trusted
+configuration independently per actor; unset values use the corresponding
+explicit global/project configuration field. No model, Archive root, project
+trust, or Work term is inferred from a fallback source.

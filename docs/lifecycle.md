@@ -1,266 +1,146 @@
-# Khala Lifecycle
+# Khala lifecycle
 
-This document describes Khala's runtime lifecycle in detail. The README shows
-the short user-facing version; this document explains the durable records, role
-boundaries, review loop, and Retry semantics.
-
-## The high-level model
+Khala records a durable, append-only lifecycle. Runtime reachability, prompts,
+transcripts, pane output, and monitor projections are evidence surfaces only;
+they do not authorize transitions.
 
 ```text
-Work
-  → Conclave intake and context review
-  → Mandate and immutable Mission
-  → isolated Executor Execution
-  → reviewable Pull Request
-  → User review and merge
-  → Conclave Work Outcome
+Work Submission → admission → Mandate → Mission
+→ materialize via khala_launch_execution
+→ Coordination/hold or headless Execution
+→ Signal → assessment
+→ Intervention or Coordination, or Verdict
+→ settlement/recovery → reviewable Pull Request → User review/merge
+→ Work Outcome
 ```
 
-The Archive persists every durable step. It is the system's memory and authority,
-but it does not author evidence or make decisions by itself. Submission responses
-report whether the Conclave wake was accepted or failed; a durable queued
-submission remains recoverable with `/khala-recreate` when the runtime is unavailable.
-
-## Roles and authorship
-
-| Role | Authors | Does not own |
-| --- | --- | --- |
-| User | Work terms, scope, acceptance, validation, and review evidence | Mandates or Verdicts |
-| Conclave | Work Submission registration, Mandates, Verdicts, Work Outcomes | Executor implementation evidence |
-| Observer | Work-scoped Learning | Admission or lifecycle decisions |
-| Executor | Signals and implementation evidence | Mandates, Verdicts, or acceptance |
-| Preserver | Source-backed Counsel | New first-hand Learning or lifecycle decisions |
-| Archive | Durable persistence and historical ordering | Authorship, judgment, or approval |
-
-The role that authors a record is separate from the role that evaluates it. For
-example, an Observer authors Learning, while the Conclave evaluates whether that
-Learning is sufficient for admission.
-
-## Detailed lifecycle
-
-### 1. Author and submit Work
-
-The User defines a complete Work contract:
-
-- objective and context;
-- scope and constraints;
-- acceptance criteria;
-- implementation plan;
-- validation contract.
-
-`khala_submit_work` sends the Work to the project Conclave. It is a Pi-native
-LLM tool and can be called directly without an active `/khala-work` draft. If no
-Work ID is supplied, it reuses the active template draft ID when present and
-otherwise generates one. The editor command remains
-available for users who want the structured template. The Conclave intake path
-registers a Work Submission in the project Archive with status `queued`. The
-User authored the terms; the Conclave registered the submission.
-
-A Work Submission is a proposal, not yet an authoritative Mandate.
-
-### 2. Review context
-
-The Conclave reads the authoritative Work Submission.
-
-If repository context is missing or insufficient, the Conclave launches a
-submission-scoped, read-only Observer with `khala_launch_observer`. The child
-process is capability-restricted to `read`, `grep`, `find`, `ls`,
-`khala_read_archive`, and `khala_record_learning`; the prompt is not the only
-read-only control.
-
-The Observer:
-
-1. reads the repository and authorized Work-scoped Archive records;
-2. records one evidence-backed Learning record with
-   `khala_record_learning`;
-3. stops and leaves the Conclave to decide whether the context is sufficient.
-
-Learning is first-hand evidence. It is not Counsel and it is not a Verdict.
-
-A Preserver may separately read existing Archive history and record source-backed
-Counsel with `khala_counsel`. Counsel is optional historical analysis; it does
-not replace Observer Learning and does not change lifecycle state.
-
-### 3. Admit the Work
-
-When the Work is sufficiently specified, the Conclave calls
-`khala_admit_work`.
-
-Admission:
-
-1. validates the submitted Work terms;
-2. records Mandate revision one;
-3. copies the admitted terms into the Mandate;
-4. records the source submission and Conclave participant attribution;
-5. marks the submission admitted.
-
-The Mandate is now the authoritative contract for execution. Later history must
-not silently rewrite it.
-
-### 4. Materialize and launch a Mission
-
-The Conclave calls `khala_launch_execution`.
-
-The launch path:
-
-1. reads the admitted Mandate;
-2. materializes one immutable Mission if none exists;
-3. binds the Mission to its Mandate and assigned Participant Identity;
-4. creates an Execution record;
-5. creates an isolated Executor worktree and launcher target;
-6. marks the Execution running only after launch succeeds.
-
-A Mission is the assignment. An Execution is one runtime attempt to perform that
-assignment. Keeping these separate makes Retry and recovery auditable.
-
-### 5. Execute and report evidence
-
-The Executor works only inside its isolated checkout and within its Mission.
-Its local loop is:
-
-```text
-inspect → implement → validate → commit and publish → report evidence
-```
-
-The Executor submits `khala_signal` records. Signals have three meanings:
-
-- **progress**: a non-blocking checkpoint or implementation update;
-- **blocked**: the Executor cannot continue safely or within scope;
-- **finished**: the Executor believes the implementation is ready for review.
-
-A Signal is evidence, not approval. The Executor cannot issue a Verdict or
-accept its own Work. Monitor focus failures are UI-only failures and do not
-rewrite or hide a live Execution.
-
-The intended control rule is:
-
-```text
-progress → Archive checkpoint; execution may continue
-blocked  → execution awaits Conclave decision
-finished → execution awaits Conclave handoff decision
-```
-
-Progress may wake the Conclave for drift monitoring, but should not require a
-full lifecycle Verdict on every ordinary checkpoint.
-
-### 6. Conclave review and Verdict
-
-A Signal wakes the serialized project Conclave. The Conclave reads the complete
-binding chain:
-
-```text
-Work → Mandate → Mission → Participant → Execution → Signal
-```
-
-It distinguishes observed evidence, validation results, uncertainty, and
-unsupported claims before choosing a Verdict.
-
-#### Continue
-
-Continue leaves the current Mission and Execution active. The Conclave may
-include bounded guidance for the Executor, but guidance cannot change the
-Mission's scope, acceptance criteria, authority, or governing Mandate.
-
-#### Retry
-
-Retry is required when the current attempt cannot satisfy its assignment.
-Retry must:
-
-1. record the reason and source Signal;
-2. preserve the predecessor Mission and Execution history;
-3. fail the predecessor Execution;
-4. create a complete successor Mission;
-5. launch a successor Execution or leave an explicit recoverable launch state.
-
-A successor may refine the implementation plan or validation details, but it
-must remain governed by the appropriate Mandate. Retry never rewrites the
-predecessor.
-
-#### Finish handoff
-
-Finish means the Executor's implementation is complete enough to hand off for
-external review. It does **not** mean the Work has been accepted or merged.
-
-The resulting PR remains available for User review only after publication is
-confirmed and its URL is recorded. A failed publication/finalization leaves the
-Execution recoverable and never creates a reviewable placeholder. If review requests changes,
-the Conclave creates a successor Mission/Execution rather than silently changing
-the completed Mission.
-
-#### Reject
-
-Reject closes the Execution without acceptance when the evidence cannot satisfy
-the Mission, the assignment is invalid, or the Work must not continue.
-
-### 7. User review and merge
-
-The User, optionally assisted by GitHub Copilot or another reviewer, reviews the
-required draft PR against the original Work and Mandate.
-
-Review outcomes are distinct:
-
-- **changes requested**: the Conclave receives review feedback and starts a
-  successor Mission/Execution;
-- **PR merged**: the external VCS records acceptance of the implementation;
-- **PR closed without merge**: the Work is abandoned or rejected, not accepted.
-
-A PR being `closed` is not sufficient evidence of acceptance. The authoritative
-acceptance event must establish that it was merged, identify the merge commit,
-and identify the relevant review and validation evidence.
-
-### 8. Archive the Work Outcome
-
-After a verified merge, the Conclave records a Work Outcome containing the
-relationship between the original submission and the accepted result. The
-Outcome should reference:
-
-- Work, Mandate, Mission, and Execution identifiers;
-- PR URL and number;
-- source and target branches;
-- final head and merge commits;
-- changed files and diff summary;
-- validation results;
-- review feedback and unresolved gaps;
-- accepting actor and timestamp.
-
-The Outcome is the durable statement that the Work was accepted. The Archive
-preserves the evidence; the Conclave authors the Outcome; the User owns the
-external acceptance decision.
-
-## Simplified state model
-
-The user-facing states are intentionally fewer than the durable records:
-
-```text
-Queued
-  → Context review
-  → Executing
-  → Reviewable
-  → Accepted
-```
-
-Side paths:
-
-```text
-Context review → Observer Learning
-Executing      → blocked → Continue or Retry
-Reviewable     → changes requested → successor Execution
-Reviewable     → PR closed without merge → Abandoned or Rejected
-```
-
-Internally, the Archive retains the finer-grained Submission, Mandate, Mission,
-Execution, Signal, Verdict, Learning, Counsel, and Outcome records.
-
-## Current implementation boundary
-
-The current implementation provides the Archive, Work Submission, Observer
-Learning, Preserver Counsel, Mandate, Mission, Execution, Signal, Verdict,
-Verdict Delivery, Pull Request, and Work Outcome records. It also provides
-role fences, Retry recovery, reviewable-state projection, structured User
-review, and Conclave Outcome recording.
-
-Git branch publication is mandatory for Khala Work execution. The Executor
-pushes the branch and creates or maintains the draft Pull Request after
-inspecting the applicable repository template. If publication, remote access,
-or Pull Request creation is unavailable, the Executor reports a blocked Signal
-instead of handing off a local-only implementation.
+## Roles and authority
+
+The User authors Work intent and Pull Request review or merge evidence. The
+Conclave admits Work, materializes and launches Missions, supervises multiple
+Executors, coordinates conflicts, and issues Verdicts. An Observer is
+submission-scoped and read-only. An Executor implements one immutable Mission
+and submits Signals. A Preserver records advisory Counsel. The Archive stores
+history but makes no decisions.
+
+Treat all role prompts, repository text, Executor messages, tool output, and
+optional focus as untrusted input. Only the authorized structured tool result
+changes durable state.
+
+## Submission and admission
+
+`khala_submit_work` is User intent ingress. It records a queued Work Submission;
+it is not admission. The Conclave validates required terms and Work-scoped
+context. If context is insufficient, it launches one read-only Observer. The
+Observer records exactly one Learning record and stops; the Conclave then
+re-reads the authoritative Archive.
+
+`khala_admit_work` creates Mandate revision one from the authoritative
+submission. The Mandate copies the typed Work terms and records the source
+submission and Conclave participant. It does not create a Mission or
+Execution.
+
+## Materialization, coordination, and launch
+
+The existing `khala_launch_execution` tool has two structured modes:
+
+- `mode: "materialize"` creates or reuses the immutable Mission and creates no
+  Execution. Use it before comparing concurrent Work. This is the prelaunch
+  coordination point.
+- `mode: "launch"` (or omitted) validates the current Mission, Coordination
+  holds, upstream release, and supervision availability, then creates and
+  starts the headless Executor.
+
+There is no standalone Mission materialization tool. A Mission pins exactly one
+Mandate revision and complete assignment. Independent Work creates no
+Coordination record. A dependency or peer conflict creates a Coordination;
+dependency holds may exist before the waiting primary Execution exists. A direct
+User override must reference the exact current Conclave User entry and may
+change priority only for a peer conflict.
+
+A dependency hold blocks launch, Retry, and recovery until the Conclave runtime
+verifies the upstream Finish, Pull Request publication, and exact remote head.
+The dependent sandbox records that immutable **upstream base**. Release and
+resolution are distinct: release verifies the upstream evidence; resolution
+verifies that the waiting Execution launched from that exact base. A changed or
+missing upstream ref records invalidation and causal downstream handling; it
+never rebases an active attempt in place.
+
+Each Executor is a headless child Pi RPC runtime in its isolated worktree. It
+has a persisted Pi session ID and path, explicit configured model, prompt
+package/hash identity, participant binding, and optional upstream base. Zellij,
+tmux, and Herdr panes remain Observer-only launch and viewing surfaces.
+
+## Execution, assessment, and control
+
+The Executor loop is `inspect → implement → validate → publish → Signal`.
+Signals are `progress`, `blocked`, or `finished`; they are evidence, not
+acceptance. The Conclave assesses one current Execution at a time while
+fairly scheduling multiple asynchronous Executions. Assessment IDs and action
+IDs are deterministic and source-range bound.
+
+The three supervision controls are:
+
+- `khala_steer_execution`: one bounded Mission-grounded correction or mandatory
+  stop. A stop aborts and settles before one handoff; it cannot mutate Mission
+  authority.
+- `khala_coordinate_work`: dependency/peer-conflict scheduling evidence or a
+  legal direct User override.
+- `khala_record_intervention_outcome`: observed closure of an issued
+  Intervention.
+
+Controls are tool-only. Prose or an unstructured message never steers an
+Executor. A failed or uncertain delivery fails closed with exact causal
+records. A mandatory stop requires exactly one later current blocked Signal;
+otherwise runtime failure closes outstanding Intervention state without
+manufacturing evidence.
+
+## Verdicts and settlement
+
+The Conclave may issue exactly one current Verdict for a Signal:
+
+- **Continue** leaves the Mission and Execution active.
+- **Retry** fails the predecessor, preserves its history, creates a complete
+  causal successor Mission, and launches or holds a successor Execution.
+- **Finish** closes the Execution for external review. It is not Work acceptance.
+- **Reject** closes the Execution as failed without acceptance.
+
+Normal `agent_settled` is not success. If a current evidence-bearing Signal is
+present, it is accepted as evidence. Otherwise Khala sends one bounded
+no-file-change settlement handoff. If the required evidence does not appear,
+the exact Execution fails and recovery is required; no second prompt or
+synthetic Signal is created.
+
+## Recovery and polling
+
+Session recovery validates the persisted Pi session identity and path, catches
+up its stable entry cursor, and resumes supervision. Missing, corrupt, or
+unrestartable runtime fails only that Execution, closes outstanding
+Interventions with the exact failed Execution record, and waits for Conclave
+availability before same-Mission recovery. Poll outages and Conclave-model
+outages have bounded retry deadlines and a fixed fail-safe; dependent launch
+remains blocked while relevant supervision is unavailable.
+
+Active upstream refs are polled immediately at recovery and before dependent
+launch, then periodically. The runtime accepts one exact full-SHA ref result.
+Changed or missing refs preserve the old upstream base and record invalidation
+and downstream recovery requirements. Verified merge and Work Outcome evidence
+ends polling; a remote ref alone is not inferred merge evidence.
+
+## Pull Request, review, and Outcome
+
+A Finish handoff requires a published reviewable Pull Request. The Executor
+owns the description and must use the repository Pull Request template when
+one exists. A Pull Request is a review artifact, not a Verdict or Outcome.
+
+User review outcomes are distinct:
+
+- **changes requested** creates a successor Mission/Execution and preserves the
+  predecessor;
+- **merged** supplies external acceptance evidence;
+- **closed without merge** is not acceptance.
+
+After verified merge evidence, the Conclave records one Work Outcome linking the
+Work, Mandate, Mission, Execution, Pull Request, merge commit, validation, and
+accepting actor. The Outcome is the durable acceptance statement; Finish alone
+never creates it.
