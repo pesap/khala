@@ -81,7 +81,6 @@ type WorkSubmissionStatusValue = (typeof WorkSubmissionStatus)[keyof typeof Work
 const KhalaWorkEntryStatus = {
 	draft: "draft",
 	queued: "queued",
-	blocked: "blocked",
 	launched: "launched",
 } as const;
 
@@ -114,6 +113,7 @@ const ConclaveWakeStatus = {
 } as const;
 type ConclaveWakeStatusValue = (typeof ConclaveWakeStatus)[keyof typeof ConclaveWakeStatus];
 type ConclaveWakeRecovery = "setup" | "recreate";
+type ConclaveWakeFailure = Readonly<{ message: string; recovery: ConclaveWakeRecovery }>;
 type ConclaveWakeRecord = Readonly<{
 	wakeId: string;
 	workId: string;
@@ -1651,6 +1651,7 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 export type {
 	ArchiveRecordType,
 	ArchiveSchemaVersion,
+	ConclaveWakeFailure,
 	ConclaveWakeRecord,
 	ConclaveWakeRecovery,
 	ConclaveWakeStatusValue,

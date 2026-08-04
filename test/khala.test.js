@@ -65,14 +65,69 @@ function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}
 	};
 }
 
+function validWork(overrides = {}) {
+	return {
+		title: "Test Work",
+		objective: "Exercise the requested Khala behavior.",
+		context: "The Work has enough context for Conclave review.",
+		scope: "The current project.",
+		acceptanceCriteria: ["The observable behavior is preserved."],
+		constraints: [],
+		plan: ["Exercise the behavior."],
+		validation: ["Inspect the result."],
+		...overrides,
+	};
+}
+
+function appendWake(projectPath, workId, status, evidence = {}) {
+	createFileConclaveStorage().submit({ workId, projectPath, work: validWork() });
+	appendArchiveRecord(projectPath, {
+		schemaVersion: 2,
+		type: "conclave-wake",
+		workId,
+		payload: {
+			wakeId: `${workId}-${status}-${evidence.recovery ?? "complete"}`,
+			workId,
+			status,
+			attemptedAt: new Date().toISOString(),
+			...evidence,
+		},
+	});
+}
+
+function startRoleSession(root, role, activeTools) {
+	const tools = new Map();
+	const events = new Map();
+	const pi = createPiStub(new Map(), tools, new Map(), { events, activeTools });
+	createExtension(pi);
+	let branch = [];
+	if (role === "conclave") branch = [{ type: "custom", customType: "khala-conclave", data: {} }];
+	else if (role === "executor") branch = [{ type: "custom", customType: "khala-executor", data: {} }];
+	else if (role === "observer") branch = [{ type: "custom", customType: "khala-observer", data: {} }];
+	else if (role === "preserver") branch = [{ type: "custom", customType: "khala-role", data: { role } }];
+	events.get("session_start")({}, {
+		cwd: join(root, role),
+		mode: "tui",
+		isIdle: () => true,
+		isProjectTrusted: () => false,
+		sessionManager: {
+			getBranch: () => branch,
+			getEntries: () => branch,
+			getSessionFile: () => undefined,
+			getSessionName: () => undefined,
+		},
+		ui: { theme: { fg: (_color, text) => text }, setStatus() {} },
+	});
+	return { pi, tools };
+}
+
 test("package manifest declares source extensions and exposes Khala commands", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	assert.equal(manifest.scripts.prepare, "npm run clean && npm run build");
-	assert.equal(manifest.dependencies.typescript, "5.9.3");
+	assert.equal(manifest.devDependencies.typescript, "5.9.3");
 	assert.equal(manifest.dependencies["@earendil-works/pi-coding-agent"], "0.82.1");
 	assert.equal(manifest.dependencies["@earendil-works/pi-tui"], "0.82.1");
 	assert.equal(manifest.dependencies.typebox, "1.1.38");
-	assert.equal(manifest.devDependencies.typescript, undefined);
 	assert.deepEqual(manifest.pi.extensions, [
 		"./src/index.ts",
 		"./extensions/pi-review/review.ts",
@@ -158,38 +213,7 @@ test("sessions expose only role-authorized Khala tools and schemas", () => {
 	]);
 	try {
 		for (const [role, expected] of expectedByRole) {
-			const commands = new Map();
-			const tools = new Map();
-			const events = new Map();
-			const pi = createPiStub(commands, tools, new Map(), { events });
-			createExtension(pi);
-			let branch = [];
-			if (role === "conclave") {
-				branch = [{ type: "custom", customType: "khala-conclave", data: {} }];
-			} else if (role === "executor") {
-				branch = [{ type: "custom", customType: "khala-executor", data: {} }];
-			} else if (role === "observer") {
-				branch = [{ type: "custom", customType: "khala-observer", data: {} }];
-			} else if (role === "preserver") {
-				branch = [{ type: "custom", customType: "khala-role", data: { role: "preserver" } }];
-			}
-			const context = {
-				cwd: join(root, role),
-				mode: "tui",
-				isIdle: () => true,
-				isProjectTrusted: () => false,
-				sessionManager: {
-					getBranch: () => branch,
-					getEntries: () => branch,
-					getSessionFile: () => undefined,
-					getSessionName: () => undefined,
-				},
-				ui: {
-					theme: { fg: (_color, text) => text },
-					setStatus() {},
-				},
-			};
-			events.get("session_start")({}, context);
+			const { pi, tools } = startRoleSession(root, role);
 			assert.deepEqual(
 				pi.getActiveTools().filter((name) => name.startsWith("khala_")).sort(),
 				expected,
@@ -212,26 +236,7 @@ test("role activation preserves explicit Pi tool exclusions", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-role-tool-exclusions-"));
 	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 	try {
-		const events = new Map();
-		const pi = createPiStub(new Map(), new Map(), new Map(), {
-			events,
-			activeTools: ["read", "khala_read_archive"],
-		});
-		createExtension(pi);
-		const branch = [{ type: "custom", customType: "khala-executor", data: {} }];
-		events.get("session_start")({}, {
-			cwd: root,
-			mode: "tui",
-			isIdle: () => true,
-			isProjectTrusted: () => false,
-			sessionManager: {
-				getBranch: () => branch,
-				getEntries: () => branch,
-				getSessionFile: () => undefined,
-				getSessionName: () => undefined,
-			},
-			ui: { theme: { fg: (_color, text) => text }, setStatus() {} },
-		});
+		const { pi } = startRoleSession(root, "executor", ["read", "khala_read_archive"]);
 		assert.deepEqual(pi.getActiveTools(), ["read", "khala_read_archive"]);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
@@ -740,7 +745,7 @@ test("Users can submit Work intent without lifecycle authority", async () => {
 			isDedicatedConclaveSession: () => false,
 			submitWork: async (request) => {
 				submitted = request;
-				return { archivePath: join(root, "archive.jsonl"), wakeStatus: "woken" };
+				return { archivePath: join(root, "archive.jsonl") };
 			},
 			getSubmission: () => undefined,
 			getPendingSubmission: () => undefined,
@@ -793,19 +798,9 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 		const result = await coordinator.submit({
 			workId: "wake-failure-work",
 			projectPath,
-			work: {
-				title: "Wake failure",
-				objective: "Preserve a failed Conclave wake.",
-				context: "The Work is complete enough for admission review.",
-				scope: "The current project.",
-				acceptanceCriteria: ["The failure is durable."],
-				constraints: [],
-				plan: ["Wake the Conclave."],
-				validation: ["Read the Archive."],
-			},
+			work: validWork({ title: "Wake failure", objective: "Preserve a failed Conclave wake." }),
 		});
-		assert.equal(result.wakeStatus, "error");
-		assert.equal(result.wakeRecovery, "setup");
+		assert.equal(result.wakeFailure.recovery, "setup");
 		const records = listArchiveRecords(projectPath);
 		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-wake"]);
 		assert.deepEqual(
@@ -855,18 +850,17 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 		assert.notEqual(setupConclave.sessionPath, "");
 		assert.match(setupConclave.task, /supervision configuration is incomplete/);
 
-		appendArchiveRecord(projectPath, {
-			schemaVersion: 2,
-			type: "conclave-wake",
-			workId: "wake-failure-work",
-			payload: {
-				wakeId: "runtime-wake-failure",
-				workId: "wake-failure-work",
-				status: "failed",
-				attemptedAt: new Date().toISOString(),
-				failure: "The configured Conclave runtime failed.",
-				recovery: "recreate",
-			},
+		appendWake(projectPath, "later-successful-work", "woken");
+		const unresolvedConclave = setupSessionSource
+			.getActiveSessions("")
+			.find((session) => session.role === "Conclave");
+		assert.equal(unresolvedConclave.state, "failed");
+		assert.equal(unresolvedConclave.action, "run setup");
+		assert.match(unresolvedConclave.task, /supervision configuration is incomplete/);
+
+		appendWake(projectPath, "wake-failure-work", "failed", {
+			failure: "The configured Conclave runtime failed.",
+			recovery: "recreate",
 		});
 		const recreateSessionSource = createSessionSource(context, () => undefined, () => undefined);
 		const recreateConclave = recreateSessionSource
@@ -902,21 +896,10 @@ test("Archive persistence failures remain distinct from Conclave wake failures",
 		const result = await coordinator.submit({
 			workId: "wake-evidence-failure-work",
 			projectPath,
-			work: {
-				title: "Wake evidence failure",
-				objective: "Distinguish a wake failure from its missing evidence.",
-				context: "The Archive becomes read-only after submission.",
-				scope: "The current project.",
-				acceptanceCriteria: ["The evidence failure is explicit."],
-				constraints: [],
-				plan: ["Attempt the Conclave wake."],
-				validation: ["Inspect the coordinator result."],
-			},
+			work: validWork({ title: "Wake evidence failure" }),
 		});
-		assert.equal(result.wakeStatus, "evidence-error");
-		assert.equal(result.wakeCompleted, false);
-		assert.equal(result.wakeRecovery, "setup");
-		assert.match(result.wakeError, /wake failed.*Archive evidence could not be persisted/s);
+		assert.equal(result.wakeFailure.recovery, "setup");
+		assert.match(result.wakeFailure.message, /wake failed.*Archive evidence could not be persisted/s);
 	} finally {
 		await coordinator.dispose();
 		if (archivePath.length > 0) {
@@ -927,115 +910,59 @@ test("Archive persistence failures remain distinct from Conclave wake failures",
 	}
 });
 
-test("Work submission throws after a failed wake and preserves an unsupervised marker", async () => {
+test("Work wake diagnostics preserve recovery without assuming Executor state", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-work-wake-error-"));
 	const tools = new Map();
 	const entries = [];
-	try {
-		registerKhalaWork(
-			createPiStub(new Map(), tools, new Map(), {
-				appendEntry(type, data) {
-					entries.push({ type, data });
-				},
-			}),
-			{
-				workTemplate: "",
-				executorSystemPrompt: "",
-				createExecutorStarter: () => {
-					throw new Error("not used");
-				},
-				isDedicatedConclaveSession: () => false,
-				submitWork: async () => ({
-					archivePath: join(root, "archive.jsonl"),
-					wakeStatus: "error",
-					wakeError: "Khala supervision configuration is incomplete or invalid.",
-					wakeRecovery: "setup",
-				}),
-				getSubmission: () => undefined,
-				getPendingSubmission: () => undefined,
-				claimSubmission: () => false,
-				markSubmissionQueued: () => {},
-				markSubmissionLaunched: () => {},
-			},
-		);
-		const context = {
-			cwd: root,
-			sessionManager: {
-				getEntries: () => [],
-				getBranch: () => [],
-			},
-		};
-		await assert.rejects(
-			() =>
-				tools.get("khala_submit_work").execute(
-					"submit",
-					{
-						objective: "Submit Work safely.",
-						scope: "The current project.",
-						acceptanceCriteria: ["The wake failure is explicit."],
-						constraints: [],
-						plan: ["Submit Work."],
-						validation: ["Inspect the result."],
-					},
-					null,
-					null,
-					context,
-				),
-			/Work .* persisted.*Executor state is unknown.*npx --yes github:pesap\/khala.*Do not launch/s,
-		);
-		assert.equal(entries.at(-1).data.status, "blocked");
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("Work submission does not report a completed wake as unlaunched", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-work-wake-evidence-error-"));
-	const tools = new Map();
-	try {
-		registerKhalaWork(createPiStub(new Map(), tools), {
+	let wakeFailure;
+	registerKhalaWork(
+		createPiStub(new Map(), tools, new Map(), {
+			appendEntry: (type, data) => entries.push({ type, data }),
+		}),
+		{
 			workTemplate: "",
 			executorSystemPrompt: "",
 			createExecutorStarter: () => {
 				throw new Error("not used");
 			},
 			isDedicatedConclaveSession: () => false,
-			submitWork: async () => ({
-				archivePath: join(root, "archive.jsonl"),
-				wakeStatus: "evidence-error",
-				wakeError: "The Conclave wake completed, but its Archive evidence could not be persisted.",
-				wakeRecovery: "recreate",
-				wakeCompleted: true,
-			}),
+			submitWork: async () => ({ archivePath: join(root, "archive.jsonl"), wakeFailure }),
 			getSubmission: () => undefined,
 			getPendingSubmission: () => undefined,
 			claimSubmission: () => false,
 			markSubmissionQueued: () => {},
 			markSubmissionLaunched: () => {},
-		});
-		await assert.rejects(
-			() =>
-				tools.get("khala_submit_work").execute(
-					"submit",
-					{
-						objective: "Report uncertain wake evidence truthfully.",
-						scope: "The current project.",
-						acceptanceCriteria: ["The diagnostic preserves wake completion."],
-						constraints: [],
-						plan: ["Submit Work."],
-						validation: ["Inspect the error."],
-					},
-					null,
-					null,
-					{ cwd: root, sessionManager: { getEntries: () => [], getBranch: () => [] } },
-				),
-			(error) => {
-				assert.match(error.message, /wake completed.*evidence was not durable/s);
-				assert.match(error.message, /Executor state is unknown/);
-				assert.doesNotMatch(error.message, /No Executor was launched/);
-				return true;
-			},
-		);
+		},
+	);
+	const context = { cwd: root, sessionManager: { getEntries: () => [], getBranch: () => [] } };
+	const scenarios = [
+		{
+			recovery: "setup",
+			message: "Khala supervision configuration is incomplete or invalid.",
+			recoveryPattern: /npx --yes github:pesap\/khala/,
+		},
+		{
+			recovery: "recreate",
+			message: "The Conclave wake completed, but its Archive evidence could not be persisted.",
+			recoveryPattern: /\/khala-recreate/,
+		},
+	];
+	try {
+		for (const scenario of scenarios) {
+			wakeFailure = { message: scenario.message, recovery: scenario.recovery };
+			await assert.rejects(
+				() => tools.get("khala_submit_work").execute("submit", validWork(), null, null, context),
+				(error) => {
+					assert.match(error.message, /durable Conclave wake completion could not be confirmed/);
+					assert.match(error.message, /Executor state is unknown/);
+					assert.match(error.message, scenario.recoveryPattern);
+					assert.ok(error.message.includes(scenario.message));
+					assert.doesNotMatch(error.message, /No Executor was launched/);
+					return true;
+				},
+			);
+			assert.equal(entries.at(-1).data.status, "queued");
+		}
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

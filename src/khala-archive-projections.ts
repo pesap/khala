@@ -38,7 +38,7 @@ import {
 type MissionProjectionState = "current" | "superseded" | "finished" | "rejected" | "retry-pending";
 type ArchiveSnapshot = Readonly<{
 	listRecords: () => readonly KhalaArchiveRecord[];
-	listConclaveWakes: () => ConclaveWakeRecord[];
+	latestUnresolvedConclaveWake: () => ConclaveWakeRecord | undefined;
 	listExecutions: () => ExecutorRecord[];
 	listSignals: () => SignalRecord[];
 	listPullRequests: () => PullRequestRecord[];
@@ -75,7 +75,7 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 	const records = listArchiveRecords(projectPath, projectTrusted);
 	return {
 		listRecords: () => records,
-		listConclaveWakes: () => projectRecordsFromRecords(records, "conclave-wake", isConclaveWakeRecord),
+		latestUnresolvedConclaveWake: () => findLatestUnresolvedConclaveWake(records),
 		listExecutions: () => projectRecordsFromRecords(records, "execution", isExecutorRecord),
 		listSignals: () => projectRecordsFromRecords(records, "signal", isSignal),
 		listPullRequests: () => projectRecordsFromRecords(records, "pull-request", isPullRequestRecord),
@@ -85,8 +85,23 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 	};
 }
 
-function listConclaveWakeRecords(projectPath: string, projectTrusted = false): ConclaveWakeRecord[] {
-	return projectRecords(projectPath, "conclave-wake", isConclaveWakeRecord, projectTrusted);
+function findLatestUnresolvedConclaveWake(records: readonly KhalaArchiveRecord[]): ConclaveWakeRecord | undefined {
+	const seenWorkIds = new Set<string>();
+	for (let index = records.length - 1; index >= 0; index -= 1) {
+		const record = records[index];
+		if (record?.type !== "conclave-wake" || !isConclaveWakeRecord(record.payload)) {
+			continue;
+		}
+		if (seenWorkIds.has(record.workId)) {
+			continue;
+		}
+		seenWorkIds.add(record.workId);
+		if (record.payload.status === "failed") {
+			return record.payload;
+		}
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy strict return analysis when no failure remains.
+	return undefined;
 }
 
 function listSubmissionRecords(projectPath: string, projectTrusted = false): KhalaWorkSubmission[] {
@@ -567,7 +582,6 @@ export {
 	activeCoordinationHolds,
 	createArchiveSnapshot,
 	findArchiveRecords,
-	listConclaveWakeRecords,
 	listCoordinationRecords,
 	listExecutionRecords,
 	listInterventionRecords,

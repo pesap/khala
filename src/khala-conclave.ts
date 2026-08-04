@@ -33,6 +33,7 @@ import {
 	writeExecutorRecord,
 } from "./khala-executor-registry.js";
 import {
+	type ConclaveWakeFailure,
 	type ConclaveWakeRecovery,
 	type ExecutorRecord,
 	ExecutorStatus,
@@ -61,25 +62,6 @@ import { isSupportedThinkingLevel } from "./khala-thinking.js";
 import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delivery.js";
 import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
-type ConclaveWakeResultStatus = "woken" | "deferred" | "error" | "evidence-error";
-type ErrorCauseOptions = Readonly<{ cause?: unknown }>;
-class ConclaveWakeEvidenceError extends Error {
-	readonly cause: unknown;
-	readonly wakeCompleted: boolean;
-	readonly recovery: ConclaveWakeRecovery;
-
-	constructor(wakeCompleted: boolean, options: ErrorCauseOptions, recovery: ConclaveWakeRecovery, wakeError: unknown) {
-		let outcome = `The Conclave wake failed: ${formatError(wakeError)}`;
-		if (wakeCompleted) {
-			outcome = "The Conclave wake completed";
-		}
-		super(`${outcome}, but its Archive evidence could not be persisted: ${formatError(options.cause)}`);
-		this.name = "ConclaveWakeEvidenceError";
-		this.cause = options.cause;
-		this.wakeCompleted = wakeCompleted;
-		this.recovery = recovery;
-	}
-}
 const CONCLAVE_PARTICIPANT_HASH_LENGTH = 16;
 const CONCLAVE_BASE_TOOL_ALLOWLIST = [
 	"khala_read_archive",
@@ -103,10 +85,7 @@ const CONCLAVE_TOOL_ALLOWLIST = [
 type ConclaveCoordinator = Readonly<{
 	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => Promise<{
 		archivePath: string;
-		wakeStatus: ConclaveWakeResultStatus;
-		wakeError?: string;
-		wakeRecovery?: ConclaveWakeRecovery;
-		wakeCompleted?: boolean;
+		wakeFailure?: ConclaveWakeFailure;
 	}>;
 	resume: (projectPath: string, projectTrusted?: boolean) => void;
 	wakeSignal: (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void>;
@@ -146,44 +125,23 @@ function createConclaveCoordinator(
 	let disposed = false;
 	const submit = async (
 		request: WorkSubmissionRequest & { projectTrusted?: boolean },
-	): Promise<{
-		archivePath: string;
-		wakeStatus: ConclaveWakeResultStatus;
-		wakeError?: string;
-		wakeRecovery?: ConclaveWakeRecovery;
-		wakeCompleted?: boolean;
-	}> => {
+	): Promise<{ archivePath: string; wakeFailure?: ConclaveWakeFailure }> => {
 		const projectPath = resolve(request.projectPath);
 		const queued = storage.submit({ ...request, projectPath });
-		try {
-			await wakeWorkSubmission({
-				projectPath,
-				projectTrusted: request.projectTrusted ?? false,
-				workId: request.workId,
-				archivePath: queued.archivePath,
-				extensionPath,
-				storage,
-				runtimes,
-				disposed: () => disposed,
-			});
-			return { ...queued, wakeStatus: "woken" };
-		} catch (error) {
-			if (error instanceof ConclaveWakeEvidenceError) {
-				return {
-					...queued,
-					wakeStatus: "evidence-error",
-					wakeError: error.message,
-					wakeRecovery: error.recovery,
-					wakeCompleted: error.wakeCompleted,
-				};
-			}
-			return {
-				...queued,
-				wakeStatus: "error",
-				wakeError: formatError(error),
-				wakeRecovery: conclaveWakeRecovery(error),
-			};
+		const wakeFailure = await wakeWorkSubmission({
+			projectPath,
+			projectTrusted: request.projectTrusted ?? false,
+			workId: request.workId,
+			archivePath: queued.archivePath,
+			extensionPath,
+			storage,
+			runtimes,
+			disposed: () => disposed,
+		});
+		if (wakeFailure !== undefined) {
+			return { ...queued, wakeFailure };
 		}
+		return queued;
 	};
 	const wakeSignal = (projectPath: string, signal: SignalRecord, projectTrusted = false): Promise<void> =>
 		wakeConclave({
@@ -314,12 +272,13 @@ interface WakeRequest {
 }
 type SubmissionWakeRequest = WakeRequest & Readonly<{ workId: string; archivePath: string }>;
 
-async function wakeWorkSubmission(request: SubmissionWakeRequest): Promise<void> {
+async function wakeWorkSubmission(request: SubmissionWakeRequest): Promise<ConclaveWakeFailure | undefined> {
 	const attemptedAt = new Date().toISOString();
 	const wakeId = nanoid();
 	try {
 		await wakeConclave(request);
 	} catch (error) {
+		const message = formatError(error);
 		const recovery = conclaveWakeRecovery(error);
 		try {
 			appendArchiveRecord(
@@ -333,16 +292,19 @@ async function wakeWorkSubmission(request: SubmissionWakeRequest): Promise<void>
 						workId: request.workId,
 						status: "failed",
 						attemptedAt,
-						failure: formatError(error),
+						failure: message,
 						recovery,
 					},
 				},
 				request.projectTrusted,
 			);
 		} catch (evidenceError) {
-			throw new ConclaveWakeEvidenceError(false, { cause: evidenceError }, recovery, error);
+			return {
+				message: `The Conclave wake failed: ${message}, but its Archive evidence could not be persisted: ${formatError(evidenceError)}`,
+				recovery,
+			};
 		}
-		throw error;
+		return { message, recovery };
 	}
 	try {
 		appendArchiveRecord(
@@ -356,14 +318,16 @@ async function wakeWorkSubmission(request: SubmissionWakeRequest): Promise<void>
 			request.projectTrusted,
 		);
 	} catch (evidenceError) {
-		throw new ConclaveWakeEvidenceError(true, { cause: evidenceError }, "recreate", undefined);
+		return {
+			message: `The Conclave wake completed, but its Archive evidence could not be persisted: ${formatError(evidenceError)}`,
+			recovery: "recreate",
+		};
 	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy strict return analysis after durable success.
+	return undefined;
 }
 
 function conclaveWakeRecovery(error: unknown): ConclaveWakeRecovery {
-	if (error instanceof ConclaveWakeEvidenceError) {
-		return error.recovery;
-	}
 	if (error instanceof KhalaConfigError) {
 		return "setup";
 	}

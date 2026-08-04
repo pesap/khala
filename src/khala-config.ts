@@ -1,5 +1,4 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Configuration parsing keeps inheritance and diagnostics in one module.
-// biome-ignore-all lint/style/noExcessiveClassesPerFile: The base and supervision-specific diagnostics form one configuration error hierarchy.
 // biome-ignore-all lint/security/noSecrets: Config field names resemble credential identifiers but contain no secrets.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -58,19 +57,6 @@ class KhalaConfigError extends Error {
 		super(message);
 		this.name = "KhalaConfigError";
 		this.cause = options?.cause;
-	}
-}
-
-class KhalaSupervisionConfigError extends KhalaConfigError {
-	readonly missingFields: readonly string[];
-
-	constructor(missingFields: readonly string[]) {
-		super(
-			`Khala supervision configuration is incomplete or invalid (${missingFields.join(", ")}). ` +
-				`Run \`${KHALA_SETUP_COMMAND}\` to configure Khala.`,
-		);
-		this.name = "KhalaSupervisionConfigError";
-		this.missingFields = [...missingFields];
 	}
 }
 
@@ -386,7 +372,10 @@ function validateRequiredSupervisionConfig(config: KhalaConfig): void {
 		missing.push("executorMaxCostUsdPerTurn");
 	}
 	if (missing.length > 0) {
-		throw new KhalaSupervisionConfigError(missing);
+		throw new KhalaConfigError(
+			`Khala supervision configuration is incomplete or invalid (${missing.join(", ")}). ` +
+				`Run \`${KHALA_SETUP_COMMAND}\` to configure Khala.`,
+		);
 	}
 }
 
@@ -445,7 +434,6 @@ export {
 	getKhalaConfigPath,
 	KHALA_SETUP_COMMAND,
 	KhalaConfigError,
-	KhalaSupervisionConfigError,
 	LauncherName,
 	loadKhalaConfig,
 	resolveEffectiveWorkBudget,

@@ -215,7 +215,7 @@ function buildSessionList(
 		},
 	];
 	const archive = createArchiveSnapshot(context.cwd, projectTrusted);
-	const latestConclaveWake = archive.listConclaveWakes().at(-1);
+	const latestConclaveWake = archive.latestUnresolvedConclaveWake();
 
 	if ((conclavePath !== undefined && existsSync(conclavePath)) || latestConclaveWake?.status === "failed") {
 		let conclaveState = getPersistedSessionState(conclavePath ?? "", "Conclave");
