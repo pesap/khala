@@ -690,7 +690,7 @@ function chooseNonInteractiveModels(
 				`Configured ${modelField} '${configuredModel}' was not discovered by Pi. Rerun setup after configuring that model or select another model.`,
 			);
 		}
-		const configuredThinking = config[thinkingField];
+		const configuredThinking = config[thinkingField] ?? "";
 		const capability = capabilities[configuredModel];
 		if (
 			configuredThinking.length > 0 &&
