@@ -124,7 +124,8 @@ function startRoleSession(root, role, activeTools) {
 test("package manifest declares source extensions and exposes Khala commands", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	assert.equal(manifest.scripts.prepare, "npm run clean && npm run build");
-	assert.equal(manifest.devDependencies.typescript, "5.9.3");
+	assert.equal(manifest.dependencies.typescript, "5.9.3");
+	assert.equal(manifest.devDependencies.typescript, undefined);
 	assert.equal(manifest.dependencies["@earendil-works/pi-coding-agent"], "0.82.1");
 	assert.equal(manifest.dependencies["@earendil-works/pi-tui"], "0.82.1");
 	assert.equal(manifest.dependencies.typebox, "1.1.38");
