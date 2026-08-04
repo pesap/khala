@@ -107,6 +107,7 @@ function printUsage(): void {
 	console.log(`khala - configure Khala
 
 Usage:
+  khala [flags]
   khala setup [flags]
   khala --help
 
@@ -698,10 +699,6 @@ async function configure(options: SetupOptions): Promise<void> {
 
 async function main(args: string[] = process.argv.slice(2)): Promise<void> {
 	try {
-		if (args.length === 0) {
-			printUsage();
-			return;
-		}
 		const options = parseArgs(args);
 		if (options.help) {
 			printUsage();

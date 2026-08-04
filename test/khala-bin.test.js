@@ -19,12 +19,19 @@ function runKhala(args = []) {
 	return result;
 }
 
-test("bare Khala invocation shows command help without starting setup", () => {
+test("bare Khala invocation starts setup", () => {
 	const result = runKhala();
+
+	assert.equal(result.status, 2);
+	assert.match(result.stdout, /Khala setup/);
+	assert.match(result.stderr, /Non-interactive setup requires an explicit conclaveModel/);
+});
+
+test("help remains available without starting setup", () => {
+	const result = runKhala(["--help"]);
 
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /Usage:/);
-	assert.match(result.stdout, /khala setup \[flags\]/);
 	assert.equal(result.stderr, "");
 });
 
