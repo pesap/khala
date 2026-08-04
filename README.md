@@ -120,6 +120,7 @@ for an entity; the complete history remains available for review and recovery.
 ## Features
 
 - `/khala-work` loads the structured Work template.
+- `/git-review [scope]` performs a read-only, history-first repository inspection and produces an evidence-backed code-reading plan.
 - `/khala-triage` (also `/triage`) turns an issue into a WorkPacket, resolves uncertainty interactively, and sends approved Work to the Project Conclave.
 - A dedicated, persisted project Conclave reviews and admits submitted Work under Mandate revision one.
 - `/khala-demo` launches a three-lane lifecycle demonstration.
@@ -233,15 +234,15 @@ individual values in `.pi/khala.json`.
   "worktreeBranchPrefix": "khala/",
   "launcher": "zellij",
   "piCommand": ["pi", "--extension", "/path/to/khala"],
-  "observerPiCommand": ["pi", "--extension", "/path/to/khala"],
   "conclaveModel": "provider/model",
+  "conclaveThinking": "medium",
   "conclaveMaxCostUsdPerTurn": 0.25,
   "executorModel": "provider/model",
+  "executorThinking": "high",
   "executorMaxCostUsdPerTurn": 1.0,
   "oracleModel": "provider/model",
+  "oracleThinking": "high",
   "observerModel": "provider/model",
-  "conclaveThinking": "medium",
-  "executorThinking": "high",
   "observerThinking": "medium",
   "pullRequestTargetBranch": "main",
   "commitConvention": "project",
@@ -252,25 +253,32 @@ individual values in `.pi/khala.json`.
 `launcher` is `zellij`, `tmux`, or `herdr` and defaults to `zellij`. These
 launchers retain pane creation and focus behavior for read-only Observers; a
 Mission Executor is always a headless RPC child and has no pane target. Herdr
-requires `HERDR_ENV=1` and keeps the caller focused. Configured commands remain
-argument arrays; Herdr quotes them for its `pane run` shell command. Observer
-commands are restricted to Pi because Khala passes read-only capability flags.
+requires `HERDR_ENV=1` and keeps the caller focused. `piCommand` remains an
+argument array and is used for Executor, Observer, and Oracle child processes;
+Herdr quotes it for its `pane run` shell command. Oracle retains only safe shared
+process flags such as `--offline` and strips configured session, resource,
+prompt, model, and thinking arguments before applying its isolated role flags.
+Khala accepts only Pi child commands because each role receives Pi-specific
+capability and runtime flags.
 
 Run the setup wizard to choose explicit models. The four supervision model/cost
 fields are required: `conclaveModel`, `conclaveMaxCostUsdPerTurn`,
 `executorModel`, and `executorMaxCostUsdPerTurn`. `oracleModel` is also required
 for Oracle. There is no model inference or silent fallback to Pi settings,
-`piCommand`, another role's model, or the first discovered model. A configured
-Executor model is passed explicitly to headless RPC. `observerModel` may be
-empty only when the Observer command supplies its own model.
+another role's model, or the first discovered model. A configured Executor
+model is passed explicitly to headless RPC. `observerModel` may be empty only
+when `piCommand` supplies its own model. Setup groups each role's model and
+thinking selection, including the Oracle's thinking level.
 
 Trusted project precedence is typed and explicit: global `khala.json` is the
-base, and a trusted project's `.pi/khala.json` overrides matching fields. An
-untrusted project uses only global configuration. Typed `Work.costBudget`
+base, and a trusted project's `.pi/khala.json` stores only values that differ
+from the global configuration. Matching project fields override the global
+base; unchanged fields continue to inherit later global updates. An untrusted
+project uses only global configuration. Typed `Work.costBudget`
 values override the corresponding merged Conclave or Executor cost field;
 unset Work values use that explicit configuration field. No fallback changes
-these precedence rules. Thinking levels are independent per role and may be
-empty only to request Pi's explicit thinking default. Missing supervision
+these precedence rules. Thinking levels are independent per role, including
+Oracle, and may be empty only to request Pi's explicit thinking default. Missing supervision
 settings fail with setup guidance.
 
 If Work submission persists but the Conclave wake does not complete, Khala

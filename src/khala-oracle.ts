@@ -10,7 +10,9 @@ import type {
 import { getMarkdownTheme, keyHint } from "@earendil-works/pi-coding-agent";
 import { type Component, Markdown, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import type { PiCommand } from "./executor.js";
 import { loadKhalaConfig } from "./khala-config.js";
+import { isolateOraclePiCommand } from "./khala-pi-command.js";
 
 const ORACLE_PARAMETERS = Type.Object({
 	prompt: Type.String({
@@ -116,6 +118,7 @@ function runOracle(
 		return Promise.reject(new Error("A Khala Oracle model must be configured before running a review."));
 	}
 	const model = config.oracleModel;
+	const [command, ...commandArguments] = buildOracleCommand(config.piCommand, prompt, model, config.oracleThinking);
 	const startedAt = Date.now();
 	return new Promise((resolve, reject) => {
 		let cancelled = false;
@@ -126,8 +129,8 @@ function runOracle(
 			}
 		};
 		const child = execFile(
-			"pi",
-			buildOracleArguments(prompt, model),
+			command,
+			commandArguments,
 			{ cwd, maxBuffer: MAX_ORACLE_OUTPUT_LENGTH, timeout: ORACLE_TIMEOUT_MS, killSignal: "SIGTERM" },
 			(error, stdout, stderr) => {
 				cleanup();
@@ -152,20 +155,32 @@ function runOracle(
 	});
 }
 
-function buildOracleArguments(prompt: string, model: string): string[] {
-	return [
+function buildOracleArguments(prompt: string, model: string, thinkingLevel: string): string[] {
+	const args = [
 		"--no-session",
 		"--no-tools",
 		"--no-extensions",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-context-files",
 		"--model",
 		model,
-		"--thinking",
-		"high",
-		"--system-prompt",
-		ORACLE_SYSTEM_PROMPT,
-		"-p",
-		prompt,
 	];
+	if (thinkingLevel.length > 0) {
+		args.push("--thinking", thinkingLevel);
+	}
+	args.push("--system-prompt", ORACLE_SYSTEM_PROMPT, "-p", prompt);
+	return args;
+}
+
+function buildOracleCommand(
+	configuredCommand: PiCommand,
+	prompt: string,
+	model: string,
+	thinkingLevel: string,
+): PiCommand {
+	const [program, ...baseArguments] = isolateOraclePiCommand(configuredCommand);
+	return [program, ...baseArguments, ...buildOracleArguments(prompt, model, thinkingLevel)];
 }
 
 function parseOracleOutput(execution: OracleExecution): OracleDetails {
@@ -257,4 +272,11 @@ function formatOracleProcessError(error: Error, stderr: string): Error {
 }
 
 export type { OracleDetails, OracleExecution, OracleInput, OracleRunner };
-export { buildOracleArguments, createOracleTool, parseOracleOutput, registerKhalaOracle, runOracle };
+export {
+	buildOracleArguments,
+	buildOracleCommand,
+	createOracleTool,
+	parseOracleOutput,
+	registerKhalaOracle,
+	runOracle,
+};
