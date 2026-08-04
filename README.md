@@ -120,6 +120,7 @@ for an entity; the complete history remains available for review and recovery.
 ## Features
 
 - `/khala-work` loads the structured Work template.
+- `/git-review [scope]` performs a read-only, history-first repository inspection and produces an evidence-backed code-reading plan.
 - `/khala-triage` (also `/triage`) turns an issue into a WorkPacket, resolves uncertainty interactively, and sends approved Work to the Project Conclave.
 - A dedicated, persisted project Conclave reviews and admits submitted Work under Mandate revision one.
 - `/khala-demo` launches a three-lane lifecycle demonstration.
