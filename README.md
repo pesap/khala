@@ -170,15 +170,14 @@ Khala requires Node.js 22.19.0 or newer.
 pi install git:github.com/pesap/khala
 ```
 
-Run `npx --yes --silent github:pesap/khala setup` once to configure the
-launcher, worktree, Pi commands, and Archive paths. The wizard writes global
-settings to `~/.pi/agent/khala.json`; use
-`npx --yes --silent github:pesap/khala setup --project` for a project override.
-Use `npx --yes --silent github:pesap/khala setup --dry-run` to preview the
-resulting configuration. Run `npx --yes --silent github:pesap/khala` without a
-command to see CLI help. `--silent` hides npm installation diagnostics while
-preserving Khala output. GitHub `npx` installs run the TypeScript source directly
-and do not compile Khala during installation.
+Run `npx --yes --silent github:pesap/khala` once to open the setup
+questionnaire for the launcher, worktree, Pi commands, and Archive paths. The
+wizard writes global settings to `~/.pi/agent/khala.json`; use
+`npx --yes --silent github:pesap/khala --project` for a project override. Use
+`npx --yes --silent github:pesap/khala --dry-run` to preview the resulting
+configuration. The explicit `setup` command is equivalent. `--silent` hides npm
+installation diagnostics while preserving Khala output. GitHub `npx` installs
+run the TypeScript source directly and do not compile Khala during installation.
 
 ### From a checkout
 
