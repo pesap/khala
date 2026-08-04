@@ -123,9 +123,10 @@ function startRoleSession(root, role, activeTools) {
 
 test("package manifest declares source extensions and exposes Khala commands", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-	assert.equal(manifest.scripts.prepare, "npm run clean && npm run build");
-	assert.equal(manifest.dependencies.typescript, "5.9.3");
-	assert.equal(manifest.devDependencies.typescript, undefined);
+	assert.equal(manifest.scripts.prepare, undefined);
+	assert.equal(manifest.dependencies.jiti, "2.7.0");
+	assert.equal(manifest.dependencies.typescript, undefined);
+	assert.equal(manifest.devDependencies.typescript, "5.9.3");
 	assert.equal(manifest.dependencies["@earendil-works/pi-coding-agent"], "0.82.1");
 	assert.equal(manifest.dependencies["@earendil-works/pi-tui"], "0.82.1");
 	assert.equal(manifest.dependencies.typebox, "1.1.38");
@@ -139,7 +140,7 @@ test("package manifest declares source extensions and exposes Khala commands", (
 		assert.ok(readFileSync(new URL(`../${extensionPath}`, import.meta.url)).length > 0);
 	}
 	const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-	assert.match(readme, /npx --yes github:pesap\/khala/);
+	assert.match(readme, /npx --yes --silent github:pesap\/khala setup/);
 	assert.doesNotMatch(readme, /Rerun setup with `khala setup`/);
 	const pullRequestTemplate = readFileSync(new URL("../templates/pull-request.md", import.meta.url), "utf8");
 	assert.equal(pullRequestTemplate.includes("<!-- Work: <!--"), false);
@@ -264,7 +265,7 @@ test("Conclave recreation reports setup before scheduling recovery", async () =>
 		});
 		assert.equal(notifications.length, 1);
 		assert.equal(notifications[0].level, "error");
-		assert.match(notifications[0].message, /npx --yes github:pesap\/khala/);
+		assert.match(notifications[0].message, /npx --yes --silent github:pesap\/khala setup/);
 		assert.doesNotMatch(notifications[0].message, /pending Work recovery was scheduled/);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
@@ -940,7 +941,7 @@ test("Work wake diagnostics preserve recovery without assuming Executor state", 
 		{
 			recovery: "setup",
 			message: "Khala supervision configuration is incomplete or invalid.",
-			recoveryPattern: /npx --yes github:pesap\/khala/,
+			recoveryPattern: /npx --yes --silent github:pesap\/khala setup/,
 		},
 		{
 			recovery: "recreate",

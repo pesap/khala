@@ -170,12 +170,15 @@ Khala requires Node.js 22.19.0 or newer.
 pi install git:github.com/pesap/khala
 ```
 
-Run `npx --yes github:pesap/khala` once to configure the launcher, worktree,
-Pi commands, and Archive paths. The wizard writes global settings to
-`~/.pi/agent/khala.json`; use `npx --yes github:pesap/khala --project` for a
-project override. Use `npx --yes github:pesap/khala --dry-run` to preview the
-resulting configuration. GitHub `npx` installs build the setup entry before the
-CLI starts; no checkout-local build is required.
+Run `npx --yes --silent github:pesap/khala setup` once to configure the
+launcher, worktree, Pi commands, and Archive paths. The wizard writes global
+settings to `~/.pi/agent/khala.json`; use
+`npx --yes --silent github:pesap/khala setup --project` for a project override.
+Use `npx --yes --silent github:pesap/khala setup --dry-run` to preview the
+resulting configuration. Run `npx --yes --silent github:pesap/khala` without a
+command to see CLI help. `--silent` hides npm installation diagnostics while
+preserving Khala output. GitHub `npx` installs run the TypeScript source directly
+and do not compile Khala during installation.
 
 ### From a checkout
 
@@ -274,9 +277,10 @@ settings fail with setup guidance.
 If Work submission persists but the Conclave wake does not complete, Khala
 records a failed `conclave-wake` event, reports the Executor state as unknown,
 and leaves the Work available for inspection and recovery under the same ID. Run
-`npx --yes github:pesap/khala` first when configuration is missing, then run
-`/khala-recreate`. For a runtime outage with valid configuration, run
-`/khala-recreate` directly. Do not launch an unsupervised replacement agent.
+`npx --yes --silent github:pesap/khala setup` first when configuration is
+missing, then run `/khala-recreate`. For a runtime outage with valid
+configuration, run `/khala-recreate` directly. Do not launch an unsupervised
+replacement agent.
 
 Every Work enables Git push and the Executor-managed draft Pull Request
 workflow. The Executor must publish a reviewable Pull Request before Finish

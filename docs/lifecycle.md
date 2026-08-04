@@ -36,9 +36,10 @@ it is not admission. Each submission wake records durable `conclave-wake`
 evidence when the Archive is writable. A wake-evidence persistence failure is
 a hard error and remains distinct from whether the wake itself completed. If
 the wake fails, the tool reports an error, treats Executor state as unknown,
-and preserves the Work under the same ID for inspection and recovery. Missing configuration
-requires `npx --yes github:pesap/khala` before `/khala-recreate`; a configured
-runtime outage requires only `/khala-recreate`. An unsupervised direct-agent
+and preserves the Work under the same ID for inspection and recovery. Missing
+configuration requires `npx --yes --silent github:pesap/khala setup` before
+`/khala-recreate`; a configured runtime outage requires only `/khala-recreate`.
+An unsupervised direct-agent
 launch is not a recovery path.
 
 After a successful wake, the Conclave validates required terms and Work-scoped

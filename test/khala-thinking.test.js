@@ -73,7 +73,7 @@ test("invalid explicit configuration fails instead of silently using defaults", 
 			(error) => {
 				assert.equal(error instanceof KhalaConfigError, true);
 				assert.match(error.message, /launcher.*zellij.*tmux.*herdr/);
-				assert.match(error.message, /npx --yes github:pesap\/khala/);
+				assert.match(error.message, /npx --yes --silent github:pesap\/khala setup/);
 				return true;
 			},
 		);
@@ -112,7 +112,7 @@ test("missing supervision configuration fails with setup guidance", () => {
 		writeFileSync(join(root, "khala.json"), JSON.stringify({ conclaveModel: "provider/model" }));
 		assert.throws(
 			() => loadKhalaConfig(),
-			/Run `npx --yes github:pesap\/khala` to configure Khala/,
+			/Run `npx --yes --silent github:pesap\/khala setup` to configure Khala/,
 		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;

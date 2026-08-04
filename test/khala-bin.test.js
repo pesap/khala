@@ -1,99 +1,60 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-const projectRoot = new URL("../", import.meta.url);
+const projectRoot = fileURLToPath(new URL("../", import.meta.url));
+const projectBin = join(projectRoot, "bin", "khala.js");
 
-function createFixture(root, packagePath) {
-	mkdirSync(join(packagePath, "bin"), { recursive: true });
-	writeFileSync(join(packagePath, "package.json"), '{"type":"module"}\n');
-	copyFileSync(new URL("bin/khala.js", projectRoot), join(packagePath, "bin", "khala.js"));
-	copyFileSync(new URL("bin/ts-loader.js", projectRoot), join(packagePath, "bin", "ts-loader.js"));
-	return () => rmSync(root, { recursive: true, force: true });
-}
-
-function runBin(packagePath, args = [], env = process.env) {
-	return spawnSync(process.execPath, [join(packagePath, "bin", "khala.js"), ...args], {
+function runKhala(args = []) {
+	const root = mkdtempSync(join(tmpdir(), "khala-bin-"));
+	const result = spawnSync(process.execPath, [projectBin, ...args], {
 		encoding: "utf8",
-		env,
+		env: { ...process.env, PI_CODING_AGENT_DIR: join(root, "agent") },
 	});
+	rmSync(root, { recursive: true, force: true });
+	return result;
 }
 
-test("installed bin starts the compiled setup entry without a TypeScript loader", () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-bin-compiled-"));
-	const packagePath = join(root, "node_modules", "@pesap", "khala");
-	const cleanup = createFixture(root, packagePath);
-	try {
-		const compiledPath = join(packagePath, "dist", "src", "khala-setup.js");
-		mkdirSync(dirname(compiledPath), { recursive: true });
-		writeFileSync(compiledPath, 'console.log(`compiled:${process.argv.slice(2).join(",")}`);\n');
-		const result = runBin(packagePath, ["--help"]);
+test("bare Khala invocation shows command help without starting setup", () => {
+	const result = runKhala();
 
-		assert.equal(result.status, 0, result.stderr);
-		assert.equal(result.stdout.trim(), "compiled:--help");
-		assert.doesNotMatch(result.stderr, /experimental-loader|UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/);
-	} finally {
-		cleanup();
-	}
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /Usage:/);
+	assert.match(result.stdout, /khala setup \[flags\]/);
+	assert.equal(result.stderr, "");
 });
 
-test("installed bin fails actionably when compiled output is missing", () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-bin-missing-"));
-	const packagePath = join(root, "node_modules", "@pesap", "khala");
-	const cleanup = createFixture(root, packagePath);
-	try {
-		mkdirSync(join(packagePath, ".git"));
-		mkdirSync(join(packagePath, "src"));
-		writeFileSync(join(packagePath, "src", "khala-setup.ts"), 'console.log("source-loaded");\n');
-		const result = runBin(packagePath);
+test("explicit setup command exposes its help", () => {
+	const result = runKhala(["setup", "--help"]);
 
-		assert.equal(result.status, 1);
-		assert.equal(result.stdout, "");
-		assert.match(result.stderr, /compiled setup entry is missing/);
-		assert.doesNotMatch(result.stderr, /source-loaded|experimental-loader|UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/);
-	} finally {
-		cleanup();
-	}
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /The setup wizard writes khala\.json/);
+	assert.equal(result.stderr, "");
 });
 
-test("source checkout retains its TypeScript developer fallback", () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-bin-checkout-"));
-	const packagePath = join(root, "khala");
-	const cleanup = createFixture(root, packagePath);
-	try {
-		mkdirSync(join(packagePath, ".git"));
-		mkdirSync(join(packagePath, "src"));
-		writeFileSync(
-			join(packagePath, "src", "khala-setup.ts"),
-			'const mode: string = process.argv[2] ?? "none"; console.log(`source:${mode}`);\n',
-		);
-		const result = runBin(packagePath, ["--dry-run"], { ...process.env, NODE_NO_WARNINGS: "1" });
+test("invalid setup arguments fail with an actionable diagnostic", () => {
+	const result = runKhala(["setup", "--unknown"]);
 
-		assert.equal(result.status, 0, result.stderr);
-		assert.equal(result.stdout.trim(), "source:--dry-run");
-	} finally {
-		cleanup();
-	}
+	assert.equal(result.status, 2);
+	assert.equal(result.stdout, "");
+	assert.match(result.stderr, /khala: Unknown argument: --unknown/);
 });
 
-test("source checkout prefers current TypeScript over stale compiled setup", () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-bin-stale-"));
-	const packagePath = join(root, "khala");
-	const cleanup = createFixture(root, packagePath);
-	try {
-		mkdirSync(join(packagePath, ".git"));
-		mkdirSync(join(packagePath, "src"));
-		mkdirSync(join(packagePath, "dist", "src"), { recursive: true });
-		writeFileSync(join(packagePath, "src", "khala-setup.ts"), 'console.log("source-current");\n');
-		writeFileSync(join(packagePath, "dist", "src", "khala-setup.js"), 'console.log("compiled-stale");\n');
-		const result = runBin(packagePath, [], { ...process.env, NODE_NO_WARNINGS: "1" });
+test("package artifact ships the source-backed CLI without compiled output", () => {
+	const result = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+		cwd: projectRoot,
+		encoding: "utf8",
+	});
+	assert.equal(result.status, 0, result.stderr);
+	const [pack] = JSON.parse(result.stdout);
+	const paths = pack.files.map((file) => file.path);
 
-		assert.equal(result.status, 0, result.stderr);
-		assert.equal(result.stdout.trim(), "source-current");
-	} finally {
-		cleanup();
-	}
+	assert.ok(paths.includes("bin/khala.js"));
+	assert.ok(paths.includes("src/khala-setup.ts"));
+	assert.equal(paths.some((path) => path.startsWith("dist/")), false);
+	assert.equal(paths.includes("bin/ts-loader.js"), false);
 });
