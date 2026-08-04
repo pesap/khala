@@ -13,6 +13,7 @@ import { type Component, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { listArchiveRecords } from "./khala-archive.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
+import { readExecutorRecord } from "./khala-executor-registry.js";
 import type { KhalaArchiveRecord } from "./khala-model.js";
 import { isUserSessionRole, KhalaRole, type KhalaRoleValue } from "./khala-role.js";
 
@@ -28,7 +29,13 @@ type ArchiveReadParameterSchema = typeof ARCHIVE_READ_PARAMETERS | typeof USER_A
 type ArchiveReadParameters = Static<typeof ARCHIVE_READ_PARAMETERS>;
 type ArchiveReadDetails = Readonly<{ records: readonly KhalaArchiveRecord[] }>;
 type SessionRoleReader = (context: ExtensionContext) => KhalaRoleValue | null;
-type ExecutorBinding = Readonly<{ executionId: string; projectPath: string; workId: string }>;
+type ExecutorBinding = Readonly<{
+	executionId: string;
+	projectPath: string;
+	workId: string;
+	executorName?: string;
+	projectTrusted?: boolean;
+}>;
 
 function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRoleReader): void {
 	pi.registerTool(createArchiveReadTool(pi, readSessionRole, ARCHIVE_READ_PARAMETERS));
@@ -76,25 +83,38 @@ function executeArchiveRead(
 	let projectPath = context.cwd;
 	let boundExecutionId: string | undefined;
 	let boundWorkId: string | undefined;
+	let projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
 	if (role === KhalaRole.executor) {
 		const binding = readExecutorBinding(context);
 		const configuredProjectPath = pi.getFlag("khala-project-path");
 		if (
 			binding === undefined ||
 			(params.executionId !== undefined && params.executionId !== binding.executionId) ||
+			(params.workId !== undefined && params.workId !== binding.workId) ||
 			typeof configuredProjectPath !== "string" ||
+			configuredProjectPath.trim().length === 0 ||
 			resolve(configuredProjectPath) !== resolve(binding.projectPath)
 		) {
 			throw new Error("An Executor may only read its bound execution from the Archive.");
 		}
 		projectPath = resolve(binding.projectPath);
+		projectTrusted = binding.projectTrusted ?? projectTrusted;
+		const registeredExecution = readExecutorRecord(projectPath, binding.executionId, projectTrusted);
+		if (
+			registeredExecution === undefined ||
+			registeredExecution.kind !== "executor" ||
+			resolve(registeredExecution.projectPath) !== projectPath ||
+			registeredExecution.workId !== binding.workId ||
+			(binding.executorName !== undefined && registeredExecution.executorName !== binding.executorName)
+		) {
+			throw new Error("An Executor may only read its bound execution from the Archive.");
+		}
 		boundExecutionId = binding.executionId;
 		boundWorkId = binding.workId;
 	}
 	if (isUserSessionRole(role) && params.workId === undefined) {
 		throw new Error("A User must specify a workId when reading the Archive.");
 	}
-	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
 	const records = listArchiveRecords(projectPath, projectTrusted).filter((record) =>
 		isVisibleArchiveRecord(record, { params, projectPath, boundWorkId, boundExecutionId }),
 	);
@@ -281,20 +301,58 @@ function formatArchiveCounts(counts: ReadonlyMap<string, number>): string {
 }
 
 function readExecutorBinding(context: ExtensionContext): ExecutorBinding | undefined {
-	let binding: ExecutorBinding | undefined;
 	for (const entry of [...context.sessionManager.getBranch()].reverse()) {
 		if (entry.type === "custom" && entry.customType === KhalaEntryType.executor) {
-			const data = entry.data as { executionId?: unknown; projectPath?: unknown; workId?: unknown };
-			if (
-				typeof data.executionId === "string" &&
-				typeof data.projectPath === "string" &&
-				typeof data.workId === "string" &&
-				data.projectPath.length > 0
-			) {
-				binding = { executionId: data.executionId, projectPath: data.projectPath, workId: data.workId };
-				break;
+			const binding = parseExecutorBinding(entry.data);
+			if (binding !== undefined) {
+				return binding;
 			}
 		}
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy strict return analysis when no marker is valid.
+	return undefined;
+}
+
+function parseExecutorBinding(input: unknown): ExecutorBinding | undefined {
+	if (typeof input !== "object" || input === null) {
+		return;
+	}
+	const data = input as {
+		executionId?: unknown;
+		projectPath?: unknown;
+		workId?: unknown;
+		executorName?: unknown;
+		projectTrusted?: unknown;
+	};
+	if (
+		typeof data.executionId !== "string" ||
+		data.executionId.trim().length === 0 ||
+		typeof data.projectPath !== "string" ||
+		data.projectPath.trim().length === 0 ||
+		typeof data.workId !== "string" ||
+		data.workId.trim().length === 0 ||
+		(data.executorName !== undefined &&
+			(typeof data.executorName !== "string" || data.executorName.trim().length === 0)) ||
+		(data.projectTrusted !== undefined && typeof data.projectTrusted !== "boolean")
+	) {
+		return;
+	}
+	const binding: {
+		executionId: string;
+		projectPath: string;
+		workId: string;
+		executorName?: string;
+		projectTrusted?: boolean;
+	} = {
+		executionId: data.executionId,
+		projectPath: data.projectPath,
+		workId: data.workId,
+	};
+	if (data.executorName !== undefined) {
+		binding.executorName = data.executorName;
+	}
+	if (data.projectTrusted !== undefined) {
+		binding.projectTrusted = data.projectTrusted;
 	}
 	return binding;
 }
