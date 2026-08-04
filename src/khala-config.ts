@@ -62,7 +62,7 @@ class KhalaConfigError extends Error {
 
 // The config shape follows the package's GitHub release version; it does not carry a separate persisted version.
 const CONFIG_FILE_NAME = "khala.json";
-const KHALA_SETUP_COMMAND = "npx --yes github:pesap/khala";
+const KHALA_SETUP_COMMAND = "npx --yes --silent github:pesap/khala setup";
 const PI_COMMAND_SUFFIX_PATTERN = /\.(cmd|exe)$/i;
 const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	worktreeRoot: join(homedir(), "worktrees"),
