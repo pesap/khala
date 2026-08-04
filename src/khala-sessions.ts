@@ -214,29 +214,44 @@ function buildSessionList(
 			isCurrent: isCurrentSession(userPath, currentPath),
 		},
 	];
+	const archive = createArchiveSnapshot(context.cwd, projectTrusted);
+	const latestConclaveWake = archive.latestUnresolvedConclaveWake();
 
-	if (conclavePath !== undefined && existsSync(conclavePath)) {
-		const conclaveState = getPersistedSessionState(conclavePath, "Conclave");
+	if ((conclavePath !== undefined && existsSync(conclavePath)) || latestConclaveWake?.status === "failed") {
+		let conclaveState = getPersistedSessionState(conclavePath ?? "", "Conclave");
+		let conclaveTask = "Work governance";
+		if (latestConclaveWake?.status === "failed") {
+			conclaveState = KhalaSessionState.failed;
+			conclaveTask = latestConclaveWake.failure ?? "Conclave wake failed";
+		}
+		let conclaveAction = "context switch";
+		let conclaveDisplayOnly = false;
+		if (latestConclaveWake?.status === "failed") {
+			conclaveAction = "run /khala-recreate";
+			if (latestConclaveWake.recovery === "setup") {
+				conclaveAction = "run setup";
+			}
+			conclaveDisplayOnly = true;
+		}
 		sessions.push({
 			id: "conclave",
 			name: "Conclave",
 			role: "Conclave",
 			state: conclaveState,
 			stateLabel: getSessionStateLabel(conclaveState),
-			action: "context switch",
-			displayOnly: false,
+			action: conclaveAction,
+			displayOnly: conclaveDisplayOnly,
 			age: "now",
-			task: "Work governance",
+			task: conclaveTask,
 			identity: "conclave",
-			session: conclavePath,
+			session: conclavePath ?? "unavailable",
 			skills: ["work-management", "verdict-issuing"],
-			sessionPath: conclavePath,
-			sessionPathLabel: formatSessionPath(conclavePath, context.cwd),
-			isCurrent: currentPath === conclavePath,
+			sessionPath: conclavePath ?? "",
+			sessionPathLabel: formatSessionPath(conclavePath ?? "", context.cwd),
+			isCurrent: conclavePath !== undefined && currentPath === conclavePath,
 		});
 	}
 
-	const archive = createArchiveSnapshot(context.cwd, projectTrusted);
 	let missions = [] as ReturnType<typeof projectMissions>[number]["mission"][];
 	try {
 		missions = projectMissions(context.cwd, projectTrusted).map((projection) => projection.mission);

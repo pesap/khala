@@ -4,10 +4,12 @@
 // biome-ignore-all lint/style/noContinue: Projection filtering keeps inactive bindings out of the active result.
 import { listArchiveRecords } from "./khala-archive.js";
 import {
+	type ConclaveWakeRecord,
 	type CoordinationRecord,
 	type ExecutorRecord,
 	type InterventionIssuanceRecord,
 	type InterventionOutcomeRecord,
+	isConclaveWakeRecord,
 	isCoordinationRecord,
 	isExecutorRecord,
 	isInterventionRecord,
@@ -36,6 +38,7 @@ import {
 type MissionProjectionState = "current" | "superseded" | "finished" | "rejected" | "retry-pending";
 type ArchiveSnapshot = Readonly<{
 	listRecords: () => readonly KhalaArchiveRecord[];
+	latestUnresolvedConclaveWake: () => ConclaveWakeRecord | undefined;
 	listExecutions: () => ExecutorRecord[];
 	listSignals: () => SignalRecord[];
 	listPullRequests: () => PullRequestRecord[];
@@ -72,6 +75,7 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 	const records = listArchiveRecords(projectPath, projectTrusted);
 	return {
 		listRecords: () => records,
+		latestUnresolvedConclaveWake: () => findLatestUnresolvedConclaveWake(records),
 		listExecutions: () => projectRecordsFromRecords(records, "execution", isExecutorRecord),
 		listSignals: () => projectRecordsFromRecords(records, "signal", isSignal),
 		listPullRequests: () => projectRecordsFromRecords(records, "pull-request", isPullRequestRecord),
@@ -79,6 +83,25 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 		listCoordinations: () => projectRecordsFromRecords(records, "coordination", isCoordinationRecord),
 		listInterventions: () => projectRecordsFromRecords(records, "intervention", isInterventionRecord),
 	};
+}
+
+function findLatestUnresolvedConclaveWake(records: readonly KhalaArchiveRecord[]): ConclaveWakeRecord | undefined {
+	const seenWorkIds = new Set<string>();
+	for (let index = records.length - 1; index >= 0; index -= 1) {
+		const record = records[index];
+		if (record?.type !== "conclave-wake" || !isConclaveWakeRecord(record.payload)) {
+			continue;
+		}
+		if (seenWorkIds.has(record.workId)) {
+			continue;
+		}
+		seenWorkIds.add(record.workId);
+		if (record.payload.status === "failed") {
+			return record.payload;
+		}
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy strict return analysis when no failure remains.
+	return undefined;
 }
 
 function listSubmissionRecords(projectPath: string, projectTrusted = false): KhalaWorkSubmission[] {

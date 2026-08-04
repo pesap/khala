@@ -136,8 +136,11 @@ for an entity; the complete history remains available for review and recovery.
 
 `khala_oracle` runs a bounded fresh-context read-only review. Its findings are advisory and do not mutate Khala state.
 
-Khala exposes these custom Pi tools. Role restrictions are enforced at runtime;
-normal User sessions have no explicit Khala role marker.
+Khala registers these custom Pi tools but activates only the allowlist for the
+current role, intersected with Pi's current tool inventory so explicit tool
+exclusions remain effective. Runtime authorization remains a defense-in-depth
+check. A normal session without an explicit role marker is treated as a User
+session.
 
 | Tool | Purpose | Authorized role |
 | --- | --- | --- |
@@ -171,7 +174,8 @@ Run `npx --yes github:pesap/khala` once to configure the launcher, worktree,
 Pi commands, and Archive paths. The wizard writes global settings to
 `~/.pi/agent/khala.json`; use `npx --yes github:pesap/khala --project` for a
 project override. Use `npx --yes github:pesap/khala --dry-run` to preview the
-resulting configuration.
+resulting configuration. GitHub `npx` installs build the setup entry before the
+CLI starts; no checkout-local build is required.
 
 ### From a checkout
 
@@ -266,6 +270,13 @@ unset Work values use that explicit configuration field. No fallback changes
 these precedence rules. Thinking levels are independent per role and may be
 empty only to request Pi's explicit thinking default. Missing supervision
 settings fail with setup guidance.
+
+If Work submission persists but the Conclave wake does not complete, Khala
+records a failed `conclave-wake` event, reports the Executor state as unknown,
+and leaves the Work available for inspection and recovery under the same ID. Run
+`npx --yes github:pesap/khala` first when configuration is missing, then run
+`/khala-recreate`. For a runtime outage with valid configuration, run
+`/khala-recreate` directly. Do not launch an unsupervised replacement agent.
 
 Every Work enables Git push and the Executor-managed draft Pull Request
 workflow. The Executor must publish a reviewable Pull Request before Finish

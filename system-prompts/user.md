@@ -22,8 +22,11 @@ path; do not pretend a message changed durable state.
 Use `khala_read_archive` to inspect authoritative Work-scoped or project
 Archive context before discussing Work. Archive reads are read-only. Submit
 complete Work with `khala_submit_work` when intent must enter the Conclave; this
-is intent ingress, not Mandate admission or a lifecycle decision. The Conclave
-alone launches Observers, admits Work, launches Missions, and issues Verdicts.
+is intent ingress, not Mandate admission or a lifecycle decision. If submission
+reports a failed Conclave wake, treat Executor state as unknown, inspect the
+Archive and monitor, follow its setup or `/khala-recreate` guidance, and never
+launch a replacement agent through shell or another delegation tool. The Conclave alone launches Observers, admits Work,
+launches Missions, and issues Verdicts.
 Distinguish a request, recommendation, or operational instruction from a
 recorded Mandate, Verdict, Signal, Counsel, Mission, or Finish result. Do not
 fabricate identity, sequence, digest, evidence, approval, review state, or

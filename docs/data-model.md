@@ -11,9 +11,9 @@ Every current record contains `recordId`, `schemaVersion: 2`, `type`, resolved
 is present when the record is execution-bound. Current record types are:
 
 ```text
-submission, mandate, mission, execution, signal, verdict,
-verdict-delivery, learning, counsel, pull-request, work-outcome,
-coordination, intervention
+submission, conclave-wake, mandate, mission, execution, signal,
+verdict, verdict-delivery, learning, counsel, pull-request,
+work-outcome, coordination, intervention
 ```
 
 Append order is the historical authority. Timestamps do not repair ordering.
@@ -27,6 +27,13 @@ and invalid typed payloads fail closed rather than projecting as empty state.
   `acceptanceCriteria`, `constraints`, `plan`, `validation`, optional typed
   positive `costBudget`), project, Archive path, and current submission status
   (`queued`, `reviewing`, `admitted`, or `rejected`).
+- **Conclave Wake**: durable attention-transport evidence for one submitted
+  Work. Each persisted attempt records `woken` or `failed`; failures retain the
+  exact diagnostic and whether recovery requires setup or Conclave recreation.
+  The payload and envelope must bind the same submitted Work, and wake IDs may
+  not repeat. A failed wake does not imply admission or an Executor launch. If
+  evidence cannot be persisted, the submission returns a distinct hard error
+  without reinterpreting whether the wake completed.
 - **Mandate**: `mandateId`, `workId`, positive `revision`, source submission
   `recordId`, immutable copied `terms`, admitting Conclave participant, and
   `admittedAt`. Current admission creates revision one.

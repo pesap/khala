@@ -53,7 +53,7 @@
     "build": "tsc",
     "check": "biome check src extensions/pi-review && tsc --noEmit",
     "dev": "tsc --watch",
-    "prepack": "npm run clean && npm run build",
+    "prepare": "npm run clean && npm run build",
     "test": "npm run build && node --test test/*.js"
   },
   "engines": {
@@ -67,13 +67,13 @@
   },
   "dependencies": {
     "@clack/prompts": "1.7.0",
-    "nanoid": "6.0.0"
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
+    "nanoid": "6.0.0",
+    "typebox": "1.1.38"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.4",
-    "@earendil-works/pi-coding-agent": "0.82.1",
-    "@earendil-works/pi-tui": "0.82.1",
-    "typebox": "1.1.38",
     "typescript": "5.9.3"
   },
   "peerDependencies": {
