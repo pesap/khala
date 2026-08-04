@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { buildPiArguments } from "../dist/src/executor.js";
-import { loadKhalaConfig } from "../dist/src/khala-config.js";
+import { KhalaConfigError, loadKhalaConfig } from "../dist/src/khala-config.js";
 import { thinkingChoices } from "../dist/src/khala-setup.js";
 import { runOracle } from "../dist/src/khala-oracle.js";
 import { getSupportedThinkingLevels, isSupportedThinkingLevel } from "../dist/src/khala-thinking.js";
@@ -68,7 +68,15 @@ test("invalid explicit configuration fails instead of silently using defaults", 
 	process.env.PI_CODING_AGENT_DIR = root;
 	try {
 		writeFileSync(join(root, "khala.json"), JSON.stringify({ launcher: "not-a-launcher" }));
-		assert.throws(() => loadKhalaConfig(), /launcher.*zellij.*tmux.*herdr/);
+		assert.throws(
+			() => loadKhalaConfig(),
+			(error) => {
+				assert.equal(error instanceof KhalaConfigError, true);
+				assert.match(error.message, /launcher.*zellij.*tmux.*herdr/);
+				assert.match(error.message, /npx --yes github:pesap\/khala/);
+				return true;
+			},
+		);
 		writeFileSync(
 			join(root, "khala.json"),
 			JSON.stringify({
@@ -102,7 +110,10 @@ test("missing supervision configuration fails with setup guidance", () => {
 	process.env.PI_CODING_AGENT_DIR = root;
 	try {
 		writeFileSync(join(root, "khala.json"), JSON.stringify({ conclaveModel: "provider/model" }));
-		assert.throws(() => loadKhalaConfig(), /Rerun setup/);
+		assert.throws(
+			() => loadKhalaConfig(),
+			/Run `npx --yes github:pesap\/khala` to configure Khala/,
+		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

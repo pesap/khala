@@ -1,4 +1,5 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Configuration parsing keeps inheritance and diagnostics in one module.
+// biome-ignore-all lint/style/noExcessiveClassesPerFile: The base and supervision-specific diagnostics form one configuration error hierarchy.
 // biome-ignore-all lint/security/noSecrets: Config field names resemble credential identifiers but contain no secrets.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -48,9 +49,34 @@ interface KhalaConfig {
 }
 
 type ConfigValues = Record<string, unknown>;
+type ErrorCauseOptions = Readonly<{ cause?: unknown }>;
+
+class KhalaConfigError extends Error {
+	readonly cause: unknown;
+
+	constructor(message: string, options?: ErrorCauseOptions) {
+		super(message);
+		this.name = "KhalaConfigError";
+		this.cause = options?.cause;
+	}
+}
+
+class KhalaSupervisionConfigError extends KhalaConfigError {
+	readonly missingFields: readonly string[];
+
+	constructor(missingFields: readonly string[]) {
+		super(
+			`Khala supervision configuration is incomplete or invalid (${missingFields.join(", ")}). ` +
+				`Run \`${KHALA_SETUP_COMMAND}\` to configure Khala.`,
+		);
+		this.name = "KhalaSupervisionConfigError";
+		this.missingFields = [...missingFields];
+	}
+}
 
 // The config shape follows the package's GitHub release version; it does not carry a separate persisted version.
 const CONFIG_FILE_NAME = "khala.json";
+const KHALA_SETUP_COMMAND = "npx --yes github:pesap/khala";
 const PI_COMMAND_SUFFIX_PATTERN = /\.(cmd|exe)$/i;
 const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	worktreeRoot: join(homedir(), "worktrees"),
@@ -76,14 +102,27 @@ function getDefaultConfig(): KhalaConfig {
 }
 
 function loadKhalaConfig(projectPath?: string, projectTrusted = false, requireSupervision = true): KhalaConfig {
-	let config = applyConfig(getDefaultConfig(), readConfigFile(getKhalaConfigPath(ConfigScope.global)));
-	if (projectPath !== undefined && projectTrusted) {
-		config = applyConfig(config, readConfigFile(getKhalaConfigPath(ConfigScope.project, projectPath)));
+	try {
+		let config = applyConfig(getDefaultConfig(), readConfigFile(getKhalaConfigPath(ConfigScope.global)));
+		if (projectPath !== undefined && projectTrusted) {
+			config = applyConfig(config, readConfigFile(getKhalaConfigPath(ConfigScope.project, projectPath)));
+		}
+		if (requireSupervision) {
+			validateRequiredSupervisionConfig(config);
+		}
+		return config;
+	} catch (error) {
+		if (error instanceof KhalaConfigError) {
+			throw error;
+		}
+		let message = String(error);
+		if (error instanceof Error) {
+			({ message } = error);
+		}
+		throw new KhalaConfigError(`${message} Run \`${KHALA_SETUP_COMMAND}\` to repair Khala configuration.`, {
+			cause: error,
+		});
 	}
-	if (requireSupervision) {
-		validateRequiredSupervisionConfig(config);
-	}
-	return config;
 }
 
 function getKhalaConfigPath(scope: ConfigScopeValue, projectPath?: string): string {
@@ -347,9 +386,7 @@ function validateRequiredSupervisionConfig(config: KhalaConfig): void {
 		missing.push("executorMaxCostUsdPerTurn");
 	}
 	if (missing.length > 0) {
-		throw new Error(
-			`Khala supervision configuration is incomplete or invalid (${missing.join(", ")}). Rerun setup with \`khala setup\`.`,
-		);
+		throw new KhalaSupervisionConfigError(missing);
 	}
 }
 
@@ -406,6 +443,9 @@ export {
 	assertObserverPiCommand,
 	ConfigScope,
 	getKhalaConfigPath,
+	KHALA_SETUP_COMMAND,
+	KhalaConfigError,
+	KhalaSupervisionConfigError,
 	LauncherName,
 	loadKhalaConfig,
 	resolveEffectiveWorkBudget,

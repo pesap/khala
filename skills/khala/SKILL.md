@@ -90,6 +90,12 @@ standalone materialization tool.
 - `khala_read_archive`: role-filtered authoritative reads.
 - `khala_counsel`: Preserver advisory evidence.
 
+Each session activates only its role-authorized Khala tools; runtime role checks
+remain a defense-in-depth boundary. After a failed Work-submission wake, treat
+Executor state as unknown and inspect the Archive and monitor. Follow the
+reported setup or `/khala-recreate` path; do not bypass Khala with a direct
+agent process.
+
 Supervision action IDs are deterministic from the assessment ID, action kind,
 and ordinal. Tool calls are the only controls; prose, labels, transcripts, and
 model suggestions have no control effect. Mandatory stops abort and settle the

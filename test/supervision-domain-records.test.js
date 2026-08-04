@@ -108,7 +108,7 @@ test("required supervision config inherits trusted project overrides without Pi 
 		assert.equal(config.executorModel, "provider/project-executor");
 		assert.equal(config.executorMaxCostUsdPerTurn, 2);
 		process.env.PI_CODING_AGENT_DIR = join(root, "empty-agent");
-		assert.throws(() => loadKhalaConfig(undefined, false), /Rerun setup/);
+		assert.throws(() => loadKhalaConfig(undefined, false), /npx --yes github:pesap\/khala/);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

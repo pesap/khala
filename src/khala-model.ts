@@ -9,6 +9,7 @@
 type ArchiveSchemaVersion = 1 | 2;
 type ArchiveRecordType =
 	| "submission"
+	| "conclave-wake"
 	| "execution"
 	| "signal"
 	| "counsel"
@@ -80,6 +81,7 @@ type WorkSubmissionStatusValue = (typeof WorkSubmissionStatus)[keyof typeof Work
 const KhalaWorkEntryStatus = {
 	draft: "draft",
 	queued: "queued",
+	blocked: "blocked",
 	launched: "launched",
 } as const;
 
@@ -104,6 +106,21 @@ type KhalaWorkSubmission = Readonly<{
 	mandateId?: string;
 	reviewAttemptId?: string;
 	rejectionReason?: string;
+}>;
+
+const ConclaveWakeStatus = {
+	woken: "woken",
+	failed: "failed",
+} as const;
+type ConclaveWakeStatusValue = (typeof ConclaveWakeStatus)[keyof typeof ConclaveWakeStatus];
+type ConclaveWakeRecovery = "setup" | "recreate";
+type ConclaveWakeRecord = Readonly<{
+	wakeId: string;
+	workId: string;
+	status: ConclaveWakeStatusValue;
+	attemptedAt: string;
+	failure?: string;
+	recovery?: ConclaveWakeRecovery;
 }>;
 
 // --- Mandates and Missions --------------------------------------------------
@@ -470,6 +487,10 @@ type GuardRecord = Record<string, unknown> &
 		packageVersion?: unknown;
 		promptSha256?: unknown;
 		workId?: unknown;
+		wakeId?: unknown;
+		attemptedAt?: unknown;
+		failure?: unknown;
+		recovery?: unknown;
 		projectPath?: unknown;
 		status?: unknown;
 		work?: unknown;
@@ -613,6 +634,7 @@ function isNonEmptyStringArray(value: unknown): value is readonly string[] {
 function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 	return (
 		value === "submission" ||
+		value === "conclave-wake" ||
 		value === "execution" ||
 		value === "signal" ||
 		value === "counsel" ||
@@ -667,6 +689,7 @@ function isArchiveRecord(value: unknown): value is KhalaArchiveRecord {
 function isImplicitV2ArchiveRecordType(type: ArchiveRecordType): boolean {
 	return (
 		type === "verdict-delivery" ||
+		type === "conclave-wake" ||
 		type === "mandate" ||
 		type === "mission" ||
 		type === "pull-request" ||
@@ -697,6 +720,9 @@ function isArchivePayloadLegacy(type: ArchiveRecordType, payload: unknown): bool
 }
 
 function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean {
+	if (type === "conclave-wake") {
+		return isConclaveWakeRecord(payload);
+	}
 	if (type === "coordination") {
 		return isCoordinationRecord(payload);
 	}
@@ -844,6 +870,23 @@ function isV2WorkSubmission(value: unknown): value is KhalaWorkSubmission {
 		return typeof record.rejectionReason === "string";
 	}
 	return true;
+}
+
+function isConclaveWakeRecord(value: unknown): value is ConclaveWakeRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	if (
+		!(isNonEmptyString(record.wakeId) && isNonEmptyString(record.workId) && isNonEmptyString(record.attemptedAt)) ||
+		(record.status !== ConclaveWakeStatus.woken && record.status !== ConclaveWakeStatus.failed)
+	) {
+		return false;
+	}
+	if (record.status === ConclaveWakeStatus.woken) {
+		return record.failure === undefined && record.recovery === undefined;
+	}
+	return isNonEmptyString(record.failure) && (record.recovery === "setup" || record.recovery === "recreate");
 }
 
 function isExecutorRecord(value: unknown): value is ExecutorRecord {
@@ -1467,7 +1510,24 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 	>();
 	const interventionGroups = new Map<string, { issuance: boolean; outcome: boolean; identity: string }>();
 	const coordinationInvalidations = new Map<string, CoordinationRecord>();
+	const submissionWorkIds = new Set<string>();
+	const wakeIds = new Set<string>();
 	for (const record of records) {
+		if (record.type === "submission" && isWorkSubmission(record.payload)) {
+			if (record.payload.workId !== record.workId) {
+				throw new Error(`Submission ${record.recordId} has inconsistent Archive bindings.`);
+			}
+			submissionWorkIds.add(record.workId);
+		}
+		if (record.type === "conclave-wake" && isConclaveWakeRecord(record.payload)) {
+			if (record.payload.workId !== record.workId || !submissionWorkIds.has(record.workId)) {
+				throw new Error(`Conclave wake ${record.payload.wakeId} has inconsistent Archive bindings.`);
+			}
+			if (wakeIds.has(record.payload.wakeId)) {
+				throw new Error(`Conclave wake ${record.payload.wakeId} is duplicated.`);
+			}
+			wakeIds.add(record.payload.wakeId);
+		}
 		if (record.type === "coordination" && isCoordinationRecord(record.payload)) {
 			const coordination = record.payload;
 			if (
@@ -1591,6 +1651,9 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 export type {
 	ArchiveRecordType,
 	ArchiveSchemaVersion,
+	ConclaveWakeRecord,
+	ConclaveWakeRecovery,
+	ConclaveWakeStatusValue,
 	CoordinationClassification,
 	CoordinationDependent,
 	CoordinationPhase,
@@ -1634,8 +1697,10 @@ export type {
 	WorkSubmissionStatusValue,
 };
 export {
+	ConclaveWakeStatus,
 	ExecutorStatus,
 	isArchiveRecord,
+	isConclaveWakeRecord,
 	isCoordinationClassification,
 	isCoordinationRecord,
 	isCounselRecord,

@@ -17,12 +17,12 @@ import {
 import { nanoid } from "nanoid";
 import packageMetadata from "../package.json" with { type: "json" };
 import { buildPiArguments, disposeHeadlessRuntimes, getHeadlessRuntime, recoverHeadlessExecutor } from "./executor.js";
-import { listArchiveRecords } from "./khala-archive.js";
+import { appendArchiveRecord, listArchiveRecords } from "./khala-archive.js";
 import { listSignalRecords } from "./khala-archive-projections.js";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
 import type { ConclaveStorage } from "./khala-conclave-storage.js";
 import { createFileConclaveStorage } from "./khala-conclave-storage-file.js";
-import { loadKhalaConfig } from "./khala-config.js";
+import { KhalaConfigError, loadKhalaConfig } from "./khala-config.js";
 import { formatError } from "./khala-error.js";
 import { createConfiguredExecutorStarter, sendConfiguredExecutorMessage } from "./khala-executor.js";
 import {
@@ -33,6 +33,7 @@ import {
 	writeExecutorRecord,
 } from "./khala-executor-registry.js";
 import {
+	type ConclaveWakeRecovery,
 	type ExecutorRecord,
 	ExecutorStatus,
 	type LearningRecord,
@@ -60,7 +61,25 @@ import { isSupportedThinkingLevel } from "./khala-thinking.js";
 import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delivery.js";
 import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
-type ConclaveWakeStatus = "woken" | "deferred" | "error";
+type ConclaveWakeResultStatus = "woken" | "deferred" | "error" | "evidence-error";
+type ErrorCauseOptions = Readonly<{ cause?: unknown }>;
+class ConclaveWakeEvidenceError extends Error {
+	readonly cause: unknown;
+	readonly wakeCompleted: boolean;
+	readonly recovery: ConclaveWakeRecovery;
+
+	constructor(wakeCompleted: boolean, options: ErrorCauseOptions, recovery: ConclaveWakeRecovery, wakeError: unknown) {
+		let outcome = `The Conclave wake failed: ${formatError(wakeError)}`;
+		if (wakeCompleted) {
+			outcome = "The Conclave wake completed";
+		}
+		super(`${outcome}, but its Archive evidence could not be persisted: ${formatError(options.cause)}`);
+		this.name = "ConclaveWakeEvidenceError";
+		this.cause = options.cause;
+		this.wakeCompleted = wakeCompleted;
+		this.recovery = recovery;
+	}
+}
 const CONCLAVE_PARTICIPANT_HASH_LENGTH = 16;
 const CONCLAVE_BASE_TOOL_ALLOWLIST = [
 	"khala_read_archive",
@@ -84,8 +103,10 @@ const CONCLAVE_TOOL_ALLOWLIST = [
 type ConclaveCoordinator = Readonly<{
 	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => Promise<{
 		archivePath: string;
-		wakeStatus: ConclaveWakeStatus;
+		wakeStatus: ConclaveWakeResultStatus;
 		wakeError?: string;
+		wakeRecovery?: ConclaveWakeRecovery;
+		wakeCompleted?: boolean;
 	}>;
 	resume: (projectPath: string, projectTrusted?: boolean) => void;
 	wakeSignal: (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void>;
@@ -127,13 +148,15 @@ function createConclaveCoordinator(
 		request: WorkSubmissionRequest & { projectTrusted?: boolean },
 	): Promise<{
 		archivePath: string;
-		wakeStatus: ConclaveWakeStatus;
+		wakeStatus: ConclaveWakeResultStatus;
 		wakeError?: string;
+		wakeRecovery?: ConclaveWakeRecovery;
+		wakeCompleted?: boolean;
 	}> => {
 		const projectPath = resolve(request.projectPath);
 		const queued = storage.submit({ ...request, projectPath });
 		try {
-			await wakeConclave({
+			await wakeWorkSubmission({
 				projectPath,
 				projectTrusted: request.projectTrusted ?? false,
 				workId: request.workId,
@@ -145,10 +168,20 @@ function createConclaveCoordinator(
 			});
 			return { ...queued, wakeStatus: "woken" };
 		} catch (error) {
+			if (error instanceof ConclaveWakeEvidenceError) {
+				return {
+					...queued,
+					wakeStatus: "evidence-error",
+					wakeError: error.message,
+					wakeRecovery: error.recovery,
+					wakeCompleted: error.wakeCompleted,
+				};
+			}
 			return {
 				...queued,
 				wakeStatus: "error",
 				wakeError: formatError(error),
+				wakeRecovery: conclaveWakeRecovery(error),
 			};
 		}
 	};
@@ -279,6 +312,63 @@ interface WakeRequest {
 	runtimes: Map<string, Promise<ConclaveRuntime>>;
 	disposed?: () => boolean;
 }
+type SubmissionWakeRequest = WakeRequest & Readonly<{ workId: string; archivePath: string }>;
+
+async function wakeWorkSubmission(request: SubmissionWakeRequest): Promise<void> {
+	const attemptedAt = new Date().toISOString();
+	const wakeId = nanoid();
+	try {
+		await wakeConclave(request);
+	} catch (error) {
+		const recovery = conclaveWakeRecovery(error);
+		try {
+			appendArchiveRecord(
+				request.projectPath,
+				{
+					schemaVersion: 2,
+					type: "conclave-wake",
+					workId: request.workId,
+					payload: {
+						wakeId,
+						workId: request.workId,
+						status: "failed",
+						attemptedAt,
+						failure: formatError(error),
+						recovery,
+					},
+				},
+				request.projectTrusted,
+			);
+		} catch (evidenceError) {
+			throw new ConclaveWakeEvidenceError(false, { cause: evidenceError }, recovery, error);
+		}
+		throw error;
+	}
+	try {
+		appendArchiveRecord(
+			request.projectPath,
+			{
+				schemaVersion: 2,
+				type: "conclave-wake",
+				workId: request.workId,
+				payload: { wakeId, workId: request.workId, status: "woken", attemptedAt },
+			},
+			request.projectTrusted,
+		);
+	} catch (evidenceError) {
+		throw new ConclaveWakeEvidenceError(true, { cause: evidenceError }, "recreate", undefined);
+	}
+}
+
+function conclaveWakeRecovery(error: unknown): ConclaveWakeRecovery {
+	if (error instanceof ConclaveWakeEvidenceError) {
+		return error.recovery;
+	}
+	if (error instanceof KhalaConfigError) {
+		return "setup";
+	}
+	return "recreate";
+}
 
 async function wakeConclave(request: WakeRequest): Promise<void> {
 	if (request.disposed?.() === true) {
@@ -389,8 +479,8 @@ async function getExistingRuntime(
 	}
 }
 
-function scheduleConclaveWake(request: WakeRequest): undefined {
-	wakeConclave(request).catch(() => undefined);
+function scheduleConclaveWake(request: SubmissionWakeRequest): undefined {
+	wakeWorkSubmission(request).catch(() => undefined);
 }
 
 function enqueueConclaveWake(runtime: ConclaveRuntime, operation: () => Promise<void>): Promise<void> {

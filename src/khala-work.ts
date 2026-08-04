@@ -14,6 +14,7 @@ import { type Static, Type } from "typebox";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import type { ExecutorStarterFactory } from "./khala-executor.js";
 import {
+	type ConclaveWakeRecovery,
 	type KhalaWork,
 	KhalaWorkEntryStatus,
 	KhalaWorkLaunchStatus,
@@ -58,12 +59,13 @@ type KhalaWorkDependencies = Readonly<{
 	executorSystemPrompt: string;
 	createExecutorStarter: ExecutorStarterFactory;
 	isDedicatedConclaveSession: (context: ExtensionContext) => boolean;
-	submitWork: (request: {
-		workId: string;
-		projectPath: string;
-		work: KhalaWork;
-		projectTrusted?: boolean;
-	}) => Promise<{ archivePath: string; wakeStatus?: "woken" | "deferred" | "error"; wakeError?: string }>;
+	submitWork: (request: { workId: string; projectPath: string; work: KhalaWork; projectTrusted?: boolean }) => Promise<{
+		archivePath: string;
+		wakeStatus?: "woken" | "deferred" | "error" | "evidence-error";
+		wakeError?: string;
+		wakeRecovery?: ConclaveWakeRecovery;
+		wakeCompleted?: boolean;
+	}>;
 	getSubmission: (
 		projectPath: string,
 		workId: string,
@@ -102,8 +104,10 @@ type KhalaWorkLaunchResult =
 				status: typeof KhalaWorkLaunchStatus.queued;
 				workId: string;
 				archivePath: string;
-				wakeStatus?: "woken" | "deferred" | "error";
+				wakeStatus?: "woken" | "deferred" | "error" | "evidence-error";
 				wakeError?: string;
+				wakeRecovery?: ConclaveWakeRecovery;
+				wakeCompleted?: boolean;
 			};
 	  }
 	| {

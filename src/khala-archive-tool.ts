@@ -1,3 +1,4 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Role-specific schemas share one Archive authorization and rendering boundary.
 import { resolve } from "node:path";
 import type {
 	AgentToolResult,
@@ -16,29 +17,47 @@ import type { KhalaArchiveRecord } from "./khala-model.js";
 import { isUserSessionRole, KhalaRole, type KhalaRoleValue } from "./khala-role.js";
 
 const ARCHIVE_READ_PARAMETERS = Type.Object({
-	workId: Type.Optional(Type.String()),
+	workId: Type.Optional(Type.String({ description: "Required in User sessions; optional for project-scoped roles." })),
 	executionId: Type.Optional(Type.String()),
 });
+const USER_ARCHIVE_READ_PARAMETERS = Type.Object({
+	workId: Type.String({ description: "Work whose authorized Archive records the User needs to inspect." }),
+	executionId: Type.Optional(Type.String()),
+});
+type ArchiveReadParameterSchema = typeof ARCHIVE_READ_PARAMETERS | typeof USER_ARCHIVE_READ_PARAMETERS;
 type ArchiveReadParameters = Static<typeof ARCHIVE_READ_PARAMETERS>;
 type ArchiveReadDetails = Readonly<{ records: readonly KhalaArchiveRecord[] }>;
 type SessionRoleReader = (context: ExtensionContext) => KhalaRoleValue | null;
 type ExecutorBinding = Readonly<{ executionId: string; projectPath: string; workId: string }>;
 
 function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRoleReader): void {
-	pi.registerTool(createArchiveReadTool(pi, readSessionRole));
+	pi.registerTool(createArchiveReadTool(pi, readSessionRole, ARCHIVE_READ_PARAMETERS));
+}
+
+function registerRoleKhalaArchiveRead(
+	pi: ExtensionAPI,
+	readSessionRole: SessionRoleReader,
+	role: KhalaRoleValue | null,
+): void {
+	let parameters: ArchiveReadParameterSchema = ARCHIVE_READ_PARAMETERS;
+	if (isUserSessionRole(role)) {
+		parameters = USER_ARCHIVE_READ_PARAMETERS;
+	}
+	pi.registerTool(createArchiveReadTool(pi, readSessionRole, parameters));
 }
 
 function createArchiveReadTool(
 	pi: ExtensionAPI,
 	readSessionRole: SessionRoleReader,
-): ToolDefinition<typeof ARCHIVE_READ_PARAMETERS, ArchiveReadDetails> {
+	parameters: ArchiveReadParameterSchema,
+): ToolDefinition<ArchiveReadParameterSchema, ArchiveReadDetails> {
 	return {
 		name: "khala_read_archive",
 		label: "Read Khala Archive",
 		description:
 			"Read authoritative Khala records visible to the current role; the UI renders a compact summary and expandable record list.",
 		promptSnippet: "Read authoritative Khala Archive records with compact UI output",
-		parameters: ARCHIVE_READ_PARAMETERS,
+		parameters,
 		// biome-ignore lint/complexity/useMaxParams: Pi defines the tool callback with five positional parameters.
 		execute: (_toolCallId, params, _signal, _onUpdate, context) =>
 			Promise.resolve(executeArchiveRead(pi, readSessionRole, params, context)),
@@ -280,4 +299,4 @@ function readExecutorBinding(context: ExtensionContext): ExecutorBinding | undef
 	return binding;
 }
 
-export { registerKhalaArchiveRead };
+export { registerKhalaArchiveRead, registerRoleKhalaArchiveRead };

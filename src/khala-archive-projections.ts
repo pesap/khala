@@ -4,10 +4,12 @@
 // biome-ignore-all lint/style/noContinue: Projection filtering keeps inactive bindings out of the active result.
 import { listArchiveRecords } from "./khala-archive.js";
 import {
+	type ConclaveWakeRecord,
 	type CoordinationRecord,
 	type ExecutorRecord,
 	type InterventionIssuanceRecord,
 	type InterventionOutcomeRecord,
+	isConclaveWakeRecord,
 	isCoordinationRecord,
 	isExecutorRecord,
 	isInterventionRecord,
@@ -36,6 +38,7 @@ import {
 type MissionProjectionState = "current" | "superseded" | "finished" | "rejected" | "retry-pending";
 type ArchiveSnapshot = Readonly<{
 	listRecords: () => readonly KhalaArchiveRecord[];
+	listConclaveWakes: () => ConclaveWakeRecord[];
 	listExecutions: () => ExecutorRecord[];
 	listSignals: () => SignalRecord[];
 	listPullRequests: () => PullRequestRecord[];
@@ -72,6 +75,7 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 	const records = listArchiveRecords(projectPath, projectTrusted);
 	return {
 		listRecords: () => records,
+		listConclaveWakes: () => projectRecordsFromRecords(records, "conclave-wake", isConclaveWakeRecord),
 		listExecutions: () => projectRecordsFromRecords(records, "execution", isExecutorRecord),
 		listSignals: () => projectRecordsFromRecords(records, "signal", isSignal),
 		listPullRequests: () => projectRecordsFromRecords(records, "pull-request", isPullRequestRecord),
@@ -79,6 +83,10 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 		listCoordinations: () => projectRecordsFromRecords(records, "coordination", isCoordinationRecord),
 		listInterventions: () => projectRecordsFromRecords(records, "intervention", isInterventionRecord),
 	};
+}
+
+function listConclaveWakeRecords(projectPath: string, projectTrusted = false): ConclaveWakeRecord[] {
+	return projectRecords(projectPath, "conclave-wake", isConclaveWakeRecord, projectTrusted);
 }
 
 function listSubmissionRecords(projectPath: string, projectTrusted = false): KhalaWorkSubmission[] {
@@ -559,6 +567,7 @@ export {
 	activeCoordinationHolds,
 	createArchiveSnapshot,
 	findArchiveRecords,
+	listConclaveWakeRecords,
 	listCoordinationRecords,
 	listExecutionRecords,
 	listInterventionRecords,

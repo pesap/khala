@@ -9,13 +9,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
-import { registerKhalaArchiveRead } from "./khala-archive-tool.js";
+import { registerKhalaArchiveRead, registerRoleKhalaArchiveRead } from "./khala-archive-tool.js";
 import {
 	CONCLAVE_BASE_TOOL_ALLOWLIST,
 	CONCLAVE_TOOL_ALLOWLIST,
 	type ConclaveCoordinator,
 	createConclaveCoordinator,
 } from "./khala-conclave.js";
+import { loadKhalaConfig } from "./khala-config.js";
 import { registerKhalaCounsel } from "./khala-counsel.js";
 import { registerKhalaDemo } from "./khala-demo.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
@@ -35,7 +36,7 @@ import { registerKhalaOracle } from "./khala-oracle.js";
 import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
 import { toggleKhalaPopup } from "./khala-popup.js";
 import { registerKhalaReview } from "./khala-review.js";
-import { KhalaRole, readRolePrompt, readSessionRole } from "./khala-role.js";
+import { KhalaRole, type KhalaRoleValue, readRolePrompt, readSessionRole } from "./khala-role.js";
 import type { KhalaSession } from "./khala-sessions.js";
 import { createSessionSource } from "./khala-sessions.js";
 import { registerKhalaSignal } from "./khala-signal.js";
@@ -56,11 +57,25 @@ const baseDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolvePackageRoot(baseDir);
 const pendingDirectInteractiveInputs = new WeakMap<object, PendingDirectInteractiveInput[]>();
 const pendingDirectUserAssessments = new WeakMap<object, DirectUserAssessmentStart[]>();
-const CONCLAVE_CONTROL_TOOL_NAMES = new Set([
-	"khala_steer_execution",
-	"khala_coordinate_work",
-	"khala_record_intervention_outcome",
+const USER_KHALA_TOOL_ALLOWLIST = new Set([
+	"khala_oracle",
+	"khala_submit_work",
+	"khala_read_archive",
+	"khala_record_pull_request_review",
 ]);
+const EXECUTOR_ACTIVE_TOOLS = [
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"grep",
+	"find",
+	"ls",
+	"khala_read_archive",
+	"khala_signal",
+] as const;
+const OBSERVER_ACTIVE_TOOLS = ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_learning"] as const;
+const PRESERVER_ACTIVE_TOOLS = ["khala_read_archive", "khala_counsel"] as const;
 
 type PendingDirectInteractiveInput = Readonly<{
 	sessionId: string;
@@ -253,12 +268,43 @@ function registerPopupControls(
 	return showPopup;
 }
 
+function setRoleActiveTools(pi: ExtensionAPI, role: KhalaRoleValue | null, dedicatedConclave: boolean): void {
+	let allowedTools: ReadonlySet<string>;
+	if (dedicatedConclave) {
+		allowedTools = new Set(CONCLAVE_TOOL_ALLOWLIST);
+	} else if (role === KhalaRole.executor) {
+		allowedTools = new Set(EXECUTOR_ACTIVE_TOOLS);
+	} else if (role === KhalaRole.observer) {
+		allowedTools = new Set(OBSERVER_ACTIVE_TOOLS);
+	} else if (role === KhalaRole.preserver) {
+		allowedTools = new Set(PRESERVER_ACTIVE_TOOLS);
+	} else if (role === KhalaRole.conclave) {
+		allowedTools = new Set(CONCLAVE_BASE_TOOL_ALLOWLIST);
+	} else {
+		pi.setActiveTools(
+			pi.getActiveTools().filter((name) => !name.startsWith("khala_") || USER_KHALA_TOOL_ALLOWLIST.has(name)),
+		);
+		return;
+	}
+	pi.setActiveTools(pi.getActiveTools().filter((name) => allowedTools.has(name)));
+}
+
 function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
 	pi.registerCommand("khala-recreate", {
 		description: "Recover the project Conclave and resume pending Work.",
 		handler: (args, context) => {
 			if (args.trim().length > 0) {
 				context.ui.notify("Usage: /khala-recreate", "warning");
+				return Promise.resolve();
+			}
+			try {
+				loadKhalaConfig(context.cwd, isTrustedProject(context));
+			} catch (error) {
+				let message = String(error);
+				if (error instanceof Error) {
+					({ message } = error);
+				}
+				context.ui.notify(message, "error");
 				return Promise.resolve();
 			}
 			let userSessionPath: string | undefined;
@@ -274,7 +320,7 @@ function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: Conclav
 			if (sessionPath === undefined) {
 				context.ui.notify("Khala could not create the project Conclave.", "error");
 			} else {
-				context.ui.notify("Project Conclave is ready; pending Work recovery was scheduled.", "info");
+				context.ui.notify("Khala configuration is valid; pending Work recovery was scheduled.", "info");
 			}
 			return Promise.resolve();
 		},
@@ -371,21 +417,9 @@ function registerKhalaSessionEvents(
 		settleStaleDirectUserAssessments(pi, context);
 		const role = readSessionRole(context);
 		const dedicatedConclave = isDedicatedConclaveSession(context) && role === KhalaRole.conclave;
-		if (dedicatedConclave) {
-			pi.setActiveTools([...CONCLAVE_TOOL_ALLOWLIST]);
-		} else if (role === KhalaRole.executor) {
-			pi.setActiveTools(["read", "bash", "edit", "write", "grep", "find", "ls", "khala_read_archive", "khala_signal"]);
-		} else if (role === KhalaRole.conclave) {
-			pi.setActiveTools([...CONCLAVE_BASE_TOOL_ALLOWLIST]);
-		} else if (typeof pi.getActiveTools === "function") {
-			pi.setActiveTools(pi.getActiveTools().filter((name) => !CONCLAVE_CONTROL_TOOL_NAMES.has(name)));
-		}
-		const disableNonConclaveControls = (): void => {
-			if (!dedicatedConclave && typeof pi.getActiveTools === "function") {
-				pi.setActiveTools(pi.getActiveTools().filter((name) => !CONCLAVE_CONTROL_TOOL_NAMES.has(name)));
-			}
-		};
-		queueMicrotask(disableNonConclaveControls);
+		registerRoleKhalaArchiveRead(pi, readSessionRole, role);
+		setRoleActiveTools(pi, role, dedicatedConclave);
+		queueMicrotask(() => setRoleActiveTools(pi, role, dedicatedConclave));
 		registerLaunchedAgent(pi, context);
 		setKhalaStatus(context, readSessionRole(context));
 		if (!isDedicatedConclaveSession(context)) {

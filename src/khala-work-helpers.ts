@@ -11,6 +11,7 @@ import {
 	readMandate,
 } from "./khala-archive-projections.js";
 import type { SubmissionSnapshot } from "./khala-conclave-storage.js";
+import { KHALA_SETUP_COMMAND } from "./khala-config.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import { formatError } from "./khala-error.js";
 import { listLearningRecords } from "./khala-learning.js";
@@ -262,6 +263,51 @@ function admittedSubmissionState(submission: KhalaWorkSubmission, mandateId: str
 	return { ...next, status: WorkSubmissionStatus.admitted, mandateId };
 }
 
+function throwFailedConclaveWake(
+	pi: ExtensionAPI,
+	work: KhalaWork,
+	workId: string,
+	queued: Awaited<ReturnType<KhalaWorkDependencies["submitWork"]>>,
+): never {
+	pi.appendEntry(KhalaEntryType.work, {
+		status: KhalaWorkEntryStatus.blocked,
+		workId,
+		title: work.title,
+		archivePath: queued.archivePath,
+		wakeError: queued.wakeError,
+		wakeRecovery: queued.wakeRecovery,
+		wakeCompleted: queued.wakeCompleted,
+	});
+	let recovery = "Run `/khala-recreate` to recover the configured project Conclave.";
+	if (queued.wakeRecovery === "setup") {
+		recovery = `Run \`${KHALA_SETUP_COMMAND}\` to configure Khala, then run \`/khala-recreate\`.`;
+	}
+	if (queued.wakeCompleted === true) {
+		throw new Error(
+			[
+				`Work "${work.title}" was persisted and its Conclave wake completed, but the wake evidence was not durable.`,
+				`Work ID: ${workId}`,
+				`Archive: ${queued.archivePath}`,
+				"Executor state is unknown; inspect the Archive and monitor before recovery.",
+				recovery,
+				"Do not launch a replacement agent outside Khala.",
+				`Cause: ${queued.wakeError ?? "unknown Archive persistence failure"}`,
+			].join("\n"),
+		);
+	}
+	throw new Error(
+		[
+			`Work "${work.title}" was persisted but its Conclave wake did not complete.`,
+			`Work ID: ${workId}`,
+			`Archive: ${queued.archivePath}`,
+			"Executor state is unknown; inspect the Archive and monitor before recovery.",
+			recovery,
+			"Do not launch a replacement agent outside Khala.",
+			`Cause: ${queued.wakeError ?? "unknown Conclave wake failure"}`,
+		].join("\n"),
+	);
+}
+
 function queueWork(input: {
 	pi: ExtensionAPI;
 	work: KhalaWork;
@@ -275,48 +321,45 @@ function queueWork(input: {
 	const workId = explicitWorkId?.trim() || readLatestWorkDraft(context)?.workId || nanoid();
 	return dependencies
 		.submitWork({ workId, projectPath: context.cwd, work, projectTrusted: isProjectTrusted(context) })
-		.then((queued): KhalaWorkLaunchResult => {
-			pi.appendEntry(KhalaEntryType.work, {
-				status: KhalaWorkEntryStatus.queued,
-				workId,
-				title: work.title,
-				archivePath: queued.archivePath,
-			});
-			const wakeStatus = queued.wakeStatus ?? "deferred";
-			let lifecycleMessage = "Executor: not assigned; admission and launch are pending.";
-			let wakeMessage = "Conclave wake is deferred; recovery is available with /khala-recreate.";
-			if (wakeStatus === "woken") {
-				lifecycleMessage = "Conclave processing completed; inspect /khala for the current lifecycle state.";
-				wakeMessage = "The Conclave completed the submission wake.";
-			} else if (wakeStatus === "error") {
-				wakeMessage =
-					`Conclave wake failed; recovery is available with /khala-recreate. ${queued.wakeError ?? ""}`.trim();
-			}
-			const details: Extract<KhalaWorkLaunchResult["details"], { status: typeof KhalaWorkLaunchStatus.queued }> = {
-				status: KhalaWorkLaunchStatus.queued,
-				workId,
-				archivePath: queued.archivePath,
-				wakeStatus,
-			};
-			if (queued.wakeError !== undefined) {
-				details.wakeError = queued.wakeError;
-			}
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: [
-							`Work "${work.title}" queued for Conclave admission.`,
-							`Work ID: ${workId}`,
-							lifecycleMessage,
-							wakeMessage,
-						].join("\n"),
-					},
-				],
-				details,
-			};
-		})
-		.catch(
+		.then(
+			(queued): KhalaWorkLaunchResult => {
+				const wakeStatus = queued.wakeStatus ?? "deferred";
+				if (wakeStatus === "error" || wakeStatus === "evidence-error") {
+					throwFailedConclaveWake(pi, work, workId, queued);
+				}
+				pi.appendEntry(KhalaEntryType.work, {
+					status: KhalaWorkEntryStatus.queued,
+					workId,
+					title: work.title,
+					archivePath: queued.archivePath,
+				});
+				let lifecycleMessage = "Executor: not assigned; admission and launch are pending.";
+				let wakeMessage = "Conclave wake is deferred; run /khala-recreate to resume pending Work.";
+				if (wakeStatus === "woken") {
+					lifecycleMessage = "Conclave processing completed; inspect /khala for the current lifecycle state.";
+					wakeMessage = "The Conclave completed the submission wake.";
+				}
+				const details: Extract<KhalaWorkLaunchResult["details"], { status: typeof KhalaWorkLaunchStatus.queued }> = {
+					status: KhalaWorkLaunchStatus.queued,
+					workId,
+					archivePath: queued.archivePath,
+					wakeStatus,
+				};
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: [
+								`Work "${work.title}" queued for Conclave admission.`,
+								`Work ID: ${workId}`,
+								lifecycleMessage,
+								wakeMessage,
+							].join("\n"),
+						},
+					],
+					details,
+				};
+			},
 			(error: unknown): KhalaWorkLaunchResult => rejectedWorkLaunch(`Work submission failed: ${formatError(error)}`),
 		);
 }
