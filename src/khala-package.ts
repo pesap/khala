@@ -6,7 +6,11 @@ function resolveExtensionPath(directory: string): string {
 	if (existsSync(compiledPath)) {
 		return compiledPath;
 	}
-	return join(directory, "index.ts");
+	const sourcePath = join(directory, "index.ts");
+	if (existsSync(sourcePath)) {
+		return sourcePath;
+	}
+	throw new Error(`Khala extension could not be resolved from package directory: ${directory}.`);
 }
 
 function resolvePackageRoot(directory: string): string {

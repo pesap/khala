@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import type { PiCommand } from "./executor.js";
 
@@ -91,4 +92,66 @@ function removePiOptionSelection(command: PiCommand, option: string): PiCommand 
 	return [program, ...filteredArguments];
 }
 
-export { assertPiCommand, isolateOraclePiCommand, removePiOptionSelection };
+function ensureKhalaExtension(command: PiCommand, extensionPath: string): PiCommand {
+	assertExtensionPath(extensionPath, "Khala extension");
+	const [program, ...arguments_] = command;
+	if (hasConfiguredExtension(arguments_)) {
+		return [program, ...arguments_];
+	}
+	const separatorIndex = arguments_.indexOf("--");
+	if (separatorIndex < 0) {
+		return [program, ...arguments_, "--extension", extensionPath];
+	}
+	return [
+		program,
+		...arguments_.slice(0, separatorIndex),
+		"--extension",
+		extensionPath,
+		...arguments_.slice(separatorIndex),
+	];
+}
+
+function hasConfiguredExtension(arguments_: readonly string[]): boolean {
+	for (let index = 0; index < arguments_.length; index += 1) {
+		if (arguments_[index] === "--") {
+			return false;
+		}
+		const configuredPath = readConfiguredExtensionPath(arguments_, index);
+		if (configuredPath !== undefined) {
+			assertExtensionPath(configuredPath, "Configured Pi extension");
+			return true;
+		}
+	}
+	return false;
+}
+
+function readConfiguredExtensionPath(arguments_: readonly string[], index: number) {
+	const argument = arguments_[index];
+	if (argument === undefined) {
+		return;
+	}
+	if (argument === "--extension" || argument === "-e") {
+		const configuredPath = arguments_[index + 1];
+		if (configuredPath === undefined || configuredPath === "--") {
+			throw new Error(`Configured Pi option '${argument}' requires an extension path.`);
+		}
+		return configuredPath;
+	}
+	if (argument.startsWith("--extension=") || argument.startsWith("-e=")) {
+		const configuredPath = argument.slice(argument.indexOf("=") + 1);
+		if (configuredPath.length === 0) {
+			throw new Error(`Configured Pi option '${argument.split("=")[0]}' requires an extension path.`);
+		}
+		return configuredPath;
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy the inferred optional return contract.
+	return undefined;
+}
+
+function assertExtensionPath(path: string, label: string): void {
+	if (!existsSync(path)) {
+		throw new Error(`${label} path is unavailable: ${path}`);
+	}
+}
+
+export { assertPiCommand, ensureKhalaExtension, isolateOraclePiCommand, removePiOptionSelection };
