@@ -114,21 +114,25 @@ Execution when the binding is missing, corrupt, or unrestartable.
 
 ```text
 worktreeRoot, worktreeBranchPrefix, launcher,
-piCommand, observerPiCommand,
+piCommand,
 conclaveModel, conclaveMaxCostUsdPerTurn,
 executorModel, executorMaxCostUsdPerTurn,
 oracleModel, observerModel,
-conclaveThinking, executorThinking, observerThinking,
+conclaveThinking, executorThinking, oracleThinking, observerThinking,
 pullRequestTargetBranch, commitConvention, archiveRoot
 ```
 
-Global `~/.pi/agent/khala.json` values are the base. A trusted project may
-provide typed overrides in `.pi/khala.json`; untrusted projects never read the
-project override. The four supervision model/cost fields
+Global `~/.pi/agent/khala.json` values are the base. A trusted project stores
+only typed values that differ from the global configuration in
+`.pi/khala.json`; untrusted projects never read the project override. The four
+supervision model/cost fields
 (`conclaveModel`, `conclaveMaxCostUsdPerTurn`, `executorModel`,
 `executorMaxCostUsdPerTurn`) are required and have no Pi or role fallback.
 `oracleModel` is explicitly required by Oracle setup. `observerModel` is
-optional only when the configured Observer Pi command supplies its own model.
+optional only when the shared `piCommand` supplies its own model. The configured
+Pi command is used for Executor, Observer, and Oracle child processes. Oracle
+retains only safe shared process flags before applying its isolated role
+arguments.
 
 For Work budgets, typed `Work.costBudget` values override the merged trusted
 configuration independently per actor; unset values use the corresponding

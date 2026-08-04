@@ -5,12 +5,12 @@ import {
 	createExecutorStarter,
 	type ExecutorStarter,
 	KHALA_HEADLESS_LAUNCHER,
-	type PiCommand,
 	sendHeadlessExecutorMessage,
 } from "./executor.js";
 import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
 import type { ExecutorRecord } from "./khala-model.js";
 import { resolvePackageRoot } from "./khala-package.js";
+import { removePiOptionSelection } from "./khala-pi-command.js";
 import type { ReviewFinalizationInput } from "./khala-review.js";
 import { latestPullRequest, recordReviewFinalization } from "./khala-review.js";
 import { createHerdrLauncher } from "./launch-herdr.js";
@@ -46,8 +46,7 @@ function createConfiguredStarter(
 	const config = loadKhalaConfig(context.cwd, context.isProjectTrusted(), !observer);
 	const {
 		launcher: launcherName,
-		piCommand: executorPiCommand,
-		observerPiCommand,
+		piCommand: configuredPiCommand,
 		observerModel,
 		executorModel,
 		executorThinking,
@@ -57,23 +56,18 @@ function createConfiguredStarter(
 	if (observer) {
 		launcher = LAUNCHER_FACTORIES[launcherName]();
 	}
-	let piCommand = executorPiCommand;
+	let piCommand = configuredPiCommand;
 	let model: string | undefined = executorModel;
 	let thinkingLevel: string | undefined = executorThinking || undefined;
 	if (observer) {
 		model = observerModel || undefined;
 		thinkingLevel = observerThinking || undefined;
-		if (model === undefined) {
-			piCommand = observerPiCommand;
-		} else {
-			piCommand = removeModelSelection(observerPiCommand);
-		}
 	}
-	if (observer && model !== undefined) {
-		piCommand = removeModelSelection(piCommand);
+	if (model !== undefined) {
+		piCommand = removePiOptionSelection(piCommand, "--model");
 	}
 	if (thinkingLevel !== undefined) {
-		piCommand = removeThinkingSelection(piCommand);
+		piCommand = removePiOptionSelection(piCommand, "--thinking");
 	}
 	const packageRoot = resolvePackageRoot(dirname(fileURLToPath(import.meta.url)));
 	const khalaSkillPath = join(packageRoot, "skills", "khala");
@@ -90,31 +84,6 @@ function createConfiguredStarter(
 		skillPaths,
 		thinkingLevel,
 	);
-}
-
-// The explicit observerModel field supersedes the older inline --model command argument.
-function removeModelSelection(command: PiCommand): PiCommand {
-	return removeOptionSelection(command, "--model");
-}
-
-function removeThinkingSelection(command: PiCommand): PiCommand {
-	return removeOptionSelection(command, "--thinking");
-}
-
-function removeOptionSelection(command: PiCommand, option: string): PiCommand {
-	const [program, ...arguments_] = command;
-	const filteredArguments: string[] = [];
-	let skipNext = false;
-	for (const argument of arguments_) {
-		if (skipNext) {
-			skipNext = false;
-		} else if (argument === option) {
-			skipNext = true;
-		} else if (!argument.startsWith(`${option}=`)) {
-			filteredArguments.push(argument);
-		}
-	}
-	return [program, ...filteredArguments];
 }
 
 function createObserverViewer(): ObserverViewer {

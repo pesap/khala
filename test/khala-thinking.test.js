@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { buildPiArguments } from "../dist/src/executor.js";
 import { KhalaConfigError, loadKhalaConfig } from "../dist/src/khala-config.js";
-import { thinkingChoices } from "../dist/src/khala-setup.js";
+import {
+	chooseNonInteractiveModels,
+	createProjectConfigOverrides,
+	thinkingChoices,
+} from "../dist/src/khala-setup.js";
 import { runOracle } from "../dist/src/khala-oracle.js";
 import { getSupportedThinkingLevels, isSupportedThinkingLevel } from "../dist/src/khala-thinking.js";
 
@@ -14,8 +18,11 @@ test("thinking capabilities follow Pi metadata semantics", () => {
 	assert.deepEqual(getSupportedThinkingLevels(model), ["off", "minimal", "low", "high"]);
 	assert.deepEqual(getSupportedThinkingLevels({ reasoning: true }), ["off", "minimal", "low", "medium", "high"]);
 	assert.deepEqual(getSupportedThinkingLevels({ reasoning: false }), ["off"]);
-	assert.deepEqual(thinkingChoices({ thinkingLevels: ["low"] }), ["Pi default", "low"]);
-	assert.deepEqual(thinkingChoices(undefined), []);
+	assert.deepEqual(
+		thinkingChoices({ "provider/selected": { thinkingLevels: ["low"] } }, "provider/selected"),
+		["Pi default", "low"],
+	);
+	assert.deepEqual(thinkingChoices({}, "provider/missing"), []);
 	assert.equal(isSupportedThinkingLevel(model, "low"), true);
 	assert.equal(isSupportedThinkingLevel(model, "medium"), false);
 	assert.equal(isSupportedThinkingLevel({ reasoning: true }, "medium"), true);
@@ -37,6 +44,7 @@ test("role-specific thinking settings load independently", () => {
 				oracleModel: "provider/oracle",
 				conclaveThinking: "high",
 				executorThinking: "low",
+				oracleThinking: "xhigh",
 				observerThinking: "minimal",
 			}),
 		);
@@ -45,11 +53,58 @@ test("role-specific thinking settings load independently", () => {
 		assert.equal(config.oracleModel, "provider/oracle");
 		assert.equal(config.conclaveThinking, "high");
 		assert.equal(config.executorThinking, "low");
+		assert.equal(config.oracleThinking, "xhigh");
 		assert.equal(config.observerThinking, "minimal");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("project setup persists only values that differ from global configuration", () => {
+	const globalConfig = {
+		piCommand: ["pi", "--offline"],
+		conclaveModel: "provider/conclave",
+		executorModel: "provider/executor",
+		observerThinking: "",
+		pullRequestTargetBranch: "",
+	};
+	const effectiveProjectConfig = {
+		...globalConfig,
+		executorModel: "provider/project-executor",
+		observerThinking: "off",
+	};
+
+	assert.deepEqual(createProjectConfigOverrides(globalConfig, effectiveProjectConfig), {
+		executorModel: "provider/project-executor",
+		observerThinking: "off",
+	});
+});
+
+test("non-interactive setup rejects thinking unsupported by the selected model", () => {
+	assert.throws(
+		() =>
+			chooseNonInteractiveModels(
+				{
+					conclaveModel: "provider/conclave",
+					executorModel: "provider/executor",
+					oracleModel: "provider/oracle",
+					observerModel: "provider/observer",
+					conclaveThinking: "high",
+					executorThinking: "high",
+					oracleThinking: "high",
+					observerThinking: "off",
+				},
+				["provider/conclave", "provider/executor", "provider/oracle", "provider/observer"],
+				{
+					"provider/conclave": { thinkingLevels: ["high"] },
+					"provider/executor": { thinkingLevels: ["high"] },
+					"provider/oracle": { thinkingLevels: ["off"] },
+					"provider/observer": { thinkingLevels: ["off"] },
+				},
+			),
+		/oracleThinking.*not supported/i,
+	);
 });
 
 test("Oracle refuses to run without a configured model", async () => {
@@ -84,10 +139,10 @@ test("invalid explicit configuration fails instead of silently using defaults", 
 				conclaveMaxCostUsdPerTurn: 0.25,
 				executorModel: "provider/executor",
 				executorMaxCostUsdPerTurn: 1,
-				observerPiCommand: ["claude"],
+				piCommand: ["claude"],
 			}),
 		);
-		assert.throws(() => loadKhalaConfig(), /Observer only supports the Pi command/);
+		assert.throws(() => loadKhalaConfig(), /only supports Pi child commands/);
 		writeFileSync(
 			join(root, "khala.json"),
 			JSON.stringify({
@@ -95,10 +150,10 @@ test("invalid explicit configuration fails instead of silently using defaults", 
 				conclaveMaxCostUsdPerTurn: 0.25,
 				executorModel: "provider/executor",
 				executorMaxCostUsdPerTurn: 1,
-				observerPiCommand: ["PI.CMD"],
+				piCommand: ["PI.CMD"],
 			}),
 		);
-		assert.deepEqual(loadKhalaConfig().observerPiCommand, ["PI.CMD"]);
+		assert.deepEqual(loadKhalaConfig().piCommand, ["PI.CMD"]);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

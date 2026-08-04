@@ -11,7 +11,6 @@ import process, { stdin as input, stdout as output } from "node:process";
 import { autocomplete, text as clackText, confirm, isCancel, select } from "@clack/prompts";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
-	assertObserverPiCommand,
 	ConfigScope,
 	type ConfigScopeValue,
 	getKhalaConfigPath,
@@ -19,6 +18,7 @@ import {
 	LauncherName,
 	loadKhalaConfig,
 } from "./khala-config.js";
+import { assertPiCommand } from "./khala-pi-command.js";
 import type { ThinkingLevel } from "./khala-thinking.js";
 import { getSupportedThinkingLevels } from "./khala-thinking.js";
 
@@ -30,7 +30,7 @@ interface SetupOptions {
 }
 
 type StoredConfig = {
-	[K in keyof KhalaConfig]: K extends "piCommand" | "observerPiCommand"
+	[K in keyof KhalaConfig]: K extends "piCommand"
 		? string[]
 		: K extends "conclaveMaxCostUsdPerTurn" | "executorMaxCostUsdPerTurn"
 			? number
@@ -61,7 +61,6 @@ type ModelCapability = Readonly<{ thinkingLevels: readonly ThinkingLevel[] }>;
 type ModelDiscovery = Readonly<{
 	models: string[];
 	capabilities: Readonly<Record<string, ModelCapability>>;
-	executorCapability?: ModelCapability;
 	reason?: string;
 }>;
 
@@ -202,7 +201,7 @@ function parseModelListOutput(stdout: string): string[] {
 	return [...new Set(models)];
 }
 
-async function discoverConfiguredModels(command: readonly string[], executorModel: string): Promise<ModelDiscovery> {
+async function discoverConfiguredModels(command: readonly string[]): Promise<ModelDiscovery> {
 	const [program, ...arguments_] = command;
 	if (program === undefined) {
 		return { models: [], capabilities: {}, reason: "the configured Pi command is empty" };
@@ -219,11 +218,7 @@ async function discoverConfiguredModels(command: readonly string[], executorMode
 		return { models, capabilities: {}, reason: "Pi returned no configured models" };
 	}
 	const capabilities = await discoverModelCapabilities(models);
-	const executorCapability = executorModel.length === 0 ? undefined : capabilities[executorModel];
-	if (executorCapability === undefined) {
-		return { models, capabilities };
-	}
-	return { models, capabilities, executorCapability };
+	return { models, capabilities };
 }
 
 async function discoverModelCapabilities(
@@ -353,7 +348,6 @@ function toStoredConfig(config: KhalaConfig): StoredConfig {
 		worktreeBranchPrefix: config.worktreeBranchPrefix,
 		launcher: config.launcher,
 		piCommand: [...config.piCommand],
-		observerPiCommand: [...config.observerPiCommand],
 		conclaveModel: config.conclaveModel,
 		conclaveMaxCostUsdPerTurn: config.conclaveMaxCostUsdPerTurn,
 		executorModel: config.executorModel,
@@ -362,6 +356,7 @@ function toStoredConfig(config: KhalaConfig): StoredConfig {
 		observerModel: config.observerModel,
 		conclaveThinking: config.conclaveThinking,
 		executorThinking: config.executorThinking,
+		oracleThinking: config.oracleThinking,
 		observerThinking: config.observerThinking,
 		pullRequestTargetBranch: config.pullRequestTargetBranch,
 		commitConvention: config.commitConvention,
@@ -369,9 +364,39 @@ function toStoredConfig(config: KhalaConfig): StoredConfig {
 	};
 }
 
-function writeConfig(configPath: string, existing: Record<string, unknown>, config: StoredConfig): void {
+function configValuesEqual(left: StoredConfig[keyof StoredConfig], right: StoredConfig[keyof StoredConfig]): boolean {
+	if (Array.isArray(left) && Array.isArray(right)) {
+		return left.length === right.length && left.every((value, index) => value === right[index]);
+	}
+	return left === right;
+}
+
+function createProjectConfigOverrides(base: StoredConfig, config: StoredConfig): Partial<StoredConfig> {
+	const overrides: Partial<StoredConfig> = {};
+	for (const key of Object.keys(config) as (keyof StoredConfig)[]) {
+		if (!configValuesEqual(base[key], config[key])) {
+			Object.assign(overrides, { [key]: config[key] });
+		}
+	}
+	return overrides;
+}
+
+function writeConfig(request: {
+	configPath: string;
+	existing: Record<string, unknown>;
+	completeConfig: StoredConfig;
+	persistedConfig: StoredConfig | Partial<StoredConfig>;
+	retainUnknown: boolean;
+}): void {
+	const { configPath, existing, completeConfig, persistedConfig, retainUnknown } = request;
+	let retained: Record<string, unknown> = {};
+	if (retainUnknown) {
+		retained = Object.fromEntries(
+			Object.entries(existing).filter(([key]) => !(key in completeConfig) && key !== "observerPiCommand"),
+		);
+	}
 	mkdirSync(dirname(configPath), { recursive: true });
-	writeFileSync(configPath, `${JSON.stringify({ ...existing, ...config }, null, 2)}\n`, "utf8");
+	writeFileSync(configPath, `${JSON.stringify({ ...retained, ...persistedConfig }, null, 2)}\n`, "utf8");
 }
 
 function unwrapPrompt<T>(result: T | symbol): T {
@@ -447,18 +472,23 @@ function thinkingValue(label: string): string {
 	return label === THINKING_DEFAULT_LABEL ? "" : label;
 }
 
-function thinkingChoices(capability: ModelCapability | undefined): readonly string[] {
-	const levels = capability?.thinkingLevels ?? [];
+function thinkingChoices(capabilities: Readonly<Record<string, ModelCapability>>, model: string): readonly string[] {
+	const levels = capabilities[model]?.thinkingLevels ?? [];
 	if (levels.length === 0) {
 		return [];
 	}
 	return [THINKING_DEFAULT_LABEL, ...levels];
 }
 
-async function askThinking(label: string, current: string, capability: ModelCapability | undefined): Promise<string> {
-	const choices = thinkingChoices(capability);
+async function askThinking(
+	label: string,
+	current: string,
+	capabilities: Readonly<Record<string, ModelCapability>>,
+	model: string,
+): Promise<string> {
+	const choices = thinkingChoices(capabilities, model);
 	if (choices.length === 0) {
-		return "";
+		return current;
 	}
 	const defaultValue = choices.includes(current) ? current : THINKING_DEFAULT_LABEL;
 	const selected = await askChoice(label, choices, thinkingLabel(defaultValue));
@@ -487,14 +517,14 @@ function printState(scope: ConfigScopeValue, configPath: string, config: StoredC
 	console.log(row("=", "worktree root", config.worktreeRoot));
 	console.log(row("=", "branch prefix", config.worktreeBranchPrefix));
 	console.log(row("=", "Pi command", commandText(config.piCommand)));
-	console.log(row("=", "observer command", commandText(config.observerPiCommand)));
 	console.log(row("=", "Conclave model", config.conclaveModel || "(required)"));
+	console.log(row("=", "Conclave thinking", config.conclaveThinking || "(Pi default)"));
 	console.log(row("=", "Conclave max cost", formatCost(config.conclaveMaxCostUsdPerTurn)));
 	console.log(row("=", "Executor model", config.executorModel || "(required)"));
+	console.log(row("=", "Executor thinking", config.executorThinking || "(Pi default)"));
 	console.log(row("=", "Executor max cost", formatCost(config.executorMaxCostUsdPerTurn)));
 	console.log(row("=", "Oracle model", config.oracleModel || "(required)"));
-	console.log(row("=", "Conclave thinking", config.conclaveThinking || "(Pi default)"));
-	console.log(row("=", "Executor thinking", config.executorThinking || "(Pi default)"));
+	console.log(row("=", "Oracle thinking", config.oracleThinking || "(Pi default)"));
 	console.log(row("=", "Observer model", config.observerModel || "(Pi default)"));
 	console.log(row("=", "Observer thinking", config.observerThinking || "(Pi default)"));
 	console.log(row("=", "PR publication", "mandatory"));
@@ -519,7 +549,7 @@ async function chooseScope(options: SetupOptions): Promise<ConfigScopeValue> {
 }
 
 async function editConfig(current: StoredConfig): Promise<StoredConfig> {
-	console.log(`\n${bold("Settings")} ${dim("Press Enter to accept the default.")}`);
+	console.log(`\n${bold("Runtime")} ${dim("Press Enter to accept the default.")}`);
 	const launcher = await askChoice(
 		"Launcher",
 		[LauncherName.zellij, LauncherName.tmux, LauncherName.herdr],
@@ -533,45 +563,52 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 			"",
 		),
 	);
-	const piCommand = parseCommand(await askLine("Pi command", commandText(current.piCommand)), "Pi command");
-	const discovery = await discoverConfiguredModels(piCommand, current.executorModel);
+	const piCommand = [
+		...assertPiCommand(parseCommand(await askLine("Pi command", commandText(current.piCommand)), "Pi command")),
+	];
+	const discovery = await discoverConfiguredModels(piCommand);
 	if (discovery.reason !== undefined) {
 		console.log(`\n${yellow(`Model discovery unavailable: ${discovery.reason}`)}`);
 	}
-	const { models, capabilities, executorCapability } = discovery;
-	const observerPiCommand = parseCommand(
-		await askLine("Observer command (Pi only)", commandText(current.observerPiCommand)),
-		"Observer command",
-	);
-	assertObserverPiCommand(observerPiCommand);
-	let { conclaveModel, executorModel, oracleModel, observerModel } = current;
+	const { models, capabilities } = discovery;
+	let {
+		conclaveModel,
+		executorModel,
+		oracleModel,
+		observerModel,
+		conclaveThinking,
+		executorThinking,
+		oracleThinking,
+		observerThinking,
+	} = current;
+
+	console.log(`\n${bold("Conclave")}`);
 	if (models.length > 0) {
-		conclaveModel = await searchModel("Conclave model", models, current.conclaveModel);
-		executorModel = await searchModel("Executor model", models, current.executorModel);
-		let oracleDefault = current.oracleModel;
-		if (oracleDefault.length === 0) {
-			oracleDefault = conclaveModel;
-		}
-		oracleModel = await searchModel("Oracle model", models, oracleDefault);
-		let observerDefault = current.observerModel;
-		if (observerDefault.length === 0) {
-			observerDefault = conclaveModel;
-		}
-		observerModel = await searchModel("Observer model", models, observerDefault);
+		conclaveModel = await searchModel("Model", models, conclaveModel);
 	}
-	const conclaveMaxCostUsdPerTurn = await askCost(
-		"Conclave max cost per turn (USD)",
-		current.conclaveMaxCostUsdPerTurn,
-	);
-	const executorMaxCostUsdPerTurn = await askCost(
-		"Executor max cost per turn (USD)",
-		current.executorMaxCostUsdPerTurn,
-	);
-	const conclaveCapability = capabilities[conclaveModel];
-	const observerCapability = capabilities[observerModel];
-	const conclaveThinking = await askThinking("Conclave thinking level", current.conclaveThinking, conclaveCapability);
-	const executorThinking = await askThinking("Executor thinking level", current.executorThinking, executorCapability);
-	const observerThinking = await askThinking("Observer thinking level", current.observerThinking, observerCapability);
+	conclaveThinking = await askThinking("Thinking level", conclaveThinking, capabilities, conclaveModel);
+	const conclaveMaxCostUsdPerTurn = await askCost("Max cost per turn (USD)", current.conclaveMaxCostUsdPerTurn);
+
+	console.log(`\n${bold("Executor")}`);
+	if (models.length > 0) {
+		executorModel = await searchModel("Model", models, executorModel);
+	}
+	executorThinking = await askThinking("Thinking level", executorThinking, capabilities, executorModel);
+	const executorMaxCostUsdPerTurn = await askCost("Max cost per turn (USD)", current.executorMaxCostUsdPerTurn);
+
+	console.log(`\n${bold("Oracle")}`);
+	if (models.length > 0) {
+		oracleModel = await searchModel("Model", models, oracleModel || conclaveModel);
+	}
+	oracleThinking = await askThinking("Thinking level", oracleThinking, capabilities, oracleModel);
+
+	console.log(`\n${bold("Observer")}`);
+	if (models.length > 0) {
+		observerModel = await searchModel("Model", models, observerModel || conclaveModel);
+	}
+	observerThinking = await askThinking("Thinking level", observerThinking, capabilities, observerModel);
+
+	console.log(`\n${bold("Review and Archive")}`);
 	const pullRequestTargetBranch = await askOptionalLine(
 		"PR target branch (leave blank for repository default)",
 		current.pullRequestTargetBranch,
@@ -586,7 +623,6 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		worktreeRoot,
 		worktreeBranchPrefix,
 		piCommand,
-		observerPiCommand,
 		conclaveModel,
 		conclaveMaxCostUsdPerTurn,
 		executorModel,
@@ -595,6 +631,7 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 		observerModel,
 		conclaveThinking,
 		executorThinking,
+		oracleThinking,
 		observerThinking,
 		pullRequestTargetBranch,
 		commitConvention,
@@ -627,25 +664,42 @@ function validateSetupConfig(config: StoredConfig, interactive: boolean): void {
 	if (config.worktreeRoot.trim().length === 0 || config.worktreeBranchPrefix.trim().length === 0) {
 		throw new Error("Setup requires a non-empty worktree root and branch prefix.");
 	}
-	assertObserverPiCommand(config.observerPiCommand);
+	assertPiCommand(config.piCommand);
 }
 
-function chooseNonInteractiveModels(config: StoredConfig, models: readonly string[]): StoredConfig {
-	for (const [field, configured] of [
-		["conclaveModel", config.conclaveModel],
-		["executorModel", config.executorModel],
-		["oracleModel", config.oracleModel],
-		["observerModel", config.observerModel],
+function chooseNonInteractiveModels(
+	config: StoredConfig,
+	models: readonly string[],
+	capabilities: Readonly<Record<string, ModelCapability>> = {},
+): StoredConfig {
+	for (const [modelField, thinkingField] of [
+		["conclaveModel", "conclaveThinking"],
+		["executorModel", "executorThinking"],
+		["oracleModel", "oracleThinking"],
+		["observerModel", "observerThinking"],
 	] as const) {
-		if (configured.trim().length === 0) {
-			if (field === "observerModel") {
+		const configuredModel = config[modelField];
+		if (configuredModel.trim().length === 0) {
+			if (modelField === "observerModel") {
 				continue;
 			}
-			throw new Error(`Non-interactive setup requires an explicit ${field}; no model fallback is available.`);
+			throw new Error(`Non-interactive setup requires an explicit ${modelField}; no model fallback is available.`);
 		}
-		if (models.length > 0 && !models.includes(configured)) {
+		if (models.length > 0 && !models.includes(configuredModel)) {
 			throw new Error(
-				`Configured ${field} '${configured}' was not discovered by Pi. Rerun setup after configuring that model or select another model.`,
+				`Configured ${modelField} '${configuredModel}' was not discovered by Pi. Rerun setup after configuring that model or select another model.`,
+			);
+		}
+		const configuredThinking = config[thinkingField];
+		const capability = capabilities[configuredModel];
+		if (
+			configuredThinking.length > 0 &&
+			capability !== undefined &&
+			capability.thinkingLevels.length > 0 &&
+			!capability.thinkingLevels.includes(configuredThinking as ThinkingLevel)
+		) {
+			throw new Error(
+				`Configured ${thinkingField} '${configuredThinking}' is not supported by ${configuredModel}. Rerun setup and select a supported level.`,
 			);
 		}
 	}
@@ -660,6 +714,7 @@ async function configure(options: SetupOptions): Promise<void> {
 	}
 	const configPath = getKhalaConfigPath(scope, projectPath);
 	const existing = readStoredValues(configPath);
+	const globalConfig = toStoredConfig(loadKhalaConfig(undefined, false, false));
 	const currentConfig = toStoredConfig(loadKhalaConfig(projectPath, scope === ConfigScope.project, false));
 	const interactive = isInteractive(options);
 	console.log(`\n${titleLine("Khala setup")}`);
@@ -680,8 +735,8 @@ async function configure(options: SetupOptions): Promise<void> {
 	if (interactive) {
 		next = await editConfig(currentConfig);
 	} else {
-		const discovery = await discoverConfiguredModels(currentConfig.piCommand, currentConfig.executorModel);
-		next = chooseNonInteractiveModels(currentConfig, discovery.models);
+		const discovery = await discoverConfiguredModels(currentConfig.piCommand);
+		next = chooseNonInteractiveModels(currentConfig, discovery.models, discovery.capabilities);
 	}
 	validateSetupConfig(next, interactive);
 	printState(scope, configPath, next, Object.keys(existing).length > 0);
@@ -693,7 +748,14 @@ async function configure(options: SetupOptions): Promise<void> {
 		console.log(`\n${dim("Skipped.")} ${dim("No files were written.")}`);
 		return;
 	}
-	writeConfig(configPath, existing, next);
+	const persistedConfig = scope === ConfigScope.project ? createProjectConfigOverrides(globalConfig, next) : next;
+	writeConfig({
+		configPath,
+		existing,
+		completeConfig: next,
+		persistedConfig,
+		retainUnknown: scope === ConfigScope.global,
+	});
 	console.log(`\n${green(bold("Done."))} ${dim(`Wrote ${configPath}`)}`);
 }
 
@@ -726,4 +788,10 @@ if (process.argv[1]?.endsWith("khala-setup.js") || process.argv[1]?.endsWith("kh
 	await main();
 }
 
-export { chooseNonInteractiveModels, main as runKhalaSetup, parseCommand, thinkingChoices };
+export {
+	chooseNonInteractiveModels,
+	createProjectConfigOverrides,
+	main as runKhalaSetup,
+	parseCommand,
+	thinkingChoices,
+};

@@ -2,10 +2,11 @@
 // biome-ignore-all lint/security/noSecrets: Config field names resemble credential identifiers but contain no secrets.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { PiCommand } from "./executor.js";
 import type { KhalaWork } from "./khala-model.js";
+import { assertPiCommand } from "./khala-pi-command.js";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -32,7 +33,6 @@ interface KhalaConfig {
 	worktreeBranchPrefix: string;
 	launcher: LauncherNameValue;
 	piCommand: PiCommand;
-	observerPiCommand: PiCommand;
 	conclaveModel: string;
 	conclaveMaxCostUsdPerTurn: number;
 	executorModel: string;
@@ -41,6 +41,7 @@ interface KhalaConfig {
 	observerModel: string;
 	conclaveThinking: ThinkingLevel | "";
 	executorThinking: ThinkingLevel | "";
+	oracleThinking: ThinkingLevel | "";
 	observerThinking: ThinkingLevel | "";
 	pullRequestTargetBranch: string;
 	commitConvention: string;
@@ -63,13 +64,11 @@ class KhalaConfigError extends Error {
 // The config shape follows the package's GitHub release version; it does not carry a separate persisted version.
 const CONFIG_FILE_NAME = "khala.json";
 const KHALA_SETUP_COMMAND = "npx --yes --silent github:pesap/khala setup";
-const PI_COMMAND_SUFFIX_PATTERN = /\.(cmd|exe)$/i;
 const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	worktreeRoot: join(homedir(), "worktrees"),
 	worktreeBranchPrefix: "khala/",
 	launcher: LauncherName.zellij,
 	piCommand: ["pi"],
-	observerPiCommand: ["pi"],
 	conclaveModel: "",
 	conclaveMaxCostUsdPerTurn: 0,
 	executorModel: "",
@@ -78,6 +77,7 @@ const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	observerModel: "",
 	conclaveThinking: "",
 	executorThinking: "",
+	oracleThinking: "high",
 	observerThinking: "",
 	pullRequestTargetBranch: "",
 	commitConvention: "project",
@@ -132,7 +132,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	const configuredBranchPrefix = readRequiredConfigString(values, "worktreeBranchPrefix");
 	const configuredLauncher = readLauncher(values, "launcher");
 	const configuredPiCommand = readPiCommand(values, "piCommand");
-	const configuredObserverPiCommand = readObserverPiCommand(values, "observerPiCommand");
 	const configuredConclaveModel = readRequiredConfigString(values, "conclaveModel");
 	const configuredConclaveMaxCostUsdPerTurn = readPositiveFiniteNumber(values, "conclaveMaxCostUsdPerTurn");
 	const configuredExecutorModel = readRequiredConfigString(values, "executorModel");
@@ -141,6 +140,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	const configuredObserverModel = readConfigString(values, "observerModel");
 	const configuredConclaveThinking = readThinkingLevel(values, "conclaveThinking");
 	const configuredExecutorThinking = readThinkingLevel(values, "executorThinking");
+	const configuredOracleThinking = readThinkingLevel(values, "oracleThinking");
 	const configuredObserverThinking = readThinkingLevel(values, "observerThinking");
 	const configuredPullRequestTargetBranch = readConfigText(values, "pullRequestTargetBranch");
 	const configuredCommitConvention = readRequiredConfigString(values, "commitConvention");
@@ -150,7 +150,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		worktreeBranchPrefix: defaultBranchPrefix,
 		launcher: defaultLauncher,
 		piCommand: defaultPiCommand,
-		observerPiCommand: defaultObserverPiCommand,
 		conclaveModel: defaultConclaveModel,
 		conclaveMaxCostUsdPerTurn: defaultConclaveMaxCostUsdPerTurn,
 		executorModel: defaultExecutorModel,
@@ -159,6 +158,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		observerModel: defaultObserverModel,
 		conclaveThinking: defaultConclaveThinking,
 		executorThinking: defaultExecutorThinking,
+		oracleThinking: defaultOracleThinking,
 		observerThinking: defaultObserverThinking,
 		pullRequestTargetBranch: defaultPullRequestTargetBranch,
 		commitConvention: defaultCommitConvention,
@@ -168,7 +168,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	let worktreeBranchPrefix = defaultBranchPrefix;
 	let launcher = defaultLauncher;
 	let piCommand = defaultPiCommand;
-	let observerPiCommand = defaultObserverPiCommand;
 	let conclaveModel = defaultConclaveModel;
 	let conclaveMaxCostUsdPerTurn = defaultConclaveMaxCostUsdPerTurn;
 	let executorModel = defaultExecutorModel;
@@ -177,6 +176,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	let observerModel = defaultObserverModel;
 	let conclaveThinking = defaultConclaveThinking;
 	let executorThinking = defaultExecutorThinking;
+	let oracleThinking = defaultOracleThinking;
 	let observerThinking = defaultObserverThinking;
 	let pullRequestTargetBranch = defaultPullRequestTargetBranch;
 	let commitConvention = defaultCommitConvention;
@@ -191,13 +191,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		launcher = configuredLauncher;
 	}
 	if (configuredPiCommand !== undefined) {
-		piCommand = configuredPiCommand;
-		if (configuredObserverPiCommand === undefined) {
-			observerPiCommand = assertObserverPiCommand(configuredPiCommand);
-		}
-	}
-	if (configuredObserverPiCommand !== undefined) {
-		observerPiCommand = configuredObserverPiCommand;
+		piCommand = assertPiCommand(configuredPiCommand);
 	}
 	if (configuredConclaveModel !== undefined) {
 		conclaveModel = configuredConclaveModel;
@@ -223,6 +217,9 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 	if (configuredExecutorThinking !== undefined) {
 		executorThinking = configuredExecutorThinking;
 	}
+	if (configuredOracleThinking !== undefined) {
+		oracleThinking = configuredOracleThinking;
+	}
 	if (configuredObserverThinking !== undefined) {
 		observerThinking = configuredObserverThinking;
 	}
@@ -240,7 +237,6 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		worktreeBranchPrefix,
 		launcher,
 		piCommand,
-		observerPiCommand,
 		conclaveModel,
 		conclaveMaxCostUsdPerTurn,
 		executorModel,
@@ -249,6 +245,7 @@ function applyConfig(base: KhalaConfig, values: ConfigValues | undefined): Khala
 		observerModel,
 		conclaveThinking,
 		executorThinking,
+		oracleThinking,
 		observerThinking,
 		pullRequestTargetBranch,
 		commitConvention,
@@ -383,25 +380,6 @@ function isPositiveFiniteNumber(value: number): boolean {
 	return Number.isFinite(value) && value > 0;
 }
 
-function readObserverPiCommand(config: ConfigValues, key: string): PiCommand | undefined {
-	const command = readPiCommand(config, key);
-	if (command === undefined) {
-		return;
-	}
-	return assertObserverPiCommand(command);
-}
-
-function assertObserverPiCommand(command: readonly string[]): PiCommand {
-	const [programPath, ...arguments_] = command;
-	const program = basename(programPath ?? "")
-		.replace(PI_COMMAND_SUFFIX_PATTERN, "")
-		.toLowerCase();
-	if (program !== "pi") {
-		throw new Error("Khala Observer only supports the Pi command; configure observerPiCommand to a pi executable.");
-	}
-	return [programPath ?? "pi", ...arguments_];
-}
-
 function readPiCommand(config: ConfigValues, key: string): PiCommand | undefined {
 	if (!(key in config)) {
 		return;
@@ -429,7 +407,6 @@ function readPiCommand(config: ConfigValues, key: string): PiCommand | undefined
 
 export type { ConfigScopeValue, EffectiveWorkBudget, KhalaConfig, LauncherNameValue };
 export {
-	assertObserverPiCommand,
 	ConfigScope,
 	getKhalaConfigPath,
 	KHALA_SETUP_COMMAND,

@@ -25,7 +25,7 @@ import { canRecordPullRequestReview } from "../dist/src/khala-review.js";
 import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
 import { isSignal } from "../dist/src/khala-model.js";
-import { buildOracleArguments, registerKhalaOracle } from "../dist/src/khala-oracle.js";
+import { buildOracleArguments, buildOracleCommand, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
 import { buildKhalaTriageTemplateInvocation, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
 
@@ -458,10 +458,47 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	assert.equal(result.details.majors, 1);
 	assert.equal(result.details.minors, 1);
 	assert.equal(result.details.validationGaps, 1);
-	assert.deepEqual(buildOracleArguments("packet", "test-model").slice(0, 7), [
-		"--no-session",
-		"--no-tools",
-		"--no-extensions",
+	const oracleArguments = buildOracleArguments("packet", "test-model", "xhigh");
+	assert.deepEqual(oracleArguments.slice(oracleArguments.indexOf("--model"), oracleArguments.indexOf("--model") + 4), [
+		"--model",
+		"test-model",
+		"--thinking",
+		"xhigh",
+	]);
+	assert.equal(buildOracleArguments("packet", "test-model", "").includes("--thinking"), false);
+	const oracleCommand = buildOracleCommand(
+		[
+			"/custom/pi",
+			"--offline",
+			"--verbose",
+			"--api-key",
+			"configured-key",
+			"--extension",
+			"/unsafe/extension.ts",
+			"--continue",
+			"--model",
+			"old-model",
+			"--thinking",
+			"low",
+			"--",
+			"--api-key=positional-key",
+		],
+		"packet",
+		"test-model",
+		"high",
+	);
+	assert.deepEqual(oracleCommand.slice(0, 5), [
+		"/custom/pi",
+		"--offline",
+		"--verbose",
+		"--api-key",
+		"configured-key",
+	]);
+	assert.equal(oracleCommand.includes("--extension"), false);
+	assert.equal(oracleCommand.includes("--continue"), false);
+	assert.equal(oracleCommand.includes("old-model"), false);
+	assert.equal(oracleCommand.includes("--api-key=positional-key"), false);
+	assert.deepEqual(oracleCommand.slice(oracleCommand.indexOf("--model"), oracleCommand.indexOf("--model") + 4), [
 		"--model",
 		"test-model",
 		"--thinking",
