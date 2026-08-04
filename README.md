@@ -163,11 +163,18 @@ session.
 
 ## Install
 
-Khala requires Node.js 22.19.0 or newer.
+Khala supports Node.js 22.22.2 or newer with npm 12.0.0 or newer. The
+repository pins npm 12.0.0 because the Pi coding-agent package publishes a
+shrinkwrap; npm 12 is required for Khala's audited transitive dependency
+overrides to apply to that package.
 
 ### From GitHub
 
+Check the supported toolchain before installing:
+
 ```sh
+node --version   # v22.22.2 or newer
+npm --version    # v12.0.0 or newer
 pi install git:github.com/pesap/khala
 ```
 
@@ -180,12 +187,22 @@ configuration. The explicit `setup` command is equivalent. `--silent` hides npm
 installation diagnostics while preserving Khala output. GitHub `npx` installs
 run the TypeScript source directly and do not compile Khala during installation.
 
+Khala has no lifecycle scripts of its own. The dependency graph intentionally
+contains install scripts in `@google/genai@1.52.0` and `protobufjs@7.6.5`; npm
+verification uses `--ignore-scripts`. Pi's GitHub installer runs
+`npm install --omit=dev`, so npm 12 blocks these two upstream scripts by default
+and reports them through its install-script approval workflow. A clean install
+can still report the upstream-only `node-domexception@1.0.0` deprecation through
+`@google/genai`'s `google-auth-library`/`gaxios`/`node-fetch`/`fetch-blob`
+chain. Khala does not own that package or claim to have removed the warning;
+track it with the upstream dependency owners.
+
 ### From a checkout
 
 ```sh
 git clone https://github.com/pesap/khala.git
 cd khala
-npm install
+npm ci --ignore-scripts
 npm run build
 pi -e .
 ```
@@ -324,16 +341,30 @@ Conclave session and can change priority only for peer conflict.
 ## Development
 
 ```sh
-npm install
+npm ci --ignore-scripts
 npm run check
+npm run check:package-surface
 npm run build
 npm test
 ```
 
-`npm run check` runs Biome and TypeScript validation. `npm test` discovers all
-tracked `test/*.js` non-e2e tests; they use local stubs and do not require
-provider credentials or paid model calls. CI uses `npm ci --ignore-scripts`,
-`npm run check`, and this safe test command.
+`npm run check` runs Biome and TypeScript validation. `npm run check:package-surface`
+checks the manifest, lockfile, lifecycle policy, and packaged resources without
+network credentials. `npm test` discovers all tracked `test/*.js` non-e2e tests;
+they use local stubs and do not require provider credentials or paid model calls.
+For a clean install audit and dependency-tree check, run:
+
+```sh
+npm audit --omit=dev --audit-level=high
+npm audit --omit=dev --json
+npm ls @google/genai protobufjs node-domexception brace-expansion undici --all
+```
+
+The first command must exit zero with no high or critical findings. The clean
+install must resolve `brace-expansion@5.0.9` and `undici@8.9.0`; the remaining
+`node-domexception@1.0.0` deprecation and the two upstream install scripts are
+reported as upstream package behavior above. CI uses `npm ci --ignore-scripts`,
+`npm run check`, `npm run check:package-surface`, and this safe test command.
 
 The most important architectural seam is `src/khala-model.ts`: it is the single
 source of truth for durable record shapes, discriminants, statuses, and guards.

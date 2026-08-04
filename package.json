@@ -51,17 +51,20 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
     "check": "biome check src extensions/pi-review && tsc --noEmit",
+    "check:package-surface": "node --test test/package-surface.test.js",
     "dev": "tsc --watch",
     "test": "npm run build && node --test test/*.js"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.22.2",
+    "npm": ">=12.0.0"
   },
+  "packageManager": "npm@12.0.0",
   "overrides": {
     "@earendil-works/pi-coding-agent": {
-      "brace-expansion": "5.0.8"
-    },
-    "brace-expansion": "5.0.8"
+      "brace-expansion": "5.0.9",
+      "undici": "8.9.0"
+    }
   },
   "dependencies": {
     "@clack/prompts": "1.7.0",
