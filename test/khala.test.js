@@ -127,9 +127,16 @@ test("package manifest declares source extensions and exposes Khala commands", (
 	assert.equal(manifest.dependencies.jiti, "2.7.0");
 	assert.equal(manifest.dependencies.typescript, undefined);
 	assert.equal(manifest.devDependencies.typescript, "5.9.3");
-	assert.equal(manifest.dependencies["@earendil-works/pi-coding-agent"], "0.83.0");
-	assert.equal(manifest.dependencies["@earendil-works/pi-tui"], "0.83.0");
-	assert.equal(manifest.dependencies.typebox, "1.1.38");
+	for (const [dependency, version] of [
+		["@earendil-works/pi-coding-agent", "0.83.0"],
+		["@earendil-works/pi-tui", "0.83.0"],
+		["typebox", "1.3.7"],
+	]) {
+		assert.equal(manifest.dependencies[dependency], undefined);
+		assert.equal(manifest.peerDependencies[dependency], "*");
+		assert.equal(manifest.peerDependenciesMeta[dependency]?.optional, true);
+		assert.equal(manifest.devDependencies[dependency], version);
+	}
 	assert.deepEqual(manifest.pi.extensions, [
 		"./src/index.ts",
 		"./extensions/pi-review/review.ts",

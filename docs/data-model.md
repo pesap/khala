@@ -129,10 +129,12 @@ supervision model/cost fields
 (`conclaveModel`, `conclaveMaxCostUsdPerTurn`, `executorModel`,
 `executorMaxCostUsdPerTurn`) are required and have no Pi or role fallback.
 `oracleModel` is explicitly required by Oracle setup. `observerModel` is
-optional only when the shared `piCommand` supplies its own model. The configured
-Pi command is used for Executor, Observer, and Oracle child processes. Oracle
-retains only safe shared process flags before applying its isolated role
-arguments.
+optional only when the shared `piCommand` supplies its own model. Non-interactive
+setup validates each explicit thinking level for a configured model with an
+offline Pi capability query and fails before writing configuration when the
+query or that model's metadata is unavailable. The configured Pi command is
+used for Executor, Observer, and Oracle child processes. Oracle retains only
+safe shared process flags before applying its isolated role arguments.
 
 For Work budgets, typed `Work.costBudget` values override the merged trusted
 configuration independently per actor; unset values use the corresponding

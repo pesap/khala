@@ -4,12 +4,13 @@
 /* biome-ignore-all lint/style/noContinue: The command parser uses early iteration exits. */
 /* biome-ignore-all lint/style/noExcessiveLinesPerFile: The standalone wizard is shipped as one CLI module. */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
 import { autocomplete, text as clackText, confirm, isCancel, select } from "@clack/prompts";
-import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { PiCommand } from "./executor.js";
+import { StrictJsonlReader } from "./executor-rpc.js";
 import {
 	ConfigScope,
 	type ConfigScopeValue,
@@ -18,9 +19,8 @@ import {
 	LauncherName,
 	loadKhalaConfig,
 } from "./khala-config.js";
-import { assertPiCommand } from "./khala-pi-command.js";
-import type { ThinkingLevel } from "./khala-thinking.js";
-import { getSupportedThinkingLevels } from "./khala-thinking.js";
+import { assertPiCommand, isolateOraclePiCommand } from "./khala-pi-command.js";
+import { getSupportedThinkingLevels, type ThinkingLevel, type ThinkingModel } from "./khala-thinking.js";
 
 interface SetupOptions {
 	scope?: ConfigScopeValue;
@@ -54,15 +54,48 @@ const MODEL_SUMMARY = /^litellm\s+\(/i;
 const MIN_MODEL_COLUMNS = 5;
 const MODEL_TRAILING_COLUMNS = 3;
 const MODEL_TRAILING_COLUMNS_WITH_IMAGES = 4;
+const MODEL_DISCOVERY_REQUEST_ID = "khala-model-discovery";
+const MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
+const MODEL_DISCOVERY_TERMINATION_GRACE_MS = 250;
+const MODEL_DISCOVERY_FLAGS = [
+	"--mode",
+	"rpc",
+	"--offline",
+	"--no-session",
+	"--no-extensions",
+	"--no-skills",
+	"--no-prompt-templates",
+	"--no-themes",
+	"--no-context-files",
+] as const;
 const SETUP_CANCELLED_MESSAGE = "Setup cancelled.";
 const CANCEL_EXIT_CODE = 130;
 
 type ModelCapability = Readonly<{ thinkingLevels: readonly ThinkingLevel[] }>;
+type ModelNameDiscovery = Readonly<{ models: string[]; reason?: string }>;
 type ModelDiscovery = Readonly<{
 	models: string[];
 	capabilities: Readonly<Record<string, ModelCapability>>;
 	reason?: string;
 }>;
+type DiscoveredPiModel = Readonly<ThinkingModel & { id: string; provider: string }>;
+type PiModelPayload = Readonly<{
+	id?: unknown;
+	provider?: unknown;
+	reasoning?: unknown;
+	thinkingLevelMap?: unknown;
+}>;
+type ModelsPayload = Readonly<{ models?: unknown }>;
+type RpcResponsePayload = Readonly<{
+	type?: unknown;
+	id?: unknown;
+	success?: unknown;
+	data?: unknown;
+	error?: unknown;
+}>;
+type ModelDiscoveryResponse =
+	| Readonly<{ result: "success"; models: readonly DiscoveredPiModel[] }>
+	| Readonly<{ result: "failure"; error: Error }>;
 
 // Keep the wizard's own styling small; Clack owns the interactive prompt behavior.
 function style(code: string, text: string): string {
@@ -201,48 +234,253 @@ function parseModelListOutput(stdout: string): string[] {
 	return [...new Set(models)];
 }
 
-async function discoverConfiguredModels(command: readonly string[]): Promise<ModelDiscovery> {
+function discoverConfiguredModelNames(command: PiCommand): ModelNameDiscovery {
 	const [program, ...arguments_] = command;
-	if (program === undefined) {
-		return { models: [], capabilities: {}, reason: "the configured Pi command is empty" };
-	}
 	const result = spawnSync(program, [...arguments_, "--list-models"], { encoding: "utf8" });
 	if (result.error !== undefined) {
-		return { models: [], capabilities: {}, reason: result.error.message };
+		return { models: [], reason: result.error.message };
 	}
 	if (result.status !== 0) {
-		return { models: [], capabilities: {}, reason: `Pi exited with status ${result.status ?? 1}` };
+		return { models: [], reason: `Pi exited with status ${result.status ?? 1}` };
 	}
 	const models = parseModelListOutput(result.stdout ?? "");
 	if (models.length === 0) {
-		return { models, capabilities: {}, reason: "Pi returned no configured models" };
+		return { models, reason: "Pi returned no configured models" };
 	}
-	const capabilities = await discoverModelCapabilities(models);
-	return { models, capabilities };
+	return { models };
 }
 
-async function discoverModelCapabilities(
-	models: readonly string[],
-): Promise<Readonly<Record<string, ModelCapability>>> {
-	const capabilities: Record<string, ModelCapability> = {};
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isThinkingLevelMap(value: unknown): value is Partial<Record<ThinkingLevel, string | null>> {
+	return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string" || entry === null);
+}
+
+function readDiscoveredPiModel(value: unknown): DiscoveredPiModel | undefined {
+	if (!isRecord(value)) {
+		return;
+	}
+	const candidate = value as PiModelPayload;
+	if (typeof candidate.id !== "string" || typeof candidate.provider !== "string") {
+		return;
+	}
+	const { thinkingLevelMap } = candidate;
+	if (thinkingLevelMap !== undefined && !isThinkingLevelMap(thinkingLevelMap)) {
+		return;
+	}
+	let model: DiscoveredPiModel = { id: candidate.id, provider: candidate.provider };
+	if (typeof candidate.reasoning === "boolean") {
+		model = { ...model, reasoning: candidate.reasoning };
+	}
+	if (thinkingLevelMap !== undefined) {
+		model = { ...model, thinkingLevelMap };
+	}
+	return model;
+}
+
+function readConfiguredModels(value: unknown): readonly DiscoveredPiModel[] {
+	if (!isRecord(value)) {
+		throw new Error("Pi RPC model discovery returned invalid data.");
+	}
+	const { models: candidates } = value as ModelsPayload;
+	if (!Array.isArray(candidates)) {
+		throw new Error("Pi RPC model discovery returned invalid data.");
+	}
+	const models: DiscoveredPiModel[] = [];
+	for (const candidate of candidates) {
+		const model = readDiscoveredPiModel(candidate);
+		if (model === undefined) {
+			throw new Error("Pi RPC model discovery returned an invalid model.");
+		}
+		models.push(model);
+	}
+	return models;
+}
+
+function normalizeModelDiscoveryError(error: unknown, prefix: string): Error {
+	return error instanceof Error ? error : new Error(`${prefix}: ${String(error)}`);
+}
+
+function readModelDiscoveryResponse(value: unknown): ModelDiscoveryResponse | undefined {
+	if (!isRecord(value)) {
+		return;
+	}
+	const response = value as RpcResponsePayload;
+	if (response.type !== "response" || response.id !== MODEL_DISCOVERY_REQUEST_ID) {
+		return;
+	}
+	if (response.success !== true) {
+		const message = typeof response.error === "string" ? response.error : "Pi model discovery failed.";
+		return { result: "failure", error: new Error(message) };
+	}
 	try {
-		const runtime = await ModelRuntime.create({
-			authPath: `${getAgentDir()}/auth.json`,
-			modelsPath: `${getAgentDir()}/models.json`,
-			allowModelNetwork: false,
-		});
-		for (const modelId of models) {
-			const separator = modelId.indexOf("/");
-			if (separator <= 0 || separator === modelId.length - 1) {
-				continue;
+		return { result: "success", models: readConfiguredModels(response.data) };
+	} catch (error) {
+		// A matching RPC response with invalid data is a protocol failure, not a
+		// partial capability result.
+		return {
+			result: "failure",
+			error: normalizeModelDiscoveryError(error, "Pi model discovery returned invalid data"),
+		};
+	}
+}
+
+function discoverModelsThroughPiRpc(command: PiCommand): Promise<readonly DiscoveredPiModel[]> {
+	const [program, ...arguments_] = isolateOraclePiCommand(command);
+	return new Promise((resolve, reject) => {
+		const child = spawn(program, [...arguments_, ...MODEL_DISCOVERY_FLAGS], { stdio: ["pipe", "pipe", "pipe"] });
+		let settled = false;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let terminationTimeout: ReturnType<typeof setTimeout> | undefined;
+		const clearTerminationTimeout = (): void => {
+			if (terminationTimeout !== undefined) {
+				clearTimeout(terminationTimeout);
+				terminationTimeout = undefined;
 			}
-			const model = runtime.getModel(modelId.slice(0, separator), modelId.slice(separator + 1));
+		};
+		const closeChild = (): void => {
+			try {
+				child.stdin?.end();
+			} catch {
+				// The child may already have closed its input stream.
+			}
+			// A wrapper can leave a descendant holding an inherited pipe after the
+			// direct child exits. Release our pipe ends once discovery settles so it
+			// cannot keep standalone setup alive.
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			child.unref();
+			if (child.exitCode !== null || child.signalCode !== null) {
+				return;
+			}
+			try {
+				child.kill("SIGTERM");
+			} catch {
+				// A concurrent exit owns child cleanup.
+				return;
+			}
+			// Keep this timer referenced: otherwise standalone setup could exit before
+			// escalation runs and leave a signal-ignoring Pi wrapper behind.
+			terminationTimeout = setTimeout(() => {
+				terminationTimeout = undefined;
+				if (child.exitCode !== null || child.signalCode !== null) {
+					return;
+				}
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					// A concurrent exit already owns termination.
+				}
+			}, MODEL_DISCOVERY_TERMINATION_GRACE_MS);
+		};
+		const fail = (error: Error): void => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			if (timeout !== undefined) {
+				clearTimeout(timeout);
+			}
+			closeChild();
+			reject(error);
+		};
+		const succeed = (models: readonly DiscoveredPiModel[]): void => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			if (timeout !== undefined) {
+				clearTimeout(timeout);
+			}
+			closeChild();
+			resolve(models);
+		};
+		const reader = new StrictJsonlReader((record) => {
+			const response = readModelDiscoveryResponse(record);
+			if (response === undefined) {
+				return;
+			}
+			if (response.result === "failure") {
+				fail(response.error);
+				return;
+			}
+			succeed(response.models);
+		});
+		child.stdout?.on("data", (chunk: Buffer | string) => {
+			try {
+				reader.push(chunk);
+			} catch (error) {
+				fail(normalizeModelDiscoveryError(error, "Pi model discovery returned invalid JSON"));
+			}
+		});
+		child.stdout?.on("end", () => {
+			try {
+				reader.end();
+			} catch (error) {
+				fail(normalizeModelDiscoveryError(error, "Pi model discovery returned invalid JSON"));
+			}
+		});
+		child.stdout?.on("error", (error) => fail(error));
+		child.stderr?.on("error", (error) => fail(error));
+		// Drain diagnostics so a failing child cannot block on pipe backpressure. Do
+		// not surface arbitrary child stderr through the interactive setup UI.
+		child.stderr?.resume();
+		child.once("error", (error) => fail(error));
+		// A wrapper can exit while a descendant still flushes the inherited stdout
+		// pipe. `close` waits for that pipe to drain, unlike `exit`.
+		child.once("close", (code, signal) => {
+			clearTerminationTimeout();
+			fail(new Error(`Pi model discovery closed before responding (${code ?? "null"}, ${signal ?? "none"}).`));
+		});
+		child.stdin?.on("error", (error) => fail(error));
+		timeout = setTimeout(
+			() => fail(new Error(`Pi model discovery timed out after ${MODEL_DISCOVERY_TIMEOUT_MS}ms.`)),
+			MODEL_DISCOVERY_TIMEOUT_MS,
+		);
+		const { stdin } = child;
+		if (stdin === null || stdin.destroyed) {
+			fail(new Error("Pi model discovery could not open its input stream."));
+			return;
+		}
+		try {
+			stdin.write(`${JSON.stringify({ id: MODEL_DISCOVERY_REQUEST_ID, type: "get_available_models" })}\n`, (error) => {
+				if (error !== undefined && error !== null) {
+					fail(error);
+				}
+			});
+		} catch (error) {
+			fail(normalizeModelDiscoveryError(error, "Pi model discovery request failed"));
+		}
+	});
+}
+
+async function discoverConfiguredModels(command: PiCommand): Promise<ModelDiscovery> {
+	const listed = discoverConfiguredModelNames(command);
+	if (listed.reason !== undefined) {
+		return { models: listed.models, capabilities: {}, reason: listed.reason };
+	}
+	try {
+		const discoveredModels = await discoverModelsThroughPiRpc(command);
+		const capabilities: Record<string, ModelCapability> = {};
+		for (const model of discoveredModels) {
+			const modelId = `${model.provider}/${model.id}`;
 			capabilities[modelId] = { thinkingLevels: getSupportedThinkingLevels(model) };
 		}
-	} catch {
-		// Missing metadata must preserve Pi defaults rather than guessing capabilities.
+		return { models: listed.models, capabilities };
+	} catch (error) {
+		// This UI discovery boundary keeps the RPC diagnostic visible to interactive
+		// setup. Non-interactive setup receives `reason` and rejects any explicit
+		// thinking level that cannot be validated before configuration is written.
+		const reason = error instanceof Error ? error.message : String(error);
+		return {
+			models: listed.models,
+			capabilities: {},
+			reason: `Pi thinking capability discovery unavailable: ${reason}`,
+		};
 	}
-	return capabilities;
 }
 
 function modelChoices(models: readonly string[]): string[] {
@@ -563,10 +801,11 @@ async function editConfig(current: StoredConfig): Promise<StoredConfig> {
 			"",
 		),
 	);
-	const piCommand = [
-		...assertPiCommand(parseCommand(await askLine("Pi command", commandText(current.piCommand)), "Pi command")),
-	];
-	const discovery = await discoverConfiguredModels(piCommand);
+	const selectedPiCommand = assertPiCommand(
+		parseCommand(await askLine("Pi command", commandText(current.piCommand)), "Pi command"),
+	);
+	const piCommand = [...selectedPiCommand];
+	const discovery = await discoverConfiguredModels(selectedPiCommand);
 	if (discovery.reason !== undefined) {
 		console.log(`\n${yellow(`Model discovery unavailable: ${discovery.reason}`)}`);
 	}
@@ -667,10 +906,42 @@ function validateSetupConfig(config: StoredConfig, interactive: boolean): void {
 	assertPiCommand(config.piCommand);
 }
 
+type NonInteractiveThinkingValidation = Readonly<{
+	configuredModel: string;
+	configuredThinking: string;
+	thinkingField: string;
+	capabilities: Readonly<Record<string, ModelCapability>>;
+	discoveryReason: string | undefined;
+}>;
+
+function validateNonInteractiveThinking(request: NonInteractiveThinkingValidation): void {
+	const { configuredModel, configuredThinking, thinkingField, capabilities, discoveryReason } = request;
+	if (configuredThinking.length === 0) {
+		return;
+	}
+	if (discoveryReason !== undefined) {
+		throw new Error(
+			`Non-interactive setup cannot validate configured ${thinkingField} '${configuredThinking}' for ${configuredModel}: ${discoveryReason}`,
+		);
+	}
+	const capability = capabilities[configuredModel];
+	if (capability === undefined) {
+		throw new Error(
+			`Non-interactive setup cannot validate configured ${thinkingField} '${configuredThinking}' for ${configuredModel}: Pi returned no capability metadata for that model.`,
+		);
+	}
+	if (!capability.thinkingLevels.includes(configuredThinking as ThinkingLevel)) {
+		throw new Error(
+			`Configured ${thinkingField} '${configuredThinking}' is not supported by ${configuredModel}. Rerun setup and select a supported level.`,
+		);
+	}
+}
+
 function chooseNonInteractiveModels(
 	config: StoredConfig,
 	models: readonly string[],
 	capabilities: Readonly<Record<string, ModelCapability>> = {},
+	discoveryReason?: string,
 ): StoredConfig {
 	for (const [modelField, thinkingField] of [
 		["conclaveModel", "conclaveThinking"],
@@ -690,18 +961,13 @@ function chooseNonInteractiveModels(
 				`Configured ${modelField} '${configuredModel}' was not discovered by Pi. Rerun setup after configuring that model or select another model.`,
 			);
 		}
-		const configuredThinking = config[thinkingField] ?? "";
-		const capability = capabilities[configuredModel];
-		if (
-			configuredThinking.length > 0 &&
-			capability !== undefined &&
-			capability.thinkingLevels.length > 0 &&
-			!capability.thinkingLevels.includes(configuredThinking as ThinkingLevel)
-		) {
-			throw new Error(
-				`Configured ${thinkingField} '${configuredThinking}' is not supported by ${configuredModel}. Rerun setup and select a supported level.`,
-			);
-		}
+		validateNonInteractiveThinking({
+			configuredModel,
+			configuredThinking: config[thinkingField] ?? "",
+			thinkingField,
+			capabilities,
+			discoveryReason,
+		});
 	}
 	return config;
 }
@@ -735,8 +1001,8 @@ async function configure(options: SetupOptions): Promise<void> {
 	if (interactive) {
 		next = await editConfig(currentConfig);
 	} else {
-		const discovery = await discoverConfiguredModels(currentConfig.piCommand);
-		next = chooseNonInteractiveModels(currentConfig, discovery.models, discovery.capabilities);
+		const discovery = await discoverConfiguredModels(assertPiCommand(currentConfig.piCommand));
+		next = chooseNonInteractiveModels(currentConfig, discovery.models, discovery.capabilities, discovery.reason);
 	}
 	validateSetupConfig(next, interactive);
 	printState(scope, configPath, next, Object.keys(existing).length > 0);
