@@ -3,7 +3,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import process from "node:process";
 import type { PiCommand } from "./executor.js";
 import type { KhalaWork } from "./khala-model.js";
 import { assertPiCommand } from "./khala-pi-command.js";
@@ -50,6 +50,11 @@ interface KhalaConfig {
 
 type ConfigValues = Record<string, unknown>;
 type ErrorCauseOptions = Readonly<{ cause?: unknown }>;
+type KhalaRuntimePaths = Readonly<{ agentDir: string; configDirName: string }>;
+type KhalaRuntimePathResolver = Readonly<{ getAgentDir: () => string; configDirName: string }>;
+
+const DEFAULT_PI_CONFIG_DIR_NAME = ".pi";
+let configuredRuntimePathResolver: KhalaRuntimePathResolver | undefined;
 
 class KhalaConfigError extends Error {
 	readonly cause: unknown;
@@ -83,8 +88,34 @@ const DEFAULT_CONFIG: Omit<KhalaConfig, "archiveRoot"> = {
 	commitConvention: "project",
 };
 
+// The standalone setup CLI cannot import Pi's host modules. The extension
+// supplies Pi's configured path resolver at load time; standalone use follows
+// Pi's documented default and PI_CODING_AGENT_DIR override.
+function configureKhalaRuntimePaths(paths: KhalaRuntimePathResolver): void {
+	configuredRuntimePathResolver = paths;
+}
+
+function getKhalaRuntimePaths(): KhalaRuntimePaths {
+	if (configuredRuntimePathResolver !== undefined) {
+		return {
+			agentDir: configuredRuntimePathResolver.getAgentDir(),
+			configDirName: configuredRuntimePathResolver.configDirName,
+		};
+	}
+	// biome-ignore lint/style/noProcessEnv: Match Pi's documented standalone config-directory override.
+	// biome-ignore lint/complexity/useLiteralKeys: ProcessEnv exposes this configurable key through its index signature.
+	const configuredAgentDir = process.env["PI_CODING_AGENT_DIR"];
+	if (configuredAgentDir !== undefined && configuredAgentDir.length > 0) {
+		return { agentDir: expandHome(configuredAgentDir), configDirName: DEFAULT_PI_CONFIG_DIR_NAME };
+	}
+	return {
+		agentDir: join(homedir(), DEFAULT_PI_CONFIG_DIR_NAME, "agent"),
+		configDirName: DEFAULT_PI_CONFIG_DIR_NAME,
+	};
+}
+
 function getDefaultConfig(): KhalaConfig {
-	return { ...DEFAULT_CONFIG, archiveRoot: join(getAgentDir(), "khala", "conclaves") };
+	return { ...DEFAULT_CONFIG, archiveRoot: join(getKhalaRuntimePaths().agentDir, "khala", "conclaves") };
 }
 
 function loadKhalaConfig(projectPath?: string, projectTrusted = false, requireSupervision = true): KhalaConfig {
@@ -112,13 +143,14 @@ function loadKhalaConfig(projectPath?: string, projectTrusted = false, requireSu
 }
 
 function getKhalaConfigPath(scope: ConfigScopeValue, projectPath?: string): string {
+	const paths = getKhalaRuntimePaths();
 	if (scope === ConfigScope.global) {
-		return join(getAgentDir(), CONFIG_FILE_NAME);
+		return join(paths.agentDir, CONFIG_FILE_NAME);
 	}
 	if (projectPath === undefined) {
 		throw new Error("A project path is required for project Khala configuration.");
 	}
-	return join(projectPath, CONFIG_DIR_NAME, CONFIG_FILE_NAME);
+	return join(projectPath, paths.configDirName, CONFIG_FILE_NAME);
 }
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: Configuration merging is intentionally centralized to preserve inheritance semantics.
@@ -269,8 +301,10 @@ function expandHome(path: string): string {
 	if (path === "~") {
 		return homedir();
 	}
-	if (path.startsWith("~/")) {
-		return join(homedir(), path.slice("~/".length));
+	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) {
+		// Match Pi's normalizePath() Windows tilde form while retaining literal
+		// backslashes on POSIX systems.
+		return join(homedir(), path.slice(2));
 	}
 	return path;
 }
@@ -408,6 +442,7 @@ function readPiCommand(config: ConfigValues, key: string): PiCommand | undefined
 export type { ConfigScopeValue, EffectiveWorkBudget, KhalaConfig, LauncherNameValue };
 export {
 	ConfigScope,
+	configureKhalaRuntimePaths,
 	getKhalaConfigPath,
 	KHALA_SETUP_COMMAND,
 	KhalaConfigError,

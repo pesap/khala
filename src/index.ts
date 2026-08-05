@@ -7,7 +7,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	CONFIG_DIR_NAME,
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+} from "@earendil-works/pi-coding-agent";
 import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
 import { registerKhalaArchiveRead, registerRoleKhalaArchiveRead } from "./khala-archive-tool.js";
 import {
@@ -16,7 +21,7 @@ import {
 	type ConclaveCoordinator,
 	createConclaveCoordinator,
 } from "./khala-conclave.js";
-import { loadKhalaConfig } from "./khala-config.js";
+import { configureKhalaRuntimePaths, loadKhalaConfig } from "./khala-config.js";
 import { registerKhalaCounsel } from "./khala-counsel.js";
 import { registerKhalaDemo } from "./khala-demo.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
@@ -54,6 +59,7 @@ import { readLatestVerdict, registerKhalaVerdict } from "./khala-verdict.js";
 import { registerKhalaWork } from "./khala-work.js";
 
 const baseDir = dirname(fileURLToPath(import.meta.url));
+configureKhalaRuntimePaths({ getAgentDir, configDirName: CONFIG_DIR_NAME });
 const packageRoot = resolvePackageRoot(baseDir);
 const pendingDirectInteractiveInputs = new WeakMap<object, PendingDirectInteractiveInput[]>();
 const pendingDirectUserAssessments = new WeakMap<object, DirectUserAssessmentStart[]>();

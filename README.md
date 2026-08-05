@@ -192,6 +192,8 @@ pi -e .
 
 Khala is a Pi package. The package manifest registers the extension, prompts,
 themes, and the Khala-owned role skills (`khala`, `khala-executor`, and `herdr`).
+Pi provides Khala's extension APIs as host peers, so a Git install installs only
+Khala's own runtime dependencies rather than another Pi runtime.
 
 ## Quick start
 

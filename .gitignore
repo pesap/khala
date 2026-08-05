@@ -557,6 +557,9 @@ $RECYCLE.BIN/
 .agent-native/**/.plan-state.json
 .pi/
 
+# Pi /export captures embed complete local session and tool transcripts.
+/pi-session-*.html
+
 # Local audit and planning notes
 TODO.md
 FINDINGS.md
