@@ -520,12 +520,56 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 			return text;
 		},
 	};
-	const collapsed = oracle.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {});
+	const renderContext = { args: { prompt: "Review this bounded packet." }, isError: false };
+	const collapsed = oracle.renderResult(result, { expanded: false, isPartial: false }, plainTheme, renderContext);
 	assert.match(collapsed.render(120).join("\n"), /→ revise/);
 	assert.match(collapsed.render(120).join("\n"), /1 major/);
-	const expanded = oracle.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
-	assert.match(expanded.render(120).join("\n"), /Findings/);
-	assert.match(expanded.render(120).join("\n"), /src\/example.ts:10/);
+	const expanded = oracle.renderResult(result, { expanded: true, isPartial: false }, plainTheme, renderContext);
+	const expandedText = expanded.render(120).join("\n");
+	assert.match(expandedText, /Bounded review prompt/);
+	assert.match(expandedText, /Review this bounded packet/);
+	assert.match(expandedText, /Complete review result/);
+	assert.match(expandedText, /Model: test-model/);
+	assert.match(expandedText, /Duration: 42 ms/);
+	assert.match(expandedText, /Findings/);
+	assert.match(expandedText, /src\/example.ts:10/);
+});
+
+test("Khala Oracle rendering reports incomplete errors without undefined metadata", () => {
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const result = { content: [{ type: "text", text: "Khala Oracle failed: review output was incomplete." }], details: {} };
+	const renderContext = { args: { prompt: "Bounded packet for the failed review." }, isError: true };
+	const collapsedText = oracle
+		.renderResult(result, { expanded: false, isPartial: false }, plainTheme, renderContext)
+		.render(120)
+		.join("\n");
+	assert.match(collapsedText, /Khala Oracle failed: review output was incomplete/);
+	assert.match(collapsedText, /to expand/);
+	assert.doesNotMatch(collapsedText, /undefined/);
+	const expandedText = oracle
+		.renderResult(result, { expanded: true, isPartial: false }, plainTheme, renderContext)
+		.render(120)
+		.join("\n");
+	assert.match(expandedText, /Bounded review prompt/);
+	assert.match(expandedText, /Bounded packet for the failed review/);
+	assert.match(expandedText, /Error/);
+	assert.match(expandedText, /review output was incomplete/);
+	assert.doesNotMatch(expandedText, /undefined/);
 });
 
 test("Conclave storage appends submission state to the configured Archive", () => {

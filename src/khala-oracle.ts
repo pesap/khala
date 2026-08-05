@@ -1,3 +1,4 @@
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Oracle execution and its defensive renderer share one read-only tool boundary.
 import { execFile } from "node:child_process";
 import type {
 	AgentToolResult,
@@ -97,7 +98,11 @@ function createOracleTool(runner: OracleRunner): ToolDefinition<typeof ORACLE_PA
 			};
 		},
 		renderCall: (args, theme) => renderOracleCall(args, theme),
-		renderResult: (result, options, theme) => renderOracleResult(result, options, theme),
+		renderResult: (result, options, theme, context) =>
+			renderOracleResult(result, options, theme, {
+				prompt: readNonEmptyString(context.args?.prompt),
+				isError: context.isError,
+			}),
 	};
 }
 
@@ -203,41 +208,212 @@ function renderOracleCall(args: OracleInput, theme: Theme): Component {
 	);
 }
 
+type OracleRawDetails = Readonly<{
+	output?: unknown;
+	model?: unknown;
+	durationMs?: unknown;
+	verdict?: unknown;
+	blockers?: unknown;
+	majors?: unknown;
+	minors?: unknown;
+	validationGaps?: unknown;
+}>;
+type OracleRenderDetails = Readonly<{
+	output: string;
+	model: string | undefined;
+	durationMs: number | undefined;
+	verdict: OracleVerdict;
+	blockers: number | undefined;
+	majors: number | undefined;
+	minors: number | undefined;
+	validationGaps: number | undefined;
+}>;
+
 function renderOracleResult(
 	result: AgentToolResult<OracleDetails>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
+	renderContext: Readonly<{ prompt: string | undefined; isError: boolean }>,
 ): Component {
 	if (options.isPartial) {
-		return new Text(theme.fg("warning", "Khala Oracle: reviewing..."), 0, 0);
+		return new Text(theme.fg("warning", "Khala Oracle: reviewing bounded packet..."), 0, 0);
 	}
-	const { details, content } = result;
-	if (details === undefined) {
-		const text = content.find((item) => item.type === "text");
-		let fallback = "";
-		if (text?.type === "text") {
-			fallback = text.text;
-		}
-		return new Text(fallback, 0, 0);
-	}
+	const details = normalizeOracleDetails(result.details, result.content);
 	if (options.expanded) {
-		return new Markdown(details.output, 0, 0, getMarkdownTheme());
+		return new Markdown(
+			formatExpandedOracleResult(details, renderContext.prompt, renderContext.isError),
+			0,
+			0,
+			getMarkdownTheme(),
+		);
 	}
-	return new Text(formatCompactOracleResult(details, theme), 0, 0);
+	return new Text(formatCompactOracleResult(details, theme, renderContext.isError), 0, 0);
 }
 
-function formatCompactOracleResult(details: OracleDetails, theme: Theme): string {
+function normalizeOracleDetails(
+	details: unknown,
+	content: AgentToolResult<OracleDetails>["content"],
+): OracleRenderDetails {
+	let source: OracleRawDetails = {};
+	if (isRecord(details)) {
+		source = details as OracleRawDetails;
+	}
+	const rawOutput = readString(source.output);
+	const output = rawOutput ?? readTextContent(content) ?? "";
+	let verdict = readOracleVerdict(source.verdict);
+	if (rawOutput !== undefined) {
+		verdict = readVerdict(rawOutput);
+	}
+	return {
+		output,
+		model: readNonEmptyString(source.model),
+		durationMs: readNonNegativeNumber(source.durationMs),
+		verdict,
+		blockers: readNonNegativeInteger(source.blockers),
+		majors: readNonNegativeInteger(source.majors),
+		minors: readNonNegativeInteger(source.minors),
+		validationGaps: readNonNegativeInteger(source.validationGaps),
+	};
+}
+
+function formatCompactOracleResult(details: OracleRenderDetails, theme: Theme, isError: boolean): string {
+	if (isError) {
+		let error = details.output;
+		if (error.length === 0) {
+			error = "review failed without an error message";
+		}
+		return `${theme.fg("error", `Khala Oracle: ${error}`)} ${theme.fg("dim", keyHint("app.tools.expand", "to expand"))}`;
+	}
 	let verdictColor: ThemeColor = "warning";
 	if (details.verdict === "pass") {
 		verdictColor = "success";
 	} else if (details.verdict === "blocked") {
 		verdictColor = "error";
 	}
-	const counts = [`${details.blockers} blocker(s)`, `${details.majors} major`, `${details.minors} minor`];
-	if (details.validationGaps > 0) {
+	let verdict = `→ ${details.verdict}`;
+	if (details.verdict === "unknown") {
+		verdict = "incomplete review (no final verdict)";
+	}
+	const counts = formatAvailableOracleCounts(details);
+	if (details.validationGaps !== undefined && details.validationGaps > 0) {
 		counts.push(`${details.validationGaps} validation gap(s)`);
 	}
-	return `${theme.fg(verdictColor, `→ ${details.verdict}`)} ${theme.fg("muted", counts.join(" · "))} ${theme.fg("dim", keyHint("app.tools.expand", "to expand"))}`;
+	let suffix = "";
+	if (counts.length > 0) {
+		suffix = ` · ${counts.join(" · ")}`;
+	}
+	return `${theme.fg(verdictColor, verdict)}${theme.fg("muted", suffix)} ${theme.fg("dim", keyHint("app.tools.expand", "to expand"))}`;
+}
+
+function formatAvailableOracleCounts(details: OracleRenderDetails): string[] {
+	const counts: string[] = [];
+	if (details.blockers !== undefined) {
+		counts.push(`${details.blockers} blocker(s)`);
+	}
+	if (details.majors !== undefined) {
+		counts.push(`${details.majors} major`);
+	}
+	if (details.minors !== undefined) {
+		counts.push(`${details.minors} minor`);
+	}
+	return counts;
+}
+
+function formatExpandedOracleResult(
+	details: OracleRenderDetails,
+	prompt: string | undefined,
+	isError: boolean,
+): string {
+	const { model: sourceModel, durationMs, output: sourceOutput } = details;
+	let model = sourceModel;
+	if (model === undefined) {
+		model = "(unavailable)";
+	}
+	let duration = "(unavailable)";
+	if (durationMs !== undefined) {
+		duration = `${durationMs} ms`;
+	}
+	let resultLabel = "Complete review result";
+	if (isError) {
+		resultLabel = "Error";
+	}
+	let boundedPrompt = prompt;
+	if (boundedPrompt === undefined) {
+		boundedPrompt = "(unavailable)";
+	}
+	let output = sourceOutput;
+	if (output.length === 0) {
+		output = "(no review result or error text available)";
+	}
+	return [
+		"## Khala Oracle review",
+		`Model: ${model} · Duration: ${duration}`,
+		"",
+		"### Bounded review prompt",
+		boundedPrompt,
+		"",
+		`### ${resultLabel}`,
+		output,
+	].join("\n");
+}
+
+function readTextContent(content: unknown): string | undefined {
+	if (!Array.isArray(content)) {
+		return;
+	}
+	const text = content.find(isTextContent);
+	if (text === undefined || text.text.trim().length === 0) {
+		return;
+	}
+	return text.text;
+}
+
+function isTextContent(value: unknown): value is { type: "text"; text: string } {
+	if (!isRecord(value)) {
+		return false;
+	}
+	const candidate = value as { type?: unknown; text?: unknown };
+	return candidate.type === "text" && typeof candidate.text === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function readString(value: unknown): string | undefined {
+	if (typeof value !== "string") {
+		return;
+	}
+	return value;
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+	const string = readString(value)?.trim();
+	if (string === undefined || string.length === 0) {
+		return;
+	}
+	return string;
+}
+
+function readNonNegativeNumber(value: unknown): number | undefined {
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+		return;
+	}
+	return value;
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		return;
+	}
+	return value;
+}
+
+function readOracleVerdict(value: unknown): OracleVerdict {
+	if (value === "pass" || value === "revise" || value === "blocked") {
+		return value;
+	}
+	return "unknown";
 }
 
 function readVerdict(output: string): OracleVerdict {
