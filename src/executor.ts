@@ -49,6 +49,7 @@ interface ExecutorRequest {
 	onRpcReady?: (binding: RpcSessionBinding) => Promise<void> | void;
 	onRpcEvent?: (event: unknown) => Promise<void> | void;
 	onRpcFailure?: (error: Error) => Promise<void> | void;
+	onRuntimeFailure?: (error: Error) => Promise<void> | void;
 	onReviewPrepared?: (preparation: ReviewPreparation, sandbox: Sandbox) => Promise<void> | void;
 	reviewWorkflow?: Readonly<{
 		publish: boolean;
@@ -143,6 +144,7 @@ function createExecutorStarter(
 		let sandboxRemoved = false;
 		let headlessRuntime: HeadlessExecutorRuntime | undefined;
 		let launched: LaunchedSession | undefined;
+		let cleanupAfterLaunch: (() => Promise<void>) | undefined;
 		try {
 			let activeLauncherName = launcherName;
 			if (request.kind === "executor") {
@@ -245,9 +247,16 @@ function createExecutorStarter(
 							runtime,
 						);
 				}
-				if (request.onRpcFailure !== undefined || supervision !== undefined) {
-					runtimeOptions.onFailure = (error) => {
-						const explicitResult = request.onRpcFailure?.(error);
+				if (request.onRpcFailure !== undefined || request.onRuntimeFailure !== undefined || supervision !== undefined) {
+					runtimeOptions.onFailure = async (error) => {
+						if (cleanupAfterLaunch !== undefined) {
+							try {
+								await cleanupAfterLaunch();
+							} catch (cleanupError) {
+								attachCleanupDiagnostic(error, cleanupError);
+							}
+						}
+						const explicitResult = (request.onRuntimeFailure ?? request.onRpcFailure)?.(error);
 						const supervisedResult = supervision?.handleRuntimeFailure(
 							{
 								workId: request.workId,
@@ -289,7 +298,7 @@ function createExecutorStarter(
 			}
 			const runningLaunch = launched;
 
-			const cleanup = async () => {
+			const cleanup = async (resourceAlreadyClosed = false) => {
 				const cleanupErrors: unknown[] = [];
 				if (launcher !== undefined && !launcherClosed && runningLaunch.target !== undefined) {
 					try {
@@ -298,6 +307,9 @@ function createExecutorStarter(
 					} catch (cleanupError) {
 						cleanupErrors.push(cleanupError);
 					}
+				}
+				if (resourceAlreadyClosed) {
+					launcherClosed = true;
 				}
 				if (!launcherClosed && headlessRuntime !== undefined) {
 					try {
@@ -332,6 +344,25 @@ function createExecutorStarter(
 					throw cleanupFailure;
 				}
 			};
+			cleanupAfterLaunch = cleanup;
+			if (runningLaunch.exited !== undefined) {
+				runningLaunch.exited
+					.then(async (exit) => {
+						if (launcherClosed) {
+							return;
+						}
+						const error = new Error(
+							`Executor launcher child exited unexpectedly (code=${exit.code ?? "null"}, signal=${exit.signal ?? "none"}).`,
+						);
+						try {
+							await cleanup(true);
+						} catch (cleanupError) {
+							attachCleanupDiagnostic(error, cleanupError);
+						}
+						await (request.onRuntimeFailure ?? request.onRpcFailure)?.(error);
+					})
+					.catch(() => undefined);
+			}
 			return { ...runningLaunch, cleanup };
 		} catch (error) {
 			if (headlessRuntime !== undefined) {

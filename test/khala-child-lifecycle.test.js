@@ -7,7 +7,7 @@ import process from "node:process";
 import test from "node:test";
 import { createExecutorStarter } from "../dist/src/executor.js";
 import { createZellijLauncher } from "../dist/src/launch-zellij.js";
-import { waitForStartup } from "../dist/src/launcher.js";
+import { waitForExit, waitForStartup } from "../dist/src/launcher.js";
 
 function runBootstrap(markerPath, code) {
 	return new Promise((resolve) => {
@@ -25,6 +25,19 @@ test("Observer bootstrap reports child readiness without shell interpretation", 
 		const child = runBootstrap(marker, "require('node:fs').writeFileSync(process.env.KHALA_STARTUP_MARKER, 'ready')");
 		await waitForStartup(marker);
 		assert.equal(await child, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Observer bootstrap reports a child exit after readiness", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-startup-later-exit-"));
+	const marker = join(root, "startup-marker");
+	try {
+		const child = runBootstrap(marker, "require('node:fs').writeFileSync(process.env.KHALA_STARTUP_MARKER, 'ready'); setTimeout(() => process.exit(9), 150)");
+		await waitForStartup(marker);
+		assert.deepEqual(await waitForExit(marker), { code: 9, signal: null });
+		assert.equal(await child, 9);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

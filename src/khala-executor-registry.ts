@@ -17,6 +17,7 @@ type ExecutorRuntimeUpdate = Readonly<{
 	sessionPath?: string;
 	promptIdentity?: ExecutorPromptIdentity;
 	upstreamBase?: UpstreamExecutionBase;
+	failure?: string;
 	lastSignalAt?: string;
 }>;
 
@@ -76,26 +77,42 @@ function updateExecutorRecord(
 		if (current === undefined) {
 			return;
 		}
+		assertRuntimeTransition(current, update, executionId);
+		if (current.status === ExecutorStatus.failed && update.status === ExecutorStatus.failed) {
+			return current;
+		}
 		const next = { ...current, ...update };
-		if (
-			(update.piSessionId !== undefined &&
-				current.piSessionId !== undefined &&
-				update.piSessionId !== current.piSessionId) ||
-			(update.sessionPath !== undefined &&
-				current.sessionPath !== undefined &&
-				update.sessionPath !== current.sessionPath) ||
-			(update.promptIdentity !== undefined &&
-				current.promptIdentity !== undefined &&
-				JSON.stringify(update.promptIdentity) !== JSON.stringify(current.promptIdentity)) ||
-			(update.upstreamBase !== undefined &&
-				current.upstreamBase !== undefined &&
-				JSON.stringify(update.upstreamBase) !== JSON.stringify(current.upstreamBase))
-		) {
-			throw new Error(`Execution ${executionId} has immutable identity bindings.`);
+		if (current.failure !== undefined && update.failure !== undefined) {
+			next.failure = current.failure;
 		}
 		writeExecutorRecord(next, projectTrusted);
 		return next;
 	});
+}
+
+function assertRuntimeTransition(current: ExecutorRecord, update: ExecutorRuntimeUpdate, executionId: string): void {
+	if (
+		update.status === ExecutorStatus.running &&
+		(current.status === ExecutorStatus.failed || current.status === ExecutorStatus.finished)
+	) {
+		throw new Error(`Execution ${executionId} cannot return to running from ${current.status}.`);
+	}
+	if (
+		(update.piSessionId !== undefined &&
+			current.piSessionId !== undefined &&
+			update.piSessionId !== current.piSessionId) ||
+		(update.sessionPath !== undefined &&
+			current.sessionPath !== undefined &&
+			update.sessionPath !== current.sessionPath) ||
+		(update.promptIdentity !== undefined &&
+			current.promptIdentity !== undefined &&
+			JSON.stringify(update.promptIdentity) !== JSON.stringify(current.promptIdentity)) ||
+		(update.upstreamBase !== undefined &&
+			current.upstreamBase !== undefined &&
+			JSON.stringify(update.upstreamBase) !== JSON.stringify(current.upstreamBase))
+	) {
+		throw new Error(`Execution ${executionId} has immutable identity bindings.`);
+	}
 }
 
 function readExecutorRecord(

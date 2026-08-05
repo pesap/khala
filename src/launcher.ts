@@ -1,12 +1,15 @@
-import { existsSync, readFileSync, unlinkSync, watch } from "node:fs";
+import { existsSync, readFileSync, watch } from "node:fs";
 import { dirname } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { Sandbox } from "./executor.js";
 
 const STARTUP_TIMEOUT_MS = 10_000;
+const LAUNCHER_EXIT_MARKER_PARTS = 3;
 
 type StartupRequest = Readonly<{ markerPath: string }>;
+
+type LauncherExit = Readonly<{ code: number | null; signal: NodeJS.Signals | null }>;
 
 interface LaunchRequest {
 	sandbox: Sandbox;
@@ -21,6 +24,8 @@ interface LaunchedSession {
 	sandbox: Sandbox;
 	target?: string;
 	ready?: Promise<void>;
+	/** Resolves with the child exit observed after the launcher reported readiness. */
+	exited?: Promise<LauncherExit>;
 	/** Releases only resources created by this launch transaction. */
 	cleanup?: () => Promise<void>;
 }
@@ -60,11 +65,6 @@ function waitForStartup(markerPath: string): Promise<void> {
 				clearTimeout(timeout);
 			}
 			watcher?.close();
-			try {
-				unlinkSync(markerPath);
-			} catch {
-				// Sandbox cleanup owns missing markers.
-			}
 			if (error === undefined) {
 				resolve();
 			} else {
@@ -93,5 +93,45 @@ function waitForStartup(markerPath: string): Promise<void> {
 	});
 }
 
-export type { LaunchedSession, LaunchRequest, StartupRequest };
-export { hasErrorCode, Launcher, prepareStartupRequest, waitForStartup };
+function waitForExit(markerPath: string): Promise<LauncherExit> {
+	return new Promise((resolve) => {
+		let watcher: ReturnType<typeof watch> | undefined;
+		const finish = (exit: LauncherExit) => {
+			watcher?.close();
+			resolve(exit);
+		};
+		const inspect = () => {
+			if (!existsSync(markerPath)) {
+				return;
+			}
+			const exit = parseLauncherExit(readFileSync(markerPath, "utf8").trim());
+			if (exit !== undefined) {
+				finish(exit);
+			}
+		};
+		watcher = watch(dirname(markerPath), { persistent: false }, inspect);
+		inspect();
+	});
+}
+
+function parseLauncherExit(marker: string): LauncherExit | undefined {
+	if (!marker.startsWith("exit:")) {
+		return;
+	}
+	const [, code, signal] = marker.split(":", LAUNCHER_EXIT_MARKER_PARTS);
+	let exitCode: number | null = null;
+	if (code !== undefined && code !== "null") {
+		const parsedCode = Number(code);
+		if (Number.isInteger(parsedCode)) {
+			exitCode = parsedCode;
+		}
+	}
+	let exitSignal: NodeJS.Signals | null = null;
+	if (signal !== undefined && signal !== "none") {
+		exitSignal = signal as NodeJS.Signals;
+	}
+	return { code: exitCode, signal: exitSignal };
+}
+
+export type { LaunchedSession, LauncherExit, LaunchRequest, StartupRequest };
+export { hasErrorCode, Launcher, prepareStartupRequest, waitForExit, waitForStartup };

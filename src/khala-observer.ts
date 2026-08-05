@@ -114,6 +114,17 @@ async function launchObserver(
 					{ sandboxPath: sandbox.path, launcher: launcherName },
 					projectTrusted,
 				),
+			onRuntimeFailure: (error) => {
+				updateExecutorRecord(
+					context.cwd,
+					executionId,
+					{
+						status: ExecutorStatus.failed,
+						failure: `${formatError(error)}${formatAttachedCleanupDiagnostic(error)}`,
+					},
+					projectTrusted,
+				);
+			},
 		});
 		let runtimeUpdate: { status: typeof ExecutorStatus.running; target?: string } = {
 			status: ExecutorStatus.running,

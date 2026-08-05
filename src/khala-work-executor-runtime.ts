@@ -11,7 +11,8 @@ import { listVerdictRecords, projectCoordinations } from "./khala-archive-projec
 import { loadKhalaConfig } from "./khala-config.js";
 import { resolveCoordination } from "./khala-coordination.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
-import { updateExecutorRecord } from "./khala-executor-registry.js";
+import { formatAttachedCleanupDiagnostic, formatError } from "./khala-error.js";
+import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
 import {
 	ExecutorStatus,
 	KhalaWorkEntryStatus,
@@ -48,6 +49,10 @@ function completeExecutorLaunch(input: {
 }): KhalaWorkLaunchResult {
 	const { pi, workId, context, dependencies, projectTrusted, mandate, executionId, mission, executorName, launched } =
 		input;
+	const current = readExecutorRecord(context.cwd, executionId, projectTrusted);
+	if (current?.status !== ExecutorStatus.starting) {
+		throw new Error(`Execution ${executionId} was no longer starting when launch initialization completed.`);
+	}
 	updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.running }, projectTrusted);
 	const releasedCoordination = projectCoordinations(context.cwd, projectTrusted).find(
 		(candidate) =>
@@ -211,8 +216,16 @@ function startExecutor(input: {
 		onRpcReady: ({ sessionId, sessionPath }) => {
 			updateExecutorRecord(context.cwd, executionId, { piSessionId: sessionId, sessionPath }, projectTrusted);
 		},
-		onRpcFailure: (_error) => {
-			updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.failed }, projectTrusted);
+		onRuntimeFailure: (error) => {
+			updateExecutorRecord(
+				context.cwd,
+				executionId,
+				{
+					status: ExecutorStatus.failed,
+					failure: `${formatError(error)}${formatAttachedCleanupDiagnostic(error)}`,
+				},
+				projectTrusted,
+			);
 		},
 		reviewWorkflow,
 		onReviewPrepared: (preparation: ReviewPreparation) => {

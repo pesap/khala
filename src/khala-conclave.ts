@@ -936,8 +936,13 @@ async function startFreshSameMissionExecution(
 					input.projectTrusted,
 				);
 			},
-			onRpcFailure: () => {
-				updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
+			onRpcFailure: (error) => {
+				updateExecutorRecord(
+					input.projectPath,
+					executionId,
+					{ status: ExecutorStatus.failed, failure: formatError(error) },
+					input.projectTrusted,
+				);
 				supervision.closeRuntimeOwner(executionId).catch(() => undefined);
 			},
 		});

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -218,7 +218,7 @@ test("headless Executor becomes ready from get_state and closes by ending its pi
 			},
 		});
 		await runtime.start();
-		assert.deepEqual(binding, { sessionId: "session-stable", sessionPath: join(root, "executor-session.jsonl") });
+		assert.deepEqual(binding, { sessionId: "session-stable", sessionPath: join(realpathSync(root), "executor-session.jsonl") });
 		assert.equal(starts[0].includes("--mode"), true);
 		assert.equal(starts[0].includes("rpc"), true);
 		assert.equal(starts[0].includes("provider/executor"), true);
@@ -228,7 +228,7 @@ test("headless Executor becomes ready from get_state and closes by ending its pi
 	}
 });
 
-test("RPC restart runs catch-up before accepting same-session live events", async () => {
+test("RPC runtime loss does not restart or accept live events", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-rpc-catch-up-order-"));
 	const starts = [];
 	const order = [];
@@ -274,17 +274,18 @@ process.stdin.on("data", chunk => {
 		});
 		await runtime.start();
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.deepEqual(order, ["catch-up", "live-event"]);
-		assert.equal(starts.length, 2);
+		assert.deepEqual(order, []);
+		assert.equal(starts.length, 1);
 		await runtime.closeProcess();
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("unexpected Executor loss restarts the same Pi session", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-rpc-restart-"));
+test("unexpected Executor loss records failure without returning to running", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-rpc-exit-"));
 	const starts = [];
+	const failures = [];
 	try {
 		const runtime = new HeadlessExecutorRuntime({
 			command: process.execPath,
@@ -293,12 +294,12 @@ test("unexpected Executor loss restarts the same Pi session", async () => {
 			model: "provider/executor",
 			mission: "Mission identity",
 			spawnProcess: createChildFactory(root, starts),
+			onFailure: (error) => { failures.push(error.message); },
 		});
 		await runtime.start();
 		await new Promise((resolve) => setTimeout(resolve, 150));
-		assert.equal(starts.length, 2);
-		assert.equal(starts[1].includes("--session"), true);
-		assert.equal(starts[1].includes(join(root, "executor-session.jsonl")), true);
+		assert.equal(starts.length, 1);
+		assert.match(failures[0] ?? "", /exited unexpectedly.*code=9/);
 		await runtime.closeProcess();
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -397,7 +398,7 @@ test("stdin EPIPE and child error races settle startup without uncaught errors",
 	}
 });
 
-test("restart rejects a changed session path even when the session ID is stable", async () => {
+test("runtime loss preserves its exit evidence", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-rpc-session-path-"));
 	const starts = [];
 	try {
@@ -424,7 +425,8 @@ test("restart rejects a changed session path even when the session ID is stable"
 		const failures = [];
 		await runtime.start();
 		await new Promise((resolve) => setTimeout(resolve, 150));
-		assert.match(failures[0] ?? "", /session identity/);
+		assert.match(failures[0] ?? "", /exited unexpectedly.*code=9/);
+		assert.equal(starts.length, 1);
 		await runtime.closeProcess();
 	} finally {
 		rmSync(root, { recursive: true, force: true });
