@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -514,8 +514,16 @@ test("Conclave supervision allowlist excludes implementation and shell tools", (
 test("mission starter uses a headless runtime without an Executor target", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-rpc-starter-"));
 	const fakePi = join(root, "fake-pi");
-	writeFileSync(fakePi, `#!/usr/bin/env node\n${CHILD_SCRIPT}`);
+	const extensionPath = join(root, "khala-extension.ts");
+	const argumentCapturePath = join(root, "pi-arguments.json");
+	writeFileSync(extensionPath, "export default {};\n");
+	writeFileSync(
+		fakePi,
+		`#!/usr/bin/env node\nconst { writeFileSync } = require("node:fs");\nwriteFileSync(process.env.KHALA_ARGUMENT_CAPTURE, JSON.stringify(process.argv.slice(2)));\n${CHILD_SCRIPT}`,
+	);
 	chmodSync(fakePi, 0o755);
+	const previousArgumentCapture = process.env.KHALA_ARGUMENT_CAPTURE;
+	process.env.KHALA_ARGUMENT_CAPTURE = argumentCapturePath;
 	let removed = false;
 	let launchName;
 	try {
@@ -528,6 +536,9 @@ test("mission starter uses a headless runtime without an Executor target", async
 			[fakePi],
 			"tmux",
 			"provider/executor",
+			[],
+			undefined,
+			extensionPath,
 		);
 		const launched = await starter({
 			projectPath: root,
@@ -542,9 +553,14 @@ test("mission starter uses a headless runtime without an Executor target", async
 		});
 		assert.equal(launched.target, undefined);
 		assert.equal(launchName, KHALA_HEADLESS_LAUNCHER);
+		const childArguments = JSON.parse(readFileSync(argumentCapturePath, "utf8"));
+		assert.deepEqual(childArguments.slice(4, 6), ["--extension", extensionPath]);
+		assert.ok(childArguments.indexOf("--khala-work-id") > 5);
 		await launched.cleanup();
 		assert.equal(removed, true);
 	} finally {
+		if (previousArgumentCapture === undefined) delete process.env.KHALA_ARGUMENT_CAPTURE;
+		else process.env.KHALA_ARGUMENT_CAPTURE = previousArgumentCapture;
 		rmSync(root, { recursive: true, force: true });
 	}
 });

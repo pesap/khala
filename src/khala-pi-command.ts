@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, resolve as resolvePath } from "node:path";
 import type { PiCommand } from "./executor.js";
 
 const PI_COMMAND_SUFFIX_PATTERN = /\.(cmd|exe)$/i;
@@ -75,6 +76,56 @@ function isolateOraclePiCommand(command: PiCommand): PiCommand {
 	return [program, ...safeArguments];
 }
 
+type ExtensionArgument = Readonly<{ path: string; nextIndex: number }>;
+
+function readExtensionArgument(arguments_: readonly string[], index: number): ExtensionArgument | undefined {
+	const argument = arguments_[index];
+	if (argument === "--extension" || argument === "-e") {
+		const path = arguments_[index + 1];
+		if (path === undefined) {
+			throw new Error(`Configured Pi option '${argument}' requires a value.`);
+		}
+		return { path, nextIndex: index + 1 };
+	}
+	if (argument?.startsWith("--extension=") === true || argument?.startsWith("-e=") === true) {
+		const equalsIndex = argument.indexOf("=");
+		const path = argument.slice(equalsIndex + 1);
+		if (path.length === 0) {
+			throw new Error(`Configured Pi option '${argument.slice(0, equalsIndex)}' requires a value.`);
+		}
+		return { path, nextIndex: index };
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy the strict optional parser contract.
+	return undefined;
+}
+
+function hasKhalaExtension(arguments_: readonly string[], extensionPath: string): boolean {
+	const normalizedExtensionPath = resolvePath(extensionPath);
+	for (let index = 0; index < arguments_.length; index += 1) {
+		const configuredExtension = readExtensionArgument(arguments_, index);
+		if (configuredExtension !== undefined) {
+			if (resolvePath(configuredExtension.path) === normalizedExtensionPath) {
+				return true;
+			}
+			index = configuredExtension.nextIndex;
+		}
+	}
+	return false;
+}
+
+function addKhalaExtension(command: PiCommand, extensionPath: string): PiCommand {
+	if (extensionPath.trim().length === 0) {
+		throw new Error("Khala child launch requires a non-empty extension path.");
+	}
+	if (!existsSync(extensionPath)) {
+		throw new Error(`Khala child extension was not found: ${extensionPath}`);
+	}
+	if (hasKhalaExtension(command.slice(1), extensionPath)) {
+		return command;
+	}
+	return [...command, "--extension", extensionPath];
+}
+
 function removePiOptionSelection(command: PiCommand, option: string): PiCommand {
 	const [program, ...arguments_] = command;
 	const filteredArguments: string[] = [];
@@ -91,4 +142,4 @@ function removePiOptionSelection(command: PiCommand, option: string): PiCommand 
 	return [program, ...filteredArguments];
 }
 
-export { assertPiCommand, isolateOraclePiCommand, removePiOptionSelection };
+export { addKhalaExtension, assertPiCommand, isolateOraclePiCommand, removePiOptionSelection };

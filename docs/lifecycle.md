@@ -80,8 +80,14 @@ never rebases an active attempt in place.
 
 Each Executor is a headless child Pi RPC runtime in its isolated worktree. It
 has a persisted Pi session ID and path, explicit configured model, prompt
-package/hash identity, participant binding, and optional upstream base. Zellij,
-tmux, and Herdr panes remain Observer-only launch and viewing surfaces.
+package/hash identity, participant binding, and optional upstream base. Every
+Khala-launched Executor and Observer passes the packaged Khala extension to its
+child Pi command before Khala's internal flags. The command remains argv-based;
+configured Pi arguments are preserved and an already configured Khala extension
+is not duplicated. This extension-loading fence validates startup configuration,
+but it does not prove that a launcher tab or child process remains healthy after
+initialization; that lifecycle monitoring is separate. Zellij, tmux, and Herdr
+panes remain Observer-only launch and viewing surfaces.
 
 ## Execution, assessment, and control
 
