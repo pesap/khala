@@ -48,8 +48,9 @@ and invalid typed payloads fail closed rather than projecting as empty state.
   Executor records also bind `piSessionId`, `sessionPath`,
   `promptIdentity { packageVersion, promptSha256 }`, and optional immutable
   `upstreamBase { kind, workId, missionId, executionId, remote, branch,
-  headCommit }`. An Executor uses `launcher: "headless-rpc"`; Observer records
-  retain their configured zellij, tmux, or Herdr pane target.
+  headCommit }`, and optional original runtime `failure` evidence. An Executor
+  uses `launcher: "headless-rpc"`; Observer records retain their configured
+  zellij, tmux, or Herdr pane target.
 - **Signal**: `signalId`, exact Work/Execution identity, optional Mission and
   participant, kind (`progress`, `blocked`, or `finished`), summary, nonempty
   evidence where required, and `observedAt`.

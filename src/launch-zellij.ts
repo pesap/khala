@@ -7,6 +7,7 @@ import {
 	Launcher,
 	type LaunchRequest,
 	prepareStartupRequest,
+	waitForExit,
 	waitForStartup,
 } from "./launcher.js";
 
@@ -24,14 +25,18 @@ type ZellijEnvironment = Readonly<{
 class ZellijLauncher extends Launcher {
 	override async launch(request: LaunchRequest): Promise<LaunchedSession> {
 		const target = await launchZellij(prepareStartupRequest(request));
-		let ready: Promise<void> | undefined;
-		if (request.startup !== undefined) {
-			ready = waitForStartup(request.startup.markerPath);
-		}
-		if (ready === undefined) {
+		const { startup } = request;
+		if (startup === undefined) {
 			return { id: request.sandbox.name, sandbox: request.sandbox, target };
 		}
-		return { id: request.sandbox.name, sandbox: request.sandbox, target, ready };
+		const ready = waitForStartup(startup.markerPath);
+		return {
+			id: request.sandbox.name,
+			sandbox: request.sandbox,
+			target,
+			ready,
+			exited: waitForExit(startup.markerPath),
+		};
 	}
 
 	override focus(target: string): Promise<void> {

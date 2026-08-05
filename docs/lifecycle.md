@@ -80,8 +80,12 @@ never rebases an active attempt in place.
 
 Each Executor is a headless child Pi RPC runtime in its isolated worktree. It
 has a persisted Pi session ID and path, explicit configured model, prompt
-package/hash identity, participant binding, and optional upstream base. Zellij,
-tmux, and Herdr panes remain Observer-only launch and viewing surfaces.
+package/hash identity, participant binding, and optional upstream base. Startup
+must complete the RPC initialization fence before the Execution becomes
+`running`; a later child exit records the original failure and closes the
+runtime-owned sandbox without reviving the Execution. Zellij, tmux, and Herdr
+panes remain Observer-only launch and viewing surfaces. Their bootstrap marker
+is retained after readiness so detached child exits are observed uniformly.
 
 ## Execution, assessment, and control
 

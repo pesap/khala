@@ -196,6 +196,8 @@ type ExecutorRecord = Readonly<{
 	sessionPath?: string;
 	promptIdentity?: ExecutorPromptIdentity;
 	upstreamBase?: UpstreamExecutionBase;
+	/** Original runtime/startup failure, including cleanup diagnostics when observed. */
+	failure?: string;
 	status: ExecutorStatusValue;
 	startedAt: string;
 	lastSignalAt?: string;
@@ -906,6 +908,7 @@ function isExecutorRecord(value: unknown): value is ExecutorRecord {
 		(record.sessionPath === undefined || isNonEmptyString(record.sessionPath)) &&
 		(record.promptIdentity === undefined || isPromptIdentity(record.promptIdentity)) &&
 		(record.upstreamBase === undefined || isUpstreamExecutionBase(record.upstreamBase)) &&
+		(record.failure === undefined || typeof record.failure === "string") &&
 		(record.status === ExecutorStatus.starting ||
 			record.status === ExecutorStatus.running ||
 			record.status === ExecutorStatus.finished ||

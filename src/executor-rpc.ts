@@ -127,12 +127,12 @@ class HeadlessExecutorRuntime {
 	private closed = false;
 	private starting = false;
 	private restartPromise: Promise<void> | undefined;
-	private started = false;
 	private stopping = false;
 	private requestNumber = 0;
 	private binding: RpcSessionBinding | undefined;
 	private stopPromise: Promise<void> | undefined;
 	private failurePromise: Promise<void> | undefined;
+	private failureError: Error | undefined;
 	private capturedStderr = Buffer.alloc(0);
 	private eventReady: Promise<void> = Promise.resolve();
 	private eventReadyResolve: (() => void) | undefined;
@@ -287,7 +287,6 @@ class HeadlessExecutorRuntime {
 			await this.restartPromise;
 			return true;
 		}
-		this.started = false;
 		await this.stopChild();
 		return false;
 	}
@@ -312,7 +311,6 @@ class HeadlessExecutorRuntime {
 	}
 
 	private async performRestart(): Promise<void> {
-		this.started = false;
 		await this.stopChild();
 		await this.startProcess(true);
 	}
@@ -382,12 +380,14 @@ class HeadlessExecutorRuntime {
 				await this.options.onReady?.(binding);
 				await this.sendPrompt(this.options.mission);
 			}
-			this.started = true;
 			this.eventReadyResolve?.();
 			this.eventReadyResolve = undefined;
 			await this.eventChain;
 			if (this.eventFailure !== undefined) {
 				throw this.eventFailure;
+			}
+			if (this.failureError !== undefined) {
+				throw this.failureError;
 			}
 		} catch (error) {
 			const normalized = normalizeError(error, "Executor RPC startup failed");
@@ -437,7 +437,7 @@ class HeadlessExecutorRuntime {
 			}
 		});
 		child.once("error", (error) => this.reportFailure(error));
-		child.once("exit", () => this.handleExit(child));
+		child.once("exit", (code, signal) => this.handleExit(child, code, signal));
 	}
 
 	private async requestState(): Promise<RpcState> {
@@ -524,19 +524,24 @@ class HeadlessExecutorRuntime {
 			});
 	}
 
-	private handleExit(child: ChildProcess): void {
+	private handleExit(child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
 		if (this.child !== child) {
 			return;
 		}
 		this.child = undefined;
-		const error = new Error("Executor RPC child process exited unexpectedly.");
-		rejectPending(error, this.pending);
-		if (this.closed || !this.started) {
+		if (this.closed || this.stopping) {
 			return;
 		}
-		this.restartFromSession()
-			.catch((restartError) => this.fail(restartError))
-			.catch(() => undefined);
+		const details = `code=${code ?? "null"}, signal=${signal ?? "none"}`;
+		const stderr = this.capturedStderr.toString("utf8").trim();
+		let message = `Executor RPC child process exited unexpectedly (${details}).`;
+		if (stderr.length > 0) {
+			message += ` stderr: ${stderr}`;
+		}
+		const error = new Error(message);
+		this.failureError = error;
+		rejectPending(error, this.pending);
+		this.fail(error).catch(() => undefined);
 	}
 
 	private fail(error: unknown): Promise<void> {
@@ -544,6 +549,7 @@ class HeadlessExecutorRuntime {
 			return this.failurePromise;
 		}
 		const normalized = normalizeError(error, "Executor RPC process failed");
+		this.failureError = normalized;
 		this.closed = true;
 		rejectPending(normalized, this.pending);
 		this.failurePromise = (async () => {

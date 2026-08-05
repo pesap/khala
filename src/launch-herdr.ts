@@ -8,6 +8,7 @@ import {
 	Launcher,
 	type LaunchRequest,
 	prepareStartupRequest,
+	waitForExit,
 	waitForStartup,
 } from "./launcher.js";
 
@@ -31,14 +32,18 @@ type HerdrWorktreeOpenResponse = Readonly<{
 class HerdrLauncher extends Launcher {
 	override async launch(request: LaunchRequest): Promise<LaunchedSession> {
 		const paneId = await launchHerdr(prepareStartupRequest(request));
-		let ready: Promise<void> | undefined;
-		if (request.startup !== undefined) {
-			ready = waitForStartup(request.startup.markerPath);
-		}
-		if (ready === undefined) {
+		const { startup } = request;
+		if (startup === undefined) {
 			return { id: request.sandbox.name, sandbox: request.sandbox, target: paneId };
 		}
-		return { id: request.sandbox.name, sandbox: request.sandbox, target: paneId, ready };
+		const ready = waitForStartup(startup.markerPath);
+		return {
+			id: request.sandbox.name,
+			sandbox: request.sandbox,
+			target: paneId,
+			ready,
+			exited: waitForExit(startup.markerPath),
+		};
 	}
 
 	override focus(target: string): Promise<void> {

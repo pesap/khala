@@ -389,6 +389,45 @@ test("Executor startup failures before RPC creation remove the sandbox", async (
 	assert.equal(sandboxRemovals, 1);
 });
 
+test("Executor failure transitions are terminal and retain first runtime evidence", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-executor-failure-state-"));
+	try {
+		const execution = createExecutorRecord(
+			{
+				executionId: "failure-execution",
+				workId: "failure-work",
+				executorName: "Failure Executor",
+				kind: "executor",
+				participantId: "executor:failure",
+				purpose: { kind: "mission", missionId: "failure-mission" },
+				missionId: "failure-mission",
+				projectPath: root,
+				sandboxPath: root,
+				launcher: "headless-rpc",
+			},
+			"starting",
+		);
+		writeExecutorRecord(execution);
+		const failed = updateExecutorRecord(root, execution.executionId, {
+			status: "failed",
+			failure: "child exited during initialization",
+		});
+		assert.equal(failed?.failure, "child exited during initialization");
+		const repeated = updateExecutorRecord(root, execution.executionId, {
+			status: "failed",
+			failure: "cleanup failed",
+		});
+		assert.equal(repeated?.failure, "child exited during initialization");
+		assert.throws(
+			() => updateExecutorRecord(root, execution.executionId, { status: "running" }),
+			/cannot return to running/,
+		);
+		assert.equal(listExecutorRecords(root).length, 1);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("post-launch cleanup retries only resources whose cleanup failed", async () => {
 	const sandbox = { path: "/tmp/khala-post-launch-sandbox", name: "post-launch", projectPath: "/tmp/khala-project" };
 	let closeAttempts = 0;
