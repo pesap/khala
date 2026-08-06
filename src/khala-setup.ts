@@ -141,9 +141,11 @@ function printUsage(): void {
 Usage:
   khala [flags]
   khala setup [flags]
+  khala litellm [flags]
   khala --help
 
 The setup wizard writes khala.json for the global Pi installation by default.
+Run \`khala litellm --help\` to register a LiteLLM-compatible Pi provider.
 
 Flags:
   -l, --project       Write .pi/khala.json in the current project
