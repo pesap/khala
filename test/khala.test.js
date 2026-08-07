@@ -602,6 +602,65 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 	const foreignProjectPath = join(root, "foreign-project");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "execution-bound",
+				workId: "work-bound",
+				executorName: "Bound Executor",
+				kind: "executor",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "headless-rpc",
+			}),
+		);
+		const boundAssignment = {
+			title: "Bound assignment",
+			objective: "Expose the assignment context.",
+			context: "The assignment is durable.",
+			scope: "Archive projection",
+			acceptanceCriteria: ["The Work context is visible."],
+			constraints: [],
+			plan: ["Read the Work records."],
+			validation: ["Run the Archive test."],
+		};
+		appendArchiveRecord(projectPath, {
+			type: "submission",
+			workId: "work-bound",
+			payload: {
+				workId: "work-bound",
+				projectPath,
+				status: "queued",
+				work: boundAssignment,
+				archivePath: join(root, "archive.jsonl"),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mandate",
+			workId: "work-bound",
+			payload: {
+				mandateId: "mandate-bound",
+				workId: "work-bound",
+				revision: 1,
+				sourceSubmissionRecordId: "submission-bound",
+				terms: boundAssignment,
+				admittedByParticipantId: "conclave:test",
+				admittedAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "work-bound",
+			payload: {
+				missionId: "mission-bound",
+				workId: "work-bound",
+				mandateId: "mandate-bound",
+				assignment: boundAssignment,
+				assignedParticipantId: "executor:bound",
+				createdAt: new Date().toISOString(),
+			},
+		});
 		appendArchiveRecord(projectPath, {
 			type: "counsel",
 			workId: "work-bound",
@@ -693,7 +752,14 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			executorContext,
 		);
-		assert.deepEqual(result.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(result.details.records.map((record) => record.type), [
+			"execution",
+			"submission",
+			"mandate",
+			"mission",
+			"counsel",
+			"signal",
+		]);
 		initTheme();
 		const plainTheme = {
 			fg(_color, text) {
@@ -705,7 +771,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		};
 		const collapsed = archiveTool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {});
 		const collapsedText = collapsed.render(120).join("\n");
-		assert.match(collapsedText, /Khala Archive: 2 record\(s\)/);
+		assert.match(collapsedText, /Khala Archive: 6 record\(s\)/);
 		assert.match(collapsedText, /to expand/);
 		assert.doesNotMatch(collapsedText, /bound evidence/);
 		const expanded = archiveTool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
@@ -714,7 +780,14 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		assert.match(expandedText, /signal/);
 		assert.doesNotMatch(expandedText, /bound evidence/);
 		const unscopedResult = await archiveTool.execute("archive", {}, null, null, executorContext);
-		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), [
+			"execution",
+			"submission",
+			"mandate",
+			"mission",
+			"counsel",
+			"signal",
+		]);
 		const userContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -730,7 +803,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userContext,
 		);
-		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["execution", "signal"]);
 		const userRoleContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -750,7 +823,14 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userRoleContext,
 		);
-		assert.deepEqual(userRoleWorkResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(userRoleWorkResult.details.records.map((record) => record.type), [
+			"execution",
+			"submission",
+			"mandate",
+			"mission",
+			"counsel",
+			"signal",
+		]);
 		const userRoleExecutionResult = await archiveTool.execute(
 			"archive",
 			{ workId: "work-other", executionId: "execution-other" },
@@ -761,6 +841,10 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		assert.deepEqual(userRoleExecutionResult.details.records.map((record) => record.type), ["signal"]);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
+			/An Executor may only read its bound execution/,
+		);
+		assert.throws(
+			() => archiveTool.execute("archive", { workId: "work-other" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
 		);
 

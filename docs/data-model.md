@@ -103,6 +103,12 @@ identity, and causal references needed for assessment and recovery. It does not
 copy raw prompts, assistant transcripts, tool output, or pane output into the
 Archive. Runtime events and monitor rows are projections over these bindings.
 
+The Executor `khala_read_archive` view is bound to the durable Executor marker
+and its registered project, Work, and execution. With no selector, or with the
+bound execution selector, it returns the bound execution records plus all
+records for that Work, including Work-scoped records without an `executionId`.
+Other Works and projects are excluded; User sessions must select a Work.
+
 Supervision state (`connected`, `recovering`, `unavailable`, `settled`) is a
 projection, not a lifecycle record. Recovery validates the exact persisted Pi
 session ID/path, catches up from the stable cursor, and fails only the affected
