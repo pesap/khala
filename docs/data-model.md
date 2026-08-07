@@ -108,6 +108,14 @@ projection, not a lifecycle record. Recovery validates the exact persisted Pi
 session ID/path, catches up from the stable cursor, and fails only the affected
 Execution when the binding is missing, corrupt, or unrestartable.
 
+## Oracle review presentation
+
+An expanded Oracle tool result shows the model, duration, original bounded
+review packet, and review output or failure message. Khala renders the bounded
+packet as literal content: packet Markdown cannot create headings or links, and
+terminal control characters are displayed as escaped text rather than sent to
+the terminal.
+
 ## Configuration and precedence
 
 `KhalaConfig` contains the explicit current fields:

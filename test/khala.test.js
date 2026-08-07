@@ -572,6 +572,141 @@ test("Khala Oracle rendering reports incomplete errors without undefined metadat
 	assert.doesNotMatch(expandedText, /undefined/);
 });
 
+test("Khala Oracle rendering derives persisted verdicts and errors from usable output", () => {
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	initTheme();
+	const contentOnlyResult = {
+		content: [{ type: "text", text: "Findings:\nVerdict: pass" }],
+		details: {},
+	};
+	const successText = oracle
+		.renderResult(contentOnlyResult, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
+		.render(120)
+		.join("\n");
+	assert.match(successText, /→ pass/);
+
+	const detailsOutputResult = {
+		content: [{ type: "text", text: "Verdict: blocked" }],
+		details: { output: "Verdict: pass" },
+	};
+	const detailsOutputText = oracle
+		.renderResult(detailsOutputResult, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
+		.render(120)
+		.join("\n");
+	assert.match(detailsOutputText, /→ pass/);
+	assert.doesNotMatch(detailsOutputText, /→ blocked/);
+
+	const whitespaceOutputResult = {
+		content: [{ type: "text", text: " " }, { type: "text", text: "Verdict: pass" }],
+		details: { output: " \t " },
+	};
+	const whitespaceOutputText = oracle
+		.renderResult(whitespaceOutputResult, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
+		.render(120)
+		.join("\n");
+	assert.match(whitespaceOutputText, /→ pass/);
+
+	const contentError = "Khala Oracle failed: the process exited before producing a review.";
+	const emptyDetailsError = {
+		content: [{ type: "text", text: contentError }],
+		details: { output: "" },
+	};
+	const errorText = oracle
+		.renderResult(emptyDetailsError, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: true })
+		.render(120)
+		.join("\n");
+	assert.match(errorText, /process exited before producing a review/);
+});
+
+test("Khala Oracle expands verdict-less output and renders review packets literally", () => {
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const prompt = [
+		"## Spoofed heading",
+		"[review evidence](file:///private/review.md)",
+		"\u001b]8;;file:///private/review.md\u0007hidden link\u001b]8;;\u0007",
+		"```",
+	].join("\n");
+	const incompleteResult = {
+		content: [{ type: "text", text: "The review ended before a final verdict." }],
+		details: { output: "The review ended before a final verdict." },
+	};
+	initTheme();
+	const compactText = oracle
+		.renderResult(incompleteResult, { expanded: false, isPartial: false }, plainTheme, { args: { prompt }, isError: false })
+		.render(120)
+		.join("\n");
+	assert.match(compactText, /incomplete review \(no final verdict\)/);
+	const expandedText = oracle
+		.renderResult(incompleteResult, { expanded: true, isPartial: false }, plainTheme, { args: { prompt }, isError: false })
+		.render(120)
+		.join("\n");
+	assert.match(expandedText, /Incomplete review result/);
+	assert.match(expandedText, /## Spoofed heading/);
+	assert.match(expandedText, /\[review evidence\]\(file:\/\/\/private\/review\.md\)/);
+	assert.match(expandedText, /\\u001b\]8;;file:\/\/\/private\/review\.md\\u0007hidden link\\u001b\]8;;\\u0007/);
+	assert.doesNotMatch(expandedText, /\u001b\]8;;file:\/\/\/private\/review\.md/);
+});
+
+test("Khala Oracle rendering tolerates malformed persisted result shapes", () => {
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	for (const result of [
+		{ content: undefined, details: "not an object" },
+		{ content: { type: "text", text: "not an array" }, details: null },
+		{ content: [{ type: "text", text: 42 }], details: {} },
+	]) {
+		const rendered = oracle
+			.renderResult(result, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
+			.render(120)
+			.join("\n");
+		assert.match(rendered, /incomplete review \(no final verdict\)/);
+	}
+});
+
 test("Conclave storage appends submission state to the configured Archive", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-archive-test-"));
 	const agentDir = join(root, "agent");

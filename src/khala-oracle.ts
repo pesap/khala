@@ -36,6 +36,16 @@ const ORACLE_VERDICT_PATTERN = /^\s*Verdict:\s*(pass|revise|blocked)\s*$/im;
 const ORACLE_VALIDATION_GAPS_PATTERN = /(?:^|\n)Validation gaps:\s*\n([\s\S]*?)(?=\n(?:Open questions:|Verdict:)|$)/i;
 const ORACLE_LIST_ITEM_PATTERN = /^\s*[-*]\s+\S/;
 const ORACLE_EMPTY_LIST_ITEM_PATTERN = /^\s*[-*]\s+none\.?\s*$/i;
+const FIRST_CHARACTER_INDEX = 0;
+const ASCII_CONTROL_START = 0;
+const LINE_FEED_CODE = 10;
+const ASCII_CONTROL_END = 31;
+const DELETE_CONTROL_CODE = 127;
+const C1_CONTROL_START = 128;
+const C1_CONTROL_END = 159;
+const HEXADECIMAL_RADIX = 16;
+const UNICODE_ESCAPE_CODE_WIDTH = 4;
+const MINIMUM_MARKDOWN_FENCE_LENGTH = 3;
 const ORACLE_SEVERITY_PATTERNS = {
 	blocker: /^\s*(?:[-*]\s*)?Severity:\s*blocker\b/gim,
 	major: /^\s*(?:[-*]\s*)?Severity:\s*major\b/gim,
@@ -259,16 +269,17 @@ function normalizeOracleDetails(
 		source = details as OracleRawDetails;
 	}
 	const rawOutput = readString(source.output);
-	const output = rawOutput ?? readTextContent(content) ?? "";
-	let verdict = readOracleVerdict(source.verdict);
-	if (rawOutput !== undefined) {
-		verdict = readVerdict(rawOutput);
+	let output = "";
+	if (rawOutput !== undefined && rawOutput.trim().length > 0) {
+		output = rawOutput;
+	} else {
+		output = readTextContent(content) ?? "";
 	}
 	return {
 		output,
 		model: readNonEmptyString(source.model),
 		durationMs: readNonNegativeNumber(source.durationMs),
-		verdict,
+		verdict: readVerdict(output),
 		blockers: readNonNegativeInteger(source.blockers),
 		majors: readNonNegativeInteger(source.majors),
 		minors: readNonNegativeInteger(source.minors),
@@ -336,11 +347,10 @@ function formatExpandedOracleResult(
 	let resultLabel = "Complete review result";
 	if (isError) {
 		resultLabel = "Error";
+	} else if (details.verdict === "unknown") {
+		resultLabel = "Incomplete review result";
 	}
-	let boundedPrompt = prompt;
-	if (boundedPrompt === undefined) {
-		boundedPrompt = "(unavailable)";
-	}
+	const boundedPrompt = prompt ?? "(unavailable)";
 	let output = sourceOutput;
 	if (output.length === 0) {
 		output = "(no review result or error text available)";
@@ -350,22 +360,49 @@ function formatExpandedOracleResult(
 		`Model: ${model} · Duration: ${duration}`,
 		"",
 		"### Bounded review prompt",
-		boundedPrompt,
+		formatLiteralOraclePrompt(boundedPrompt),
 		"",
 		`### ${resultLabel}`,
 		output,
 	].join("\n");
 }
 
+function formatLiteralOraclePrompt(prompt: string): string {
+	// The packet is untrusted session data: escape terminal controls and use a fence
+	// longer than any contained backtick run so Markdown cannot reinterpret it.
+	let literalPrompt = "";
+	for (const character of prompt) {
+		const code = character.charCodeAt(FIRST_CHARACTER_INDEX);
+		const isAsciiControl = code >= ASCII_CONTROL_START && code <= ASCII_CONTROL_END && code !== LINE_FEED_CODE;
+		const isC1Control = code >= C1_CONTROL_START && code <= C1_CONTROL_END;
+		if (isAsciiControl || code === DELETE_CONTROL_CODE || isC1Control) {
+			literalPrompt += `\\u${code.toString(HEXADECIMAL_RADIX).padStart(UNICODE_ESCAPE_CODE_WIDTH, "0")}`;
+		} else {
+			literalPrompt += character;
+		}
+	}
+	let fenceLength = MINIMUM_MARKDOWN_FENCE_LENGTH;
+	for (const match of literalPrompt.matchAll(/`+/g)) {
+		fenceLength = Math.max(fenceLength, (match[0]?.length ?? 0) + 1);
+	}
+	const fence = "`".repeat(fenceLength);
+	return `${fence}\n${literalPrompt}\n${fence}`;
+}
+
 function readTextContent(content: unknown): string | undefined {
-	if (!Array.isArray(content)) {
-		return;
+	let text: string | undefined;
+	if (Array.isArray(content)) {
+		for (const entry of content) {
+			if (isTextContent(entry)) {
+				const { text: candidateText } = entry;
+				if (candidateText.trim().length > 0) {
+					text = candidateText;
+					break;
+				}
+			}
+		}
 	}
-	const text = content.find(isTextContent);
-	if (text === undefined || text.text.trim().length === 0) {
-		return;
-	}
-	return text.text;
+	return text;
 }
 
 function isTextContent(value: unknown): value is { type: "text"; text: string } {
@@ -407,13 +444,6 @@ function readNonNegativeInteger(value: unknown): number | undefined {
 		return;
 	}
 	return value;
-}
-
-function readOracleVerdict(value: unknown): OracleVerdict {
-	if (value === "pass" || value === "revise" || value === "blocked") {
-		return value;
-	}
-	return "unknown";
 }
 
 function readVerdict(output: string): OracleVerdict {
