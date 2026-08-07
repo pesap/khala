@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
 import { confirm, isCancel, multiselect, password, select, text } from "@clack/prompts";
+import { dim, row, titleLine, yellow } from "./khala-cli-ui.js";
 import { ConfigScope, getKhalaConfigPath } from "./khala-config.js";
 import {
 	deriveEnvVarFromKeyName,
@@ -107,11 +108,11 @@ Flags:
       --base-url <url>      LiteLLM base URL     (e.g. https://lite.example/v1)
       --key-env <name>      LiteLLM key name (matches your portal label, e.g. reeds-maint).
                              Shell env var is derived: 'reeds-maint' -> $REEDS_MAINT.
-      --model <ids>         One model id or comma-separated list to register and enable
+      --model <ids>         One model id or comma-separated list to register
       --auth-mode <mode>    How to store the key: skip | literal | command
       --auth-key <value>    Literal key value for --auth-mode=literal
       --auth-command <!cmd> Shell command for --auth-mode=command (must start with '!')
-      --project-settings    Also update .pi/settings.json default/enabled models
+      --project-settings    Also set .pi/settings.json defaults; leave models enabled
       --no-project-settings Do not update .pi/settings.json
   -y, --yes                 Use defaults and skip prompts (requires all flags above)
       --no-input             Alias for --yes
@@ -808,23 +809,47 @@ async function planSetup(options: LitellmOptions): Promise<ResolvedSetup> {
 	return planInteractiveNewProvider(options, providers);
 }
 
-function printPlanSummary(plan: ResolvedSetup, dryRun: boolean): void {
-	console.log("");
-	console.log(dryRun ? "Planned changes (dry run):" : "Ready to write:");
-	if (plan.writeModelsJson) {
-		console.log(`  - register provider '${plan.provider}' with ${modelSummary(plan.modelIds)} in ${modelsJsonPath()}`);
-	} else {
-		console.log(`  - leave ${modelsJsonPath()} unchanged (provider '${plan.provider}' already registered)`);
+function printPlanSummary(plan: ResolvedSetup): void {
+	let authentication = `environment $${deriveEnvVarFromKeyName(plan.keyEnv) ?? plan.keyEnv}`;
+	let authenticationMarker = "=";
+	if (plan.auth.mode === "literal") {
+		authentication = "stored literal value (0600)";
+		authenticationMarker = "+";
+	} else if (plan.auth.mode === "command") {
+		authentication = "stored command (0600)";
+		authenticationMarker = "+";
 	}
-	if (plan.writeProjectKeyConfig) {
-		console.log(`  - save project key label '${plan.keyEnv}' in ${projectLitellmConfigPath(process.cwd())}`);
-	}
-	if (plan.auth.mode === "literal" || plan.auth.mode === "command") {
-		console.log(`  - store API key ${plan.auth.mode === "literal" ? "value" : "command"} in ${authJsonPath()} (0600)`);
-	}
+	const writesKeyRegistry = plan.auth.mode !== "skip" || plan.writeModelsJson || plan.writeProjectKeyConfig;
+	let projectDefaults = "(unchanged)";
 	if (plan.writeProjectSettings) {
-		console.log(`  - set ${projectSettingsPath(process.cwd())} to ${modelSummary(plan.modelIds)}`);
+		const globalSettings = readJsonObjectFile(join(agentDir(), "settings.json"));
+		const currentProjectSettings = readJsonObjectFile(projectSettingsPath(process.cwd()));
+		const modelScope = currentProjectSettings?.["enabledModels"] ?? globalSettings?.["enabledModels"];
+		const scopeDescription = modelScope === undefined ? "all models enabled" : "existing model scope preserved";
+		projectDefaults = `${projectSettingsPath(process.cwd())} (${scopeDescription})`;
 	}
+
+	console.log("");
+	console.log(titleLine("LiteLLM configuration"));
+	console.log(row("=", "provider", plan.provider));
+	console.log(row("=", "base URL", plan.baseUrl));
+	console.log(row("=", "models", modelSummary(plan.modelIds)));
+	console.log(row("=", "key label", plan.keyEnv));
+	console.log(row(authenticationMarker, "authentication", authentication));
+	console.log(
+		row(plan.writeModelsJson ? "+" : "=", "Pi models", plan.writeModelsJson ? modelsJsonPath() : "(unchanged)"),
+	);
+	console.log(
+		row(
+			plan.writeProjectKeyConfig ? "+" : "=",
+			"project key",
+			plan.writeProjectKeyConfig ? projectLitellmConfigPath(process.cwd()) : "(unchanged)",
+		),
+	);
+	console.log(
+		row(writesKeyRegistry ? "+" : "=", "key registry", writesKeyRegistry ? keyRegistryPath() : "(unchanged)"),
+	);
+	console.log(row(plan.writeProjectSettings ? "+" : "=", "project defaults", projectDefaults));
 }
 
 async function writePlan(plan: ResolvedSetup): Promise<void> {
@@ -914,9 +939,9 @@ async function configure(options: LitellmOptions): Promise<void> {
 			`Provider '${plan.provider}' has a provider-level auth.json entry. Remove it before configuring project-specific LiteLLM keys; Pi would use it before the selected-key resolver.`,
 		);
 	}
-	printPlanSummary(plan, options.dryRun);
+	printPlanSummary(plan);
 	if (options.dryRun) {
-		console.log("\nDry run. Run without --dry-run to write.");
+		console.log(`\n${yellow("Dry run.")} ${dim("Run without --dry-run to write the LiteLLM configuration.")}`);
 		return;
 	}
 	if (isInteractive(options)) {

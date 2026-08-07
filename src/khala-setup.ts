@@ -11,6 +11,7 @@ import process, { stdin as input, stdout as output } from "node:process";
 import { autocomplete, text as clackText, confirm, isCancel, select } from "@clack/prompts";
 import type { PiCommand } from "./executor.js";
 import { StrictJsonlReader } from "./executor-rpc.js";
+import { bold, dim, green, row, titleLine, yellow } from "./khala-cli-ui.js";
 import {
 	ConfigScope,
 	type ConfigScopeValue,
@@ -37,14 +38,6 @@ type StoredConfig = {
 			: string;
 };
 
-const ANSI = {
-	bold: "\u001b[1m",
-	dim: "\u001b[2m",
-	green: "\u001b[32m",
-	yellow: "\u001b[33m",
-	reset: "\u001b[0m",
-} as const;
-const LABEL_WIDTH = 18;
 const WHITESPACE = /\s/;
 const MODEL_LINE_SEPARATOR = /\r?\n/;
 const MODEL_COLUMN_SEPARATOR = /\s+/;
@@ -96,40 +89,6 @@ type RpcResponsePayload = Readonly<{
 type ModelDiscoveryResponse =
 	| Readonly<{ result: "success"; models: readonly DiscoveredPiModel[] }>
 	| Readonly<{ result: "failure"; error: Error }>;
-
-// Keep the wizard's own styling small; Clack owns the interactive prompt behavior.
-function style(code: string, text: string): string {
-	// biome-ignore lint/style/noProcessEnv: NO_COLOR is the conventional CLI opt-out.
-	// biome-ignore lint/complexity/useLiteralKeys: ProcessEnv is intentionally accessed through its index signature.
-	if (!output.isTTY || process.env["NO_COLOR"] !== undefined) {
-		return text;
-	}
-	return `${code}${text}${ANSI.reset}`;
-}
-
-function bold(text: string): string {
-	return style(ANSI.bold, text);
-}
-
-function dim(text: string): string {
-	return style(ANSI.dim, text);
-}
-
-function green(text: string): string {
-	return style(ANSI.green, text);
-}
-
-function yellow(text: string): string {
-	return style(ANSI.yellow, text);
-}
-
-function titleLine(title: string): string {
-	return `${bold(title)} ${dim("────────────────────────────────────────────────────────")}`;
-}
-
-function row(marker: string, label: string, value: string): string {
-	return `  ${marker} ${label.padEnd(LABEL_WIDTH)}${value}`;
-}
 
 function isInteractive(options: SetupOptions): boolean {
 	return !options.yes && input.isTTY === true && output.isTTY === true;

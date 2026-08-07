@@ -660,11 +660,9 @@ function mergeLitellmProjectSettings(
 ): JsonRecord {
 	const providerId = validateLitellmProviderId(options.providerId);
 	const modelIds = normalizeModelIdList(options);
-	const enabledModels = modelIds.map((id) => `${providerId}/${id}`);
 	const root: JsonRecord = isPlainObject(current) ? { ...current } : {};
 	root["defaultProvider"] = providerId;
 	root["defaultModel"] = modelIds[0];
-	root["enabledModels"] = enabledModels;
 	return root;
 }
 

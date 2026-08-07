@@ -91,20 +91,16 @@ label, so the same LiteLLM provider can expose multiple reusable labels.
 
 ## Project Settings
 
-Pass `--project-settings` (or answer yes when prompted) only when the
-selected models should become this project's Pi defaults. This does not
-change what `pi --list-models` prints — that command lists the shared
-`~/.pi/agent/models.json` registry. Project model scope is controlled by the
-`defaultProvider`, `defaultModel`, and `enabledModels` block inside the
-current project's `.pi/settings.json`.
+Pass `--project-settings` (or answer yes when prompted) when the first
+selected model should become this project's Pi default. This does not change
+what `pi --list-models` prints — that command lists the shared
+`~/.pi/agent/models.json` registry.
 
-Khala writes `enabledModels` as provider-qualified entries such as:
-
-```text
-team-litellm/gpt-5.4-mini
-```
-
-That prevents Pi from resolving a same-named model from another provider.
+Khala sets `defaultProvider` and `defaultModel` but does not add an
+`enabledModels` allowlist. Pi therefore leaves every registered model enabled
+by default; use Pi's model-scope controls to opt out when a project needs a
+narrower set. If the project already has an explicit `enabledModels` scope,
+Khala preserves it.
 
 ## Model Metadata
 

@@ -109,6 +109,20 @@ test("mergeAuthJsonApiKey preserves unrelated providers and reports conflicts", 
 	assert.equal(replaced.conflict, true);
 });
 
+test("project defaults preserve an existing model scope", () => {
+	const merged = lib.mergeLitellmProjectSettings(
+		{
+			enabledModels: ["anthropic/claude-sonnet"],
+			theme: "dark",
+		},
+		{ providerId: "team-litellm", modelIds: ["gpt-5.4-mini"] },
+	);
+	assert.equal(merged.defaultProvider, "team-litellm");
+	assert.equal(merged.defaultModel, "gpt-5.4-mini");
+	assert.deepEqual(merged.enabledModels, ["anthropic/claude-sonnet"]);
+	assert.equal(merged.theme, "dark");
+});
+
 test("secure auth writes repair permissions when the JSON already matches", () => {
 	const directory = mkdtempSync(join(tmpdir(), "khala-litellm-auth-"));
 	const authPath = join(directory, "auth.json");
@@ -207,7 +221,7 @@ test("non-interactive setup registers a provider, project key config, and key re
 	const settings = JSON.parse(readFileSync(join(result.root, ".pi", "settings.json"), "utf8"));
 	assert.equal(settings.defaultProvider, "team-litellm");
 	assert.equal(settings.defaultModel, "gpt-5.4-mini");
-	assert.deepEqual(settings.enabledModels, ["team-litellm/gpt-5.4-mini"]);
+	assert.equal(settings.enabledModels, undefined);
 
 	const registry = JSON.parse(readFileSync(join(result.agentDir, "khala", "litellm-keys.json"), "utf8"));
 	assert.deepEqual(registry.keys, [
@@ -274,7 +288,7 @@ test("non-interactive setup preserves Pi model ids containing slashes and colons
 
 	const settings = JSON.parse(readFileSync(join(result.root, ".pi", "settings.json"), "utf8"));
 	assert.equal(settings.defaultModel, "openai/gpt-4o:extended");
-	assert.deepEqual(settings.enabledModels, ["team-litellm/openai/gpt-4o:extended"]);
+	assert.equal(settings.enabledModels, undefined);
 });
 
 test("--auth-mode=literal writes auth.json with 0600 permissions and never echoes the key", () => {
@@ -332,7 +346,7 @@ test("setup refuses a provider-level credential that would bypass project key se
 	assert.equal(existsSync(join(agentDir, "models.json")), false);
 });
 
-test("--dry-run prints the plan without writing any files", () => {
+test("--dry-run shows a Khala-style LiteLLM configuration without writing files", () => {
 	const result = runKhalaLitellm([
 		"--provider",
 		"team-litellm",
@@ -342,11 +356,17 @@ test("--dry-run prints the plan without writing any files", () => {
 		"reeds-maint",
 		"--model",
 		"gpt-5.4-mini",
+		"--project-settings",
 		"--dry-run",
 		"--yes",
 	]);
 	assert.equal(result.status, 0, result.stderr);
-	assert.match(result.stdout, /Dry run/);
+	assert.match(result.stdout, /LiteLLM configuration/);
+	assert.match(result.stdout, /\+ Pi models\s+.*models\.json/);
+	assert.match(result.stdout, /\+ project key\s+.*\.pi\/khala\/litellm\.json/);
+	assert.match(result.stdout, /= authentication\s+environment \$REEDS_MAINT/);
+	assert.match(result.stdout, /\+ project defaults\s+.*settings\.json \(all models enabled\)/);
+	assert.match(result.stdout, /Dry run\.\s+Run without --dry-run to write the LiteLLM configuration\./);
 	assert.equal(existsSync(join(result.agentDir, "models.json")), false);
 });
 
