@@ -1,0 +1,187 @@
+# Install hooks:
+#   prek install --hook-type pre-commit --hook-type pre-push
+#
+# Run all hooks manually:
+#   prek run --all-files
+#
+# Intended for a modern TypeScript Pi extension using:
+#   - Biome
+#   - TypeScript
+#   - Vitest
+#   - npm
+#
+# package.json should provide:
+#
+#   "scripts": {
+#     "check": "biome check .",
+#     "check:fix": "biome check --write .",
+#     "typecheck": "tsc --noEmit",
+#     "test": "vitest run"
+#   }
+
+minimum_prek_version = "0.3.2"
+
+default_install_hook_types = [
+  "pre-commit",
+  "pre-push",
+]
+
+
+# ---------------------------------------------------------------------------
+# Repository hygiene
+#
+# These are native prek hooks, so they do not require cloning another
+# pre-commit repository or creating another runtime environment.
+# ---------------------------------------------------------------------------
+
+[[repos]]
+repo = "builtin"
+
+hooks = [
+  # Basic file hygiene.
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+
+  # Prevent unresolved Git merge artifacts.
+  { id = "check-merge-conflict" },
+
+  # Catch filenames that behave differently across case-sensitive and
+  # case-insensitive filesystems.
+  { id = "check-case-conflict" },
+
+  # Validate common configuration formats.
+  { id = "check-json" },
+  { id = "check-yaml" },
+  { id = "check-toml" },
+
+  # Avoid accidentally committing generated artifacts, datasets, binaries,
+  # logs, or other large files.
+  { id = "check-added-large-files", args = ["--maxkb=1000"] },
+
+  # Cheap first line of defense against accidentally committed credentials.
+  { id = "detect-private-key" },
+]
+
+
+# ---------------------------------------------------------------------------
+# TypeScript / Pi extension hooks
+#
+# package.json owns tool versions and commands.
+# prek only decides when those commands run.
+# ---------------------------------------------------------------------------
+
+[[repos]]
+repo = "local"
+
+
+# ---------------------------------------------------------------------------
+# Biome
+#
+# Runs only against TypeScript files covered by biome.json.
+#
+# `npm run lint:fix --` allows prek to append the filenames being checked.
+# ---------------------------------------------------------------------------
+
+[[repos.hooks]]
+id = "biome"
+name = "biome"
+entry = "npm run lint:fix --"
+language = "system"
+
+files = '''
+(?x)^(
+  src/.*\.(ts|tsx|mts|cts)|
+  extensions/pi-review/.*\.(ts|tsx|mts|cts)
+)$
+'''
+
+stages = [
+  "pre-commit",
+]
+
+
+# ---------------------------------------------------------------------------
+# TypeScript type checking
+#
+# Pi can execute TypeScript directly, so this is validation rather than a
+# build step.
+#
+# Type checking is repository-wide, therefore filenames are not passed.
+# Run it at pre-push so normal commits stay fast.
+# ---------------------------------------------------------------------------
+
+[[repos.hooks]]
+id = "typecheck"
+name = "typecheck"
+entry = "npm run typecheck"
+language = "system"
+
+pass_filenames = false
+always_run = true
+
+stages = [
+  "pre-push",
+]
+
+
+# ---------------------------------------------------------------------------
+# Tests
+#
+# Run the complete test suite before pushing rather than on every commit.
+# ---------------------------------------------------------------------------
+
+[[repos.hooks]]
+id = "test"
+name = "test"
+entry = "npm test"
+language = "system"
+
+pass_filenames = false
+always_run = true
+
+stages = [
+  "pre-push",
+]
+
+
+# ---------------------------------------------------------------------------
+# Package validation
+#
+# Pi extensions distributed through npm/git need their package contents and
+# dependency declarations to be correct.
+#
+# `npm pack --dry-run` catches:
+#   - missing package files
+#   - unexpected files
+#   - bad `files` configuration
+#   - packaging mistakes
+# ---------------------------------------------------------------------------
+
+[[repos.hooks]]
+id = "package-check"
+name = "npm pack"
+entry = "npm pack --dry-run"
+language = "system"
+
+pass_filenames = false
+always_run = true
+
+stages = [
+  "pre-push",
+]
+
+
+# ---------------------------------------------------------------------------
+# prek configuration validation
+# ---------------------------------------------------------------------------
+
+[[repos]]
+repo = "meta"
+
+hooks = [
+  # Catch hooks whose file filters can never match anything in the repository.
+  { id = "check-hooks-apply" },
+
+  # Catch excludes that do not affect any configured hook.
+  { id = "check-useless-excludes" },
+]

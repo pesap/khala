@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -66,6 +66,20 @@ function createChildFactory(root, starts, environment = {}) {
 		});
 		return child;
 	};
+}
+
+async function waitFor(predicate, description) {
+	const deadline = Date.now() + 2_000;
+	while (!predicate()) {
+		if (Date.now() >= deadline) {
+			throw new Error(`Timed out waiting for ${description}.`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+function physicalTempPath(root, filename) {
+	return join(realpathSync(root), filename);
 }
 
 test("RPC framing is LF-only and preserves U+2028 and U+2029", () => {
@@ -218,10 +232,33 @@ test("headless Executor becomes ready from get_state and closes by ending its pi
 			},
 		});
 		await runtime.start();
-		assert.deepEqual(binding, { sessionId: "session-stable", sessionPath: join(root, "executor-session.jsonl") });
+		assert.deepEqual(binding, { sessionId: "session-stable", sessionPath: physicalTempPath(root, "executor-session.jsonl") });
 		assert.equal(starts[0].includes("--mode"), true);
 		assert.equal(starts[0].includes("rpc"), true);
 		assert.equal(starts[0].includes("provider/executor"), true);
+		await runtime.closeProcess();
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("headless RPC accepts a physical session path for a lexical session-path alias", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-rpc-session-alias-"));
+	const lexicalSessionPath = join(root, "executor-session.jsonl");
+	const physicalSessionPath = physicalTempPath(root, "executor-session.jsonl");
+	try {
+		const runtime = new HeadlessExecutorRuntime({
+			command: process.execPath,
+			args: [],
+			cwd: root,
+			model: "provider/executor",
+			mission: "Mission identity",
+			sessionId: "session-stable",
+			sessionPath: lexicalSessionPath,
+			spawnProcess: createChildFactory(root, [], { SESSION_FILE: physicalSessionPath }),
+		});
+		await runtime.start();
+		assert.equal(runtime.sessionPath, physicalSessionPath);
 		await runtime.closeProcess();
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -273,7 +310,7 @@ process.stdin.on("data", chunk => {
 			onEvent: (event) => { if ((event).type === "live_event") order.push("live-event"); },
 		});
 		await runtime.start();
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitFor(() => order.length === 2, "restart catch-up and live event");
 		assert.deepEqual(order, ["catch-up", "live-event"]);
 		assert.equal(starts.length, 2);
 		await runtime.closeProcess();
@@ -295,10 +332,9 @@ test("unexpected Executor loss restarts the same Pi session", async () => {
 			spawnProcess: createChildFactory(root, starts),
 		});
 		await runtime.start();
-		await new Promise((resolve) => setTimeout(resolve, 150));
-		assert.equal(starts.length, 2);
+		await waitFor(() => starts.length === 2, "Executor restart");
 		assert.equal(starts[1].includes("--session"), true);
-		assert.equal(starts[1].includes(join(root, "executor-session.jsonl")), true);
+		assert.equal(starts[1].includes(physicalTempPath(root, "executor-session.jsonl")), true);
 		await runtime.closeProcess();
 	} finally {
 		rmSync(root, { recursive: true, force: true });
@@ -423,7 +459,7 @@ test("restart rejects a changed session path even when the session ID is stable"
 		});
 		const failures = [];
 		await runtime.start();
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await waitFor(() => failures.length === 1, "restart identity failure");
 		assert.match(failures[0] ?? "", /session identity/);
 		await runtime.closeProcess();
 	} finally {
@@ -456,7 +492,7 @@ test("runtime loss after a failed restart reports process failure", async () => 
 			onFailure: (error) => { failure = error; },
 		});
 		await runtime.start();
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		await waitFor(() => failure !== undefined, "restart process failure");
 		assert.match(failure?.message ?? "", /exited|failed|unavailable/i);
 	} finally {
 		rmSync(root, { recursive: true, force: true });

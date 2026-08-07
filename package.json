@@ -50,7 +50,10 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
-    "check": "biome check src extensions/pi-review && tsc --noEmit",
+    "lint": "biome check src extensions/pi-review",
+    "lint:fix": "biome check --write",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck",
     "dev": "tsc --watch",
     "test": "npm run build && node --test test/*.js"
   },

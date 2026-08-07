@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -429,6 +429,8 @@ test("persisted Executor session validation rejects missing, corrupt, and mismat
     const sessionPath = join(root, "session.jsonl");
     writeFileSync(sessionPath, JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: root }) + "\n");
     validatePersistedExecutorSession({ sessionId: "session-1", sessionPath }, sessionPath);
+    const physicalSessionPath = join(realpathSync(root), "session.jsonl");
+    validatePersistedExecutorSession({ sessionId: "session-1", sessionPath: physicalSessionPath }, sessionPath);
     writeFileSync(sessionPath, "not-json\n");
     assert.throws(() => validatePersistedExecutorSession({ sessionId: "session-1", sessionPath }), /corrupt/);
     writeFileSync(sessionPath, JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: root }) + "\n");

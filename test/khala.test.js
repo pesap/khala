@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -1264,7 +1264,7 @@ test("Git worktree cleanup removes the Executor branch from the project reposito
 	let sandbox;
 	try {
 		sandbox = await provider.createSandbox({ projectPath: repo, name: "cleanup" });
-		assert.equal(sandbox.projectPath, repo);
+		assert.equal(sandbox.projectPath, realpathSync(repo));
 		assert.equal(execFileSync("git", ["-C", sandbox.path, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim(), sandbox.path);
 	} finally {
 		if (sandbox !== undefined) await provider.removeSandbox(sandbox);

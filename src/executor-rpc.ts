@@ -4,8 +4,8 @@
 // biome-ignore-all lint/suspicious/noShadow: Promise resolver names are local transport callbacks.
 // biome-ignore-all lint/style/noExcessiveClassesPerFile: The JSONL decoder and process owner share the same transport boundary.
 import { type ChildProcess, spawn } from "node:child_process";
-import { resolve as resolvePath } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { sameFilesystemPath } from "./khala-path.js";
 import type { LaunchedSession } from "./launcher.js";
 
 type RpcSessionBinding = Readonly<{ sessionId: string; sessionPath: string }>;
@@ -361,7 +361,8 @@ class HeadlessExecutorRuntime {
 			if (
 				resume &&
 				this.binding !== undefined &&
-				(binding.sessionId !== this.binding.sessionId || binding.sessionPath !== this.binding.sessionPath)
+				(binding.sessionId !== this.binding.sessionId ||
+					!sameFilesystemPath(binding.sessionPath, this.binding.sessionPath))
 			) {
 				throw new Error(`Executor RPC restart changed Pi session identity from ${this.binding.sessionId}.`);
 			}
@@ -370,7 +371,7 @@ class HeadlessExecutorRuntime {
 			}
 			if (
 				this.options.sessionPath !== undefined &&
-				resolvePath(binding.sessionPath) !== resolvePath(this.options.sessionPath)
+				!sameFilesystemPath(binding.sessionPath, this.options.sessionPath)
 			) {
 				throw new Error(`Executor RPC session path changed from ${this.options.sessionPath}.`);
 			}

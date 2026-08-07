@@ -38,6 +38,7 @@ import {
 	type InterventionIssuanceRecord,
 	type UpstreamExecutionBase,
 } from "./khala-model.js";
+import { sameFilesystemPath } from "./khala-path.js";
 
 const UPSTREAM_POLL_INTERVAL_MS = 30_000;
 const GIT_REF_TIMEOUT_MS = 10_000;
@@ -855,7 +856,7 @@ function validatePersistedExecutorSession(binding: RpcSessionBinding, expectedPa
 	if (binding.sessionId.trim().length === 0 || binding.sessionPath.trim().length === 0) {
 		throw new Error("Persisted Executor Pi session binding is empty.");
 	}
-	if (expectedPath !== undefined && resolve(expectedPath) !== resolve(binding.sessionPath)) {
+	if (expectedPath !== undefined && !sameFilesystemPath(expectedPath, binding.sessionPath)) {
 		throw new Error("Persisted Executor session path does not match its Pi binding.");
 	}
 	if (!(existsSync(binding.sessionPath) && statSync(binding.sessionPath).isFile())) {

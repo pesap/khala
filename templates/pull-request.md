@@ -21,7 +21,7 @@
 
 <!-- List the checks run and their results. Include commands when useful. -->
 
-- 
+-
 
 ## Review notes
 

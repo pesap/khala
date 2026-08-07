@@ -1,6 +1,6 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Git VCS and Pull Request publication share one provider boundary.
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -33,9 +33,11 @@ class GitWorktreeProvider extends VCSProvider {
 		await assertMainWorktree(request.projectPath, projectRoot);
 		assertWorktreeRootDoesNotContainProject(this.#worktreeRoot, projectRoot);
 		await mkdir(this.#worktreeRoot, { recursive: true });
-
+		// Git reports worktrees through the physical filesystem path. Persist the
+		// same identity so a macOS /var alias cannot split one sandbox in two.
+		const worktreeRoot = realpathSync(this.#worktreeRoot);
 		const name = this.generateSandboxName(request.name);
-		const sandboxPath = join(this.#worktreeRoot, name);
+		const sandboxPath = join(worktreeRoot, name);
 
 		if (Buffer.byteLength(name) > MAX_COMPONENT_LENGTH) {
 			throw new Error(
