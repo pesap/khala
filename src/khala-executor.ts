@@ -9,7 +9,7 @@ import {
 } from "./executor.js";
 import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
 import type { ExecutorRecord } from "./khala-model.js";
-import { resolvePackageRoot } from "./khala-package.js";
+import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
 import { removePiOptionSelection } from "./khala-pi-command.js";
 import type { ReviewFinalizationInput } from "./khala-review.js";
 import { latestPullRequest, recordReviewFinalization } from "./khala-review.js";
@@ -69,7 +69,9 @@ function createConfiguredStarter(
 	if (thinkingLevel !== undefined) {
 		piCommand = removePiOptionSelection(piCommand, "--thinking");
 	}
-	const packageRoot = resolvePackageRoot(dirname(fileURLToPath(import.meta.url)));
+	const packageDirectory = dirname(fileURLToPath(import.meta.url));
+	const packageRoot = resolvePackageRoot(packageDirectory);
+	const khalaExtensionPath = resolveExtensionPath(packageDirectory);
 	const khalaSkillPath = join(packageRoot, "skills", "khala");
 	const skillPaths: string[] = [khalaSkillPath];
 	if (!observer) {
@@ -83,6 +85,7 @@ function createConfiguredStarter(
 		model,
 		skillPaths,
 		thinkingLevel,
+		khalaExtensionPath,
 	);
 }
 

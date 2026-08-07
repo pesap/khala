@@ -19,6 +19,15 @@ steering, Coordination, lifecycle, failure, recovery, or budget evidence.
 Missing or zero pricing is `unavailable`; an overrun remains visible while work
 continues.
 
+## Child launch contract
+
+Every Khala-launched Executor and Observer starts Pi with the packaged Khala
+extension registered through `--extension`. The extension argument is resolved
+from the source checkout or installed package, is added only when the configured
+Pi command does not already register an extension, and remains a separate argv
+entry. This registration makes Khala's internal flags and role tools available;
+it does not prove that the child process initialized or remains healthy.
+
 Routine aligned assessment input and responses remain hidden from the
 interactive Conclave view but stay in the persisted Pi session. The monitor
 adds no supervision controls or keybindings. A direct User priority override is

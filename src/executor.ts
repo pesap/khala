@@ -1,7 +1,8 @@
 // biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Executor startup composes sandbox, review preparation, RPC readiness, and cleanup fences in one transaction.
 // biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Executor startup composes sandbox, review preparation, RPC readiness, and cleanup fences in one transaction.
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Executor launch keeps sandbox and launcher ownership in one transaction boundary.
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { HeadlessRuntimeOptions, RpcSessionBinding } from "./executor-rpc.js";
 import {
 	HeadlessExecutorRuntime,
@@ -9,6 +10,8 @@ import {
 	registerHeadlessRuntime,
 	unregisterHeadlessRuntime,
 } from "./executor-rpc.js";
+import { resolveExtensionPath } from "./khala-package.js";
+import { ensureKhalaExtension } from "./khala-pi-command.js";
 import { getSupervisionController } from "./khala-supervision.js";
 import { validatePersistedExecutorSession } from "./khala-supervision-recovery.js";
 import type { LaunchedSession, Launcher, StartupRequest } from "./launcher.js";
@@ -31,6 +34,8 @@ interface Sandbox {
 
 type PiCommand = readonly [command: string, ...args: string[]];
 type KhalaAgentKind = "executor" | "observer";
+
+const DEFAULT_KHALA_EXTENSION_PATH = resolveExtensionPath(dirname(fileURLToPath(import.meta.url)));
 
 interface ExecutorRequest {
 	projectPath: string;
@@ -70,6 +75,7 @@ type ExecutorRecoveryRequest = Readonly<{
 	mission: string;
 	command: string;
 	args: readonly string[];
+	extensionPath?: string;
 	onReady?: HeadlessRuntimeOptions["onReady"];
 	onRestart?: HeadlessRuntimeOptions["onRestart"];
 	onEvent?: HeadlessRuntimeOptions["onEvent"];
@@ -82,9 +88,14 @@ async function recoverHeadlessExecutor(request: ExecutorRecoveryRequest): Promis
 		{ sessionId: request.sessionId, sessionPath: request.sessionPath },
 		request.sessionPath,
 	);
+	const normalizedCommand = ensureKhalaExtension(
+		[request.command, ...request.args],
+		request.extensionPath ?? DEFAULT_KHALA_EXTENSION_PATH,
+	);
+	const [command, ...args] = normalizedCommand;
 	let runtimeOptions: HeadlessRuntimeOptions = {
-		command: request.command,
-		args: request.args,
+		command,
+		args,
 		cwd: request.cwd,
 		model: request.model,
 		mission: request.mission,
@@ -123,7 +134,12 @@ function createExecutorStarter(
 	model?: string,
 	skillPaths: readonly string[] = [],
 	thinkingLevel?: string,
+	extensionPath?: string,
 ): ExecutorStarter {
+	let normalizedPiCommand = piCommand;
+	if (extensionPath !== undefined) {
+		normalizedPiCommand = ensureKhalaExtension(piCommand, extensionPath);
+	}
 	return async (request) => {
 		const sandboxRequest: SandboxRequest = { projectPath: request.projectPath, name: request.name };
 		if (request.reviewWorkflow?.targetBranch !== undefined) {
@@ -191,7 +207,7 @@ function createExecutorStarter(
 				if (model === undefined || model.trim().length === 0) {
 					throw new Error("A configured executorModel is required for headless Executor launch.");
 				}
-				const [command, ...commandArgs] = piCommand;
+				const [command, ...commandArgs] = normalizedPiCommand;
 				const skillArguments: string[] = [];
 				for (const skillPath of skillPaths) {
 					skillArguments.push("--skill", skillPath);
@@ -268,17 +284,21 @@ function createExecutorStarter(
 				if (launcher === undefined) {
 					throw new Error("Observer launch requires a configured pane launcher.");
 				}
-				const [command, ...commandArgs] = piCommand;
+				const [command, ...commandArgs] = normalizedPiCommand;
 				const skillArguments: string[] = [];
 				for (const skillPath of skillPaths) {
 					skillArguments.push("--skill", skillPath);
+				}
+				let modelArguments: string[] = [];
+				if (model !== undefined && model.trim().length > 0) {
+					modelArguments = ["--model", model];
 				}
 				const startup: StartupRequest = { markerPath: join(sandbox.path, `.khala-startup-${request.executionId}`) };
 				launched = await launcher.launch({
 					sandbox,
 					name: request.name,
 					command,
-					args: [...commandArgs, ...skillArguments, ...buildPiArguments(request, thinkingLevel)],
+					args: [...commandArgs, ...modelArguments, ...skillArguments, ...buildPiArguments(request, thinkingLevel)],
 					startup,
 				});
 				launcherClosed = launched.target === undefined;
