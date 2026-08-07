@@ -66,6 +66,19 @@ and invalid typed payloads fail closed rather than projecting as empty state.
   Mission/Execution bindings, validation and review evidence, accepting actor,
   and timestamp. It is the acceptance record; Finish is not acceptance.
 
+## Archive read projections
+
+`khala_read_archive` keeps role-specific least-privilege boundaries. A User
+must select a Work; the optional Execution selector then narrows that Work's
+records. An Executor's durable session marker must match its registered Project,
+Work, and Execution before a read is allowed. The Executor may omit selectors,
+select its bound Work, or select its bound Execution; all three forms project
+only the bound project and Work, including records without an `executionId`
+such as the Submission, Mandate, and Mission assignment. Execution-bound
+records must match the bound Execution. Incorrect Work or Execution selectors,
+foreign projects, and unrelated Works are rejected. Corrupt Archive records
+fail closed during the authoritative read.
+
 ## Coordination and Intervention records
 
 **Coordination** records append-only phases for dependency or peer conflict,

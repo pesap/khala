@@ -13,6 +13,7 @@ import { type Component, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { listArchiveRecords } from "./khala-archive.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
+import { readExecutorRecord } from "./khala-executor-registry.js";
 import type { KhalaArchiveRecord } from "./khala-model.js";
 import { isUserSessionRole, KhalaRole, type KhalaRoleValue } from "./khala-role.js";
 
@@ -28,7 +29,13 @@ type ArchiveReadParameterSchema = typeof ARCHIVE_READ_PARAMETERS | typeof USER_A
 type ArchiveReadParameters = Static<typeof ARCHIVE_READ_PARAMETERS>;
 type ArchiveReadDetails = Readonly<{ records: readonly KhalaArchiveRecord[] }>;
 type SessionRoleReader = (context: ExtensionContext) => KhalaRoleValue | null;
-type ExecutorBinding = Readonly<{ executionId: string; projectPath: string; workId: string }>;
+type ExecutorBinding = Readonly<{
+	executionId: string;
+	executorName: string;
+	projectPath: string;
+	projectTrusted?: boolean;
+	workId: string;
+}>;
 
 function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRoleReader): void {
 	pi.registerTool(createArchiveReadTool(pi, readSessionRole, ARCHIVE_READ_PARAMETERS));
@@ -82,12 +89,24 @@ function executeArchiveRead(
 		if (
 			binding === undefined ||
 			(params.executionId !== undefined && params.executionId !== binding.executionId) ||
+			(params.workId !== undefined && params.workId !== binding.workId) ||
 			typeof configuredProjectPath !== "string" ||
 			resolve(configuredProjectPath) !== resolve(binding.projectPath)
 		) {
-			throw new Error("An Executor may only read its bound execution from the Archive.");
+			throw new Error("An Executor may only read its bound Work and execution from the Archive.");
 		}
 		projectPath = resolve(binding.projectPath);
+		const projectTrusted = binding.projectTrusted ?? readProjectTrusted(context);
+		const registeredExecution = readExecutorRecord(projectPath, binding.executionId, projectTrusted);
+		if (
+			registeredExecution === undefined ||
+			resolve(registeredExecution.projectPath) !== projectPath ||
+			registeredExecution.workId !== binding.workId ||
+			registeredExecution.executorName !== binding.executorName ||
+			registeredExecution.kind === "observer"
+		) {
+			throw new Error("The Executor marker does not match its registered Work execution.");
+		}
 		boundExecutionId = binding.executionId;
 		boundWorkId = binding.workId;
 	}
@@ -150,7 +169,9 @@ function isVisibleArchiveRecord(
 ): boolean {
 	const { params, projectPath, boundWorkId, boundExecutionId } = options;
 	if (boundExecutionId !== undefined) {
-		// Executors may inspect their Work assignment as well as records emitted by their execution.
+		// Work-scoped records, such as the submission and Mission assignment, do not
+		// have an execution envelope. They remain visible only when both the project
+		// and Work match the durable Executor binding.
 		if (resolve(record.projectPath) !== projectPath || record.workId !== boundWorkId) {
 			return false;
 		}
@@ -280,18 +301,40 @@ function formatArchiveCounts(counts: ReadonlyMap<string, number>): string {
 	return [...counts.entries()].map(([value, count]) => `${value}=${count}`).join(" · ");
 }
 
+function readProjectTrusted(context: ExtensionContext): boolean {
+	return typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+}
+
 function readExecutorBinding(context: ExtensionContext): ExecutorBinding | undefined {
 	let binding: ExecutorBinding | undefined;
 	for (const entry of [...context.sessionManager.getBranch()].reverse()) {
 		if (entry.type === "custom" && entry.customType === KhalaEntryType.executor) {
-			const data = entry.data as { executionId?: unknown; projectPath?: unknown; workId?: unknown };
+			const data = entry.data as {
+				executionId?: unknown;
+				executorName?: unknown;
+				projectPath?: unknown;
+				projectTrusted?: unknown;
+				workId?: unknown;
+			};
 			if (
 				typeof data.executionId === "string" &&
+				typeof data.executorName === "string" &&
 				typeof data.projectPath === "string" &&
 				typeof data.workId === "string" &&
-				data.projectPath.length > 0
+				data.executionId.length > 0 &&
+				data.executorName.length > 0 &&
+				data.projectPath.length > 0 &&
+				data.workId.length > 0
 			) {
-				binding = { executionId: data.executionId, projectPath: data.projectPath, workId: data.workId };
+				binding = {
+					executionId: data.executionId,
+					executorName: data.executorName,
+					projectPath: data.projectPath,
+					workId: data.workId,
+				};
+				if (typeof data.projectTrusted === "boolean") {
+					binding = { ...binding, projectTrusted: data.projectTrusted };
+				}
 				break;
 			}
 		}

@@ -660,6 +660,16 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 				observedAt: new Date().toISOString(),
 			},
 		});
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "execution-bound",
+				workId: "work-bound",
+				executorName: "Bound Executor",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "headless-rpc",
+			}),
+		);
 
 		const commands = new Map();
 		const tools = new Map();
@@ -693,7 +703,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			executorContext,
 		);
-		assert.deepEqual(result.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(result.details.records.map((record) => record.type), ["counsel", "signal", "execution"]);
 		initTheme();
 		const plainTheme = {
 			fg(_color, text) {
@@ -705,7 +715,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		};
 		const collapsed = archiveTool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {});
 		const collapsedText = collapsed.render(120).join("\n");
-		assert.match(collapsedText, /Khala Archive: 2 record\(s\)/);
+		assert.match(collapsedText, /Khala Archive: 3 record\(s\)/);
 		assert.match(collapsedText, /to expand/);
 		assert.doesNotMatch(collapsedText, /bound evidence/);
 		const expanded = archiveTool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
@@ -714,7 +724,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		assert.match(expandedText, /signal/);
 		assert.doesNotMatch(expandedText, /bound evidence/);
 		const unscopedResult = await archiveTool.execute("archive", {}, null, null, executorContext);
-		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), ["counsel", "signal", "execution"]);
 		const userContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -730,7 +740,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userContext,
 		);
-		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal", "execution"]);
 		const userRoleContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -750,7 +760,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userRoleContext,
 		);
-		assert.deepEqual(userRoleWorkResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(userRoleWorkResult.details.records.map((record) => record.type), ["counsel", "signal", "execution"]);
 		const userRoleExecutionResult = await archiveTool.execute(
 			"archive",
 			{ workId: "work-other", executionId: "execution-other" },
@@ -761,14 +771,200 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		assert.deepEqual(userRoleExecutionResult.details.records.map((record) => record.type), ["signal"]);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
-			/An Executor may only read its bound execution/,
+			/An Executor may only read its bound Work and execution/,
+		);
+		assert.throws(
+			() => archiveTool.execute("archive", { workId: "work-other" }, null, null, executorContext),
+			/An Executor may only read its bound Work and execution/,
 		);
 
 		flags.set("khala-project-path", foreignProjectPath);
 		assert.throws(
-			() => archiveTool.execute("archive", { executionId: "execution-bound" }, null, null, executorContext),
-			/An Executor may only read its bound execution/,
+			() => archiveTool.execute("archive", { workId: "work-bound" }, null, null, executorContext),
+			/An Executor may only read its bound Work and execution/,
 		);
+		assert.throws(
+			() => archiveTool.execute("archive", { executionId: "execution-bound" }, null, null, executorContext),
+			/An Executor may only read its bound Work and execution/,
+		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Executor Archive reads include only the bound Work lifecycle projection", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-archive-work-projection-test-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	const foreignProjectPath = join(root, "foreign-project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		storage.submit({ workId: "work-bound", projectPath, work: validWork({ title: "Bound Work" }) });
+		storage.submit({ workId: "work-other", projectPath, work: validWork({ title: "Other Work" }) });
+		const submissions = listArchiveRecords(projectPath).filter((record) => record.type === "submission");
+		const boundSubmission = submissions.find((record) => record.workId === "work-bound");
+		assert.ok(boundSubmission);
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mandate",
+			workId: "work-bound",
+			payload: {
+				mandateId: "mandate-bound",
+				workId: "work-bound",
+				revision: 1,
+				sourceSubmissionRecordId: boundSubmission.recordId,
+				terms: validWork({ title: "Bound Work" }),
+				admittedByParticipantId: "conclave-bound",
+				admittedAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "work-bound",
+			payload: {
+				missionId: "mission-bound",
+				workId: "work-bound",
+				mandateId: "mandate-bound",
+				assignment: validWork({ title: "Bound Work" }),
+				assignedParticipantId: "executor-bound",
+				createdAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			type: "learning",
+			workId: "work-bound",
+			executionId: "execution-bound",
+			payload: {
+				learningId: "learning-bound",
+				workId: "work-bound",
+				executionId: "execution-bound",
+				observerName: "Observer",
+				topic: "Bound context",
+				summary: "The bound context is available.",
+				evidence: ["The Work record is present."],
+				sourcePaths: ["README.md"],
+				createdAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "work-bound",
+			executionId: "execution-bound",
+			payload: {
+				signalId: "signal-bound",
+				workId: "work-bound",
+				executionId: "execution-bound",
+				executorName: "Bound Executor",
+				kind: "progress",
+				summary: "The bound execution is visible.",
+				evidence: ["The execution is registered."],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			type: "verdict",
+			workId: "work-bound",
+			executionId: "execution-bound",
+			payload: {
+				workId: "work-bound",
+				executionId: "execution-bound",
+				signalId: "signal-bound",
+				decision: "continue",
+				reason: "The bound execution remains active.",
+				verdictId: "verdict-bound",
+				issuedAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			type: "counsel",
+			workId: "work-bound",
+			payload: {
+				workId: "work-bound",
+				sourceRecordIds: [boundSubmission.recordId],
+				observations: ["The Work is bound."],
+				recommendations: ["Continue with the assignment."],
+				uncertainties: [],
+				counselId: "counsel-bound",
+				createdAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "work-other",
+			executionId: "execution-bound",
+			payload: {
+				signalId: "signal-other-work",
+				workId: "work-other",
+				executionId: "execution-bound",
+				executorName: "Other Executor",
+				kind: "progress",
+				summary: "Unrelated Work",
+				evidence: ["Must remain hidden."],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		appendArchiveRecord(foreignProjectPath, {
+			type: "signal",
+			workId: "work-bound",
+			executionId: "execution-bound",
+			payload: {
+				signalId: "signal-foreign-project",
+				workId: "work-bound",
+				executionId: "execution-bound",
+				executorName: "Bound Executor",
+				kind: "progress",
+				summary: "Foreign project",
+				evidence: ["Must remain hidden."],
+				observedAt: new Date().toISOString(),
+			},
+		});
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "execution-bound",
+				workId: "work-bound",
+				executorName: "Bound Executor",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "headless-rpc",
+			}),
+		);
+
+		const tools = new Map();
+		const flags = new Map([["khala-project-path", projectPath]]);
+		createExtension(createPiStub(new Map(), tools, flags));
+		const archiveTool = tools.get("khala_read_archive");
+		const executorContext = {
+			cwd: join(root, "sandbox"),
+			sessionManager: {
+				getBranch() {
+					return [
+						{
+							type: "custom",
+							customType: "khala-executor",
+							data: { workId: "work-bound", executionId: "execution-bound", executorName: "Bound Executor", projectPath },
+						},
+					];
+				},
+			},
+		};
+		const read = async (params) => (await archiveTool.execute("archive", params, null, null, executorContext)).details.records;
+		for (const records of [await read({}), await read({ workId: "work-bound" }), await read({ executionId: "execution-bound" })]) {
+			assert.ok(records.some((record) => record.type === "submission"));
+			assert.ok(records.some((record) => record.type === "mandate"));
+			assert.ok(records.some((record) => record.type === "mission"));
+			assert.ok(records.some((record) => record.type === "learning"));
+			assert.ok(records.some((record) => record.type === "counsel"));
+			assert.ok(records.some((record) => record.type === "signal"));
+			assert.ok(records.some((record) => record.type === "verdict"));
+			assert.ok(records.some((record) => record.type === "execution"));
+			assert.equal(records.some((record) => record.workId === "work-other"), false);
+			assert.equal(records.some((record) => record.projectPath === foreignProjectPath), false);
+		}
+		assert.throws(() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext), /bound Work and execution/);
+		assert.throws(() => archiveTool.execute("archive", { workId: "work-other" }, null, null, executorContext), /bound Work and execution/);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
