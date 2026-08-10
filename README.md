@@ -137,7 +137,7 @@ for an entity; the complete history remains available for review and recovery.
 
 ## Pi tools
 
-`khala_oracle` runs a bounded fresh-context read-only review. Its findings are advisory and do not mutate Khala state.
+`khala_oracle` runs a bounded fresh-context read-only review. Its findings are advisory and do not mutate Khala state. While it runs, Pi displays coarse public checkpoints such as packet review, evidence analysis, and findings synthesis; the expanded result preserves that review trace and the final verdict without exposing private chain-of-thought.
 
 Khala registers these custom Pi tools but activates only the allowlist for the
 current role, intersected with Pi's current tool inventory so explicit tool

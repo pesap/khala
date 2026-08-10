@@ -434,6 +434,7 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 		receivedPrompt = prompt;
 		receivedSignal = signal;
 		return {
+			progress: ["Oracle process started", "Evidence analyzed", "Final verdict ready"],
 			output: [
 				"Findings:",
 				"- Severity: major",
@@ -465,6 +466,7 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	assert.equal(result.details.majors, 1);
 	assert.equal(result.details.minors, 1);
 	assert.equal(result.details.validationGaps, 1);
+	assert.deepEqual(result.details.progress, ["Oracle process started", "Evidence analyzed", "Final verdict ready"]);
 	const oracleArguments = buildOracleArguments("packet", "test-model", "xhigh");
 	assert.deepEqual(oracleArguments.slice(oracleArguments.indexOf("--model"), oracleArguments.indexOf("--model") + 4), [
 		"--model",
@@ -531,8 +533,44 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	assert.match(expandedText, /Complete review result/);
 	assert.match(expandedText, /Model: test-model/);
 	assert.match(expandedText, /Duration: 42 ms/);
+	assert.match(expandedText, /Review trace/);
+	assert.match(expandedText, /Evidence analyzed/);
 	assert.match(expandedText, /Findings/);
 	assert.match(expandedText, /src\/example.ts:10/);
+});
+
+test("Khala Oracle renders observable progress without exposing hidden reasoning", () => {
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "Verdict: pass",
+		model: "test-model",
+		durationMs: 10,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const partial = oracle
+		.renderResult(
+			{
+				content: [{ type: "text", text: "Analyzing evidence and weighing risks." }],
+				details: { progress: ["Oracle process started", "Evidence analyzed"] },
+			},
+			{ expanded: false, isPartial: true },
+			plainTheme,
+			{ args: {}, isError: false },
+		)
+		.render(120)
+		.join("\n");
+	assert.match(partial, /Analyzing evidence and weighing risks/);
+	assert.match(partial, /\[done\] Evidence analyzed/);
+	assert.doesNotMatch(partial, /chain-of-thought|private reasoning/i);
 });
 
 test("Khala Oracle rendering reports incomplete errors without undefined metadata", () => {
