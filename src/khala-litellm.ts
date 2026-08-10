@@ -27,6 +27,7 @@ import {
 	litellmKeyAuthId,
 	litellmKeyAuthParts,
 	litellmProviderExists,
+	litellmProviderNeedsRegistration,
 	lookupKeyValueByName,
 	mergeAuthJsonApiKey,
 	mergeLitellmKeyRegistry,
@@ -111,7 +112,7 @@ Flags:
       --auth-mode <mode>    How to store the key: skip | literal | command
       --auth-key <value>    Literal key value for --auth-mode=literal
       --auth-command <!cmd> Shell command for --auth-mode=command (must start with '!')
-      --project-settings    Also set .pi/settings.json defaults; leave models enabled
+      --project-settings    Set .pi/settings.json defaults and use this provider's models
       --no-project-settings Do not update .pi/settings.json
   -y, --yes                 Use defaults and skip prompts (requires all flags above)
       --no-input             Alias for --yes
@@ -538,7 +539,7 @@ async function planInteractiveNewProvider(
 	const catalogModelNames = resolvedKey === undefined ? [] : await fetchCatalogNames(baseUrl, resolvedKey);
 	const modelIds = options.model.length > 0 ? parseModelList(options.model) : await askModelIds(catalogModelNames);
 
-	const writeProjectSettings = await resolveProjectSettingsChoice(options, true);
+	const writeProjectSettings = await resolveProjectSettingsChoice(options, true, provider);
 	return {
 		provider,
 		baseUrl,
@@ -648,14 +649,18 @@ function parseModelList(raw: string): string[] {
 	return modelIds;
 }
 
-async function resolveProjectSettingsChoice(options: LitellmOptions, defaultToAsk: boolean): Promise<boolean> {
+async function resolveProjectSettingsChoice(
+	options: LitellmOptions,
+	defaultToAsk: boolean,
+	providerId: string,
+): Promise<boolean> {
 	if (options.projectSettings !== null) {
 		return options.projectSettings;
 	}
 	if (!(isInteractive(options) && defaultToAsk)) {
 		return false;
 	}
-	return askYesNo("Set this project's Pi defaults (.pi/settings.json) to these models?", false);
+	return askYesNo(`Set this project's Pi defaults and use ${providerId} as its model source?`, false);
 }
 
 async function planAddKeyToExistingProvider(
@@ -682,7 +687,9 @@ async function planAddKeyToExistingProvider(
 	const writeProjectKeyConfig = isInteractive(options)
 		? await askYesNo(`Configure this project to use key label '${keyEnv}'?`, false)
 		: true;
-	const writeProjectSettings = writeProjectKeyConfig ? await resolveProjectSettingsChoice(options, true) : false;
+	const writeProjectSettings = writeProjectKeyConfig
+		? await resolveProjectSettingsChoice(options, true, provider.name)
+		: false;
 	return {
 		provider: provider.name,
 		baseUrl: provider.baseUrl,
@@ -724,14 +731,18 @@ async function planReuseExistingKey(options: LitellmOptions): Promise<ResolvedSe
 	const writeProjectKeyConfig = isInteractive(options)
 		? await askYesNo(`Configure this project to use ${providerName}:${selected.keyEnv}?`, true)
 		: true;
-	const writeProjectSettings = writeProjectKeyConfig ? await resolveProjectSettingsChoice(options, true) : false;
+	const writeProjectSettings = writeProjectKeyConfig
+		? await resolveProjectSettingsChoice(options, true, providerName)
+		: false;
+	const writeModelsJson =
+		writeProjectKeyConfig && litellmProviderNeedsRegistration(readJsonObjectFile(modelsJsonPath()), providerName);
 	return {
 		provider: providerName,
 		baseUrl: selected.baseUrl,
 		keyEnv: selected.keyEnv,
 		modelIds: selected.modelIds,
 		auth: { mode: "skip" },
-		writeModelsJson: false,
+		writeModelsJson,
 		writeProjectKeyConfig,
 		writeProjectSettings,
 	};
@@ -773,7 +784,7 @@ async function planNonInteractive(options: LitellmOptions): Promise<ResolvedSetu
 	const keyEnv = validateLitellmKeyEnv(options.keyEnv);
 	const modelIds = parseModelList(options.model);
 	const auth = await resolveAuthChoice(options, provider, keyEnv, false);
-	const writeProjectSettings = await resolveProjectSettingsChoice(options, false);
+	const writeProjectSettings = await resolveProjectSettingsChoice(options, false, provider);
 	return {
 		provider,
 		baseUrl,
@@ -820,11 +831,7 @@ function printPlanSummary(plan: ResolvedSetup): void {
 	const writesKeyRegistry = plan.auth.mode !== "skip" || plan.writeModelsJson || plan.writeProjectKeyConfig;
 	let projectDefaults = "(unchanged)";
 	if (plan.writeProjectSettings) {
-		const globalSettings = readJsonObjectFile(join(agentDir(), "settings.json"));
-		const currentProjectSettings = readJsonObjectFile(projectSettingsPath(process.cwd()));
-		const modelScope = currentProjectSettings?.["enabledModels"] ?? globalSettings?.["enabledModels"];
-		const scopeDescription = modelScope === undefined ? "all models enabled" : "existing model scope preserved";
-		projectDefaults = `${projectSettingsPath(process.cwd())} (${scopeDescription})`;
+		projectDefaults = `${projectSettingsPath(process.cwd())} (models from ${plan.provider})`;
 	}
 
 	console.log("");
@@ -895,6 +902,7 @@ async function writePlan(plan: ResolvedSetup): Promise<void> {
 		const merged = mergeLitellmProjectSettings(readJsonObjectFile(path), {
 			providerId: plan.provider,
 			modelIds: plan.modelIds,
+			scopeToProvider: true,
 		});
 		writeJsonFile(path, merged);
 	}

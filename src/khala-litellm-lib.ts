@@ -283,24 +283,22 @@ function costPerMillion(perToken: unknown): number | undefined {
 }
 
 function modelInfoCost(info: JsonRecord): JsonRecord {
-	const cost: JsonRecord = {};
 	const input = costPerMillion(info["input_cost_per_token"]);
 	const output = costPerMillion(info["output_cost_per_token"]);
 	const cacheRead = costPerMillion(info["cache_read_input_token_cost"]);
 	const cacheWrite = costPerMillion(info["cache_creation_input_token_cost"]);
-	if (input !== undefined) {
-		cost["input"] = input;
+	if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined) {
+		return {};
 	}
-	if (output !== undefined) {
-		cost["output"] = output;
-	}
-	if (cacheRead !== undefined) {
-		cost["cacheRead"] = cacheRead;
-	}
-	if (cacheWrite !== undefined) {
-		cost["cacheWrite"] = cacheWrite;
-	}
-	return cost;
+	// Pi requires all four cost fields whenever a model has a cost object. A
+	// LiteLLM catalog often omits cache pricing, so unknown cache prices use the
+	// schema-safe zero value rather than producing an invalid models.json file.
+	return {
+		input: input ?? 0,
+		output: output ?? 0,
+		cacheRead: cacheRead ?? 0,
+		cacheWrite: cacheWrite ?? 0,
+	};
 }
 
 function modelInfoInputs(info: JsonRecord): string[] {
@@ -313,9 +311,11 @@ function modelInfoInputs(info: JsonRecord): string[] {
 
 function buildModelInfoEntry(modelName: string, info: JsonRecord): JsonRecord {
 	const entry: JsonRecord = { id: modelName, name: modelName, input: modelInfoInputs(info) };
-	if (info["supports_reasoning"] === true) {
-		entry["reasoning"] = true;
-		entry["thinkingLevelMap"] = { ...DEFAULT_THINKING_LEVEL_MAP };
+	if (typeof info["supports_reasoning"] === "boolean") {
+		entry["reasoning"] = info["supports_reasoning"];
+		if (info["supports_reasoning"] === true) {
+			entry["thinkingLevelMap"] = { ...DEFAULT_THINKING_LEVEL_MAP };
+		}
 	}
 	const maxInputTokens = info["max_input_tokens"];
 	if (typeof maxInputTokens === "number" && Number.isFinite(maxInputTokens)) {
@@ -330,6 +330,27 @@ function buildModelInfoEntry(modelName: string, info: JsonRecord): JsonRecord {
 		entry["cost"] = cost;
 	}
 	return entry;
+}
+
+function parseLitellmPublicModelHubResponse(json: unknown): Map<string, JsonRecord> {
+	const map = new Map<string, JsonRecord>();
+	let rows: unknown[] = [];
+	if (Array.isArray(json)) {
+		rows = json;
+	} else if (isPlainObject(json) && Array.isArray(json["data"])) {
+		rows = json["data"];
+	}
+	for (const item of rows) {
+		if (!isPlainObject(item)) {
+			continue;
+		}
+		const modelName = trimOrEmpty(item["model_group"] ?? item["model_name"]);
+		if (modelName.length === 0) {
+			continue;
+		}
+		map.set(modelName, buildModelInfoEntry(modelName, item));
+	}
+	return map;
 }
 
 /**
@@ -400,6 +421,41 @@ function litellmProviderExists(current: unknown, providerId: string): boolean {
 		return false;
 	}
 	return isPlainObject(current["providers"][providerId]);
+}
+
+function litellmProviderNeedsRegistration(current: unknown, providerId: string): boolean {
+	const provider = validateLitellmProviderId(providerId);
+	if (!(isPlainObject(current) && isPlainObject(current["providers"]))) {
+		return true;
+	}
+	const config = current["providers"][provider];
+	if (!isPlainObject(config)) {
+		return true;
+	}
+	const modelEntries = Array.isArray(config["models"]) ? config["models"] : [];
+	const modelIds = modelEntries.map(modelIdFromModelsJsonEntry).filter((id) => id.length > 0);
+	const hasBareModel = modelEntries.some(
+		(entry) => !isPlainObject(entry) || Object.keys(entry).every((key) => key === "id"),
+	);
+	const hasIncompleteCost = modelEntries.some((entry) => {
+		if (!isPlainObject(entry)) {
+			return false;
+		}
+		const cost = entry["cost"];
+		if (!isPlainObject(cost)) {
+			return false;
+		}
+		return ["input", "output", "cacheRead", "cacheWrite"].some(
+			(key) => typeof cost[key] !== "number" || !Number.isFinite(cost[key]),
+		);
+	});
+	return (
+		!LITELLM_PROVIDER_APIS.has(trimOrEmpty(config["api"])) ||
+		modelIds.length === 0 ||
+		hasBareModel ||
+		hasIncompleteCost ||
+		config["apiKey"] !== buildLitellmApiKeyCommand(provider)
+	);
 }
 
 function validateAuthCommand(value: unknown): string {
@@ -572,13 +628,16 @@ function mergeLitellmModelsJson(current: unknown, options: MergeModelsJsonOption
 
 function mergeLitellmProjectSettings(
 	current: unknown,
-	options: { providerId: string; modelIds?: readonly string[]; modelId?: string },
+	options: { providerId: string; modelIds?: readonly string[]; modelId?: string; scopeToProvider?: boolean },
 ): JsonRecord {
 	const providerId = validateLitellmProviderId(options.providerId);
 	const modelIds = normalizeModelIdList(options);
 	const root: JsonRecord = isPlainObject(current) ? { ...current } : {};
 	root["defaultProvider"] = providerId;
 	root["defaultModel"] = modelIds[0];
+	if (options.scopeToProvider === true) {
+		root["enabledModels"] = [`${providerId}/*`];
+	}
 	return root;
 }
 
@@ -769,6 +828,10 @@ function litellmModelInfoUrl(baseUrl: string): string {
 	return `${baseUrl.replace(/\/+$/, "").replace(/\/v1$/i, "")}/model/info`;
 }
 
+function litellmPublicModelHubUrl(baseUrl: string): string {
+	return `${baseUrl.replace(/\/+$/, "").replace(/\/v1$/i, "")}/public/model_hub`;
+}
+
 function litellmModelsUrl(baseUrl: string): string {
 	return `${baseUrl.replace(/\/+$/, "")}/models`;
 }
@@ -809,12 +872,16 @@ function parseLitellmModelsResponse(json: unknown): string[] {
 	return [...new Set(names)];
 }
 
-async function fetchJsonWithBearer(url: string, apiKey: string, timeoutMs = 10_000): Promise<unknown> {
+async function fetchJson(url: string, apiKey: string | undefined, timeoutMs = 10_000): Promise<unknown> {
 	let response: Response;
 	try {
 		response = await fetch(url, {
-			// biome-ignore lint/style/useNamingConvention: HTTP header names are not camelCase identifiers.
-			headers: { Authorization: `Bearer ${apiKey}` },
+			...(apiKey === undefined
+				? {}
+				: {
+						// biome-ignore lint/style/useNamingConvention: HTTP header names are not camelCase identifiers.
+						headers: { Authorization: `Bearer ${apiKey}` },
+					}),
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 	} catch (error) {
@@ -836,13 +903,18 @@ async function fetchJsonWithBearer(url: string, apiKey: string, timeoutMs = 10_0
 }
 
 async function fetchLitellmModelInfo(baseUrl: string, apiKey: string): Promise<Map<string, JsonRecord>> {
-	const body = await fetchJsonWithBearer(litellmModelInfoUrl(baseUrl), apiKey);
+	const body = await fetchJson(litellmModelInfoUrl(baseUrl), apiKey);
 	return parseLitellmModelInfoResponse(body);
 }
 
 async function fetchLitellmModels(baseUrl: string, apiKey: string): Promise<string[]> {
-	const body = await fetchJsonWithBearer(litellmModelsUrl(baseUrl), apiKey);
+	const body = await fetchJson(litellmModelsUrl(baseUrl), apiKey);
 	return parseLitellmModelsResponse(body);
+}
+
+async function fetchLitellmPublicModelHub(baseUrl: string): Promise<Map<string, JsonRecord>> {
+	const body = await fetchJson(litellmPublicModelHubUrl(baseUrl), undefined);
+	return parseLitellmPublicModelHubResponse(body);
 }
 
 function litellmModelCatalogEntries(infoMap: ReadonlyMap<string, JsonRecord>): string[] {
@@ -866,6 +938,19 @@ async function fetchLitellmCatalog(baseUrl: string, apiKey: string): Promise<Lit
 		}
 	} catch (error) {
 		metadataError = error instanceof Error ? error : new Error(String(error));
+	}
+	if (infoMap.size === 0) {
+		try {
+			infoMap = await fetchLitellmPublicModelHub(baseUrl);
+			if (modelNames.length === 0) {
+				modelNames = litellmModelCatalogEntries(infoMap);
+			}
+			if (infoMap.size > 0) {
+				metadataError = undefined;
+			}
+		} catch {
+			// Keep the authenticated metadata error so callers can report why enrichment was unavailable.
+		}
 	}
 	return { infoMap, modelNames, metadataError, modelListError };
 }
@@ -894,6 +979,7 @@ export {
 	litellmKeyAuthId,
 	litellmKeyAuthParts,
 	litellmProviderExists,
+	litellmProviderNeedsRegistration,
 	lookupKeyValueByName,
 	mergeAuthJsonApiKey,
 	mergeLitellmKeyRegistry,
@@ -905,6 +991,7 @@ export {
 	normalizeLitellmKeyRegistryEntry,
 	normalizeLitellmModelPattern,
 	parseLitellmModelInfoResponse,
+	parseLitellmPublicModelHubResponse,
 	readJsonObjectFile,
 	registryLitellmKeyCandidates,
 	resolveKeyForFetch,

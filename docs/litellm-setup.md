@@ -91,24 +91,25 @@ label, so the same LiteLLM provider can expose multiple reusable labels.
 
 ## Project Settings
 
-Pass `--project-settings` (or answer yes when prompted) when the first
-selected model should become this project's Pi default. This does not change
-what `pi --list-models` prints — that command lists the shared
-`~/.pi/agent/models.json` registry.
+Pass `--project-settings` (or answer yes when prompted) when the selected
+provider should become this project's model source and its first model should
+be the Pi default. Khala writes `enabledModels: ["<provider>/*"]`, so model
+cycling uses only that provider while automatically including its registered
+models. This does not change what `pi --list-models` prints — that command
+lists the shared `~/.pi/agent/models.json` registry.
 
-Khala sets `defaultProvider` and `defaultModel` but does not add an
-`enabledModels` allowlist. Pi therefore leaves every registered model enabled
-by default; use Pi's model-scope controls to opt out when a project needs a
-narrower set. If the project already has an explicit `enabledModels` scope,
-Khala preserves it.
+If you do not configure project settings, Khala still registers the provider
+and project key but leaves the project's model scope unchanged.
 
 ## Model Metadata
 
 When an API key is available during setup, Khala fetches LiteLLM's
 `/model/info` endpoint so selected models get metadata such as context
-window, cost, reasoning support, and input modalities instead of bare `{ id
-}` entries. If the fetch fails, setup falls back to bare entries and still
-writes the provider — metadata enrichment is best-effort only.
+window, cost, reasoning support, and input modalities. If the virtual key
+cannot access that admin route, Khala falls back to the public
+`/public/model_hub` catalog without sending the API key there. If both
+metadata sources fail, setup writes bare `{ id }` entries and still writes the
+provider — metadata enrichment is best-effort only.
 
 ## Key Resolution at Runtime
 

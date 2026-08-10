@@ -54,6 +54,21 @@ test("buildLitellmApiKeyCommand and isLitellmApiKeyCommand round-trip", () => {
 	assert.equal(lib.isLitellmApiKeyCommand("other", command), false);
 });
 
+test("litellmProviderNeedsRegistration detects a missing or stale shared provider", () => {
+	const provider = {
+		api: "openai-completions",
+		apiKey: "!npx --yes --silent github:pesap/khala litellm print-key --provider team-litellm",
+		models: [{ id: "gpt-5.4-mini", name: "gpt-5.4-mini", input: ["text"], reasoning: true }],
+	};
+	assert.equal(lib.litellmProviderNeedsRegistration({ providers: { "team-litellm": provider } }, "team-litellm"), false);
+	assert.equal(lib.litellmProviderNeedsRegistration(null, "team-litellm"), true);
+	assert.equal(lib.litellmProviderNeedsRegistration({ providers: { "team-litellm": { ...provider, models: [{ id: "gpt-5.4-mini" }] } } }, "team-litellm"), true);
+	assert.equal(lib.litellmProviderNeedsRegistration({ providers: { "team-litellm": { ...provider, models: [{ ...provider.models[0], cost: { input: 1, output: 2 } }] } } }, "team-litellm"), true);
+	assert.equal(lib.litellmProviderNeedsRegistration({ providers: { "team-litellm": { ...provider, models: [] } } }, "team-litellm"), true);
+	assert.equal(lib.litellmProviderNeedsRegistration({ providers: { "team-litellm": { ...provider, apiKey: "!khala litellm print-key --provider team-litellm" } } }, "team-litellm"), true);
+	assert.equal(lib.litellmProviderNeedsRegistration({ providers: { "team-litellm": { ...provider, api: "anthropic-messages" } } }, "team-litellm"), true);
+});
+
 test("mergeLitellmModelsJson writes a provider entry with REPLACE model semantics", () => {
 	const first = lib.mergeLitellmModelsJson(null, {
 		providerId: "team-litellm",
@@ -138,6 +153,12 @@ test("project defaults preserve an existing model scope", () => {
 	assert.equal(merged.defaultModel, "gpt-5.4-mini");
 	assert.deepEqual(merged.enabledModels, ["anthropic/claude-sonnet"]);
 	assert.equal(merged.theme, "dark");
+
+	const scoped = lib.mergeLitellmProjectSettings(
+		{ theme: "dark" },
+		{ providerId: "team-litellm", modelIds: ["gpt-5.4-mini"], scopeToProvider: true },
+	);
+	assert.deepEqual(scoped.enabledModels, ["team-litellm/*"]);
 });
 
 test("secure auth writes repair permissions when the JSON already matches", () => {
@@ -150,6 +171,46 @@ test("secure auth writes repair permissions when the JSON already matches", () =
 	lib.writeSecureJsonFile(authPath, auth);
 
 	assert.equal(statSync(authPath).mode & 0o777, 0o600);
+});
+
+test("parseLitellmPublicModelHubResponse preserves reasoning capabilities", () => {
+	const infoMap = lib.parseLitellmPublicModelHubResponse([
+		{ model_group: "gpt-5.4", supports_reasoning: true, supports_vision: true },
+		{ model_group: "HALO Gemma 4", supports_reasoning: false },
+	]);
+	assert.equal(infoMap.get("gpt-5.4").reasoning, true);
+	assert.ok(infoMap.get("gpt-5.4").thinkingLevelMap);
+	assert.equal(infoMap.get("HALO Gemma 4").reasoning, false);
+});
+
+test("fetchLitellmCatalog falls back to the public model hub without sending the key", async () => {
+	const originalFetch = globalThis.fetch;
+	const requests = [];
+	globalThis.fetch = async (url, init) => {
+		const endpoint = String(url);
+		requests.push({ endpoint, headers: init?.headers });
+		if (endpoint.endsWith("/models")) {
+			return new Response(JSON.stringify({ data: [{ id: "gpt-5.4" }] }), { status: 200 });
+		}
+		if (endpoint.endsWith("/model/info")) {
+			return new Response(JSON.stringify({ error: "forbidden" }), { status: 403 });
+		}
+		if (endpoint.endsWith("/public/model_hub")) {
+			return new Response(JSON.stringify([{ model_group: "gpt-5.4", supports_reasoning: true }]), { status: 200 });
+		}
+		return new Response("not found", { status: 404 });
+	};
+	try {
+		const catalog = await lib.fetchLitellmCatalog("https://lite.example/v1", "sk-test");
+		assert.deepEqual(catalog.modelNames, ["gpt-5.4"]);
+		assert.equal(catalog.metadataError, undefined);
+		assert.equal(catalog.infoMap.get("gpt-5.4").reasoning, true);
+		const publicRequest = requests.find((request) => request.endpoint.endsWith("/public/model_hub"));
+		assert.ok(publicRequest);
+		assert.equal(publicRequest.headers, undefined);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });
 
 test("parseLitellmModelInfoResponse enriches reasoning, cost, and modality fields", () => {
@@ -178,6 +239,8 @@ test("parseLitellmModelInfoResponse enriches reasoning, cost, and modality field
 	assert.equal(entry.maxTokens, 32000);
 	assert.equal(entry.cost.input, 2.5);
 	assert.equal(entry.cost.output, 10);
+	assert.equal(entry.cost.cacheRead, 0);
+	assert.equal(entry.cost.cacheWrite, 0);
 });
 
 // ── CLI behavior ─────────────────────────────────────────────────────────────
@@ -238,7 +301,7 @@ test("non-interactive setup registers a provider, project key config, and key re
 	const settings = JSON.parse(readFileSync(join(result.root, ".pi", "settings.json"), "utf8"));
 	assert.equal(settings.defaultProvider, "team-litellm");
 	assert.equal(settings.defaultModel, "gpt-5.4-mini");
-	assert.equal(settings.enabledModels, undefined);
+	assert.deepEqual(settings.enabledModels, ["team-litellm/*"]);
 
 	const registry = JSON.parse(readFileSync(join(result.agentDir, "khala", "litellm-keys.json"), "utf8"));
 	assert.deepEqual(registry.keys, [
@@ -305,7 +368,7 @@ test("non-interactive setup preserves Pi model ids containing slashes and colons
 
 	const settings = JSON.parse(readFileSync(join(result.root, ".pi", "settings.json"), "utf8"));
 	assert.equal(settings.defaultModel, "openai/gpt-4o:extended");
-	assert.equal(settings.enabledModels, undefined);
+	assert.deepEqual(settings.enabledModels, ["team-litellm/*"]);
 });
 
 test("--auth-mode=literal writes auth.json with 0600 permissions and never echoes the key", () => {
@@ -382,7 +445,7 @@ test("--dry-run shows a Khala-style LiteLLM configuration without writing files"
 	assert.match(result.stdout, /\+ Pi models\s+.*models\.json/);
 	assert.match(result.stdout, /\+ project key\s+.*\.pi\/khala\/litellm\.json/);
 	assert.match(result.stdout, /= authentication\s+environment \$REEDS_MAINT/);
-	assert.match(result.stdout, /\+ project defaults\s+.*settings\.json \(all models enabled\)/);
+	assert.match(result.stdout, /\+ project defaults\s+.*settings\.json \(models from team-litellm\)/);
 	assert.match(result.stdout, /Dry run\.\s+Run without --dry-run to write the LiteLLM configuration\./);
 	assert.equal(existsSync(join(result.agentDir, "models.json")), false);
 });
