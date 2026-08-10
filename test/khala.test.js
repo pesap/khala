@@ -9,7 +9,7 @@ import createExtension from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
-import { readMandate } from "../dist/src/khala-archive-projections.js";
+import { listExecutionRecords, readMandate } from "../dist/src/khala-archive-projections.js";
 import { createConclaveCoordinator, enqueueConclaveWake } from "../dist/src/khala-conclave.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
 import { createHerdrLauncher } from "../dist/src/launch-herdr.js";
@@ -1651,6 +1651,96 @@ test("Archive reads fail closed with safe, line-aware corruption errors", () => 
 			() => listArchiveRecords(projectPath),
 			(error) => error.name === "KhalaArchiveReadError" && error.lineNumber === 1 && !error.message.includes("not displayed"),
 		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("schema v2 mission Executions remain readable after schema v3 identity requirements", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-legacy-execution-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const legacyExecution = {
+			executionId: "legacy-execution",
+			workId: "legacy-work",
+			executorName: "Legacy Executor",
+			kind: "executor",
+			participantId: "executor:legacy-execution",
+			purpose: { kind: "mission", missionId: "legacy-mission" },
+			missionId: "legacy-mission",
+			projectPath,
+			sandboxPath: join(root, "legacy-sandbox"),
+			launcher: "zellij",
+			status: "running",
+			startedAt: new Date().toISOString(),
+		};
+		const archivePath = getArchivePath(projectPath);
+		mkdirSync(dirname(archivePath), { recursive: true });
+		writeFileSync(
+			archivePath,
+			`${JSON.stringify({
+				recordId: "legacy-execution-record",
+				schemaVersion: 2,
+				type: "execution",
+				projectPath,
+				workId: legacyExecution.workId,
+				executionId: legacyExecution.executionId,
+				recordedAt: new Date().toISOString(),
+				payload: legacyExecution,
+			})}\n`,
+		);
+
+		assert.deepEqual(listExecutionRecords(projectPath).map((execution) => execution.executionId), ["legacy-execution"]);
+		const currentExecution = {
+			...legacyExecution,
+			executionId: "current-execution",
+			workId: "current-work",
+			participantId: "executor:current-execution",
+			purpose: { kind: "mission", missionId: "current-mission" },
+			missionId: "current-mission",
+		};
+		assert.throws(
+			() =>
+				appendArchiveRecord(projectPath, {
+					schemaVersion: 2,
+					type: "execution",
+					workId: currentExecution.workId,
+					executionId: currentExecution.executionId,
+					payload: currentExecution,
+				}),
+			/Cannot append an invalid Khala Archive record/,
+		);
+		assert.throws(
+			() =>
+				appendArchiveRecord(projectPath, {
+					schemaVersion: 1,
+					type: "execution",
+					workId: "partial-current-work",
+					executionId: "partial-current-execution",
+					payload: {
+						...currentExecution,
+						workId: "partial-current-work",
+						executionId: "partial-current-execution",
+						purpose: undefined,
+					},
+				}),
+			/Cannot append an invalid Khala Archive record/,
+		);
+		appendArchiveRecord(projectPath, {
+			type: "execution",
+			workId: currentExecution.workId,
+			executionId: currentExecution.executionId,
+			payload: {
+				...currentExecution,
+				piSessionId: "current-pi-session",
+				sessionPath: join(root, "current-executor.jsonl"),
+				promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+			},
+		});
+		assert.equal(listArchiveRecords(projectPath).at(-1)?.schemaVersion, 3);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

@@ -144,6 +144,9 @@ ends polling; a remote ref alone is not inferred merge evidence.
 A Finish handoff requires a published reviewable Pull Request. The Executor
 owns the description and must use the repository Pull Request template when
 one exists. A Pull Request is a review artifact, not a Verdict or Outcome.
+During recovery, Khala changes a Pull Request to `reviewable` only when the
+Archive already holds matching, non-closed remote publication evidence; it
+never creates or infers that evidence.
 
 User review outcomes are distinct:
 

@@ -144,13 +144,7 @@ function markPullRequestReviewable(input: {
 	executionId: string;
 }): PullRequestRecord {
 	const existing = latestPullRequest(input.projectPath, input.executionId, input.projectTrusted);
-	if (
-		existing === undefined ||
-		existing.url === undefined ||
-		existing.url.trim().length === 0 ||
-		existing.remoteConfirmedAt === undefined ||
-		existing.status === "closed"
-	) {
+	if (!isActiveRemotelyConfirmedPullRequest(existing)) {
 		throw new Error(
 			"An active, remotely confirmed Pull Request must exist before the Execution can become reviewable.",
 		);
@@ -488,6 +482,18 @@ function latestPullRequest(
 	return latest;
 }
 
+function isActiveRemotelyConfirmedPullRequest(
+	pullRequest: PullRequestRecord | undefined,
+): pullRequest is PullRequestRecord {
+	return (
+		pullRequest !== undefined &&
+		pullRequest.url !== undefined &&
+		pullRequest.url.trim().length > 0 &&
+		pullRequest.remoteConfirmedAt !== undefined &&
+		pullRequest.status !== "closed"
+	);
+}
+
 function latestPullRequestById(
 	projectPath: string,
 	pullRequestId: string,
@@ -518,6 +524,7 @@ export type { PullRequestReviewInput, ReviewFinalizationInput, ReviewPreparation
 export {
 	appendPullRequestRecord,
 	canRecordPullRequestReview,
+	isActiveRemotelyConfirmedPullRequest,
 	latestPullRequest,
 	latestPullRequestForMission,
 	markPullRequestReviewable,

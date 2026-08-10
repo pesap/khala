@@ -6,9 +6,12 @@ log at `<archiveRoot>/<projectKey>/archive.jsonl`.
 
 ## Archive envelope
 
-Every current record contains `recordId`, `schemaVersion: 2`, `type`, resolved
-`projectPath`, `workId`, `recordedAt`, and a guarded `payload`. `executionId`
-is present when the record is execution-bound. Current record types are:
+Every Archive record contains `recordId`, `type`, resolved `projectPath`,
+`workId`, `recordedAt`, and a guarded `payload`. Versioned records also contain
+`schemaVersion`; unchanged record types use schema 2, while newly written
+mission Execution records use schema 3. Schema 2 Execution records retain the
+bindings required when they were written. `executionId` is present when the
+record is execution-bound. Current record types are:
 
 ```text
 submission, conclave-wake, mandate, mission, execution, signal,
@@ -48,8 +51,11 @@ and invalid typed payloads fail closed rather than projecting as empty state.
   Executor records also bind `piSessionId`, `sessionPath`,
   `promptIdentity { packageVersion, promptSha256 }`, and optional immutable
   `upstreamBase { kind, workId, missionId, executionId, remote, branch,
-  headCommit }`. An Executor uses `launcher: "headless-rpc"`; Observer records
-  retain their configured zellij, tmux, or Herdr pane target.
+  headCommit }`. Schema 3 requires those Pi identity bindings for a running
+  mission Executor; recovery treats a historical schema 2 record without them
+  as unavailable rather than assuming its runtime is recoverable. An Executor
+  uses `launcher: "headless-rpc"`; Observer records retain their configured
+  zellij, tmux, or Herdr pane target.
 - **Signal**: `signalId`, exact Work/Execution identity, optional Mission and
   participant, kind (`progress`, `blocked`, or `finished`), summary, nonempty
   evidence where required, and `observedAt`.

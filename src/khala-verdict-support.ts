@@ -7,6 +7,7 @@ import { type MissionProjection, readCurrentMission, readMandate } from "./khala
 import { resolveTerminalUpstreamCoordinations } from "./khala-coordination.js";
 import { readExecutorRecord, updateExecutorRecord, writeExecutorRecord } from "./khala-executor-registry.js";
 import {
+	EXECUTION_SCHEMA_VERSION,
 	ExecutorStatus,
 	type ExecutorStatusValue,
 	isWorkCostBudget,
@@ -225,7 +226,7 @@ function materializeRetryVerdict(
 					payload: verdict,
 				},
 				{
-					schemaVersion: 2,
+					schemaVersion: EXECUTION_SCHEMA_VERSION,
 					type: "execution",
 					workId: currentExecution.workId,
 					executionId: currentExecution.executionId,

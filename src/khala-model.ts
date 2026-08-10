@@ -6,7 +6,8 @@
 
 // --- Archive envelope -------------------------------------------------------
 
-type ArchiveSchemaVersion = 1 | 2;
+const EXECUTION_SCHEMA_VERSION = 3;
+type ArchiveSchemaVersion = 1 | 2 | typeof EXECUTION_SCHEMA_VERSION;
 type ArchiveRecordType =
 	| "submission"
 	| "conclave-wake"
@@ -651,7 +652,7 @@ function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 }
 
 function isArchiveSchemaVersion(value: unknown): value is ArchiveSchemaVersion {
-	return value === 1 || value === 2;
+	return value === 1 || value === 2 || value === EXECUTION_SCHEMA_VERSION;
 }
 
 function isArchiveRecord(value: unknown): value is KhalaArchiveRecord {
@@ -679,6 +680,9 @@ function isArchiveRecord(value: unknown): value is KhalaArchiveRecord {
 		!("payload" in value)
 	) {
 		return false;
+	}
+	if (record.schemaVersion === EXECUTION_SCHEMA_VERSION) {
+		return record.type === "execution" && isV3ExecutorRecord(record.payload);
 	}
 	if (record.schemaVersion === 2 || isImplicitV2ArchiveRecordType(record.type)) {
 		return isArchivePayloadV2(record.type, record.payload);
@@ -929,6 +933,8 @@ function isExecutionPurpose(value: unknown): value is ExecutionPurpose {
 	);
 }
 
+// Schema v2 predates recoverable Pi identity bindings. Its durable records must
+// retain their original validation contract during replay; new records use v3.
 function isV2ExecutorRecord(value: unknown): value is ExecutorRecord {
 	if (!isExecutorRecord(value) || typeof value !== "object" || value === null) {
 		return false;
@@ -938,19 +944,28 @@ function isV2ExecutorRecord(value: unknown): value is ExecutorRecord {
 		return false;
 	}
 	if (record.purpose.kind === "mission") {
-		if (record.kind === "observer" || record.missionId !== record.purpose.missionId) {
-			return false;
-		}
-		if (record.status === ExecutorStatus.running) {
-			return (
-				isNonEmptyString(record.piSessionId) &&
-				isNonEmptyString(record.sessionPath) &&
-				isPromptIdentity(record.promptIdentity)
-			);
-		}
-		return true;
+		return record.kind !== "observer" && record.missionId === record.purpose.missionId;
 	}
 	return record.kind === "observer" && record.missionId === undefined;
+}
+
+function isV3ExecutorRecord(value: unknown): value is ExecutorRecord {
+	if (!isV2ExecutorRecord(value) || typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	const { purpose } = record;
+	if (!isExecutionPurpose(purpose)) {
+		return false;
+	}
+	if (purpose.kind !== "mission" || record.status !== ExecutorStatus.running) {
+		return true;
+	}
+	return (
+		isNonEmptyString(record.piSessionId) &&
+		isNonEmptyString(record.sessionPath) &&
+		isPromptIdentity(record.promptIdentity)
+	);
 }
 
 function isSignalKind(value: unknown): value is SignalKind {
@@ -1699,6 +1714,7 @@ export type {
 };
 export {
 	ConclaveWakeStatus,
+	EXECUTION_SCHEMA_VERSION,
 	ExecutorStatus,
 	isArchiveRecord,
 	isConclaveWakeRecord,
@@ -1721,6 +1737,7 @@ export {
 	isV2Signal,
 	isV2Verdict,
 	isV2WorkSubmission,
+	isV3ExecutorRecord,
 	isVerdict,
 	isVerdictDelivery,
 	isWorkCostBudget,

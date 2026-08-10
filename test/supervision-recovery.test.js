@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,11 +13,12 @@ import {
   mandatoryStopExecution,
   revisionDependents,
 } from "../dist/src/khala-supervision-recovery.js";
-import { appendArchiveRecord, listArchiveRecords } from "../dist/src/khala-archive.js";
+import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
 import { listCoordinationRecords } from "../dist/src/khala-archive-projections.js";
 import { directRevisionDependents, recordUpstreamRevision } from "../dist/src/khala-coordination.js";
 import { failExecutionAndCloseInterventions } from "../dist/src/khala-supervision-recovery.js";
 import { SupervisionController } from "../dist/src/khala-supervision.js";
+import { EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
 
 const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
@@ -439,6 +440,69 @@ test("persisted Executor session validation rejects missing, corrupt, and mismat
     writeFileSync(sessionPath, JSON.stringify({ type: "session", version: 3, id: "session-2", cwd: root }) + "\n");
     assert.throws(() => validatePersistedExecutorSession({ sessionId: "session-1", sessionPath }), /identity/);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("schema v2 running Executions without Pi identity fail recovery without invalidating the Archive", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-legacy-execution-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  try {
+    const now = new Date().toISOString();
+    const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now } });
+    const archivePath = getArchivePath(root);
+    const legacyExecution = {
+      executionId: "execution",
+      workId: "work",
+      executorName: "Legacy Executor",
+      kind: "executor",
+      participantId: "executor",
+      purpose: { kind: "mission", missionId: "mission" },
+      missionId: "mission",
+      projectPath: root,
+      sandboxPath: root,
+      launcher: "zellij",
+      status: "running",
+      startedAt: now,
+    };
+    writeFileSync(
+      archivePath,
+      `${readFileSync(archivePath, "utf8")}${JSON.stringify({ recordId: "legacy-execution", schemaVersion: 2, type: "execution", projectPath: root, workId: "work", executionId: "execution", recordedAt: now, payload: legacyExecution })}\n`,
+    );
+    const sessionManager = SessionManager.inMemory(root);
+    const recoveryFailures = [];
+    let recoveryAttempts = 0;
+    const controller = new SupervisionController({
+      projectPath: root,
+      projectTrusted: false,
+      session: { sessionManager, subscribe: () => () => {}, async sendCustomMessage() {}, async waitForIdle() {} },
+      conclaveParticipantId: "conclave",
+      conclaveMaxCostUsdPerTurn: 1,
+      executorMaxCostUsdPerTurn: 1,
+      recoverExecutor: async () => {
+        recoveryAttempts += 1;
+        throw new Error("legacy execution must not be recovered");
+      },
+      onExecutorRecoveryFailure: async (_execution, _mission, error) => {
+        recoveryFailures.push(error.message);
+      },
+    });
+
+    await controller.recover();
+
+    const executions = listArchiveRecords(root).filter((record) => record.type === "execution");
+    assert.deepEqual(executions.map((record) => record.payload.status), ["running", "failed"]);
+    assert.equal(executions[0].schemaVersion, 2);
+    assert.equal(executions[1].schemaVersion, EXECUTION_SCHEMA_VERSION);
+    assert.equal(recoveryAttempts, 0);
+    assert.deepEqual(recoveryFailures, ["Executor has no persisted Pi session binding."]);
+    controller.dispose();
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     rmSync(root, { recursive: true, force: true });
   }
 });

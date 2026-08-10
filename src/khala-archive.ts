@@ -5,7 +5,7 @@ import process from "node:process";
 import { nanoid } from "nanoid";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
 import type { ArchiveSchemaVersion, KhalaArchiveAppend, KhalaArchiveRecord } from "./khala-model.js";
-import { isArchiveRecord, validateArchiveReplay } from "./khala-model.js";
+import { EXECUTION_SCHEMA_VERSION, isArchiveRecord, validateArchiveReplay } from "./khala-model.js";
 
 class KhalaArchiveReadError extends Error {
 	readonly path: string;
@@ -42,6 +42,7 @@ const localArchiveLockDepth = new Map<string, number>();
 type ArchivePayloadRecord = Record<string, unknown> &
 	Readonly<{
 		status?: unknown;
+		kind?: unknown;
 		purpose?: unknown;
 		participantId?: unknown;
 		missionId?: unknown;
@@ -157,7 +158,7 @@ function readSupervisionActionId(record: KhalaArchiveRecord): string | undefined
 }
 
 function createArchiveRecord(projectPath: string, input: KhalaArchiveAppend): KhalaArchiveRecord {
-	const schemaVersion = input.schemaVersion ?? inferSchemaVersion(input);
+	const schemaVersion = resolveArchiveSchemaVersion(input);
 	let record: KhalaArchiveRecord = {
 		recordId: nanoid(),
 		type: input.type,
@@ -166,13 +167,30 @@ function createArchiveRecord(projectPath: string, input: KhalaArchiveAppend): Kh
 		recordedAt: new Date().toISOString(),
 		payload: input.payload,
 	};
-	if (schemaVersion === 2) {
-		record = { ...record, schemaVersion: 2 };
+	if (schemaVersion !== 1) {
+		record = { ...record, schemaVersion };
 	}
 	if (input.executionId !== undefined) {
 		return { ...record, executionId: input.executionId };
 	}
 	return record;
+}
+
+// Schema v2 describes the historic mission Execution contract. New mission
+// Executions and active Executor writes always use v3, even when an internal
+// caller supplies a legacy schema version.
+function resolveArchiveSchemaVersion(input: KhalaArchiveAppend): ArchiveSchemaVersion {
+	const inferredSchemaVersion = inferSchemaVersion(input);
+	if (input.type === "execution" && typeof input.payload === "object" && input.payload !== null) {
+		const payload = input.payload as ArchivePayloadRecord;
+		if (
+			inferredSchemaVersion === EXECUTION_SCHEMA_VERSION ||
+			(payload.kind === "executor" && payload.status === "running")
+		) {
+			return EXECUTION_SCHEMA_VERSION;
+		}
+	}
+	return input.schemaVersion ?? inferredSchemaVersion;
 }
 
 function inferSchemaVersion(input: KhalaArchiveAppend): ArchiveSchemaVersion {
@@ -197,7 +215,7 @@ function inferPayloadSchemaVersion(
 	}
 	if (type === "execution") {
 		if (hasV2Fields(payload, ["purpose", "participantId"])) {
-			return 2;
+			return EXECUTION_SCHEMA_VERSION;
 		}
 		return 1;
 	}

@@ -21,7 +21,7 @@ import {
 	type SignalRecord,
 	type VerdictRecord,
 } from "./khala-model.js";
-import { markPullRequestReviewable } from "./khala-review.js";
+import { isActiveRemotelyConfirmedPullRequest, latestPullRequest, markPullRequestReviewable } from "./khala-review.js";
 import type { MissionAssignmentInput } from "./khala-verdict.js";
 
 function recoverTerminalExecutionStates(projectPath: string, projectTrusted: boolean): void {
@@ -33,7 +33,14 @@ function recoverTerminalExecutionStates(projectPath: string, projectTrusted: boo
 		for (const verdict of listVerdictRecords(projectPath, projectTrusted)) {
 			if (verdict.decision === "finish" || verdict.decision === "reject") {
 				if (verdict.decision === "finish" && verdict.missionId !== undefined) {
-					reviewable.push({ workId: verdict.workId, missionId: verdict.missionId, executionId: verdict.executionId });
+					const pullRequest = latestPullRequest(projectPath, verdict.executionId, projectTrusted);
+					if (
+						isActiveRemotelyConfirmedPullRequest(pullRequest) &&
+						pullRequest.workId === verdict.workId &&
+						pullRequest.missionId === verdict.missionId
+					) {
+						reviewable.push({ workId: verdict.workId, missionId: verdict.missionId, executionId: verdict.executionId });
+					}
 				}
 				const execution = executions.get(verdict.executionId);
 				if (execution !== undefined && execution.workId !== verdict.workId) {
@@ -50,10 +57,10 @@ function recoverTerminalExecutionStates(projectPath: string, projectTrusted: boo
 				}
 			}
 		}
+		for (const input of reviewable) {
+			markPullRequestReviewable({ projectPath, projectTrusted, ...input });
+		}
 	});
-	for (const input of reviewable) {
-		markPullRequestReviewable({ projectPath, projectTrusted, ...input });
-	}
 }
 
 function latestPullRequestForMission(

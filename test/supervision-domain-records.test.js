@@ -20,7 +20,7 @@ import {
 	isMandateRecord,
 	isMissionRecord,
 	isUpstreamExecutionBase,
-	isV2ExecutorRecord,
+	isV3ExecutorRecord,
 } from "../dist/src/khala-model.js";
 import { chooseNonInteractiveModels } from "../dist/src/khala-setup.js";
 import {
@@ -253,7 +253,7 @@ test("Executor launch uses immutable successor Mission terms and hashes only the
 	}
 });
 
-test("mission Executions require recoverable Pi identity and exact upstream bases", () => {
+test("schema v3 mission Executions require recoverable Pi identity and exact upstream bases", () => {
 	const upstreamBase = {
 		kind: "upstream-execution",
 		workId: "upstream-work",
@@ -282,8 +282,8 @@ test("mission Executions require recoverable Pi identity and exact upstream base
 		startedAt: new Date().toISOString(),
 	};
 	assert.equal(isUpstreamExecutionBase(upstreamBase), true);
-	assert.equal(isV2ExecutorRecord(execution), true);
-	assert.equal(isV2ExecutorRecord({ ...execution, sessionPath: undefined }), false);
+	assert.equal(isV3ExecutorRecord(execution), true);
+	assert.equal(isV3ExecutorRecord({ ...execution, sessionPath: undefined }), false);
 	assert.equal(
 		isMissionRecord({
 			missionId: "successor",
