@@ -48,8 +48,8 @@ test("normalizeLitellmBaseUrl strips trailing slashes and rejects query strings"
 });
 
 test("buildLitellmApiKeyCommand and isLitellmApiKeyCommand round-trip", () => {
-	const command = lib.buildLitellmApiKeyCommand("team-litellm", "khala");
-	assert.equal(command, "!khala litellm print-key --provider team-litellm");
+	const command = lib.buildLitellmApiKeyCommand("team-litellm");
+	assert.equal(command, "!npx --yes --silent github:pesap/khala litellm print-key --provider team-litellm");
 	assert.equal(lib.isLitellmApiKeyCommand("team-litellm", command), true);
 	assert.equal(lib.isLitellmApiKeyCommand("other", command), false);
 });
@@ -59,7 +59,6 @@ test("mergeLitellmModelsJson writes a provider entry with REPLACE model semantic
 		providerId: "team-litellm",
 		baseUrl: "https://lite.example/v1",
 		modelIds: ["gpt-a", "gpt-b"],
-		apiKeyResolverCommand: "khala",
 	});
 	assert.equal(first.isUpdate, false);
 	assert.deepEqual(
@@ -71,7 +70,6 @@ test("mergeLitellmModelsJson writes a provider entry with REPLACE model semantic
 		providerId: "team-litellm",
 		baseUrl: "https://lite.example/v1",
 		modelIds: ["gpt-b"],
-		apiKeyResolverCommand: "khala",
 	});
 	assert.equal(second.isUpdate, true);
 	assert.deepEqual(
@@ -80,18 +78,37 @@ test("mergeLitellmModelsJson writes a provider entry with REPLACE model semantic
 	);
 });
 
+test("mergeLitellmModelsJson preserves an existing supported API", () => {
+	const merged = lib.mergeLitellmModelsJson(
+		{
+			providers: {
+				"team-litellm": {
+					api: "openai-responses",
+					baseUrl: "https://lite.example/v1",
+					apiKey: "!npx --yes --silent github:pesap/khala litellm print-key --provider team-litellm",
+					models: [{ id: "gpt-old" }],
+				},
+			},
+		},
+		{
+			providerId: "team-litellm",
+			baseUrl: "https://lite.example/v1",
+			modelIds: ["gpt-new"],
+		},
+	);
+	assert.equal(merged.value.providers["team-litellm"].api, "openai-responses");
+});
+
 test("mergeLitellmModelsJson flags a conflicting base URL for an existing provider", () => {
 	const first = lib.mergeLitellmModelsJson(null, {
 		providerId: "team-litellm",
 		baseUrl: "https://lite.example/v1",
 		modelIds: ["gpt-a"],
-		apiKeyResolverCommand: "khala",
 	});
 	const second = lib.mergeLitellmModelsJson(first.value, {
 		providerId: "team-litellm",
 		baseUrl: "https://other.example/v1",
 		modelIds: ["gpt-a"],
-		apiKeyResolverCommand: "khala",
 	});
 	assert.equal(second.conflict, true);
 });
@@ -163,10 +180,6 @@ test("parseLitellmModelInfoResponse enriches reasoning, cost, and modality field
 	assert.equal(entry.cost.output, 10);
 });
 
-test("resolveLitellmApiKeyResolverCommand honors an explicit override", () => {
-	assert.equal(lib.resolveLitellmApiKeyResolverCommand("custom-resolver"), "custom-resolver");
-});
-
 // ── CLI behavior ─────────────────────────────────────────────────────────────
 
 test("khala litellm --help exits zero without writing files", () => {
@@ -174,6 +187,8 @@ test("khala litellm --help exits zero without writing files", () => {
 	assert.equal(result.status, 0, result.stderr);
 	assert.match(result.stdout, /khala litellm - configure a LiteLLM-compatible Pi provider/);
 	assert.match(result.stdout, /--model <ids>/);
+	assert.match(result.stdout, /npx --yes --silent github:pesap\/khala litellm print-key/);
+	assert.doesNotMatch(result.stdout, /<resolver>/);
 	assert.doesNotMatch(result.stdout, /legacy provider auth/);
 	assert.equal(existsSync(join(result.agentDir, "models.json")), false);
 });
@@ -202,14 +217,16 @@ test("non-interactive setup registers a provider, project key config, and key re
 			"--project-settings",
 			"--yes",
 		],
-		{ env: { KHALA_LITELLM_RESOLVER_COMMAND: "khala" } },
 	);
 	assert.equal(result.status, 0, result.stderr);
 
 	const models = JSON.parse(readFileSync(join(result.agentDir, "models.json"), "utf8"));
 	assert.equal(models.providers["team-litellm"].baseUrl, "https://lite.example/v1");
 	assert.equal(models.providers["team-litellm"].api, "openai-completions");
-	assert.equal(models.providers["team-litellm"].apiKey, "!khala litellm print-key --provider team-litellm");
+	assert.equal(
+		models.providers["team-litellm"].apiKey,
+		"!npx --yes --silent github:pesap/khala litellm print-key --provider team-litellm",
+	);
 	assert.deepEqual(
 		models.providers["team-litellm"].models.map((entry) => entry.id),
 		["gpt-5.4-mini"],

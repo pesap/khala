@@ -112,14 +112,16 @@ writes the provider — metadata enrichment is best-effort only.
 
 ## Key Resolution at Runtime
 
-In all auth modes, `models.json` keeps a stable resolver entry:
+In all auth modes, `models.json` uses the same package entry point users use
+for Khala:
 
 ```text
-!khala litellm print-key --provider <id>
+!npx --yes --silent github:pesap/khala litellm print-key --provider <id>
 ```
 
-(or, when `khala` is not resolvable on `PATH` — for example after an ad hoc
-`npx github:pesap/khala` install — the equivalent `npx` invocation).
+The resolver intentionally does not inspect `PATH` or switch to another
+command. It invokes the current GitHub package entry point each time Pi needs
+the provider key.
 
 `khala litellm print-key --provider <id>` walks up from the current
 directory to the nearest `.pi/khala/litellm.json`, reads the selected key
@@ -132,9 +134,6 @@ Pi gives a provider-level `auth.json` credential precedence over this resolver.
 Khala refuses setup while one exists for the selected provider so it cannot
 silently defeat the project key label; remove that credential before configuring
 LiteLLM through Khala.
-
-Set `KHALA_LITELLM_RESOLVER_COMMAND` to override the command Khala writes
-into `models.json` for key lookup.
 
 ## Base Install Commands
 

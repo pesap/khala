@@ -8,8 +8,8 @@
 // biome-ignore-all lint/style/useErrorCause: Preserve ES2020 compatibility.
 // biome-ignore-all lint/complexity/noUselessReturn: TypeScript's noImplicitReturns requires an explicit return on every code path, including bare early exits.
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, delimiter as pathDelimiter, resolve } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import process from "node:process";
 
 type JsonRecord = Record<string, unknown>;
@@ -35,7 +35,6 @@ interface MergeModelsJsonOptions {
 	modelIds?: readonly string[];
 	modelId?: string;
 	infoMap?: ReadonlyMap<string, JsonRecord> | null;
-	apiKeyResolverCommand?: string;
 }
 
 interface MergeModelsJsonResult {
@@ -67,9 +66,7 @@ const KEY_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
 const LITELLM_PROVIDER_API = "openai-completions";
 const LITELLM_PROVIDER_APIS: ReadonlySet<string> = new Set(["openai-completions", "openai-responses"]);
-const DEFAULT_LITELLM_RESOLVER_COMMAND = "khala";
-const LITELLM_NPX_RESOLVER_COMMAND = "npx --yes --silent github:pesap/khala";
-const LITELLM_RESOLVER_OVERRIDE_ENV = "KHALA_LITELLM_RESOLVER_COMMAND";
+const DEFAULT_LITELLM_RESOLVER_COMMAND = "npx --yes --silent github:pesap/khala";
 const AUTH_COMMAND_PREFIX = "!";
 const LITELLM_AUTH_MODES: ReadonlySet<string> = new Set(["skip", "literal", "command"]);
 
@@ -206,91 +203,9 @@ function modelSummary(modelIds: readonly string[]): string {
 	return `${modelIds.length} models (${shown}, +${modelIds.length - preview} more)`;
 }
 
-function shellQuoteCommandArg(value: string): string {
-	if (/^[A-Za-z0-9_/:=.,+-]+$/.test(value)) {
-		return value;
-	}
-	return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function executablePathExists(filePath: string): boolean {
-	if (!existsSync(filePath)) {
-		return false;
-	}
-	if (process.platform === "win32") {
-		return true;
-	}
-	try {
-		accessSync(filePath, constants.X_OK);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Minimal cross-platform `which`. Only used to decide whether the LiteLLM
- * key resolver written into models.json can say plain `khala` or needs an
- * `npx` fallback for ad hoc `npx github:pesap/khala` installs.
- */
-function resolveCommandOnPath(command: string): string | undefined {
-	const trimmed = trimOrEmpty(command);
-	if (trimmed.length === 0) {
-		return;
-	}
-	if (isAbsolute(trimmed) || trimmed.includes("/") || trimmed.includes("\\")) {
-		const resolved = resolve(trimmed);
-		return executablePathExists(resolved) ? resolved : undefined;
-	}
-	const pathValue = trimOrEmpty(process.env["PATH"]);
-	if (pathValue.length === 0) {
-		return;
-	}
-	const dirs = pathValue.split(pathDelimiter).filter((entry) => entry.length > 0);
-	const candidates =
-		process.platform === "win32" && extname(trimmed).length === 0
-			? [`${trimmed}.CMD`, `${trimmed}.EXE`, `${trimmed}.BAT`, trimmed]
-			: [trimmed];
-	for (const dir of dirs) {
-		for (const candidate of candidates) {
-			const resolved = join(dir, candidate);
-			if (executablePathExists(resolved)) {
-				return resolved;
-			}
-		}
-	}
-	return;
-}
-
-/**
- * Choose the command Pi writes into models.json's `apiKey` field to resolve
- * the LiteLLM key at runtime (`!<resolver> litellm print-key --provider X`).
- * Prefers an explicit override, then a `khala` binary actually on PATH
- * (global/checkout installs), then falls back to the documented ad hoc
- * `npx` invocation so the resolver keeps working after an `npx` install
- * that never put `khala` on PATH.
- */
-function resolveLitellmApiKeyResolverCommand(overrideCommand?: string): string {
-	const override = trimOrEmpty(overrideCommand);
-	if (override.length > 0) {
-		return override;
-	}
-	if (resolveCommandOnPath(DEFAULT_LITELLM_RESOLVER_COMMAND) !== undefined) {
-		return DEFAULT_LITELLM_RESOLVER_COMMAND;
-	}
-	return LITELLM_NPX_RESOLVER_COMMAND;
-}
-
-function buildLitellmApiKeyCommand(
-	providerId: string,
-	resolverCommand: string = DEFAULT_LITELLM_RESOLVER_COMMAND,
-): string {
+function buildLitellmApiKeyCommand(providerId: string): string {
 	const provider = validateLitellmProviderId(providerId);
-	const resolver = trimOrEmpty(resolverCommand);
-	if (resolver.length === 0) {
-		throw new Error("LiteLLM API key resolver command is required.");
-	}
-	return `!${resolver} litellm print-key --provider ${provider}`;
+	return `!${DEFAULT_LITELLM_RESOLVER_COMMAND} litellm print-key --provider ${provider}`;
 }
 
 function isLitellmApiKeyCommand(providerId: string, raw: unknown): boolean {
@@ -643,11 +558,12 @@ function mergeLitellmModelsJson(current: unknown, options: MergeModelsJsonOption
 	);
 
 	const mergedModelEntries = buildEnrichedModelEntries(modelIds, options.infoMap, existingProvider["models"]);
+	const api = LITELLM_PROVIDER_APIS.has(existingApi) ? existingApi : LITELLM_PROVIDER_API;
 	providers[providerId] = {
 		...existingProvider,
 		baseUrl,
-		api: LITELLM_PROVIDER_API,
-		apiKey: buildLitellmApiKeyCommand(providerId, options.apiKeyResolverCommand),
+		api,
+		apiKey: buildLitellmApiKeyCommand(providerId),
 		models: mergedModelEntries,
 	};
 	root["providers"] = providers;
@@ -975,7 +891,6 @@ export {
 	LITELLM_AUTH_MODES,
 	LITELLM_PROVIDER_API,
 	LITELLM_PROVIDER_APIS,
-	LITELLM_RESOLVER_OVERRIDE_ENV,
 	litellmKeyAuthId,
 	litellmKeyAuthParts,
 	litellmProviderExists,
@@ -993,8 +908,6 @@ export {
 	readJsonObjectFile,
 	registryLitellmKeyCandidates,
 	resolveKeyForFetch,
-	resolveLitellmApiKeyResolverCommand,
-	shellQuoteCommandArg,
 	stringifyModelsJson,
 	validateAuthCommand,
 	validateAuthLiteral,

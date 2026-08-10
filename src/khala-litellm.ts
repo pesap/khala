@@ -39,7 +39,6 @@ import {
 	readJsonObjectFile,
 	registryLitellmKeyCandidates,
 	resolveKeyForFetch,
-	resolveLitellmApiKeyResolverCommand,
 	validateAuthCommand,
 	validateAuthLiteral,
 	validateLitellmKeyEnv,
@@ -128,13 +127,12 @@ Examples:
     --key-env reeds-maint --model gpt-5.4-mini --auth-mode=literal --auth-key="$KEY" --yes
 
 Key resolution at runtime:
-  models.json calls '!<resolver> litellm print-key --provider <id>'. print-key reads this
-  project's selected key label, then checks env vars and key-specific auth entries
+  models.json calls '!npx --yes --silent github:pesap/khala litellm print-key --provider <id>'.
+  print-key reads this project's selected key label, then checks env vars and key-specific auth entries
   (<provider>:<key-label>).
 
 Environment:
   PI_CODING_AGENT_DIR              Override the Pi agent directory (default: ~/.pi/agent)
-  KHALA_LITELLM_RESOLVER_COMMAND   Override the command written into models.json for key lookup
 `);
 }
 
@@ -853,7 +851,6 @@ function printPlanSummary(plan: ResolvedSetup): void {
 }
 
 async function writePlan(plan: ResolvedSetup): Promise<void> {
-	const resolverCommand = resolveLitellmApiKeyResolverCommand(process.env["KHALA_LITELLM_RESOLVER_COMMAND"]);
 	if (plan.writeModelsJson) {
 		const currentModels = readJsonObjectFile(modelsJsonPath());
 		const managedProvider = extractLitellmProvidersFromModelsJson(currentModels).some(
@@ -870,7 +867,6 @@ async function writePlan(plan: ResolvedSetup): Promise<void> {
 			baseUrl: plan.baseUrl,
 			modelIds: plan.modelIds,
 			infoMap: catalog,
-			apiKeyResolverCommand: resolverCommand,
 		});
 		writeJsonFile(modelsJsonPath(), merged.value, { compactModelEntries: true });
 	}
