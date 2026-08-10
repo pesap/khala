@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -112,6 +112,74 @@ test("Oracle refuses to run without a configured model", async () => {
 	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 	try {
 		await assert.rejects(runOracle(root, "Review packet", undefined), /must be configured/);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle surfaces model errors instead of hanging or accepting JSON event output", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-process-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], errorMessage: "Codex error: The usage limit has been reached" } }) + "\\n"));
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		await assert.rejects(runOracle(root, "Review packet", undefined), /Khala Oracle failed: Codex error: The usage limit has been reached/);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle streams oversized JSON events without tripping an aggregate stdout limit", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-large-output-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+const thinking = "x".repeat(70_000);
+process.stdout.write(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: thinking } }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Verdict: pass" }] } }) + "\\n");
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const result = await runOracle(root, "Review packet", undefined);
+		assert.equal(result.output, "Verdict: pass");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
