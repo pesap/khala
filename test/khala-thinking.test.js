@@ -263,3 +263,389 @@ test("child Pi arguments propagate only the configured role thinking level", () 
 	const defaultArgs = buildPiArguments(request, "");
 	assert.equal(defaultArgs.includes("--thinking"), false);
 });
+
+test("Oracle live phases advance monotonically from real JSON events and finish only on accepted output", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-phases-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	const events = [
+		{ type: "agent_start" },
+		{ type: "agent_start" },
+		{ type: "unknown_event" },
+		{ type: "turn_start" },
+		{ type: "message_update", assistantMessageEvent: { type: "text_start" } },
+		{ type: "message_update", assistantMessageEvent: { type: "thinking_start" } },
+		{ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "x" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "y" } },
+		{ type: "message_update", assistantMessageEvent: { type: "text_end" } },
+		{
+			type: "message_end",
+			message: { role: "assistant", content: [{ type: "text", text: "Findings:\nVerdict: pass" }] },
+		},
+		{ type: "agent_end" },
+	];
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+${events.map((event) => `process.stdout.write(${JSON.stringify(JSON.stringify(event))} + "\\n");`).join("\n")}
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const progress = [];
+		const result = await runOracle(root, "Review packet", undefined, {
+			projectTrusted: false,
+			onProgress: (update) => progress.push(update),
+		});
+		assert.equal(result.output, "Findings:\nVerdict: pass");
+		assert.ok(progress.length >= 12, `expected at least 12 progress updates, got ${progress.length}`);
+		let previousPhase = -1;
+		for (const update of progress) {
+			assert.ok(update.phase >= previousPhase, `phase regressed to ${update.phase}`);
+			previousPhase = update.phase;
+		}
+		assert.equal(progress[0].phase, 0);
+		assert.equal(progress.at(-1).phase, 4);
+		const trace = progress.at(-1).trace;
+		assert.deepEqual(trace, ["Prepare context", "Read packet", "Review evidence", "Deliver verdict"]);
+		assert.equal(new Set(trace).size, trace.length);
+		assert.equal(trace.filter((entry) => entry === "Read packet").length, 1);
+		assert.equal(trace.filter((entry) => entry === "Review evidence").length, 1);
+		const delivered = progress.find((update) => update.message === "Final review delivered; confirming the verdict.");
+		assert.equal(delivered.phase, 3);
+		assert.equal(delivered.trace.includes("Deliver verdict"), false);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle preserves usable verdict-less output without completing Deliver verdict", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-no-verdict-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "The review ended early." }] } }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const progress = [];
+		const result = await runOracle(root, "Review packet", undefined, {
+			projectTrusted: false,
+			onProgress: (update) => progress.push(update),
+		});
+		assert.equal(result.output, "The review ended early.");
+		assert.ok(progress.at(-1).phase < 4, "Deliver verdict must not complete without a parsed verdict");
+		assert.equal(progress.at(-1).trace.includes("Deliver verdict"), false);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle reconstructs ordered text blocks so trailing content cannot falsely complete the verdict", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-multi-block-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [
+  { type: "text", text: " " },
+  { type: "text", text: "Findings:\\nVerdict: pass" },
+  { type: "image", image: "ignored non-text entry" },
+  { type: "text", text: "Handoff note: evidence was cut off before confirmation." }
+] } }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const progress = [];
+		const result = await runOracle(root, "Review packet", undefined, {
+			projectTrusted: false,
+			onProgress: (update) => progress.push(update),
+		});
+		assert.equal(
+			result.output,
+			" \nFindings:\nVerdict: pass\nHandoff note: evidence was cut off before confirmation.",
+		);
+		assert.ok(progress.at(-1).phase < 4, "an earlier verdict block must not complete Deliver verdict");
+		assert.equal(progress.at(-1).trace.includes("Deliver verdict"), false);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle completes Deliver verdict only when the final output line is the verdict", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-final-line-verdict-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Findings:\\nVerdict: pass\\nHandoff note for the human reviewer." }] } }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const progress = [];
+		const result = await runOracle(root, "Review packet", undefined, {
+			projectTrusted: false,
+			onProgress: (update) => progress.push(update),
+		});
+		assert.equal(result.output, "Findings:\nVerdict: pass\nHandoff note for the human reviewer.");
+		assert.ok(progress.at(-1).phase < 4, "an earlier verdict line must not complete Deliver verdict");
+		assert.equal(progress.at(-1).trace.includes("Deliver verdict"), false);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle keeps a whitespace-only block between No findings. and the verdict noncanonical", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-whitespace-block-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [
+  { type: "text", text: "Findings:\\nNo findings." },
+  { type: "text", text: " " },
+  { type: "text", text: "Verdict: pass" }
+] } }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const progress = [];
+		const result = await runOracle(root, "Review packet", undefined, {
+			projectTrusted: false,
+			onProgress: (update) => progress.push(update),
+		});
+		assert.equal(result.output, "Findings:\nNo findings.\n \nVerdict: pass");
+		assert.equal(progress.at(-1).phase, 4, "the final verdict line still completes Deliver verdict");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle preserves leading whitespace before an exact Findings heading", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-leading-whitespace-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [
+  { type: "text", text: " " },
+  { type: "text", text: "Findings:\\nNo findings.\\nVerdict: pass" }
+] } }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const result = await runOracle(root, "Review packet", undefined);
+		assert.equal(result.output, " \nFindings:\nNo findings.\nVerdict: pass");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle preserves a multibyte character split across stdout pipe chunks", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-split-utf8-stdout-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+const line = JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Findings:\\nVerdict: pass \\u{1D518}" }] } }) + "\\n";
+const bytes = Buffer.from(line, "utf8");
+const boundary = bytes.indexOf(Buffer.from("\\u{1D518}", "utf8")) + 2;
+process.stdout.write(bytes.subarray(0, boundary));
+setTimeout(() => process.stdout.write(bytes.subarray(boundary)), 50);
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		const result = await runOracle(root, "Review packet", undefined);
+		assert.equal(result.output, "Findings:\nVerdict: pass \u{1D518}");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Oracle preserves a split multibyte stderr diagnostic from a failing child", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-oracle-split-utf8-stderr-"));
+	const agentDir = join(root, "agent");
+	const fakePi = join(root, "pi");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(
+			fakePi,
+			`#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+const bytes = Buffer.from("\\u{1D518}\\n", "utf8");
+const boundary = bytes.indexOf(Buffer.from("\\u{1D518}", "utf8")) + 2;
+process.stderr.write(bytes.subarray(0, boundary));
+setTimeout(() => {
+process.stderr.write(bytes.subarray(boundary));
+process.exitCode = 1;
+}, 50);
+});
+`,
+		);
+		chmodSync(fakePi, 0o755);
+		writeFileSync(
+			join(agentDir, "khala.json"),
+			JSON.stringify({
+				piCommand: [fakePi],
+				conclaveModel: "provider/conclave",
+				conclaveMaxCostUsdPerTurn: 1,
+				executorModel: "provider/executor",
+				executorMaxCostUsdPerTurn: 1,
+				oracleModel: "provider/oracle",
+			}),
+		);
+		await assert.rejects(runOracle(root, "Review packet", undefined), (error) => {
+			assert.ok(error.message.includes("\u{1D518}"), `stderr character preserved: ${error.message}`);
+			assert.doesNotMatch(error.message, /\uFFFD/, "no replacement characters in the diagnostic");
+			return true;
+		});
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});

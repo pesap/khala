@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { DefaultResourceLoader, initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import createExtension from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
@@ -25,7 +26,7 @@ import { canRecordPullRequestReview } from "../dist/src/khala-review.js";
 import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
 import { isSignal } from "../dist/src/khala-model.js";
-import { buildOracleArguments, buildOracleCommand, registerKhalaOracle } from "../dist/src/khala-oracle.js";
+import { buildOracleArguments, buildOracleCommand, parseOracleOutput, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
 import { buildKhalaTriageTemplateInvocation, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
 
@@ -434,7 +435,7 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 		receivedPrompt = prompt;
 		receivedSignal = signal;
 		return {
-			progress: ["Oracle process started", "Evidence analyzed", "Final verdict ready"],
+			trace: ["Prepare context", "Read packet", "Review evidence", "Deliver verdict"],
 			output: [
 				"Findings:",
 				"- Severity: major",
@@ -454,7 +455,7 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	const signal = new AbortController().signal;
 	const result = await oracle.execute(
 		"oracle",
-		{ prompt: "  Review this bounded packet.  " },
+		{ subject: "auth flow", prompt: "  Review this bounded packet.  " },
 		signal,
 		null,
 		{ cwd: "/tmp/project" },
@@ -466,7 +467,12 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	assert.equal(result.details.majors, 1);
 	assert.equal(result.details.minors, 1);
 	assert.equal(result.details.validationGaps, 1);
-	assert.deepEqual(result.details.progress, ["Oracle process started", "Evidence analyzed", "Final verdict ready"]);
+	assert.deepEqual(result.details.trace, [
+		"Prepare context",
+		"Read packet",
+		"Review evidence",
+		"Deliver verdict",
+	]);
 	const oracleArguments = buildOracleArguments("packet", "test-model", "xhigh");
 	assert.deepEqual(oracleArguments.slice(oracleArguments.indexOf("--model"), oracleArguments.indexOf("--model") + 4), [
 		"--model",
@@ -522,10 +528,11 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 			return text;
 		},
 	};
-	const renderContext = { args: { prompt: "Review this bounded packet." }, isError: false };
+	const renderContext = { args: { subject: "auth flow", prompt: "Review this bounded packet." }, isError: false };
 	const collapsed = oracle.renderResult(result, { expanded: false, isPartial: false }, plainTheme, renderContext);
-	assert.match(collapsed.render(120).join("\n"), /→ revise/);
+	assert.match(collapsed.render(120).join("\n"), /Verdict: Needs revision/);
 	assert.match(collapsed.render(120).join("\n"), /1 major/);
+	assert.match(collapsed.render(120).join("\n"), /42 ms/);
 	const expanded = oracle.renderResult(result, { expanded: true, isPartial: false }, plainTheme, renderContext);
 	const expandedText = expanded.render(120).join("\n");
 	assert.match(expandedText, /Bounded review prompt/);
@@ -534,12 +541,16 @@ test("Khala Oracle runs a bounded fresh review and renders advisory output", asy
 	assert.match(expandedText, /Model: test-model/);
 	assert.match(expandedText, /Duration: 42 ms/);
 	assert.match(expandedText, /Review trace/);
-	assert.match(expandedText, /Evidence analyzed/);
+	assert.match(expandedText, /Prepare context/);
 	assert.match(expandedText, /Findings/);
 	assert.match(expandedText, /src\/example.ts:10/);
+	assert.match(expandedText, /Verdict: Needs revision/);
+	assert.ok(expandedText.search(/Verdict: Needs revision/) < expandedText.search(/Verdict: revise/));
+	assert.ok(expandedText.search(/Verdict: revise/) < expandedText.search(/Model: test-model/));
+	assert.ok(expandedText.search(/Model: test-model/) < expandedText.search(/Bounded review prompt/));
 });
 
-test("Khala Oracle renders observable progress without exposing hidden reasoning", () => {
+test("Khala Oracle live rendering shows a two-line phase path without exposing hidden reasoning", () => {
 	const commands = new Map();
 	const tools = new Map();
 	registerKhalaOracle(createPiStub(commands, tools), async () => ({
@@ -556,21 +567,39 @@ test("Khala Oracle renders observable progress without exposing hidden reasoning
 			return text;
 		},
 	};
-	const partial = oracle
-		.renderResult(
-			{
-				content: [{ type: "text", text: "Analyzing evidence and weighing risks." }],
-				details: { progress: ["Oracle process started", "Evidence analyzed"] },
-			},
-			{ expanded: false, isPartial: true },
-			plainTheme,
-			{ args: {}, isError: false },
-		)
-		.render(120)
-		.join("\n");
-	assert.match(partial, /Analyzing evidence and weighing risks/);
-	assert.match(partial, /\[done\] Evidence analyzed/);
-	assert.doesNotMatch(partial, /chain-of-thought|private reasoning/i);
+	const partial = {
+		content: [{ type: "text", text: "Reviewing evidence in the bounded packet." }],
+		details: { trace: ["Prepare context", "Read packet"], phase: 2, durationMs: 72_000 },
+	};
+	const renderLive = (width) => {
+		const lines = oracle
+			.renderResult(partial, { expanded: false, isPartial: true }, plainTheme, { args: {}, isError: false })
+			.render(width);
+		for (const line of lines) {
+			assert.ok(visibleWidth(line) <= width, `line overflows ${width} columns: ${JSON.stringify(line)}`);
+		}
+		return lines.join("\n");
+	};
+	const wide = renderLive(120);
+	assert.equal(wide.split("\n").length, 2);
+	assert.match(wide, /✓ Prepare context ─ ✓ Read packet ─ ◐ Review evidence \[active\] ─ · Deliver verdict/);
+	assert.match(wide, /Phase 3 of 4/);
+	assert.match(wide, /1:12 elapsed/);
+	assert.match(wide, /Last: Read packet/);
+	assert.match(wide, /to cancel/);
+	assert.doesNotMatch(wide, /chain-of-thought|private reasoning/i);
+	const breakpoint = renderLive(100);
+	assert.match(breakpoint, /✓ Prepare context ─ ✓ Read packet ─ ◐ Review evidence \[active\] ─ · Deliver verdict/);
+	assert.match(breakpoint, /to cancel/);
+	const narrow = renderLive(60);
+	assert.equal(narrow.split("\n").length, 2);
+	const [narrowLine1, narrowLine2] = narrow.split("\n");
+	assert.match(narrowLine1, /Review evidence/);
+	assert.match(narrowLine1, /Phase 3 of 4/);
+	assert.match(narrowLine1, /1:12 elapsed/);
+	assert.doesNotMatch(narrowLine1, /✓|\[active\]/);
+	assert.match(narrowLine2, /Last: Read packet/);
+	assert.match(narrowLine2, /to cancel/);
 });
 
 test("Khala Oracle rendering reports incomplete errors without undefined metadata", () => {
@@ -636,7 +665,9 @@ test("Khala Oracle rendering derives persisted verdicts and errors from usable o
 		.renderResult(contentOnlyResult, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
 		.render(120)
 		.join("\n");
-	assert.match(successText, /→ pass/);
+	assert.match(successText, /Verdict: Pass/);
+	assert.doesNotMatch(successText, /No findings/);
+	assert.doesNotMatch(successText, /0 blockers/);
 
 	const detailsOutputResult = {
 		content: [{ type: "text", text: "Verdict: blocked" }],
@@ -646,8 +677,8 @@ test("Khala Oracle rendering derives persisted verdicts and errors from usable o
 		.renderResult(detailsOutputResult, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
 		.render(120)
 		.join("\n");
-	assert.match(detailsOutputText, /→ pass/);
-	assert.doesNotMatch(detailsOutputText, /→ blocked/);
+	assert.match(detailsOutputText, /Verdict: Pass/);
+	assert.doesNotMatch(detailsOutputText, /Verdict: Blocked/);
 
 	const whitespaceOutputResult = {
 		content: [{ type: "text", text: " " }, { type: "text", text: "Verdict: pass" }],
@@ -657,7 +688,18 @@ test("Khala Oracle rendering derives persisted verdicts and errors from usable o
 		.renderResult(whitespaceOutputResult, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
 		.render(120)
 		.join("\n");
-	assert.match(whitespaceOutputText, /→ pass/);
+	assert.match(whitespaceOutputText, /Verdict: Pass/);
+
+	const findingsOnly = {
+		content: [{ type: "text", text: "Findings:\n- Severity: major\n  Evidence: src/a.ts\nVerdict: pass" }],
+		details: {},
+	};
+	const findingsText = oracle
+		.renderResult(findingsOnly, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
+		.render(120)
+		.join("\n");
+	assert.match(findingsText, /1 major/);
+	assert.doesNotMatch(findingsText, /No findings/);
 
 	const contentError = "Khala Oracle failed: the process exited before producing a review.";
 	const emptyDetailsError = {
@@ -669,6 +711,281 @@ test("Khala Oracle rendering derives persisted verdicts and errors from usable o
 		.render(120)
 		.join("\n");
 	assert.match(errorText, /process exited before producing a review/);
+});
+
+test("Khala Oracle persisted rendering reconstructs ordered content blocks so the final block controls the verdict", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const render = (result, options) =>
+		oracle
+			.renderResult(result, options, plainTheme, { args: { prompt: "packet" }, isError: false })
+			.render(120)
+			.join("\n");
+
+	const finalBlockVerdict = {
+		content: [
+			{ type: "text", text: "Findings:\n- Severity: major\n  Evidence: src/a.ts" },
+			{ type: "text", text: "" },
+			{ type: "text", text: "Verdict: pass" },
+		],
+		details: {},
+	};
+	const compactText = render(finalBlockVerdict, { expanded: false, isPartial: false });
+	assert.match(compactText, /Verdict: Pass/);
+	assert.match(compactText, /1 major/);
+	assert.doesNotMatch(compactText, /Verdict: Incomplete/);
+	const expandedText = render(finalBlockVerdict, { expanded: true, isPartial: false });
+	const plainExpanded = expandedText.replace(/\u001b\[[0-9;]*m/g, "").replace(/[ \t]+$/gm, "").trim();
+	assert.match(plainExpanded, /- Severity: major/);
+	assert.match(plainExpanded, /src\/a\.ts/);
+	assert.match(plainExpanded, /Verdict: pass/);
+	assert.ok(
+		plainExpanded.search(/src\/a\.ts/) < plainExpanded.search(/Verdict: pass/),
+		"ordered blocks are preserved in the expanded output",
+	);
+
+	const trailingContent = {
+		content: [
+			{ type: "text", text: "Findings:\nVerdict: pass" },
+			{ type: "text", text: "Handoff note after the verdict." },
+		],
+		details: {},
+	};
+	const trailingText = render(trailingContent, { expanded: false, isPartial: false });
+	assert.match(trailingText, /Verdict: Incomplete/);
+	assert.doesNotMatch(trailingText, /Verdict: Pass/);
+	const trailingExpanded = render(trailingContent, { expanded: true, isPartial: false });
+	const plainTrailing = trailingExpanded.replace(/\u001b\[[0-9;]*m/g, "").replace(/[ \t]+$/gm, "").trim();
+	assert.match(plainTrailing, /Handoff note after the verdict\./);
+	assert.ok(
+		plainTrailing.search(/Verdict: pass/) < plainTrailing.search(/Handoff note after the verdict\./),
+		"trailing blocks stay after the earlier verdict block in the expanded output",
+	);
+});
+
+test("Khala Oracle compact no-findings summary requires an exactly canonical Findings section", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const renderCompact = (details) =>
+		oracle
+			.renderResult(
+				{ content: [], details },
+				{ expanded: false, isPartial: false },
+				plainTheme,
+				{ args: {}, isError: false },
+			)
+			.render(120)
+			.join("\n");
+
+	for (const [name, output] of [
+		["prose after the line", "Findings:\nNo findings.\nThe reviewer added a closing remark.\nVerdict: pass"],
+		[
+			"unsupported severity alongside",
+			"Findings:\nNo findings.\n- Severity: critical\n  Evidence: src/a.ts\nVerdict: pass",
+		],
+		["code fence block", "Findings:\nNo findings.\n```\nreview snippet\n```\nVerdict: pass"],
+		["lowercase line", "Findings:\nno findings.\nVerdict: pass"],
+		["capitalized variant", "Findings:\nNo Findings.\nVerdict: pass"],
+		["indented line", "Findings:\n  No findings.\nVerdict: pass"],
+		["blank line between", "Findings:\nNo findings.\n\nVerdict: pass"],
+	]) {
+		const rendered = renderCompact({ output });
+		assert.doesNotMatch(rendered, /No findings/, `${name} must not render as a clean no-findings review`);
+		assert.match(rendered, /Verdict: Pass/);
+	}
+
+	const canonical = renderCompact({ output: "Findings:\nNo findings.\nVerdict: pass" });
+	assert.match(canonical, /No findings/);
+	const crlfCanonical = renderCompact({ output: "Findings:\r\nNo findings.\r\nVerdict: pass" });
+	assert.match(crlfCanonical, /No findings/);
+});
+
+test("Khala Oracle compact no-findings summary stays unrecognized past blank lines and verdict-shaped content", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const renderCompact = (details) =>
+		oracle
+			.renderResult(
+				{ content: [], details },
+				{ expanded: false, isPartial: false },
+				plainTheme,
+				{ args: {}, isError: false },
+			)
+			.render(120)
+			.join("\n");
+
+	const blankLineAfterHeading = renderCompact({ output: "Findings:\n\nNo findings.\nVerdict: pass" });
+	assert.doesNotMatch(blankLineAfterHeading, /No findings/, "a blank line after Findings: must stay unrecognized");
+	assert.match(blankLineAfterHeading, /Verdict: Pass/);
+	const crlfBlankLineAfterHeading = renderCompact({
+		output: "Findings:\r\n\r\nNo findings.\r\nVerdict: pass",
+	});
+	assert.doesNotMatch(crlfBlankLineAfterHeading, /No findings/, "a CRLF blank line after Findings: must stay unrecognized");
+
+	const earlierVerdictLine = renderCompact({
+		output: "Findings:\nNo findings.\nVerdict: pass\n- Severity: major\n  Evidence: src/a.ts\nVerdict: revise",
+	});
+	assert.doesNotMatch(
+		earlierVerdictLine,
+		/No findings/,
+		"an earlier verdict-shaped line must not truncate the Findings section",
+	);
+	assert.match(earlierVerdictLine, /1 major/);
+
+	const inlineVerdictText = renderCompact({
+		output: "Findings:\nNo findings.\nVerdict: pass (inline note)\nVerdict: revise",
+	});
+	assert.doesNotMatch(
+		inlineVerdictText,
+		/No findings/,
+		"inline verdict-shaped text must not truncate the Findings section",
+	);
+	assert.match(inlineVerdictText, /Verdict: Needs revision/);
+});
+
+test("Khala Oracle compact no-findings summary stays unrecognized across whitespace-only blocks and preserves leading whitespace", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const renderCompact = (result) =>
+		oracle
+			.renderResult(result, { expanded: false, isPartial: false }, plainTheme, { args: { prompt: "packet" }, isError: false })
+			.render(120)
+			.join("\n");
+	const renderExpanded = (result) =>
+		oracle
+			.renderResult(result, { expanded: true, isPartial: false }, plainTheme, { args: { prompt: "packet" }, isError: false })
+			.render(120)
+			.join("\n");
+
+	// The live execution preserves the whitespace-only block verbatim in
+	// details.output; that usable output stays authoritative and the Findings body
+	// stays noncanonical, so the compact renderer must not claim a clean review.
+	const authoritative = { content: [], details: { output: "Findings:\nNo findings.\n \nVerdict: pass" } };
+	assert.doesNotMatch(renderCompact(authoritative), /No findings/);
+	assert.match(renderCompact(authoritative), /Verdict: Pass/);
+
+	// The persisted content fallback must preserve the same block boundaries: the
+	// whitespace-only block between No findings. and the verdict must survive the
+	// reconstruction and keep the compact renderer unrecognized.
+	const fallback = {
+		content: [
+			{ type: "text", text: "Findings:\nNo findings." },
+			{ type: "text", text: " " },
+			{ type: "text", text: "Verdict: pass" },
+		],
+		details: {},
+	};
+	assert.doesNotMatch(renderCompact(fallback), /No findings/);
+	assert.match(renderCompact(fallback), /Verdict: Pass/);
+
+	// Leading whitespace before an exact Findings heading is preserved by the
+	// fallback but never erases the heading: the canonical no-findings body still
+	// parses and the whitespace line survives into the expanded review.
+	const leadingWhitespace = {
+		content: [
+			{ type: "text", text: " " },
+			{ type: "text", text: "Findings:\nNo findings.\nVerdict: pass" },
+		],
+		details: {},
+	};
+	assert.match(renderCompact(leadingWhitespace), /No findings/);
+	assert.match(renderCompact(leadingWhitespace), /Verdict: Pass/);
+	assert.ok(renderExpanded(leadingWhitespace).includes(" \nFindings:"), "leading whitespace survives into the expanded output");
+});
+
+test("Khala Oracle renders stable human durations at unit boundaries", () => {
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "Verdict: pass",
+		model: "test-model",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const renderCompact = (durationMs) =>
+		oracle
+			.renderResult(
+				{ content: [{ type: "text", text: "Verdict: pass" }], details: { output: "Verdict: pass", durationMs } },
+				{ expanded: false, isPartial: false },
+				plainTheme,
+				{ args: {}, isError: false },
+			)
+			.render(120)
+			.join("\n");
+	assert.match(renderCompact(999), /999 ms/);
+	assert.doesNotMatch(renderCompact(999), /1000 ms/);
+	assert.match(renderCompact(1000), /1 s/);
+	assert.match(renderCompact(59_000), /59 s/);
+	assert.doesNotMatch(renderCompact(60_000), /60 s/);
+	assert.match(renderCompact(60_000), /1:00/);
 });
 
 test("Khala Oracle expands verdict-less output and renders review packets literally", () => {
@@ -703,12 +1020,15 @@ test("Khala Oracle expands verdict-less output and renders review packets litera
 		.renderResult(incompleteResult, { expanded: false, isPartial: false }, plainTheme, { args: { prompt }, isError: false })
 		.render(120)
 		.join("\n");
-	assert.match(compactText, /incomplete review \(no final verdict\)/);
+	assert.match(compactText, /Verdict: Incomplete/);
+	assert.doesNotMatch(compactText, /No findings/);
 	const expandedText = oracle
 		.renderResult(incompleteResult, { expanded: true, isPartial: false }, plainTheme, { args: { prompt }, isError: false })
 		.render(120)
 		.join("\n");
 	assert.match(expandedText, /Incomplete review result/);
+	assert.match(expandedText, /Verdict: Incomplete/);
+	assert.ok(expandedText.search(/Verdict: Incomplete/) < expandedText.search(/The review ended before a final verdict/));
 	assert.match(expandedText, /## Spoofed heading/);
 	assert.match(expandedText, /\[review evidence\]\(file:\/\/\/private\/review\.md\)/);
 	assert.match(expandedText, /\\u001b\]8;;file:\/\/\/private\/review\.md\\u0007hidden link\\u001b\]8;;\\u0007/);
@@ -741,7 +1061,508 @@ test("Khala Oracle rendering tolerates malformed persisted result shapes", () =>
 			.renderResult(result, { expanded: false, isPartial: false }, plainTheme, { args: {}, isError: false })
 			.render(120)
 			.join("\n");
-		assert.match(rendered, /incomplete review \(no final verdict\)/);
+		assert.match(rendered, /Verdict: Incomplete/);
+		assert.doesNotMatch(rendered, /No findings/);
+	}
+});
+
+test("Khala Oracle requires a non-empty review subject and renders it in the call row", async () => {
+	const commands = new Map();
+	const tools = new Map();
+	let receivedPrompt;
+	registerKhalaOracle(createPiStub(commands, tools), async (cwd, prompt) => {
+		receivedPrompt = prompt;
+		return { output: "Verdict: pass", model: "test-model", durationMs: 1 };
+	});
+	const oracle = tools.get("khala_oracle");
+	await assert.rejects(
+		() => oracle.execute("oracle", { subject: "  ", prompt: "packet" }, undefined, null, { cwd: "/tmp/project" }),
+		/non-empty review subject/,
+	);
+	const result = await oracle.execute(
+		"oracle",
+		{ subject: "auth flow", prompt: "  packet  " },
+		undefined,
+		null,
+		{ cwd: "/tmp/project" },
+	);
+	assert.equal(receivedPrompt, "packet");
+	assert.equal(result.details.verdict, "pass");
+	initTheme();
+	const callText = oracle
+		.renderCall(
+			{ subject: "  auth flow  ", prompt: "packet" },
+			{
+				fg(_color, text) {
+					return text;
+				},
+				bold(text) {
+					return text;
+				},
+			},
+			{},
+		)
+		.render(120)
+		.join("\n");
+	assert.match(callText, /khala_oracle · auth flow/);
+	assert.doesNotMatch(callText, /fresh-eyes/);
+});
+
+test("Khala Oracle call row sanitizes an untrusted subject to one safe bounded line", () => {
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "Verdict: pass",
+		model: "test-model",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const rawSubject = "Recheck\n\tauth\vflow\r\u001b]8;;file:///private/x\u0007hidden";
+	const call = oracle.renderCall({ subject: rawSubject, prompt: "packet" }, plainTheme, {});
+	const wideLines = call.render(120);
+	assert.equal(wideLines.length, 1);
+	const wideText = wideLines[0];
+	assert.match(wideText, /khala_oracle · Recheck \\u0009auth/);
+	assert.match(wideText, /\\u000b/);
+	assert.match(wideText, /\\u000d/);
+	assert.match(wideText, /\\u001b\]8;;file:\/\/\/private\/x\\u0007hidden/);
+	assert.doesNotMatch(wideText, /\u0007|\u001b|\r|\n|\t/);
+	const narrowLines = call.render(24);
+	assert.equal(narrowLines.length, 1);
+	assert.ok(visibleWidth(narrowLines[0]) <= 24);
+});
+
+test("Khala Oracle accepts only an exact final-line verdict and ignores earlier candidates", () => {
+	const parse = (output) => parseOracleOutput({ output, model: "test-model", durationMs: 1 }).verdict;
+	assert.equal(parse("Findings:\n- Severity: minor\nVerdict: blocked"), "blocked");
+	assert.equal(parse("Verdict: pass\nVerdict: revise"), "revise");
+	assert.equal(parse("  Verdict:   pass  \n\n"), "pass");
+	assert.equal(parse("The model said \"Verdict: pass\" but the review is incomplete."), "unknown");
+	assert.equal(parse("Verdict: revise\nSome closing note."), "unknown");
+	assert.equal(parse("Quoted earlier: \"Verdict: blocked\"\nNo verdict reached."), "unknown");
+	assert.equal(parse("Verdict: PASS"), "unknown");
+	assert.equal(parse("verdict: pass"), "unknown");
+});
+
+test("Khala Oracle counts emphasized severities and reports findings status from the contract", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const renderCompact = (details) =>
+		oracle
+			.renderResult(
+				{ content: [], details },
+				{ expanded: false, isPartial: false },
+				plainTheme,
+				{ args: {}, isError: false },
+			)
+			.render(120)
+			.join("\n");
+
+	const emphasized = {
+		output: [
+			"Findings:",
+			"- **Severity:** major",
+			"  Evidence: src/a.ts",
+			"- *Severity:* minor",
+			"Verdict: revise",
+		].join("\n"),
+	};
+	const emphasizedDetails = parseOracleOutput({ ...emphasized, model: "test-model", durationMs: 1 });
+	assert.equal(emphasizedDetails.majors, 1);
+	assert.equal(emphasizedDetails.minors, 1);
+	const emphasizedText = renderCompact(emphasized);
+	assert.match(emphasizedText, /1 major/);
+	assert.match(emphasizedText, /1 minor/);
+	assert.doesNotMatch(emphasizedText, /No findings/);
+
+	const emptySectionText = renderCompact({ output: "Findings:\nVerdict: pass" });
+	assert.doesNotMatch(emptySectionText, /No findings/);
+	const explicitNoneText = renderCompact({ output: "Findings:\nNo findings.\nVerdict: pass" });
+	assert.match(explicitNoneText, /No findings/);
+
+	const unrecognizedText = renderCompact({
+		output: "Findings:\n- Severity: critical\n  Evidence: src/a.ts\nVerdict: pass",
+	});
+	assert.doesNotMatch(unrecognizedText, /No findings/);
+	assert.doesNotMatch(unrecognizedText, /critical/);
+
+	const verdictOnlyText = renderCompact({ output: "Verdict: pass" });
+	assert.doesNotMatch(verdictOnlyText, /No findings/);
+});
+
+test("Khala Oracle treats only the exact standalone no-findings line inside Findings as no-findings", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const renderCompact = (details) =>
+		oracle
+			.renderResult(
+				{ content: [], details },
+				{ expanded: false, isPartial: false },
+				plainTheme,
+				{ args: {}, isError: false },
+			)
+			.render(120)
+			.join("\n");
+
+	const explicitNone = { output: "Findings:\nNo findings.\nVerdict: pass" };
+	assert.match(renderCompact(explicitNone), /No findings/);
+	const missingPeriod = { output: "Findings:\nNo findings\nVerdict: pass" };
+	assert.doesNotMatch(renderCompact(missingPeriod), /No findings/);
+
+	const quotedInEvidence = {
+		output: [
+			"Findings:",
+			"- Severity: critical",
+			"  Evidence: We could not reproduce the crash; no findings. surfaced.",
+			"Verdict: pass",
+		].join("\n"),
+	};
+	assert.doesNotMatch(renderCompact(quotedInEvidence), /No findings/);
+
+	const inValidationGaps = {
+		output: [
+			"Findings:",
+			"Validation gaps:",
+			"- No findings were verified independently.",
+			"Verdict: pass",
+		].join("\n"),
+	};
+	assert.doesNotMatch(renderCompact(inValidationGaps), /No findings/);
+
+	const inOpenQuestions = {
+		output: [
+			"Findings:",
+			"Open questions:",
+			"- No findings. or a finding, which is it?",
+			"Verdict: pass",
+		].join("\n"),
+	};
+	assert.doesNotMatch(renderCompact(inOpenQuestions), /No findings/);
+
+	const beforeFindings = {
+		output: [
+			"Opinion:",
+			"No findings.",
+			"Findings:",
+			"- Severity: critical",
+			"  Evidence: unreproducible",
+			"Verdict: pass",
+		].join("\n"),
+	};
+	assert.doesNotMatch(renderCompact(beforeFindings), /No findings/);
+
+	const emptySection = { output: "Findings:\nVerdict: pass" };
+	assert.doesNotMatch(renderCompact(emptySection), /No findings/);
+});
+
+test("Khala Oracle counts severity lines only inside the Findings section", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const renderCompact = (details) =>
+		oracle
+			.renderResult(
+				{ content: [], details },
+				{ expanded: false, isPartial: false },
+				plainTheme,
+				{ args: {}, isError: false },
+			)
+			.render(120)
+			.join("\n");
+
+	const deceptive = {
+		output: [
+			"Opinion:",
+			"Severity: blocker - this is prose, not a finding.",
+			"Findings:",
+			"- Severity: major",
+			"  Evidence: src/a.ts",
+			"Validation gaps:",
+			"- Severity: blocker in a gap line must not count.",
+			"Open questions:",
+			"- Is Severity: minor in a question counted?",
+			"Verdict: revise",
+		].join("\n"),
+	};
+	const deceptiveDetails = parseOracleOutput({ ...deceptive, model: "test-model", durationMs: 1 });
+	assert.equal(deceptiveDetails.majors, 1);
+	assert.equal(deceptiveDetails.minors, 0);
+	assert.equal(deceptiveDetails.blockers, 0);
+	const deceptiveText = renderCompact(deceptive);
+	assert.match(deceptiveText, /1 major/);
+	assert.doesNotMatch(deceptiveText, /minor/);
+	assert.doesNotMatch(deceptiveText, /blocker/);
+
+	const emphasized = {
+		output: [
+			"Findings:",
+			"- **Severity:** blocker",
+			"  Evidence: src/a.ts",
+			"Verdict: blocked",
+		].join("\n"),
+	};
+	assert.equal(parseOracleOutput({ ...emphasized, model: "test-model", durationMs: 1 }).blockers, 1);
+	assert.match(renderCompact(emphasized), /1 blocker/);
+});
+
+test("Khala Oracle keeps multi-line output but flattens single-line model and trace metadata", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const render = (result, options) =>
+		oracle
+			.renderResult(result, options, plainTheme, { args: { prompt: "packet" }, isError: false })
+			.render(120)
+			.join("\n");
+	const expanded = render(
+		{
+			content: [],
+			details: {
+				output: "Findings:\n- Severity: minor\nVerdict: pass",
+				model: "provider/\nlegacy-model",
+				trace: ["Prepare\ncontext", "\u0007window\u0007title"],
+				durationMs: 1,
+			},
+		},
+		{ expanded: true, isPartial: false },
+	);
+	const plainText = expanded.replace(/\u001b\[[0-9;]*m/g, "").replace(/[ \t]+$/gm, "").trim();
+	assert.match(plainText, /Findings:\n- Severity: minor/);
+	assert.match(plainText, /- Severity: minor\n  Verdict: pass/);
+	assert.match(plainText, /Model: provider\/ legacy-model · Duration: 1 ms/);
+	assert.doesNotMatch(plainText, /provider\/\nlegacy-model/);
+	assert.match(plainText, /- Prepare context/);
+	assert.doesNotMatch(plainText, /- Prepare\n/);
+	assert.match(plainText, /- \\u0007window\\u0007title/);
+	assert.doesNotMatch(plainText, /- \u0007window/);
+});
+
+test("Khala Oracle system prompt defines the exact review contract", () => {
+	const oracleArguments = buildOracleArguments("packet", "test-model", "xhigh");
+	const systemPrompt = oracleArguments[oracleArguments.indexOf("--system-prompt") + 1];
+	assert.equal(typeof systemPrompt, "string");
+	for (const required of [
+		"Opinion:",
+		"Findings:",
+		"Severity: blocker",
+		"Severity: major",
+		"Severity: minor",
+		"Confidence:",
+		"Evidence:",
+		"Issue:",
+		"Why it matters:",
+		"Suggested fix:",
+		"Validation gaps:",
+		"Open questions:",
+		"No findings.",
+		"Verdict: pass|revise|blocked",
+	]) {
+		assert.ok(systemPrompt.includes(required), `system prompt must define ${required}`);
+	}
+	assert.match(systemPrompt, /final line/);
+});
+
+test("Khala Oracle sanitizes terminal controls from output, errors, model, and trace at render boundaries", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "unused",
+		model: "unused",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const render = (result, options, isError) =>
+		oracle
+			.renderResult(result, options, plainTheme, { args: { prompt: "packet" }, isError })
+			.render(120)
+			.join("\n");
+
+	const compactError = render(
+		{
+			content: [{ type: "text", text: "Khala Oracle failed: process error \u001b[31mred\u001b[0m\u0007" }],
+			details: {},
+		},
+		{ expanded: false, isPartial: false },
+		true,
+	);
+	assert.match(compactError, /Khala Oracle failed: process error/);
+	assert.match(compactError, /\\u001b\[31mred\\u001b\[0m\\u0007/);
+	assert.doesNotMatch(compactError, /\u0007/);
+	assert.doesNotMatch(compactError, /\u001b\[31mred/);
+
+	const rawOutput = "Findings:\n\u001b]8;;file:///private/x\u0007hidden link\u001b]8;;\u0007\nVerdict: pass";
+	const rawModel = "provider/\u001b[31mred\u001b[0m";
+	const rawTrace = ["Prepare context", "\u0007\u001b]0;window title\u0007"];
+	const expanded = render(
+		{
+			content: [],
+			details: { output: rawOutput, model: rawModel, trace: rawTrace, durationMs: 1 },
+		},
+		{ expanded: true, isPartial: false },
+		false,
+	);
+	assert.match(expanded, /Verdict: Pass/);
+	assert.match(expanded, /\\u001b\]8;;file:\/\/\/private\/x\\u0007hidden link\\u001b\]8;;\\u0007/);
+	assert.match(expanded, /provider\/\\u001b\[31mred\\u001b\[0m/);
+	assert.match(expanded, /\\u0007\\u001b\]0;window title\\u0007/);
+	assert.doesNotMatch(expanded, /\u0007/);
+	assert.doesNotMatch(expanded, /\u001b\]8;;file:\/\/\/private\/x\u0007/);
+	assert.doesNotMatch(expanded, /\u001b\[31mred\u001b\[0m/);
+	assert.doesNotMatch(expanded, /\u001b\]0;window title\u0007/);
+});
+
+test("Khala Oracle live timer starts on partial rendering and stops on completion and error", () => {
+	initTheme();
+	const commands = new Map();
+	const tools = new Map();
+	registerKhalaOracle(createPiStub(commands, tools), async () => ({
+		output: "Verdict: pass",
+		model: "test-model",
+		durationMs: 1,
+	}));
+	const oracle = tools.get("khala_oracle");
+	const plainTheme = {
+		fg(_color, text) {
+			return text;
+		},
+		bold(text) {
+			return text;
+		},
+	};
+	const realSetInterval = globalThis.setInterval;
+	const realClearInterval = globalThis.clearInterval;
+	let scheduledCallback;
+	let clearedIntervals = 0;
+	globalThis.setInterval = (callback) => {
+		scheduledCallback = callback;
+		return "oracle-live-timer";
+	};
+	globalThis.clearInterval = () => {
+		clearedIntervals += 1;
+	};
+	try {
+		const state = { startedAt: undefined, interval: undefined };
+		let invalidations = 0;
+		const renderContext = {
+			args: { prompt: "packet" },
+			invalidate() {
+				invalidations += 1;
+			},
+			state,
+			executionStarted: true,
+			isError: false,
+		};
+		const partialResult = {
+			content: [{ type: "text", text: "Reviewing evidence." }],
+			details: { phase: 2, trace: ["Prepare context", "Read packet"], durationMs: 1000 },
+		};
+		const live = oracle.renderResult(
+			partialResult,
+			{ expanded: false, isPartial: true },
+			plainTheme,
+			renderContext,
+		);
+		assert.equal(typeof scheduledCallback, "function", "partial rendering arms the live timer");
+		assert.equal(state.interval, "oracle-live-timer");
+		scheduledCallback();
+		assert.equal(invalidations, 1, "the live timer invalidates the component");
+		assert.match(live.render(120).join("\n"), /Review evidence/);
+
+		oracle.renderResult(
+			{ content: [{ type: "text", text: "Verdict: pass" }], details: { output: "Verdict: pass", durationMs: 1 } },
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			renderContext,
+		);
+		assert.equal(state.interval, undefined, "completion clears the live timer");
+		assert.equal(clearedIntervals, 1);
+
+		oracle.renderResult(
+			partialResult,
+			{ expanded: false, isPartial: true },
+			plainTheme,
+			{ ...renderContext, isError: true },
+		);
+		assert.equal(state.interval, undefined, "an error render clears the live timer even while partial");
+		assert.equal(clearedIntervals, 1, "an error render must not arm a new live timer");
+	} finally {
+		globalThis.setInterval = realSetInterval;
+		globalThis.clearInterval = realClearInterval;
 	}
 });
 

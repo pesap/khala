@@ -137,7 +137,16 @@ for an entity; the complete history remains available for review and recovery.
 
 ## Pi tools
 
-`khala_oracle` runs a bounded fresh-context read-only review. Its findings are advisory and do not mutate Khala state. While it runs, Pi displays coarse public checkpoints such as packet review, evidence analysis, and findings synthesis; the expanded result preserves that review trace and the final verdict without exposing private chain-of-thought.
+`khala_oracle` runs a bounded fresh-context read-only review. Callers pass a short
+required `subject` and the self-contained review packet. Its findings are advisory and
+do not mutate Khala state. While it runs, Pi shows a four-phase progress path — Prepare
+context, Read packet, Review evidence, Deliver verdict — as a two-line status with the
+active phase ordinal, elapsed time, last completed checkpoint, and the configured cancel
+key; compact results start with a `Verdict:` label (Pass, Needs revision, Blocked,
+Incomplete) followed by finding and validation-gap counts, real duration, and the
+expand hint. The expanded result surfaces the verdict label, then the review output,
+then model and duration, then the coarse lifecycle trace, then the literal packet,
+without exposing private chain-of-thought.
 
 Khala registers these custom Pi tools but activates only the allowlist for the
 current role, intersected with Pi's current tool inventory so explicit tool
@@ -147,7 +156,7 @@ session.
 
 | Tool | Purpose | Authorized role |
 | --- | --- | --- |
-| `khala_oracle` | Run a bounded fresh-context read-only review; results are advisory. | Any Session |
+| `khala_oracle` | Run a bounded fresh-context read-only review of a named subject; results are advisory. | Any Session |
 | `khala_submit_work` | Submit a complete Work to the project Conclave; an active WorkPacket is optional. | User |
 | `khala_read_archive` | Read authoritative Archive records visible to the current role. | Role-filtered |
 | `khala_admit_work` | Admit a Work Submission and create Mandate revision one. | Conclave |

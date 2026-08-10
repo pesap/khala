@@ -116,11 +116,29 @@ Execution when the binding is missing, corrupt, or unrestartable.
 
 ## Oracle review presentation
 
-An expanded Oracle tool result shows the model, duration, original bounded
-review packet, and review output or failure message. Khala renders the bounded
-packet as literal content: packet Markdown cannot create headings or links, and
-terminal control characters are displayed as escaped text rather than sent to
-the terminal.
+Khala Oracle takes a short required `subject` and a bounded, self-contained review
+packet; the packet remains the only review evidence. Live partial results advance
+through four public phases — Prepare context, Read packet, Review evidence, Deliver
+verdict — rendered as a two-line status: a left-to-right path with done, active, and
+pending symbols on wide terminals, and the active phase with its ordinal, elapsed time,
+last completed checkpoint, and the configured cancel key on both wide and narrow lines,
+without horizontal overflow. Phase transitions are monotonic and idempotent: each
+coarse JSON lifecycle event can only complete phases, duplicate or late events are
+no-ops, and Deliver verdict completes only when the final output parses a pass, revise,
+or blocked verdict; usable output without a parsed verdict stays incomplete and never
+marks that phase done. Models that emit no thinking events still advance safely. A
+Pi-configured key hints cancellation; no percentage, ETA, confidence, or hidden
+reasoning is shown, and durations are human-readable (ms, s, m:ss).
+
+Compact results start with a `Verdict:` label (Pass, Needs revision, Blocked,
+Incomplete), then blocker/major/minor counts or `No findings`, distinct
+validation-gap counts, real duration, and the expand hint, with distinct failed,
+cancelled, blocked, and incomplete states. An expanded Oracle result surfaces the
+`Verdict:` label, then the review output and findings, then model and duration, then
+the sanitized coarse lifecycle trace, then the submitted bounded review packet last.
+Khala renders the bounded packet as literal content: packet Markdown cannot create
+headings or links, and terminal control characters are displayed as escaped text rather
+than sent to the terminal.
 
 ## Configuration and precedence
 
