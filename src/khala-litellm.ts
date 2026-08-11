@@ -24,6 +24,7 @@ import {
 	type JsonRecord,
 	LITELLM_AUTH_MODES,
 	type LitellmProvider,
+	litellmEnvironmentStatus,
 	litellmKeyAuthId,
 	litellmKeyAuthParts,
 	litellmProviderExists,
@@ -39,6 +40,8 @@ import {
 	normalizeLitellmModelPattern,
 	readJsonObjectFile,
 	registryLitellmKeyCandidates,
+	removeAuthJsonEntry,
+	removeLitellmKeyRegistryEntry,
 	removeLitellmProjectKeyConfig,
 	removeLitellmProjectSettings,
 	resolveKeyForFetch,
@@ -67,13 +70,19 @@ interface LitellmOptions {
 	help: boolean;
 }
 
+type StoredAuthMode = "literal" | "command";
+type SharedKeyOperation = "delete-auth" | "forget-registry" | "delete-both";
+
 interface ReusableKeyCandidate {
 	provider: string;
 	baseUrl: string;
 	keyEnv: string;
 	modelIds: string[];
 	hasStoredAuth: boolean;
-	needsKeyLabel: boolean;
+	authMode: StoredAuthMode | undefined;
+	hasRegistryEntry: boolean;
+	hasProjectReference: boolean;
+	environmentStatus: "missing" | "empty" | "present";
 }
 
 const SETUP_CANCELLED_MESSAGE = "Setup cancelled.";
@@ -81,7 +90,8 @@ const CANCEL_EXIT_CODE = 130;
 const NEW_PROVIDER_LABEL = "New provider and key";
 const ADD_KEY_LABEL = "New key for existing provider";
 const REUSE_KEY_LABEL = "Reuse an existing key";
-const REMOVE_KEY_LABEL = "Remove an existing key";
+const REMOVE_KEY_LABEL = "Detach a key from this project";
+const MANAGE_SHARED_KEY_LABEL = "Manage shared key records";
 
 function isInteractive(options: Pick<LitellmOptions, "yes">): boolean {
 	return !options.yes && input.isTTY === true && output.isTTY === true;
@@ -123,7 +133,7 @@ Flags:
   -h, --help                 Show help
 
 Examples:
-  # Interactive: add, reuse, or remove a project key.
+  # Interactive: add, reuse, detach, or manage a project key.
   khala litellm
 
   # Fully specified new-key setup:
@@ -304,11 +314,35 @@ function rememberedBaseUrl(providerId: string, providers: readonly LitellmProvid
 	return uniqueBaseUrls.length === 1 ? (uniqueBaseUrls[0] ?? "") : "";
 }
 
+function storedAuthMode(entry: unknown): StoredAuthMode | undefined {
+	if (!isStoredLitellmAuthEntry(entry)) {
+		return;
+	}
+	return entry.key.startsWith("!") ? "command" : "literal";
+}
+
+function environmentStatusLabel(status: ReusableKeyCandidate["environmentStatus"]): string {
+	if (status === "present") {
+		return "set; not validated";
+	}
+	return status === "empty" ? "set but empty" : "not set";
+}
+
 function reusableKeyLabel(candidate: ReusableKeyCandidate): string {
-	const keySource = candidate.hasStoredAuth
-		? "stored key"
-		: `env $${deriveEnvVarFromKeyName(candidate.keyEnv) ?? candidate.keyEnv}`;
-	return `${candidate.keyEnv} (${keySource}; ${modelSummary(candidate.modelIds)})`;
+	const sources: string[] = [];
+	if (candidate.hasStoredAuth) {
+		sources.push(`local ${candidate.authMode ?? "unknown"} auth`);
+	}
+	if (candidate.hasRegistryEntry) {
+		sources.push("reuse metadata");
+	}
+	if (candidate.hasProjectReference) {
+		sources.push("current project");
+	}
+	const envVar = deriveEnvVarFromKeyName(candidate.keyEnv) ?? candidate.keyEnv;
+	sources.push(`env $${envVar} (${environmentStatusLabel(candidate.environmentStatus)})`);
+	const models = candidate.modelIds.length > 0 ? modelSummary(candidate.modelIds) : "model metadata unavailable";
+	return `${candidate.keyEnv} (${sources.join("; ")}; ${models})`;
 }
 
 function reusableKeyCandidates(): ReusableKeyCandidate[] {
@@ -321,27 +355,73 @@ function reusableKeyCandidates(): ReusableKeyCandidate[] {
 		projectConfig !== null && typeof projectConfig["providers"] === "object" && projectConfig["providers"] !== null
 			? (projectConfig["providers"] as JsonRecord)
 			: {};
+	const registryEntries = registryLitellmKeyCandidates(readJsonObjectFile(keyRegistryPath()));
+	const registryByKey = new Map(registryEntries.map((entry) => [`${entry.provider}\0${entry.keyEnv}`, entry]));
+	const candidates = new Map<string, ReusableKeyCandidate>();
 
-	const seeded: { provider: string; baseUrl: string; keyEnv: string; modelIds: string[] }[] = [];
-	for (const entry of registryLitellmKeyCandidates(readJsonObjectFile(keyRegistryPath()))) {
-		seeded.push(entry);
+	function addCandidate(
+		entry: { provider: string; baseUrl: string; keyEnv: string; modelIds: string[] },
+		flags: {
+			hasStoredAuth?: boolean;
+			authMode?: StoredAuthMode;
+			hasRegistryEntry?: boolean;
+			hasProjectReference?: boolean;
+		},
+	): void {
+		const provider = providerByName.get(entry.provider);
+		const baseUrl = entry.baseUrl.length > 0 ? entry.baseUrl : (provider?.baseUrl ?? "");
+		const modelIds = entry.modelIds.length > 0 ? entry.modelIds : [...(provider?.models ?? [])];
+		if (baseUrl.length === 0 || modelIds.length === 0) {
+			return;
+		}
+		const key = `${entry.provider}\0${entry.keyEnv}`;
+		const existing = candidates.get(key);
+		const envVar = deriveEnvVarFromKeyName(entry.keyEnv) ?? entry.keyEnv;
+		if (existing === undefined) {
+			candidates.set(key, {
+				provider: entry.provider,
+				baseUrl,
+				keyEnv: entry.keyEnv,
+				modelIds,
+				hasStoredAuth: flags.hasStoredAuth === true,
+				authMode: flags.authMode,
+				hasRegistryEntry: flags.hasRegistryEntry === true,
+				hasProjectReference: flags.hasProjectReference === true,
+				environmentStatus: litellmEnvironmentStatus(envVar),
+			});
+			return;
+		}
+		existing.hasStoredAuth ||= flags.hasStoredAuth === true;
+		existing.authMode ??= flags.authMode;
+		existing.hasRegistryEntry ||= flags.hasRegistryEntry === true;
+		existing.hasProjectReference ||= flags.hasProjectReference === true;
+	}
+
+	for (const entry of registryEntries) {
+		addCandidate(entry, { hasRegistryEntry: true });
 	}
 	if (auth !== null) {
 		for (const [authId, authEntry] of Object.entries(auth)) {
-			if (!isStoredLitellmAuthEntry(authEntry)) {
-				continue;
-			}
 			const parts = litellmKeyAuthParts(authId);
-			const provider = parts === undefined ? undefined : providerByName.get(parts.provider);
-			if (parts === undefined || provider === undefined) {
+			if (parts === undefined || !isStoredLitellmAuthEntry(authEntry)) {
 				continue;
 			}
-			seeded.push({
-				provider: parts.provider,
-				baseUrl: provider.baseUrl,
-				keyEnv: parts.keyEnv,
-				modelIds: [...provider.models],
-			});
+			const provider = providerByName.get(parts.provider);
+			const registryEntry = registryByKey.get(`${parts.provider}\0${parts.keyEnv}`);
+			const source = provider ?? registryEntry;
+			if (source === undefined) {
+				continue;
+			}
+			const authMode = storedAuthMode(authEntry);
+			addCandidate(
+				{
+					provider: parts.provider,
+					baseUrl: source.baseUrl,
+					keyEnv: parts.keyEnv,
+					modelIds: [...(provider?.models ?? registryEntry?.modelIds ?? [])],
+				},
+				authMode === undefined ? { hasStoredAuth: true } : { hasStoredAuth: true, authMode },
+			);
 		}
 	}
 	for (const provider of providers) {
@@ -353,39 +433,20 @@ function reusableKeyCandidates(): ReusableKeyCandidate[] {
 			typeof projectKeyEnvRaw === "string" && projectKeyEnvRaw.trim().length > 0
 				? validateLitellmKeyEnv(projectKeyEnvRaw)
 				: "";
-		seeded.push({
-			provider: provider.name,
-			baseUrl: provider.baseUrl,
-			keyEnv: projectKeyEnv.length > 0 ? projectKeyEnv : provider.name,
-			modelIds: [...provider.models],
-		});
+		addCandidate(
+			{
+				provider: provider.name,
+				baseUrl: provider.baseUrl,
+				keyEnv: projectKeyEnv.length > 0 ? projectKeyEnv : provider.name,
+				modelIds: [...provider.models],
+			},
+			{ hasProjectReference: projectKeyEnv.length > 0 },
+		);
 	}
 
-	const seen = new Set<string>();
-	const candidates: ReusableKeyCandidate[] = [];
-	for (const entry of seeded) {
-		const provider = providerByName.get(entry.provider);
-		const baseUrl = entry.baseUrl.length > 0 ? entry.baseUrl : (provider?.baseUrl ?? "");
-		const modelIds = entry.modelIds.length > 0 ? entry.modelIds : [...(provider?.models ?? [])];
-		if (baseUrl.length === 0 || modelIds.length === 0) {
-			continue;
-		}
-		const key = `${entry.provider}\0${entry.keyEnv}`;
-		if (seen.has(key)) {
-			continue;
-		}
-		seen.add(key);
-		const keySpecificAuth = auth === null ? undefined : auth[litellmKeyAuthId(entry.provider, entry.keyEnv)];
-		candidates.push({
-			provider: entry.provider,
-			baseUrl,
-			keyEnv: entry.keyEnv,
-			modelIds,
-			hasStoredAuth: isStoredLitellmAuthEntry(keySpecificAuth),
-			needsKeyLabel: false,
-		});
-	}
-	return candidates.sort((a, b) => `${a.provider}\0${a.keyEnv}`.localeCompare(`${b.provider}\0${b.keyEnv}`));
+	return [...candidates.values()].sort((a, b) =>
+		`${a.provider}\0${a.keyEnv}`.localeCompare(`${b.provider}\0${b.keyEnv}`),
+	);
 }
 
 function projectKeyCandidates(): { provider: string; keyEnv: string }[] {
@@ -538,6 +599,14 @@ interface ResolvedRemoval {
 	action: "remove";
 	provider: string;
 	keyEnv: string;
+}
+
+interface ResolvedSharedKeyManagement {
+	action: "manage-shared";
+	provider: string;
+	keyEnv: string;
+	operation: SharedKeyOperation;
+	candidate: ReusableKeyCandidate;
 }
 
 interface ResolvedSetup {
@@ -762,6 +831,174 @@ async function planRemoveExistingKey(options: LitellmOptions): Promise<ResolvedR
 	return { action: "remove", provider, keyEnv };
 }
 
+function sharedKeyCandidates(): ReusableKeyCandidate[] {
+	const providers = litellmProvidersFromModelsJson();
+	const providerByName = new Map(providers.map((provider) => [provider.name, provider]));
+	const auth = readJsonObjectFile(authJsonPath());
+	const registryEntries = registryLitellmKeyCandidates(readJsonObjectFile(keyRegistryPath()));
+	const registryByKey = new Map(registryEntries.map((entry) => [`${entry.provider}\0${entry.keyEnv}`, entry]));
+	const projectConfigPath = findProjectLitellmConfigPath(process.cwd());
+	const projectConfig = projectConfigPath === undefined ? null : readJsonObjectFile(projectConfigPath);
+	const projectProviders =
+		projectConfig !== null &&
+		typeof projectConfig["providers"] === "object" &&
+		projectConfig["providers"] !== null &&
+		!Array.isArray(projectConfig["providers"])
+			? (projectConfig["providers"] as JsonRecord)
+			: {};
+	const candidates = new Map<string, ReusableKeyCandidate>();
+
+	function addCandidate(
+		providerId: string,
+		keyEnv: string,
+		metadata: { baseUrl?: string; modelIds?: string[] },
+		flags: {
+			hasStoredAuth?: boolean;
+			authMode?: StoredAuthMode;
+			hasRegistryEntry?: boolean;
+			hasProjectReference?: boolean;
+		},
+	): void {
+		const provider = providerByName.get(providerId);
+		const baseUrl = metadata.baseUrl ?? provider?.baseUrl ?? "";
+		const modelIds = metadata.modelIds ?? [...(provider?.models ?? [])];
+		const key = `${providerId}\0${keyEnv}`;
+		const existing = candidates.get(key);
+		const envVar = deriveEnvVarFromKeyName(keyEnv) ?? keyEnv;
+		if (existing === undefined) {
+			candidates.set(key, {
+				provider: providerId,
+				baseUrl,
+				keyEnv,
+				modelIds,
+				hasStoredAuth: flags.hasStoredAuth === true,
+				authMode: flags.authMode,
+				hasRegistryEntry: flags.hasRegistryEntry === true,
+				hasProjectReference: flags.hasProjectReference === true,
+				environmentStatus: litellmEnvironmentStatus(envVar),
+			});
+			return;
+		}
+		if (existing.baseUrl.length === 0 && baseUrl.length > 0) {
+			existing.baseUrl = baseUrl;
+		}
+		if (existing.modelIds.length === 0 && modelIds.length > 0) {
+			existing.modelIds = modelIds;
+		}
+		existing.hasStoredAuth ||= flags.hasStoredAuth === true;
+		existing.authMode ??= flags.authMode;
+		existing.hasRegistryEntry ||= flags.hasRegistryEntry === true;
+		existing.hasProjectReference ||= flags.hasProjectReference === true;
+	}
+
+	for (const entry of registryEntries) {
+		addCandidate(entry.provider, entry.keyEnv, entry, { hasRegistryEntry: true });
+	}
+	if (auth !== null) {
+		for (const [authId, authEntry] of Object.entries(auth)) {
+			const parts = litellmKeyAuthParts(authId);
+			if (parts === undefined || !isStoredLitellmAuthEntry(authEntry)) {
+				continue;
+			}
+			const registryEntry = registryByKey.get(`${parts.provider}\0${parts.keyEnv}`);
+			const authMode = storedAuthMode(authEntry);
+			addCandidate(
+				parts.provider,
+				parts.keyEnv,
+				registryEntry ?? {},
+				authMode === undefined ? { hasStoredAuth: true } : { hasStoredAuth: true, authMode },
+			);
+		}
+	}
+	for (const [providerId, rawEntry] of Object.entries(projectProviders)) {
+		if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
+			continue;
+		}
+		const keyEnvRaw = (rawEntry as JsonRecord)["keyEnv"];
+		if (typeof keyEnvRaw !== "string" || keyEnvRaw.trim().length === 0) {
+			continue;
+		}
+		addCandidate(
+			validateLitellmProviderId(providerId),
+			validateLitellmKeyEnv(keyEnvRaw),
+			{},
+			{ hasProjectReference: true },
+		);
+	}
+
+	return [...candidates.values()]
+		.filter((candidate) => candidate.hasStoredAuth || candidate.hasRegistryEntry)
+		.sort((a, b) => `${a.provider}\0${a.keyEnv}`.localeCompare(`${b.provider}\0${b.keyEnv}`));
+}
+
+function sharedKeyOperationLabel(operation: SharedKeyOperation): string {
+	if (operation === "delete-auth") {
+		return "Delete local auth entry";
+	}
+	if (operation === "forget-registry") {
+		return "Forget reuse metadata";
+	}
+	return "Delete both local records";
+}
+
+async function planManageSharedKey(options: LitellmOptions): Promise<ResolvedSharedKeyManagement> {
+	const candidates = sharedKeyCandidates();
+	if (candidates.length === 0) {
+		throw new Error("No shared LiteLLM key records found.");
+	}
+	const providerNames = [...new Set(candidates.map((candidate) => candidate.provider))];
+	const providerName =
+		options.provider.length > 0
+			? validateLitellmProviderId(options.provider)
+			: await askSelect("LiteLLM provider to manage", providerNames, providerNames[0] ?? "");
+	const providerCandidates = candidates.filter((candidate) => candidate.provider === providerName);
+	if (providerCandidates.length === 0) {
+		throw new Error(`No shared key records found for provider '${providerName}'.`);
+	}
+	const keyChoices = providerCandidates.map((candidate) => reusableKeyLabel(candidate));
+	const selectedLabel =
+		options.keyEnv.length > 0 ? "" : await askSelect("Shared key to manage", keyChoices, keyChoices[0] ?? "");
+	const selected =
+		options.keyEnv.length > 0
+			? providerCandidates.find((candidate) => candidate.keyEnv === options.keyEnv)
+			: providerCandidates[keyChoices.indexOf(selectedLabel)];
+	if (selected === undefined) {
+		throw new Error(`No shared key labeled '${options.keyEnv}' found for provider '${providerName}'.`);
+	}
+	const operations: SharedKeyOperation[] = [];
+	if (selected.hasStoredAuth) {
+		operations.push("delete-auth");
+	}
+	if (selected.hasRegistryEntry) {
+		operations.push("forget-registry");
+	}
+	if (operations.length === 2) {
+		operations.push("delete-both");
+	}
+	if (operations.length === 0) {
+		throw new Error(`No removable shared records found for '${providerName}:${selected.keyEnv}'.`);
+	}
+	const operationChoices = operations.map(sharedKeyOperationLabel);
+	const selectedOperation =
+		options.yes === true
+			? operations[0]
+			: operations[
+					operationChoices.indexOf(
+						await askSelect("Shared key record to remove", operationChoices, operationChoices[0] ?? ""),
+					)
+				];
+	if (selectedOperation === undefined) {
+		throw new Error("No shared key operation selected.");
+	}
+	return {
+		action: "manage-shared",
+		provider: providerName,
+		keyEnv: selected.keyEnv,
+		operation: selectedOperation,
+		candidate: selected,
+	};
+}
+
 async function planReuseExistingKey(options: LitellmOptions): Promise<ResolvedSetup> {
 	const candidates = reusableKeyCandidates();
 	if (candidates.length === 0) {
@@ -857,7 +1094,9 @@ async function planNonInteractive(options: LitellmOptions): Promise<ResolvedSetu
 	};
 }
 
-async function planSetup(options: LitellmOptions): Promise<ResolvedSetup | ResolvedRemoval> {
+async function planSetup(
+	options: LitellmOptions,
+): Promise<ResolvedSetup | ResolvedRemoval | ResolvedSharedKeyManagement> {
 	const providers = litellmProvidersFromModelsJson();
 	if (!isInteractive(options) || hasExplicitSetupInput(options)) {
 		if (!isInteractive(options)) {
@@ -870,6 +1109,7 @@ async function planSetup(options: LitellmOptions): Promise<ResolvedSetup | Resol
 		...(providers.length > 0 ? [ADD_KEY_LABEL] : []),
 		...(reusableKeyCandidates().length > 0 ? [REUSE_KEY_LABEL] : []),
 		...(projectKeyCandidates().length > 0 ? [REMOVE_KEY_LABEL] : []),
+		...(sharedKeyCandidates().length > 0 ? [MANAGE_SHARED_KEY_LABEL] : []),
 	];
 	console.log("Connect Pi to a LiteLLM-compatible proxy. Press Ctrl-C any time to cancel.");
 	const mode = await askSelect("LiteLLM key setup", modes, NEW_PROVIDER_LABEL);
@@ -882,11 +1122,22 @@ async function planSetup(options: LitellmOptions): Promise<ResolvedSetup | Resol
 	if (mode === REMOVE_KEY_LABEL) {
 		return planRemoveExistingKey(options);
 	}
+	if (mode === MANAGE_SHARED_KEY_LABEL) {
+		return planManageSharedKey(options);
+	}
 	return planInteractiveNewProvider(options, providers);
 }
 
-function isResolvedRemoval(plan: ResolvedSetup | ResolvedRemoval): plan is ResolvedRemoval {
+function isResolvedRemoval(
+	plan: ResolvedSetup | ResolvedRemoval | ResolvedSharedKeyManagement,
+): plan is ResolvedRemoval {
 	return "action" in plan && plan.action === "remove";
+}
+
+function isResolvedSharedKeyManagement(
+	plan: ResolvedSetup | ResolvedRemoval | ResolvedSharedKeyManagement,
+): plan is ResolvedSharedKeyManagement {
+	return "action" in plan && plan.action === "manage-shared";
 }
 
 function printPlanSummary(plan: ResolvedSetup): void {
@@ -964,6 +1215,85 @@ async function removeProjectKey(plan: ResolvedRemoval, options: LitellmOptions):
 		writeJsonFile(settingsPath, nextSettings);
 	}
 	console.log("\nDone. LiteLLM key was detached from this project.");
+}
+
+async function manageSharedKey(plan: ResolvedSharedKeyManagement, options: LitellmOptions): Promise<void> {
+	const authId = litellmKeyAuthId(plan.provider, plan.keyEnv);
+	const deletesAuth = plan.operation === "delete-auth" || plan.operation === "delete-both";
+	const deletesRegistry = plan.operation === "forget-registry" || plan.operation === "delete-both";
+	const authPath = authJsonPath();
+	const registryPath = keyRegistryPath();
+
+	console.log("");
+	console.log(titleLine(options.dryRun ? "Shared LiteLLM key cleanup (dry run)" : "Shared LiteLLM key cleanup"));
+	console.log(row("=", "provider", plan.provider));
+	console.log(row("=", "key label", plan.keyEnv));
+	if (deletesAuth) {
+		console.log(row("-", "local auth entry", authPath));
+	}
+	if (deletesRegistry) {
+		console.log(row("-", "reuse metadata", registryPath));
+	}
+	console.log(row("=", "project configuration", "unchanged"));
+	console.log(row("=", "shared models", "unchanged"));
+	console.log(dim("This does not edit environment variables or revoke the remote LiteLLM key."));
+	if (plan.candidate.hasProjectReference && deletesAuth) {
+		console.log(
+			dim(
+				"This key is selected by the current project; deleting its local auth may make that project unable to authenticate.",
+			),
+		);
+	}
+	if (deletesAuth) {
+		console.log(dim("The local auth entry may also be used by other projects; Khala cannot enumerate every project."));
+	}
+	if (deletesAuth && deletesRegistry) {
+		console.log(
+			dim(
+				"Both files are updated sequentially; if the second write fails, the result will report the completed first removal.",
+			),
+		);
+	}
+
+	if (options.dryRun) {
+		console.log("Run without --dry-run to apply this cleanup.");
+		return;
+	}
+	if (isInteractive(options) && !(await askYesNo("Apply this shared key cleanup?", false))) {
+		console.log("Skipped. No files were changed.");
+		return;
+	}
+
+	const completed: string[] = [];
+	try {
+		if (deletesAuth) {
+			const currentAuth = readJsonObjectFile(authPath);
+			if (currentAuth === null || !isStoredLitellmAuthEntry(currentAuth[authId])) {
+				throw new Error(`No local auth entry exists for '${authId}'. It may have already been removed.`);
+			}
+			writeSecureJsonFile(authPath, removeAuthJsonEntry(currentAuth, authId));
+			completed.push("local auth entry");
+		}
+		if (deletesRegistry) {
+			const currentRegistry = readJsonObjectFile(registryPath);
+			if (
+				!registryLitellmKeyCandidates(currentRegistry).some(
+					(entry) => entry.provider === plan.provider && entry.keyEnv === plan.keyEnv,
+				)
+			) {
+				throw new Error(
+					`No reuse metadata exists for '${plan.provider}:${plan.keyEnv}'. It may have already been removed.`,
+				);
+			}
+			writeJsonFile(registryPath, removeLitellmKeyRegistryEntry(currentRegistry, plan));
+			completed.push("reuse metadata");
+		}
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		const prefix = completed.length > 0 ? `Completed: ${completed.join(", ")}. ` : "";
+		throw Object.assign(new Error(`${prefix}Could not complete shared key cleanup: ${detail}`), { cause: error });
+	}
+	console.log(`\nDone. Removed ${completed.join(" and ")}.`);
 }
 
 async function writePlan(plan: ResolvedSetup): Promise<void> {
@@ -1048,6 +1378,10 @@ async function configure(options: LitellmOptions): Promise<void> {
 	const plan = await planSetup(options);
 	if (isResolvedRemoval(plan)) {
 		await removeProjectKey(plan, options);
+		return;
+	}
+	if (isResolvedSharedKeyManagement(plan)) {
+		await manageSharedKey(plan, options);
 		return;
 	}
 	const currentAuth = readJsonObjectFile(authJsonPath());

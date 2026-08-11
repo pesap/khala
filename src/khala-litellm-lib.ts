@@ -508,6 +508,16 @@ function mergeAuthJsonApiKey(current: unknown, providerId: string, keyValue: str
 	return { value: root, conflict, isUpdate: existing !== null };
 }
 
+function removeAuthJsonEntry(current: unknown, authId: string): JsonRecord {
+	const id = trimOrEmpty(authId);
+	if (id.length === 0) {
+		throw new Error("authId is required for auth.json removal");
+	}
+	const root: JsonRecord = isPlainObject(current) ? { ...current } : {};
+	delete root[id];
+	return root;
+}
+
 /**
  * Compact-but-readable JSON serializer for models.json: collapses each
  * single-field `{ "id": "..." }` model entry onto one line. Model entries
@@ -798,6 +808,31 @@ function registryLitellmKeyCandidates(registry: unknown): LitellmKeyRegistryEntr
 	return result;
 }
 
+function removeLitellmKeyRegistryEntry(current: unknown, entry: { provider: string; keyEnv: string }): JsonRecord {
+	const provider = validateLitellmProviderId(entry.provider);
+	const keyEnv = validateLitellmKeyEnv(entry.keyEnv);
+	const root: JsonRecord = isPlainObject(current) ? { ...current } : {};
+	const existingRaw = Array.isArray(root["keys"]) ? root["keys"] : [];
+	const remaining = existingRaw.filter((item) => {
+		const normalized = normalizeLitellmKeyRegistryEntry(item);
+		return normalized === undefined || normalized.provider !== provider || normalized.keyEnv !== keyEnv;
+	});
+	if (remaining.length === 0) {
+		const { keys: _keys, ...withoutKeys } = root;
+		return withoutKeys;
+	}
+	root["keys"] = remaining;
+	return root;
+}
+
+function litellmEnvironmentStatus(envVar: string): "missing" | "empty" | "present" {
+	const value = process.env[envVar];
+	if (value === undefined) {
+		return "missing";
+	}
+	return value.length === 0 ? "empty" : "present";
+}
+
 function resolveKeyCommand(rawValue: string): string | undefined {
 	const cmd = rawValue.slice(1).trim();
 	if (cmd.length === 0) {
@@ -1015,6 +1050,7 @@ export {
 	LITELLM_AUTH_MODES,
 	LITELLM_PROVIDER_API,
 	LITELLM_PROVIDER_APIS,
+	litellmEnvironmentStatus,
 	litellmKeyAuthId,
 	litellmKeyAuthParts,
 	litellmProviderExists,
@@ -1033,6 +1069,8 @@ export {
 	parseLitellmPublicModelHubResponse,
 	readJsonObjectFile,
 	registryLitellmKeyCandidates,
+	removeAuthJsonEntry,
+	removeLitellmKeyRegistryEntry,
 	removeLitellmProjectKeyConfig,
 	removeLitellmProjectSettings,
 	resolveKeyForFetch,

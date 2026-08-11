@@ -180,6 +180,56 @@ test("project key removal detaches only project state", () => {
 	assert.deepEqual(removedSettings, { enabledModels: ["other/*"], theme: "dark" });
 });
 
+test("shared key cleanup removes only the exact auth and registry records", () => {
+	const auth = lib.removeAuthJsonEntry(
+		{
+			"NLR:naerm-pesap": { type: "api_key", key: "secret" },
+			"NLR:other": { type: "api_key", key: "keep" },
+			unrelated: { type: "oauth", access: "keep" },
+		},
+		"NLR:naerm-pesap",
+	);
+	assert.deepEqual(auth, {
+		"NLR:other": { type: "api_key", key: "keep" },
+		unrelated: { type: "oauth", access: "keep" },
+	});
+
+	const registry = lib.removeLitellmKeyRegistryEntry(
+		{
+			keys: [
+				{ provider: "NLR", keyEnv: "naerm-pesap", baseUrl: "https://n.example/v1", modelIds: ["gpt-x"] },
+				{ provider: "NLR", keyEnv: "other", baseUrl: "https://n.example/v1", modelIds: ["gpt-y"] },
+			],
+			note: "keep",
+		},
+		{ provider: "NLR", keyEnv: "naerm-pesap" },
+	);
+	assert.deepEqual(registry, {
+		keys: [{ provider: "NLR", keyEnv: "other", baseUrl: "https://n.example/v1", modelIds: ["gpt-y"] }],
+		note: "keep",
+	});
+});
+
+test("environment status distinguishes missing, empty, and present values", () => {
+	assert.equal(lib.litellmEnvironmentStatus("KHAlA_TEST_MISSING"), "missing");
+	const previous = process.env.KHALA_TEST_EMPTY;
+	process.env.KHALA_TEST_EMPTY = "";
+	try {
+		assert.equal(lib.litellmEnvironmentStatus("KHALA_TEST_EMPTY"), "empty");
+	} finally {
+		if (previous === undefined) delete process.env.KHALA_TEST_EMPTY;
+		else process.env.KHALA_TEST_EMPTY = previous;
+	}
+	const previousPresent = process.env.KHALA_TEST_PRESENT;
+	process.env.KHALA_TEST_PRESENT = "not-a-secret-value";
+	try {
+		assert.equal(lib.litellmEnvironmentStatus("KHALA_TEST_PRESENT"), "present");
+	} finally {
+		if (previousPresent === undefined) delete process.env.KHALA_TEST_PRESENT;
+		else process.env.KHALA_TEST_PRESENT = previousPresent;
+	}
+});
+
 test("secure auth writes repair permissions when the JSON already matches", () => {
 	const directory = mkdtempSync(join(tmpdir(), "khala-litellm-auth-"));
 	const authPath = join(directory, "auth.json");

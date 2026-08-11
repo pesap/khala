@@ -58,14 +58,15 @@ for the full flag reference.
 
 ## Interactive Paths
 
-Running `khala litellm` with no flags in a terminal offers four flows:
+Running `khala litellm` with no flags in a terminal offers these flows:
 
 | Flow                          | Use when                                                                 |
 | ------------------------------ | ------------------------------------------------------------------------ |
-| New provider and key          | The proxy, model list, and reusable key label are new                    |
-| New key for existing provider | The proxy exists, but the current project needs a fresh portal key label |
-| Reuse an existing key         | Another project already registered this provider/key label               |
-| Remove an existing key        | Detach a provider/key selection from the current project                 |
+| New provider and key            | The proxy, model list, and reusable key label are new                    |
+| New key for existing provider   | The proxy exists, but the current project needs a fresh portal key label |
+| Reuse an existing key           | Another project already registered this provider/key label               |
+| Detach a key from this project  | Remove a provider/key selection from the current project                 |
+| Manage shared key records       | Delete local auth or forget reuse metadata across projects               |
 
 Choose **New key for existing provider** when the proxy and model list are
 already registered but a fresh portal key label is needed. Khala keeps the
@@ -90,11 +91,31 @@ the shared Pi `models.json`/`auth.json` config and Khala's non-secret
 key-label registry. The picker asks for the provider first, then the key
 label, so the same LiteLLM provider can expose multiple reusable labels.
 
-Choose **Remove an existing key** to detach one of the current project's
-provider/key selections. This removes the project key reference and any
-matching project default/model scope, but leaves shared models, `auth.json`,
-and the global key registry unchanged. It does not revoke the remote
-LiteLLM key.
+Choose **Detach a key from this project** to detach one of the current
+project's provider/key selections. This removes the project key reference and
+any matching project default/model scope, but leaves shared models,
+`auth.json`, and the global key registry unchanged. It does not revoke the
+remote LiteLLM key.
+
+Choose **Manage shared key records** to clean up global Khala records. Khala
+shows the sources it can observe, including local auth, reuse metadata, the
+current project's reference, and the derived environment variable status.
+Available operations are:
+
+- **Delete local auth entry** removes the exact `<provider>:<key-label>` entry
+  from the shared `auth.json`. This may affect other projects using the same
+  local credential. Literal values and shell commands are never displayed.
+- **Forget reuse metadata** removes the non-secret entry from
+  `khala/litellm-keys.json`. This only hides the key from future reuse
+  discovery; existing project configuration is unchanged.
+- **Delete both local records** performs both operations above. The two files
+  are updated sequentially; if the second write fails, Khala reports which
+  removal completed.
+
+These operations do not edit shell files, unset environment variables, change
+shared models, or revoke the remote LiteLLM key. Environment variables are
+reported only as `set`, `set but empty`, or `not set` in the current Khala
+process and are never remotely validated.
 
 ## Project Settings
 
