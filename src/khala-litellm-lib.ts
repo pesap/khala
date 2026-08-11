@@ -653,6 +653,45 @@ function mergeLitellmProjectKeyConfig(current: unknown, options: { providerId: s
 	return root;
 }
 
+function removeLitellmProjectKeyConfig(current: unknown, providerId: string): JsonRecord {
+	const provider = validateLitellmProviderId(providerId);
+	const root: JsonRecord = isPlainObject(current) ? { ...current } : {};
+	const existingProviders = root["providers"];
+	if (!isPlainObject(existingProviders)) {
+		return root;
+	}
+	const providers = { ...existingProviders };
+	delete providers[provider];
+	if (Object.keys(providers).length === 0) {
+		const { providers: _providers, ...withoutProviders } = root;
+		return withoutProviders;
+	}
+	root["providers"] = providers;
+	return root;
+}
+
+function removeLitellmProjectSettings(current: unknown, providerId: string): JsonRecord {
+	const provider = validateLitellmProviderId(providerId);
+	let root: JsonRecord = isPlainObject(current) ? { ...current } : {};
+	if (root["defaultProvider"] === provider) {
+		const { defaultProvider: _defaultProvider, defaultModel: _defaultModel, ...withoutDefaults } = root;
+		root = withoutDefaults;
+	}
+	if (Array.isArray(root["enabledModels"])) {
+		const prefix = `${provider}/`;
+		const enabledModels = root["enabledModels"].filter(
+			(pattern) => typeof pattern !== "string" || !pattern.startsWith(prefix),
+		);
+		if (enabledModels.length === 0) {
+			const { enabledModels: _enabledModels, ...withoutEnabledModels } = root;
+			root = withoutEnabledModels;
+		} else {
+			root["enabledModels"] = enabledModels;
+		}
+	}
+	return root;
+}
+
 function litellmKeyAuthId(provider: string, keyEnv: string): string {
 	return `${provider}:${keyEnv}`;
 }
@@ -994,6 +1033,8 @@ export {
 	parseLitellmPublicModelHubResponse,
 	readJsonObjectFile,
 	registryLitellmKeyCandidates,
+	removeLitellmProjectKeyConfig,
+	removeLitellmProjectSettings,
 	resolveKeyForFetch,
 	stringifyModelsJson,
 	validateAuthCommand,

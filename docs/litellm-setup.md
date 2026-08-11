@@ -58,13 +58,14 @@ for the full flag reference.
 
 ## Interactive Paths
 
-Running `khala litellm` with no flags in a terminal offers up to three flows:
+Running `khala litellm` with no flags in a terminal offers four flows:
 
 | Flow                          | Use when                                                                 |
 | ------------------------------ | ------------------------------------------------------------------------ |
 | New provider and key          | The proxy, model list, and reusable key label are new                    |
 | New key for existing provider | The proxy exists, but the current project needs a fresh portal key label |
 | Reuse an existing key         | Another project already registered this provider/key label               |
+| Remove an existing key        | Detach a provider/key selection from the current project                 |
 
 Choose **New key for existing provider** when the proxy and model list are
 already registered but a fresh portal key label is needed. Khala keeps the
@@ -88,6 +89,12 @@ Choose **Reuse an existing key**. Khala lists reusable LiteLLM providers from
 the shared Pi `models.json`/`auth.json` config and Khala's non-secret
 key-label registry. The picker asks for the provider first, then the key
 label, so the same LiteLLM provider can expose multiple reusable labels.
+
+Choose **Remove an existing key** to detach one of the current project's
+provider/key selections. This removes the project key reference and any
+matching project default/model scope, but leaves shared models, `auth.json`,
+and the global key registry unchanged. It does not revoke the remote
+LiteLLM key.
 
 ## Project Settings
 

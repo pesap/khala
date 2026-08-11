@@ -161,6 +161,25 @@ test("project defaults preserve an existing model scope", () => {
 	assert.deepEqual(scoped.enabledModels, ["team-litellm/*"]);
 });
 
+test("project key removal detaches only project state", () => {
+	const removedKey = lib.removeLitellmProjectKeyConfig(
+		{ providers: { NLR: { keyEnv: "naerm-pesap" }, other: { keyEnv: "other" } }, note: "keep" },
+		"NLR",
+	);
+	assert.deepEqual(removedKey, { providers: { other: { keyEnv: "other" } }, note: "keep" });
+
+	const removedSettings = lib.removeLitellmProjectSettings(
+		{
+			defaultProvider: "NLR",
+			defaultModel: "gpt-5.4",
+			enabledModels: ["NLR/*", "other/*"],
+			theme: "dark",
+		},
+		"NLR",
+	);
+	assert.deepEqual(removedSettings, { enabledModels: ["other/*"], theme: "dark" });
+});
+
 test("secure auth writes repair permissions when the JSON already matches", () => {
 	const directory = mkdtempSync(join(tmpdir(), "khala-litellm-auth-"));
 	const authPath = join(directory, "auth.json");

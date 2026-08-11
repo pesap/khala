@@ -39,6 +39,8 @@ import {
 	normalizeLitellmModelPattern,
 	readJsonObjectFile,
 	registryLitellmKeyCandidates,
+	removeLitellmProjectKeyConfig,
+	removeLitellmProjectSettings,
 	resolveKeyForFetch,
 	validateAuthCommand,
 	validateAuthLiteral,
@@ -79,6 +81,7 @@ const CANCEL_EXIT_CODE = 130;
 const NEW_PROVIDER_LABEL = "New provider and key";
 const ADD_KEY_LABEL = "New key for existing provider";
 const REUSE_KEY_LABEL = "Reuse an existing key";
+const REMOVE_KEY_LABEL = "Remove an existing key";
 
 function isInteractive(options: Pick<LitellmOptions, "yes">): boolean {
 	return !options.yes && input.isTTY === true && output.isTTY === true;
@@ -120,7 +123,7 @@ Flags:
   -h, --help                 Show help
 
 Examples:
-  # Interactive: add a provider/key, add a key to an existing provider, or reuse a key.
+  # Interactive: add, reuse, or remove a project key.
   khala litellm
 
   # Fully specified new-key setup:
@@ -385,6 +388,32 @@ function reusableKeyCandidates(): ReusableKeyCandidate[] {
 	return candidates.sort((a, b) => `${a.provider}\0${a.keyEnv}`.localeCompare(`${b.provider}\0${b.keyEnv}`));
 }
 
+function projectKeyCandidates(): { provider: string; keyEnv: string }[] {
+	const projectConfigPath = findProjectLitellmConfigPath(process.cwd());
+	if (projectConfigPath === undefined) {
+		return [];
+	}
+	const projectConfig = readJsonObjectFile(projectConfigPath);
+	const projectProviders =
+		projectConfig !== null &&
+		typeof projectConfig["providers"] === "object" &&
+		projectConfig["providers"] !== null &&
+		!Array.isArray(projectConfig["providers"])
+			? (projectConfig["providers"] as JsonRecord)
+			: {};
+	const candidates: { provider: string; keyEnv: string }[] = [];
+	for (const [providerName, rawEntry] of Object.entries(projectProviders)) {
+		if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
+			continue;
+		}
+		candidates.push({
+			provider: validateLitellmProviderId(providerName),
+			keyEnv: validateLitellmKeyEnv((rawEntry as JsonRecord)["keyEnv"]),
+		});
+	}
+	return candidates.sort((a, b) => `${a.provider}\0${a.keyEnv}`.localeCompare(`${b.provider}\0${b.keyEnv}`));
+}
+
 // ── Prompts ──────────────────────────────────────────────────────────────
 function acceptAnyValue(): string | undefined {
 	// No validation rule; every value is accepted.
@@ -504,6 +533,12 @@ async function askAuthMode(provider: string, keyEnv: string, hasExistingAuth: bo
 }
 
 // ── Main flow ────────────────────────────────────────────────────────────
+
+interface ResolvedRemoval {
+	action: "remove";
+	provider: string;
+	keyEnv: string;
+}
 
 interface ResolvedSetup {
 	provider: string;
@@ -702,6 +737,31 @@ async function planAddKeyToExistingProvider(
 	};
 }
 
+async function planRemoveExistingKey(options: LitellmOptions): Promise<ResolvedRemoval> {
+	const candidates = projectKeyCandidates();
+	if (candidates.length === 0) {
+		throw new Error("No LiteLLM key is configured for the current project.");
+	}
+	const providerNames = [...new Set(candidates.map((candidate) => candidate.provider))];
+	const provider =
+		options.provider.length > 0
+			? validateLitellmProviderId(options.provider)
+			: await askSelect("LiteLLM provider to remove", providerNames, providerNames[0] ?? "");
+	const providerCandidates = candidates.filter((candidate) => candidate.provider === provider);
+	if (providerCandidates.length === 0) {
+		throw new Error(`No LiteLLM key for provider '${provider}' is configured for the current project.`);
+	}
+	const keyChoices = providerCandidates.map((candidate) => candidate.keyEnv);
+	const keyEnv =
+		options.keyEnv.length > 0
+			? validateLitellmKeyEnv(options.keyEnv)
+			: await askSelect("Key label to remove", keyChoices, keyChoices[0] ?? "");
+	if (!providerCandidates.some((candidate) => candidate.keyEnv === keyEnv)) {
+		throw new Error(`Key '${keyEnv}' for provider '${provider}' is not configured for the current project.`);
+	}
+	return { action: "remove", provider, keyEnv };
+}
+
 async function planReuseExistingKey(options: LitellmOptions): Promise<ResolvedSetup> {
 	const candidates = reusableKeyCandidates();
 	if (candidates.length === 0) {
@@ -797,7 +857,7 @@ async function planNonInteractive(options: LitellmOptions): Promise<ResolvedSetu
 	};
 }
 
-async function planSetup(options: LitellmOptions): Promise<ResolvedSetup> {
+async function planSetup(options: LitellmOptions): Promise<ResolvedSetup | ResolvedRemoval> {
 	const providers = litellmProvidersFromModelsJson();
 	if (!isInteractive(options) || hasExplicitSetupInput(options)) {
 		if (!isInteractive(options)) {
@@ -805,8 +865,12 @@ async function planSetup(options: LitellmOptions): Promise<ResolvedSetup> {
 		}
 		return planInteractiveNewProvider(options, providers);
 	}
-	const modes =
-		providers.length > 0 ? [NEW_PROVIDER_LABEL, ADD_KEY_LABEL, REUSE_KEY_LABEL] : [NEW_PROVIDER_LABEL, REUSE_KEY_LABEL];
+	const modes = [
+		NEW_PROVIDER_LABEL,
+		...(providers.length > 0 ? [ADD_KEY_LABEL] : []),
+		...(reusableKeyCandidates().length > 0 ? [REUSE_KEY_LABEL] : []),
+		...(projectKeyCandidates().length > 0 ? [REMOVE_KEY_LABEL] : []),
+	];
 	console.log("Connect Pi to a LiteLLM-compatible proxy. Press Ctrl-C any time to cancel.");
 	const mode = await askSelect("LiteLLM key setup", modes, NEW_PROVIDER_LABEL);
 	if (mode === ADD_KEY_LABEL) {
@@ -815,7 +879,14 @@ async function planSetup(options: LitellmOptions): Promise<ResolvedSetup> {
 	if (mode === REUSE_KEY_LABEL) {
 		return planReuseExistingKey(options);
 	}
+	if (mode === REMOVE_KEY_LABEL) {
+		return planRemoveExistingKey(options);
+	}
 	return planInteractiveNewProvider(options, providers);
+}
+
+function isResolvedRemoval(plan: ResolvedSetup | ResolvedRemoval): plan is ResolvedRemoval {
+	return "action" in plan && plan.action === "remove";
 }
 
 function printPlanSummary(plan: ResolvedSetup): void {
@@ -855,6 +926,44 @@ function printPlanSummary(plan: ResolvedSetup): void {
 		row(writesKeyRegistry ? "+" : "=", "key registry", writesKeyRegistry ? keyRegistryPath() : "(unchanged)"),
 	);
 	console.log(row(plan.writeProjectSettings ? "+" : "=", "project defaults", projectDefaults));
+}
+
+async function removeProjectKey(plan: ResolvedRemoval, options: LitellmOptions): Promise<void> {
+	const configPath = findProjectLitellmConfigPath(process.cwd());
+	if (configPath === undefined) {
+		throw new Error("No project LiteLLM key config found for the current project.");
+	}
+	const settingsPath = projectSettingsPath(process.cwd());
+	const currentConfig = readJsonObjectFile(configPath);
+	const currentSettings = readJsonObjectFile(settingsPath);
+	const nextConfig = removeLitellmProjectKeyConfig(currentConfig, plan.provider);
+	const nextSettings = removeLitellmProjectSettings(currentSettings, plan.provider);
+
+	console.log("");
+	console.log(titleLine(options.dryRun ? "LiteLLM key removal (dry run)" : "LiteLLM key removal"));
+	console.log(row("=", "provider", plan.provider));
+	console.log(row("=", "key label", plan.keyEnv));
+	console.log(row("-", "project key", configPath));
+	if (currentSettings !== null) {
+		console.log(row("-", "project model settings", settingsPath));
+	}
+	console.log(row("=", "shared provider/models", "unchanged"));
+	console.log(row("=", "global auth and key registry", "unchanged"));
+	console.log(dim("This detaches the key from this project; it does not revoke the remote LiteLLM key."));
+
+	if (options.dryRun) {
+		console.log("Run without --dry-run to remove the project key.");
+		return;
+	}
+	if (isInteractive(options) && !(await askYesNo("Remove this project key?", false))) {
+		console.log("Skipped. No files were changed.");
+		return;
+	}
+	writeJsonFile(configPath, nextConfig);
+	if (currentSettings !== null) {
+		writeJsonFile(settingsPath, nextSettings);
+	}
+	console.log("\nDone. LiteLLM key was detached from this project.");
 }
 
 async function writePlan(plan: ResolvedSetup): Promise<void> {
@@ -937,6 +1046,10 @@ function writeAuthEntry(provider: string, keyEnv: string, keyValue: string): voi
 
 async function configure(options: LitellmOptions): Promise<void> {
 	const plan = await planSetup(options);
+	if (isResolvedRemoval(plan)) {
+		await removeProjectKey(plan, options);
+		return;
+	}
 	const currentAuth = readJsonObjectFile(authJsonPath());
 	if (currentAuth !== null && currentAuth[plan.provider] !== undefined) {
 		throw new Error(
