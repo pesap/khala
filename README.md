@@ -132,8 +132,6 @@ for an entity; the complete history remains available for review and recovery.
 - The packaged Herdr skill teaches agents to inspect and control Herdr panes safely.
 - Git worktrees provide Executor isolation.
 - The Archive is stored as inspectable JSONL rather than hidden in a service.
-- `khala litellm` registers a LiteLLM-compatible provider directly in Pi's own
-  config so its models become selectable for every Khala role.
 
 ## Pi tools
 
@@ -190,10 +188,6 @@ wizard writes global settings to `~/.pi/agent/khala.json`; use
 configuration. The explicit `setup` command is equivalent. `--silent` hides npm
 installation diagnostics while preserving Khala output. GitHub `npx` installs
 run the TypeScript source directly and do not compile Khala during installation.
-
-If your models run behind a LiteLLM proxy, run `npx --yes --silent
-github:pesap/khala litellm` to register it as a Pi provider before running
-the Khala setup wizard — see [LiteLLM setup](docs/litellm-setup.md).
 
 ### From a checkout
 
@@ -333,8 +327,6 @@ Conclave session and can change priority only for peer conflict.
   User overrides, and failure semantics.
 - [Supervision monitor](docs/supervision-monitor.md) — minimum monitor and
   headless Executor/Observer surfaces.
-- [LiteLLM setup](docs/litellm-setup.md) — register a LiteLLM-compatible Pi
-  provider with `khala litellm`.
 - [Work template](templates/khala-work.md) — the structured request format.
 - [Pull Request template](templates/pull-request.md) — the bundled Executor PR description format.
 - [System prompts](system-prompts/) — role behavior and constraints.

@@ -43,7 +43,7 @@ const MODEL_LINE_SEPARATOR = /\r?\n/;
 const MODEL_COLUMN_SEPARATOR = /\s+/;
 const MODEL_HEADER = /^provider\s+model\b/i;
 const NO_MODELS_HEADER = /^no models/i;
-const MODEL_SUMMARY = /^litellm\s+\(/i;
+const PROVIDER_SUMMARY = /^[A-Za-z0-9._:-]+\s+\(/i;
 const MIN_MODEL_COLUMNS = 5;
 const MODEL_TRAILING_COLUMNS = 3;
 const MODEL_TRAILING_COLUMNS_WITH_IMAGES = 4;
@@ -100,11 +100,9 @@ function printUsage(): void {
 Usage:
   khala [flags]
   khala setup [flags]
-  khala litellm [flags]
   khala --help
 
 The setup wizard writes khala.json for the global Pi installation by default.
-Run \`khala litellm --help\` to register a LiteLLM-compatible Pi provider.
 
 Flags:
   -l, --project       Write .pi/khala.json in the current project
@@ -168,7 +166,7 @@ function parseModelListOutput(stdout: string): string[] {
 			trimmed.length === 0 ||
 			MODEL_HEADER.test(trimmed) ||
 			NO_MODELS_HEADER.test(trimmed) ||
-			MODEL_SUMMARY.test(trimmed)
+			PROVIDER_SUMMARY.test(trimmed)
 		) {
 			continue;
 		}
