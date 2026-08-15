@@ -421,13 +421,13 @@ function registerKhalaSessionEvents(
 ): void {
 	pi.on("session_start", (_event, context) => {
 		settleStaleDirectUserAssessments(pi, context);
+		registerLaunchedAgent(pi, context);
 		const role = readSessionRole(context);
 		const dedicatedConclave = isDedicatedConclaveSession(context) && role === KhalaRole.conclave;
 		registerRoleKhalaArchiveRead(pi, readSessionRole, role);
 		setRoleActiveTools(pi, role, dedicatedConclave);
 		queueMicrotask(() => setRoleActiveTools(pi, role, dedicatedConclave));
-		registerLaunchedAgent(pi, context);
-		setKhalaStatus(context, readSessionRole(context));
+		setKhalaStatus(context, role);
 		if (!isDedicatedConclaveSession(context)) {
 			conclaveCoordinator.resume(context.cwd, isTrustedProject(context));
 		}

@@ -40,6 +40,7 @@ function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}
 		registerFlag() {},
 		registerShortcut() {},
 		registerTool(tool) {
+			hooks.registerTool?.(tool);
 			tools.set(tool.name, tool);
 			if (!hasExplicitActiveTools) {
 				activeTools.add(tool.name);
@@ -248,6 +249,71 @@ test("role activation preserves explicit Pi tool exclusions", () => {
 	try {
 		const { pi } = startRoleSession(root, "executor", ["read", "khala_read_archive"]);
 		assert.deepEqual(pi.getActiveTools(), ["read", "khala_read_archive"]);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("launched Executor and Observer sessions activate role tools on first startup", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-launched-role-tools-"));
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	try {
+		for (const [kind, expected] of [
+			["executor", ["khala_read_archive", "khala_signal"]],
+			["observer", ["khala_read_archive", "khala_record_learning"]],
+		]) {
+			const tools = new Map();
+			const events = new Map();
+			const branch = [];
+			let archiveRegistrations = 0;
+			const flags = new Map([
+				["khala-work-id", `${kind}-work`],
+				["khala-execution-id", `${kind}-execution`],
+				["khala-project-path", join(root, kind)],
+			]);
+			if (kind === "observer") {
+				flags.set("khala-agent-kind", "observer");
+			}
+			const pi = createPiStub(new Map(), tools, flags, {
+				events,
+				appendEntry(type, data) {
+					branch.push({ type: "custom", customType: type, data });
+				},
+				registerTool(tool) {
+					if (tool.name === "khala_read_archive") {
+						archiveRegistrations += 1;
+					}
+				},
+			});
+			createExtension(pi);
+			events.get("session_start")({}, {
+				cwd: join(root, kind, "sandbox"),
+				isProjectTrusted: () => false,
+				sessionManager: {
+					getBranch: () => branch,
+					getEntries: () => branch,
+					getSessionFile: () => undefined,
+					getSessionName: () => undefined,
+				},
+				ui: { theme: { fg: (_color, text) => text }, setStatus() {} },
+			});
+
+			assert.deepEqual(
+				pi.getActiveTools().filter((name) => name.startsWith("khala_")).sort(),
+				expected,
+				`${kind} tool inventory at session_start`,
+			);
+			await Promise.resolve();
+			assert.deepEqual(
+				pi.getActiveTools().filter((name) => name.startsWith("khala_")).sort(),
+				expected,
+				`${kind} tool inventory after startup`,
+			);
+			assert.equal(tools.get("khala_read_archive").parameters.required?.includes("workId") ?? false, false);
+			assert.equal(archiveRegistrations, 2);
+			assert.ok(branch.some((entry) => entry.customType === `khala-${kind}`));
+		}
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
