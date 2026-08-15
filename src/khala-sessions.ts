@@ -1,13 +1,24 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: The session projection intentionally keeps all role and review state in one roster pass.
 // biome-ignore-all lint/style/noTernary: Optional monitor fields keep the existing row projection shape stable.
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { relative } from "node:path";
-import type { ExtensionContext, FileEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
-import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
+import { StringDecoder } from "node:string_decoder";
+import type { ExtensionContext, FileEntry } from "@earendil-works/pi-coding-agent";
+import { getArchivePath } from "./khala-archive.js";
 import { createArchiveSnapshot, projectMissions } from "./khala-archive-projections.js";
-import { LauncherName, type LauncherNameValue, loadKhalaConfig } from "./khala-config.js";
+import {
+	ConfigScope,
+	getKhalaConfigPath,
+	LauncherName,
+	type LauncherNameValue,
+	loadKhalaConfig,
+} from "./khala-config.js";
 import { type ExecutorRecord, ExecutorStatus } from "./khala-model.js";
-import { type KhalaExecutionMonitor, projectExecutionMonitor } from "./khala-supervision-projection.js";
+import {
+	CONCLAVE_MONITOR_ENTRY_TYPES,
+	type KhalaExecutionMonitor,
+	projectExecutionMonitor,
+} from "./khala-supervision-projection.js";
 
 const KhalaSessionState = {
 	input: "input",
@@ -47,14 +58,171 @@ interface KhalaSessionSource {
 }
 type ConclaveSessionPathReader = (projectPath: string, projectTrusted?: boolean) => string | undefined;
 
+interface ConclaveMonitorEntryReader {
+	read: (path: string | undefined) => readonly FileEntry[];
+	needsRetry: () => boolean;
+	clearRetry: () => void;
+}
+
 function createSessionSource(
 	context: ExtensionContext,
 	readConclavePath: ConclaveSessionPathReader,
 	readUserPath: ConclaveSessionPathReader,
 ): KhalaSessionSource {
+	let cached: Readonly<{ fingerprint: string; sessions: KhalaSession[] }> | undefined;
+	const readConclaveMonitorEntries = createConclaveMonitorEntryReader();
 	return {
-		getActiveSessions: (currentPath) => buildSessionList(context, currentPath, readConclavePath, readUserPath),
+		getActiveSessions: (currentPath) => {
+			const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+			const conclavePath = readConclavePath(context.cwd, projectTrusted);
+			const mappedUserPath = readUserPath(context.cwd, projectTrusted);
+			const userPath = mappedUserPath ?? context.sessionManager.getSessionFile() ?? "";
+			const fingerprint = createSessionListFingerprint({
+				context,
+				currentPath,
+				projectTrusted,
+				conclavePath,
+				userPath,
+			});
+			if (cached?.fingerprint === fingerprint && !readConclaveMonitorEntries.needsRetry()) {
+				return cached.sessions;
+			}
+			const sessions = buildSessionList(
+				context,
+				currentPath,
+				() => conclavePath,
+				() => mappedUserPath,
+				readConclaveMonitorEntries,
+			);
+			cached = { fingerprint, sessions };
+			return sessions;
+		},
 	};
+}
+
+function createSessionListFingerprint(
+	input: Readonly<{
+		context: ExtensionContext;
+		currentPath: string;
+		projectTrusted: boolean;
+		conclavePath: string | undefined;
+		userPath: string;
+	}>,
+): string {
+	const projectConfigPath = input.projectTrusted ? getKhalaConfigPath(ConfigScope.project, input.context.cwd) : "";
+	const archivePath = getArchivePath(input.context.cwd, input.projectTrusted);
+	return [
+		input.currentPath,
+		input.projectTrusted ? "trusted" : "global",
+		getSessionIdleState(input.context) ? "idle" : "working",
+		fileFingerprint(getKhalaConfigPath(ConfigScope.global)),
+		fileFingerprint(projectConfigPath),
+		fileFingerprint(archivePath),
+		fileFingerprint(input.conclavePath ?? ""),
+		fileFingerprint(input.userPath),
+	].join("\u0000");
+}
+
+type FileVersion = Readonly<{ path: string; size: number; mtimeMs: number; ino: number }>;
+type CachedConclaveMonitorEntries = Readonly<
+	FileVersion & { entries: readonly FileEntry[]; incompleteLineStart?: number }
+>;
+type ReadConclaveEntriesResult = Readonly<{ entries: FileEntry[]; success: boolean; incompleteLineStart?: number }>;
+
+function fileFingerprint(path: string): string {
+	const version = getFileVersion(path);
+	if (version === undefined) {
+		return `${path}:unavailable`;
+	}
+	return `${version.path}:${version.size}:${version.mtimeMs}:${version.ino}`;
+}
+
+function getFileVersion(path: string): FileVersion | undefined {
+	if (path.length === 0) {
+		return;
+	}
+	try {
+		const stats = statSync(path);
+		return { path, size: stats.size, mtimeMs: stats.mtimeMs, ino: stats.ino };
+	} catch {
+		// Missing or unreadable monitor files are represented by an unavailable version.
+		// biome-ignore lint/complexity/noUselessUndefined: The explicit return satisfies the file-version reader contract.
+		return undefined;
+	}
+}
+
+function createConclaveMonitorEntryReader(): ConclaveMonitorEntryReader {
+	let cached: CachedConclaveMonitorEntries | undefined;
+	let retry = false;
+	return {
+		read: (path) => {
+			const version = getFileVersion(path ?? "");
+			if (version === undefined) {
+				retry = false;
+				return [];
+			}
+			const next = refreshConclaveMonitorEntries(cached, version);
+			if (next === undefined) {
+				retry = true;
+				return cached?.entries ?? [];
+			}
+			cached = next;
+			retry = false;
+			return cached.entries;
+		},
+		needsRetry: () => retry,
+		clearRetry: () => {
+			retry = false;
+		},
+	};
+}
+
+function refreshConclaveMonitorEntries(
+	cached: CachedConclaveMonitorEntries | undefined,
+	version: FileVersion,
+): CachedConclaveMonitorEntries | undefined {
+	// Pi persists session entries append-only. An inode change indicates an atomic
+	// replacement, which must discard the prior compact monitor projection.
+	if (cached !== undefined && cached.path === version.path && cached.ino === version.ino) {
+		if (cached.size === version.size && cached.mtimeMs === version.mtimeMs) {
+			return cached;
+		}
+		if (cached.size < version.size) {
+			return appendConclaveMonitorEntries(cached, version);
+		}
+	}
+	return readFullConclaveMonitorEntries(version);
+}
+
+function appendConclaveMonitorEntries(
+	cached: CachedConclaveMonitorEntries,
+	version: FileVersion,
+): CachedConclaveMonitorEntries | undefined {
+	const update = readConclaveEntries(version.path, cached.incompleteLineStart ?? cached.size, version.size);
+	if (!update.success) {
+		return;
+	}
+	return {
+		...version,
+		entries: [...cached.entries, ...update.entries],
+		...(update.incompleteLineStart === undefined ? {} : { incompleteLineStart: update.incompleteLineStart }),
+	};
+}
+
+function readFullConclaveMonitorEntries(version: FileVersion): CachedConclaveMonitorEntries | undefined {
+	const result = readConclaveEntries(version.path, 0, version.size);
+	if (!result.success) {
+		return;
+	}
+	return {
+		...version,
+		entries: result.entries,
+		...(result.incompleteLineStart === undefined ? {} : { incompleteLineStart: result.incompleteLineStart }),
+	};
+}
+
+function getSessionIdleState(context: ExtensionContext): boolean {
+	return typeof context.isIdle === "function" && context.isIdle();
 }
 
 function isCurrentSession(path: string, currentPath: string): boolean {
@@ -127,15 +295,20 @@ function getSessionStateLabel(state: KhalaSessionStateValue): string {
 	return "Active";
 }
 
+// biome-ignore lint/style/noMagicNumbers: 64 KiB bounds per-line scanning allocations.
+const SESSION_LINE_SCAN_BUFFER_SIZE = 64 * 1024;
+const LINE_FEED_BYTE = 10;
+
+type PersistedSessionMessage = Readonly<{ role: string; stopReason?: string }>;
+type PersistedSessionEntry = Readonly<{ type?: unknown; message?: unknown }>;
+type PersistedSessionMessageData = Readonly<{ role?: unknown; stopReason?: unknown }>;
+
 function getPersistedSessionState(path: string, role: string): KhalaSessionStateValue {
 	if (path.length === 0 || !existsSync(path)) {
 		return KhalaSessionState.working;
 	}
 	try {
-		const entries = parseSessionEntries(readFileSync(path, "utf8"));
-		const latestMessage = [...entries]
-			.reverse()
-			.find((entry): entry is SessionMessageEntry => entry.type === "message");
+		const latestMessage = readLatestSessionMessage(path);
 		if (latestMessage === undefined) {
 			return KhalaSessionState.input;
 		}
@@ -145,8 +318,116 @@ function getPersistedSessionState(path: string, role: string): KhalaSessionState
 	}
 }
 
-function getMessageSessionState(entry: SessionMessageEntry, role: string): KhalaSessionStateValue {
+interface ReverseSessionLineScan {
+	buffer?: Buffer;
+	start: number;
+	end: number;
+}
+
+function readLatestSessionMessage(path: string): PersistedSessionMessage | undefined {
+	const descriptor = openSync(path, "r");
+	try {
+		let lineEnd = statSync(path).size;
+		const scan: ReverseSessionLineScan = { start: 0, end: 0 };
+		while (lineEnd > 0) {
+			if (readSessionByte(descriptor, lineEnd - 1, scan) === LINE_FEED_BYTE) {
+				lineEnd -= 1;
+			} else {
+				const lineStart = findPreviousLineBreak(descriptor, lineEnd, scan) + 1;
+				const lineLength = lineEnd - lineStart;
+				const line = Buffer.allocUnsafe(lineLength);
+				if (readSync(descriptor, line, 0, line.length, lineStart) !== line.length) {
+					throw new Error(`Unable to read persisted session: ${path}`);
+				}
+				const message = parsePersistedSessionMessage(line.toString("utf8"));
+				if (message !== undefined) {
+					return message;
+				}
+				lineEnd = lineStart - 1;
+			}
+		}
+		// biome-ignore lint/complexity/noUselessUndefined: The explicit return satisfies the persisted-session reader contract.
+		return undefined;
+	} finally {
+		closeSync(descriptor);
+	}
+}
+
+function readSessionByte(descriptor: number, position: number, scan: ReverseSessionLineScan): number {
+	if (scan.buffer !== undefined && position >= scan.start && position < scan.end) {
+		return scan.buffer[position - scan.start] as number;
+	}
+	const byte = Buffer.allocUnsafe(1);
+	if (readSync(descriptor, byte, 0, byte.length, position) !== 1) {
+		throw new Error("Unable to scan persisted session.");
+	}
+	return byte[0] as number;
+}
+
+function findPreviousLineBreak(descriptor: number, lineEnd: number, scan?: ReverseSessionLineScan): number {
+	let position = lineEnd;
+	while (position > 0) {
+		let buffer: Buffer;
+		let bufferStart: number;
+		let length: number;
+		if (scan?.buffer !== undefined && scan.start < position && position <= scan.end) {
+			const { buffer: cachedBuffer, start } = scan;
+			buffer = cachedBuffer;
+			bufferStart = start;
+			length = position - bufferStart;
+		} else {
+			length = Math.min(SESSION_LINE_SCAN_BUFFER_SIZE, position);
+			bufferStart = position - length;
+			buffer = Buffer.allocUnsafe(length);
+			if (readSync(descriptor, buffer, 0, length, bufferStart) !== length) {
+				throw new Error("Unable to scan persisted session.");
+			}
+			if (scan !== undefined) {
+				scan.buffer = buffer;
+				scan.start = bufferStart;
+				scan.end = position;
+			}
+		}
+		for (let index = length - 1; index >= 0; index -= 1) {
+			if (buffer[index] === LINE_FEED_BYTE) {
+				return bufferStart + index;
+			}
+		}
+		position = bufferStart;
+	}
+	return -1;
+}
+
+function parsePersistedSessionMessage(line: string): PersistedSessionMessage | undefined {
+	let entry: unknown;
+	try {
+		entry = JSON.parse(line);
+	} catch {
+		// Pi skips malformed JSONL lines while loading a session, so the monitor does too.
+		return;
+	}
+	if (!isPersistedSessionEntry(entry) || entry.type !== "message") {
+		return;
+	}
 	const { message } = entry;
+	if (!isPersistedSessionMessageData(message) || typeof message.role !== "string") {
+		return;
+	}
+	if (typeof message.stopReason === "string") {
+		return { role: message.role, stopReason: message.stopReason };
+	}
+	return { role: message.role };
+}
+
+function isPersistedSessionEntry(value: unknown): value is PersistedSessionEntry {
+	return typeof value === "object" && value !== null;
+}
+
+function isPersistedSessionMessageData(value: unknown): value is PersistedSessionMessageData {
+	return typeof value === "object" && value !== null;
+}
+
+function getMessageSessionState(message: PersistedSessionMessage, role: string): KhalaSessionStateValue {
 	if (message.role !== "assistant") {
 		if (message.role === "user" || message.role === "toolResult") {
 			return KhalaSessionState.working;
@@ -177,11 +458,13 @@ function getUserSessionState(context: ExtensionContext, path: string, currentPat
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: The session projection is intentionally assembled in one read-only pass.
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The projection keeps user, Conclave, Executor, and Observer state in one read-only pass.
+// biome-ignore lint/complexity/useMaxParams: The projection receives independent storage readers at its read-model boundary.
 function buildSessionList(
 	context: ExtensionContext,
 	currentPath: string,
 	readConclavePath: ConclaveSessionPathReader,
 	readUserPath: ConclaveSessionPathReader,
+	readConclaveMonitorEntries: ConclaveMonitorEntryReader,
 ): KhalaSession[] {
 	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
 	const conclavePath = readConclavePath(context.cwd, projectTrusted);
@@ -258,7 +541,6 @@ function buildSessionList(
 	} catch {
 		// The existing session list remains usable while an incomplete lifecycle projection is repaired.
 	}
-	const conclaveEntries = readConclaveEntries(conclavePath);
 	const config = readMonitorConfig(context.cwd, projectTrusted);
 	const latestPullRequests = new Map<string, ReturnType<typeof archive.listPullRequests>[number]>();
 	for (const pullRequest of archive.listPullRequests()) {
@@ -295,14 +577,22 @@ function buildSessionList(
 			latestExecutionsByWork.set(execution.workId, execution);
 		}
 	}
-	for (const executor of [...latestExecutions.values()].filter(
+	const activeExecutions = [...latestExecutions.values()].filter(
 		(candidate) =>
 			candidate.status === ExecutorStatus.starting ||
 			candidate.status === ExecutorStatus.running ||
 			(candidate.status === ExecutorStatus.failed &&
 				latestExecutionsByWork.get(candidate.workId)?.executionId === candidate.executionId) ||
 			(candidate.status === ExecutorStatus.finished && reviewableExecutions.has(candidate.executionId)),
-	)) {
+	);
+	// Conclave transcripts can be much larger than the Archive. Their supervision
+	// entries are needed only for an Executor detail row, not an idle roster.
+	const needsConclaveMonitorEntries = activeExecutions.some((execution) => execution.kind !== "observer");
+	if (!needsConclaveMonitorEntries) {
+		readConclaveMonitorEntries.clearRetry();
+	}
+	const conclaveEntries = needsConclaveMonitorEntries ? readConclaveMonitorEntries.read(conclavePath) : [];
+	for (const executor of activeExecutions) {
 		const latestSignal = latestSignals.get(executor.executionId);
 		const state = getExecutorSessionState(executor.status, latestSignal?.kind);
 		const isObserver = executor.kind === "observer";
@@ -368,15 +658,90 @@ function buildSessionList(
 	return sessions;
 }
 
-function readConclaveEntries(path: string | undefined): readonly FileEntry[] {
-	if (path === undefined || !existsSync(path)) {
-		return [];
+// biome-ignore lint/style/noMagicNumbers: Match Pi's 1 MiB session stream buffer while retaining only monitor entries.
+const CONCLAVE_SESSION_READ_BUFFER_SIZE = 1024 * 1024;
+
+type PersistedConclaveEntry = Readonly<{ type?: unknown; customType?: unknown }>;
+
+function readConclaveEntries(path: string, startPosition: number, endPosition: number): ReadConclaveEntriesResult {
+	if (!existsSync(path)) {
+		return { entries: [], success: false };
 	}
 	try {
-		return parseSessionEntries(readFileSync(path, "utf8"));
+		const descriptor = openSync(path, "r");
+		try {
+			const decoder = new StringDecoder("utf8");
+			const buffer = Buffer.allocUnsafe(CONCLAVE_SESSION_READ_BUFFER_SIZE);
+			const entries: FileEntry[] = [];
+			let position = startPosition;
+			let pending = "";
+			while (position < endPosition) {
+				const remaining = endPosition - position;
+				const bytesRead = readSync(descriptor, buffer, 0, Math.min(buffer.length, remaining), position);
+				if (bytesRead === 0) {
+					break;
+				}
+				position += bytesRead;
+				pending += decoder.write(buffer.subarray(0, bytesRead));
+				let lineStart = 0;
+				let lineEnd = pending.indexOf("\n", lineStart);
+				while (lineEnd >= 0) {
+					const entry = parseConclaveMonitorEntry(pending.slice(lineStart, lineEnd));
+					if (entry !== undefined) {
+						entries.push(entry);
+					}
+					lineStart = lineEnd + 1;
+					lineEnd = pending.indexOf("\n", lineStart);
+				}
+				pending = pending.slice(lineStart);
+			}
+			pending += decoder.end();
+			const entry = parseConclaveMonitorEntry(pending);
+			if (entry !== undefined) {
+				entries.push(entry);
+				return { entries, success: true };
+			}
+			if (pending.trim().length === 0) {
+				return { entries, success: true };
+			}
+			return { entries, success: true, incompleteLineStart: findPreviousLineBreak(descriptor, endPosition) + 1 };
+		} finally {
+			closeSync(descriptor);
+		}
 	} catch {
-		return [];
+		return { entries: [], success: false };
 	}
+}
+
+function parseConclaveMonitorEntry(line: string): FileEntry | undefined {
+	if (line.trim().length === 0) {
+		return;
+	}
+	try {
+		const entry: unknown = JSON.parse(line);
+		if (isConclaveMonitorEntry(entry)) {
+			return entry;
+		}
+	} catch {
+		// Pi skips malformed JSONL lines while loading persisted sessions.
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: The explicit return satisfies the session-line parser contract.
+	return undefined;
+}
+
+function isConclaveMonitorEntry(value: unknown): value is FileEntry {
+	if (!isPersistedConclaveEntry(value)) {
+		return false;
+	}
+	return (
+		(value.type === "custom" || value.type === "custom_message") &&
+		typeof value.customType === "string" &&
+		CONCLAVE_MONITOR_ENTRY_TYPES.has(value.customType)
+	);
+}
+
+function isPersistedConclaveEntry(value: unknown): value is PersistedConclaveEntry {
+	return typeof value === "object" && value !== null;
 }
 
 function readMonitorConfig(

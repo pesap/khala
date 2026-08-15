@@ -19,6 +19,13 @@ steering, Coordination, lifecycle, failure, recovery, or budget evidence.
 Missing or zero pricing is `unavailable`; an overrun remains visible while work
 continues.
 
+The popup refreshes its roster only when the relevant session, Archive, or
+configuration state changes. While it is idle, it reuses the current roster and
+does not replay the persisted Conclave transcript. Active Executor details retain
+a compact projection of supervision entries and incrementally read newly
+appended session records. Replacing the Conclave session file discards that
+projection and rebuilds it from the replacement.
+
 Routine aligned assessment input and responses remain hidden from the
 interactive Conclave view but stay in the persisted Pi session. The monitor
 adds no supervision controls or keybindings. A direct User priority override is

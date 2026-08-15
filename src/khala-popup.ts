@@ -28,6 +28,7 @@ interface KhalaPopupOptions {
 class KhalaPopup implements Component {
 	private readonly container: Box;
 	private readonly sessionList: KhalaSessionList;
+	private sessions: readonly KhalaSession[];
 	private readonly summary: Text;
 	private readonly canSwitch: boolean;
 	private readonly tui: TUI;
@@ -43,6 +44,7 @@ class KhalaPopup implements Component {
 		this.container = new Box(1, 1, (line: string) => theme.bg("toolPendingBg", line));
 		this.tui = tui;
 		this.close = close;
+		this.sessions = sessions;
 		this.sessionList = new KhalaSessionList(sessions, theme, keybindings);
 		this.summary = new Text("", 1, 0);
 		this.canSwitch = onSwitch !== undefined;
@@ -60,6 +62,10 @@ class KhalaPopup implements Component {
 	}
 
 	refresh(sessions: readonly KhalaSession[]): void {
+		if (sessions === this.sessions) {
+			return;
+		}
+		this.sessions = sessions;
 		this.sessionList.updateSessions(sessions);
 		this.updateSummary(sessions.length);
 		this.tui.requestRender();

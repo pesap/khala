@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	readdirSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
@@ -191,6 +203,23 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 				launcher: "tmux",
 			}),
 		);
+		appendFileSync(
+			sessionPath,
+			`${JSON.stringify({
+				type: "custom",
+				id: "executor-budget",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				customType: "khala-supervision-budget",
+				data: {
+					executionId: "execution-1",
+					actor: "executor",
+					costUsd: 0.25,
+					thresholdUsd: 1,
+					overrun: false,
+				},
+			})}\n`,
+		);
 		appendArchiveRecord(projectPath, {
 			type: "submission",
 			workId: "work-1",
@@ -246,6 +275,60 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 		assert.equal(executorSession?.sandboxPathLabel, relative(projectPath, join(root, "sandbox")));
 		assert.equal(executorSession?.state, "working");
 		assert.equal(executorSession?.task, "Improve session roster");
+		assert.equal(executorSession?.executionMonitor?.latestTurnCost.executor.costUsd, 0.25);
+
+		const updatedBudget = JSON.stringify({
+			type: "custom",
+			id: "executor-budget-updated",
+			parentId: null,
+			timestamp: "2026-01-01T00:01:00.000Z",
+			customType: "khala-supervision-budget",
+			data: {
+				executionId: "execution-1",
+				actor: "executor",
+				costUsd: 0.5,
+				thresholdUsd: 1,
+				overrun: false,
+			},
+		});
+		const splitIndex = Math.floor(updatedBudget.length / 2);
+		appendFileSync(sessionPath, updatedBudget.slice(0, splitIndex));
+		assert.equal(
+			source
+				.getActiveSessions(sessionPath)
+				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
+			0.25,
+		);
+		appendFileSync(sessionPath, `${updatedBudget.slice(splitIndex)}\n`);
+		assert.equal(
+			source
+				.getActiveSessions(sessionPath)
+				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
+			0.5,
+		);
+
+		const fixedSessionTime = new Date("2026-01-01T00:02:00.000Z");
+		utimesSync(sessionPath, fixedSessionTime, fixedSessionTime);
+		assert.equal(
+			source
+				.getActiveSessions(sessionPath)
+				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
+			0.5,
+		);
+		const replacementSessionPath = join(root, "replacement-conclave.jsonl");
+		const sessionStats = statSync(sessionPath);
+		writeFileSync(replacementSessionPath, readFileSync(sessionPath, "utf8").replaceAll("0.5", "0.7"));
+		utimesSync(replacementSessionPath, fixedSessionTime, fixedSessionTime);
+		const replacementStats = statSync(replacementSessionPath);
+		assert.equal(replacementStats.size, sessionStats.size);
+		assert.equal(replacementStats.mtimeMs, sessionStats.mtimeMs);
+		renameSync(replacementSessionPath, sessionPath);
+		assert.equal(
+			source
+				.getActiveSessions(sessionPath)
+				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
+			0.7,
+		);
 
 		updateExecutorRecord(projectPath, "execution-1", { status: "failed" });
 		const failedExecutor = source
@@ -349,6 +432,53 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 		);
 		const busyUser = busyUserSource.getActiveSessions(userSessionPath).find((session) => session.id === "user");
 		assert.equal(busyUser?.state, "working");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Khala monitor reuses its roster until persisted state changes", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-session-roster-cache-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	const conclavePath = join(root, "conclave.jsonl");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		writeFileSync(
+			conclavePath,
+			`${JSON.stringify({ type: "session", version: 3, id: "conclave", timestamp: "2026-01-01T00:00:00.000Z" })}\n`,
+		);
+		const source = createSessionSource(
+			{
+				cwd: projectPath,
+				sessionManager: {
+					getSessionFile() {
+						return conclavePath;
+					},
+				},
+			},
+			() => conclavePath,
+			() => undefined,
+		);
+
+		const initial = source.getActiveSessions(conclavePath);
+		assert.equal(initial.find((session) => session.id === "conclave")?.state, "input");
+		assert.strictEqual(source.getActiveSessions(conclavePath), initial);
+
+		appendFileSync(
+			conclavePath,
+			`${JSON.stringify({
+				type: "message",
+				id: "assistant-message",
+				parentId: null,
+				timestamp: "2026-01-01T00:01:00.000Z",
+				message: { role: "assistant", stopReason: "stop" },
+			})}\n`,
+		);
+		const refreshed = source.getActiveSessions(conclavePath);
+		assert.notStrictEqual(refreshed, initial);
+		assert.equal(refreshed.find((session) => session.id === "conclave")?.state, "review");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
@@ -553,6 +683,7 @@ test("Khala popup refreshes its session roster while open", async () => {
 	let component;
 	let finish;
 	let customOptions;
+	let renderRequests = 0;
 	const source = {
 		getActiveSessions() {
 			return sessions;
@@ -570,15 +701,27 @@ test("Khala popup refreshes its session roster while open", async () => {
 				customOptions = options;
 				return new Promise((resolve) => {
 					finish = resolve;
-					component = factory({ requestRender() {} }, theme, popupKeybindings, finish);
+					component = factory(
+						{
+							requestRender() {
+								renderRequests += 1;
+							},
+						},
+						theme,
+						popupKeybindings,
+						finish,
+					);
 				});
 			},
 		},
 	};
 
 	const popupPromise = toggleKhalaPopup(context, source);
+	await new Promise((resolve) => setTimeout(resolve, 1100));
+	assert.equal(renderRequests, 0);
 	sessions = [userSession, executorSession];
 	await new Promise((resolve) => setTimeout(resolve, 1100));
+	assert.equal(renderRequests, 1);
 	const renderedPopup = component.render(80).join("\n");
 	assert.doesNotMatch(renderedPopup, /CURRENT CONTEXT|AGENTS · DISPLAY ONLY/);
 	assert.match(renderedPopup, /Executor/);

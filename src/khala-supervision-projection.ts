@@ -31,6 +31,15 @@ const SUPERVISION_ENTRY_TYPES = {
 	actionComplete: "khala-supervision-action-complete",
 } as const;
 
+const CONCLAVE_MONITOR_ENTRY_TYPES: ReadonlySet<string> = new Set([
+	SUPERVISION_ENTRY_TYPES.budget,
+	SUPERVISION_ENTRY_TYPES.critical,
+	SUPERVISION_ENTRY_TYPES.outage,
+	SUPERVISION_ENTRY_TYPES.actionStart,
+	SUPERVISION_ENTRY_TYPES.actionComplete,
+	"khala-supervision-critical",
+]);
+
 type SupervisionRuntimeState = "starting" | "running" | "finished" | "failed";
 type SupervisionConnectionState = "connected" | "unavailable" | "recovering" | "settled";
 type CostObservation = Readonly<{
@@ -662,4 +671,4 @@ export type {
 	SupervisionRuntimeState,
 	UpstreamMonitorFact,
 };
-export { projectExecutionMonitor };
+export { CONCLAVE_MONITOR_ENTRY_TYPES, projectExecutionMonitor };
