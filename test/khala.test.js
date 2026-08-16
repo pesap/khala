@@ -130,6 +130,7 @@ test("package manifest declares source extensions and exposes Khala commands", (
 	assert.equal(manifest.dependencies.typescript, undefined);
 	assert.equal(manifest.devDependencies.typescript, "5.9.3");
 	for (const [dependency, version] of [
+		["@earendil-works/pi-ai", "0.83.0"],
 		["@earendil-works/pi-coding-agent", "0.83.0"],
 		["@earendil-works/pi-tui", "0.83.0"],
 		["typebox", "1.3.7"],
@@ -142,9 +143,11 @@ test("package manifest declares source extensions and exposes Khala commands", (
 	assert.deepEqual(manifest.pi.extensions, [
 		"./src/index.ts",
 		"./extensions/pi-review/review.ts",
+		"./extensions/pi-clarify/clarify.ts",
 	]);
 	assert.deepEqual(manifest.pi.prompts, ["./prompts"]);
-	assert.deepEqual(manifest.pi.skills, ["./skills/khala", "./skills/khala-executor", "./skills/herdr"]);
+	assert.deepEqual(manifest.pi.skills, ["./skills/khala", "./skills/khala-executor"]);
+	assert.equal(manifest.files.includes("skills/herdr"), false);
 	for (const extensionPath of manifest.pi.extensions) {
 		assert.ok(readFileSync(new URL(`../${extensionPath}`, import.meta.url)).length > 0);
 	}
@@ -154,7 +157,7 @@ test("package manifest declares source extensions and exposes Khala commands", (
 	const pullRequestTemplate = readFileSync(new URL("../templates/pull-request.md", import.meta.url), "utf8");
 	assert.equal(pullRequestTemplate.includes("<!-- Work: <!--"), false);
 	assert.doesNotMatch(pullRequestTemplate.replaceAll(/<!--.*?-->/gs, ""), /Closes\s*$/m);
-	for (const skillName of ["khala", "khala-executor", "herdr"]) {
+	for (const skillName of ["khala", "khala-executor"]) {
 		assert.ok(readFileSync(new URL(`../skills/${skillName}/SKILL.md`, import.meta.url)).length > 0);
 	}
 

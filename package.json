@@ -17,7 +17,8 @@
   "pi": {
     "extensions": [
       "./src/index.ts",
-      "./extensions/pi-review/review.ts"
+      "./extensions/pi-review/review.ts",
+      "./extensions/pi-clarify/clarify.ts"
     ],
     "prompts": [
       "./prompts"
@@ -27,8 +28,7 @@
     ],
     "skills": [
       "./skills/khala",
-      "./skills/khala-executor",
-      "./skills/herdr"
+      "./skills/khala-executor"
     ]
   },
   "exports": {
@@ -44,13 +44,12 @@
     "assets",
     "skills/khala",
     "skills/khala-executor",
-    "skills/herdr",
     "src"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
-    "lint": "biome check src extensions/pi-review",
+    "lint": "biome check src extensions/pi-review extensions/pi-clarify",
     "lint:fix": "biome check --write",
     "typecheck": "tsc --noEmit",
     "check": "npm run lint && npm run typecheck",
@@ -73,17 +72,22 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.4",
+    "@earendil-works/pi-ai": "0.83.0",
     "@earendil-works/pi-coding-agent": "0.83.0",
     "@earendil-works/pi-tui": "0.83.0",
     "typebox": "1.3.7",
     "typescript": "5.9.3"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     },

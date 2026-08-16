@@ -6,7 +6,7 @@
 		"useIgnoreFile": false
 	},
 	"files": {
-		"includes": ["src/**/*.ts", "extensions/pi-review/**/*.ts"],
+		"includes": ["src/**/*.ts", "extensions/pi-review/**/*.ts", "extensions/pi-clarify/**/*.ts"],
 		"ignoreUnknown": false,
 		"maxSize": 1048576
 	},
@@ -68,7 +68,7 @@
 			}
 		},
 		{
-			"includes": ["extensions/pi-review/**/*.ts"],
+			"includes": ["extensions/pi-review/**/*.ts", "extensions/pi-clarify/**/*.ts"],
 			"linter": { "enabled": false }
 		},
 		{

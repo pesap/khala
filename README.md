@@ -126,10 +126,10 @@ for an entity; the complete history remains available for review and recovery.
 - `/khala-demo` launches a three-lane lifecycle demonstration.
 - `/khala` or `Alt+K` opens the session monitor.
 - The bundled `pi-review` extension adds `/review` and `/end-review` for scoped code reviews.
+- The bundled `pi-clarify` extension rewrites rough prompts with `/clarify` or the `-clarify` message marker using the configured Conclave model.
 - Observers record repository Learning before an Executor starts when context is
   incomplete.
 - Zellij, tmux, and Herdr launchers are supported.
-- The packaged Herdr skill teaches agents to inspect and control Herdr panes safely.
 - Git worktrees provide Executor isolation.
 - The Archive is stored as inspectable JSONL rather than hidden in a service.
 
@@ -200,7 +200,7 @@ pi -e .
 ```
 
 Khala is a Pi package. The package manifest registers the extension, prompts,
-themes, and the Khala-owned role skills (`khala`, `khala-executor`, and `herdr`).
+themes, and the Khala-owned role skills (`khala` and `khala-executor`).
 Pi provides Khala's extension APIs as host peers, so a Git install installs only
 Khala's own runtime dependencies rather than another Pi runtime.
 
@@ -330,7 +330,7 @@ Conclave session and can change priority only for peer conflict.
 - [Work template](templates/khala-work.md) — the structured request format.
 - [Pull Request template](templates/pull-request.md) — the bundled Executor PR description format.
 - [System prompts](system-prompts/) — role behavior and constraints.
-- [Bundled Pi extensions](extensions/) — extensions shipped with Khala, including `pi-review`.
+- [Bundled Pi extensions](docs/pi-extensions.md) — extensions shipped with Khala, including `pi-review` and `pi-clarify`.
 
 ## Development
 
