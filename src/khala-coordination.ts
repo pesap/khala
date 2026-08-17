@@ -123,14 +123,16 @@ function upstreamBaseGraphKey(base: UpstreamExecutionBase): string {
 // The graph lives only for the coordination operation that requested it; nothing is cached globally.
 function buildCoordinationDependencyGraph(projectPath: string, projectTrusted = false): CoordinationDependencyGraph {
 	const records = listArchiveRecords(projectPath, projectTrusted);
-	const missionsById = new Map<string, MissionRecord>();
+	// Replicate readCurrentMission's work-scoped selection: the latest non-superseded Mission per Work.
+	const currentMissionByWorkId = new Map<string, string>();
 	for (const projection of projectMissionsFromRecords(records)) {
-		missionsById.set(projection.mission.missionId, projection.mission);
+		if (projection.state === "superseded") {
+			continue;
+		}
+		currentMissionByWorkId.set(projection.mission.workId, projection.mission.missionId);
 	}
-	const isCurrentMission = (workId: string, missionId: string): boolean => {
-		const mission = missionsById.get(missionId);
-		return mission !== undefined && mission.workId === workId;
-	};
+	const isCurrentMission = (workId: string, missionId: string): boolean =>
+		currentMissionByWorkId.get(workId) === missionId;
 	const executions = projectRecordsFromRecords(records, "execution", isExecutorRecord);
 	const coordinations = projectCoordinationsFromRecords(records);
 

@@ -684,3 +684,63 @@ test("normal agent_settled uses one bounded handoff, then fails without a second
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the dependency graph excludes dependents whose Mission is superseded", () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-graph-superseded-"));
+  try {
+    const now = new Date().toISOString();
+    const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+    const base = { kind: "upstream-execution", workId: "upstream-work", missionId: "upstream-mission", executionId: "upstream-execution", remote: "origin", branch: "feature/upstream", headCommit: HEAD_A };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "dependent-work", payload: { mandateId: "dependent-mandate", workId: "dependent-work", revision: 1, sourceSubmissionRecordId: "submission-dependent", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "dependent-work", payload: { missionId: "superseded-mission", workId: "dependent-work", mandateId: "dependent-mandate", assignment, assignedParticipantId: "participant-dependent", createdAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "dependent-work", payload: { missionId: "current-mission", workId: "dependent-work", mandateId: "dependent-mandate", predecessorMissionId: "superseded-mission", causedByVerdictId: "retry-verdict", assignment, assignedParticipantId: "participant-dependent", createdAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "signal", workId: "dependent-work", executionId: "dependent-execution", payload: { signalId: "signal-retry", workId: "dependent-work", executionId: "dependent-execution", executorName: "E", missionId: "superseded-mission", participantId: "participant-dependent", kind: "blocked", summary: "Blocked.", evidence: ["e"], observedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "verdict", workId: "dependent-work", executionId: "dependent-execution", payload: { workId: "dependent-work", executionId: "dependent-execution", signalId: "signal-retry", missionId: "superseded-mission", governingMandateId: "dependent-mandate", issuedByParticipantId: "conclave", decision: "retry", reason: "Retry.", verdictId: "retry-verdict", issuedAt: now, retryHandoff: { failedCriteria: ["A"], completedWork: ["B"], requiredChanges: ["C"], nonGoals: ["D"], validation: ["E"] }, successorAssignment: assignment } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "dependent-work", executionId: "dependent-execution", payload: { executionId: "dependent-execution", workId: "dependent-work", executorName: "dependent-execution", kind: "executor", participantId: "participant-dependent", purpose: { kind: "mission", missionId: "superseded-mission" }, missionId: "superseded-mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "session-dependent", sessionPath: join(root, "dependent.jsonl"), promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, upstreamBase: base, status: "running", startedAt: now } });
+    const dependents = directRevisionDependents(root, base);
+    assert.deepEqual(dependents, [], "a dependent on a superseded Mission must not be projected");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the dependency graph isolates dependents by remote, branch, and head", () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-graph-identity-"));
+  try {
+    const now = new Date().toISOString();
+    const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+    const base = { kind: "upstream-execution", workId: "upstream-work", missionId: "upstream-mission", executionId: "upstream-execution", remote: "origin", branch: "feature/upstream", headCommit: HEAD_A };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "dependent-work", payload: { mandateId: "dependent-mandate", workId: "dependent-work", revision: 1, sourceSubmissionRecordId: "submission-dependent", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "dependent-work", payload: { missionId: "dependent-mission", workId: "dependent-work", mandateId: "dependent-mandate", assignment, assignedParticipantId: "participant-dependent", createdAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "dependent-work", executionId: "dependent-execution", payload: { executionId: "dependent-execution", workId: "dependent-work", executorName: "dependent-execution", kind: "executor", participantId: "participant-dependent", purpose: { kind: "mission", missionId: "dependent-mission" }, missionId: "dependent-mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "session-dependent", sessionPath: join(root, "dependent.jsonl"), promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, upstreamBase: { ...base, branch: "feature/other" }, status: "running", startedAt: now } });
+    const dependents = directRevisionDependents(root, base);
+    assert.deepEqual(dependents, [], "a dependent pinned to a different branch must not match the base");
+    const decision = {
+      coordinationId: "coordination-other",
+      actionId: "decision-other",
+      phase: "decision",
+      relation: "dependency",
+      workId: "dependent-work",
+      missionId: "dependent-mission",
+      executionId: "dependent-execution",
+      selectedWorkId: "upstream-work",
+      selectedMissionId: "upstream-mission",
+      selectedExecutionId: "upstream-execution",
+      relatedWorkId: "upstream-work",
+      relatedMissionId: "upstream-mission",
+      relatedExecutionId: "upstream-execution",
+      upstreamWorkId: "upstream-work",
+      upstreamMissionId: "upstream-mission",
+      upstreamExecutionId: "upstream-execution",
+      remote: "origin",
+      branch: "feature/upstream",
+      reason: "Exact upstream base.",
+    };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "coordination", workId: "dependent-work", executionId: "dependent-execution", payload: decision });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "coordination", workId: "dependent-work", executionId: "dependent-execution", payload: { ...decision, actionId: "release-other", phase: "release", upstreamHead: HEAD_B, releasedExecutionId: "dependent-execution", remoteObservation: { remote: "origin", branch: "feature/upstream", headCommit: HEAD_B, observedAt: now } } });
+    const afterRelease = directRevisionDependents(root, base);
+    assert.deepEqual(afterRelease, [], "a coordination pinned to a different upstream head must not match the base");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
