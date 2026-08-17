@@ -172,7 +172,10 @@ session.
 
 ## Install
 
-Khala requires Node.js 22.19.0 or newer.
+Khala requires Node.js 22.19.0 or newer and is validated on Node.js 26.7.0 with
+npm 11.19.0. On that toolchain a clean install completes with no install-script
+warnings and a clean `npm audit --audit-level=high` for both the production and
+the complete dependency tree.
 
 ### From GitHub
 
@@ -187,7 +190,9 @@ wizard writes global settings to `~/.pi/agent/khala.json`; use
 `npx --yes --silent github:pesap/khala --dry-run` to preview the resulting
 configuration. The explicit `setup` command is equivalent. `--silent` hides npm
 installation diagnostics while preserving Khala output. GitHub `npx` installs
-run the TypeScript source directly and do not compile Khala during installation.
+run the TypeScript source directly and do not compile Khala during installation
+and install only Khala's runtime dependencies, so they never install the
+upstream packages that carry lifecycle scripts.
 
 ### From a checkout
 
@@ -203,6 +208,44 @@ Khala is a Pi package. The package manifest registers the extension, prompts,
 themes, and the Khala-owned role skills (`khala` and `khala-executor`).
 Pi provides Khala's extension APIs as host peers, so a Git install installs only
 Khala's own runtime dependencies rather than another Pi runtime.
+
+### Dependency policy
+
+The `allowScripts` field in `package.json` narrowly approves the only two
+lifecycle scripts that appear in the resolved dependency tree, after review:
+
+- `@google/genai@1.52.0` — its `preinstall` is `echo 'preinstall: no-op'`; the
+  published tarball ships prebuilt `dist/` and no `scripts/` directory.
+- `protobufjs@7.6.5` — its `postinstall` runs `node scripts/postinstall`, a
+  compatibility check that only warns when the *root* project pins a direct
+  protobufjs dependency with a mismatched version scheme. Khala installs
+  protobufjs transitively, so the script exits without doing anything; the
+  tarball ships prebuilt `dist/`.
+
+Both scripts are covered by exact-version entries, so a fresh `npm install` from
+a checkout completes without an npm `install-scripts` warning. New dependencies
+that ship lifecycle scripts must be reviewed and either added here as an
+exact-version entry or denied explicitly; the package regression test fails when
+an install-script package is not covered by the policy.
+
+`node-domexception@1.0.0` remains in the dev-only dependency tree and npm prints
+its upstream deprecation warning (`Use your platform's native DOMException
+instead`). It is an upstream limitation, not a Khala defect: the chain
+`@earendil-works/pi-ai` -> `@google/genai` (pi-ai 0.83.x and 0.84.x both pin
+exactly `1.52.0`) -> `google-auth-library` `^10.3.0` (latest 10.x and 11.x both
+depend on `gaxios` `^7`) -> `gaxios` (latest `7.3.1`) -> `node-fetch` `^3.3.2`
+(latest 3.x) -> `formdata-polyfill` `^4.0.10` (latest) -> `node-domexception`
+`^1.0.0` (the only published version, marked deprecated upstream). Every package
+in the chain is at its newest compatible version, and `node-domexception` is a
+hard runtime requirement of `formdata-polyfill`, so removing it would require an
+unsafe override. Khala runs on Node.js 22.19.0+, where native `DOMException` is
+available and the polyfill path is unused.
+
+Direct dependencies and devDependencies are exact-pinned and `package-lock.json`
+matches `package.json`. The `brace-expansion` override pins the fixed `5.0.9`
+release to close the advisory range GHSA-rgw5-rvv9-x895. `npm audit
+--audit-level=high` reports zero vulnerabilities for both
+`npm audit --omit=dev` and the complete tree.
 
 ## Quick start
 
