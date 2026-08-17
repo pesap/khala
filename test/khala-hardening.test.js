@@ -1564,6 +1564,10 @@ test("pi-review PR resolution failure clears the checkout and leaks no state", a
 	assert.equal(appended.filter((entry) => entry.type === "review-session").length, 0, "no state record on failure");
 	assert.ok(execCalls.some((call) => call[0] === "git" && call[1] === "switch" && call[2] === "main"));
 	assert.ok(notices.some((notice) => /does not match GitHub head/.test(notice.message)));
+	assert.ok(
+		notices.some((notice) => notice.message === "Review cancelled"),
+		"the selector stub must cancel deterministically and settle the handler",
+	);
 
 	// A later fresh review must not inherit the failed PR's checkout.
 	await commands.get("review").handler("uncommitted", ctx);
@@ -1573,4 +1577,11 @@ test("pi-review PR resolution failure clears the checkout and leaks no state", a
 	assert.equal(stateRecords[0].data.originId, "leaf-1");
 	assert.equal("checkout" in stateRecords[0].data, false, "the failed PR checkout must not leak into a later review");
 	assert.equal(widgets.filter((widget) => widget.widget !== undefined).length, 1);
+	assert.equal(
+		appended.some(
+			(entry) => entry.type === "review-session" && entry.data.active === true && !entry.data.originId,
+		),
+		false,
+		"every persisted active state must carry a non-empty originId",
+	);
 });
