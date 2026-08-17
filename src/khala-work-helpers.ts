@@ -83,16 +83,33 @@ function ensureMission(input: {
 	projectTrusted: boolean;
 	workId: string;
 	mandate: MandateRecord;
-	existingMission: MissionRecord | undefined;
 	assignedParticipantId?: string;
+	readSubmission?: (projectPath: string, workId: string, projectTrusted?: boolean) => SubmissionSnapshot | undefined;
 }): MissionRecord {
-	if (input.existingMission !== undefined) {
-		return input.existingMission;
-	}
+	// The create/reuse/reject decision happens inside the work lock against the current Archive
+	// state, so a concurrent retry or launch cannot reuse a superseded Mission or create a duplicate.
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The locked decision re-verifies submission, mandate, and Mission state before acting.
 	return withArchiveLock(input.projectPath, input.projectTrusted, () => {
+		if (input.readSubmission !== undefined) {
+			const current = input.readSubmission(input.projectPath, input.workId, input.projectTrusted);
+			if (
+				current === undefined ||
+				current.submission.status !== WorkSubmissionStatus.admitted ||
+				current.submission.mandateId !== input.mandate.mandateId
+			) {
+				throw new Error(`Work Submission ${input.workId} changed before Mission materialization.`);
+			}
+		}
+		const currentMandate = readMandate(input.projectPath, input.mandate.mandateId, input.projectTrusted);
+		if (currentMandate === undefined) {
+			throw new Error(`Mandate ${input.mandate.mandateId} is unavailable for Work ${input.workId}.`);
+		}
 		const current = readCurrentMission(input.projectPath, input.workId, input.projectTrusted);
 		if (current?.state === "retry-pending") {
 			throw new Error(`Mission ${current.mission.missionId} has an incomplete Retry; recovery is required.`);
+		}
+		if (current !== undefined && current.state !== "current") {
+			throw new Error(`Mission ${current.mission.missionId} is ${current.state} and cannot be materialized.`);
 		}
 		if (current !== undefined) {
 			return current.mission;
@@ -101,8 +118,8 @@ function ensureMission(input: {
 		const mission: MissionRecord = {
 			missionId,
 			workId: input.workId,
-			mandateId: input.mandate.mandateId,
-			assignment: input.mandate.terms,
+			mandateId: currentMandate.mandateId,
+			assignment: currentMandate.terms,
 			assignedParticipantId: input.assignedParticipantId ?? `executor:${missionId}`,
 			createdAt: new Date().toISOString(),
 		};

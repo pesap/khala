@@ -100,7 +100,8 @@ function materializeMission(
 		projectTrusted,
 		workId,
 		mandate,
-		existingMission: current?.mission,
+		readSubmission: (projectPath, requestedWorkId, trusted) =>
+			dependencies.getSubmission(projectPath, requestedWorkId, trusted),
 	});
 	return {
 		content: [{ type: "text", text: `Mission ${mission.missionId} materialized without an Executor.` }],

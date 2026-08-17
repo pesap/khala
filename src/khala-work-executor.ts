@@ -109,16 +109,17 @@ type PreparedExecutorRuntime = Readonly<{
 function prepareExecutorRuntime(
 	workId: string,
 	context: ExtensionContext,
-	_dependencies: KhalaWorkDependencies,
+	dependencies: KhalaWorkDependencies,
 	prepared: PreparedExecutionLaunch,
 ): PreparedExecutorRuntime | KhalaWorkLaunchResult {
-	const { projectTrusted, currentProjection, mandate } = prepared;
+	const { projectTrusted, mandate } = prepared;
 	const mission = ensureMission({
 		projectPath: context.cwd,
 		projectTrusted,
 		workId,
 		mandate,
-		existingMission: currentProjection?.mission,
+		readSubmission: (projectPath, requestedWorkId, trusted) =>
+			dependencies.getSubmission(projectPath, requestedWorkId, trusted),
 	});
 	const participantId = mission.assignedParticipantId;
 	const executionId = nanoid();

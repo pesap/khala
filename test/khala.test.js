@@ -8,7 +8,7 @@ import { DefaultResourceLoader, initTheme } from "@earendil-works/pi-coding-agen
 import { visibleWidth } from "@earendil-works/pi-tui";
 import createExtension from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
-import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
+import { appendArchiveRecord, getArchivePath, listArchiveRecords, withArchiveLock } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { listExecutionRecords, readMandate } from "../dist/src/khala-archive-projections.js";
 import { createConclaveCoordinator, enqueueConclaveWake, recoverPendingSubmissions } from "../dist/src/khala-conclave.js";
@@ -3656,6 +3656,107 @@ test("a persisted malformed v2 retry Verdict fails closed on read", () => {
 		);
 		assert.throws(() => listArchiveRecords(projectPath), /Invalid Khala Archive record/);
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("concurrent Mission materialization creates exactly one Mission under the work lock", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-mission-race-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		const work = {
+			title: "Race test",
+			objective: "Materialize one Mission.",
+			context: "The required repository context is known.",
+			scope: "The temporary test project.",
+			acceptanceCriteria: ["Exactly one Mission exists."],
+			constraints: [],
+			plan: ["Read the Archive."],
+			validation: ["Assert the projection."],
+		};
+		storage.submit({ workId: "race-work", projectPath, work });
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+			},
+		};
+		const admit = await tools
+			.get("khala_admit_work")
+			.execute("admit", { workId: "race-work" }, null, null, conclaveContext);
+		assert.equal(admit.details.status, "admitted");
+		const [first, second] = await Promise.all([
+			tools
+				.get("khala_launch_execution")
+				.execute("materialize-1", { workId: "race-work", mode: "materialize" }, null, null, conclaveContext),
+			tools
+				.get("khala_launch_execution")
+				.execute("materialize-2", { workId: "race-work", mode: "materialize" }, null, null, conclaveContext),
+		]);
+		assert.equal(first.details.missionId, second.details.missionId);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 1);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Mission materialization re-reads Submission and Mandate inside the work lock", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-mission-reread-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		const work = {
+			title: "Reread test",
+			objective: "Reject stale Mission materialization.",
+			context: "The required repository context is known.",
+			scope: "The temporary test project.",
+			acceptanceCriteria: ["The stale launch is rejected."],
+			constraints: [],
+			plan: ["Read the Archive."],
+			validation: ["Assert the rejection."],
+		};
+		storage.submit({ workId: "reread-work", projectPath, work });
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+			},
+		};
+		await tools.get("khala_admit_work").execute("admit", { workId: "reread-work" }, null, null, conclaveContext);
+		const admitted = storage.getSubmission(projectPath, "reread-work").submission;
+		assert.equal(admitted.status, "admitted");
+		// Simulate the Submission changing (requeue) while the materialization decision is pending.
+		withArchiveLock(projectPath, false, () => {
+			appendArchiveRecord(projectPath, {
+				schemaVersion: 2,
+				type: "submission",
+				workId: "reread-work",
+				payload: { ...admitted, status: "queued" },
+			});
+		});
+		await assert.rejects(
+			tools
+				.get("khala_launch_execution")
+				.execute("materialize-stale", { workId: "reread-work", mode: "materialize" }, null, null, conclaveContext),
+			/must be admitted/,
+		);
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 0);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
 	}
 });
