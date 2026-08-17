@@ -27,11 +27,12 @@
 Khala is a [Pi coding-agent](https://github.com/earendil-works/pi) extension for
 coordinating serious repository work across specialized agent roles.
 
-A user describes Work. A project-scoped Conclave validates it and decides
-whether it is ready to execute. An isolated Executor performs the mission in
-a Git worktree and reports evidence-bearing Signals. The Conclave reviews the
-evidence and records a Verdict. When context is missing, a read-only Observer
-gathers it first. Every durable transition is written to an append-only Archive.
+A user queues Work. A project-scoped Conclave validates it and admits it
+under a Mandate when it is ready to execute. An isolated Executor performs the
+mission in a Git worktree and reports evidence-bearing Signals. The Conclave
+reviews the evidence and records a Verdict. When context is missing, a
+read-only Observer gathers it first. Every durable transition is written to an
+append-only Archive.
 
 > The principle: agents may act, but only evidence changes the record.
 

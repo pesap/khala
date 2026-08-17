@@ -108,7 +108,7 @@ Conclave. The User does not admit Work or issue Verdicts.
 
 ### Conclave
 
-The project's governing authority. It reviews Work, admits Mandates, launches
+The project's governing authority. It reviews and admits Work under a Mandate, launches
 Observers and Executors, reads evidence, and issues Verdicts.
 
 ### Observer
@@ -130,8 +130,8 @@ Counsel, but cannot admit Work, launch executions, or issue Verdicts.
 ## Record authorship
 
 ```text
-User      → Work terms, Pull Request review, and merge evidence
-Conclave  → Work Submission, Mandate, Verdict, and Work Outcome
+User      → queued Work, Pull Request review, and merge evidence
+Conclave  → admission Mandate, Verdict, and Work Outcome
 Khala runtime → Verdict Delivery and Pull Request handoff evidence
 Executor  → Signal
 Observer  → Learning
