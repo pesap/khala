@@ -5,6 +5,7 @@
 // biome-ignore-all lint/complexity/useOptionalChain: Recovery availability is intentionally fail-closed.
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
 	type AgentSession,
@@ -37,6 +38,7 @@ import {
 	type ConclaveWakeRecovery,
 	type ExecutorRecord,
 	ExecutorStatus,
+	type KhalaWorkSubmission,
 	type LearningRecord,
 	type MissionRecord,
 	type SignalRecord,
@@ -197,18 +199,22 @@ function createConclaveCoordinator(
 	const resume = (projectPath: string, projectTrusted = false): void => {
 		const resolvedProjectPath = resolve(projectPath);
 		recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
-		for (const submission of storage.getPendingSubmissions(resolvedProjectPath, projectTrusted)) {
-			scheduleConclaveWake({
-				projectPath: resolvedProjectPath,
-				projectTrusted,
-				workId: submission.workId,
-				archivePath: submission.archivePath,
-				extensionPath,
-				storage,
-				runtimes,
-				disposed: () => disposed,
-			});
-		}
+		recoverPendingSubmissions({
+			projectPath: resolvedProjectPath,
+			projectTrusted,
+			storage,
+			wake: (submission) =>
+				wakeConclave({
+					projectPath: resolvedProjectPath,
+					projectTrusted,
+					workId: submission.workId,
+					archivePath: submission.archivePath,
+					extensionPath,
+					storage,
+					runtimes,
+					disposed: () => disposed,
+				}),
+		}).catch(() => undefined);
 	};
 
 	const ensureConclaveSession = (
@@ -443,8 +449,51 @@ async function getExistingRuntime(
 	}
 }
 
-function scheduleConclaveWake(request: SubmissionWakeRequest): undefined {
-	wakeWorkSubmission(request).catch(() => undefined);
+type PendingSubmissionRecoveryOptions = Readonly<{
+	projectPath: string;
+	projectTrusted: boolean;
+	storage: ConclaveStorage;
+	wake: (submission: KhalaWorkSubmission) => Promise<void>;
+	ownerProcessId?: number;
+}>;
+
+async function recoverPendingSubmissions(options: PendingSubmissionRecoveryOptions): Promise<void> {
+	const candidates = options.storage.getRecoverableSubmissions(options.projectPath, options.projectTrusted);
+	await Promise.all(
+		candidates.map(async (submission) => {
+			const claim = options.storage.claimSubmissionRecovery(
+				options.projectPath,
+				submission.workId,
+				options.ownerProcessId ?? process.pid,
+				options.projectTrusted,
+			);
+			if (claim === undefined) {
+				return;
+			}
+			const attemptedAt = new Date().toISOString();
+			try {
+				await options.wake(claim.submission);
+				options.storage.completeSubmissionRecovery(
+					options.projectPath,
+					claim,
+					{ status: "woken", attemptedAt },
+					options.projectTrusted,
+				);
+			} catch (error) {
+				options.storage.completeSubmissionRecovery(
+					options.projectPath,
+					claim,
+					{
+						status: "failed",
+						attemptedAt,
+						failure: formatError(error),
+						recovery: conclaveWakeRecovery(error),
+					},
+					options.projectTrusted,
+				);
+			}
+		}),
+	);
 }
 
 function enqueueConclaveWake(runtime: ConclaveRuntime, operation: () => Promise<void>): Promise<void> {
@@ -974,4 +1023,10 @@ function resolveConfiguredModel(modelRuntime: ModelRuntime, modelId: string) {
 }
 
 export type { ConclaveCoordinator };
-export { CONCLAVE_BASE_TOOL_ALLOWLIST, CONCLAVE_TOOL_ALLOWLIST, createConclaveCoordinator, enqueueConclaveWake };
+export {
+	CONCLAVE_BASE_TOOL_ALLOWLIST,
+	CONCLAVE_TOOL_ALLOWLIST,
+	createConclaveCoordinator,
+	enqueueConclaveWake,
+	recoverPendingSubmissions,
+};

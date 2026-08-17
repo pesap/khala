@@ -1,19 +1,31 @@
 import { resolve } from "node:path";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import {
+	claimSubmissionRecovery,
+	completeSubmissionRecovery,
+	getRecoverableSubmissions,
+} from "./khala-conclave-recovery-storage.js";
+import {
 	getConclaveSessionPath,
 	getConclaveUserSessionPath,
 	loadConclaveSession,
 } from "./khala-conclave-session-storage.js";
 import type { ConclaveStorage, SubmissionLaunchResult, SubmissionSnapshot } from "./khala-conclave-storage.js";
-import { type KhalaWorkSubmission, type WorkSubmissionRequest, WorkSubmissionStatus } from "./khala-model.js";
+import {
+	isWorkSubmission,
+	type KhalaWorkSubmission,
+	type WorkSubmissionRequest,
+	WorkSubmissionStatus,
+} from "./khala-model.js";
 
 function createFileConclaveStorage(): ConclaveStorage {
 	return {
 		submit,
 		getSubmission,
 		getPendingSubmission,
-		getPendingSubmissions,
+		getRecoverableSubmissions,
+		claimSubmissionRecovery,
+		completeSubmissionRecovery,
 		claimSubmission,
 		markSubmissionReviewing,
 		markSubmissionQueued,
@@ -54,7 +66,7 @@ function submit(request: WorkSubmissionRequest & { projectTrusted?: boolean }): 
 function getSubmission(projectPath: string, workId: string, projectTrusted = false): SubmissionSnapshot | undefined {
 	let latest: SubmissionSnapshot | undefined;
 	for (const record of listArchiveRecords(projectPath, projectTrusted)) {
-		if (record.type === "submission" && record.workId === workId && isSubmission(record.payload)) {
+		if (record.type === "submission" && record.workId === workId && isWorkSubmission(record.payload)) {
 			latest = { submission: record.payload, recordId: record.recordId };
 		}
 	}
@@ -79,22 +91,6 @@ function getPendingSubmission(
 		pending = snapshot.submission;
 	}
 	return pending;
-}
-
-function getPendingSubmissions(projectPath: string, projectTrusted = false): readonly KhalaWorkSubmission[] {
-	const submissions = new Map<string, KhalaWorkSubmission>();
-	for (const record of listArchiveRecords(projectPath, projectTrusted)) {
-		if (record.type === "submission" && isSubmission(record.payload)) {
-			submissions.set(record.workId, record.payload);
-		}
-	}
-	return [...submissions.values()].filter(
-		(submission) =>
-			submission.status === WorkSubmissionStatus.queued ||
-			submission.status === WorkSubmissionStatus.reviewing ||
-			submission.status === WorkSubmissionStatus.admitted ||
-			submission.status === WorkSubmissionStatus.launching,
-	);
 }
 
 // Legacy launch callers retain their v1 launching state. New admission/mission
@@ -286,7 +282,5 @@ function clearRuntimeMetadata(submission: KhalaWorkSubmission): KhalaWorkSubmiss
 	const { target: _target, sandboxPath: _sandboxPath, ...next } = submission;
 	return next;
 }
-const isSubmission = (value: unknown): value is KhalaWorkSubmission =>
-	typeof value === "object" && value !== null && "workId" in value && "status" in value && "work" in value;
 
 export { createFileConclaveStorage };

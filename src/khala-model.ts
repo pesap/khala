@@ -11,6 +11,7 @@ type ArchiveSchemaVersion = 1 | 2 | typeof EXECUTION_SCHEMA_VERSION;
 type ArchiveRecordType =
 	| "submission"
 	| "conclave-wake"
+	| "conclave-recovery"
 	| "execution"
 	| "signal"
 	| "counsel"
@@ -123,6 +124,32 @@ type ConclaveWakeRecord = Readonly<{
 	failure?: string;
 	recovery?: ConclaveWakeRecovery;
 }>;
+
+const ConclaveRecoveryStatus = {
+	claimed: "claimed",
+	exhausted: "exhausted",
+} as const;
+type ConclaveRecoveryClaimRecord = Readonly<{
+	recoveryId: string;
+	workId: string;
+	submissionRecordId: string;
+	status: typeof ConclaveRecoveryStatus.claimed;
+	attempt: number;
+	maxAttempts: number;
+	ownerProcessId: number;
+	claimedAt: string;
+}>;
+type ConclaveRecoveryExhaustedRecord = Readonly<{
+	recoveryId: string;
+	workId: string;
+	submissionRecordId: string;
+	status: typeof ConclaveRecoveryStatus.exhausted;
+	attempt: number;
+	maxAttempts: number;
+	exhaustedAt: string;
+	reason: string;
+}>;
+type ConclaveRecoveryRecord = ConclaveRecoveryClaimRecord | ConclaveRecoveryExhaustedRecord;
 
 // --- Mandates and Missions --------------------------------------------------
 
@@ -492,6 +519,13 @@ type GuardRecord = Record<string, unknown> &
 		attemptedAt?: unknown;
 		failure?: unknown;
 		recovery?: unknown;
+		recoveryId?: unknown;
+		submissionRecordId?: unknown;
+		attempt?: unknown;
+		maxAttempts?: unknown;
+		ownerProcessId?: unknown;
+		claimedAt?: unknown;
+		exhaustedAt?: unknown;
 		projectPath?: unknown;
 		status?: unknown;
 		work?: unknown;
@@ -636,6 +670,7 @@ function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 	return (
 		value === "submission" ||
 		value === "conclave-wake" ||
+		value === "conclave-recovery" ||
 		value === "execution" ||
 		value === "signal" ||
 		value === "counsel" ||
@@ -694,6 +729,7 @@ function isImplicitV2ArchiveRecordType(type: ArchiveRecordType): boolean {
 	return (
 		type === "verdict-delivery" ||
 		type === "conclave-wake" ||
+		type === "conclave-recovery" ||
 		type === "mandate" ||
 		type === "mission" ||
 		type === "pull-request" ||
@@ -726,6 +762,9 @@ function isArchivePayloadLegacy(type: ArchiveRecordType, payload: unknown): bool
 function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean {
 	if (type === "conclave-wake") {
 		return isConclaveWakeRecord(payload);
+	}
+	if (type === "conclave-recovery") {
+		return isConclaveRecoveryRecord(payload);
 	}
 	if (type === "coordination") {
 		return isCoordinationRecord(payload);
@@ -891,6 +930,44 @@ function isConclaveWakeRecord(value: unknown): value is ConclaveWakeRecord {
 		return record.failure === undefined && record.recovery === undefined;
 	}
 	return isNonEmptyString(record.failure) && (record.recovery === "setup" || record.recovery === "recreate");
+}
+
+function isConclaveRecoveryRecord(value: unknown): value is ConclaveRecoveryRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	const common =
+		isNonEmptyString(record.recoveryId) &&
+		isNonEmptyString(record.workId) &&
+		isNonEmptyString(record.submissionRecordId) &&
+		typeof record.attempt === "number" &&
+		Number.isInteger(record.attempt) &&
+		record.attempt > 0 &&
+		typeof record.maxAttempts === "number" &&
+		Number.isInteger(record.maxAttempts) &&
+		record.maxAttempts > 0 &&
+		record.attempt <= record.maxAttempts;
+	if (!common) {
+		return false;
+	}
+	if (record.status === ConclaveRecoveryStatus.claimed) {
+		return (
+			typeof record.ownerProcessId === "number" &&
+			Number.isSafeInteger(record.ownerProcessId) &&
+			record.ownerProcessId > 0 &&
+			isNonEmptyString(record.claimedAt) &&
+			record.exhaustedAt === undefined
+		);
+	}
+	return (
+		record.status === ConclaveRecoveryStatus.exhausted &&
+		record.attempt === record.maxAttempts &&
+		record.ownerProcessId === undefined &&
+		record.claimedAt === undefined &&
+		isNonEmptyString(record.exhaustedAt) &&
+		isNonEmptyString(record.reason)
+	);
 }
 
 function isExecutorRecord(value: unknown): value is ExecutorRecord {
@@ -1526,13 +1603,55 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 	const interventionGroups = new Map<string, { issuance: boolean; outcome: boolean; identity: string }>();
 	const coordinationInvalidations = new Map<string, CoordinationRecord>();
 	const submissionWorkIds = new Set<string>();
+	const submissionRecordWorkIds = new Map<string, string>();
 	const wakeIds = new Set<string>();
+	const recoveryIds = new Set<string>();
+	const recoveryClaims = new Map<string, { submissionRecordId: string; workId: string }>();
+	const recoveriesBySubmission = new Map<
+		string,
+		{ attempts: number; maxAttempts: number; exhausted: boolean; completed: boolean }
+	>();
 	for (const record of records) {
 		if (record.type === "submission" && isWorkSubmission(record.payload)) {
 			if (record.payload.workId !== record.workId) {
 				throw new Error(`Submission ${record.recordId} has inconsistent Archive bindings.`);
 			}
 			submissionWorkIds.add(record.workId);
+			submissionRecordWorkIds.set(record.recordId, record.workId);
+		}
+		if (record.type === "conclave-recovery" && isConclaveRecoveryRecord(record.payload)) {
+			const recovery = record.payload;
+			if (
+				recovery.workId !== record.workId ||
+				submissionRecordWorkIds.get(recovery.submissionRecordId) !== record.workId ||
+				recoveryIds.has(recovery.recoveryId)
+			) {
+				throw new Error(`Conclave recovery ${recovery.recoveryId} has inconsistent Archive bindings.`);
+			}
+			recoveryIds.add(recovery.recoveryId);
+			let state = recoveriesBySubmission.get(recovery.submissionRecordId);
+			if (state === undefined) {
+				state = { attempts: 0, maxAttempts: recovery.maxAttempts, exhausted: false, completed: false };
+				recoveriesBySubmission.set(recovery.submissionRecordId, state);
+			}
+			if (state.maxAttempts !== recovery.maxAttempts || state.exhausted || state.completed) {
+				throw new Error(`Conclave recovery ${recovery.recoveryId} has invalid retry state.`);
+			}
+			if (recovery.status === ConclaveRecoveryStatus.claimed) {
+				if (recovery.attempt !== state.attempts + 1) {
+					throw new Error(`Conclave recovery ${recovery.recoveryId} has an invalid attempt sequence.`);
+				}
+				state.attempts = recovery.attempt;
+				recoveryClaims.set(recovery.recoveryId, {
+					submissionRecordId: recovery.submissionRecordId,
+					workId: recovery.workId,
+				});
+			} else {
+				if (state.attempts !== recovery.maxAttempts || recovery.attempt !== state.attempts) {
+					throw new Error(`Conclave recovery ${recovery.recoveryId} exhausted before its retry limit.`);
+				}
+				state.exhausted = true;
+			}
 		}
 		if (record.type === "conclave-wake" && isConclaveWakeRecord(record.payload)) {
 			if (record.payload.workId !== record.workId || !submissionWorkIds.has(record.workId)) {
@@ -1542,6 +1661,17 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 				throw new Error(`Conclave wake ${record.payload.wakeId} is duplicated.`);
 			}
 			wakeIds.add(record.payload.wakeId);
+			const claim = recoveryClaims.get(record.payload.wakeId);
+			if (claim !== undefined) {
+				if (claim.workId !== record.workId) {
+					throw new Error(`Conclave wake ${record.payload.wakeId} changed its recovery binding.`);
+				}
+				const state = recoveriesBySubmission.get(claim.submissionRecordId);
+				if (state === undefined || state.exhausted || state.completed) {
+					throw new Error(`Conclave wake ${record.payload.wakeId} has invalid recovery ordering.`);
+				}
+				state.completed = record.payload.status === ConclaveWakeStatus.woken;
+			}
 		}
 		if (record.type === "coordination" && isCoordinationRecord(record.payload)) {
 			const coordination = record.payload;
@@ -1666,6 +1796,9 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 export type {
 	ArchiveRecordType,
 	ArchiveSchemaVersion,
+	ConclaveRecoveryClaimRecord,
+	ConclaveRecoveryExhaustedRecord,
+	ConclaveRecoveryRecord,
 	ConclaveWakeFailure,
 	ConclaveWakeRecord,
 	ConclaveWakeRecovery,
@@ -1713,10 +1846,12 @@ export type {
 	WorkSubmissionStatusValue,
 };
 export {
+	ConclaveRecoveryStatus,
 	ConclaveWakeStatus,
 	EXECUTION_SCHEMA_VERSION,
 	ExecutorStatus,
 	isArchiveRecord,
+	isConclaveRecoveryRecord,
 	isConclaveWakeRecord,
 	isCoordinationClassification,
 	isCoordinationRecord,
