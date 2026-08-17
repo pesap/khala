@@ -221,8 +221,7 @@ function applyClarifyOutcome(outcome: ClarifyOutcome, ctx: ClarifyUi): void {
 }
 
 export type { ClarifyOutcome };
-export { USAGE };
-export { applyClarifyOutcome };
+export { applyClarifyOutcome, USAGE };
 // biome-ignore lint/performance/noBarrelFile: The default export remains the extension entry; named helpers stay beside it.
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("clarify", {
