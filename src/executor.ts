@@ -303,7 +303,7 @@ function createExecutorStarter(
 					try {
 						await headlessRuntime.closeProcess();
 						launcherClosed = true;
-						unregisterHeadlessRuntime(request.executionId);
+						unregisterHeadlessRuntime(request.executionId, headlessRuntime);
 					} catch (cleanupError) {
 						cleanupErrors.push(cleanupError);
 					}
@@ -341,7 +341,7 @@ function createExecutorStarter(
 				} catch (cleanupError) {
 					attachCleanupDiagnostic(error, cleanupError);
 				}
-				unregisterHeadlessRuntime(request.executionId);
+				unregisterHeadlessRuntime(request.executionId, headlessRuntime);
 			}
 			if (launcher !== undefined && launched?.target !== undefined && !launcherClosed) {
 				try {

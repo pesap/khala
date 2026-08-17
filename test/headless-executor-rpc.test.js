@@ -8,6 +8,7 @@ import { createAgentSession, DefaultResourceLoader, SessionManager } from "@eare
 import {
 	buildHeadlessPiArguments,
 	createExecutorStarter,
+	getHeadlessRuntime,
 	HeadlessExecutorRuntime,
 	KHALA_HEADLESS_LAUNCHER,
 	StrictJsonlReader,
@@ -399,6 +400,43 @@ test("malformed JSON and event callback failures stop the child and unregister t
 		await assert.rejects(sendHeadlessExecutorMessage("callback-execution", "late"), /No live headless/);
 	} finally {
 		rmSync(callbackRoot, { recursive: true, force: true });
+	}
+});
+
+test("a replaced runtime that closes late cannot deregister its successor", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-rpc-replacement-"));
+	try {
+		const replaced = new HeadlessExecutorRuntime({
+			command: process.execPath,
+			args: [],
+			cwd: root,
+			model: "provider/executor",
+			mission: "Mission identity",
+			executionId: "replaced-execution",
+			spawnProcess: (_command, args, cwd) =>
+				spawn(process.execPath, ["-e", MALFORMED_CHILD_SCRIPT, "--", ...args], {
+					cwd,
+					stdio: ["pipe", "pipe", "pipe"],
+				}),
+		});
+		const replacement = new HeadlessExecutorRuntime({
+			command: process.execPath,
+			args: [],
+			cwd: root,
+			model: "provider/executor",
+			mission: "Mission identity",
+			executionId: "replaced-execution",
+			spawnProcess: createChildFactory(root, []),
+		});
+		// Recovery replaces the runtime instance for the same execution ID while the old instance is still closing.
+		registerHeadlessRuntime("replaced-execution", replaced);
+		registerHeadlessRuntime("replaced-execution", replacement);
+		await assert.rejects(replaced.start(), /JSON|startup|failed/i);
+		await replaced.closeProcess();
+		assert.equal(getHeadlessRuntime("replaced-execution"), replacement);
+		await replacement.closeProcess();
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 

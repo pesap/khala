@@ -599,7 +599,7 @@ class HeadlessExecutorRuntime {
 
 	private unregisterRuntime(): void {
 		if (this.options.executionId !== undefined) {
-			unregisterHeadlessRuntime(this.options.executionId);
+			unregisterHeadlessRuntime(this.options.executionId, this);
 		}
 	}
 
@@ -720,8 +720,12 @@ function registerHeadlessRuntime(executionId: string, runtime: HeadlessExecutorR
 	headlessRuntimes.set(executionId, runtime);
 }
 
-function unregisterHeadlessRuntime(executionId: string): void {
-	headlessRuntimes.delete(executionId);
+// A replaced runtime may close late (recovery restarts the same execution ID); only the instance
+// still registered for that ID may remove the entry.
+function unregisterHeadlessRuntime(executionId: string, runtime: HeadlessExecutorRuntime): void {
+	if (headlessRuntimes.get(executionId) === runtime) {
+		headlessRuntimes.delete(executionId);
+	}
 }
 
 function getHeadlessRuntime(executionId: string): HeadlessExecutorRuntime | undefined {
