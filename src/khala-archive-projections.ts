@@ -45,6 +45,7 @@ type ArchiveSnapshot = Readonly<{
 	listSubmissions: () => KhalaWorkSubmission[];
 	listCoordinations: () => CoordinationRecord[];
 	listInterventions: () => (InterventionIssuanceRecord | InterventionOutcomeRecord)[];
+	missions: () => MissionProjection[];
 }>;
 type MissionProjection = Readonly<{
 	mission: MissionRecord;
@@ -82,6 +83,7 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 		listSubmissions: () => projectRecordsFromRecords(records, "submission", isWorkSubmission),
 		listCoordinations: () => projectRecordsFromRecords(records, "coordination", isCoordinationRecord),
 		listInterventions: () => projectRecordsFromRecords(records, "intervention", isInterventionRecord),
+		missions: () => projectMissionsFromRecords(records),
 	};
 }
 
@@ -157,13 +159,38 @@ function listInterventionRecords(
 
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: Active base projection keeps merge, review, and Mission-state fences together.
 function projectActiveUpstreamBases(projectPath: string, projectTrusted = false): UpstreamExecutionBase[] {
+	// One append-ordered snapshot per composite projection; private local maps replace repeated scans.
+	const records = listArchiveRecords(projectPath, projectTrusted);
 	const latestExecutions = new Map<string, ExecutorRecord>();
-	for (const execution of listExecutionRecords(projectPath, projectTrusted)) {
+	for (const execution of projectRecordsFromRecords(records, "execution", isExecutorRecord)) {
 		latestExecutions.set(execution.executionId, execution);
 	}
-	const missions = projectMissions(projectPath, projectTrusted);
-	const pullRequests = listPullRequestRecords(projectPath, projectTrusted);
-	const outcomes = listWorkOutcomeRecords(projectPath, projectTrusted);
+	const missions = projectMissionsFromRecords(records);
+	const pullRequests = projectRecordsFromRecords(records, "pull-request", isPullRequestRecord);
+	const outcomes = projectRecordsFromRecords(records, "work-outcome", isWorkOutcomeRecord);
+	const latestPullRequestByExecution = new Map<string, PullRequestRecord>();
+	for (const pullRequest of pullRequests) {
+		latestPullRequestByExecution.set(pullRequest.executionId, pullRequest);
+	}
+	const mergedBaseKeys = new Set<string>();
+	for (const pullRequest of pullRequests) {
+		if (
+			pullRequest.status === "merged" &&
+			pullRequest.headCommit !== undefined &&
+			pullRequest.mergeCommit !== undefined
+		) {
+			mergedBaseKeys.add(
+				upstreamBaseKey(pullRequest.workId, pullRequest.missionId, pullRequest.executionId, pullRequest.headCommit),
+			);
+		}
+	}
+	for (const outcome of outcomes) {
+		if (outcome.mergeCommit.length > 0) {
+			mergedBaseKeys.add(
+				upstreamBaseKey(outcome.workId, outcome.missionId, outcome.executionId, outcome.finalHeadCommit),
+			);
+		}
+	}
 	const active: UpstreamExecutionBase[] = [];
 	for (const execution of latestExecutions.values()) {
 		const base = execution.upstreamBase;
@@ -179,9 +206,7 @@ function projectActiveUpstreamBases(projectPath: string, projectTrusted = false)
 		) {
 			continue;
 		}
-		const handoff = [...pullRequests]
-			.reverse()
-			.find((pullRequest) => pullRequest.executionId === execution.executionId);
+		const handoff = latestPullRequestByExecution.get(execution.executionId);
 		const currentOrReviewable =
 			execution.status === "starting" ||
 			execution.status === "running" ||
@@ -189,24 +214,7 @@ function projectActiveUpstreamBases(projectPath: string, projectTrusted = false)
 		if (!currentOrReviewable || handoff?.status === "closed") {
 			continue;
 		}
-		const merged =
-			pullRequests.some(
-				(pullRequest) =>
-					pullRequest.workId === base.workId &&
-					pullRequest.missionId === base.missionId &&
-					pullRequest.executionId === base.executionId &&
-					pullRequest.status === "merged" &&
-					pullRequest.headCommit === base.headCommit &&
-					pullRequest.mergeCommit !== undefined,
-			) ||
-			outcomes.some(
-				(outcome) =>
-					outcome.workId === base.workId &&
-					outcome.missionId === base.missionId &&
-					outcome.executionId === base.executionId &&
-					outcome.finalHeadCommit === base.headCommit &&
-					outcome.mergeCommit.length > 0,
-			);
+		const merged = mergedBaseKeys.has(upstreamBaseKey(base.workId, base.missionId, base.executionId, base.headCommit));
 		if (!merged) {
 			active.push(base);
 		}
@@ -218,10 +226,15 @@ function projectActiveUpstreamBases(projectPath: string, projectTrusted = false)
 	);
 }
 
+function upstreamBaseKey(workId: string, missionId: string, executionId: string, headCommit: string): string {
+	return `${workId}\u0000${missionId}\u0000${executionId}\u0000${headCommit}`;
+}
+
 function activeCoordinationHolds(projectPath: string, projectTrusted = false): CoordinationHold[] {
 	const holds: CoordinationHold[] = [];
-	const missions = projectMissions(projectPath, projectTrusted);
-	for (const coordination of projectCoordinations(projectPath, projectTrusted)) {
+	const records = listArchiveRecords(projectPath, projectTrusted);
+	const missions = projectMissionsFromRecords(records);
+	for (const coordination of projectCoordinationsFromRecords(records)) {
 		const { latest } = coordination;
 		if (!coordination.active || latest.phase === "release" || latest.phase === "resolution") {
 			continue;
@@ -253,23 +266,27 @@ function currentCoordinationHold(
 	return { coordination, workId: current?.workId ?? workId, missionId: current?.missionId ?? missionId };
 }
 
-function projectCoordinations(projectPath: string, projectTrusted = false): CoordinationProjection[] {
+function projectCoordinationsFromRecords(records: readonly KhalaArchiveRecord[]): CoordinationProjection[] {
 	const grouped = new Map<string, CoordinationRecord[]>();
-	for (const record of listCoordinationRecords(projectPath, projectTrusted)) {
+	for (const record of projectRecordsFromRecords(records, "coordination", isCoordinationRecord)) {
 		const group = grouped.get(record.coordinationId) ?? [];
 		group.push(record);
 		grouped.set(record.coordinationId, group);
 	}
-	const projections = [...grouped.values()].map((records) => {
-		const latest = records.at(-1);
+	const projections = [...grouped.values()].map((group) => {
+		const latest = group.at(-1);
 		if (latest === undefined) {
 			throw new Error("Coordination projection encountered an empty record group.");
 		}
 		const resolved = latest.phase === "resolution";
-		return { coordinationId: latest.coordinationId, records, latest, active: !resolved, resolved };
+		return { coordinationId: latest.coordinationId, records: group, latest, active: !resolved, resolved };
 	});
 	validateCoordinationGraph(projections);
 	return projections;
+}
+
+function projectCoordinations(projectPath: string, projectTrusted = false): CoordinationProjection[] {
+	return projectCoordinationsFromRecords(listArchiveRecords(projectPath, projectTrusted));
 }
 
 function validateProspectiveCoordinationGraph(
@@ -497,10 +514,10 @@ function validateMissionRelationships(
 	return { successors, terminalVerdicts, retryVerdicts };
 }
 
-function projectMissions(projectPath: string, projectTrusted = false): MissionProjection[] {
-	const missions = listMissionRecords(projectPath, projectTrusted);
-	const verdicts = listVerdictRecords(projectPath, projectTrusted);
-	const coordinations = listCoordinationRecords(projectPath, projectTrusted);
+function projectMissionsFromRecords(records: readonly KhalaArchiveRecord[]): MissionProjection[] {
+	const missions = projectRecordsFromRecords(records, "mission", isMissionRecord);
+	const verdicts = projectRecordsFromRecords(records, "verdict", isVerdict);
+	const coordinations = projectRecordsFromRecords(records, "coordination", isCoordinationRecord);
 	const { successors, terminalVerdicts, retryVerdicts } = validateMissionRelationships(
 		missions,
 		verdicts,
@@ -524,6 +541,10 @@ function projectMissions(projectPath: string, projectTrusted = false): MissionPr
 		}
 		return { mission, state: "current" };
 	});
+}
+
+function projectMissions(projectPath: string, projectTrusted = false): MissionProjection[] {
+	return projectMissionsFromRecords(listArchiveRecords(projectPath, projectTrusted));
 }
 
 function readCurrentMission(

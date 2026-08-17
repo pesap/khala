@@ -4,13 +4,21 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpa
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { DefaultResourceLoader, initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import createExtension from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords, withArchiveLock } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
-import { listExecutionRecords, listPullRequestRecords, readMandate } from "../dist/src/khala-archive-projections.js";
+import {
+	createArchiveSnapshot,
+	listExecutionRecords,
+	listPullRequestRecords,
+	projectActiveUpstreamBases,
+	projectMissions,
+	readMandate,
+} from "../dist/src/khala-archive-projections.js";
 import { createConclaveCoordinator, enqueueConclaveWake, recoverPendingSubmissions } from "../dist/src/khala-conclave.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
 import { createHerdrLauncher } from "../dist/src/launch-herdr.js";
@@ -25,7 +33,7 @@ import {
 import { appendPullRequestRecord, canRecordPullRequestReview, registerKhalaReview } from "../dist/src/khala-review.js";
 import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
-import { isSignal, isV2Verdict } from "../dist/src/khala-model.js";
+import { isSignal, isV2Verdict, EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
 import { buildOracleArguments, buildOracleCommand, parseOracleOutput, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { materializeMissingRetrySuccessor } from "../dist/src/khala-verdict-recovery.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
@@ -4210,6 +4218,128 @@ test("a User cannot record a merge without runtime-confirmed Pull Request eviden
 		assert.equal(listPullRequestRecords(projectPath).at(-1).status, "open");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: tru});
+
+test("composite projections use one immutable Archive snapshot per operation", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-single-snapshot-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const now = new Date().toISOString();
+		const terms = {
+			title: "Snapshot test",
+			objective: "Project from one Archive snapshot.",
+			context: "Context.",
+			scope: "Scope.",
+			acceptanceCriteria: ["One read per projection."],
+			constraints: [],
+			plan: ["Read the Archive."],
+			validation: ["Assert the projection."],
+		};
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "snapshot-work",
+			payload: {
+				missionId: "snapshot-mission",
+				workId: "snapshot-work",
+				mandateId: "snapshot-mandate",
+				assignment: terms,
+				assignedParticipantId: "executor:snapshot-execution",
+				createdAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: EXECUTION_SCHEMA_VERSION,
+			type: "execution",
+			workId: "snapshot-work",
+			executionId: "snapshot-execution",
+			payload: {
+				executionId: "snapshot-execution",
+				workId: "snapshot-work",
+				executorName: "Snapshot Executor",
+				kind: "executor",
+				participantId: "executor:snapshot-execution",
+				purpose: { kind: "mission", missionId: "snapshot-mission" },
+				missionId: "snapshot-mission",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "headless-rpc",
+				piSessionId: "snapshot-session",
+				sessionPath: join(root, "snapshot-executor.jsonl"),
+				promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+				upstreamBase: {
+					kind: "upstream-execution",
+					workId: "upstream-work",
+					missionId: "upstream-mission",
+					executionId: "upstream-execution",
+					remote: "origin",
+					branch: "feature/upstream",
+					headCommit: "b".repeat(40),
+				},
+				status: "running",
+				startedAt: now,
+			},
+		});
+
+		const snapshot = createArchiveSnapshot(projectPath);
+		assert.equal(snapshot.missions().length, 1);
+		assert.equal(snapshot.missions()[0].state, "current");
+		assert.equal(snapshot.listSignals().length, 0);
+		assert.equal(snapshot.listPullRequests().length, 0);
+
+		// Records appended after snapshot creation must not leak into the snapshot view,
+		// while fresh composite projections must observe them from one current read.
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "signal",
+			workId: "snapshot-work",
+			executionId: "snapshot-execution",
+			payload: {
+				signalId: "snapshot-signal",
+				workId: "snapshot-work",
+				executionId: "snapshot-execution",
+				executorName: "Snapshot Executor",
+				missionId: "snapshot-mission",
+				participantId: "executor:snapshot-execution",
+				kind: "progress",
+				summary: "Progressing.",
+				evidence: ["evidence"],
+				observedAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "verdict",
+			workId: "snapshot-work",
+			executionId: "snapshot-execution",
+			payload: {
+				workId: "snapshot-work",
+				executionId: "snapshot-execution",
+				signalId: "snapshot-signal",
+				missionId: "snapshot-mission",
+				governingMandateId: "snapshot-mandate",
+				issuedByParticipantId: "conclave:test",
+				decision: "finish",
+				reason: "Finished.",
+				verdictId: "snapshot-finish-verdict",
+				issuedAt: now,
+			},
+		});
+
+		assert.equal(snapshot.listSignals().length, 0, "a snapshot must not re-read the Archive");
+		assert.equal(snapshot.missions()[0].state, "current", "a snapshot must not re-read the Archive");
+		const freshMissions = projectMissions(projectPath);
+		assert.equal(freshMissions.length, 1);
+		assert.equal(freshMissions[0].state, "finished");
+		const bases = projectActiveUpstreamBases(projectPath);
+		assert.equal(bases.length, 1);
+		assert.equal(bases[0].executionId, "upstream-execution");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
+	}
+});
 	}
 });

@@ -5,7 +5,7 @@ import { relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { ExtensionContext, FileEntry } from "@earendil-works/pi-coding-agent";
 import { getArchivePath } from "./khala-archive.js";
-import { createArchiveSnapshot, projectMissions } from "./khala-archive-projections.js";
+import { createArchiveSnapshot, type projectMissions } from "./khala-archive-projections.js";
 import {
 	ConfigScope,
 	getKhalaConfigPath,
@@ -537,7 +537,7 @@ function buildSessionList(
 
 	let missions = [] as ReturnType<typeof projectMissions>[number]["mission"][];
 	try {
-		missions = projectMissions(context.cwd, projectTrusted).map((projection) => projection.mission);
+		missions = archive.missions().map((projection) => projection.mission);
 	} catch {
 		// The existing session list remains usable while an incomplete lifecycle projection is repaired.
 	}
