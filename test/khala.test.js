@@ -370,7 +370,19 @@ test("launched Executor and Observer sessions activate role tools on first start
 			);
 			assert.equal(tools.get("khala_read_archive").parameters.required?.includes("workId") ?? false, false);
 			assert.equal(archiveRegistrations, 2);
-			assert.ok(branch.some((entry) => entry.customType === `khala-${kind}`));
+			const marker = branch.find((entry) => entry.customType === `khala-${kind}`);
+			assert.ok(marker);
+			assert.equal(marker.data.kind, kind);
+			assert.equal(marker.data.workId, `${kind}-work`);
+			assert.equal(marker.data.executionId, `${kind}-execution`);
+			assert.equal(marker.data.projectPath, join(root, kind));
+			if (kind === "observer") {
+				assert.equal(typeof marker.data.observerName, "string");
+				assert.equal("executorName" in marker.data, false);
+			} else {
+				assert.equal(typeof marker.data.executorName, "string");
+				assert.equal("observerName" in marker.data, false);
+			}
 		}
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;

@@ -773,14 +773,13 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 		let marker: {
 			workId: string;
 			executionId: string;
-			executorName: string;
 			projectPath: string;
 			projectTrusted: boolean;
 			kind: string;
 			missionId?: string;
 			mandateId?: string;
 			participantId?: string;
-		} = { workId, executionId, executorName, projectPath, projectTrusted, kind: agentKind };
+		} = { workId, executionId, projectPath, projectTrusted, kind: agentKind };
 		if (typeof missionId === "string") {
 			marker = { ...marker, missionId };
 		}
@@ -791,9 +790,10 @@ function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): voi
 			marker = { ...marker, participantId };
 		}
 		if (isObserver) {
-			pi.appendEntry(KhalaEntryType.observer, marker);
+			// The Observer marker carries the role-specific observerName identity consumed by khala_record_learning.
+			pi.appendEntry(KhalaEntryType.observer, { ...marker, observerName: executorName });
 		} else {
-			pi.appendEntry(KhalaEntryType.executor, marker);
+			pi.appendEntry(KhalaEntryType.executor, { ...marker, executorName });
 		}
 	}
 	const sessionPath = context.sessionManager.getSessionFile();

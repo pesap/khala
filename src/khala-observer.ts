@@ -115,14 +115,18 @@ async function launchObserver(
 					projectTrusted,
 				),
 		});
-		let runtimeUpdate: { status: typeof ExecutorStatus.running; target?: string } = {
-			status: ExecutorStatus.running,
-		};
-		if (launched.target !== undefined) {
-			runtimeUpdate = { ...runtimeUpdate, target: launched.target };
+		// Learning closes the Observer pane through its registered launcher target, so a launch without
+		// a closeable target cannot complete its lifecycle; fail the run and requeue the submission.
+		if (launched.target === undefined) {
+			throw new Error("Observer launch did not return a closeable pane target; the run cannot close its lifecycle.");
 		}
-		updateExecutorRecord(context.cwd, executionId, runtimeUpdate, projectTrusted);
-		const destination = launched.target ?? launched.sandbox.path;
+		updateExecutorRecord(
+			context.cwd,
+			executionId,
+			{ status: ExecutorStatus.running, target: launched.target },
+			projectTrusted,
+		);
+		const destination = launched.target;
 		return {
 			content: [{ type: "text", text: `Observer ${observerName} launched for Work ${params.workId}.` }],
 			details: { workId: params.workId, executionId, observerName, destination, sandboxPath: launched.sandbox.path },

@@ -1087,3 +1087,71 @@ test("Observer review executions remain submission-scoped and recover their queu
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("Observer launch without a closeable pane target fails and requeues the submission", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-observer-targetless-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const storage = createFileConclaveStorage();
+		storage.submit({
+			workId: "observer-work",
+			projectPath,
+			work: {
+				title: "Observer test",
+				objective: "Gather context.",
+				context: "",
+				scope: "Temporary project.",
+				acceptanceCriteria: ["Learning is recorded."],
+				constraints: [],
+				plan: ["Inspect files."],
+				validation: ["Cite sources."],
+			},
+		});
+		const tools = new Map();
+		let cleanedUp = false;
+		registerKhalaObserver(createPiStub(new Map(), tools), {
+			observerSystemPrompt: "observer prompt",
+			isDedicatedConclaveSession: (context) =>
+				context.sessionManager
+					.getBranch()
+					.some((entry) => entry.type === "custom" && entry.customType === "khala-conclave"),
+			getSubmission: storage.getSubmission,
+			getPendingSubmission: storage.getPendingSubmission,
+			markSubmissionReviewing: storage.markSubmissionReviewing,
+			markSubmissionQueued: storage.markSubmissionQueued,
+			createObserverStarter: () => async (request) => {
+				request.onSandboxCreated?.({ path: join(root, "observer-sandbox"), name: "observer-sandbox" }, "tmux");
+				return {
+					id: "observer-session",
+					sandbox: { path: join(root, "observer-sandbox"), name: "observer-sandbox" },
+					cleanup: async () => {
+						cleanedUp = true;
+					},
+				};
+			},
+		});
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+				getSessionFile() {
+					return join(root, "conclave.jsonl");
+				},
+			},
+		};
+		await assert.rejects(
+			tools.get("khala_launch_observer").execute("observer", { workId: "observer-work" }, null, null, conclaveContext),
+			/closeable pane target/,
+		);
+		assert.equal(cleanedUp, true);
+		assert.equal(listExecutorRecords(projectPath).filter((execution) => execution.kind === "observer")[0].status, "failed");
+		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "queued");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
