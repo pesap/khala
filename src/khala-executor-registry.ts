@@ -31,24 +31,30 @@ function writeExecutorRecord(record: ExecutorRecord, projectTrusted = false): vo
 	withArchiveLock(record.projectPath, projectTrusted, () => writeExecutorRecordLocked(record, projectTrusted));
 }
 
-function writeExecutorRecordLocked(record: ExecutorRecord, projectTrusted: boolean): void {
-	const existing = readExecutorRecord(record.projectPath, record.executionId, projectTrusted);
-	if (existing !== undefined) {
-		if (existing.piSessionId !== undefined && record.piSessionId !== existing.piSessionId) {
+function writeExecutorRecordLocked(
+	record: ExecutorRecord,
+	projectTrusted: boolean,
+	existing?: ExecutorRecord,
+): void {
+	// The locked writer accepts the record already loaded by the caller (updateExecutorRecord)
+	// instead of scanning the Archive again inside this nested helper.
+	const current = existing ?? readExecutorRecord(record.projectPath, record.executionId, projectTrusted);
+	if (current !== undefined) {
+		if (current.piSessionId !== undefined && record.piSessionId !== current.piSessionId) {
 			throw new Error(`Execution ${record.executionId} has an immutable Pi session ID.`);
 		}
-		if (existing.sessionPath !== undefined && record.sessionPath !== existing.sessionPath) {
+		if (current.sessionPath !== undefined && record.sessionPath !== current.sessionPath) {
 			throw new Error(`Execution ${record.executionId} has an immutable Pi session path.`);
 		}
 		if (
-			existing.promptIdentity !== undefined &&
-			JSON.stringify(record.promptIdentity) !== JSON.stringify(existing.promptIdentity)
+			current.promptIdentity !== undefined &&
+			JSON.stringify(record.promptIdentity) !== JSON.stringify(current.promptIdentity)
 		) {
 			throw new Error(`Execution ${record.executionId} has an immutable prompt identity.`);
 		}
 		if (
-			existing.upstreamBase !== undefined &&
-			JSON.stringify(record.upstreamBase) !== JSON.stringify(existing.upstreamBase)
+			current.upstreamBase !== undefined &&
+			JSON.stringify(record.upstreamBase) !== JSON.stringify(current.upstreamBase)
 		) {
 			throw new Error(`Execution ${record.executionId} has an immutable upstream base.`);
 		}
@@ -93,7 +99,7 @@ function updateExecutorRecord(
 		) {
 			throw new Error(`Execution ${executionId} has immutable identity bindings.`);
 		}
-		writeExecutorRecord(next, projectTrusted);
+		writeExecutorRecordLocked(next, projectTrusted, current);
 		return next;
 	});
 }
