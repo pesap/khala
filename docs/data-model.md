@@ -48,7 +48,8 @@ for later records.
   the persisted Conclave session retains the diagnostic without changing the
   queued submission.
 - **Conclave Recovery**: one durable automatic-recovery claim or exhaustion
-  decision for an exact submission transition. Claims carry an attempt count,
+  decision for an exact submission transition. Initial queued processing and
+  restart recovery share that claim. Claims carry an attempt count,
   a per-process nonce owner, and a bounded lease. The active owner appends
   lease renewals while its wake or outcome write is running. An expired lease
   consumes its attempt and permits a new claimant; PID reuse cannot preserve

@@ -34,12 +34,7 @@ import {
 import { resolveEffectiveWorkBudget } from "./khala-config.js";
 import { listExecutorRecords } from "./khala-executor-registry.js";
 import { type ExecutorRecord, ExecutorStatus, type MissionRecord } from "./khala-model.js";
-import {
-	type ProjectionTruncation,
-	projectDiagnosticValue,
-	serializedByteLength,
-	truncateUtf8,
-} from "./khala-payload-projection.js";
+import { type ProjectionTruncation, projectDiagnosticValue, serializedByteLength } from "./khala-payload-projection.js";
 import type { UpstreamRefPoller } from "./khala-supervision-recovery.js";
 import { failExecutionAndCloseInterventions, validatePersistedExecutorSession } from "./khala-supervision-recovery.js";
 
@@ -564,21 +559,21 @@ function formatAssessmentPrompt(input: AssessmentPromptInput): string {
 }
 
 function createAssessmentPrompt(input: AssessmentPromptInput): AssessmentPrompt {
-	const identifierValues = [
-		input.assessmentId,
+	const assessmentId = requireBoundedAssessmentIdentifier(input.assessmentId, "assessment ID");
+	const conclaveParticipantId = requireBoundedAssessmentIdentifier(
 		input.conclaveParticipantId,
-		input.mission.workId,
-		input.mission.missionId,
-		input.deltas[0]?.executionId ?? "unknown",
-	];
-	const boundedIdentifiers = identifierValues.map((value) => truncateUtf8(value, ASSESSMENT_IDENTIFIER_BYTE_LIMIT));
+		"Conclave participant ID",
+	);
+	const workId = requireBoundedAssessmentIdentifier(input.mission.workId, "Work ID");
+	const missionId = requireBoundedAssessmentIdentifier(input.mission.missionId, "Mission ID");
+	const executionId = requireBoundedAssessmentIdentifier(input.deltas[0]?.executionId ?? "unknown", "Execution ID");
 	const mission = projectDiagnosticValue(input.mission, MISSION_PROJECTION_OPTIONS);
 	const deltas = input.deltas.map(projectTurnDeltaIdentity);
 	const report: AssessmentProjectionReport = {
 		bounded: true,
 		byteBudget: SUPERVISION_ASSESSMENT_PROMPT_BYTE_LIMIT,
 		truncated: true,
-		identifiersTruncated: boundedIdentifiers.filter((value, index) => value !== identifierValues[index]).length,
+		identifiersTruncated: 0,
 		sections: {
 			mission: createAssessmentSectionProjection(1, 1, mission.truncation.truncated ? 1 : 0),
 			deltas: createAssessmentSectionProjection(input.deltas.length, input.deltas.length),
@@ -596,11 +591,11 @@ function createAssessmentPrompt(input: AssessmentPromptInput): AssessmentPrompt 
 	);
 	const packet: AssessmentPacket = {
 		assessment: {
-			assessmentId: boundedIdentifiers[0] as string,
-			conclaveParticipantId: boundedIdentifiers[1] as string,
-			workId: boundedIdentifiers[2] as string,
-			missionId: boundedIdentifiers[3] as string,
-			executionId: boundedIdentifiers[4] as string,
+			assessmentId,
+			conclaveParticipantId,
+			workId,
+			missionId,
+			executionId,
 			effectiveCostThreshold: input.effectiveCostThreshold,
 		},
 		mission: { data: mission.value, projection: mission.truncation },
@@ -642,17 +637,26 @@ function createAssessmentSectionProjection(
 	return { total, included, omitted: total - included, projectedValuesTruncated };
 }
 
+function requireBoundedAssessmentIdentifier(value: string, label: string): string {
+	if (Buffer.byteLength(value, "utf8") > ASSESSMENT_IDENTIFIER_BYTE_LIMIT) {
+		throw new Error(
+			`Supervision assessment ${label} exceeds its ${ASSESSMENT_IDENTIFIER_BYTE_LIMIT}-byte identity limit.`,
+		);
+	}
+	return value;
+}
+
 function projectTurnDeltaIdentity(delta: TurnDelta): ProjectedTurnDelta {
 	const sourceEntryIds = delta.sourceEntryIds
 		.slice(0, ASSESSMENT_SOURCE_ENTRY_ID_LIMIT)
-		.map((id) => truncateUtf8(id, ASSESSMENT_IDENTIFIER_BYTE_LIMIT));
+		.map((id) => requireBoundedAssessmentIdentifier(id, "source entry ID"));
 	let result: ProjectedTurnDelta = {
 		kind: "completed-turn",
-		workId: truncateUtf8(delta.workId, ASSESSMENT_IDENTIFIER_BYTE_LIMIT),
-		missionId: truncateUtf8(delta.missionId, ASSESSMENT_IDENTIFIER_BYTE_LIMIT),
-		executionId: truncateUtf8(delta.executionId, ASSESSMENT_IDENTIFIER_BYTE_LIMIT),
-		firstSourceEntryId: truncateUtf8(delta.firstSourceEntryId, ASSESSMENT_IDENTIFIER_BYTE_LIMIT),
-		lastSourceEntryId: truncateUtf8(delta.lastSourceEntryId, ASSESSMENT_IDENTIFIER_BYTE_LIMIT),
+		workId: requireBoundedAssessmentIdentifier(delta.workId, "Work ID"),
+		missionId: requireBoundedAssessmentIdentifier(delta.missionId, "Mission ID"),
+		executionId: requireBoundedAssessmentIdentifier(delta.executionId, "Execution ID"),
+		firstSourceEntryId: requireBoundedAssessmentIdentifier(delta.firstSourceEntryId, "source entry ID"),
+		lastSourceEntryId: requireBoundedAssessmentIdentifier(delta.lastSourceEntryId, "source entry ID"),
 		sourceEntryIds,
 		sourceEntryCount: delta.sourceEntryIds.length,
 		sourceEntryIdsOmitted: delta.sourceEntryIds.length - sourceEntryIds.length,

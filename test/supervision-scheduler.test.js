@@ -220,6 +220,20 @@ test("assessment prompts and persisted inputs use deterministic bounded diagnost
     assert.match(firstPrompt, /"truncated":true/);
     assert.doesNotMatch(firstPrompt, /failure-tail/);
 
+    const oversizedSourceEntryId = `source-${"s".repeat(200)}`;
+    const oversizedIdentityDelta = createTurnDelta({
+      workId: currentMission.workId,
+      missionId: currentMission.missionId,
+      executionId: "bounded",
+      message: assistant("bounded"),
+      toolResults: [],
+      sourceEntryIds: [oversizedSourceEntryId],
+    });
+    assert.throws(
+      () => formatAssessmentPrompt({ ...assessmentInput, deltas: [oversizedIdentityDelta] }),
+      /source entry ID exceeds its 160-byte identity limit/,
+    );
+
     const session = fakeSession();
     const controller = new SupervisionController({
       projectPath: root,

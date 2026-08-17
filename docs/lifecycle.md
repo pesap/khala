@@ -37,8 +37,10 @@ acknowledgement means only that the submission is persisted and Conclave
 processing is scheduled. It does not mean the Work was admitted, a Mission was
 materialized, or an Executor was launched.
 
-Conclave processing runs independently in the project wake queue. Each wake
-records durable `conclave-wake` evidence when the Archive is writable. A later
+Conclave processing runs independently in the project wake queue. Initial
+queued processing and restart recovery use the same atomic claim for the
+submission transition before waking the model. Each wake records durable
+`conclave-wake` evidence when the Archive is writable. A later
 wake failure does not change the queued acknowledgement or the authoritative
 submission. Inspect the Archive and monitor under the returned Work ID. Missing
 configuration requires `npx --yes --silent github:pesap/khala setup` before

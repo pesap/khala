@@ -11,7 +11,7 @@ import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { listExecutionRecords, readMandate } from "../dist/src/khala-archive-projections.js";
-import { createConclaveCoordinator, enqueueConclaveWake } from "../dist/src/khala-conclave.js";
+import { createConclaveCoordinator, enqueueConclaveWake, recoverPendingSubmissions } from "../dist/src/khala-conclave.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
 import { createHerdrLauncher } from "../dist/src/launch-herdr.js";
 import { createGitWorktreeProvider } from "../dist/src/vcs-git-worktree.js";
@@ -2149,6 +2149,46 @@ test("Work acknowledgement returns while the Conclave queue is blocked and leave
 	}
 });
 
+test("submission scheduling and recovery share one durable wake claim", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-shared-claim-"));
+	const projectPath = join(root, "project");
+	const storage = createFileConclaveStorage();
+	let submittedWakeCount = 0;
+	let recoveryWakeCount = 0;
+	const coordinator = createConclaveCoordinator(
+		join(process.cwd(), "dist", "src", "index.js"),
+		storage,
+		async () => {
+			submittedWakeCount += 1;
+		},
+	);
+	try {
+		await coordinator.submit({
+			workId: "shared-claim-work",
+			projectPath,
+			work: validWork({ title: "Shared durable claim" }),
+		});
+		await recoverPendingSubmissions({
+			projectPath,
+			projectTrusted: false,
+			storage: createFileConclaveStorage(),
+			wake: async () => {
+				recoveryWakeCount += 1;
+			},
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.equal(submittedWakeCount, 0);
+		assert.equal(recoveryWakeCount, 1);
+		const records = listArchiveRecords(projectPath);
+		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-recovery", "conclave-wake"]);
+		assert.equal(records[2].payload.status, "woken");
+	} finally {
+		await coordinator.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("coordinator disposal waits for an already-started submission wake", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-conclave-submit-disposal-"));
 	const projectPath = join(root, "project");
@@ -2186,6 +2226,9 @@ test("coordinator disposal waits for an already-started submission wake", async 
 		await disposal;
 		assert.equal(disposalFinished, true);
 		assert.equal(createFileConclaveStorage().getSubmission(projectPath, "dispose-tracked-work").submission.status, "queued");
+		const records = listArchiveRecords(projectPath);
+		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-recovery", "conclave-wake"]);
+		assert.equal(records[2].payload.status, "woken");
 	} finally {
 		releaseWake();
 		await coordinator.dispose();
@@ -2213,6 +2256,14 @@ test("coordinator disposal cancels a submission wake that has not started", asyn
 			work: validWork({ title: "Cancelled disposal" }),
 		});
 		await coordinator.dispose();
+		await assert.rejects(
+			coordinator.submit({
+				workId: "disposed-work",
+				projectPath,
+				work: validWork({ title: "Disposed coordinator" }),
+			}),
+			/coordinator has been disposed/,
+		);
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(wakeCount, 0);
 		assert.equal(createFileConclaveStorage().getSubmission(projectPath, "dispose-cancelled-work").submission.status, "queued");
@@ -2259,20 +2310,20 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 		assert.equal(acknowledgement.details.status, "queued");
 		assert.match(acknowledgement.content[0].text, /admission and launch remain pending/);
 		let records = listArchiveRecords(projectPath);
-		for (let attempt = 0; attempt < 200 && records.length < 2; attempt += 1) {
+		for (let attempt = 0; attempt < 200 && records.length < 3; attempt += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 			records = listArchiveRecords(projectPath);
 		}
-		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-wake"]);
+		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-recovery", "conclave-wake"]);
 		assert.deepEqual(
 			{
-				status: records[1].payload.status,
-				recovery: records[1].payload.recovery,
-				workId: records[1].payload.workId,
+				status: records[2].payload.status,
+				recovery: records[2].payload.recovery,
+				workId: records[2].payload.workId,
 			},
 			{ status: "failed", recovery: "setup", workId: "wake-failure-work" },
 		);
-		assert.match(records[1].payload.failure, /supervision configuration is incomplete/);
+		assert.match(records[2].payload.failure, /supervision configuration is incomplete/);
 		assert.equal(records.some((record) => record.type === "mandate" || record.type === "execution"), false);
 		assert.throws(
 			() =>
@@ -2280,7 +2331,7 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 					schemaVersion: 2,
 					type: "conclave-wake",
 					workId: "wake-failure-work",
-					payload: { ...records[1].payload, wakeId: "mismatched-wake", workId: "different-work" },
+					payload: { ...records[2].payload, wakeId: "mismatched-wake", workId: "different-work" },
 				}),
 			/inconsistent Archive bindings/,
 		);
@@ -2290,7 +2341,7 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 					schemaVersion: 2,
 					type: "conclave-wake",
 					workId: "wake-failure-work",
-					payload: records[1].payload,
+					payload: records[2].payload,
 				}),
 			/is duplicated/,
 		);
@@ -2338,7 +2389,7 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 	}
 });
 
-test("asynchronous wake evidence failures retain a Conclave-session diagnostic", async () => {
+test("asynchronous submission wake persistence failures retain a Conclave-session diagnostic", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-conclave-wake-evidence-failure-"));
 	const projectPath = join(root, "project");
 	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
@@ -2375,8 +2426,8 @@ test("asynchronous wake evidence failures retain a Conclave-session diagnostic",
 			}
 		}
 		assert.equal(diagnostic.workId, "wake-evidence-failure-work");
-		assert.equal(diagnostic.recovery, "setup");
-		assert.match(diagnostic.message, /wake failed.*Archive evidence could not be persisted/s);
+		assert.equal(diagnostic.recovery, "recreate");
+		assert.match(diagnostic.message, /scheduled Conclave wake failed unexpectedly/);
 		assert.equal(listArchiveRecords(projectPath).at(-1).payload.status, "queued");
 	} finally {
 		await coordinator.dispose();
