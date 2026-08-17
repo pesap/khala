@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -3562,6 +3562,20 @@ test("v2 Verdict records fail closed on incomplete retry handoff metadata", () =
 	assert.equal(
 		isV2Verdict({
 			...base,
+			successorAssignment: { ...base.successorAssignment, acceptanceCriteria: [] },
+		}),
+		false,
+	);
+	assert.equal(
+		isV2Verdict({
+			...base,
+			successorAssignment: { ...base.successorAssignment, validation: ["   "] },
+		}),
+		false,
+	);
+	assert.equal(
+		isV2Verdict({
+			...base,
 			retryHandoff: {
 				failedCriteria: ["Only the criteria are present."],
 				completedWork: [],
@@ -3605,6 +3619,42 @@ test("the Archive rejects a malformed v2 retry Verdict at append time", () => {
 			/Cannot append an invalid Khala Archive record/,
 		);
 		assert.equal(listArchiveRecords(projectPath).length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a persisted malformed v2 retry Verdict fails closed on read", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-retry-read-fail-"));
+	try {
+		const projectPath = join(root, "project");
+		const path = getArchivePath(projectPath);
+		mkdirSync(dirname(path), { recursive: true });
+		appendFileSync(
+			path,
+			`${JSON.stringify({
+				recordId: "malformed-retry-record",
+				schemaVersion: 2,
+				type: "verdict",
+				projectPath,
+				workId: "work-retry",
+				recordedAt: new Date().toISOString(),
+				payload: {
+					workId: "work-retry",
+					executionId: "execution-retry",
+					signalId: "signal-retry",
+					missionId: "mission-retry",
+					governingMandateId: "mandate-retry",
+					issuedByParticipantId: "conclave:test",
+					decision: "retry",
+					reason: "Retry without a handoff.",
+					verdictId: "verdict-malformed",
+					issuedAt: new Date().toISOString(),
+				},
+			})}\n`,
+			"utf8",
+		);
+		assert.throws(() => listArchiveRecords(projectPath), /Invalid Khala Archive record/);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

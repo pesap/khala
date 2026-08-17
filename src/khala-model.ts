@@ -1198,9 +1198,29 @@ function isV2Verdict(value: unknown): value is VerdictRecord {
 	// Retry decisions require both the handoff and the successor assignment; other decisions must
 	// never carry either. Malformed records fail closed instead of projecting an ambiguous retry state.
 	if (record.decision === "retry") {
-		return isRetryHandoff(record.retryHandoff) && isKhalaWork(record.successorAssignment);
+		return isRetryHandoff(record.retryHandoff) && isCompleteSuccessorAssignment(record.successorAssignment);
 	}
 	return record.retryHandoff === undefined && record.successorAssignment === undefined;
+}
+
+// The persisted successor assignment must be as complete as the Verdict tool's creation-time fence
+// (khala-verdict-support isCompleteAssignment); isKhalaWork alone accepts empty criteria arrays.
+function isCompleteSuccessorAssignment(value: unknown): value is KhalaWork {
+	if (!isKhalaWork(value)) {
+		return false;
+	}
+	return (
+		value.title.trim().length > 0 &&
+		value.objective.trim().length > 0 &&
+		value.scope.trim().length > 0 &&
+		value.acceptanceCriteria.length > 0 &&
+		value.acceptanceCriteria.every((item) => item.trim().length > 0) &&
+		value.plan.length > 0 &&
+		value.plan.every((item) => item.trim().length > 0) &&
+		value.validation.length > 0 &&
+		value.validation.every((item) => item.trim().length > 0) &&
+		value.constraints.every((item) => item.trim().length > 0)
+	);
 }
 
 function isVerdictDeliveryStatus(value: unknown): value is VerdictDeliveryStatusValue {
