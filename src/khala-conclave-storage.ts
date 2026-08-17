@@ -72,7 +72,6 @@ interface ConclaveStorage {
 	) => void;
 	admitSubmission: (projectPath: string, workId: string, mandateId: string, projectTrusted?: boolean) => boolean;
 	rejectSubmission: (projectPath: string, workId: string, reason: string, projectTrusted?: boolean) => boolean;
-	requeueSubmission: (projectPath: string, workId: string, projectTrusted?: boolean) => boolean;
 	markSubmissionLaunched: (
 		projectPath: string,
 		workId: string,

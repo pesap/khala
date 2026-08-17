@@ -397,12 +397,7 @@ function registerKhalaTools(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoord
 	registerKhalaArchiveRead(pi, readSessionRole);
 	registerKhalaOracle(pi);
 	registerKhalaCounsel(pi, (context) => readSessionRole(context) === KhalaRole.preserver);
-	registerKhalaVerdict(
-		pi,
-		isDedicatedConclaveSession,
-		conclaveCoordinator.requeueSubmission,
-		conclaveCoordinator.deliverVerdict,
-	);
+	registerKhalaVerdict(pi, isDedicatedConclaveSession, conclaveCoordinator.deliverVerdict);
 	registerKhalaReview(pi, isDedicatedConclaveSession, (projectPath, workId, projectTrusted) =>
 		conclaveCoordinator.wakeReview(projectPath, workId, projectTrusted),
 	);

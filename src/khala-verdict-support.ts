@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import { appendArchiveRecord, appendArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import { type MissionProjection, readCurrentMission, readMandate } from "./khala-archive-projections.js";
 import { resolveTerminalUpstreamCoordinations } from "./khala-coordination.js";
-import { readExecutorRecord, updateExecutorRecord, writeExecutorRecord } from "./khala-executor-registry.js";
+import { readExecutorRecord, writeExecutorRecord } from "./khala-executor-registry.js";
 import {
 	EXECUTION_SCHEMA_VERSION,
 	ExecutorStatus,
@@ -18,7 +18,7 @@ import {
 } from "./khala-model.js";
 import { latestPullRequestForMission, markPullRequestReviewable } from "./khala-review.js";
 import type { readSignal } from "./khala-signal.js";
-import type { NormalizedVerdictInput, RequeueSubmission, VerdictInput } from "./khala-verdict.js";
+import type { NormalizedVerdictInput, VerdictInput } from "./khala-verdict.js";
 
 const PARTICIPANT_HASH_LENGTH = 16;
 
@@ -27,11 +27,10 @@ function processNewVerdict(input: {
 	context: ExtensionContext;
 	signal: NonNullable<ReturnType<typeof readSignal>>;
 	projectTrusted: boolean;
-	requeueSubmission: RequeueSubmission;
 	normalizedParams: NormalizedVerdictInput;
 	reason: string;
 }) {
-	const { params, context, signal, projectTrusted, requeueSubmission, normalizedParams, reason } = input;
+	const { params, context, signal, projectTrusted, normalizedParams, reason } = input;
 	const execution = readExecutorRecord(context.cwd, params.executionId, projectTrusted);
 	if (execution === undefined || execution.status !== ExecutorStatus.running || execution.workId !== params.workId) {
 		throw new Error("A Verdict may only be issued for a current running Executor execution.");
@@ -63,7 +62,6 @@ function processNewVerdict(input: {
 		missionProjection,
 		context,
 		projectTrusted,
-		requeueSubmission,
 	});
 }
 
@@ -82,6 +80,9 @@ function validateMissionVerdict(input: {
 	normalizedRetryHandoff: RetryHandoff | undefined;
 }): MissionVerdictContext {
 	if (input.execution.purpose?.kind !== "mission") {
+		if (input.params.decision === "retry") {
+			throw new Error("Retry requires an active Mission; the legacy submission requeue path is retired.");
+		}
 		return {};
 	}
 	const { missionId } = input.execution.purpose;
@@ -117,9 +118,8 @@ function persistVerdict(input: {
 	missionProjection: MissionProjection | undefined;
 	context: ExtensionContext;
 	projectTrusted: boolean;
-	requeueSubmission: RequeueSubmission;
 }) {
-	const { verdict, missionId, missionProjection, context, projectTrusted, requeueSubmission } = input;
+	const { verdict, missionId, missionProjection, context, projectTrusted } = input;
 	if (missionId !== undefined && verdict.decision === "retry") {
 		return materializeRetryVerdict(verdict, missionProjection, context, projectTrusted);
 	}
@@ -173,10 +173,6 @@ function persistVerdict(input: {
 		{ schemaVersion, type: "verdict", workId: verdict.workId, executionId: verdict.executionId, payload: verdict },
 		projectTrusted,
 	);
-	if (verdict.decision === "retry") {
-		updateExecutorRecord(context.cwd, verdict.executionId, { status: ExecutorStatus.failed }, projectTrusted);
-		return verdictResult(verdict, requeueSubmission(context.cwd, verdict.workId, projectTrusted));
-	}
 	return verdictResult(verdict, false);
 }
 

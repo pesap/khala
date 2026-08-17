@@ -33,7 +33,6 @@ function createFileConclaveStorage(): ConclaveStorage {
 		markSubmissionQueued,
 		admitSubmission,
 		rejectSubmission,
-		requeueSubmission,
 		markSubmissionLaunched,
 		loadConclaveSession,
 		getConclaveSessionPath,
@@ -233,22 +232,6 @@ function rejectSubmission(projectPath: string, workId: string, reason: string, p
 	});
 }
 
-function requeueSubmission(projectPath: string, workId: string, projectTrusted = false): boolean {
-	return withArchiveLock(projectPath, projectTrusted, () => {
-		const snapshot = getSubmission(projectPath, workId, projectTrusted);
-		if (snapshot?.submission.status !== WorkSubmissionStatus.launched) {
-			return false;
-		}
-		appendSubmissionState(
-			projectPath,
-			{ ...clearRuntimeMetadata(snapshot.submission), status: WorkSubmissionStatus.queued },
-			projectTrusted,
-			1,
-		);
-		return true;
-	});
-}
-
 function markSubmissionLaunched(
 	projectPath: string,
 	workId: string,
@@ -285,10 +268,6 @@ function appendSubmissionState(
 }
 function clearReviewMetadata(submission: KhalaWorkSubmission): KhalaWorkSubmission {
 	const { reviewAttemptId: _reviewAttemptId, rejectionReason: _rejectionReason, ...next } = submission;
-	return next;
-}
-function clearRuntimeMetadata(submission: KhalaWorkSubmission): KhalaWorkSubmission {
-	const { target: _target, sandboxPath: _sandboxPath, ...next } = submission;
 	return next;
 }
 

@@ -56,13 +56,11 @@ type NormalizedVerdictInput = Omit<VerdictInput, "retryHandoff" | "successorAssi
 	successorAssignment?: KhalaWork;
 };
 type ConclaveSessionCheck = (context: ExtensionContext) => boolean;
-type RequeueSubmission = (projectPath: string, workId: string, projectTrusted?: boolean) => boolean;
 type VerdictDelivery = (projectPath: string, verdict: VerdictRecord, projectTrusted?: boolean) => Promise<void>;
 
 function registerKhalaVerdict(
 	pi: ExtensionAPI,
 	isConclave: ConclaveSessionCheck,
-	requeueSubmission: RequeueSubmission,
 	deliverVerdict: VerdictDelivery = async () => undefined,
 ): void {
 	pi.registerTool({
@@ -73,7 +71,7 @@ function registerKhalaVerdict(
 		parameters: VERDICT_PARAMETERS,
 		execute: (...args) => {
 			const [, params, , , context] = args;
-			return recordVerdict(params, context, isConclave, requeueSubmission, deliverVerdict);
+			return recordVerdict(params, context, isConclave, deliverVerdict);
 		},
 	});
 }
@@ -82,7 +80,6 @@ function recordVerdict(
 	params: VerdictInput,
 	context: ExtensionContext,
 	isConclave: ConclaveSessionCheck,
-	requeueSubmission: RequeueSubmission,
 	deliverVerdict: VerdictDelivery,
 ) {
 	if (!isConclave(context)) {
@@ -126,7 +123,6 @@ function recordVerdict(
 		context,
 		signal,
 		projectTrusted,
-		requeueSubmission,
 		normalizedParams,
 		reason,
 	}).then(async (result) => {
@@ -190,5 +186,5 @@ function normalizeRetryHandoff(handoff: VerdictInput["retryHandoff"]): RetryHand
 	};
 }
 
-export type { MissionAssignmentInput, NormalizedVerdictInput, RequeueSubmission, VerdictDelivery, VerdictInput };
+export type { MissionAssignmentInput, NormalizedVerdictInput, VerdictDelivery, VerdictInput };
 export { normalizeRetryHandoff, readLatestVerdict, recordVerdict, registerKhalaVerdict };

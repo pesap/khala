@@ -98,7 +98,6 @@ type ConclaveCoordinator = Readonly<{
 	claimSubmission: ConclaveStorage["claimSubmission"];
 	markSubmissionReviewing: ConclaveStorage["markSubmissionReviewing"];
 	markSubmissionQueued: ConclaveStorage["markSubmissionQueued"];
-	requeueSubmission: ConclaveStorage["requeueSubmission"];
 	markSubmissionLaunched: ConclaveStorage["markSubmissionLaunched"];
 	pollBeforeDependentLaunch: (projectPath: string, projectTrusted?: boolean, workId?: string) => Promise<void>;
 	getConclaveSessionPath: ConclaveStorage["getConclaveSessionPath"];
@@ -270,7 +269,6 @@ function createConclaveCoordinator(
 		claimSubmission: storage.claimSubmission,
 		markSubmissionReviewing: storage.markSubmissionReviewing,
 		markSubmissionQueued: storage.markSubmissionQueued,
-		requeueSubmission: storage.requeueSubmission,
 		markSubmissionLaunched: storage.markSubmissionLaunched,
 		pollBeforeDependentLaunch,
 		getConclaveSessionPath: storage.getConclaveSessionPath,

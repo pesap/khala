@@ -1740,15 +1740,10 @@ test("Conclave storage appends submission state to the configured Archive", () =
 		assert.equal(storage.claimSubmission(projectPath, "work-archive"), true);
 		storage.markSubmissionLaunched(projectPath, "work-archive", { sandboxPath: "/tmp/sandbox" });
 		assert.equal(storage.getPendingSubmission(projectPath, "work-archive"), undefined);
-		assert.equal(storage.requeueSubmission(projectPath, "work-archive"), true);
-		assert.equal(storage.getPendingSubmission(projectPath, "work-archive")?.status, "queued");
-		assert.equal(storage.claimSubmission(projectPath, "work-archive"), true);
-		storage.markSubmissionLaunched(projectPath, "work-archive", { sandboxPath: "/tmp/retry-sandbox" });
-		assert.equal(storage.getPendingSubmission(projectPath, "work-archive"), undefined);
 		const records = listArchiveRecords(projectPath);
 		assert.deepEqual(
 			records.filter((record) => record.type === "submission").map((record) => record.payload.status),
-			["queued", "launching", "queued", "launching", "launched", "queued", "launching", "launched"],
+			["queued", "launching", "queued", "launching", "launched"],
 		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
@@ -2946,13 +2941,14 @@ test("role-specific tools record only authorized Archive mutations", async () =>
 			false,
 		);
 
+		// The legacy missionless Retry requeue path is retired: Retry requires an active Mission.
 		const retryStorage = createFileConclaveStorage();
 		const retryWork = {
 			title: "Retry test",
-			objective: "Verify retry requeue.",
+			objective: "Verify the missionless retry gate.",
 			context: "Test context",
 			scope: "Test scope",
-			acceptanceCriteria: ["The submission is requeued."],
+			acceptanceCriteria: ["The missionless retry is rejected."],
 			constraints: [],
 			plan: ["Issue retry."],
 			validation: ["Read the pending submission."],
@@ -2985,21 +2981,25 @@ test("role-specific tools record only authorized Archive mutations", async () =>
 				launcher: "demo",
 			}),
 		);
-		const retryResult = await verdictTool.execute(
-			"retry-verdict",
-			{
-				workId: "work-retry",
-				executionId: "execution-retry",
-				signalId: "signal-retry",
-				decision: "retry",
-				reason: "Retry the blocked execution.",
-			},
-			null,
-			null,
-			conclaveContext,
+		assert.throws(
+			() =>
+				verdictTool.execute(
+					"retry-verdict",
+					{
+						workId: "work-retry",
+						executionId: "execution-retry",
+						signalId: "signal-retry",
+						decision: "retry",
+						reason: "Retry the blocked execution.",
+					},
+					null,
+					null,
+					conclaveContext,
+				),
+			/Retry requires an active Mission/,
 		);
-		assert.match(retryResult.content[0].text, /requeued/);
-		assert.equal(retryStorage.getPendingSubmission(projectPath, "work-retry")?.status, "queued");
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "verdict").length, 1);
+		assert.equal(retryStorage.getSubmission(projectPath, "work-retry").submission.status, "launched");
 
 		const userContext = {
 			...preserverContext,
