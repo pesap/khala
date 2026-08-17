@@ -25,7 +25,7 @@ import {
 import { canRecordPullRequestReview } from "../dist/src/khala-review.js";
 import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
-import { isSignal } from "../dist/src/khala-model.js";
+import { isSignal, isV2Verdict } from "../dist/src/khala-model.js";
 import { buildOracleArguments, buildOracleCommand, parseOracleOutput, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
 import { buildKhalaTriageTemplateInvocation, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
@@ -3522,6 +3522,90 @@ test("Mandate admission is Conclave-only, idempotent, and preserves the source s
 		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("v2 Verdict records fail closed on incomplete retry handoff metadata", () => {
+	const base = {
+		workId: "work-retry",
+		executionId: "execution-retry",
+		signalId: "signal-retry",
+		missionId: "mission-retry",
+		governingMandateId: "mandate-retry",
+		issuedByParticipantId: "conclave:test",
+		decision: "retry",
+		reason: "Retry required.",
+		verdictId: "verdict-retry",
+		issuedAt: new Date().toISOString(),
+		retryHandoff: {
+			failedCriteria: ["The regression is covered."],
+			completedWork: ["The implementation is preserved."],
+			requiredChanges: ["Add the focused test."],
+			nonGoals: ["Do not change model selection."],
+			validation: ["Run the focused test."],
+		},
+		successorAssignment: {
+			title: "Retry Work",
+			objective: "Verify the retry contract.",
+			context: "Retry context.",
+			scope: "Focused scope.",
+			acceptanceCriteria: ["The focused test passes."],
+			constraints: [],
+			plan: ["Apply the required changes."],
+			validation: ["Run the focused test."],
+		},
+	};
+	assert.equal(isV2Verdict(base), true);
+	assert.equal(isV2Verdict({ ...base, retryHandoff: undefined }), false);
+	assert.equal(isV2Verdict({ ...base, successorAssignment: undefined }), false);
+	assert.equal(
+		isV2Verdict({
+			...base,
+			retryHandoff: {
+				failedCriteria: ["Only the criteria are present."],
+				completedWork: [],
+				requiredChanges: [],
+				nonGoals: [],
+				validation: [],
+			},
+		}),
+		false,
+	);
+	const finished = { ...base, decision: "finish", reason: "Accepted.", retryHandoff: undefined, successorAssignment: undefined };
+	assert.equal(isV2Verdict(finished), true);
+	assert.equal(isV2Verdict({ ...finished, retryHandoff: base.retryHandoff }), false);
+	assert.equal(isV2Verdict({ ...finished, successorAssignment: base.successorAssignment }), false);
+});
+
+test("the Archive rejects a malformed v2 retry Verdict at append time", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-retry-append-fail-"));
+	try {
+		const projectPath = join(root, "project");
+		assert.throws(
+			() =>
+				appendArchiveRecord(projectPath, {
+					schemaVersion: 2,
+					type: "verdict",
+					workId: "work-retry",
+					executionId: "execution-retry",
+					payload: {
+						workId: "work-retry",
+						executionId: "execution-retry",
+						signalId: "signal-retry",
+						missionId: "mission-retry",
+						governingMandateId: "mandate-retry",
+						issuedByParticipantId: "conclave:test",
+						decision: "retry",
+						reason: "Retry without a handoff.",
+						verdictId: "verdict-malformed",
+						issuedAt: new Date().toISOString(),
+					},
+				}),
+			/Cannot append an invalid Khala Archive record/,
+		);
+		assert.equal(listArchiveRecords(projectPath).length, 0);
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });

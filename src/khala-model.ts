@@ -1195,7 +1195,12 @@ function isV2Verdict(value: unknown): value is VerdictRecord {
 	) {
 		return false;
 	}
-	return record.decision !== "retry" || isKhalaWork(record.successorAssignment);
+	// Retry decisions require both the handoff and the successor assignment; other decisions must
+	// never carry either. Malformed records fail closed instead of projecting an ambiguous retry state.
+	if (record.decision === "retry") {
+		return isRetryHandoff(record.retryHandoff) && isKhalaWork(record.successorAssignment);
+	}
+	return record.retryHandoff === undefined && record.successorAssignment === undefined;
 }
 
 function isVerdictDeliveryStatus(value: unknown): value is VerdictDeliveryStatusValue {
