@@ -119,6 +119,42 @@ test("scoped polling receives its exact outcome while a global poll is in flight
   poller.dispose();
 });
 
+test("concurrent global and scoped polls run one base transaction per base", async () => {
+  const first = base("one");
+  const second = { ...base("two"), remote: "origin", branch: "feature/upstream" };
+  let calls = 0;
+  let release;
+  const query = new Promise((resolve) => { release = resolve; });
+  const recorded = [];
+  const successes = [];
+  const poller = new UpstreamRefPoller({
+    projectPath: "/project",
+    getBases: () => [first, second],
+    exec: async () => {
+      calls += 1;
+      if (calls === 1) return query;
+      return `${HEAD_B}\trefs/heads/feature/upstream\n`;
+    },
+    recordRevision: (input) => recorded.push(input.supersededBase.executionId),
+    onSuccess: (base) => successes.push(base.executionId),
+    isVerifiedMerged: () => false,
+  });
+  const global = poller.pollNow();
+  const scoped = poller.pollNow({ base: second, remote: second.remote, branch: second.branch });
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  release(`${HEAD_B}\trefs/heads/feature/upstream\n`);
+  const [globalOutcomes, scopedOutcomes] = await Promise.all([global, scoped]);
+  assert.equal(globalOutcomes.length, 2);
+  assert.deepEqual(globalOutcomes.map((item) => item.status), ["changed", "changed"]);
+  assert.equal(scopedOutcomes.length, 1);
+  assert.equal(scopedOutcomes[0].status, "changed");
+  assert.equal(scopedOutcomes[0].base.executionId, second.executionId);
+  assert.deepEqual(recorded.sort(), ["execution-one", "execution-two"]);
+  assert.deepEqual(successes.sort(), ["execution-one", "execution-two"]);
+  poller.dispose();
+});
+
 test("scoped outage retry treats a now-merged inactive base as terminal success", async () => {
   const upstream = base("merged");
   let succeeded = 0;

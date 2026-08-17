@@ -204,6 +204,7 @@ class UpstreamRefPoller {
 	private interval: TimeoutHandle | undefined;
 	private disposed = false;
 	private readonly polling = new Map<string, Promise<readonly PollOutcome[]>>();
+	private readonly basePolls = new Map<string, Promise<PollOutcome>>();
 
 	constructor(options: UpstreamPollerOptions) {
 		const projectTrusted = options.projectTrusted ?? false;
@@ -282,7 +283,28 @@ class UpstreamRefPoller {
 		return Promise.all(bases.map((base) => this.pollBase(base)));
 	}
 
-	private async pollBase(base: UpstreamExecutionBase): Promise<PollOutcome> {
+	// One base transaction per poll window: a concurrent global and a scoped poll for the same base
+	// share the same in-flight transaction (ref query, revision recording, and success callbacks) and
+	// both receive its outcome, instead of running the side effects twice.
+	private pollBase(base: UpstreamExecutionBase): Promise<PollOutcome> {
+		const identity = baseIdentity(base);
+		const existing = this.basePolls.get(identity);
+		if (existing !== undefined) {
+			return existing;
+		}
+		const run = this.runPollBase(base);
+		this.basePolls.set(identity, run);
+		run
+			.finally(() => {
+				if (this.basePolls.get(identity) === run) {
+					this.basePolls.delete(identity);
+				}
+			})
+			.catch(() => undefined);
+		return run;
+	}
+
+	private async runPollBase(base: UpstreamExecutionBase): Promise<PollOutcome> {
 		const identity = baseIdentity(base);
 		const pendingObservation = this.pendingObservations.get(identity);
 		const observedAt = pendingObservation?.observedAt ?? new Date(this.options.clock()).toISOString();
