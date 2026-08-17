@@ -21,3 +21,5 @@ jobs:
       # so a separate --noEmit typecheck pass would be redundant build work.
       - run: npm run lint
       - run: npm run test
+      # Package artifact validation moved from the pre-push hook to the CI gate.
+      - run: npm pack --dry-run
