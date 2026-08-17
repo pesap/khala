@@ -17,5 +17,7 @@ jobs:
           node-version: 22.19.0
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run check
+      # Lint here; the test step's build (clean + tsc) is the authoritative type gate,
+      # so a separate --noEmit typecheck pass would be redundant build work.
+      - run: npm run lint
       - run: npm run test

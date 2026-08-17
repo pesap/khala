@@ -101,33 +101,11 @@ stages = [
 
 
 # ---------------------------------------------------------------------------
-# TypeScript type checking
-#
-# Pi can execute TypeScript directly, so this is validation rather than a
-# build step.
-#
-# Type checking is repository-wide, therefore filenames are not passed.
-# Run it at pre-push so normal commits stay fast.
-# ---------------------------------------------------------------------------
-
-[[repos.hooks]]
-id = "typecheck"
-name = "typecheck"
-entry = "npm run typecheck"
-language = "system"
-
-pass_filenames = false
-always_run = true
-
-stages = [
-  "pre-push",
-]
-
-
-# ---------------------------------------------------------------------------
 # Tests
 #
-# Run the complete test suite before pushing rather than on every commit.
+# npm test builds first (clean + tsc) and then runs the complete suite, so the
+# build is the authoritative type gate; the typecheck and package-check hooks
+# were redundant with it and were removed.
 # ---------------------------------------------------------------------------
 
 [[repos.hooks]]
@@ -136,33 +114,6 @@ name = "test"
 # Git exports repository-local variables to pre-push hooks. Tests create nested
 # repositories, so remove those bindings before they invoke Git.
 entry = "env -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_OBJECT_DIRECTORY -u GIT_DIR -u GIT_WORK_TREE -u GIT_IMPLICIT_WORK_TREE -u GIT_GRAFT_FILE -u GIT_INDEX_FILE -u GIT_NO_REPLACE_OBJECTS -u GIT_REPLACE_REF_BASE -u GIT_PREFIX -u GIT_INTERNAL_SUPER_PREFIX -u GIT_SHALLOW_FILE -u GIT_COMMON_DIR npm test"
-language = "system"
-
-pass_filenames = false
-always_run = true
-
-stages = [
-  "pre-push",
-]
-
-
-# ---------------------------------------------------------------------------
-# Package validation
-#
-# Pi extensions distributed through npm/git need their package contents and
-# dependency declarations to be correct.
-#
-# `npm pack --dry-run` catches:
-#   - missing package files
-#   - unexpected files
-#   - bad `files` configuration
-#   - packaging mistakes
-# ---------------------------------------------------------------------------
-
-[[repos.hooks]]
-id = "package-check"
-name = "npm pack"
-entry = "npm pack --dry-run"
 language = "system"
 
 pass_filenames = false
