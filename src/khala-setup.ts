@@ -208,6 +208,8 @@ function discoverConfiguredModelNames(
 			encoding: "utf8",
 			timeout: options.timeoutMs ?? MODEL_LIST_TIMEOUT_MS,
 			maxBuffer: options.maxBufferBytes ?? MODEL_LIST_MAX_BUFFER_BYTES,
+			// A SIGTERM-handling wrapper would otherwise outlive the timeout and hang setup.
+			killSignal: "SIGKILL",
 		});
 	} catch {
 		// spawnSync throws when stdout or stderr exceeds maxBuffer; never parse partial output.

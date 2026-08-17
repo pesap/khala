@@ -67,3 +67,25 @@ if (args.includes("--list-models")) {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("model-list discovery times out even when the fake Pi ignores SIGTERM", () => {
+	const { root, piPath } = fakePi(`
+const args = process.argv.slice(2);
+if (args.includes("--list-models")) {
+  process.on("SIGTERM", () => {});
+  process.stdout.write("provider conclave 100K 10K yes yes\\n");
+  setInterval(() => {}, 1000);
+} else {
+  process.exit(1);
+}
+`);
+	try {
+		const started = Date.now();
+		const discovery = discoverConfiguredModelNames([piPath], { timeoutMs: 200 });
+		assert.equal(discovery.reason, "Pi model discovery timed out");
+		assert.deepEqual(discovery.models, []);
+		assert.ok(Date.now() - started < 2_000, "discovery must not hang past the timeout");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
