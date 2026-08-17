@@ -3930,6 +3930,29 @@ test("User Pull Request reviews preserve runtime-owned bindings and cannot set r
 				createdAt: now,
 			},
 		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mandate",
+			workId: "pr-work",
+			payload: {
+				mandateId: "pr-mandate",
+				workId: "pr-work",
+				revision: 1,
+				sourceSubmissionRecordId: "pr-submission-record",
+				terms: {
+					title: "PR test",
+					objective: "Verify ownership.",
+					context: "Context.",
+					scope: "Scope.",
+					acceptanceCriteria: ["The runtime bindings are preserved."],
+					constraints: [],
+					plan: ["Record a review."],
+					validation: ["Assert the record."],
+				},
+				admittedByParticipantId: "conclave:test",
+				admittedAt: now,
+			},
+		});
 		appendPullRequestRecord(projectPath, {
 			pullRequestId: "pr-runtime-record",
 			workId: "pr-work",
@@ -4014,6 +4037,24 @@ test("User Pull Request reviews preserve runtime-owned bindings and cannot set r
 		assert.equal(merged.details.url, "https://github.com/example/repo/pull/42");
 		assert.equal(merged.details.headCommit, "b".repeat(40));
 		assert.deepEqual(merged.details.validationResults, ["runtime validation"]);
+
+		updateExecutorRecord(projectPath, "pr-execution", { status: "finished" });
+		const outcome = await tools.get("khala_record_work_outcome").execute(
+			"outcome",
+			{
+				workId: "pr-work",
+				pullRequestId: merged.details.pullRequestId,
+				acceptingActor: "Reviewer Name",
+			},
+			null,
+			null,
+			userContext,
+		);
+		assert.equal(outcome.details.pullRequestId, merged.details.pullRequestId);
+		assert.equal(outcome.details.mergeCommit, "c".repeat(40));
+		assert.equal(outcome.details.finalHeadCommit, "b".repeat(40));
+		assert.deepEqual(outcome.details.validationResults, ["runtime validation"]);
+		assert.deepEqual(outcome.details.reviewFeedback, ["Add the focused test."]);
 
 		await assert.rejects(
 			tools.get("khala_record_pull_request_review").execute(
@@ -4132,6 +4173,41 @@ test("a User cannot record a merge without runtime-confirmed Pull Request eviden
 			/runtime-confirmed Pull Request URL/,
 		);
 		assert.equal(listPullRequestRecords(projectPath).length, 0);
+
+		// A User-created open record cannot be promoted to merged without runtime confirmation.
+		const opened = await tools.get("khala_record_pull_request_review").execute(
+			"open",
+			{
+				workId: "unfinalized-work",
+				executionId: "unfinalized-execution",
+				missionId: "unfinalized-mission",
+				status: "open",
+				reviewFeedback: [],
+				unresolvedGaps: [],
+			},
+			null,
+			null,
+			userContext,
+		);
+		assert.equal(opened.details.status, "open");
+		assert.equal(listPullRequestRecords(projectPath).length, 1);
+		await assert.rejects(
+			tools.get("khala_record_pull_request_review").execute(
+				"merge-from-open",
+				{
+					workId: "unfinalized-work",
+					executionId: "unfinalized-execution",
+					missionId: "unfinalized-mission",
+					status: "merged",
+					mergeCommit: "c".repeat(40),
+				},
+				null,
+				null,
+				userContext,
+			),
+			/runtime-confirmed Pull Request URL/,
+		);
+		assert.equal(listPullRequestRecords(projectPath).at(-1).status, "open");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
