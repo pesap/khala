@@ -20,8 +20,9 @@ work-outcome, coordination, intervention
 ```
 
 Append order is the historical authority. Timestamps do not repair ordering.
-A local process-aware lock protects read-modify-append transitions; the log is
-not a distributed transaction. Corrupt JSON, blank records, invalid envelopes,
+A local process-aware lock protects read-modify-append transitions and
+serializes Conclave model-session mapping rotation across local processes; the
+log is not a distributed transaction. Corrupt JSON, blank records, invalid envelopes,
 and invalid typed payloads fail closed rather than projecting as empty state.
 
 ## Work and lifecycle records
@@ -102,6 +103,15 @@ and completion entries, source entry IDs, deterministic assessment/action ID
 namespace, action reservations/completions, outage checkpoints, budget facts,
 settlement handoffs, and direct User source entries. It is a control audit
 surface, not a transcript mirror.
+
+The Conclave model session is a disposable projection over Archive authority.
+Before opening it with Pi, Khala rotates the mapped session when its file is at
+least 16 MiB or has not been modified for 30 days. Rotation writes a fresh
+Conclave marker and session name, atomically maps the project to that bounded
+session, and preserves the mapped User session. It does not copy the prior
+model transcript or modify the Archive. The prior model-session file remains
+unreferenced in the Conclave sessions directory, and the next wake reconstructs
+current context by reading the authoritative Archive.
 
 Executor Pi sessions remain in their own JSONL files. Supervision stores stable
 entry IDs, bounded message hashes, usage/cost facts, source ranges, prompt

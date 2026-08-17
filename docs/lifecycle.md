@@ -125,6 +125,11 @@ synthetic Signal is created.
 
 ## Recovery and polling
 
+Ordinary Pi `session_start` schedules Conclave recovery after an event-loop
+yield. Startup does not synchronously scan the Archive or open the Conclave
+model session, and background scheduling failures are contained instead of
+becoming unhandled promise rejections.
+
 Session recovery validates the persisted Pi session identity and path, catches
 up its stable entry cursor, and resumes supervision. Missing, corrupt, or
 unrestartable runtime fails only that Execution, closes outstanding

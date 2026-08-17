@@ -8,7 +8,7 @@ import {
 import {
 	getConclaveSessionPath,
 	getConclaveUserSessionPath,
-	loadConclaveSession,
+	loadConclaveSession as loadConclaveModelSession,
 } from "./khala-conclave-session-storage.js";
 import type { ConclaveStorage, SubmissionLaunchResult, SubmissionSnapshot } from "./khala-conclave-storage.js";
 import {
@@ -37,6 +37,13 @@ function createFileConclaveStorage(): ConclaveStorage {
 		getConclaveSessionPath,
 		getConclaveUserSessionPath,
 	};
+}
+
+function loadConclaveSession(projectPath: string, userSessionPath?: string, projectTrusted = false) {
+	const resolvedProjectPath = resolve(projectPath);
+	return withArchiveLock(resolvedProjectPath, projectTrusted, () =>
+		loadConclaveModelSession(resolvedProjectPath, userSessionPath, projectTrusted),
+	);
 }
 
 function submit(request: WorkSubmissionRequest & { projectTrusted?: boolean }): { archivePath: string } {

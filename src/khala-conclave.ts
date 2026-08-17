@@ -124,6 +124,7 @@ function createConclaveCoordinator(
 	storage: ConclaveStorage = createFileConclaveStorage(),
 ): ConclaveCoordinator {
 	const runtimes = new Map<string, Promise<ConclaveRuntime>>();
+	const backgroundTasks = new Set<Promise<void>>();
 	let disposed = false;
 	const submit = async (
 		request: WorkSubmissionRequest & { projectTrusted?: boolean },
@@ -198,23 +199,28 @@ function createConclaveCoordinator(
 	};
 	const resume = (projectPath: string, projectTrusted = false): void => {
 		const resolvedProjectPath = resolve(projectPath);
-		recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
-		recoverPendingSubmissions({
-			projectPath: resolvedProjectPath,
-			projectTrusted,
-			storage,
-			wake: (submission) =>
-				wakeConclave({
-					projectPath: resolvedProjectPath,
-					projectTrusted,
-					workId: submission.workId,
-					archivePath: submission.archivePath,
-					extensionPath,
-					storage,
-					runtimes,
-					disposed: () => disposed,
-				}),
-		}).catch(() => undefined);
+		scheduleConclaveBackgroundTask(backgroundTasks, async () => {
+			if (disposed) {
+				return;
+			}
+			recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
+			await recoverPendingSubmissions({
+				projectPath: resolvedProjectPath,
+				projectTrusted,
+				storage,
+				wake: (submission) =>
+					wakeConclave({
+						projectPath: resolvedProjectPath,
+						projectTrusted,
+						workId: submission.workId,
+						archivePath: submission.archivePath,
+						extensionPath,
+						storage,
+						runtimes,
+						disposed: () => disposed,
+					}),
+			});
+		});
 	};
 
 	const ensureConclaveSession = (
@@ -244,6 +250,7 @@ function createConclaveCoordinator(
 		ensureConclaveSession,
 		dispose: async () => {
 			disposed = true;
+			await Promise.all([...backgroundTasks]);
 			const runtimesToDispose = [...runtimes.values()];
 			runtimes.clear();
 			await disposeHeadlessRuntimes();
@@ -494,6 +501,18 @@ async function recoverPendingSubmissions(options: PendingSubmissionRecoveryOptio
 			}
 		}),
 	);
+}
+
+function scheduleConclaveBackgroundTask(
+	backgroundTasks: Set<Promise<void>>,
+	operation: () => void | Promise<void>,
+): void {
+	let task: Promise<void>;
+	task = new Promise<void>((resolveTask) => setImmediate(resolveTask))
+		.then(operation)
+		.catch(() => undefined)
+		.finally(() => backgroundTasks.delete(task));
+	backgroundTasks.add(task);
 }
 
 function enqueueConclaveWake(runtime: ConclaveRuntime, operation: () => Promise<void>): Promise<void> {
