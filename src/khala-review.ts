@@ -19,8 +19,9 @@ import type { PullRequestRecord, PullRequestStatusValue, WorkOutcomeRecord } fro
 import { isUserSessionRole, type KhalaRoleValue, readSessionRole } from "./khala-role.js";
 
 // The User tool records only User-owned review outcome and evidence fields. Runtime-owned
-// bindings (publication URL/number, branches, commits, changed files, diff summary) and the
-// draft/reviewable statuses are written exclusively by the runtime and preserved here.
+// bindings (publication URL/number, branches, commits, changed files, diff summary, validation
+// evidence) and the draft/reviewable statuses are written exclusively by the runtime; the User
+// reports only the merge commit (an externally observed fact) and review feedback fields.
 const PULL_REQUEST_REVIEW_PARAMETERS = Type.Object({
 	workId: Type.String(),
 	executionId: Type.String(),
@@ -31,12 +32,9 @@ const PULL_REQUEST_REVIEW_PARAMETERS = Type.Object({
 		Type.Literal("merged"),
 		Type.Literal("closed"),
 	]),
-	url: Type.Optional(Type.String()),
-	headCommit: Type.Optional(Type.String()),
 	mergeCommit: Type.Optional(Type.String()),
-	validationResults: Type.Array(Type.String()),
-	reviewFeedback: Type.Array(Type.String()),
-	unresolvedGaps: Type.Array(Type.String()),
+	reviewFeedback: Type.Optional(Type.Array(Type.String())),
+	unresolvedGaps: Type.Optional(Type.Array(Type.String())),
 	reviewer: Type.Optional(Type.String()),
 });
 const WORK_OUTCOME_PARAMETERS = Type.Object({
@@ -197,12 +195,9 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 		throw new Error("Pull Request review requires Work, Execution, and Mission identifiers.");
 	}
 	const reviewFeedback = normalizeArray(input.reviewFeedback ?? []);
-	const validationResults = normalizeArray(input.validationResults ?? []);
+	const unresolvedGaps = normalizeArray(input.unresolvedGaps ?? []);
 	if (status === "merged" && (input.mergeCommit === undefined || input.mergeCommit.trim().length === 0)) {
 		throw new Error("A merged Pull Request requires a merge commit.");
-	}
-	if (status === "merged" && (input.headCommit === undefined || input.headCommit.trim().length === 0)) {
-		throw new Error("A merged Pull Request requires the final head commit.");
 	}
 	if (status === "changes-requested" && reviewFeedback.length === 0) {
 		throw new Error("Changes-requested review requires review feedback.");
@@ -224,27 +219,21 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 		throw new Error("The Pull Request review requires a matching Executor Mission execution.");
 	}
 	const existing = latestPullRequest(context.cwd, input.executionId, projectTrusted);
-	if (status === "merged" && validationResults.length === 0 && (existing?.validationResults?.length ?? 0) === 0) {
-		throw new Error("A merged Pull Request requires validation evidence.");
-	}
 	if (existing !== undefined && (existing.workId !== input.workId || existing.missionId !== input.missionId)) {
 		throw new Error("The Pull Request review does not match the registered Work Mission.");
 	}
-	const suppliedUrl = input.url?.trim();
-	if (
-		existing?.remoteConfirmedAt !== undefined &&
-		suppliedUrl !== undefined &&
-		suppliedUrl.length > 0 &&
-		suppliedUrl !== existing.url
-	) {
-		throw new Error("User review evidence cannot replace the runtime-confirmed Pull Request URL.");
-	}
-	let reviewUrl = suppliedUrl;
-	if ((reviewUrl === undefined || reviewUrl.length === 0) && existing?.url !== undefined) {
-		reviewUrl = existing.url.trim();
-	}
-	if (status === "merged" && (reviewUrl === undefined || reviewUrl.length === 0)) {
-		throw new Error("A merged Pull Request requires a Pull Request URL.");
+	// A merged record requires the runtime-confirmed publication and its recorded evidence;
+	// User input can never populate runtime-owned bindings.
+	if (status === "merged") {
+		if (existing === undefined || existing.remoteConfirmedAt === undefined || existing.url === undefined) {
+			throw new Error("A merged Pull Request requires a runtime-confirmed Pull Request URL.");
+		}
+		if (existing.headCommit === undefined) {
+			throw new Error("A merged Pull Request requires the runtime-recorded final head commit.");
+		}
+		if ((existing.validationResults?.length ?? 0) === 0) {
+			throw new Error("A merged Pull Request requires runtime validation evidence.");
+		}
 	}
 	if (existing?.status === "merged" && status !== "merged") {
 		throw new Error("A merged Pull Request cannot transition back to review or closure.");
@@ -260,29 +249,17 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 	) {
 		throw new Error("A merged Pull Request cannot change its merge commit.");
 	}
-	if (
-		existing?.status === "merged" &&
-		input.headCommit !== undefined &&
-		existing.headCommit !== undefined &&
-		input.headCommit.trim() !== existing.headCommit
-	) {
-		throw new Error("A merged Pull Request cannot change its final head commit.");
-	}
 	const record: PullRequestRecord = {
 		pullRequestId: existing?.pullRequestId ?? nanoid(),
 		workId: input.workId,
 		missionId: input.missionId,
 		executionId: input.executionId,
 		status,
-		...(input.url?.trim() ? { url: input.url.trim() } : existing?.url === undefined ? {} : { url: existing.url }),
+		...(existing?.url === undefined ? {} : { url: existing.url }),
 		...(existing?.number === undefined ? {} : { number: existing.number }),
 		...(existing?.sourceBranch === undefined ? {} : { sourceBranch: existing.sourceBranch }),
 		...(existing?.targetBranch === undefined ? {} : { targetBranch: existing.targetBranch }),
-		...(input.headCommit?.trim()
-			? { headCommit: input.headCommit.trim() }
-			: existing?.headCommit === undefined
-				? {}
-				: { headCommit: existing.headCommit }),
+		...(existing?.headCommit === undefined ? {} : { headCommit: existing.headCommit }),
 		...(existing?.planningCommit === undefined ? {} : { planningCommit: existing.planningCommit }),
 		...(existing?.relatedPullRequestUrl === undefined ? {} : { relatedPullRequestUrl: existing.relatedPullRequestUrl }),
 		...(existing?.remoteConfirmedAt === undefined ? {} : { remoteConfirmedAt: existing.remoteConfirmedAt }),
@@ -293,13 +270,14 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 				: { mergeCommit: existing.mergeCommit }),
 		changedFiles: existing?.changedFiles ?? [],
 		diffSummary: existing?.diffSummary ?? "",
-		validationResults: validationResults.length > 0 ? validationResults : (existing?.validationResults ?? []),
+		validationResults: existing?.validationResults ?? [],
 		reviewFeedback: reviewFeedback.length > 0 ? reviewFeedback : (existing?.reviewFeedback ?? []),
-		unresolvedGaps:
-			normalizeArray(input.unresolvedGaps ?? []).length > 0
-				? normalizeArray(input.unresolvedGaps ?? [])
-				: (existing?.unresolvedGaps ?? []),
-		...(input.reviewer?.trim() ? { reviewer: input.reviewer.trim() } : {}),
+		unresolvedGaps: unresolvedGaps.length > 0 ? unresolvedGaps : (existing?.unresolvedGaps ?? []),
+		...(input.reviewer?.trim()
+			? { reviewer: input.reviewer.trim() }
+			: existing?.reviewer === undefined
+				? {}
+				: { reviewer: existing.reviewer }),
 		recordedAt: new Date().toISOString(),
 	};
 	appendPullRequestRecord(context.cwd, record, projectTrusted);

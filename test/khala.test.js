@@ -10,7 +10,7 @@ import createExtension from "../dist/src/index.js";
 import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords, withArchiveLock } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
-import { listExecutionRecords, readMandate } from "../dist/src/khala-archive-projections.js";
+import { listExecutionRecords, listPullRequestRecords, readMandate } from "../dist/src/khala-archive-projections.js";
 import { createConclaveCoordinator, enqueueConclaveWake, recoverPendingSubmissions } from "../dist/src/khala-conclave.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
 import { createHerdrLauncher } from "../dist/src/launch-herdr.js";
@@ -3974,7 +3974,6 @@ test("User Pull Request reviews preserve runtime-owned bindings and cannot set r
 				executionId: "pr-execution",
 				missionId: "pr-mission",
 				status: "changes-requested",
-				validationResults: [],
 				reviewFeedback: ["Add the focused test."],
 				unresolvedGaps: ["Coverage gap."],
 				reviewer: "Reviewer Name",
@@ -3997,6 +3996,25 @@ test("User Pull Request reviews preserve runtime-owned bindings and cannot set r
 		assert.deepEqual(result.details.validationResults, ["runtime validation"]);
 		assert.deepEqual(wakes, [`${projectPath}:pr-work`]);
 
+		const merged = await tools.get("khala_record_pull_request_review").execute(
+			"merge",
+			{
+				workId: "pr-work",
+				executionId: "pr-execution",
+				missionId: "pr-mission",
+				status: "merged",
+				mergeCommit: "c".repeat(40),
+			},
+			null,
+			null,
+			userContext,
+		);
+		assert.equal(merged.details.status, "merged");
+		assert.equal(merged.details.mergeCommit, "c".repeat(40));
+		assert.equal(merged.details.url, "https://github.com/example/repo/pull/42");
+		assert.equal(merged.details.headCommit, "b".repeat(40));
+		assert.deepEqual(merged.details.validationResults, ["runtime validation"]);
+
 		await assert.rejects(
 			tools.get("khala_record_pull_request_review").execute(
 				"runtime-status",
@@ -4005,7 +4023,6 @@ test("User Pull Request reviews preserve runtime-owned bindings and cannot set r
 					executionId: "pr-execution",
 					missionId: "pr-mission",
 					status: "reviewable",
-					validationResults: [],
 					reviewFeedback: [],
 					unresolvedGaps: [],
 				},
@@ -4017,14 +4034,12 @@ test("User Pull Request reviews preserve runtime-owned bindings and cannot set r
 		);
 		await assert.rejects(
 			tools.get("khala_record_pull_request_review").execute(
-				"replace-url",
+				"merge-without-runtime",
 				{
 					workId: "pr-work",
 					executionId: "pr-execution",
 					missionId: "pr-mission",
 					status: "closed",
-					url: "https://github.com/example/repo/pull/99",
-					validationResults: [],
 					reviewFeedback: [],
 					unresolvedGaps: [],
 				},
@@ -4032,8 +4047,91 @@ test("User Pull Request reviews preserve runtime-owned bindings and cannot set r
 				null,
 				userContext,
 			),
-			/cannot replace the runtime-confirmed Pull Request URL/,
+			/A merged Pull Request cannot transition back/,
 		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a User cannot record a merge without runtime-confirmed Pull Request evidence", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-pr-merge-gate-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const now = new Date().toISOString();
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "unfinalized-execution",
+				workId: "unfinalized-work",
+				executorName: "Unfinalized Executor",
+				kind: "executor",
+				participantId: "executor:unfinalized-execution",
+				purpose: { kind: "mission", missionId: "unfinalized-mission" },
+				missionId: "unfinalized-mission",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "headless-rpc",
+				piSessionId: "unfinalized-session",
+				sessionPath: join(root, "unfinalized-executor.jsonl"),
+				promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+			}),
+		);
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "unfinalized-work",
+			payload: {
+				missionId: "unfinalized-mission",
+				workId: "unfinalized-work",
+				mandateId: "unfinalized-mandate",
+				assignment: {
+					title: "Merge gate test",
+					objective: "Reject merges without runtime evidence.",
+					context: "Context.",
+					scope: "Scope.",
+					acceptanceCriteria: ["The merge is rejected."],
+					constraints: [],
+					plan: ["Record a merge."],
+					validation: ["Assert the rejection."],
+				},
+				assignedParticipantId: "executor:unfinalized-execution",
+				createdAt: now,
+			},
+		});
+		const tools = new Map();
+		registerKhalaReview(
+			createPiStub(new Map(), tools),
+			() => true,
+			async () => {},
+		);
+		const userContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [];
+				},
+			},
+		};
+		await assert.rejects(
+			tools.get("khala_record_pull_request_review").execute(
+				"merge-unfinalized",
+				{
+					workId: "unfinalized-work",
+					executionId: "unfinalized-execution",
+					missionId: "unfinalized-mission",
+					status: "merged",
+					mergeCommit: "c".repeat(40),
+				},
+				null,
+				null,
+				userContext,
+			),
+			/runtime-confirmed Pull Request URL/,
+		);
+		assert.equal(listPullRequestRecords(projectPath).length, 0);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
