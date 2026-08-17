@@ -155,7 +155,7 @@ session.
 | Tool | Purpose | Authorized role |
 | --- | --- | --- |
 | `khala_oracle` | Run a bounded fresh-context read-only review of a named subject; results are advisory. | Any Session |
-| `khala_submit_work` | Submit a complete Work to the project Conclave; an active WorkPacket is optional. | User |
+| `khala_submit_work` | Persist and queue a complete Work for project Conclave review; an active WorkPacket is optional. | User |
 | `khala_read_archive` | Read authoritative Archive records visible to the current role. | Role-filtered |
 | `khala_admit_work` | Admit a Work Submission and create Mandate revision one. | Conclave |
 | `khala_launch_observer` | Launch a read-only Observer to gather missing Work context. | Conclave |
@@ -212,7 +212,7 @@ Khala's own runtime dependencies rather than another Pi runtime.
    `/khala-triage --approve <github-issue>` for independent submission.
 4. For a manual Work, fill in the template, or ask the LLM to call `khala_submit_work` directly.
    `Objective`, `Scope`, `Acceptance criteria`, `Plan`, and `Validation` are required.
-5. The Work is sent to the Project Conclave for admission and launch.
+5. The Work is persisted and queued for independent Project Conclave review. The acknowledgement does not imply admission or launch.
 6. Open `/khala` to watch the Conclave, headless Executor state, Observer panes,
    supervision, and recovery facts. Executors do not create panes.
 7. Inspect the Archive when you need the authoritative lifecycle history.
@@ -292,9 +292,12 @@ these precedence rules. Thinking levels are independent per role, including
 Oracle, and may be empty only to request Pi's explicit thinking default. Missing supervision
 settings fail with setup guidance.
 
-If Work submission persists but the Conclave wake does not complete, Khala
-records a failed `conclave-wake` event, reports the Executor state as unknown,
-and leaves the Work available for inspection and recovery under the same ID. Run
+`khala_submit_work` returns after the queued submission is durable and Conclave
+processing has been scheduled independently. This acknowledgement is not
+admission, Mission materialization, or Executor launch. If the later wake fails,
+Khala records a failed `conclave-wake` event and leaves the Work available for
+inspection and recovery under the same ID. When wake evidence cannot be
+appended, the persisted Conclave session retains the diagnostic. Run
 `npx --yes --silent github:pesap/khala setup` first when configuration is
 missing, then run `/khala-recreate`. For a runtime outage with valid
 configuration, run `/khala-recreate` directly. Do not launch an unsupervised

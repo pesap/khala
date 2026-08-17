@@ -93,7 +93,6 @@ const KhalaWorkLaunchStatus = {
 	held: "held",
 	starting: "starting",
 	launched: "launched",
-	rejected: "rejected",
 } as const;
 
 type KhalaWorkSubmission = Readonly<{

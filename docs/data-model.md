@@ -35,9 +35,11 @@ and invalid typed payloads fail closed rather than projecting as empty state.
   Work. Each persisted attempt records `woken` or `failed`; failures retain the
   exact diagnostic and whether recovery requires setup or Conclave recreation.
   The payload and envelope must bind the same submitted Work, and wake IDs may
-  not repeat. A failed wake does not imply admission or an Executor launch. If
-  evidence cannot be persisted, the submission returns a distinct hard error
-  without reinterpreting whether the wake completed.
+  not repeat. Submission acknowledgement precedes wake processing and means
+  only that the queued submission is durable. A later failed wake does not
+  imply admission or an Executor launch. If wake evidence cannot be appended,
+  the persisted Conclave session retains the diagnostic without changing the
+  queued submission.
 - **Mandate**: `mandateId`, `workId`, positive `revision`, source submission
   `recordId`, immutable copied `terms`, admitting Conclave participant, and
   `admittedAt`. Current admission creates revision one.

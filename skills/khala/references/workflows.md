@@ -10,9 +10,11 @@ runtime check.
 2. State objective, context, scope, acceptance criteria, constraints, plan, and
    validation separately. Do not hide missing context in a recommendation.
 3. Call `khala_submit_work` once the contract is complete. Preserve the returned
-   Work ID and distinguish `queued` from any later Conclave action.
-4. If the wake fails, do not launch a replacement. Inspect the authoritative
-   records and follow the setup or `/khala-recreate` path.
+   Work ID and distinguish the durable `queued` acknowledgement from the
+   independently scheduled Conclave review and every later lifecycle action.
+4. If the Archive later records a failed wake, do not launch a replacement.
+   Inspect the authoritative records and follow the setup or `/khala-recreate`
+   path.
 5. Record review or merge evidence with `khala_record_pull_request_review` only
    when the User has actually observed it. A review record is not acceptance.
 

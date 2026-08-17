@@ -6,11 +6,12 @@ replacement action.
 
 ## Work submission or review wake fails
 
-The Work Submission, Signal, or review evidence may already be durable even
-when its wake reports an error. Read the Archive and keep the same Work ID.
-When a Work-submission wake fails, treat Executor state as unknown. Use the
-reported setup path or `/khala-recreate`; never start a direct replacement
-agent from a shell or another delegation tool.
+A successful Work submission acknowledgement means the queued submission is
+durable; its independently scheduled wake may fail later. Signal or review
+evidence may likewise already be durable when a wake reports an error. Read the
+Archive and keep the same Work ID. When a Work-submission wake fails, treat
+Executor state as unknown. Use the reported setup path or `/khala-recreate`;
+never start a direct replacement agent from a shell or another delegation tool.
 
 ## Observer or Execution launch fails
 

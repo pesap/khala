@@ -30,12 +30,15 @@ or settle anything.
 Use only for a complete User Work contract: objective, scope, acceptance
 criteria, constraints, plan, and validation must be concrete and nonblank.
 `context` and `title` are optional; `workId` may be supplied to preserve a
-stable draft identity. The tool queues a Work Submission and wakes the project
-Conclave. It is intent ingress, not Mandate admission.
+stable draft identity. The tool durably queues a Work Submission, schedules the
+project Conclave wake independently, and returns without waiting for model
+processing. Its `queued` acknowledgement is intent ingress, not Mandate
+admission, Mission materialization, or Executor launch.
 
-If the wake fails, preserve the returned Work ID, treat runtime state as
-unknown, read the Archive and monitor, and follow setup or `/khala-recreate`
-guidance. Never launch a replacement agent from the User session.
+If the Archive later records a failed wake, preserve the returned Work ID,
+treat runtime state as unknown, read the Archive and monitor, and follow setup
+or `/khala-recreate` guidance. Never launch a replacement agent from the User
+session.
 
 ### `khala_record_pull_request_review`
 

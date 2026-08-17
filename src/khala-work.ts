@@ -14,7 +14,6 @@ import { type Static, Type } from "typebox";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import type { ExecutorStarterFactory } from "./khala-executor.js";
 import {
-	type ConclaveWakeFailure,
 	type KhalaWork,
 	KhalaWorkEntryStatus,
 	KhalaWorkLaunchStatus,
@@ -59,10 +58,13 @@ type KhalaWorkDependencies = Readonly<{
 	executorSystemPrompt: string;
 	createExecutorStarter: ExecutorStarterFactory;
 	isDedicatedConclaveSession: (context: ExtensionContext) => boolean;
-	submitWork: (request: { workId: string; projectPath: string; work: KhalaWork; projectTrusted?: boolean }) => Promise<{
-		archivePath: string;
-		wakeFailure?: ConclaveWakeFailure;
-	}>;
+	submitWork: (request: {
+		workId: string;
+		projectPath: string;
+		work: KhalaWork;
+		projectTrusted?: boolean;
+		signal: AbortSignal | undefined;
+	}) => Promise<{ archivePath: string }>;
 	getSubmission: (
 		projectPath: string,
 		workId: string,
@@ -144,19 +146,12 @@ type KhalaWorkLaunchResult =
 				missionId: string;
 				mandateId: string;
 			};
-	  }
-	| {
-			content: [{ type: "text"; text: string }];
-			details: { status: typeof KhalaWorkLaunchStatus.rejected; reason: string };
-			isError: true;
 	  };
 
-type KhalaAdmissionResult =
-	| {
-			content: [{ type: "text"; text: string }];
-			details: { workId: string; mandateId: string; revision: number; status: "admitted" };
-	  }
-	| { content: [{ type: "text"; text: string }]; details: { status: "rejected"; reason: string }; isError: true };
+interface KhalaAdmissionResult {
+	content: [{ type: "text"; text: string }];
+	details: { workId: string; mandateId: string; revision: number; status: "admitted" };
+}
 function registerKhalaWork(pi: ExtensionAPI, dependencies: KhalaWorkDependencies): void {
 	pi.registerCommand("khala-work", {
 		description: "Load the Khala Work template into the Pi editor.",
@@ -179,7 +174,7 @@ function registerKhalaWork(pi: ExtensionAPI, dependencies: KhalaWorkDependencies
 		parameters: ADMIT_WORK_PARAMETERS,
 		execute: (...args) => {
 			const [, params, , , context] = args;
-			return Promise.resolve(admitWork(params, context, dependencies));
+			return Promise.resolve().then(() => admitWork(params, context, dependencies));
 		},
 	});
 	pi.registerTool({
@@ -192,7 +187,7 @@ function registerKhalaWork(pi: ExtensionAPI, dependencies: KhalaWorkDependencies
 		parameters: LAUNCH_EXECUTION_PARAMETERS,
 		execute: (...args) => {
 			const [, params, , , context] = args;
-			return launchExecution(pi, params, context, dependencies);
+			return Promise.resolve().then(() => launchExecution(pi, params, context, dependencies));
 		},
 	});
 }
@@ -212,12 +207,14 @@ function loadWorkTemplate(
 	context.ui.notify("Khala Work template loaded. Fill it out, then submit it to the Conclave.", "info");
 }
 
-function submitValidatedWork(
-	pi: ExtensionAPI,
-	params: KhalaWorkInput,
-	context: ExtensionContext,
-	dependencies: KhalaWorkDependencies,
-): Promise<KhalaWorkLaunchResult> {
+function submitValidatedWork(input: {
+	pi: ExtensionAPI;
+	params: KhalaWorkInput;
+	signal: AbortSignal | undefined;
+	context: ExtensionContext;
+	dependencies: KhalaWorkDependencies;
+}): Promise<KhalaWorkLaunchResult> {
+	const { pi, params, signal, context, dependencies } = input;
 	const role = readSessionRole(context);
 	if (!isUserSessionRole(role)) {
 		return Promise.resolve(rejectedWorkLaunch("Only a User may submit Work."));
@@ -227,7 +224,7 @@ function submitValidatedWork(
 	if (validationErrors.length > 0) {
 		return Promise.resolve(rejectedWorkLaunch(`Khala Work is incomplete:\n- ${validationErrors.join("\n- ")}`));
 	}
-	return queueWork({ pi, work, explicitWorkId: params.workId, context, dependencies });
+	return queueWork({ pi, work, explicitWorkId: params.workId, signal, context, dependencies });
 }
 
 function createSubmitWorkTool(
@@ -243,11 +240,12 @@ function createSubmitWorkTool(
 		executionMode: "sequential",
 		parameters: WORK_PARAMETERS,
 		execute: (...args) => {
-			const [, params, , , context] = args;
-			return submitValidatedWork(pi, params, context, dependencies);
+			const [, params, signal, , context] = args;
+			return Promise.resolve().then(() => submitValidatedWork({ pi, params, signal, context, dependencies }));
 		},
 		renderCall: (args, theme) => renderSubmitWorkCall(args, theme),
-		renderResult: (result, options, theme, context) => renderSubmitWorkResult(result, options, theme, context.args),
+		renderResult: (result, options, theme, context) =>
+			renderSubmitWorkResult({ result, options, theme, params: context.args, isError: context.isError }),
 	};
 }
 
@@ -265,26 +263,25 @@ function renderSubmitWorkCall(args: KhalaWorkInput, theme: Theme): Component {
 	return new Text(theme.fg("toolTitle", theme.bold("khala_submit_work ")) + theme.fg("muted", `"${title}"`), 0, 0);
 }
 
-function renderSubmitWorkResult(
-	result: AgentToolResult<KhalaWorkLaunchResult["details"]>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	params: KhalaWorkInput,
-): Component {
+function renderSubmitWorkResult(input: {
+	result: AgentToolResult<KhalaWorkLaunchResult["details"]>;
+	options: ToolRenderResultOptions;
+	theme: Theme;
+	params: KhalaWorkInput;
+	isError: boolean;
+}): Component {
+	const { result, options, theme, params, isError } = input;
 	if (options.isPartial) {
 		return new Text(theme.fg("warning", "Submitting Khala Work..."), 0, 0);
 	}
 	const { details, content } = result;
-	if (details === undefined) {
+	if (isError || details === undefined) {
 		const [text] = content;
 		let fallback = "";
 		if (text?.type === "text") {
 			fallback = text.text;
 		}
 		return new Text(fallback, 0, 0);
-	}
-	if (details.status === KhalaWorkLaunchStatus.rejected) {
-		return new Text(theme.fg("error", `Work submission rejected: ${details.reason}`), 0, 0);
 	}
 	const work = toKhalaWork(params);
 	let text = renderSubmitWorkStatus(details, work, theme);

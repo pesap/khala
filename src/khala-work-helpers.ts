@@ -11,18 +11,10 @@ import {
 	readMandate,
 } from "./khala-archive-projections.js";
 import type { SubmissionSnapshot } from "./khala-conclave-storage.js";
-import { KHALA_SETUP_COMMAND } from "./khala-config.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import { formatError } from "./khala-error.js";
 import { listLearningRecords } from "./khala-learning.js";
-import type {
-	ConclaveWakeFailure,
-	KhalaWork,
-	KhalaWorkSubmission,
-	LearningRecord,
-	MandateRecord,
-	MissionRecord,
-} from "./khala-model.js";
+import type { KhalaWork, KhalaWorkSubmission, LearningRecord, MandateRecord, MissionRecord } from "./khala-model.js";
 import { KhalaWorkEntryStatus, KhalaWorkLaunchStatus, WorkSubmissionStatus } from "./khala-model.js";
 import { materializeMissingRetrySuccessor, materializeReviewRequestedSuccessor } from "./khala-verdict-recovery.js";
 import type {
@@ -46,7 +38,7 @@ function prepareExecutionLaunch(
 	workId: string,
 	context: ExtensionContext,
 	dependencies: KhalaWorkDependencies,
-): PreparedExecutionLaunch | KhalaWorkLaunchResult {
+): PreparedExecutionLaunch {
 	const projectTrusted = isProjectTrusted(context);
 	const snapshot = dependencies.getSubmission(context.cwd, workId, projectTrusted);
 	if (snapshot === undefined) {
@@ -196,20 +188,12 @@ function launchHold(projectPath: string, workId: string, missionId: string, proj
 	return { coordination, workId, missionId };
 }
 
-function rejectedWorkLaunch(message: string): KhalaWorkLaunchResult {
-	return {
-		content: [{ type: "text", text: message }],
-		details: { status: KhalaWorkLaunchStatus.rejected, reason: message },
-		isError: true,
-	};
+function rejectedWorkLaunch(message: string): never {
+	throw new Error(message);
 }
 
-function rejectedAdmission(message: string): KhalaAdmissionResult {
-	return {
-		content: [{ type: "text", text: message }],
-		details: { status: "rejected", reason: message },
-		isError: true,
-	};
+function rejectedAdmission(message: string): never {
+	throw new Error(message);
 }
 
 function admissionResult(mandate: MandateRecord): KhalaAdmissionResult {
@@ -270,42 +254,20 @@ function admittedSubmissionState(submission: KhalaWorkSubmission, mandateId: str
 	return { ...next, status: WorkSubmissionStatus.admitted, mandateId };
 }
 
-function throwFailedConclaveWake(
-	work: KhalaWork,
-	workId: string,
-	archivePath: string,
-	failure: ConclaveWakeFailure,
-): never {
-	let recovery = "Run `/khala-recreate` to recover the configured project Conclave.";
-	if (failure.recovery === "setup") {
-		recovery = `Run \`${KHALA_SETUP_COMMAND}\` to configure Khala, then run \`/khala-recreate\`.`;
-	}
-	throw new Error(
-		[
-			`Work "${work.title}" was persisted, but durable Conclave wake completion could not be confirmed.`,
-			`Work ID: ${workId}`,
-			`Archive: ${archivePath}`,
-			"Executor state is unknown; inspect the Archive and monitor before recovery.",
-			recovery,
-			"Do not launch a replacement agent outside Khala.",
-			`Cause: ${failure.message}`,
-		].join("\n"),
-	);
-}
-
 function queueWork(input: {
 	pi: ExtensionAPI;
 	work: KhalaWork;
 	explicitWorkId: string | undefined;
+	signal: AbortSignal | undefined;
 	context: ExtensionContext;
 	dependencies: KhalaWorkDependencies;
 }): Promise<KhalaWorkLaunchResult> {
 	// The editor command still supplies a draft ID when one exists, but direct
 	// LLM tool calls must remain usable without session-local Work state.
-	const { pi, work, explicitWorkId, context, dependencies } = input;
+	const { pi, work, explicitWorkId, signal, context, dependencies } = input;
 	const workId = explicitWorkId?.trim() || readLatestWorkDraft(context)?.workId || nanoid();
 	return dependencies
-		.submitWork({ workId, projectPath: context.cwd, work, projectTrusted: isProjectTrusted(context) })
+		.submitWork({ workId, projectPath: context.cwd, work, projectTrusted: isProjectTrusted(context), signal })
 		.then(
 			(queued): KhalaWorkLaunchResult => {
 				pi.appendEntry(KhalaEntryType.work, {
@@ -314,17 +276,14 @@ function queueWork(input: {
 					title: work.title,
 					archivePath: queued.archivePath,
 				});
-				if (queued.wakeFailure !== undefined) {
-					throwFailedConclaveWake(work, workId, queued.archivePath, queued.wakeFailure);
-				}
 				return {
 					content: [
 						{
 							type: "text" as const,
 							text: [
-								`Work "${work.title}" queued for Conclave admission.`,
+								`Work "${work.title}" persisted and queued for Conclave review.`,
 								`Work ID: ${workId}`,
-								"Conclave processing completed; inspect /khala for the current lifecycle state.",
+								"Conclave processing was scheduled; admission and launch remain pending.",
 							].join("\n"),
 						},
 					],
@@ -335,7 +294,9 @@ function queueWork(input: {
 					},
 				};
 			},
-			(error: unknown): KhalaWorkLaunchResult => rejectedWorkLaunch(`Work submission failed: ${formatError(error)}`),
+			(error: unknown): never => {
+				throw new Error(`Work submission failed: ${formatError(error)}`);
+			},
 		);
 }
 

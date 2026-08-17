@@ -41,8 +41,9 @@ Work submission → Conclave review → optional Observer → Mandate
 
 - **Archive** is durable append-only authority; prompts, runtime state, pane
   output, and projections do not establish state.
-- **Work Submission** is User intent ingress; `khala_submit_work` does not admit
-  Work or issue a lifecycle decision.
+- **Work Submission** is User intent ingress. `khala_submit_work` acknowledges
+  durable queuing and independent Conclave scheduling; it does not admit Work,
+  materialize a Mission, launch an Executor, or issue a lifecycle decision.
 - **Mandate** is Conclave admission of one Work revision.
 - **Mission** is the immutable assignment derived from one Mandate. A Retry
   creates a successor; it never rewrites the predecessor.
