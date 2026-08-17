@@ -31,14 +31,13 @@ launch, approve, or settle anything.
 Use `khala_record_pull_request_review` only for review, closure, requested
 changes, or merge facts the User has actually observed for the matching Work,
 Mission, and Execution. The User owns the `open`, `changes-requested`, `closed`,
-and `merged` statuses and the review feedback and evidence fields; the runtime
-owns publication bindings (URL, number, branches, commits, changed files, diff
-summary, validation evidence) and the `draft`/`reviewable` statuses.
+and `merged` statuses, the review feedback fields, and the observed merge commit;
+the runtime owns publication bindings (URL, number, branches, commits, changed
+files, diff summary, validation evidence) and the `draft`/`reviewable` statuses.
 
 - `changes-requested` requires nonempty feedback.
-- `merged` requires a Pull Request URL, final head commit, merge commit, and
-  validation evidence (the runtime's recorded validation evidence is preserved
-  when no new evidence is supplied).
+- `merged` requires a merge commit and a runtime-confirmed Pull Request with
+  recorded URL, final head commit, and validation evidence.
 - The record may wake the Conclave, but it is external review evidence. It does
   not issue a Verdict or establish a Work Outcome.
 
