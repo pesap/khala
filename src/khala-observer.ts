@@ -117,7 +117,7 @@ async function launchObserver(
 		});
 		// Learning closes the Observer pane through its registered launcher target, so a launch without
 		// a closeable target cannot complete its lifecycle; fail the run and requeue the submission.
-		if (launched.target === undefined) {
+		if (launched.target === undefined || launched.target.length === 0) {
 			throw new Error("Observer launch did not return a closeable pane target; the run cannot close its lifecycle.");
 		}
 		updateExecutorRecord(

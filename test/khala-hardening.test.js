@@ -49,6 +49,8 @@ import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
 
 function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}) {
+	const hasExplicitActiveTools = hooks.activeTools !== undefined;
+	const activeTools = new Set(hooks.activeTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"]);
 	return {
 		registerCommand(name, command) {
 			commands.set(name, command);
@@ -57,6 +59,9 @@ function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}
 		registerShortcut() {},
 		registerTool(tool) {
 			tools.set(tool.name, tool);
+			if (!hasExplicitActiveTools) {
+				activeTools.add(tool.name);
+			}
 		},
 		on(name, handler) {
 			hooks.events?.set(name, handler);
@@ -66,6 +71,15 @@ function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}
 		},
 		appendEntry(type, data) {
 			hooks.appendEntry?.(type, data);
+		},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		setActiveTools(names) {
+			activeTools.clear();
+			for (const name of names) {
+				activeTools.add(name);
+			}
 		},
 	};
 }
@@ -1150,6 +1164,105 @@ test("Observer launch without a closeable pane target fails and requeues the sub
 		assert.equal(cleanedUp, true);
 		assert.equal(listExecutorRecords(projectPath).filter((execution) => execution.kind === "observer")[0].status, "failed");
 		assert.equal(storage.getSubmission(projectPath, "observer-work").submission.status, "queued");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the root-registered Observer marker binds khala_record_learning end to end", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-observer-marker-contract-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	const sandboxPath = join(root, "sandbox");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		writeExecutorRecord(
+			createExecutorRecord(
+				{
+					executionId: "observer-execution",
+					workId: "observer-work",
+					executorName: "Adun",
+					kind: "observer",
+					participantId: "observer:observer-execution",
+					purpose: { kind: "observation", submissionRecordId: "observer-submission-record" },
+					projectPath,
+					sandboxPath,
+					launcher: "tmux",
+					target: "session:observer-window",
+				},
+				"running",
+			),
+		);
+		const branch = [];
+		const events = new Map();
+		const flags = new Map([
+			["khala-work-id", "observer-work"],
+			["khala-execution-id", "observer-execution"],
+			["khala-project-path", projectPath],
+			["khala-agent-kind", "observer"],
+		]);
+		const pi = createPiStub(new Map(), new Map(), flags, {
+			events,
+			appendEntry(type, data) {
+				branch.push({ type: "custom", customType: type, data });
+			},
+		});
+		createExtension(pi);
+		events.get("session_start")({}, {
+			cwd: sandboxPath,
+			isProjectTrusted: () => false,
+			sessionManager: {
+				getBranch: () => branch,
+				getEntries: () => branch,
+				getSessionFile: () => undefined,
+				getSessionName: () => "Adun",
+			},
+			ui: { theme: { fg: (_color, text) => text }, setStatus() {} },
+		});
+		const rootMarker = branch.find((entry) => entry.customType === "khala-observer");
+		assert.ok(rootMarker);
+		assert.equal(rootMarker.data.observerName, "Adun");
+		assert.equal("executorName" in rootMarker.data, false);
+
+		const learningTools = new Map();
+		let woken = false;
+		registerKhalaLearning(
+			createPiStub(new Map(), learningTools),
+			async (path, learning) => {
+				woken = true;
+				assert.equal(path, projectPath);
+				assert.equal(learning.observerName, "Adun");
+			},
+			async () => {},
+		);
+		const observerContext = {
+			cwd: sandboxPath,
+			sessionManager: {
+				getBranch() {
+					return branch;
+				},
+				getSessionFile() {
+					return undefined;
+				},
+			},
+		};
+		await learningTools.get("khala_record_learning").execute(
+			"learning",
+			{
+				workId: "observer-work",
+				executionId: "observer-execution",
+				topic: "Repository context",
+				summary: "The relevant context was found.",
+				evidence: ["README describes the behavior."],
+				sourcePaths: ["README.md"],
+			},
+			null,
+			null,
+			observerContext,
+		);
+		assert.equal(woken, true);
+		assert.equal(readExecutorRecord(projectPath, "observer-execution").status, "finished");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
