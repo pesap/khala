@@ -36,6 +36,9 @@ import {
 } from "./khala-model.js";
 
 type MissionProjectionState = "current" | "superseded" | "finished" | "rejected" | "retry-pending";
+// One append-ordered point-in-time view of the Archive: accessors never re-read the file, so
+// records appended after snapshot creation are invisible to it. Accessors return the stored
+// payload references (no defensive copies), matching the aliasing behavior of direct Archive reads.
 type ArchiveSnapshot = Readonly<{
 	listRecords: () => readonly KhalaArchiveRecord[];
 	latestUnresolvedConclaveWake: () => ConclaveWakeRecord | undefined;
@@ -226,8 +229,10 @@ function projectActiveUpstreamBases(projectPath: string, projectTrusted = false)
 	);
 }
 
+// JSON-serialized array key: injective for any strings, unlike a separator-joined key that
+// adversarial identifiers (e.g. containing the separator) could make ambiguous.
 function upstreamBaseKey(workId: string, missionId: string, executionId: string, headCommit: string): string {
-	return `${workId}\u0000${missionId}\u0000${executionId}\u0000${headCommit}`;
+	return JSON.stringify([workId, missionId, executionId, headCommit]);
 }
 
 function activeCoordinationHolds(projectPath: string, projectTrusted = false): CoordinationHold[] {
