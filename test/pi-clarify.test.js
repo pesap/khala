@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import test from "node:test";
 import clarifyExtension, { applyClarifyOutcome, extractClarifyText, USAGE } from "../dist/extensions/pi-clarify/clarify.js";
@@ -335,4 +336,83 @@ test("clarify warns on empty input through the handler", async () => {
 		},
 	});
 	assert.deepEqual(notices, [{ message: USAGE, type: "warning" }]);
+});
+
+initTheme();
+
+test("a ready rewrite whose text starts with 'error:' stays ready through the TUI loader", async () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-clarify-loader-ready-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	const provider = registerClarifyProvider({
+		role: "assistant",
+		content: [{ type: "text", text: "error: documented limitation" }],
+		api: "clarify-test",
+		provider: "clarify-test",
+		model: "rewrite-model",
+		usage: {},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	});
+	writeFileSync(
+		join(agentDir, "khala.json"),
+		JSON.stringify({
+			conclaveModel: `${provider.model.provider}/${provider.model.id}`,
+			conclaveMaxCostUsdPerTurn: 1,
+			executorModel: "provider/executor",
+			executorMaxCostUsdPerTurn: 1,
+		}),
+	);
+	const commands = new Map();
+	const notices = [];
+	let editorText = "";
+	try {
+		clarifyExtension({
+			registerCommand(name, command) {
+				commands.set(name, command);
+			},
+			on() {},
+		});
+		await commands.get("clarify").handler("make search wait", {
+			cwd: agentDir,
+			isProjectTrusted: () => false,
+			hasUI: true,
+			mode: "tui",
+			modelRegistry: {
+				find: () => provider.model,
+				async getApiKeyAndHeaders() {
+					return { ok: true, apiKey: "test-key" };
+				},
+			},
+			ui: {
+				setEditorText(text) {
+					editorText = text;
+				},
+				notify(message, type) {
+					notices.push({ message, type });
+				},
+				custom(factory) {
+					const tui = { requestRender() {} };
+					const theme = { fg: (_color, text) => text };
+					let settle;
+					const pending = new Promise((resolve) => {
+						settle = resolve;
+					});
+					const loader = factory(tui, theme, {}, (outcome) => settle(outcome));
+					// Stop the spinner timer so the test process can exit.
+					if (typeof loader.dispose === "function") {
+						loader.dispose();
+					}
+					return pending;
+				},
+			},
+		});
+		assert.equal(editorText, "error: documented limitation");
+		assert.deepEqual(notices, [{ message: "Rewrite ready. Edit if needed, then send.", type: "info" }]);
+	} finally {
+		provider.cleanup();
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(agentDir, { recursive: true, force: true });
+	}
 });

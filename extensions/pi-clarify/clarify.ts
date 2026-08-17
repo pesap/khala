@@ -156,17 +156,21 @@ async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<ClarifyOutcom
 
 	// Interactive TUI can show a loader. Other hosts fall through to a plain call.
 	if (ctx.mode === "tui" && ctx.hasUI) {
-		const loaded = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+		const loaded = await ctx.ui.custom<ClarifyOutcome | null>((tui, theme, _kb, done) => {
 			const loader = new BorderedLoader(tui, theme, `Clarifying with ${model.provider}/${model.id}...`);
-			loader.onAbort = () => done(null);
+			loader.onAbort = () => done({ result: "cancelled" });
 
 			const run = async () => {
 				try {
 					const result = await callModel(text, model, ctx, loader.signal);
-					done(result);
+					if (result === null) {
+						done({ result: "cancelled" });
+						return;
+					}
+					done({ result: "ready", text: result });
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
-					done(`error:${message}`);
+					done({ result: "failure", reason: message });
 				}
 			};
 
@@ -174,10 +178,7 @@ async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<ClarifyOutcom
 			return loader;
 		});
 		if (loaded !== undefined && loaded !== null) {
-			if (loaded.startsWith("error:")) {
-				return { result: "failure", reason: loaded.slice("error:".length) };
-			}
-			return { result: "ready", text: loaded };
+			return loaded;
 		}
 		return { result: "cancelled" };
 	}
