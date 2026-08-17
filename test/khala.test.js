@@ -27,7 +27,9 @@ import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
 import { isSignal, isV2Verdict } from "../dist/src/khala-model.js";
 import { buildOracleArguments, buildOracleCommand, parseOracleOutput, registerKhalaOracle } from "../dist/src/khala-oracle.js";
+import { materializeMissingRetrySuccessor } from "../dist/src/khala-verdict-recovery.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
+import { ensureMission } from "../dist/src/khala-work-helpers.js";
 import { buildKhalaTriageTemplateInvocation, parseKhalaTriageArgs, registerKhalaTriage } from "../dist/src/khala-triage.js";
 
 function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}) {
@@ -3755,6 +3757,127 @@ test("Mission materialization re-reads Submission and Mandate inside the work lo
 			/must be admitted/,
 		);
 		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 0);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Mission materialization reuses the current Mission after a concurrent Retry supersedes it", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-mission-supersede-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const now = new Date().toISOString();
+		const terms = {
+			title: "Supersede test",
+			objective: "Reuse the successor Mission.",
+			context: "The required repository context is known.",
+			scope: "The temporary test project.",
+			acceptanceCriteria: ["The successor Mission is reused."],
+			constraints: [],
+			plan: ["Read the Archive."],
+			validation: ["Assert the projection."],
+		};
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "submission",
+			workId: "supersede-work",
+			payload: {
+				workId: "supersede-work",
+				projectPath,
+				status: "admitted",
+				mandateId: "supersede-mandate",
+				archivePath: getArchivePath(projectPath),
+				work: terms,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mandate",
+			workId: "supersede-work",
+			payload: {
+				mandateId: "supersede-mandate",
+				workId: "supersede-work",
+				revision: 1,
+				sourceSubmissionRecordId: "supersede-submission-record",
+				terms,
+				admittedByParticipantId: "conclave:test",
+				admittedAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "supersede-work",
+			payload: {
+				missionId: "mission-a",
+				workId: "supersede-work",
+				mandateId: "supersede-mandate",
+				assignment: terms,
+				assignedParticipantId: "executor:mission-a",
+				createdAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "signal",
+			workId: "supersede-work",
+			executionId: "supersede-execution",
+			payload: {
+				signalId: "supersede-signal",
+				workId: "supersede-work",
+				executionId: "supersede-execution",
+				executorName: "Supersede Executor",
+				missionId: "mission-a",
+				participantId: "executor:mission-a",
+				kind: "blocked",
+				summary: "Blocked.",
+				evidence: ["evidence"],
+				observedAt: now,
+			},
+		});
+		const retryVerdict = {
+			workId: "supersede-work",
+			executionId: "supersede-execution",
+			signalId: "supersede-signal",
+			missionId: "mission-a",
+			governingMandateId: "supersede-mandate",
+			issuedByParticipantId: "conclave:test",
+			decision: "retry",
+			reason: "Retry required.",
+			verdictId: "supersede-retry-verdict",
+			issuedAt: now,
+			retryHandoff: {
+				failedCriteria: ["The blocker is resolved."],
+				completedWork: ["The prior attempt is recorded."],
+				requiredChanges: ["Run the corrected lifecycle."],
+				nonGoals: ["Do not broaden scope."],
+				validation: ["Read durable records."],
+			},
+			successorAssignment: terms,
+		};
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "verdict",
+			workId: "supersede-work",
+			executionId: "supersede-execution",
+			payload: retryVerdict,
+		});
+		assert.equal(materializeMissingRetrySuccessor(projectPath, false, retryVerdict), true);
+		const mandate = readMandate(projectPath, "supersede-mandate");
+		assert.ok(mandate);
+		// The caller's pre-lock snapshot would have been Mission A; the locked decision must reuse the successor.
+		const reused = ensureMission({
+			projectPath,
+			projectTrusted: false,
+			workId: "supersede-work",
+			mandate,
+		});
+		assert.notEqual(reused.missionId, "mission-a");
+		assert.equal(reused.predecessorMissionId, "mission-a");
+		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 2);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
