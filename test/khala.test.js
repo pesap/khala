@@ -130,9 +130,9 @@ test("package manifest declares source extensions and exposes Khala commands", (
 	assert.equal(manifest.dependencies.typescript, undefined);
 	assert.equal(manifest.devDependencies.typescript, "5.9.3");
 	for (const [dependency, version] of [
-		["@earendil-works/pi-ai", "0.83.0"],
-		["@earendil-works/pi-coding-agent", "0.83.0"],
-		["@earendil-works/pi-tui", "0.83.0"],
+		["@earendil-works/pi-ai", "0.84.2"],
+		["@earendil-works/pi-coding-agent", "0.84.2"],
+		["@earendil-works/pi-tui", "0.84.2"],
 		["typebox", "1.3.7"],
 	]) {
 		assert.equal(manifest.dependencies[dependency], undefined);
@@ -166,6 +166,61 @@ test("package manifest declares source extensions and exposes Khala commands", (
 	for (const command of ["khala", "khala-work", "khala-triage"]) {
 		assert.ok(commands.has(command), `/${command} should be registered`);
 	}
+});
+
+test("dependency policy approves every install-script package by exact version", () => {
+	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	const lockfile = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+	const policy = manifest.allowScripts ?? {};
+	const installScriptPackages = [];
+	for (const [path, entry] of Object.entries(lockfile.packages)) {
+		if (path === "" || entry.hasInstallScript !== true) {
+			continue;
+		}
+		installScriptPackages.push(`${path.split("node_modules/").pop()}@${entry.version}`);
+	}
+	assert.ok(installScriptPackages.length > 0, "lockfile should list install-script packages");
+	for (const spec of installScriptPackages) {
+		assert.equal(
+			policy[spec],
+			true,
+			`allowScripts must approve ${spec} by exact version; policy is ${JSON.stringify(policy)}`,
+		);
+	}
+	for (const spec of Object.keys(policy)) {
+		assert.match(spec, /^(@[^/]+\/)?[^@]+@\d+\.\d+\.\d+$/);
+	}
+});
+
+test("direct dependencies stay exact-pinned and the lockfile matches the manifest", () => {
+	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	const lockfile = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+	const specs = [
+		...Object.values(manifest.dependencies ?? {}),
+		...Object.values(manifest.devDependencies ?? {}),
+	];
+	for (const [name, override] of Object.entries(manifest.overrides ?? {})) {
+		if (typeof override === "string") {
+			specs.push(override);
+		} else {
+			for (const [nestedName, nestedOverride] of Object.entries(override)) {
+				assert.equal(typeof nestedOverride, "string", `${name}.${nestedName} override must be a string`);
+				specs.push(nestedOverride);
+			}
+		}
+	}
+	for (const spec of specs) {
+		assert.match(spec, /^\d+\.\d+\.\d+$/, `dependency spec must be exact-pinned, got ${JSON.stringify(spec)}`);
+	}
+	const root = lockfile.packages[""];
+	assert.deepEqual(root.dependencies, manifest.dependencies);
+	assert.deepEqual(root.devDependencies, manifest.devDependencies);
+	assert.deepEqual(root.bin, { khala: "bin/khala.js" });
+	assert.equal(manifest.overrides["brace-expansion"], "5.0.9");
+	const braceEntry = Object.entries(lockfile.packages).find(([path, entry]) =>
+		path.endsWith("node_modules/brace-expansion") || path === "node_modules/brace-expansion",
+	)?.[1];
+	assert.equal(braceEntry?.version, "5.0.9", "lockfile must resolve the brace-expansion override");
 });
 
 test("Pi discovers and loads the Khala triage prompt as a dynamic template resource", async () => {
