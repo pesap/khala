@@ -27,11 +27,12 @@ import type { RpcSessionBinding } from "./executor-rpc.js";
 import { appendArchiveRecord, listArchiveRecords } from "./khala-archive.js";
 import { projectActiveUpstreamBases } from "./khala-archive-projections.js";
 import {
+	buildCoordinationDependencyGraph,
 	directRevisionDependents,
 	recordUpstreamRevision,
 	resolveTerminalUpstreamCoordinations,
 } from "./khala-coordination.js";
-import { listExecutorRecords, readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
+import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
 import {
 	type CoordinationDependent,
 	ExecutorStatus,
@@ -394,23 +395,7 @@ function revisionDependents(
 	projectTrusted: boolean,
 	base: UpstreamExecutionBase,
 ): CoordinationDependent[] {
-	const executions = listExecutorRecords(projectPath, projectTrusted);
-	const coordinationRecords = listArchiveRecords(projectPath, projectTrusted).flatMap((record) =>
-		record.type === "coordination" && typeof record.payload === "object" && record.payload !== null
-			? [
-					record.payload as {
-						workId?: unknown;
-						missionId?: unknown;
-						upstreamWorkId?: unknown;
-						upstreamMissionId?: unknown;
-						upstreamExecutionId?: unknown;
-						remote?: unknown;
-						branch?: unknown;
-						upstreamHead?: unknown;
-					},
-				]
-			: [],
-	);
+	const graph = buildCoordinationDependencyGraph(projectPath, projectTrusted);
 	const result: CoordinationDependent[] = [];
 	const seenDependents = new Set<string>();
 	const seenSources = new Set<string>();
@@ -423,7 +408,7 @@ function revisionDependents(
 				continue;
 			}
 			seenSources.add(sourceKey);
-			for (const dependent of directRevisionDependents(projectPath, source, projectTrusted)) {
+			for (const dependent of graph.directDependents(source)) {
 				const key = `${dependent.workId}\u0000${dependent.missionId}\u0000${dependent.executionId ?? ""}`;
 				if (seenDependents.has(key)) {
 					continue;
@@ -432,57 +417,12 @@ function revisionDependents(
 				result.push(dependent);
 			}
 			for (const dependent of result.filter((candidate) => candidate.supersededHead === source.headCommit)) {
-				if (dependent.executionId !== undefined) {
-					for (const execution of executions) {
-						if (
-							execution.workId === dependent.workId &&
-							execution.missionId === dependent.missionId &&
-							execution.executionId === dependent.executionId &&
-							execution.upstreamBase !== undefined
-						) {
-							next.push(...publishedBasesFor(execution.workId, execution.missionId, execution.executionId));
-						}
-					}
-				}
-				for (const record of coordinationRecords) {
-					if (
-						record.upstreamWorkId === dependent.workId &&
-						record.upstreamMissionId === dependent.missionId &&
-						record.upstreamExecutionId === dependent.executionId &&
-						typeOfNonEmpty(record.remote) &&
-						typeOfNonEmpty(record.branch) &&
-						typeOfCommit(record.upstreamHead)
-					) {
-						next.push({
-							kind: "upstream-execution",
-							workId: dependent.workId,
-							missionId: dependent.missionId,
-							executionId: dependent.executionId as string,
-							remote: record.remote,
-							branch: record.branch,
-							headCommit: record.upstreamHead,
-						});
-					}
-				}
+				next.push(...graph.publishedBases(dependent.workId, dependent.missionId, dependent.executionId));
 			}
 		}
 		frontier = next;
 	}
 	return result;
-
-	function publishedBasesFor(workId: string, missionId: string, executionId: string): UpstreamExecutionBase[] {
-		const bases: UpstreamExecutionBase[] = [];
-		for (const candidate of executions) {
-			if (
-				candidate.upstreamBase?.workId === workId &&
-				candidate.upstreamBase.missionId === missionId &&
-				candidate.upstreamBase.executionId === executionId
-			) {
-				bases.push(candidate.upstreamBase);
-			}
-		}
-		return bases;
-	}
 }
 
 function defaultVerifiedMerge(projectPath: string, projectTrusted: boolean, base: UpstreamExecutionBase): boolean {
@@ -961,14 +901,6 @@ async function mandatoryStopExecution(
 		throw new Error("Mandatory stop handoff did not produce exactly one current blocked Signal.");
 	}
 	return marked;
-}
-
-function typeOfNonEmpty(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
-}
-
-function typeOfCommit(value: unknown): value is string {
-	return typeof value === "string" && FULL_COMMIT_PATTERN.test(value);
 }
 
 function errorMessage(error: unknown): string {

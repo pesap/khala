@@ -17,6 +17,9 @@ import {
 	listSignalRecords,
 	listVerdictRecords,
 	projectCoordinations,
+	projectCoordinationsFromRecords,
+	projectMissionsFromRecords,
+	projectRecordsFromRecords,
 	readCurrentMission,
 	readMission,
 	validateProspectiveCoordinationGraph,
@@ -27,6 +30,7 @@ import {
 	type CoordinationRecord,
 	type ExecutorRecord,
 	ExecutorStatus,
+	isExecutorRecord,
 	type MissionRecord,
 	type UpstreamExecutionBase,
 } from "./khala-model.js";
@@ -86,36 +90,10 @@ function orderCoordinationDependents(
 	upstreamMissionId: string,
 	projectTrusted = false,
 ): CoordinationDependent[] {
-	const candidates = projectCoordinations(projectPath, projectTrusted)
-		.filter((candidate) => candidate.active && candidate.latest.relation === "dependency")
-		.map((candidate) => candidate.latest);
-	const ordered: CoordinationDependent[] = [];
-	const seen = new Set<string>();
-	let frontier = [{ workId: upstreamWorkId, missionId: upstreamMissionId }];
-	while (frontier.length > 0) {
-		const next: Array<{ workId: string; missionId: string }> = [];
-		for (const parent of frontier) {
-			for (const latest of candidates) {
-				if (latest.relatedWorkId !== parent.workId || latest.relatedMissionId !== parent.missionId) {
-					continue;
-				}
-				const key = `${latest.workId}\u0000${latest.missionId}`;
-				if (seen.has(key)) {
-					continue;
-				}
-				seen.add(key);
-				ordered.push({
-					workId: latest.workId,
-					missionId: latest.missionId,
-					...(latest.executionId === undefined ? {} : { executionId: latest.executionId }),
-					supersededHead: latest.upstreamHead ?? "",
-				});
-				next.push({ workId: latest.workId, missionId: latest.missionId });
-			}
-		}
-		frontier = next;
-	}
-	return ordered;
+	return buildCoordinationDependencyGraph(projectPath, projectTrusted).orderedDependents(
+		upstreamWorkId,
+		upstreamMissionId,
+	);
 }
 
 function directRevisionDependents(
@@ -123,57 +101,187 @@ function directRevisionDependents(
 	base: UpstreamExecutionBase,
 	projectTrusted = false,
 ): CoordinationDependent[] {
-	const dependents = new Map<string, CoordinationDependent>();
-	for (const execution of listExecutionRecords(projectPath, projectTrusted)) {
-		if (
-			execution.upstreamBase?.workId !== base.workId ||
-			execution.upstreamBase.missionId !== base.missionId ||
-			execution.upstreamBase.executionId !== base.executionId ||
-			execution.upstreamBase.remote !== base.remote ||
-			execution.upstreamBase.branch !== base.branch ||
-			execution.upstreamBase.headCommit !== base.headCommit ||
-			execution.missionId === undefined
-		) {
+	return buildCoordinationDependencyGraph(projectPath, projectTrusted).directDependents(base);
+}
+
+type CoordinationDependencyGraph = Readonly<{
+	directDependents: (base: UpstreamExecutionBase) => CoordinationDependent[];
+	orderedDependents: (upstreamWorkId: string, upstreamMissionId: string) => CoordinationDependent[];
+	publishedBases: (workId: string, missionId: string, executionId: string | undefined) => UpstreamExecutionBase[];
+}>;
+
+function dependentGraphKey(workId: string, missionId: string, executionId: string | undefined): string {
+	return JSON.stringify([workId, missionId, executionId]);
+}
+
+function upstreamBaseGraphKey(base: UpstreamExecutionBase): string {
+	return JSON.stringify([base.workId, base.missionId, base.executionId, base.remote, base.branch, base.headCommit]);
+}
+
+// One private, operation-local graph per coordination read: repeated scans and overlapping maps are
+// replaced by lookup tables keyed by the complete upstream identity (including remote and branch).
+// The graph lives only for the coordination operation that requested it; nothing is cached globally.
+function buildCoordinationDependencyGraph(projectPath: string, projectTrusted = false): CoordinationDependencyGraph {
+	const records = listArchiveRecords(projectPath, projectTrusted);
+	const missionsById = new Map<string, MissionRecord>();
+	for (const projection of projectMissionsFromRecords(records)) {
+		missionsById.set(projection.mission.missionId, projection.mission);
+	}
+	const isCurrentMission = (workId: string, missionId: string): boolean => {
+		const mission = missionsById.get(missionId);
+		return mission !== undefined && mission.workId === workId;
+	};
+	const executions = projectRecordsFromRecords(records, "execution", isExecutorRecord);
+	const coordinations = projectCoordinationsFromRecords(records);
+
+	const directByBase = new Map<string, CoordinationDependent[]>();
+	const addDirectDependent = (base: UpstreamExecutionBase, dependent: CoordinationDependent): void => {
+		const key = upstreamBaseGraphKey(base);
+		const group = directByBase.get(key) ?? [];
+		group.push(dependent);
+		directByBase.set(key, group);
+	};
+	for (const execution of executions) {
+		const base = execution.upstreamBase;
+		if (base === undefined || execution.missionId === undefined) {
 			continue;
 		}
-		const current = readCurrentMission(projectPath, execution.workId, projectTrusted);
-		if (current?.mission.missionId !== execution.missionId || current.state === "superseded") {
+		if (!isCurrentMission(execution.workId, execution.missionId)) {
 			continue;
 		}
-		const dependent: CoordinationDependent = {
+		addDirectDependent(base, {
 			workId: execution.workId,
 			missionId: execution.missionId,
 			executionId: execution.executionId,
 			supersededHead: base.headCommit,
-		};
-		dependents.set(dependentKey(dependent), dependent);
+		});
 	}
-	for (const projection of projectCoordinations(projectPath, projectTrusted)) {
+	for (const projection of coordinations) {
 		const record = projection.latest;
 		if (
 			record.relation !== "dependency" ||
-			record.upstreamWorkId !== base.workId ||
-			record.upstreamMissionId !== base.missionId ||
-			record.upstreamExecutionId !== base.executionId ||
-			record.remote !== base.remote ||
-			record.branch !== base.branch ||
-			record.upstreamHead !== base.headCommit
+			record.upstreamWorkId === undefined ||
+			record.upstreamMissionId === undefined ||
+			record.upstreamExecutionId === undefined ||
+			record.remote === undefined ||
+			record.branch === undefined ||
+			record.upstreamHead === undefined
 		) {
 			continue;
 		}
-		const current = readCurrentMission(projectPath, record.workId, projectTrusted);
-		if (current?.mission.missionId !== record.missionId || current.state === "superseded") {
+		if (!isCurrentMission(record.workId, record.missionId)) {
 			continue;
 		}
-		const dependent: CoordinationDependent = {
-			workId: record.workId,
-			missionId: record.missionId,
-			...(record.executionId === undefined ? {} : { executionId: record.executionId }),
-			supersededHead: base.headCommit,
-		};
-		dependents.set(dependentKey(dependent), dependent);
+		addDirectDependent(
+			{
+				kind: "upstream-execution",
+				workId: record.upstreamWorkId,
+				missionId: record.upstreamMissionId,
+				executionId: record.upstreamExecutionId,
+				remote: record.remote,
+				branch: record.branch,
+				headCommit: record.upstreamHead,
+			},
+			{
+				workId: record.workId,
+				missionId: record.missionId,
+				...(record.executionId === undefined ? {} : { executionId: record.executionId }),
+				supersededHead: record.upstreamHead,
+			},
+		);
 	}
-	return [...dependents.values()].sort((left, right) => dependentKey(left).localeCompare(dependentKey(right)));
+
+	const publishedByDependent = new Map<string, UpstreamExecutionBase[]>();
+	const addPublishedBase = (
+		workId: string,
+		missionId: string,
+		executionId: string | undefined,
+		base: UpstreamExecutionBase,
+	): void => {
+		const key = dependentGraphKey(workId, missionId, executionId);
+		const group = publishedByDependent.get(key) ?? [];
+		group.push(base);
+		publishedByDependent.set(key, group);
+	};
+	for (const execution of executions) {
+		const base = execution.upstreamBase;
+		if (base !== undefined) {
+			addPublishedBase(base.workId, base.missionId, base.executionId, base);
+		}
+	}
+	for (const projection of coordinations) {
+		const record = projection.latest;
+		if (
+			record.relation !== "dependency" ||
+			record.upstreamWorkId === undefined ||
+			record.upstreamMissionId === undefined ||
+			record.upstreamExecutionId === undefined ||
+			record.remote === undefined ||
+			record.branch === undefined ||
+			record.upstreamHead === undefined
+		) {
+			continue;
+		}
+		addPublishedBase(record.upstreamWorkId, record.upstreamMissionId, record.upstreamExecutionId, {
+			kind: "upstream-execution",
+			workId: record.upstreamWorkId,
+			missionId: record.upstreamMissionId,
+			executionId: record.upstreamExecutionId,
+			remote: record.remote,
+			branch: record.branch,
+			headCommit: record.upstreamHead,
+		});
+	}
+
+	const orderedByParent = new Map<string, CoordinationRecord[]>();
+	for (const projection of coordinations) {
+		if (!projection.active || projection.latest.relation !== "dependency") {
+			continue;
+		}
+		const key = dependentGraphKey(projection.latest.relatedWorkId, projection.latest.relatedMissionId, undefined);
+		const group = orderedByParent.get(key) ?? [];
+		group.push(projection.latest);
+		orderedByParent.set(key, group);
+	}
+
+	return {
+		directDependents: (base) => {
+			const unique = new Map<string, CoordinationDependent>();
+			for (const dependent of directByBase.get(upstreamBaseGraphKey(base)) ?? []) {
+				unique.set(dependentKey(dependent), dependent);
+			}
+			return [...unique.values()].sort((left, right) => dependentKey(left).localeCompare(dependentKey(right)));
+		},
+		orderedDependents: (upstreamWorkId, upstreamMissionId) => {
+			const ordered: CoordinationDependent[] = [];
+			const seen = new Set<string>();
+			let frontier = [{ workId: upstreamWorkId, missionId: upstreamMissionId }];
+			while (frontier.length > 0) {
+				const next: Array<{ workId: string; missionId: string }> = [];
+				for (const parent of frontier) {
+					const candidates = orderedByParent.get(dependentGraphKey(parent.workId, parent.missionId, undefined)) ?? [];
+					for (const latest of candidates) {
+						const key = dependentGraphKey(latest.workId, latest.missionId, undefined);
+						if (seen.has(key)) {
+							continue;
+						}
+						seen.add(key);
+						ordered.push({
+							workId: latest.workId,
+							missionId: latest.missionId,
+							...(latest.executionId === undefined ? {} : { executionId: latest.executionId }),
+							supersededHead: latest.upstreamHead ?? "",
+						});
+						next.push({ workId: latest.workId, missionId: latest.missionId });
+					}
+				}
+				frontier = next;
+			}
+			return ordered;
+		},
+		publishedBases: (workId, missionId, executionId) =>
+			publishedByDependent.get(dependentGraphKey(workId, missionId, executionId)) ?? [],
+	};
 }
 
 function releaseCoordination(input: CoordinationPhaseInput & { evidence: PublishedHeadEvidence }): CoordinationRecord {
@@ -1045,6 +1153,7 @@ export type {
 	UpstreamRevisionResult,
 };
 export {
+	buildCoordinationDependencyGraph,
 	directRevisionDependents,
 	invalidateCoordination,
 	materializeCoordinationSuccessor,
