@@ -1,9 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
+
+const CONCLAVE_MODEL_SESSION_MAX_BYTES = 16_777_216;
+const CONCLAVE_MODEL_SESSION_MAX_IDLE_MS = 2_592_000_000;
 
 function getConclaveSessionPath(projectPath: string, projectTrusted = false): string | undefined {
 	const { sessionPath: mappedSessionPath } =
@@ -22,11 +25,19 @@ function getConclaveUserSessionPath(projectPath: string, projectTrusted = false)
 function loadConclaveSession(projectPath: string, userSessionPath?: string, projectTrusted = false): SessionManager {
 	const paths = getProjectPaths(projectPath, projectTrusted);
 	const mapping = readConclaveMapping(paths.mappingPath);
-	if (mapping?.sessionPath !== undefined && existsSync(mapping.sessionPath)) {
+	let mappedUserSessionPath = mapping?.userSessionPath;
+	if (userSessionPath !== undefined && userSessionPath !== mapping?.sessionPath) {
+		mappedUserSessionPath = userSessionPath;
+	}
+	if (
+		mapping?.sessionPath !== undefined &&
+		existsSync(mapping.sessionPath) &&
+		!shouldRotateConclaveModelSession(mapping.sessionPath)
+	) {
 		const sessionManager = SessionManager.open(mapping.sessionPath, paths.sessionDir, projectPath);
 		if (isConclaveSession(sessionManager)) {
-			if (userSessionPath !== undefined && userSessionPath !== mapping.sessionPath) {
-				writeConclaveMapping(paths.mappingPath, mapping.sessionPath, userSessionPath);
+			if (mappedUserSessionPath !== mapping.userSessionPath) {
+				writeConclaveMapping(paths.mappingPath, mapping.sessionPath, mappedUserSessionPath);
 			}
 			return sessionManager;
 		}
@@ -40,8 +51,15 @@ function loadConclaveSession(projectPath: string, userSessionPath?: string, proj
 		return sessionManager;
 	}
 	writeSessionAtomically(sessionPath, sessionManager);
-	writeConclaveMapping(paths.mappingPath, sessionPath, userSessionPath);
+	writeConclaveMapping(paths.mappingPath, sessionPath, mappedUserSessionPath);
 	return SessionManager.open(sessionPath, paths.sessionDir, projectPath);
+}
+
+function shouldRotateConclaveModelSession(sessionPath: string): boolean {
+	const stats = statSync(sessionPath);
+	return (
+		stats.size >= CONCLAVE_MODEL_SESSION_MAX_BYTES || Date.now() - stats.mtimeMs >= CONCLAVE_MODEL_SESSION_MAX_IDLE_MS
+	);
 }
 
 function isConclaveSession(sessionManager: SessionManager): boolean {
@@ -111,4 +129,10 @@ function writeJsonAtomically(path: string, value: unknown): void {
 	renameSync(temporaryPath, path);
 }
 
-export { getConclaveSessionPath, getConclaveUserSessionPath, loadConclaveSession };
+export {
+	CONCLAVE_MODEL_SESSION_MAX_BYTES,
+	CONCLAVE_MODEL_SESSION_MAX_IDLE_MS,
+	getConclaveSessionPath,
+	getConclaveUserSessionPath,
+	loadConclaveSession,
+};

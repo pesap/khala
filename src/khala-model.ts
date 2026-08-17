@@ -11,6 +11,7 @@ type ArchiveSchemaVersion = 1 | 2 | typeof EXECUTION_SCHEMA_VERSION;
 type ArchiveRecordType =
 	| "submission"
 	| "conclave-wake"
+	| "conclave-recovery"
 	| "execution"
 	| "signal"
 	| "counsel"
@@ -92,7 +93,6 @@ const KhalaWorkLaunchStatus = {
 	held: "held",
 	starting: "starting",
 	launched: "launched",
-	rejected: "rejected",
 } as const;
 
 type KhalaWorkSubmission = Readonly<{
@@ -123,6 +123,50 @@ type ConclaveWakeRecord = Readonly<{
 	failure?: string;
 	recovery?: ConclaveWakeRecovery;
 }>;
+
+const CONCLAVE_RECOVERY_CLAIM_LEASE_MS = 60_000;
+const CONCLAVE_RECOVERY_RECORD_CLOCK_SKEW_MS = 5000;
+const ConclaveRecoveryStatus = {
+	claimed: "claimed",
+	renewed: "renewed",
+	exhausted: "exhausted",
+} as const;
+type ConclaveRecoveryClaimRecord = Readonly<{
+	recoveryId: string;
+	workId: string;
+	submissionRecordId: string;
+	status: typeof ConclaveRecoveryStatus.claimed;
+	attempt: number;
+	maxAttempts: number;
+	ownerId: string;
+	claimedAt: string;
+	leaseExpiresAt: string;
+}>;
+type ConclaveRecoveryRenewalRecord = Readonly<{
+	recoveryId: string;
+	workId: string;
+	submissionRecordId: string;
+	status: typeof ConclaveRecoveryStatus.renewed;
+	attempt: number;
+	maxAttempts: number;
+	ownerId: string;
+	renewedAt: string;
+	leaseExpiresAt: string;
+}>;
+type ConclaveRecoveryExhaustedRecord = Readonly<{
+	recoveryId: string;
+	workId: string;
+	submissionRecordId: string;
+	status: typeof ConclaveRecoveryStatus.exhausted;
+	attempt: number;
+	maxAttempts: number;
+	exhaustedAt: string;
+	reason: string;
+}>;
+type ConclaveRecoveryRecord =
+	| ConclaveRecoveryClaimRecord
+	| ConclaveRecoveryRenewalRecord
+	| ConclaveRecoveryExhaustedRecord;
 
 // --- Mandates and Missions --------------------------------------------------
 
@@ -492,6 +536,15 @@ type GuardRecord = Record<string, unknown> &
 		attemptedAt?: unknown;
 		failure?: unknown;
 		recovery?: unknown;
+		recoveryId?: unknown;
+		submissionRecordId?: unknown;
+		attempt?: unknown;
+		maxAttempts?: unknown;
+		ownerId?: unknown;
+		claimedAt?: unknown;
+		renewedAt?: unknown;
+		leaseExpiresAt?: unknown;
+		exhaustedAt?: unknown;
 		projectPath?: unknown;
 		status?: unknown;
 		work?: unknown;
@@ -636,6 +689,7 @@ function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 	return (
 		value === "submission" ||
 		value === "conclave-wake" ||
+		value === "conclave-recovery" ||
 		value === "execution" ||
 		value === "signal" ||
 		value === "counsel" ||
@@ -694,6 +748,7 @@ function isImplicitV2ArchiveRecordType(type: ArchiveRecordType): boolean {
 	return (
 		type === "verdict-delivery" ||
 		type === "conclave-wake" ||
+		type === "conclave-recovery" ||
 		type === "mandate" ||
 		type === "mission" ||
 		type === "pull-request" ||
@@ -726,6 +781,9 @@ function isArchivePayloadLegacy(type: ArchiveRecordType, payload: unknown): bool
 function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean {
 	if (type === "conclave-wake") {
 		return isConclaveWakeRecord(payload);
+	}
+	if (type === "conclave-recovery") {
+		return isConclaveRecoveryRecord(payload);
 	}
 	if (type === "coordination") {
 		return isCoordinationRecord(payload);
@@ -891,6 +949,90 @@ function isConclaveWakeRecord(value: unknown): value is ConclaveWakeRecord {
 		return record.failure === undefined && record.recovery === undefined;
 	}
 	return isNonEmptyString(record.failure) && (record.recovery === "setup" || record.recovery === "recreate");
+}
+
+function isRecoveryLeaseBoundedFromRecord(recordedAt: string, leaseExpiresAt: string): boolean {
+	const recorded = Date.parse(recordedAt);
+	const expires = Date.parse(leaseExpiresAt);
+	return (
+		Number.isFinite(recorded) &&
+		Number.isFinite(expires) &&
+		expires > recorded &&
+		expires - recorded <= CONCLAVE_RECOVERY_CLAIM_LEASE_MS
+	);
+}
+
+function isRecoveryTimestampNearRecord(recordedAt: string, payloadTimestamp: string): boolean {
+	const recorded = Date.parse(recordedAt);
+	const payload = Date.parse(payloadTimestamp);
+	return (
+		Number.isFinite(recorded) &&
+		Number.isFinite(payload) &&
+		Math.abs(recorded - payload) <= CONCLAVE_RECOVERY_RECORD_CLOCK_SKEW_MS
+	);
+}
+
+function isValidRecoveryLease(startedAt: unknown, leaseExpiresAt: unknown): boolean {
+	if (!(isNonEmptyString(startedAt) && isNonEmptyString(leaseExpiresAt))) {
+		return false;
+	}
+	const started = Date.parse(startedAt);
+	const expires = Date.parse(leaseExpiresAt);
+	return (
+		Number.isFinite(started) &&
+		Number.isFinite(expires) &&
+		expires > started &&
+		expires - started <= CONCLAVE_RECOVERY_CLAIM_LEASE_MS
+	);
+}
+
+function isConclaveRecoveryRecord(value: unknown): value is ConclaveRecoveryRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	const common =
+		isNonEmptyString(record.recoveryId) &&
+		isNonEmptyString(record.workId) &&
+		isNonEmptyString(record.submissionRecordId) &&
+		typeof record.attempt === "number" &&
+		Number.isInteger(record.attempt) &&
+		record.attempt > 0 &&
+		typeof record.maxAttempts === "number" &&
+		Number.isInteger(record.maxAttempts) &&
+		record.maxAttempts > 0 &&
+		record.attempt <= record.maxAttempts;
+	if (!common) {
+		return false;
+	}
+	if (record.status === ConclaveRecoveryStatus.claimed) {
+		return (
+			isNonEmptyString(record.ownerId) &&
+			isNonEmptyString(record.claimedAt) &&
+			record.renewedAt === undefined &&
+			isValidRecoveryLease(record.claimedAt, record.leaseExpiresAt) &&
+			record.exhaustedAt === undefined
+		);
+	}
+	if (record.status === ConclaveRecoveryStatus.renewed) {
+		return (
+			isNonEmptyString(record.ownerId) &&
+			record.claimedAt === undefined &&
+			isNonEmptyString(record.renewedAt) &&
+			isValidRecoveryLease(record.renewedAt, record.leaseExpiresAt) &&
+			record.exhaustedAt === undefined
+		);
+	}
+	return (
+		record.status === ConclaveRecoveryStatus.exhausted &&
+		record.attempt === record.maxAttempts &&
+		record.ownerId === undefined &&
+		record.claimedAt === undefined &&
+		record.renewedAt === undefined &&
+		record.leaseExpiresAt === undefined &&
+		isNonEmptyString(record.exhaustedAt) &&
+		isNonEmptyString(record.reason)
+	);
 }
 
 function isExecutorRecord(value: unknown): value is ExecutorRecord {
@@ -1526,13 +1668,120 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 	const interventionGroups = new Map<string, { issuance: boolean; outcome: boolean; identity: string }>();
 	const coordinationInvalidations = new Map<string, CoordinationRecord>();
 	const submissionWorkIds = new Set<string>();
+	const submissionRecordWorkIds = new Map<string, string>();
 	const wakeIds = new Set<string>();
+	const recoveryIds = new Set<string>();
+	const recoveryClaims = new Map<
+		string,
+		{ submissionRecordId: string; workId: string; ownerId: string; attempt: number; leaseExpiresAt: string }
+	>();
+	const recoveriesBySubmission = new Map<
+		string,
+		{
+			attempts: number;
+			maxAttempts: number;
+			exhausted: boolean;
+			completed: boolean;
+			latestRecoveryId?: string;
+			latestLeaseExpiresAt?: string;
+			latestWakeStatus: ConclaveWakeStatusValue | undefined;
+		}
+	>();
 	for (const record of records) {
 		if (record.type === "submission" && isWorkSubmission(record.payload)) {
 			if (record.payload.workId !== record.workId) {
 				throw new Error(`Submission ${record.recordId} has inconsistent Archive bindings.`);
 			}
 			submissionWorkIds.add(record.workId);
+			submissionRecordWorkIds.set(record.recordId, record.workId);
+		}
+		if (record.type === "conclave-recovery" && isConclaveRecoveryRecord(record.payload)) {
+			const recovery = record.payload;
+			if (
+				recovery.workId !== record.workId ||
+				submissionRecordWorkIds.get(recovery.submissionRecordId) !== record.workId
+			) {
+				throw new Error(`Conclave recovery ${recovery.recoveryId} has inconsistent Archive bindings.`);
+			}
+			let state = recoveriesBySubmission.get(recovery.submissionRecordId);
+			if (state === undefined) {
+				state = {
+					attempts: 0,
+					maxAttempts: recovery.maxAttempts,
+					exhausted: false,
+					completed: false,
+					latestWakeStatus: undefined,
+				};
+				recoveriesBySubmission.set(recovery.submissionRecordId, state);
+			}
+			if (state.maxAttempts !== recovery.maxAttempts || state.exhausted || state.completed) {
+				throw new Error(`Conclave recovery ${recovery.recoveryId} has invalid retry state.`);
+			}
+			if (recovery.status === ConclaveRecoveryStatus.claimed) {
+				const previousAttemptSettled =
+					state.attempts === 0 ||
+					state.latestWakeStatus === ConclaveWakeStatus.failed ||
+					(state.latestLeaseExpiresAt !== undefined &&
+						Date.parse(record.recordedAt) >= Date.parse(state.latestLeaseExpiresAt));
+				if (
+					recoveryIds.has(recovery.recoveryId) ||
+					recovery.attempt !== state.attempts + 1 ||
+					!previousAttemptSettled ||
+					!isRecoveryTimestampNearRecord(record.recordedAt, recovery.claimedAt) ||
+					!isRecoveryLeaseBoundedFromRecord(record.recordedAt, recovery.leaseExpiresAt)
+				) {
+					throw new Error(`Conclave recovery ${recovery.recoveryId} has an invalid attempt sequence.`);
+				}
+				recoveryIds.add(recovery.recoveryId);
+				state.attempts = recovery.attempt;
+				state.latestRecoveryId = recovery.recoveryId;
+				state.latestLeaseExpiresAt = recovery.leaseExpiresAt;
+				state.latestWakeStatus = undefined;
+				recoveryClaims.set(recovery.recoveryId, {
+					submissionRecordId: recovery.submissionRecordId,
+					workId: recovery.workId,
+					ownerId: recovery.ownerId,
+					attempt: recovery.attempt,
+					leaseExpiresAt: recovery.leaseExpiresAt,
+				});
+			} else if (recovery.status === ConclaveRecoveryStatus.renewed) {
+				const claim = recoveryClaims.get(recovery.recoveryId);
+				if (
+					claim === undefined ||
+					wakeIds.has(recovery.recoveryId) ||
+					claim.submissionRecordId !== recovery.submissionRecordId ||
+					claim.workId !== recovery.workId ||
+					claim.ownerId !== recovery.ownerId ||
+					claim.attempt !== recovery.attempt ||
+					state.attempts !== recovery.attempt ||
+					state.latestRecoveryId !== recovery.recoveryId ||
+					!isRecoveryTimestampNearRecord(record.recordedAt, recovery.renewedAt) ||
+					!isRecoveryLeaseBoundedFromRecord(record.recordedAt, recovery.leaseExpiresAt) ||
+					Date.parse(record.recordedAt) >= Date.parse(claim.leaseExpiresAt) ||
+					Date.parse(recovery.renewedAt) >= Date.parse(claim.leaseExpiresAt) ||
+					Date.parse(recovery.leaseExpiresAt) <= Date.parse(claim.leaseExpiresAt)
+				) {
+					throw new Error(`Conclave recovery ${recovery.recoveryId} has an invalid lease renewal.`);
+				}
+				claim.leaseExpiresAt = recovery.leaseExpiresAt;
+				state.latestLeaseExpiresAt = recovery.leaseExpiresAt;
+			} else {
+				const finalAttemptSettled =
+					state.latestWakeStatus === ConclaveWakeStatus.failed ||
+					(state.latestLeaseExpiresAt !== undefined &&
+						Date.parse(record.recordedAt) >= Date.parse(state.latestLeaseExpiresAt));
+				if (
+					recoveryIds.has(recovery.recoveryId) ||
+					state.attempts !== recovery.maxAttempts ||
+					recovery.attempt !== state.attempts ||
+					!finalAttemptSettled ||
+					!isRecoveryTimestampNearRecord(record.recordedAt, recovery.exhaustedAt)
+				) {
+					throw new Error(`Conclave recovery ${recovery.recoveryId} exhausted before its retry limit.`);
+				}
+				recoveryIds.add(recovery.recoveryId);
+				state.exhausted = true;
+			}
 		}
 		if (record.type === "conclave-wake" && isConclaveWakeRecord(record.payload)) {
 			if (record.payload.workId !== record.workId || !submissionWorkIds.has(record.workId)) {
@@ -1542,6 +1791,23 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 				throw new Error(`Conclave wake ${record.payload.wakeId} is duplicated.`);
 			}
 			wakeIds.add(record.payload.wakeId);
+			const claim = recoveryClaims.get(record.payload.wakeId);
+			if (claim !== undefined) {
+				if (claim.workId !== record.workId) {
+					throw new Error(`Conclave wake ${record.payload.wakeId} changed its recovery binding.`);
+				}
+				const state = recoveriesBySubmission.get(claim.submissionRecordId);
+				if (
+					state === undefined ||
+					state.exhausted ||
+					state.completed ||
+					state.latestRecoveryId !== record.payload.wakeId
+				) {
+					throw new Error(`Conclave wake ${record.payload.wakeId} has invalid recovery ordering.`);
+				}
+				state.latestWakeStatus = record.payload.status;
+				state.completed = record.payload.status === ConclaveWakeStatus.woken;
+			}
 		}
 		if (record.type === "coordination" && isCoordinationRecord(record.payload)) {
 			const coordination = record.payload;
@@ -1666,6 +1932,10 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 export type {
 	ArchiveRecordType,
 	ArchiveSchemaVersion,
+	ConclaveRecoveryClaimRecord,
+	ConclaveRecoveryExhaustedRecord,
+	ConclaveRecoveryRecord,
+	ConclaveRecoveryRenewalRecord,
 	ConclaveWakeFailure,
 	ConclaveWakeRecord,
 	ConclaveWakeRecovery,
@@ -1713,10 +1983,13 @@ export type {
 	WorkSubmissionStatusValue,
 };
 export {
+	CONCLAVE_RECOVERY_CLAIM_LEASE_MS,
+	ConclaveRecoveryStatus,
 	ConclaveWakeStatus,
 	EXECUTION_SCHEMA_VERSION,
 	ExecutorStatus,
 	isArchiveRecord,
+	isConclaveRecoveryRecord,
 	isConclaveWakeRecord,
 	isCoordinationClassification,
 	isCoordinationRecord,

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -10,6 +13,7 @@ import {
   deltasFromExecutorEntries,
   deterministicActionId,
   deterministicAssessmentId,
+  formatAssessmentPrompt,
   hideAlignedAssessmentResponse,
   readCompletedCursors,
   getSupervisionController,
@@ -150,6 +154,126 @@ test("turn deltas preserve ordered tool calls/results and stable deterministic I
   assert.equal(assessmentId, deterministicAssessmentId("e", "entry-1", "entry-2"));
   assert.equal(deterministicActionId(assessmentId, "steer"), deterministicActionId(assessmentId, "steer"));
   assert.notEqual(deterministicActionId(assessmentId, "steer"), deterministicActionId(assessmentId, "stop"));
+});
+
+test("assessment prompts and persisted inputs use deterministic bounded diagnostic projections", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-payload-bounds-"));
+  try {
+    const hugeDiagnostic = `failure-prefix-${"x".repeat(200_000)}-failure-tail`;
+    const currentMission = {
+      ...mission("bounded"),
+      assignment: { ...mission("bounded").assignment, context: hugeDiagnostic },
+    };
+    const deltas = Array.from({ length: 8 }, (_, index) => {
+      const toolResult = {
+        role: "toolResult",
+        toolCallId: `call-${index}`,
+        toolName: "bash",
+        content: [{ type: "text", text: hugeDiagnostic }],
+        isError: true,
+        timestamp: Date.parse(`2026-01-01T00:00:0${index}.000Z`),
+      };
+      return createTurnDelta({
+        workId: currentMission.workId,
+        missionId: currentMission.missionId,
+        executionId: "bounded",
+        turnIndex: index,
+        message: { ...assistant(hugeDiagnostic), timestamp: toolResult.timestamp },
+        toolResults: [toolResult],
+        sourceEntryIds: [`user-${index}`, `assistant-${index}`, `tool-${index}`],
+      });
+    });
+    const assessmentInput = {
+      assessmentId: deterministicAssessmentId("bounded", "user-0", "tool-7"),
+      conclaveParticipantId: "conclave:test",
+      mission: currentMission,
+      deltas,
+      priorInterventions: Array.from({ length: 50 }, (_, index) => ({
+        interventionId: `intervention-${index}`,
+        executionId: "bounded",
+        phase: "issuance",
+        status: "open",
+        sentAt: `2026-01-01T00:01:${String(index).padStart(2, "0")}.000Z`,
+        failureSummary: hugeDiagnostic,
+      })),
+      currentCoordination: [{ coordinationId: "coordination-1", phase: "decision", status: "active", reason: hugeDiagnostic }],
+      coordinationHolds: [{ workId: currentMission.workId, missionId: currentMission.missionId, relation: "dependency", reason: hugeDiagnostic }],
+      effectiveCostThreshold: 1,
+      candidateMissions: Array.from({ length: 50 }, (_, index) => ({
+        mission: { ...currentMission, missionId: `candidate-${index}`, createdAt: `2026-01-02T00:00:${String(index).padStart(2, "0")}.000Z` },
+        activity: [{ executionId: `candidate-execution-${index}`, status: "running", startedAt: "2026-01-02T00:00:00.000Z" }],
+      })),
+    };
+
+    const firstPrompt = formatAssessmentPrompt(assessmentInput);
+    const repeatedPrompt = formatAssessmentPrompt(assessmentInput);
+    assert.equal(repeatedPrompt, firstPrompt);
+    assert.ok(Buffer.byteLength(firstPrompt, "utf8") <= 28_000);
+    assert.match(firstPrompt, /"assessmentId":"assessment-/);
+    assert.match(firstPrompt, /"workId":"work-bounded"/);
+    assert.match(firstPrompt, /"missionId":"mission-bounded"/);
+    assert.match(firstPrompt, /"executionId":"bounded"/);
+    assert.match(firstPrompt, /"toolName":"bash"/);
+    assert.match(firstPrompt, /"isError":true/);
+    assert.match(firstPrompt, /"timestamp":1767225600000/);
+    assert.match(firstPrompt, /failure-prefix/);
+    assert.match(firstPrompt, /"truncated":true/);
+    assert.doesNotMatch(firstPrompt, /failure-tail/);
+
+    const oversizedSourceEntryId = `source-${"s".repeat(200)}`;
+    const oversizedIdentityDelta = createTurnDelta({
+      workId: currentMission.workId,
+      missionId: currentMission.missionId,
+      executionId: "bounded",
+      message: assistant("bounded"),
+      toolResults: [],
+      sourceEntryIds: [oversizedSourceEntryId],
+    });
+    assert.throws(
+      () => formatAssessmentPrompt({ ...assessmentInput, deltas: [oversizedIdentityDelta] }),
+      /source entry ID exceeds its 160-byte identity limit/,
+    );
+
+    const session = fakeSession();
+    const controller = new SupervisionController({
+      projectPath: root,
+      projectTrusted: false,
+      session,
+      conclaveParticipantId: "conclave:test",
+      conclaveMaxCostUsdPerTurn: 1,
+      executorMaxCostUsdPerTurn: 1,
+    });
+    controller.registerExecution(currentMission, "bounded");
+    const runtime = {
+      getEntries: async () => ({
+        entries: [
+          { type: "message", id: "runtime-user", message: { role: "user", content: "inspect", timestamp: 1 } },
+          { type: "message", id: "runtime-assistant", message: deltas[0].messages[0] },
+          { type: "message", id: "runtime-tool", message: deltas[0].toolResults[0] },
+        ],
+        leafId: "runtime-tool",
+      }),
+    };
+    await controller.handleRuntimeEvent(
+      { workId: currentMission.workId, missionId: currentMission.missionId, executionId: "bounded" },
+      { type: "turn_end", message: deltas[0].messages[0], toolResults: deltas[0].toolResults },
+      runtime,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const call = session.calls.find((candidate) => candidate.message.customType === SUPERVISION_ENTRY_TYPES.assessmentInput);
+    assert.ok(call);
+    assert.ok(Buffer.byteLength(JSON.stringify(call.message), "utf8") <= 36_000);
+    const persisted = session.sessionManager.getEntries().find((entry) => entry.type === "custom_message" && entry.customType === SUPERVISION_ENTRY_TYPES.assessmentInput);
+    assert.ok(persisted);
+    assert.ok(Buffer.byteLength(JSON.stringify(persisted), "utf8") <= 40_000);
+    assert.equal(persisted.details.workId, currentMission.workId);
+    assert.equal(persisted.details.missionId, currentMission.missionId);
+    assert.equal(persisted.details.executionId, "bounded");
+    assert.equal("sourceEntryIds" in persisted.details, false);
+    controller.dispose();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("restart cursor advances only from completed assessment entries and catch-up retains turn order", () => {

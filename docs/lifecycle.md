@@ -31,21 +31,28 @@ changes durable state.
 
 ## Submission and admission
 
-`khala_submit_work` is User intent ingress. It records a queued Work Submission;
-it is not admission. Each submission wake records durable `conclave-wake`
-evidence when the Archive is writable. A wake-evidence persistence failure is
-a hard error and remains distinct from whether the wake itself completed. If
-the wake fails, the tool reports an error, treats Executor state as unknown,
-and preserves the Work under the same ID for inspection and recovery. Missing
+`khala_submit_work` is User intent ingress. It durably records a queued Work
+Submission and returns without waiting for Conclave model processing. Its
+acknowledgement means only that the submission is persisted and Conclave
+processing is scheduled. It does not mean the Work was admitted, a Mission was
+materialized, or an Executor was launched.
+
+Conclave processing runs independently in the project wake queue. Initial
+queued processing and restart recovery use the same atomic claim for the
+submission transition before waking the model. Each wake records durable
+`conclave-wake` evidence when the Archive is writable. A later
+wake failure does not change the queued acknowledgement or the authoritative
+submission. Inspect the Archive and monitor under the returned Work ID. Missing
 configuration requires `npx --yes --silent github:pesap/khala setup` before
 `/khala-recreate`; a configured runtime outage requires only `/khala-recreate`.
-An unsupervised direct-agent
-launch is not a recovery path.
+When wake evidence cannot be appended, Khala records a diagnostic in the
+persisted Conclave session. An unsupervised direct-agent launch is not a
+recovery path.
 
-After a successful wake, the Conclave validates required terms and Work-scoped
-context. If context is insufficient, it launches one read-only Observer. The
-Observer records exactly one Learning record and stops; the Conclave then
-re-reads the authoritative Archive.
+When the Conclave processes the wake, it validates required terms and
+Work-scoped context. If context is insufficient, it launches one read-only
+Observer. The Observer records exactly one Learning record and stops; the
+Conclave then re-reads the authoritative Archive.
 
 `khala_admit_work` creates Mandate revision one from the authoritative
 submission. The Mandate copies the typed Work terms and records the source
@@ -124,6 +131,18 @@ the exact Execution fails and recovery is required; no second prompt or
 synthetic Signal is created.
 
 ## Recovery and polling
+
+Ordinary Pi `session_start` schedules Conclave recovery after an event-loop
+yield. Startup does not synchronously scan the Archive or open the Conclave
+model session, and background scheduling failures are contained instead of
+becoming unhandled promise rejections. Eligible submission recovery uses one
+atomic leased claim per transition, a per-process nonce rather than PID
+ownership, and at most three durable automatic attempts. Timely successful
+renewal keeps a long-running wake claimed while its idempotent outcome is
+reconciled. A missed renewal can expire and permit another attempt; the stale
+owner is then fenced and settles without retrying an impossible completion.
+Submission wakes are tracked
+through coordinator disposal so no model session starts after shutdown.
 
 Session recovery validates the persisted Pi session identity and path, catches
 up its stable entry cursor, and resumes supervision. Missing, corrupt, or

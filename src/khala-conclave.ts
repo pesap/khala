@@ -5,6 +5,7 @@
 // biome-ignore-all lint/complexity/useOptionalChain: Recovery availability is intentionally fail-closed.
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
 	type AgentSession,
@@ -17,10 +18,10 @@ import {
 import { nanoid } from "nanoid";
 import packageMetadata from "../package.json" with { type: "json" };
 import { buildPiArguments, disposeHeadlessRuntimes, getHeadlessRuntime, recoverHeadlessExecutor } from "./executor.js";
-import { appendArchiveRecord, listArchiveRecords } from "./khala-archive.js";
+import { listArchiveRecords } from "./khala-archive.js";
 import { listSignalRecords } from "./khala-archive-projections.js";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
-import type { ConclaveStorage } from "./khala-conclave-storage.js";
+import type { ConclaveStorage, SubmissionRecoveryClaim, SubmissionRecoveryOutcome } from "./khala-conclave-storage.js";
 import { createFileConclaveStorage } from "./khala-conclave-storage-file.js";
 import { KhalaConfigError, loadKhalaConfig } from "./khala-config.js";
 import { formatError } from "./khala-error.js";
@@ -33,10 +34,11 @@ import {
 	writeExecutorRecord,
 } from "./khala-executor-registry.js";
 import {
-	type ConclaveWakeFailure,
+	CONCLAVE_RECOVERY_CLAIM_LEASE_MS,
 	type ConclaveWakeRecovery,
 	type ExecutorRecord,
 	ExecutorStatus,
+	type KhalaWorkSubmission,
 	type LearningRecord,
 	type MissionRecord,
 	type SignalRecord,
@@ -83,10 +85,9 @@ const CONCLAVE_TOOL_ALLOWLIST = [
 	"khala_record_intervention_outcome",
 ] as const;
 type ConclaveCoordinator = Readonly<{
-	submit: (request: WorkSubmissionRequest & { projectTrusted?: boolean }) => Promise<{
-		archivePath: string;
-		wakeFailure?: ConclaveWakeFailure;
-	}>;
+	submit: (
+		request: WorkSubmissionRequest & { projectTrusted?: boolean; signal?: AbortSignal | undefined },
+	) => Promise<{ archivePath: string }>;
 	resume: (projectPath: string, projectTrusted?: boolean) => void;
 	wakeSignal: (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void>;
 	wakeLearning: (projectPath: string, learning: LearningRecord, projectTrusted?: boolean) => Promise<void>;
@@ -120,28 +121,45 @@ interface ConclaveRuntime {
 function createConclaveCoordinator(
 	extensionPath: string,
 	storage: ConclaveStorage = createFileConclaveStorage(),
+	processSubmissionWake: SubmissionWakeProcessor = wakeWorkSubmission,
 ): ConclaveCoordinator {
 	const runtimes = new Map<string, Promise<ConclaveRuntime>>();
+	const backgroundTasks = new Set<Promise<void>>();
+	const backgroundAbort = new AbortController();
 	let disposed = false;
-	const submit = async (
-		request: WorkSubmissionRequest & { projectTrusted?: boolean },
-	): Promise<{ archivePath: string; wakeFailure?: ConclaveWakeFailure }> => {
-		const projectPath = resolve(request.projectPath);
-		const queued = storage.submit({ ...request, projectPath });
-		const wakeFailure = await wakeWorkSubmission({
-			projectPath,
-			projectTrusted: request.projectTrusted ?? false,
-			workId: request.workId,
-			archivePath: queued.archivePath,
-			extensionPath,
-			storage,
-			runtimes,
-			disposed: () => disposed,
-		});
-		if (wakeFailure !== undefined) {
-			return { ...queued, wakeFailure };
+	const submit = (
+		request: WorkSubmissionRequest & { projectTrusted?: boolean; signal?: AbortSignal | undefined },
+	): Promise<{ archivePath: string }> => {
+		if (disposed) {
+			return Promise.reject(
+				new Error("The Khala Conclave coordinator has been disposed; run /khala-recreate to recover it."),
+			);
 		}
-		return queued;
+		request.signal?.throwIfAborted();
+		const projectPath = resolve(request.projectPath);
+		const projectTrusted = request.projectTrusted ?? false;
+		const queued = storage.submit({
+			workId: request.workId,
+			projectPath,
+			work: request.work,
+			projectTrusted,
+		});
+		scheduleConclaveWake(
+			backgroundTasks,
+			{
+				projectPath,
+				projectTrusted,
+				workId: request.workId,
+				archivePath: queued.archivePath,
+				extensionPath,
+				storage,
+				runtimes,
+				abortSignal: backgroundAbort.signal,
+				disposed: () => disposed,
+			},
+			processSubmissionWake,
+		);
+		return Promise.resolve(queued);
 	};
 	const wakeSignal = (projectPath: string, signal: SignalRecord, projectTrusted = false): Promise<void> =>
 		wakeConclave({
@@ -196,19 +214,41 @@ function createConclaveCoordinator(
 	};
 	const resume = (projectPath: string, projectTrusted = false): void => {
 		const resolvedProjectPath = resolve(projectPath);
-		recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
-		for (const submission of storage.getPendingSubmissions(resolvedProjectPath, projectTrusted)) {
-			scheduleConclaveWake({
+		scheduleConclaveBackgroundTask(backgroundTasks, async () => {
+			if (disposed) {
+				return;
+			}
+			recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
+			await recoverPendingSubmissions({
 				projectPath: resolvedProjectPath,
 				projectTrusted,
-				workId: submission.workId,
-				archivePath: submission.archivePath,
-				extensionPath,
 				storage,
-				runtimes,
-				disposed: () => disposed,
+				signal: backgroundAbort.signal,
+				wake: (submission) =>
+					wakeWorkSubmission({
+						projectPath: resolvedProjectPath,
+						projectTrusted,
+						workId: submission.workId,
+						archivePath: submission.archivePath,
+						extensionPath,
+						storage,
+						runtimes,
+						disposed: () => disposed,
+					}),
+				onOutcomePersistenceFailure: (claim, outcome, error) =>
+					recordRecoveryOutcomePersistenceFailure(
+						{
+							projectPath: resolvedProjectPath,
+							projectTrusted,
+							workId: claim.submission.workId,
+							archivePath: claim.submission.archivePath,
+							storage,
+						},
+						outcome,
+						error,
+					),
 			});
-		}
+		});
 	};
 
 	const ensureConclaveSession = (
@@ -238,6 +278,8 @@ function createConclaveCoordinator(
 		ensureConclaveSession,
 		dispose: async () => {
 			disposed = true;
+			backgroundAbort.abort();
+			await Promise.all([...backgroundTasks]);
 			const runtimesToDispose = [...runtimes.values()];
 			runtimes.clear();
 			await disposeHeadlessRuntimes();
@@ -268,63 +310,22 @@ interface WakeRequest {
 	extensionPath: string;
 	storage: ConclaveStorage;
 	runtimes: Map<string, Promise<ConclaveRuntime>>;
+	abortSignal?: AbortSignal;
 	disposed?: () => boolean;
 }
 type SubmissionWakeRequest = WakeRequest & Readonly<{ workId: string; archivePath: string }>;
+type SubmissionWakeProcessor = (request: SubmissionWakeRequest) => Promise<void>;
+type SubmissionWakeDiagnostic = Readonly<{ message: string; recovery: ConclaveWakeRecovery }>;
+type SubmissionWakeDiagnosticRequest = Readonly<{
+	projectPath: string;
+	projectTrusted: boolean;
+	workId: string;
+	archivePath: string;
+	storage: ConclaveStorage;
+}>;
 
-async function wakeWorkSubmission(request: SubmissionWakeRequest): Promise<ConclaveWakeFailure | undefined> {
-	const attemptedAt = new Date().toISOString();
-	const wakeId = nanoid();
-	try {
-		await wakeConclave(request);
-	} catch (error) {
-		const message = formatError(error);
-		const recovery = conclaveWakeRecovery(error);
-		try {
-			appendArchiveRecord(
-				request.projectPath,
-				{
-					schemaVersion: 2,
-					type: "conclave-wake",
-					workId: request.workId,
-					payload: {
-						wakeId,
-						workId: request.workId,
-						status: "failed",
-						attemptedAt,
-						failure: message,
-						recovery,
-					},
-				},
-				request.projectTrusted,
-			);
-		} catch (evidenceError) {
-			return {
-				message: `The Conclave wake failed: ${message}, but its Archive evidence could not be persisted: ${formatError(evidenceError)}`,
-				recovery,
-			};
-		}
-		return { message, recovery };
-	}
-	try {
-		appendArchiveRecord(
-			request.projectPath,
-			{
-				schemaVersion: 2,
-				type: "conclave-wake",
-				workId: request.workId,
-				payload: { wakeId, workId: request.workId, status: "woken", attemptedAt },
-			},
-			request.projectTrusted,
-		);
-	} catch (evidenceError) {
-		return {
-			message: `The Conclave wake completed, but its Archive evidence could not be persisted: ${formatError(evidenceError)}`,
-			recovery: "recreate",
-		};
-	}
-	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy strict return analysis after durable success.
-	return undefined;
+async function wakeWorkSubmission(request: SubmissionWakeRequest): Promise<void> {
+	await wakeConclave(request);
 }
 
 function conclaveWakeRecovery(error: unknown): ConclaveWakeRecovery {
@@ -334,10 +335,14 @@ function conclaveWakeRecovery(error: unknown): ConclaveWakeRecovery {
 	return "recreate";
 }
 
-async function wakeConclave(request: WakeRequest): Promise<void> {
+function assertConclaveCoordinatorActive(request: WakeRequest): void {
 	if (request.disposed?.() === true) {
 		throw new Error("The Khala Conclave coordinator has been disposed; run /khala-recreate to recover it.");
 	}
+}
+
+async function wakeConclave(request: WakeRequest): Promise<void> {
+	assertConclaveCoordinatorActive(request);
 	const runtime = await getRuntime(
 		request.projectPath,
 		request.projectTrusted,
@@ -345,7 +350,9 @@ async function wakeConclave(request: WakeRequest): Promise<void> {
 		request.storage,
 		request.runtimes,
 	);
+	assertConclaveCoordinatorActive(request);
 	const wake = enqueueConclaveWake(runtime, async () => {
+		assertConclaveCoordinatorActive(request);
 		let prompt: string;
 		if (request.learning !== undefined) {
 			prompt = [
@@ -443,8 +450,269 @@ async function getExistingRuntime(
 	}
 }
 
-function scheduleConclaveWake(request: SubmissionWakeRequest): undefined {
-	wakeWorkSubmission(request).catch(() => undefined);
+const RECOVERY_OWNER_ID = `${process.pid}:${nanoid()}`;
+const RECOVERY_COMPLETION_RETRY_DELAY_MS = 250;
+const RECOVERY_LEASE_RENEWALS_PER_LEASE = 3;
+const RECOVERY_LEASE_RENEWAL_INTERVAL_MS = Math.floor(
+	CONCLAVE_RECOVERY_CLAIM_LEASE_MS / RECOVERY_LEASE_RENEWALS_PER_LEASE,
+);
+
+type PendingSubmissionRecoveryOptions = Readonly<{
+	projectPath: string;
+	projectTrusted: boolean;
+	storage: ConclaveStorage;
+	wake: (submission: KhalaWorkSubmission) => Promise<void>;
+	workId?: string;
+	ownerId?: string;
+	leaseRenewalIntervalMs?: number;
+	signal?: AbortSignal;
+	onOutcomePersistenceFailure?: (
+		claim: SubmissionRecoveryClaim,
+		outcome: SubmissionRecoveryOutcome,
+		error: unknown,
+	) => void;
+}>;
+
+async function recoverPendingSubmissions(options: PendingSubmissionRecoveryOptions): Promise<void> {
+	if (isRecoveryAborted(options)) {
+		return;
+	}
+	const candidates = options.storage
+		.getRecoverableSubmissions(options.projectPath, options.projectTrusted)
+		.filter((submission) => options.workId === undefined || submission.workId === options.workId);
+	await Promise.all(
+		candidates.map(async (submission) => {
+			if (isRecoveryAborted(options)) {
+				return;
+			}
+			const claim = options.storage.claimSubmissionRecovery(
+				options.projectPath,
+				submission.workId,
+				options.ownerId ?? RECOVERY_OWNER_ID,
+				options.projectTrusted,
+			);
+			if (claim === undefined) {
+				return;
+			}
+			const stopLeaseRenewal = maintainRecoveryLease(options, claim);
+			try {
+				const attemptedAt = new Date().toISOString();
+				let outcome: SubmissionRecoveryOutcome;
+				if (isRecoveryAborted(options)) {
+					outcome = {
+						status: "failed",
+						attemptedAt,
+						failure: "Conclave recovery was cancelled before its wake began.",
+						recovery: "recreate",
+					};
+				} else {
+					try {
+						await options.wake(claim.submission);
+						outcome = { status: "woken", attemptedAt };
+					} catch (error) {
+						outcome = {
+							status: "failed",
+							attemptedAt,
+							failure: formatError(error),
+							recovery: conclaveWakeRecovery(error),
+						};
+					}
+				}
+				await persistRecoveryOutcome(options, claim, outcome);
+			} finally {
+				await stopLeaseRenewal();
+			}
+		}),
+	);
+}
+
+async function persistRecoveryOutcome(
+	options: PendingSubmissionRecoveryOptions,
+	claim: SubmissionRecoveryClaim,
+	outcome: SubmissionRecoveryOutcome,
+): Promise<void> {
+	let attemptedPersistence = false;
+	let reportedPersistenceFailure = false;
+	for (;;) {
+		if (attemptedPersistence && isRecoveryAborted(options)) {
+			return;
+		}
+		try {
+			attemptedPersistence = true;
+			options.storage.completeSubmissionRecovery(options.projectPath, claim, outcome, options.projectTrusted);
+			// A false result is definitive claim loss, not a retryable storage failure.
+			return;
+		} catch (error) {
+			if (!reportedPersistenceFailure) {
+				reportedPersistenceFailure = true;
+				reportRecoveryOutcomePersistenceFailure(options, claim, outcome, error);
+			}
+			if (isRecoveryAborted(options)) {
+				return;
+			}
+			await waitForRecoveryRetry(options.signal);
+		}
+	}
+}
+
+function reportRecoveryOutcomePersistenceFailure(
+	options: PendingSubmissionRecoveryOptions,
+	claim: SubmissionRecoveryClaim,
+	outcome: SubmissionRecoveryOutcome,
+	error: unknown,
+): void {
+	try {
+		options.onOutcomePersistenceFailure?.(claim, outcome, error);
+	} catch {
+		// A session diagnostic cannot replace the authoritative retry path.
+	}
+}
+
+function isRecoveryAborted(options: PendingSubmissionRecoveryOptions): boolean {
+	return options.signal?.aborted === true;
+}
+
+function waitForRecoveryRetry(signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolveRetry) => {
+		const timer = setTimeout(finish, RECOVERY_COMPLETION_RETRY_DELAY_MS);
+		function finish(): void {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", finish);
+			resolveRetry();
+		}
+		signal?.addEventListener("abort", finish, { once: true });
+	});
+}
+
+function maintainRecoveryLease(
+	options: PendingSubmissionRecoveryOptions,
+	claim: SubmissionRecoveryClaim,
+): () => Promise<void> {
+	let stopped = false;
+	let cancelDelay: (() => void) | undefined;
+	const wait = (milliseconds: number): Promise<void> =>
+		new Promise((resolveWait) => {
+			const timer = setTimeout(() => {
+				cancelDelay = undefined;
+				resolveWait();
+			}, milliseconds);
+			cancelDelay = () => {
+				clearTimeout(timer);
+				cancelDelay = undefined;
+				resolveWait();
+			};
+		});
+	const renewal = (async () => {
+		let delay = options.leaseRenewalIntervalMs ?? RECOVERY_LEASE_RENEWAL_INTERVAL_MS;
+		while (!(stopped || isRecoveryAborted(options))) {
+			await wait(delay);
+			if (stopped || isRecoveryAborted(options)) {
+				return;
+			}
+			try {
+				if (!options.storage.renewSubmissionRecovery(options.projectPath, claim, options.projectTrusted)) {
+					return;
+				}
+				delay = options.leaseRenewalIntervalMs ?? RECOVERY_LEASE_RENEWAL_INTERVAL_MS;
+			} catch {
+				delay = RECOVERY_COMPLETION_RETRY_DELAY_MS;
+			}
+		}
+	})();
+	return async () => {
+		stopped = true;
+		cancelDelay?.();
+		await renewal;
+	};
+}
+
+function scheduleConclaveBackgroundTask(
+	backgroundTasks: Set<Promise<void>>,
+	operation: () => void | Promise<void>,
+): void {
+	let task: Promise<void>;
+	task = new Promise<void>((resolveTask) => setImmediate(resolveTask))
+		.then(operation)
+		.catch(() => undefined)
+		.finally(() => backgroundTasks.delete(task));
+	backgroundTasks.add(task);
+}
+
+function scheduleConclaveWake(
+	backgroundTasks: Set<Promise<void>>,
+	request: SubmissionWakeRequest,
+	processWake: SubmissionWakeProcessor,
+): void {
+	scheduleConclaveBackgroundTask(backgroundTasks, async () => {
+		if (request.disposed?.() === true) {
+			return;
+		}
+		try {
+			await recoverPendingSubmissions({
+				projectPath: request.projectPath,
+				projectTrusted: request.projectTrusted,
+				storage: request.storage,
+				workId: request.workId,
+				...(request.abortSignal === undefined ? {} : { signal: request.abortSignal }),
+				wake: (submission) =>
+					processWake({ ...request, workId: submission.workId, archivePath: submission.archivePath }),
+				onOutcomePersistenceFailure: (claim, outcome, error) =>
+					recordRecoveryOutcomePersistenceFailure(
+						{
+							projectPath: request.projectPath,
+							projectTrusted: request.projectTrusted,
+							workId: claim.submission.workId,
+							archivePath: claim.submission.archivePath,
+							storage: request.storage,
+						},
+						outcome,
+						error,
+					),
+			});
+		} catch (error) {
+			recordScheduledWakeDiagnostic(request, {
+				message: `The scheduled Conclave wake failed unexpectedly: ${formatError(error)}`,
+				recovery: conclaveWakeRecovery(error),
+			});
+		}
+	});
+}
+
+function recordRecoveryOutcomePersistenceFailure(
+	request: SubmissionWakeDiagnosticRequest,
+	outcome: SubmissionRecoveryOutcome,
+	error: unknown,
+): void {
+	if (outcome.status === "failed") {
+		recordScheduledWakeDiagnostic(request, {
+			message: `The Conclave wake failed: ${outcome.failure}, but its Archive evidence could not be persisted: ${formatError(error)}`,
+			recovery: outcome.recovery,
+		});
+		return;
+	}
+	recordScheduledWakeDiagnostic(request, {
+		message: `The Conclave wake completed, but its Archive evidence could not be persisted: ${formatError(error)}`,
+		recovery: "recreate",
+	});
+}
+
+function recordScheduledWakeDiagnostic(
+	request: SubmissionWakeDiagnosticRequest,
+	failure: SubmissionWakeDiagnostic,
+): void {
+	try {
+		request.storage
+			.loadConclaveSession(request.projectPath, undefined, request.projectTrusted)
+			.appendCustomEntry("khala-conclave-wake-error", {
+				workId: request.workId,
+				archivePath: request.archivePath,
+				message: failure.message,
+				recovery: failure.recovery,
+			});
+	} catch {
+		// The wake promise is always handled. If both Archive and Conclave-session
+		// persistence are unavailable, recovery remains discoverable through setup.
+	}
 }
 
 function enqueueConclaveWake(runtime: ConclaveRuntime, operation: () => Promise<void>): Promise<void> {
@@ -974,4 +1242,10 @@ function resolveConfiguredModel(modelRuntime: ModelRuntime, modelId: string) {
 }
 
 export type { ConclaveCoordinator };
-export { CONCLAVE_BASE_TOOL_ALLOWLIST, CONCLAVE_TOOL_ALLOWLIST, createConclaveCoordinator, enqueueConclaveWake };
+export {
+	CONCLAVE_BASE_TOOL_ALLOWLIST,
+	CONCLAVE_TOOL_ALLOWLIST,
+	createConclaveCoordinator,
+	enqueueConclaveWake,
+	recoverPendingSubmissions,
+};

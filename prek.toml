@@ -133,7 +133,9 @@ stages = [
 [[repos.hooks]]
 id = "test"
 name = "test"
-entry = "npm test"
+# Git exports repository-local variables to pre-push hooks. Tests create nested
+# repositories, so remove those bindings before they invoke Git.
+entry = "env -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_OBJECT_DIRECTORY -u GIT_DIR -u GIT_WORK_TREE -u GIT_IMPLICIT_WORK_TREE -u GIT_GRAFT_FILE -u GIT_INDEX_FILE -u GIT_NO_REPLACE_OBJECTS -u GIT_REPLACE_REF_BASE -u GIT_PREFIX -u GIT_INTERNAL_SUPER_PREFIX -u GIT_SHALLOW_FILE -u GIT_COMMON_DIR npm test"
 language = "system"
 
 pass_filenames = false

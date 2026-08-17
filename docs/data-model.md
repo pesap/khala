@@ -14,15 +14,23 @@ bindings required when they were written. `executionId` is present when the
 record is execution-bound. Current record types are:
 
 ```text
-submission, conclave-wake, mandate, mission, execution, signal,
-verdict, verdict-delivery, learning, counsel, pull-request,
+submission, conclave-wake, conclave-recovery, mandate, mission, execution,
+signal, verdict, verdict-delivery, learning, counsel, pull-request,
 work-outcome, coordination, intervention
 ```
 
 Append order is the historical authority. Timestamps do not repair ordering.
-A local process-aware lock protects read-modify-append transitions; the log is
-not a distributed transaction. Corrupt JSON, blank records, invalid envelopes,
+A local process-aware lock protects read-modify-append transitions and
+serializes Conclave model-session mapping rotation across local processes; the
+log is not a distributed transaction. Corrupt JSON, blank records, invalid envelopes,
 and invalid typed payloads fail closed rather than projecting as empty state.
+
+`khala_read_archive` exposes append-ordered bounded projections rather than raw
+records. It caps projected values and display identifiers, returns an exact
+record ID as the continuation cursor, and fails explicitly if authoritative
+cursor metadata cannot fit its byte budget. Payload and metadata truncation
+fields identify lossy record projections; callers continue with `nextCursor`
+for later records.
 
 ## Work and lifecycle records
 
@@ -34,9 +42,22 @@ and invalid typed payloads fail closed rather than projecting as empty state.
   Work. Each persisted attempt records `woken` or `failed`; failures retain the
   exact diagnostic and whether recovery requires setup or Conclave recreation.
   The payload and envelope must bind the same submitted Work, and wake IDs may
-  not repeat. A failed wake does not imply admission or an Executor launch. If
-  evidence cannot be persisted, the submission returns a distinct hard error
-  without reinterpreting whether the wake completed.
+  not repeat. Submission acknowledgement precedes wake processing and means
+  only that the queued submission is durable. A later failed wake does not
+  imply admission or an Executor launch. If wake evidence cannot be appended,
+  the persisted Conclave session retains the diagnostic without changing the
+  queued submission.
+- **Conclave Recovery**: one durable automatic-recovery claim or exhaustion
+  decision for an exact submission transition. Initial queued processing and
+  restart recovery share that claim. Claims carry an attempt count,
+  a per-process nonce owner, and a bounded lease. The active owner appends
+  lease renewals while its wake or outcome write is running. An expired lease
+  consumes its attempt and permits a new claimant; PID reuse cannot preserve
+  ownership. Wake outcomes are idempotent and fenced to the latest claim. A
+  live owner reconciles completion writes without repeating its wake; a crash
+  before the outcome is durable retains delivery uncertainty after lease
+  expiry. Three failed or abandoned attempts append one durable exhaustion
+  record.
 - **Mandate**: `mandateId`, `workId`, positive `revision`, source submission
   `recordId`, immutable copied `terms`, admitting Conclave participant, and
   `admittedAt`. Current admission creates revision one.
@@ -102,6 +123,15 @@ and completion entries, source entry IDs, deterministic assessment/action ID
 namespace, action reservations/completions, outage checkpoints, budget facts,
 settlement handoffs, and direct User source entries. It is a control audit
 surface, not a transcript mirror.
+
+The Conclave model session is a disposable projection over Archive authority.
+Before opening it with Pi, Khala rotates the mapped session when its file is at
+least 16 MiB or has not been modified for 30 days. Rotation writes a fresh
+Conclave marker and session name, atomically maps the project to that bounded
+session, and preserves the mapped User session. It does not copy the prior
+model transcript or modify the Archive. The prior model-session file remains
+unreferenced in the Conclave sessions directory, and the next wake reconstructs
+current context by reading the authoritative Archive.
 
 Executor Pi sessions remain in their own JSONL files. Supervision stores stable
 entry IDs, bounded message hashes, usage/cost facts, source ranges, prompt

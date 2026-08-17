@@ -1,5 +1,10 @@
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { KhalaWorkSubmission, WorkSubmissionRequest } from "./khala-model.js";
+import type {
+	ConclaveRecoveryClaimRecord,
+	ConclaveWakeRecovery,
+	KhalaWorkSubmission,
+	WorkSubmissionRequest,
+} from "./khala-model.js";
 
 type SubmissionSnapshot = Readonly<{
 	submission: KhalaWorkSubmission;
@@ -9,6 +14,22 @@ type SubmissionSnapshot = Readonly<{
 type SubmissionLaunchResult = Readonly<{
 	sandboxPath: string;
 }>;
+
+type SubmissionRecoveryClaim = Readonly<{
+	recovery: ConclaveRecoveryClaimRecord;
+	submission: KhalaWorkSubmission;
+}>;
+
+type SubmissionRecoveryOutcome =
+	| Readonly<{ status: "woken"; attemptedAt: string }>
+	| Readonly<{
+			status: "failed";
+			attemptedAt: string;
+			failure: string;
+			recovery: ConclaveWakeRecovery;
+	  }>;
+
+const AUTOMATIC_RECOVERY_MAX_ATTEMPTS = 3;
 
 /**
  * Project-scoped durable storage for Conclave state. Submission state is
@@ -22,7 +43,20 @@ interface ConclaveStorage {
 		workId: string,
 		projectTrusted?: boolean,
 	) => KhalaWorkSubmission | undefined;
-	getPendingSubmissions: (projectPath: string, projectTrusted?: boolean) => readonly KhalaWorkSubmission[];
+	getRecoverableSubmissions: (projectPath: string, projectTrusted?: boolean) => readonly KhalaWorkSubmission[];
+	claimSubmissionRecovery: (
+		projectPath: string,
+		workId: string,
+		ownerId: string,
+		projectTrusted?: boolean,
+	) => SubmissionRecoveryClaim | undefined;
+	renewSubmissionRecovery: (projectPath: string, claim: SubmissionRecoveryClaim, projectTrusted?: boolean) => boolean;
+	completeSubmissionRecovery: (
+		projectPath: string,
+		claim: SubmissionRecoveryClaim,
+		outcome: SubmissionRecoveryOutcome,
+		projectTrusted?: boolean,
+	) => boolean;
 	claimSubmission: (projectPath: string, workId: string, projectTrusted?: boolean) => boolean;
 	markSubmissionReviewing: (
 		projectPath: string,
@@ -50,4 +84,11 @@ interface ConclaveStorage {
 	getConclaveUserSessionPath: (projectPath: string, projectTrusted?: boolean) => string | undefined;
 }
 
-export type { ConclaveStorage, SubmissionLaunchResult, SubmissionSnapshot };
+export type {
+	ConclaveStorage,
+	SubmissionLaunchResult,
+	SubmissionRecoveryClaim,
+	SubmissionRecoveryOutcome,
+	SubmissionSnapshot,
+};
+export { AUTOMATIC_RECOVERY_MAX_ATTEMPTS };

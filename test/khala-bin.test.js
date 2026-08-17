@@ -22,6 +22,24 @@ function runKhala(args = []) {
 	return result;
 }
 
+async function assertProcessExited(processId, timeoutMs = 1_000) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			process.kill(processId, 0);
+		} catch (error) {
+			if (typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH") {
+				return;
+			}
+			throw error;
+		}
+		if (Date.now() >= deadline) {
+			assert.fail(`Process ${processId} remained alive after ${timeoutMs}ms.`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
 test("standalone configuration expands a Windows Pi agent-directory override", () => {
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
@@ -280,7 +298,7 @@ test("setup releases model-discovery streams after a Pi wrapper exits", () => {
 	}
 });
 
-test("setup force-terminates a signal-ignoring model-discovery child", () => {
+test("setup force-terminates a signal-ignoring model-discovery child", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-bin-rpc-stubborn-"));
 	const agentDir = join(root, "agent");
 	const projectDir = join(root, "project");
@@ -322,10 +340,7 @@ test("setup force-terminates a signal-ignoring model-discovery child", () => {
 		assert.equal(Number.isInteger(rpcProcessId) && rpcProcessId > 0, true);
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stdout, /Done\./);
-		assert.throws(
-			() => process.kill(rpcProcessId, 0),
-			(error) => typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH",
-		);
+		await assertProcessExited(rpcProcessId);
 	} finally {
 		if (rpcProcessId !== undefined) {
 			try {

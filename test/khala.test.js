@@ -11,7 +11,7 @@ import { runKhalaDemo } from "../dist/src/khala-demo.js";
 import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist/src/khala-archive.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { listExecutionRecords, readMandate } from "../dist/src/khala-archive-projections.js";
-import { createConclaveCoordinator, enqueueConclaveWake } from "../dist/src/khala-conclave.js";
+import { createConclaveCoordinator, enqueueConclaveWake, recoverPendingSubmissions } from "../dist/src/khala-conclave.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
 import { createHerdrLauncher } from "../dist/src/launch-herdr.js";
 import { createGitWorktreeProvider } from "../dist/src/vcs-git-worktree.js";
@@ -1800,7 +1800,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			executorContext,
 		);
-		assert.deepEqual(result.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(result.details.summaries.map((record) => record.type), ["counsel", "signal"]);
 		initTheme();
 		const plainTheme = {
 			fg(_color, text) {
@@ -1812,7 +1812,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		};
 		const collapsed = archiveTool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {});
 		const collapsedText = collapsed.render(120).join("\n");
-		assert.match(collapsedText, /Khala Archive: 2 record\(s\)/);
+		assert.match(collapsedText, /Khala Archive: 2 of 2 record\(s\)/);
 		assert.match(collapsedText, /to expand/);
 		assert.doesNotMatch(collapsedText, /bound evidence/);
 		const expanded = archiveTool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
@@ -1821,7 +1821,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		assert.match(expandedText, /signal/);
 		assert.doesNotMatch(expandedText, /bound evidence/);
 		const unscopedResult = await archiveTool.execute("archive", {}, null, null, executorContext);
-		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(unscopedResult.details.summaries.map((record) => record.type), ["counsel", "signal"]);
 		const userContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -1837,7 +1837,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userContext,
 		);
-		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		assert.deepEqual(userExecutionResult.details.summaries.map((record) => record.type), ["signal"]);
 		const userRoleContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -1857,7 +1857,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userRoleContext,
 		);
-		assert.deepEqual(userRoleWorkResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(userRoleWorkResult.details.summaries.map((record) => record.type), ["counsel", "signal"]);
 		const userRoleExecutionResult = await archiveTool.execute(
 			"archive",
 			{ workId: "work-other", executionId: "execution-other" },
@@ -1865,7 +1865,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userRoleContext,
 		);
-		assert.deepEqual(userRoleExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		assert.deepEqual(userRoleExecutionResult.details.summaries.map((record) => record.type), ["signal"]);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
@@ -1876,6 +1876,156 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			() => archiveTool.execute("archive", { executionId: "execution-bound" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
 		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Archive reads enforce a serialized byte budget with deterministic continuation and bounded projections", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-archive-bounds-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	try {
+		const expectedRecordIds = [];
+		for (let index = 0; index < 12; index += 1) {
+			const record = appendArchiveRecord(projectPath, {
+				type: "signal",
+				workId: "work-bounded",
+				executionId: "execution-bounded",
+				payload: {
+					signalId: `signal-${index}`,
+					workId: "work-bounded",
+					executionId: "execution-bounded",
+					executorName: "Bounded Executor",
+					kind: index === 11 ? "finished" : "progress",
+					summary: `diagnostic-${index}-${"x".repeat(80_000)}`,
+					evidence: [`evidence-${index}-${"y".repeat(80_000)}`],
+					observedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+				},
+			});
+			expectedRecordIds.push(record.recordId);
+		}
+
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const archiveTool = tools.get("khala_read_archive");
+		const context = {
+			cwd: projectPath,
+			isProjectTrusted: () => false,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-role", data: { role: "user" } }];
+				},
+			},
+		};
+		const readPage = async (cursor) => {
+			const result = await archiveTool.execute(
+				"archive",
+				{ workId: "work-bounded", limit: 4, ...(cursor === undefined ? {} : { cursor }) },
+				null,
+				null,
+				context,
+			);
+			assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") <= 40_000);
+			assert.equal("records" in result.details, false);
+			assert.doesNotMatch(JSON.stringify(result.details), /diagnostic-|evidence-/);
+			return { result, page: JSON.parse(result.content[0].text) };
+		};
+
+		const first = await readPage();
+		const repeated = await readPage();
+		assert.deepEqual(repeated.page, first.page);
+		assert.equal(first.page.page.totalVisible, 12);
+		assert.equal(first.page.page.truncated, true);
+		assert.ok(first.page.page.nextCursor);
+
+		const observedRecordIds = [];
+		let current = first;
+		for (;;) {
+			for (const record of current.page.records) {
+				observedRecordIds.push(record.recordId);
+				assert.equal(record.type, "signal");
+				assert.equal(record.workId, "work-bounded");
+				assert.equal(record.executionId, "execution-bounded");
+				assert.match(record.recordedAt, /^\d{4}-\d{2}-\d{2}T/);
+				assert.match(record.payload.signalId, /^signal-/);
+				assert.ok(["progress", "finished"].includes(record.payload.kind));
+				assert.match(record.payload.observedAt, /^2026-01-01T/);
+				assert.equal(record.projection.truncated, true);
+			}
+			if (current.page.page.nextCursor === undefined) break;
+			current = await readPage(current.page.page.nextCursor);
+		}
+		assert.deepEqual(observedRecordIds, expectedRecordIds);
+		assert.equal(new Set(observedRecordIds).size, expectedRecordIds.length);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Archive pagination retains forward progress with oversized visible identifiers", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-archive-identifier-bounds-"));
+	const projectPath = join(root, "project");
+	const workId = `work-${"w".repeat(80_000)}`;
+	const executionId = `execution-${"e".repeat(80_000)}`;
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	try {
+		const recordIds = [];
+		for (let index = 0; index < 2; index += 1) {
+			const record = appendArchiveRecord(projectPath, {
+				type: "signal",
+				workId,
+				executionId,
+				payload: {
+					signalId: `oversized-signal-${index}`,
+					workId,
+					executionId,
+					executorName: "Bounded Executor",
+					kind: "progress",
+					summary: "Bound identifier metadata.",
+					evidence: ["The page remains resumable."],
+					observedAt: new Date().toISOString(),
+				},
+			});
+			recordIds.push(record.recordId);
+		}
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const archiveTool = tools.get("khala_read_archive");
+		const context = {
+			cwd: projectPath,
+			isProjectTrusted: () => false,
+			sessionManager: {
+				getBranch: () => [{ type: "custom", customType: "khala-role", data: { role: "user" } }],
+			},
+		};
+
+		const first = await archiveTool.execute("archive", { workId, limit: 1 }, null, null, context);
+		const firstContent = JSON.parse(first.content[0].text);
+		assert.ok(Buffer.byteLength(JSON.stringify(first), "utf8") <= 40_000);
+		assert.equal(firstContent.page.hasMore, true);
+		assert.equal(firstContent.page.nextCursor, recordIds[0]);
+		assert.equal(firstContent.records[0].recordId, recordIds[0]);
+		assert.notEqual(firstContent.records[0].workId, workId);
+		assert.deepEqual(firstContent.records[0].metadataTruncation, {
+			workId: true,
+			executionId: true,
+			recordedAt: false,
+		});
+		assert.equal(first.details.summaries[0].metadataTruncated, true);
+
+		const second = await archiveTool.execute(
+			"archive",
+			{ workId, limit: 1, cursor: firstContent.page.nextCursor },
+			null,
+			null,
+			context,
+		);
+		const secondContent = JSON.parse(second.content[0].text);
+		assert.equal(secondContent.page.hasMore, false);
+		assert.equal(secondContent.records[0].recordId, recordIds[1]);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
@@ -1933,11 +2083,193 @@ test("Users can submit Work intent without lifecycle authority", async () => {
 			userContext,
 		);
 		assert.equal(result.details.status, "queued");
-		assert.match(result.content[0].text, /Conclave processing completed/);
-		assert.doesNotMatch(result.content[0].text, /admission and launch are pending/);
+		assert.match(result.content[0].text, /persisted and queued for Conclave review/);
+		assert.match(result.content[0].text, /Conclave processing was scheduled; admission and launch remain pending/);
+		assert.doesNotMatch(result.content[0].text, /processing completed|admitted|launched/);
 		assert.equal(submitted.projectPath, projectPath);
 		assert.equal(submitted.work.context, "The User supplied initial context.");
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Work acknowledgement returns while the Conclave queue is blocked and leaves persistence authoritative", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-blocked-conclave-queue-"));
+	const projectPath = join(root, "project");
+	const storage = createFileConclaveStorage();
+	const tools = new Map();
+	const blockedRuntime = { wakeChain: new Promise(() => {}) };
+	const coordinator = createConclaveCoordinator(
+		join(process.cwd(), "dist", "src", "index.js"),
+		storage,
+		() => enqueueConclaveWake(blockedRuntime, async () => {}),
+	);
+	registerKhalaWork(createPiStub(new Map(), tools), {
+		workTemplate: "",
+		executorSystemPrompt: "",
+		createExecutorStarter: () => {
+			throw new Error("not used");
+		},
+		isDedicatedConclaveSession: () => false,
+		submitWork: coordinator.submit,
+		getSubmission: coordinator.getSubmission,
+		getPendingSubmission: coordinator.getPendingSubmission,
+		claimSubmission: coordinator.claimSubmission,
+		markSubmissionQueued: coordinator.markSubmissionQueued,
+		markSubmissionLaunched: coordinator.markSubmissionLaunched,
+	});
+	const context = {
+		cwd: projectPath,
+		sessionManager: { getEntries: () => [], getBranch: () => [] },
+	};
+	let deadline;
+	try {
+		const acknowledgement = await Promise.race([
+			tools.get("khala_submit_work").execute(
+				"blocked-queue-submit",
+				validWork({ workId: "blocked-queue-work", title: "Blocked queue acknowledgement" }),
+				undefined,
+				null,
+				context,
+			),
+			new Promise((_, reject) => {
+				deadline = setTimeout(() => reject(new Error("submission acknowledgement missed its local deadline")), 100);
+			}),
+		]);
+		assert.equal(acknowledgement.details.status, "queued");
+		assert.match(acknowledgement.content[0].text, /admission and launch remain pending/);
+		const records = listArchiveRecords(projectPath);
+		assert.deepEqual(records.map((record) => record.type), ["submission"]);
+		assert.equal(records[0].payload.status, "queued");
+		assert.equal(records.some((record) => record.type === "mandate" || record.type === "execution"), false);
+	} finally {
+		clearTimeout(deadline);
+		await coordinator.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("submission scheduling and recovery share one durable wake claim", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-shared-claim-"));
+	const projectPath = join(root, "project");
+	const storage = createFileConclaveStorage();
+	let submittedWakeCount = 0;
+	let recoveryWakeCount = 0;
+	const coordinator = createConclaveCoordinator(
+		join(process.cwd(), "dist", "src", "index.js"),
+		storage,
+		async () => {
+			submittedWakeCount += 1;
+		},
+	);
+	try {
+		await coordinator.submit({
+			workId: "shared-claim-work",
+			projectPath,
+			work: validWork({ title: "Shared durable claim" }),
+		});
+		await recoverPendingSubmissions({
+			projectPath,
+			projectTrusted: false,
+			storage: createFileConclaveStorage(),
+			wake: async () => {
+				recoveryWakeCount += 1;
+			},
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.equal(submittedWakeCount, 0);
+		assert.equal(recoveryWakeCount, 1);
+		const records = listArchiveRecords(projectPath);
+		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-recovery", "conclave-wake"]);
+		assert.equal(records[2].payload.status, "woken");
+	} finally {
+		await coordinator.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("coordinator disposal waits for an already-started submission wake", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-submit-disposal-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	let markWakeStarted;
+	let releaseWake;
+	const wakeStarted = new Promise((resolve) => {
+		markWakeStarted = resolve;
+	});
+	const wakeGate = new Promise((resolve) => {
+		releaseWake = resolve;
+	});
+	const coordinator = createConclaveCoordinator(
+		join(process.cwd(), "dist", "src", "index.js"),
+		createFileConclaveStorage(),
+		async () => {
+			markWakeStarted();
+			await wakeGate;
+		},
+	);
+	try {
+		await coordinator.submit({
+			workId: "dispose-tracked-work",
+			projectPath,
+			work: validWork({ title: "Tracked disposal" }),
+		});
+		await wakeStarted;
+		let disposalFinished = false;
+		const disposal = coordinator.dispose().then(() => {
+			disposalFinished = true;
+		});
+		await Promise.resolve();
+		assert.equal(disposalFinished, false);
+		releaseWake();
+		await disposal;
+		assert.equal(disposalFinished, true);
+		assert.equal(createFileConclaveStorage().getSubmission(projectPath, "dispose-tracked-work").submission.status, "queued");
+		const records = listArchiveRecords(projectPath);
+		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-recovery", "conclave-wake"]);
+		assert.equal(records[2].payload.status, "woken");
+	} finally {
+		releaseWake();
+		await coordinator.dispose();
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("coordinator disposal cancels a submission wake that has not started", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-submit-cancelled-disposal-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	let wakeCount = 0;
+	const coordinator = createConclaveCoordinator(
+		join(process.cwd(), "dist", "src", "index.js"),
+		createFileConclaveStorage(),
+		async () => {
+			wakeCount += 1;
+		},
+	);
+	try {
+		await coordinator.submit({
+			workId: "dispose-cancelled-work",
+			projectPath,
+			work: validWork({ title: "Cancelled disposal" }),
+		});
+		await coordinator.dispose();
+		await assert.rejects(
+			coordinator.submit({
+				workId: "disposed-work",
+				projectPath,
+				work: validWork({ title: "Disposed coordinator" }),
+			}),
+			/coordinator has been disposed/,
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(wakeCount, 0);
+		assert.equal(createFileConclaveStorage().getSubmission(projectPath, "dispose-cancelled-work").submission.status, "queued");
+	} finally {
+		await coordinator.dispose();
+		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -1948,30 +2280,58 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 	const coordinator = createConclaveCoordinator(join(process.cwd(), "dist", "src", "index.js"));
 	try {
-		const result = await coordinator.submit({
-			workId: "wake-failure-work",
-			projectPath,
-			work: validWork({ title: "Wake failure", objective: "Preserve a failed Conclave wake." }),
+		const tools = new Map();
+		registerKhalaWork(createPiStub(new Map(), tools), {
+			workTemplate: "",
+			executorSystemPrompt: "",
+			createExecutorStarter: () => {
+				throw new Error("not used");
+			},
+			isDedicatedConclaveSession: () => false,
+			submitWork: coordinator.submit,
+			getSubmission: coordinator.getSubmission,
+			getPendingSubmission: coordinator.getPendingSubmission,
+			claimSubmission: coordinator.claimSubmission,
+			markSubmissionQueued: coordinator.markSubmissionQueued,
+			markSubmissionLaunched: coordinator.markSubmissionLaunched,
 		});
-		assert.equal(result.wakeFailure.recovery, "setup");
-		const records = listArchiveRecords(projectPath);
-		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-wake"]);
+		const acknowledgement = await tools.get("khala_submit_work").execute(
+			"wake-failure-submit",
+			validWork({
+				workId: "wake-failure-work",
+				title: "Wake failure",
+				objective: "Preserve a failed Conclave wake.",
+			}),
+			undefined,
+			null,
+			{ cwd: projectPath, sessionManager: { getEntries: () => [], getBranch: () => [] } },
+		);
+		assert.equal(acknowledgement.details.archivePath, getArchivePath(projectPath));
+		assert.equal(acknowledgement.details.status, "queued");
+		assert.match(acknowledgement.content[0].text, /admission and launch remain pending/);
+		let records = listArchiveRecords(projectPath);
+		for (let attempt = 0; attempt < 200 && records.length < 3; attempt += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			records = listArchiveRecords(projectPath);
+		}
+		assert.deepEqual(records.map((record) => record.type), ["submission", "conclave-recovery", "conclave-wake"]);
 		assert.deepEqual(
 			{
-				status: records[1].payload.status,
-				recovery: records[1].payload.recovery,
-				workId: records[1].payload.workId,
+				status: records[2].payload.status,
+				recovery: records[2].payload.recovery,
+				workId: records[2].payload.workId,
 			},
 			{ status: "failed", recovery: "setup", workId: "wake-failure-work" },
 		);
-		assert.match(records[1].payload.failure, /supervision configuration is incomplete/);
+		assert.match(records[2].payload.failure, /supervision configuration is incomplete/);
+		assert.equal(records.some((record) => record.type === "mandate" || record.type === "execution"), false);
 		assert.throws(
 			() =>
 				appendArchiveRecord(projectPath, {
 					schemaVersion: 2,
 					type: "conclave-wake",
 					workId: "wake-failure-work",
-					payload: { ...records[1].payload, wakeId: "mismatched-wake", workId: "different-work" },
+					payload: { ...records[2].payload, wakeId: "mismatched-wake", workId: "different-work" },
 				}),
 			/inconsistent Archive bindings/,
 		);
@@ -1981,7 +2341,7 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 					schemaVersion: 2,
 					type: "conclave-wake",
 					workId: "wake-failure-work",
-					payload: records[1].payload,
+					payload: records[2].payload,
 				}),
 			/is duplicated/,
 		);
@@ -2029,7 +2389,7 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 	}
 });
 
-test("Archive persistence failures remain distinct from Conclave wake failures", async () => {
+test("asynchronous submission wake persistence failures retain a Conclave-session diagnostic", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-conclave-wake-evidence-failure-"));
 	const projectPath = join(root, "project");
 	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
@@ -2051,8 +2411,24 @@ test("Archive persistence failures remain distinct from Conclave wake failures",
 			projectPath,
 			work: validWork({ title: "Wake evidence failure" }),
 		});
-		assert.equal(result.wakeFailure.recovery, "setup");
-		assert.match(result.wakeFailure.message, /wake failed.*Archive evidence could not be persisted/s);
+		assert.equal(result.archivePath, archivePath);
+		let diagnostic;
+		for (let attempt = 0; attempt < 200 && diagnostic === undefined; attempt += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			const sessionPath = coordinator.getConclaveSessionPath(projectPath);
+			if (sessionPath !== undefined) {
+				const entries = readFileSync(sessionPath, "utf8")
+					.trim()
+					.split("\n")
+					.filter(Boolean)
+					.map((line) => JSON.parse(line));
+				diagnostic = entries.find((entry) => entry.customType === "khala-conclave-wake-error")?.data;
+			}
+		}
+		assert.equal(diagnostic.workId, "wake-evidence-failure-work");
+		assert.equal(diagnostic.recovery, "recreate");
+		assert.match(diagnostic.message, /scheduled Conclave wake failed unexpectedly/);
+		assert.equal(listArchiveRecords(projectPath).at(-1).payload.status, "queued");
 	} finally {
 		await coordinator.dispose();
 		if (archivePath.length > 0) {
@@ -2063,11 +2439,10 @@ test("Archive persistence failures remain distinct from Conclave wake failures",
 	}
 });
 
-test("Work wake diagnostics preserve recovery without assuming Executor state", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-work-wake-error-"));
+test("Work submission propagates cancellation to the persistence boundary", async () => {
 	const tools = new Map();
 	const entries = [];
-	let wakeFailure;
+	let observedSignal;
 	registerKhalaWork(
 		createPiStub(new Map(), tools, new Map(), {
 			appendEntry: (type, data) => entries.push({ type, data }),
@@ -2079,7 +2454,11 @@ test("Work wake diagnostics preserve recovery without assuming Executor state", 
 				throw new Error("not used");
 			},
 			isDedicatedConclaveSession: () => false,
-			submitWork: async () => ({ archivePath: join(root, "archive.jsonl"), wakeFailure }),
+			submitWork: (request) =>
+				new Promise((_resolve, reject) => {
+					observedSignal = request.signal;
+					request.signal.addEventListener("abort", () => reject(new Error("persistence cancelled")), { once: true });
+				}),
 			getSubmission: () => undefined,
 			getPendingSubmission: () => undefined,
 			claimSubmission: () => false,
@@ -2087,38 +2466,115 @@ test("Work wake diagnostics preserve recovery without assuming Executor state", 
 			markSubmissionLaunched: () => {},
 		},
 	);
-	const context = { cwd: root, sessionManager: { getEntries: () => [], getBranch: () => [] } };
-	const scenarios = [
-		{
-			recovery: "setup",
-			message: "Khala supervision configuration is incomplete or invalid.",
-			recoveryPattern: /npx --yes --silent github:pesap\/khala setup/,
+	const controller = new AbortController();
+	const execution = tools.get("khala_submit_work").execute(
+		"cancel-submit",
+		validWork(),
+		controller.signal,
+		null,
+		{ cwd: "/tmp/cancelled-work", sessionManager: { getEntries: () => [], getBranch: () => [] } },
+	);
+	await Promise.resolve();
+	assert.equal(observedSignal, controller.signal);
+	controller.abort();
+	await assert.rejects(execution, /Work submission failed: persistence cancelled/);
+	assert.deepEqual(entries, []);
+});
+
+test("registered Work tools throw validation, submission, admission, and launch rejections", async () => {
+	const tools = new Map();
+	let submissionFailure;
+	registerKhalaWork(createPiStub(new Map(), tools), {
+		workTemplate: "",
+		executorSystemPrompt: "",
+		createExecutorStarter: () => {
+			throw new Error("not used");
 		},
-		{
-			recovery: "recreate",
-			message: "The Conclave wake completed, but its Archive evidence could not be persisted.",
-			recoveryPattern: /\/khala-recreate/,
+		isDedicatedConclaveSession: (context) =>
+			context.sessionManager
+				.getBranch()
+				.some((entry) => entry.type === "custom" && entry.customType === "khala-conclave"),
+		submitWork: async () => {
+			if (submissionFailure !== undefined) {
+				throw submissionFailure;
+			}
+			return { archivePath: "/tmp/rejection-archive.jsonl" };
 		},
-	];
-	try {
-		for (const scenario of scenarios) {
-			wakeFailure = { message: scenario.message, recovery: scenario.recovery };
-			await assert.rejects(
-				() => tools.get("khala_submit_work").execute("submit", validWork(), null, null, context),
-				(error) => {
-					assert.match(error.message, /durable Conclave wake completion could not be confirmed/);
-					assert.match(error.message, /Executor state is unknown/);
-					assert.match(error.message, scenario.recoveryPattern);
-					assert.ok(error.message.includes(scenario.message));
-					assert.doesNotMatch(error.message, /No Executor was launched/);
-					return true;
+		getSubmission: () => undefined,
+		getPendingSubmission: () => undefined,
+		claimSubmission: () => false,
+		markSubmissionQueued: () => {},
+		markSubmissionLaunched: () => {},
+	});
+	const userContext = {
+		cwd: "/tmp/rejected-work",
+		sessionManager: { getEntries: () => [], getBranch: () => [] },
+	};
+	const conclaveContext = {
+		...userContext,
+		sessionManager: {
+			...userContext.sessionManager,
+			getBranch: () => [{ type: "custom", customType: "khala-conclave" }],
+		},
+	};
+	await assert.rejects(
+		tools.get("khala_submit_work").execute(
+			"invalid-submit",
+			validWork({ objective: "" }),
+			undefined,
+			null,
+			userContext,
+		),
+		/Khala Work is incomplete.*objective is required/s,
+	);
+	submissionFailure = new Error("Archive unavailable");
+	await assert.rejects(
+		tools.get("khala_submit_work").execute(
+			"failed-submit",
+			validWork(),
+			undefined,
+			null,
+			userContext,
+		),
+		/Work submission failed: Archive unavailable/,
+	);
+	await assert.rejects(
+		tools.get("khala_admit_work").execute(
+			"rejected-admission",
+			{ workId: "missing-work" },
+			undefined,
+			null,
+			conclaveContext,
+		),
+		/No authoritative Work Submission exists for ID missing-work/,
+	);
+	await assert.rejects(
+		tools.get("khala_launch_execution").execute(
+			"rejected-launch",
+			{ workId: "missing-work" },
+			undefined,
+			null,
+			conclaveContext,
+		),
+		/No authoritative Work Submission exists for ID missing-work/,
+	);
+	initTheme();
+	const renderedError = tools
+		.get("khala_submit_work")
+		.renderResult(
+			{ content: [{ type: "text", text: "Khala Work is incomplete: objective is required" }], details: {} },
+			{ expanded: false, isPartial: false },
+			{
+				fg(_color, text) {
+					return text;
 				},
-			);
-			assert.equal(entries.at(-1).data.status, "queued");
-		}
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+			},
+			{ args: validWork(), isError: true },
+		)
+		.render(120)
+		.join("\n");
+	assert.match(renderedError, /Khala Work is incomplete/);
+	assert.doesNotMatch(renderedError, /Work launched/);
 });
 
 test("Herdr launcher opens the Executor worktree in a new Herdr workspace", async () => {
@@ -2993,9 +3449,10 @@ test("Mandate admission is Conclave-only, idempotent, and preserves the source s
 			projectPath,
 			work: { ...work, context: "", title: "Missing context" },
 		});
-		const rejected = await admitTool.execute("missing", { workId: "missing-context" }, null, null, conclaveContext);
-		assert.equal(rejected.isError, true);
-		assert.match(rejected.details.reason, /Learning/);
+		await assert.rejects(
+			admitTool.execute("missing", { workId: "missing-context" }, null, null, conclaveContext),
+			/Learning/,
+		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

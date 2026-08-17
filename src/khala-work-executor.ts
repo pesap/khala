@@ -46,9 +46,6 @@ async function launchFromConclave(
 	dependencies: KhalaWorkDependencies,
 ): Promise<KhalaWorkLaunchResult> {
 	const prepared = prepareExecutionLaunch(workId, context, dependencies);
-	if (!("projectTrusted" in prepared)) {
-		return Promise.resolve(prepared);
-	}
 	const { projectTrusted, submission, mandate, learning } = prepared;
 	await dependencies.pollBeforeDependentLaunch?.(context.cwd, projectTrusted, workId);
 	const runtime = prepareExecutorRuntime(workId, context, dependencies, prepared);
