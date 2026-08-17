@@ -1466,3 +1466,111 @@ test("pi-review PR flow persists one active state and ends deterministically", a
 	assert.equal(widgets.at(-1).widget, undefined, "the widget is cleared after end-review");
 	assert.ok(notices.some((notice) => notice.message === "Review complete! Returned to original position."));
 });
+
+test("pi-review PR resolution failure clears the checkout and leaks no state", async () => {
+	const baseSha = "a".repeat(40);
+	const headSha = "b".repeat(40);
+	const mismatchSha = "c".repeat(40);
+	const entries = [];
+	const appended = [];
+	const notices = [];
+	const widgets = [];
+	let headCalls = 0;
+	const execCalls = [];
+	const exec = async (command, args) => {
+		const joined = args.join(" ");
+		execCalls.push([command, ...args]);
+		if (command === "gh" && joined === "--version") return { code: 0, stdout: "gh version 2.0.0\n", stderr: "" };
+		if (command === "gh" && joined === "auth status") return { code: 0, stdout: "authenticated\n", stderr: "" };
+		if (command === "gh" && joined.startsWith("pr view 42 --json")) {
+			return {
+				code: 0,
+				stdout: JSON.stringify({
+					number: 42,
+					baseRefName: "main",
+					baseRefOid: baseSha,
+					baseRepository: { nameWithOwner: "example/repo" },
+					title: "Review",
+					headRefName: "head-branch",
+					headRefOid: headSha,
+				}),
+				stderr: "",
+			};
+		}
+		if (command === "gh" && joined === "repo view --json nameWithOwner --jq .nameWithOwner") {
+			return { code: 0, stdout: "example/repo\n", stderr: "" };
+		}
+		if (command === "gh" && joined === "pr checkout 42") return { code: 0, stdout: "", stderr: "" };
+		if (command === "git" && joined === "rev-parse --git-dir") return { code: 0, stdout: "/tmp/.git\n", stderr: "" };
+		if (command === "git" && joined === "status --porcelain --untracked-files=all") {
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		if (command === "git" && joined === "branch --show-current") return { code: 0, stdout: "main\n", stderr: "" };
+		if (command === "git" && joined === "rev-parse HEAD") {
+			headCalls += 1;
+			return { code: 0, stdout: `${headCalls === 1 ? headSha : mismatchSha}\n`, stderr: "" };
+		}
+		if (command === "git" && joined === "symbolic-ref refs/remotes/origin/HEAD --short") {
+			return { code: 0, stdout: "origin/main\n", stderr: "" };
+		}
+		if (command === "git" && joined.startsWith("switch ")) return { code: 0, stdout: "", stderr: "" };
+		throw new Error(`Unexpected command: ${command} ${joined}`);
+	};
+	const commands = new Map();
+	const pi = {
+		registerCommand(name, command) {
+			commands.set(name, command);
+		},
+		on() {},
+		exec,
+		appendEntry(type, data) {
+			appended.push({ type, data });
+		},
+		sendUserMessage() {},
+	};
+	reviewExtension(pi);
+	const ctx = {
+		hasUI: true,
+		cwd: "/tmp",
+		isProjectTrusted: () => false,
+		sessionManager: {
+			getLeafId: () => "leaf-1",
+			getEntries: () => entries,
+			getBranch: () => [],
+		},
+		ui: {
+			notify(message, type) {
+				notices.push({ message, type });
+			},
+			confirm: async () => true,
+			select: async () => undefined,
+			setWidget(name, widget) {
+				widgets.push({ name, widget });
+			},
+			setEditorText() {},
+			custom: async (factory) => {
+				const theme = { fg: (_color, text) => text, bold: (text) => text };
+				factory({ requestRender() {} }, theme, {}, () => {});
+				return null;
+			},
+		},
+		navigateTree: async () => ({ cancelled: false }),
+	};
+
+	applyReviewState({ ...ctx, sessionManager: { ...ctx.sessionManager, getBranch: () => [{ type: "custom", customType: "review-session", data: { active: false } }] } });
+
+	// The checked-out PR head mismatches GitHub: resolution fails, checkout is restored, selector cancelled.
+	await commands.get("review").handler("pr 42", ctx);
+	assert.equal(appended.filter((entry) => entry.type === "review-session").length, 0, "no state record on failure");
+	assert.ok(execCalls.some((call) => call[0] === "git" && call[1] === "switch" && call[2] === "main"));
+	assert.ok(notices.some((notice) => /does not match GitHub head/.test(notice.message)));
+
+	// A later fresh review must not inherit the failed PR's checkout.
+	await commands.get("review").handler("uncommitted", ctx);
+	const stateRecords = appended.filter((entry) => entry.type === "review-session");
+	assert.equal(stateRecords.length, 1);
+	assert.equal(stateRecords[0].data.active, true);
+	assert.equal(stateRecords[0].data.originId, "leaf-1");
+	assert.equal("checkout" in stateRecords[0].data, false, "the failed PR checkout must not leak into a later review");
+	assert.equal(widgets.filter((widget) => widget.widget !== undefined).length, 1);
+});

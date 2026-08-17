@@ -4393,7 +4393,8 @@ test("replaying a historical missionless retry Verdict fails closed before mutat
 				issuedAt: now,
 			},
 		});
-		const before = listArchiveRecords(projectPath).length;
+		const beforeRecords = JSON.stringify(listArchiveRecords(projectPath));
+		const beforeExecutions = JSON.stringify(listExecutionRecords(projectPath));
 		const conclaveContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -4419,7 +4420,77 @@ test("replaying a historical missionless retry Verdict fails closed before mutat
 				),
 			/missing its durable retry handoff/,
 		);
-		assert.equal(listArchiveRecords(projectPath).length, before, "the replay must not mutate the Archive");
+		assert.equal(
+			JSON.stringify(listArchiveRecords(projectPath)),
+			beforeRecords,
+			"the replay must not mutate any Archive record",
+		);
+		assert.equal(
+			JSON.stringify(listExecutionRecords(projectPath)),
+			beforeExecutions,
+			"the replay must not mutate the executor registry",
+		);
+
+		// A missionless retry that carries a handoff replays idempotently without mutation either.
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 1,
+			type: "verdict",
+			workId: "legacy-retry-work",
+			executionId: "legacy-retry-execution",
+			payload: {
+				workId: "legacy-retry-work",
+				executionId: "legacy-retry-execution",
+				signalId: "legacy-retry-signal",
+				decision: "retry",
+				reason: "Legacy retry with a handoff.",
+				verdictId: "legacy-retry-verdict-handoff",
+				issuedAt: now,
+				retryHandoff: {
+					failedCriteria: ["A"],
+					completedWork: ["B"],
+					requiredChanges: ["C"],
+					nonGoals: ["D"],
+					validation: ["E"],
+				},
+			},
+		});
+		const beforeHandoff = JSON.stringify(listArchiveRecords(projectPath));
+		const beforeHandoffExecutions = JSON.stringify(listExecutionRecords(projectPath));
+		const result = tools.get("khala_verdict").execute(
+			"legacy-replay-handoff",
+			{
+				workId: "legacy-retry-work",
+				executionId: "legacy-retry-execution",
+				signalId: "legacy-retry-signal",
+				decision: "retry",
+				reason: "Legacy retry with a handoff.",
+				retryHandoff: {
+					failedCriteria: ["A"],
+					completedWork: ["B"],
+					requiredChanges: ["C"],
+					nonGoals: ["D"],
+					validation: ["E"],
+				},
+			},
+			null,
+			null,
+			conclaveContext,
+		);
+		await result;
+		assert.equal(
+			JSON.stringify(listExecutionRecords(projectPath)),
+			beforeHandoffExecutions,
+			"a missionless handoff-bearing retry must not mutate the executor registry",
+		);
+		const lifecycleAfter = listArchiveRecords(projectPath).filter(
+			(record) => record.type !== "verdict-delivery",
+		);
+		const lifecycleBefore = JSON.parse(beforeHandoff).filter((record) => record.type !== "verdict-delivery");
+		assert.deepEqual(
+			lifecycleAfter,
+			lifecycleBefore,
+			"a missionless handoff-bearing retry must not mutate lifecycle records",
+		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
