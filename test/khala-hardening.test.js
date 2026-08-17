@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
-import {
+import reviewExtension, {
 	applyReviewState,
 	createBranchSelectorItems,
 	createCommitSelectorItems,
@@ -1352,4 +1352,117 @@ test("pi-review state application drives the widget and origin from one mirror",
 		},
 	});
 	assert.deepEqual(cleared, [{ name: "review", widget: undefined }]);
+});
+
+test("pi-review PR flow persists one active state and ends deterministically", async () => {
+	const baseSha = "a".repeat(40);
+	const headSha = "b".repeat(40);
+	const entries = [];
+	const appended = [];
+	const notices = [];
+	const widgets = [];
+	const sentMessages = [];
+	const exec = async (command, args) => {
+		const joined = args.join(" ");
+		if (command === "gh" && joined === "--version") return { code: 0, stdout: "gh version 2.0.0\n", stderr: "" };
+		if (command === "gh" && joined === "auth status") return { code: 0, stdout: "authenticated\n", stderr: "" };
+		if (command === "gh" && joined.startsWith("pr view 42 --json")) {
+			return {
+				code: 0,
+				stdout: JSON.stringify({
+					number: 42,
+					baseRefName: "main",
+					baseRefOid: baseSha,
+					baseRepository: { nameWithOwner: "example/repo" },
+					title: "Review",
+					headRefName: "head-branch",
+					headRefOid: headSha,
+				}),
+				stderr: "",
+			};
+		}
+		if (command === "gh" && joined === "repo view --json nameWithOwner --jq .nameWithOwner") {
+			return { code: 0, stdout: "example/repo\n", stderr: "" };
+		}
+		if (command === "gh" && joined === "pr checkout 42") return { code: 0, stdout: "", stderr: "" };
+		if (command === "git" && joined === "rev-parse --git-dir") return { code: 0, stdout: "/tmp/.git\n", stderr: "" };
+		if (command === "git" && joined === "status --porcelain --untracked-files=all") {
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		if (command === "git" && joined === "branch --show-current") return { code: 0, stdout: "main\n", stderr: "" };
+		if (command === "git" && joined === "rev-parse HEAD") return { code: 0, stdout: `${headSha}\n`, stderr: "" };
+		if (command === "git" && joined.startsWith("fetch --no-tags origin refs/heads/")) {
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		if (command === "git" && joined.startsWith("rev-parse --verify ")) {
+			return { code: 0, stdout: `${args[2].replace("^{commit}", "")}\n`, stderr: "" };
+		}
+		if (command === "git" && joined.startsWith("merge-base ")) return { code: 0, stdout: "merge-base-sha\n", stderr: "" };
+		if (command === "git" && joined.startsWith("switch ")) return { code: 0, stdout: "", stderr: "" };
+		throw new Error(`Unexpected command: ${command} ${joined}`);
+	};
+	const commands = new Map();
+	const pi = {
+		registerCommand(name, command) {
+			commands.set(name, command);
+		},
+		on() {},
+		exec,
+		appendEntry(type, data) {
+			appended.push({ type, data });
+		},
+		sendUserMessage(message) {
+			sentMessages.push(message);
+		},
+	};
+	reviewExtension(pi);
+	const ctx = {
+		hasUI: true,
+		cwd: "/tmp",
+		isProjectTrusted: () => false,
+		sessionManager: {
+			getLeafId: () => "leaf-1",
+			getEntries: () => entries,
+			getBranch: () => [],
+		},
+		ui: {
+			notify(message, type) {
+				notices.push({ message, type });
+			},
+			confirm: async () => true,
+			select: async () => "Return only",
+			setWidget(name, widget) {
+				widgets.push({ name, widget });
+			},
+			setEditorText() {},
+		},
+		navigateTree: async () => ({ cancelled: false }),
+	};
+
+	// Reset the module mirror left by earlier state tests.
+	applyReviewState({ ...ctx, sessionManager: { ...ctx.sessionManager, getBranch: () => [{ type: "custom", customType: "review-session", data: { active: false } }] } });
+
+	await commands.get("review").handler("pr 42", ctx);
+
+	const stateRecords = appended.filter((entry) => entry.type === "review-session");
+	assert.equal(stateRecords.length, 1, "one persisted review-state record");
+	assert.equal(stateRecords[0].data.active, true);
+	assert.equal(stateRecords[0].data.originId, "leaf-1");
+	assert.ok(stateRecords[0].data.checkout, "the PR checkout is persisted with the active state");
+	assert.equal(stateRecords[0].data.checkout.originalBranch, "main");
+	assert.ok(sentMessages.length === 1);
+	assert.ok(notices.some((notice) => /Starting review: PR #42/.test(notice.message)));
+	assert.ok(widgets.some((widget) => widget.name === "review" && widget.widget !== undefined));
+
+	// End the review: checkout restored, state cleared, no empty-origin record ever persisted.
+	await commands.get("end-review").handler("", ctx);
+	const finalRecord = appended.filter((entry) => entry.type === "review-session").at(-1);
+	assert.deepEqual(finalRecord.data, { active: false });
+	assert.equal(
+		appended.some((entry) => entry.type === "review-session" && entry.data.active === true && !entry.data.originId),
+		false,
+		"no active record without an originId may be persisted",
+	);
+	assert.equal(widgets.at(-1).widget, undefined, "the widget is cleared after end-review");
+	assert.ok(notices.some((notice) => notice.message === "Review complete! Returned to original position."));
 });

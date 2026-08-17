@@ -4343,3 +4343,85 @@ test("composite projections use one immutable Archive snapshot per operation", (
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("replaying a historical missionless retry Verdict fails closed before mutation", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-v1-retry-replay-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const now = new Date().toISOString();
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "legacy-retry-execution",
+				workId: "legacy-retry-work",
+				executorName: "Legacy Retry Executor",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "demo",
+			}),
+		);
+		appendArchiveRecord(projectPath, {
+			type: "signal",
+			workId: "legacy-retry-work",
+			executionId: "legacy-retry-execution",
+			payload: {
+				signalId: "legacy-retry-signal",
+				workId: "legacy-retry-work",
+				executionId: "legacy-retry-execution",
+				executorName: "Legacy Retry Executor",
+				kind: "blocked",
+				summary: "Legacy retryable failure.",
+				evidence: ["The first attempt was blocked."],
+				observedAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 1,
+			type: "verdict",
+			workId: "legacy-retry-work",
+			executionId: "legacy-retry-execution",
+			payload: {
+				workId: "legacy-retry-work",
+				executionId: "legacy-retry-execution",
+				signalId: "legacy-retry-signal",
+				decision: "retry",
+				reason: "Legacy retry without a Mission.",
+				verdictId: "legacy-retry-verdict",
+				issuedAt: now,
+			},
+		});
+		const before = listArchiveRecords(projectPath).length;
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-conclave", data: {} }];
+				},
+			},
+		};
+		assert.throws(
+			() =>
+				tools.get("khala_verdict").execute(
+					"legacy-replay",
+					{
+						workId: "legacy-retry-work",
+						executionId: "legacy-retry-execution",
+						signalId: "legacy-retry-signal",
+						decision: "retry",
+						reason: "Legacy retry without a Mission.",
+					},
+					null,
+					null,
+					conclaveContext,
+				),
+			/missing its durable retry handoff/,
+		);
+		assert.equal(listArchiveRecords(projectPath).length, before, "the replay must not mutate the Archive");
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});

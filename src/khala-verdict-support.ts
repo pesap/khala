@@ -351,11 +351,7 @@ function isSameVerdict(existing: VerdictRecord, input: NormalizedVerdictInput): 
 function verdictResult(verdict: VerdictRecord, successorMaterialized: boolean) {
 	let text = `Verdict ${verdict.verdictId} recorded.`;
 	if (verdict.decision === "retry" && successorMaterialized) {
-		if (verdict.missionId === undefined) {
-			text = `Verdict ${verdict.verdictId} recorded; Work ${verdict.workId} was requeued for a successor execution.`;
-		} else {
-			text = `Verdict ${verdict.verdictId} recorded; successor Mission materialized for Work ${verdict.workId}.`;
-		}
+		text = `Verdict ${verdict.verdictId} recorded; successor Mission materialized for Work ${verdict.workId}.`;
 	}
 	return Promise.resolve({ content: [{ type: "text" as const, text }], details: verdict });
 }

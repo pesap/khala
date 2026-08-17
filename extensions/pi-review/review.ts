@@ -1364,7 +1364,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("Failed to determine review origin.", "error");
 				return false;
 			}
-			activeReviewSession = { originId };
+			activeReviewSession = { ...(activeReviewSession ?? {}), originId };
 
 			// Keep a local copy so session_tree events during navigation don't wipe review state.
 			const lockedReviewSession = activeReviewSession;
