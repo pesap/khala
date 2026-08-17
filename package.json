@@ -48,7 +48,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "tsc",
+    "build": "npm run clean && tsc",
     "lint": "biome check src extensions/pi-review extensions/pi-clarify",
     "lint:fix": "biome check --write",
     "typecheck": "tsc --noEmit",
