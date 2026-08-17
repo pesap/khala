@@ -1800,7 +1800,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			executorContext,
 		);
-		assert.deepEqual(result.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(result.details.summaries.map((record) => record.type), ["counsel", "signal"]);
 		initTheme();
 		const plainTheme = {
 			fg(_color, text) {
@@ -1812,7 +1812,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		};
 		const collapsed = archiveTool.renderResult(result, { expanded: false, isPartial: false }, plainTheme, {});
 		const collapsedText = collapsed.render(120).join("\n");
-		assert.match(collapsedText, /Khala Archive: 2 record\(s\)/);
+		assert.match(collapsedText, /Khala Archive: 2 of 2 record\(s\)/);
 		assert.match(collapsedText, /to expand/);
 		assert.doesNotMatch(collapsedText, /bound evidence/);
 		const expanded = archiveTool.renderResult(result, { expanded: true, isPartial: false }, plainTheme, {});
@@ -1821,7 +1821,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		assert.match(expandedText, /signal/);
 		assert.doesNotMatch(expandedText, /bound evidence/);
 		const unscopedResult = await archiveTool.execute("archive", {}, null, null, executorContext);
-		assert.deepEqual(unscopedResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(unscopedResult.details.summaries.map((record) => record.type), ["counsel", "signal"]);
 		const userContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -1837,7 +1837,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userContext,
 		);
-		assert.deepEqual(userExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		assert.deepEqual(userExecutionResult.details.summaries.map((record) => record.type), ["signal"]);
 		const userRoleContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -1857,7 +1857,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userRoleContext,
 		);
-		assert.deepEqual(userRoleWorkResult.details.records.map((record) => record.type), ["counsel", "signal"]);
+		assert.deepEqual(userRoleWorkResult.details.summaries.map((record) => record.type), ["counsel", "signal"]);
 		const userRoleExecutionResult = await archiveTool.execute(
 			"archive",
 			{ workId: "work-other", executionId: "execution-other" },
@@ -1865,7 +1865,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			null,
 			userRoleContext,
 		);
-		assert.deepEqual(userRoleExecutionResult.details.records.map((record) => record.type), ["signal"]);
+		assert.deepEqual(userRoleExecutionResult.details.summaries.map((record) => record.type), ["signal"]);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
@@ -1876,6 +1876,89 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			() => archiveTool.execute("archive", { executionId: "execution-bound" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,
 		);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Archive reads enforce a serialized byte budget with deterministic continuation and bounded projections", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-archive-bounds-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	try {
+		const expectedRecordIds = [];
+		for (let index = 0; index < 12; index += 1) {
+			const record = appendArchiveRecord(projectPath, {
+				type: "signal",
+				workId: "work-bounded",
+				executionId: "execution-bounded",
+				payload: {
+					signalId: `signal-${index}`,
+					workId: "work-bounded",
+					executionId: "execution-bounded",
+					executorName: "Bounded Executor",
+					kind: index === 11 ? "finished" : "progress",
+					summary: `diagnostic-${index}-${"x".repeat(80_000)}`,
+					evidence: [`evidence-${index}-${"y".repeat(80_000)}`],
+					observedAt: `2026-01-01T00:00:${String(index).padStart(2, "0")}.000Z`,
+				},
+			});
+			expectedRecordIds.push(record.recordId);
+		}
+
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const archiveTool = tools.get("khala_read_archive");
+		const context = {
+			cwd: projectPath,
+			isProjectTrusted: () => false,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-role", data: { role: "user" } }];
+				},
+			},
+		};
+		const readPage = async (cursor) => {
+			const result = await archiveTool.execute(
+				"archive",
+				{ workId: "work-bounded", limit: 4, ...(cursor === undefined ? {} : { cursor }) },
+				null,
+				null,
+				context,
+			);
+			assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") <= 40_000);
+			assert.equal("records" in result.details, false);
+			assert.doesNotMatch(JSON.stringify(result.details), /diagnostic-|evidence-/);
+			return { result, page: JSON.parse(result.content[0].text) };
+		};
+
+		const first = await readPage();
+		const repeated = await readPage();
+		assert.deepEqual(repeated.page, first.page);
+		assert.equal(first.page.page.totalVisible, 12);
+		assert.equal(first.page.page.truncated, true);
+		assert.ok(first.page.page.nextCursor);
+
+		const observedRecordIds = [];
+		let current = first;
+		for (;;) {
+			for (const record of current.page.records) {
+				observedRecordIds.push(record.recordId);
+				assert.equal(record.type, "signal");
+				assert.equal(record.workId, "work-bounded");
+				assert.equal(record.executionId, "execution-bounded");
+				assert.match(record.recordedAt, /^\d{4}-\d{2}-\d{2}T/);
+				assert.match(record.payload.signalId, /^signal-/);
+				assert.ok(["progress", "finished"].includes(record.payload.kind));
+				assert.match(record.payload.observedAt, /^2026-01-01T/);
+				assert.equal(record.projection.truncated, true);
+			}
+			if (current.page.page.nextCursor === undefined) break;
+			current = await readPage(current.page.page.nextCursor);
+		}
+		assert.deepEqual(observedRecordIds, expectedRecordIds);
+		assert.equal(new Set(observedRecordIds).size, expectedRecordIds.length);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
