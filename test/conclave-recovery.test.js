@@ -566,3 +566,47 @@ test("automatic recovery exhaustion is durable across storage and process restar
     assert.equal(wakeRecords(projectPath).filter((record) => record.payload.status === "failed").length, 3);
   });
 });
+
+test("a scheduled wake claims its named Work directly without a recovery scan", async () => {
+  await withFixture("khala-named-recovery-", async ({ projectPath, storage }) => {
+    admitWithMission(storage, projectPath, "named-work", false);
+    let scanCalls = 0;
+    const originalScan = storage.getRecoverableSubmissions;
+    storage.getRecoverableSubmissions = (path, trusted) => {
+      scanCalls += 1;
+      return originalScan(path, trusted);
+    };
+    const woken = [];
+    await recoverPendingSubmissions({
+      projectPath,
+      projectTrusted: false,
+      storage,
+      workId: "named-work",
+      wake: (submission) => {
+        woken.push(submission.workId);
+      },
+    });
+    assert.equal(scanCalls, 0, "a named scheduled wake must not scan recoverable submissions");
+    assert.deepEqual(woken, ["named-work"]);
+    assert.equal(recoveryRecords(projectPath).length, 1);
+    assert.equal(wakeRecords(projectPath).length, 1);
+  });
+});
+
+test("startup recovery without a known Work still scans recoverable submissions", async () => {
+  await withFixture("khala-scan-recovery-", async ({ projectPath, storage }) => {
+    admitWithMission(storage, projectPath, "scan-work", false);
+    let scanCalls = 0;
+    const originalScan = storage.getRecoverableSubmissions;
+    storage.getRecoverableSubmissions = (path, trusted) => {
+      scanCalls += 1;
+      return originalScan(path, trusted);
+    };
+    const woken = [];
+    await recover(projectPath, storage, (submission) => {
+      woken.push(submission.workId);
+    });
+    assert.equal(scanCalls, 1, "startup recovery must scan recoverable submissions");
+    assert.deepEqual(woken, ["scan-work"]);
+  });
+});

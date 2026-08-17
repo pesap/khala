@@ -477,17 +477,22 @@ async function recoverPendingSubmissions(options: PendingSubmissionRecoveryOptio
 	if (isRecoveryAborted(options)) {
 		return;
 	}
-	const candidates = options.storage
-		.getRecoverableSubmissions(options.projectPath, options.projectTrusted)
-		.filter((submission) => options.workId === undefined || submission.workId === options.workId);
+	// A scheduled wake carries the exact Work ID; claim it directly instead of scanning the
+	// whole Archive. The global scan remains only for startup and resume without a known Work.
+	const workIds =
+		options.workId === undefined
+			? options.storage
+					.getRecoverableSubmissions(options.projectPath, options.projectTrusted)
+					.map((submission) => submission.workId)
+			: [options.workId];
 	await Promise.all(
-		candidates.map(async (submission) => {
+		workIds.map(async (workId) => {
 			if (isRecoveryAborted(options)) {
 				return;
 			}
 			const claim = options.storage.claimSubmissionRecovery(
 				options.projectPath,
-				submission.workId,
+				workId,
 				options.ownerId ?? RECOVERY_OWNER_ID,
 				options.projectTrusted,
 			);
