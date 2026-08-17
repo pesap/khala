@@ -4,7 +4,7 @@
 /* biome-ignore-all lint/style/noContinue: The command parser uses early iteration exits. */
 /* biome-ignore-all lint/style/noExcessiveLinesPerFile: The standalone wizard is shipped as one CLI module. */
 
-import { spawn, spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import process, { stdin as input, stdout as output } from "node:process";
@@ -50,6 +50,10 @@ const MODEL_TRAILING_COLUMNS_WITH_IMAGES = 4;
 const MODEL_DISCOVERY_REQUEST_ID = "khala-model-discovery";
 const MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
 const MODEL_DISCOVERY_TERMINATION_GRACE_MS = 250;
+const MODEL_LIST_TIMEOUT_MS = 10_000;
+const KIBIBYTE = 1024;
+const MODEL_LIST_MAX_BUFFER_KIB = 256;
+const MODEL_LIST_MAX_BUFFER_BYTES = MODEL_LIST_MAX_BUFFER_KIB * KIBIBYTE;
 const MODEL_DISCOVERY_FLAGS = [
 	"--mode",
 	"rpc",
@@ -193,10 +197,30 @@ function parseModelListOutput(stdout: string): string[] {
 	return [...new Set(models)];
 }
 
-function discoverConfiguredModelNames(command: PiCommand): ModelNameDiscovery {
+function discoverConfiguredModelNames(
+	command: PiCommand,
+	options: Readonly<{ timeoutMs?: number; maxBufferBytes?: number }> = {},
+): ModelNameDiscovery {
 	const [program, ...arguments_] = command;
-	const result = spawnSync(program, [...arguments_, "--list-models"], { encoding: "utf8" });
+	let result: SpawnSyncReturns<string>;
+	try {
+		result = spawnSync(program, [...arguments_, "--list-models"], {
+			encoding: "utf8",
+			timeout: options.timeoutMs ?? MODEL_LIST_TIMEOUT_MS,
+			maxBuffer: options.maxBufferBytes ?? MODEL_LIST_MAX_BUFFER_BYTES,
+		});
+	} catch {
+		// spawnSync throws when stdout or stderr exceeds maxBuffer; never parse partial output.
+		return { models: [], reason: "Pi model discovery output exceeded the size limit" };
+	}
 	if (result.error !== undefined) {
+		const errorCode = (result.error as NodeJS.ErrnoException).code;
+		if (errorCode === "ETIMEDOUT") {
+			return { models: [], reason: "Pi model discovery timed out" };
+		}
+		if (errorCode === "ENOBUFS" || errorCode === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+			return { models: [], reason: "Pi model discovery output exceeded the size limit" };
+		}
 		return { models: [], reason: result.error.message };
 	}
 	if (result.status !== 0) {
@@ -1016,6 +1040,7 @@ if (process.argv[1]?.endsWith("khala-setup.js") || process.argv[1]?.endsWith("kh
 export {
 	chooseNonInteractiveModels,
 	createProjectConfigOverrides,
+	discoverConfiguredModelNames,
 	main as runKhalaSetup,
 	parseCommand,
 	thinkingChoices,
