@@ -37,20 +37,20 @@ landed before closing each slice.
 | 15 | F-23/F-24 automation simplification | 1eb94dc, 22d298e | revise → fixed → pass |
 | 16 | F-26 ownership terminology | ba38ff3 | pass (with 15) |
 
-## Phase 4 — NOT implemented (gated)
+## Phase 4 — complete (explicitly approved)
 
-The plan gates these behind explicit decisions/approval that are not recorded
-anywhere (checked the Khala Archive for the project; no decision records):
+All three gated slices were approved by the product owner and implemented with
+strict cutover (no migrations or compatibility fallbacks):
 
-| Slice | Finding | Gate |
+| Slice | Finding | Summary |
 | --- | --- | --- |
-| 17 | F-07 retire legacy v1 retry path | "Only after F-01 and explicit approval" |
-| 18 | F-20 normalize pi-review active state | "After the persisted-state decision" |
-| 19 | F-18 remove Oracle summary parser | "After consumer confirmation" |
+| 17 | F-07 retire legacy v1 retry path | Missionless Retry is rejected ("Retry requires an active Mission"); the requeue branch, RequeueSubmission dependency chain, storage method, and legacy text branch removed; replay of historical missionless retries fails closed or replays idempotently (byte-identical archive/registry snapshots). |
+| 18 | F-20 normalize pi-review active state | One discriminated persisted state ({active:true, originId required, checkout?} | {active:false}); strict cutover (malformed active-without-originId records are invalid); single in-memory mirror replaces the dual globals; integration tests cover setup window, failure, restore, end, and stale-checkout isolation (and caught a real checkout-clobbering bug). |
+| 19 | F-18 remove Oracle summary parser | src/khala-oracle-summary.ts and its test removed; zero references across tracked files (git grep), clean built dist, and the actual npm pack tarball contents. |
 
 ## Final state
 
-- 249 tests pass (was 222 at baseline), npm run check clean, prek run clean.
+- 250 tests pass (was 222 at baseline), npm run check clean, prek run clean.
 - No compatibility adapters, no persistent caches, no global indexes introduced.
 - Explicit non-work honored: F-02/F-10/F-14/R-01 and the legacy launching/launched
   storage path untouched.
