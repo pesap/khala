@@ -4218,7 +4218,9 @@ test("a User cannot record a merge without runtime-confirmed Pull Request eviden
 		assert.equal(listPullRequestRecords(projectPath).at(-1).status, "open");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
-		rmSync(root, { recursive: true, force: tru});
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("composite projections use one immutable Archive snapshot per operation", () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-single-snapshot-"));
@@ -4339,7 +4341,5 @@ test("composite projections use one immutable Archive snapshot per operation", (
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
-	}
-});
 	}
 });
