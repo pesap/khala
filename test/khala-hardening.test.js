@@ -17,9 +17,11 @@ import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import {
+	applyReviewState,
 	createBranchSelectorItems,
 	createCommitSelectorItems,
 	filterReviewSelectorItems,
+	getReviewState,
 	repositoryFromPrReference,
 	resolveReviewTarget,
 	sortReviewBranches,
@@ -1267,4 +1269,87 @@ test("the root-registered Observer marker binds khala_record_learning end to end
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("pi-review state is one explicit active/inactive representation with strict cutover", () => {
+	const branch = (records) => ({
+		cwd: "/tmp",
+		sessionManager: {
+			getBranch: () => records,
+		},
+		ui: {
+			setWidget() {},
+		},
+	});
+	const activeRecord = { type: "custom", customType: "review-session", data: { active: true, originId: "leaf-1" } };
+	assert.deepEqual(getReviewState(branch([activeRecord])), { active: true, originId: "leaf-1" });
+
+	const activeWithCheckout = {
+		type: "custom",
+		customType: "review-session",
+		data: {
+			active: true,
+			originId: "leaf-1",
+			checkout: { originalBranch: "main", originalHead: "a".repeat(40), originalStatus: "clean", reviewBranch: "pr-branch", reviewHead: "b".repeat(40) },
+		},
+	};
+	assert.deepEqual(getReviewState(branch([activeWithCheckout])), {
+		active: true,
+		originId: "leaf-1",
+		checkout: { originalBranch: "main", originalHead: "a".repeat(40), originalStatus: "clean", reviewBranch: "pr-branch", reviewHead: "b".repeat(40) },
+	});
+
+	assert.deepEqual(getReviewState(branch([{ type: "custom", customType: "review-session", data: { active: false } }])), {
+		active: false,
+	});
+
+	// Strict cutover: an active record without an originId is not a valid review state.
+	assert.equal(
+		getReviewState(branch([{ type: "custom", customType: "review-session", data: { active: true } }])),
+		undefined,
+	);
+	assert.equal(
+		getReviewState(branch([{ type: "custom", customType: "review-session", data: { active: true, originId: "" } }])),
+		undefined,
+	);
+	// The latest valid record wins; malformed records are ignored.
+	assert.deepEqual(
+		getReviewState(branch([{ type: "custom", customType: "review-session", data: { active: false } }, activeRecord])),
+		{ active: true, originId: "leaf-1" },
+	);
+});
+
+test("pi-review state application drives the widget and origin from one mirror", () => {
+	const widgets = [];
+	const context = {
+		cwd: "/tmp",
+		hasUI: true,
+		sessionManager: {
+			getBranch: () => [{ type: "custom", customType: "review-session", data: { active: true, originId: "leaf-2" } }],
+		},
+		ui: {
+			setWidget(name, widget) {
+				widgets.push({ name, widget });
+			},
+		},
+	};
+	applyReviewState(context);
+	assert.equal(widgets.length, 1);
+	assert.equal(widgets[0].name, "review");
+	assert.ok(widgets[0].widget);
+
+	const cleared = [];
+	applyReviewState({
+		cwd: "/tmp",
+		hasUI: true,
+		sessionManager: {
+			getBranch: () => [{ type: "custom", customType: "review-session", data: { active: true } }],
+		},
+		ui: {
+			setWidget(name, widget) {
+				cleared.push({ name, widget });
+			},
+		},
+	});
+	assert.deepEqual(cleared, [{ name: "review", widget: undefined }]);
 });

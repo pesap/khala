@@ -41,10 +41,11 @@ import { Container, fuzzyFilter, Input, type SelectItem, SelectList, Spacer, Tex
 // State to track fresh session review (where we branched from).
 // Module-level state means only one review can be active at a time.
 // This is intentional - the UI and /end-review command assume a single active review.
-let reviewOriginId: string | undefined;
 let endReviewInProgress = false;
 let reviewCustomInstructions: string | undefined;
-let reviewCheckoutState: ReviewCheckoutState | undefined;
+// One in-memory mirror of the persisted review session; undefined means inactive.
+// A transient empty originId marks a PR checkout recorded before the review origin is known.
+let activeReviewSession: ActiveReviewSession | undefined;
 
 const REVIEW_STATE_TYPE = "review-session";
 const REVIEW_ANCHOR_TYPE = "review-anchor";
@@ -54,11 +55,16 @@ const GH_SETUP_INSTRUCTIONS =
 const PR_CHECKOUT_BLOCKED_BY_PENDING_CHANGES_MESSAGE =
 	"Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.";
 
-interface ReviewSessionState {
-	active: boolean;
-	originId?: string;
+interface ActiveReviewSession {
+	originId: string;
 	checkout?: ReviewCheckoutState;
 }
+
+// One explicit active/inactive representation: an active session requires an originId;
+// a record claiming active without one is malformed and not a valid state.
+type ReviewSessionState =
+	| Readonly<{ active: true; originId: string; checkout?: ReviewCheckoutState }>
+	| Readonly<{ active: false }>;
 
 interface ReviewSettingsState {
 	customInstructions?: string | undefined;
@@ -98,26 +104,60 @@ function setReviewWidget(ctx: ExtensionContext, active: boolean) {
 function getReviewState(ctx: ExtensionContext): ReviewSessionState | undefined {
 	let state: ReviewSessionState | undefined;
 	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type === "custom" && entry.customType === REVIEW_STATE_TYPE) {
-			state = entry.data as ReviewSessionState | undefined;
+		if (entry.type !== "custom" || entry.customType !== REVIEW_STATE_TYPE) {
+			continue;
 		}
+		const data = entry.data as { active?: unknown; originId?: unknown; checkout?: unknown };
+		if (data.active === true && typeof data.originId === "string" && data.originId.length > 0) {
+			state = {
+				active: true,
+				originId: data.originId,
+				...(isReviewCheckoutState(data.checkout) ? { checkout: data.checkout } : {}),
+			};
+		} else if (data.active === false) {
+			state = { active: false };
+		}
+		// Strict cutover: malformed records (e.g. active without an originId) are not valid state.
 	}
 
 	return state;
 }
 
+function isReviewCheckoutState(value: unknown): value is ReviewCheckoutState {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const checkout = value as {
+		originalBranch?: unknown;
+		originalHead?: unknown;
+		originalStatus?: unknown;
+		reviewBranch?: unknown;
+		reviewHead?: unknown;
+	};
+	return (
+		(typeof checkout.originalBranch === "string" || checkout.originalBranch === null) &&
+		typeof checkout.originalHead === "string" &&
+		typeof checkout.originalStatus === "string" &&
+		(checkout.reviewBranch === undefined ||
+			checkout.reviewBranch === null ||
+			typeof checkout.reviewBranch === "string") &&
+		(checkout.reviewHead === undefined || typeof checkout.reviewHead === "string")
+	);
+}
+
 function applyReviewState(ctx: ExtensionContext) {
 	const state = getReviewState(ctx);
 
-	if (state?.active && state.originId) {
-		reviewOriginId = state.originId;
-		reviewCheckoutState = state.checkout;
+	if (state?.active) {
+		activeReviewSession = {
+			originId: state.originId,
+			...(state.checkout === undefined ? {} : { checkout: state.checkout }),
+		};
 		setReviewWidget(ctx, true);
 		return;
 	}
 
-	reviewOriginId = undefined;
-	reviewCheckoutState = undefined;
+	activeReviewSession = undefined;
 	setReviewWidget(ctx, false);
 }
 
@@ -965,7 +1005,10 @@ export default function reviewExtension(pi: ExtensionAPI) {
 
 		const reviewBranch = await getCurrentBranch(pi);
 		const reviewHead = await getHeadSha(pi);
-		reviewCheckoutState = { originalBranch, originalHead, originalStatus, reviewBranch, reviewHead };
+		activeReviewSession = {
+			...(activeReviewSession ?? { originId: "" }),
+			checkout: { originalBranch, originalHead, originalStatus, reviewBranch, reviewHead },
+		};
 		if (reviewHead !== prInfo.headSha) {
 			let restored = false;
 			let restoreError: string | undefined;
@@ -997,7 +1040,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 	}
 
 	async function restoreReviewCheckout(ctx: ExtensionContext): Promise<boolean> {
-		const checkout = reviewCheckoutState;
+		const checkout = activeReviewSession?.checkout;
 		if (!checkout) {
 			return true;
 		}
@@ -1023,7 +1066,9 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			ctx.ui.notify(`Failed to restore the original checkout: ${result.stderr.trim() || "git switch failed"}`, "error");
 			return false;
 		}
-		reviewCheckoutState = undefined;
+		if (activeReviewSession !== undefined) {
+			activeReviewSession = { originId: activeReviewSession.originId };
+		}
 		return true;
 	}
 
@@ -1287,7 +1332,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		options?: { extraInstruction?: string | undefined },
 	): Promise<boolean> {
 		// Check if we're already in a review
-		if (reviewOriginId) {
+		if (activeReviewSession?.originId) {
 			ctx.ui.notify("Already in a review. Use /end-review to finish first.", "warning");
 			return false;
 		}
@@ -1319,11 +1364,10 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("Failed to determine review origin.", "error");
 				return false;
 			}
-			reviewOriginId = originId;
+			activeReviewSession = { originId };
 
-			// Keep local copies so session_tree events during navigation don't wipe review state.
-			const lockedOriginId = originId;
-			const lockedCheckoutState = reviewCheckoutState;
+			// Keep a local copy so session_tree events during navigation don't wipe review state.
+			const lockedReviewSession = activeReviewSession;
 
 			// Find the first user message in the session.
 			// If none exists (e.g. brand-new session), we'll stay on the current leaf.
@@ -1336,15 +1380,13 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				try {
 					const result = await ctx.navigateTree(firstUserMessage.id, { summarize: false, label: "code-review" });
 					if (result.cancelled) {
-						reviewOriginId = undefined;
-						reviewCheckoutState = lockedCheckoutState;
+						activeReviewSession = lockedReviewSession;
 						await restoreReviewCheckout(ctx);
 						return false;
 					}
 				} catch (error) {
 					// Clean up state if navigation fails
-					reviewOriginId = undefined;
-					reviewCheckoutState = lockedCheckoutState;
+					activeReviewSession = lockedReviewSession;
 					await restoreReviewCheckout(ctx);
 					ctx.ui.notify(`Failed to start review: ${error instanceof Error ? error.message : String(error)}`, "error");
 					return false;
@@ -1355,21 +1397,20 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			}
 
 			// Restore state after navigation events (session_tree can reset it)
-			reviewOriginId = lockedOriginId;
-			reviewCheckoutState = lockedCheckoutState;
+			activeReviewSession = lockedReviewSession;
 
 			// Show widget indicating review is active
 			setReviewWidget(ctx, true);
 
 			// Persist review state so tree navigation can restore/reset it.
-			if (reviewCheckoutState) {
+			if (lockedReviewSession.checkout !== undefined) {
 				pi.appendEntry(REVIEW_STATE_TYPE, {
 					active: true,
-					originId: lockedOriginId,
-					checkout: reviewCheckoutState,
+					originId: lockedReviewSession.originId,
+					checkout: lockedReviewSession.checkout,
 				});
 			} else {
-				pi.appendEntry(REVIEW_STATE_TYPE, { active: true, originId: lockedOriginId });
+				pi.appendEntry(REVIEW_STATE_TYPE, { active: true, originId: lockedReviewSession.originId });
 			}
 		}
 
@@ -1561,7 +1602,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			}
 
 			// Check if we're already in a review
-			if (reviewOriginId) {
+			if (activeReviewSession?.originId) {
 				ctx.ui.notify("Already in a review. Use /end-review to finish first.", "warning");
 				return;
 			}
@@ -1710,30 +1751,24 @@ Instructions:
 	}
 
 	function getActiveReviewOrigin(ctx: ExtensionContext): string | undefined {
-		if (reviewOriginId) {
-			return reviewOriginId;
+		if (activeReviewSession?.originId) {
+			return activeReviewSession.originId;
 		}
 
 		const state = getReviewState(ctx);
-		if (state?.active && state.originId) {
-			reviewOriginId = state.originId;
-			reviewCheckoutState = state.checkout;
-			return reviewOriginId;
-		}
-
 		if (state?.active) {
-			setReviewWidget(ctx, false);
-			reviewCheckoutState = undefined;
-			pi.appendEntry(REVIEW_STATE_TYPE, { active: false });
-			ctx.ui.notify("Review state was missing origin info; cleared review status.", "warning");
+			activeReviewSession = {
+				originId: state.originId,
+				...(state.checkout === undefined ? {} : { checkout: state.checkout }),
+			};
+			return state.originId;
 		}
 		return undefined;
 	}
 
 	function clearReviewState(ctx: ExtensionContext) {
 		setReviewWidget(ctx, false);
-		reviewOriginId = undefined;
-		reviewCheckoutState = undefined;
+		activeReviewSession = undefined;
 		pi.appendEntry(REVIEW_STATE_TYPE, { active: false });
 	}
 
@@ -1788,7 +1823,7 @@ Instructions:
 		}
 
 		const notifySuccess = options.notifySuccess ?? true;
-		const checkoutState = reviewCheckoutState;
+		const checkoutState = activeReviewSession?.checkout;
 
 		if (action === "returnOnly") {
 			try {
@@ -1801,7 +1836,10 @@ Instructions:
 				ctx.ui.notify(`Failed to return: ${error instanceof Error ? error.message : String(error)}`, "error");
 				return "error";
 			}
-			reviewCheckoutState = checkoutState;
+			activeReviewSession = {
+				...(activeReviewSession ?? { originId: "" }),
+				...(checkoutState === undefined ? {} : { checkout: checkoutState }),
+			};
 			if (!(await restoreReviewCheckout(ctx))) {
 				return "error";
 			}
@@ -1828,7 +1866,10 @@ Instructions:
 			ctx.ui.notify("Navigation cancelled. Use /end-review to try again.", "info");
 			return "cancelled";
 		}
-		reviewCheckoutState = checkoutState;
+		activeReviewSession = {
+			...(activeReviewSession ?? { originId: "" }),
+			...(checkoutState === undefined ? {} : { checkout: checkoutState }),
+		};
 		if (!(await restoreReviewCheckout(ctx))) {
 			return "error";
 		}
@@ -1902,9 +1943,11 @@ Instructions:
 }
 
 export {
+	applyReviewState,
 	createBranchSelectorItems,
 	createCommitSelectorItems,
 	filterReviewSelectorItems,
+	getReviewState,
 	repositoryFromPrReference,
 	resolveReviewTarget,
 	sortReviewBranches,
