@@ -31,11 +31,7 @@ function writeExecutorRecord(record: ExecutorRecord, projectTrusted = false): vo
 	withArchiveLock(record.projectPath, projectTrusted, () => writeExecutorRecordLocked(record, projectTrusted));
 }
 
-function writeExecutorRecordLocked(
-	record: ExecutorRecord,
-	projectTrusted: boolean,
-	existing?: ExecutorRecord,
-): void {
+function writeExecutorRecordLocked(record: ExecutorRecord, projectTrusted: boolean, existing?: ExecutorRecord): void {
 	// The locked writer accepts the record already loaded by the caller (updateExecutorRecord)
 	// instead of scanning the Archive again inside this nested helper.
 	const current = existing ?? readExecutorRecord(record.projectPath, record.executionId, projectTrusted);

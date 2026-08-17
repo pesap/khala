@@ -53,40 +53,38 @@ type ClarifyUi = {
 	isProjectTrusted: () => boolean;
 };
 
+// The rewrite flow reports one explicit outcome; UI text is derived only in applyClarifyOutcome.
+type ClarifyOutcome =
+	| { result: "ready"; text: string }
+	| { result: "cancelled" }
+	| { result: "invalid"; reason: string }
+	| { result: "unavailable"; reason: string }
+	| { result: "failure"; reason: string };
+
 type RewriteModel = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>;
 
-function resolveRewriteModel(ctx: ClarifyUi): RewriteModel | null {
+function resolveRewriteModel(ctx: ClarifyUi): { model: RewriteModel } | { reason: string } {
 	let config;
 	try {
 		config = loadKhalaConfig(ctx.cwd, ctx.isProjectTrusted());
 	} catch (error) {
-		if (ctx.hasUI) {
-			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-		}
-		return null;
+		return { reason: error instanceof Error ? error.message : String(error) };
 	}
 
 	const modelReference = config.conclaveModel.trim();
 	const separator = modelReference.indexOf("/");
 	if (separator <= 0 || separator === modelReference.length - 1) {
-		if (ctx.hasUI) {
-			ctx.ui.notify(
-				`No valid Conclave model is configured. Run \`${KHALA_SETUP_COMMAND}\` to configure Khala.`,
-				"error",
-			);
-		}
-		return null;
+		return {
+			reason: `No valid Conclave model is configured. Run \`${KHALA_SETUP_COMMAND}\` to configure Khala.`,
+		};
 	}
 
 	const provider = modelReference.slice(0, separator);
 	const modelId = modelReference.slice(separator + 1);
 	const model = ctx.modelRegistry.find(provider, modelId);
-	if (model) return model as RewriteModel;
+	if (model) return { model: model as RewriteModel };
 
-	if (ctx.hasUI) {
-		ctx.ui.notify(`Configured Conclave model is unavailable: ${modelReference}`, "error");
-	}
-	return null;
+	return { reason: `Configured Conclave model is unavailable: ${modelReference}` };
 }
 
 async function callModel(
@@ -144,15 +142,17 @@ export function extractClarifyText(
 	return rewritten;
 }
 
-async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<string | null> {
+async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<ClarifyOutcome> {
 	const text = raw.trim();
 	if (!text) {
-		if (ctx.hasUI) ctx.ui.notify(USAGE, "warning");
-		return null;
+		return { result: "invalid", reason: USAGE };
 	}
 
-	const model = resolveRewriteModel(ctx);
-	if (!model) return null;
+	const resolved = resolveRewriteModel(ctx);
+	if ("reason" in resolved) {
+		return { result: "unavailable", reason: resolved.reason };
+	}
+	const model = resolved.model;
 
 	// Interactive TUI can show a loader. Other hosts fall through to a plain call.
 	if (ctx.mode === "tui" && ctx.hasUI) {
@@ -166,42 +166,63 @@ async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<string | null
 					done(result);
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
-					ctx.ui.notify(message, "error");
-					done(null);
+					done(`error:${message}`);
 				}
 			};
 
 			void run();
 			return loader;
 		});
-		if (loaded !== undefined) return loaded;
+		if (loaded !== undefined && loaded !== null) {
+			if (loaded.startsWith("error:")) {
+				return { result: "failure", reason: loaded.slice("error:".length) };
+			}
+			return { result: "ready", text: loaded };
+		}
+		return { result: "cancelled" };
 	}
 
 	try {
-		return await callModel(text, model, ctx);
+		const rewritten = await callModel(text, model, ctx);
+		if (rewritten === null) {
+			return { result: "cancelled" };
+		}
+		return { result: "ready", text: rewritten };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (ctx.hasUI) ctx.ui.notify(message, "error");
-		return null;
+		return { result: "failure", reason: message };
 	}
 }
 
-async function putRewriteInEditor(raw: string, ctx: ClarifyUi): Promise<void> {
-	const rewritten = await rewritePrompt(raw, ctx);
-	if (rewritten === null) {
-		if (ctx.hasUI) ctx.ui.notify("Cancelled", "info");
+// One boundary maps every clarify outcome to UI text.
+function applyClarifyOutcome(outcome: ClarifyOutcome, ctx: ClarifyUi): void {
+	if (outcome.result === "ready") {
+		if (ctx.hasUI && typeof ctx.ui.setEditorText === "function") {
+			ctx.ui.setEditorText(outcome.text);
+			ctx.ui.notify("Rewrite ready. Edit if needed, then send.", "info");
+			return;
+		}
+		ctx.ui.notify(outcome.text, "info");
 		return;
 	}
-
-	if (ctx.hasUI && typeof ctx.ui.setEditorText === "function") {
-		ctx.ui.setEditorText(rewritten);
-		ctx.ui.notify("Rewrite ready. Edit if needed, then send.", "info");
+	if (!ctx.hasUI) {
 		return;
 	}
-
-	ctx.ui.notify(rewritten, "info");
+	if (outcome.result === "cancelled") {
+		ctx.ui.notify("Cancelled", "info");
+		return;
+	}
+	if (outcome.result === "invalid") {
+		ctx.ui.notify(outcome.reason, "warning");
+		return;
+	}
+	ctx.ui.notify(outcome.reason, "error");
 }
 
+export type { ClarifyOutcome };
+export { USAGE };
+export { applyClarifyOutcome };
+// biome-ignore lint/performance/noBarrelFile: The default export remains the extension entry; named helpers stay beside it.
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("clarify", {
 		description: "Rewrite a rough idea into a precise technical prompt (result goes in the editor)",
@@ -225,7 +246,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			await putRewriteInEditor(source, ui);
+			await applyClarifyOutcome(await rewritePrompt(source, ui), ui);
 		},
 	});
 
@@ -254,7 +275,7 @@ export default function (pi: ExtensionAPI) {
 			isProjectTrusted: ctx.isProjectTrusted,
 		};
 
-		await putRewriteInEditor(rough, ui);
+		await applyClarifyOutcome(await rewritePrompt(rough, ui), ui);
 		return { action: "handled" };
 	});
 }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import test from "node:test";
-import clarifyExtension, { extractClarifyText } from "../dist/extensions/pi-clarify/clarify.js";
+import clarifyExtension, { applyClarifyOutcome, extractClarifyText, USAGE } from "../dist/extensions/pi-clarify/clarify.js";
 
 function response(overrides = {}) {
 	return {
@@ -166,4 +166,173 @@ test("clarify explains when a model returns only non-text blocks", () => {
 			),
 		/Clarify returned no text \(stop reason: stop; content blocks: thinking\)/,
 	);
+});
+
+function uiStub(notices) {
+	return {
+		hasUI: true,
+		mode: "rpc",
+		modelRegistry: {},
+		cwd: "/tmp",
+		isProjectTrusted: () => false,
+		ui: {
+			notify(message, type) {
+				notices.push({ message, type });
+			},
+		},
+	};
+}
+
+test("clarify maps cancellation and invalid input through the outcome boundary", () => {
+	const cancelledNotices = [];
+	applyClarifyOutcome({ result: "cancelled" }, uiStub(cancelledNotices));
+	assert.deepEqual(cancelledNotices, [{ message: "Cancelled", type: "info" }]);
+
+	const invalidNotices = [];
+	applyClarifyOutcome({ result: "invalid", reason: USAGE }, uiStub(invalidNotices));
+	assert.deepEqual(invalidNotices, [{ message: USAGE, type: "warning" }]);
+
+	const unavailableNotices = [];
+	applyClarifyOutcome({ result: "unavailable", reason: "No model." }, uiStub(unavailableNotices));
+	assert.deepEqual(unavailableNotices, [{ message: "No model.", type: "error" }]);
+
+	const failureNotices = [];
+	applyClarifyOutcome({ result: "failure", reason: "Boom." }, uiStub(failureNotices));
+	assert.deepEqual(failureNotices, [{ message: "Boom.", type: "error" }]);
+});
+
+test("clarify reports an unavailable configured model through the handler", async () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-clarify-unavailable-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	writeFileSync(
+		join(agentDir, "khala.json"),
+		JSON.stringify({
+			conclaveModel: "provider/executor",
+			conclaveMaxCostUsdPerTurn: 1,
+			executorModel: "provider/executor",
+			executorMaxCostUsdPerTurn: 1,
+		}),
+	);
+	const commands = new Map();
+	const notices = [];
+	try {
+		clarifyExtension({
+			registerCommand(name, command) {
+				commands.set(name, command);
+			},
+			on() {},
+		});
+		await commands.get("clarify").handler("make search wait", {
+			cwd: agentDir,
+			isProjectTrusted: () => false,
+			hasUI: true,
+			mode: "rpc",
+			modelRegistry: {
+				find() {
+					return undefined;
+				},
+				async getApiKeyAndHeaders() {
+					return { ok: true, apiKey: "test-key" };
+				},
+			},
+			ui: {
+				notify(message, type) {
+					notices.push({ message, type });
+				},
+			},
+		});
+		assert.deepEqual(notices, [
+			{ message: "Configured Conclave model is unavailable: provider/executor", type: "error" },
+		]);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("clarify reports provider failures through the handler", async () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-clarify-failure-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	const provider = registerClarifyProvider({
+		role: "assistant",
+		content: [{ type: "text", text: "partial output" }],
+		api: "clarify-test",
+		provider: "clarify-test",
+		model: "rewrite-model",
+		usage: {},
+		stopReason: "error",
+		errorMessage: "The provider rejected the request.",
+		timestamp: Date.now(),
+	});
+	writeFileSync(
+		join(agentDir, "khala.json"),
+		JSON.stringify({
+			conclaveModel: `${provider.model.provider}/${provider.model.id}`,
+			conclaveMaxCostUsdPerTurn: 1,
+			executorModel: "provider/executor",
+			executorMaxCostUsdPerTurn: 1,
+		}),
+	);
+	const commands = new Map();
+	const notices = [];
+	try {
+		clarifyExtension({
+			registerCommand(name, command) {
+				commands.set(name, command);
+			},
+			on() {},
+		});
+		await commands.get("clarify").handler("make search wait", {
+			cwd: agentDir,
+			isProjectTrusted: () => false,
+			hasUI: true,
+			mode: "rpc",
+			modelRegistry: {
+				find: () => provider.model,
+				async getApiKeyAndHeaders() {
+					return { ok: true, apiKey: "test-key" };
+				},
+			},
+			ui: {
+				notify(message, type) {
+					notices.push({ message, type });
+				},
+			},
+		});
+		assert.deepEqual(notices, [
+			{ message: "Clarify model failed: The provider rejected the request.", type: "error" },
+		]);
+	} finally {
+		provider.cleanup();
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("clarify warns on empty input through the handler", async () => {
+	const commands = new Map();
+	const notices = [];
+	clarifyExtension({
+		registerCommand(name, command) {
+			commands.set(name, command);
+		},
+		on() {},
+	});
+	await commands.get("clarify").handler("", {
+		cwd: "/tmp",
+		isProjectTrusted: () => false,
+		hasUI: true,
+		mode: "rpc",
+		modelRegistry: {},
+		ui: {
+			notify(message, type) {
+				notices.push({ message, type });
+			},
+		},
+	});
+	assert.deepEqual(notices, [{ message: USAGE, type: "warning" }]);
 });
