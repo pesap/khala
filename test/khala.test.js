@@ -22,7 +22,7 @@ import {
 	updateExecutorRecord,
 	writeExecutorRecord,
 } from "../dist/src/khala-executor-registry.js";
-import { canRecordPullRequestReview } from "../dist/src/khala-review.js";
+import { appendPullRequestRecord, canRecordPullRequestReview, registerKhalaReview } from "../dist/src/khala-review.js";
 import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
 import { isSignal, isV2Verdict } from "../dist/src/khala-model.js";
@@ -3878,6 +3878,162 @@ test("Mission materialization reuses the current Mission after a concurrent Retr
 		assert.notEqual(reused.missionId, "mission-a");
 		assert.equal(reused.predecessorMissionId, "mission-a");
 		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 2);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("User Pull Request reviews preserve runtime-owned bindings and cannot set runtime statuses", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-pr-ownership-"));
+	const agentDir = join(root, "agent");
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const now = new Date().toISOString();
+		writeExecutorRecord(
+			createExecutorRecord({
+				executionId: "pr-execution",
+				workId: "pr-work",
+				executorName: "Review Executor",
+				kind: "executor",
+				participantId: "executor:pr-execution",
+				purpose: { kind: "mission", missionId: "pr-mission" },
+				missionId: "pr-mission",
+				projectPath,
+				sandboxPath: join(root, "sandbox"),
+				launcher: "headless-rpc",
+				piSessionId: "pr-session",
+				sessionPath: join(root, "pr-executor.jsonl"),
+				promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+			}),
+		);
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "pr-work",
+			payload: {
+				missionId: "pr-mission",
+				workId: "pr-work",
+				mandateId: "pr-mandate",
+				assignment: {
+					title: "PR test",
+					objective: "Verify ownership.",
+					context: "Context.",
+					scope: "Scope.",
+					acceptanceCriteria: ["The runtime bindings are preserved."],
+					constraints: [],
+					plan: ["Record a review."],
+					validation: ["Assert the record."],
+				},
+				assignedParticipantId: "executor:pr-execution",
+				createdAt: now,
+			},
+		});
+		appendPullRequestRecord(projectPath, {
+			pullRequestId: "pr-runtime-record",
+			workId: "pr-work",
+			missionId: "pr-mission",
+			executionId: "pr-execution",
+			status: "reviewable",
+			url: "https://github.com/example/repo/pull/42",
+			number: 42,
+			sourceBranch: "khala/pr-work",
+			targetBranch: "main",
+			headCommit: "b".repeat(40),
+			planningCommit: "a".repeat(40),
+			remoteConfirmedAt: now,
+			changedFiles: ["src/a.ts"],
+			diffSummary: "Runtime diff summary.",
+			validationResults: ["runtime validation"],
+			reviewFeedback: [],
+			unresolvedGaps: [],
+			recordedAt: now,
+		});
+		const tools = new Map();
+		const wakes = [];
+		registerKhalaReview(
+			createPiStub(new Map(), tools),
+			() => true,
+			async (path, workId) => {
+				wakes.push(`${path}:${workId}`);
+			},
+		);
+		const userContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [];
+				},
+			},
+		};
+		const result = await tools.get("khala_record_pull_request_review").execute(
+			"review",
+			{
+				workId: "pr-work",
+				executionId: "pr-execution",
+				missionId: "pr-mission",
+				status: "changes-requested",
+				validationResults: [],
+				reviewFeedback: ["Add the focused test."],
+				unresolvedGaps: ["Coverage gap."],
+				reviewer: "Reviewer Name",
+			},
+			null,
+			null,
+			userContext,
+		);
+		assert.equal(result.details.status, "changes-requested");
+		assert.deepEqual(result.details.reviewFeedback, ["Add the focused test."]);
+		assert.deepEqual(result.details.unresolvedGaps, ["Coverage gap."]);
+		assert.equal(result.details.reviewer, "Reviewer Name");
+		assert.equal(result.details.url, "https://github.com/example/repo/pull/42");
+		assert.equal(result.details.number, 42);
+		assert.equal(result.details.sourceBranch, "khala/pr-work");
+		assert.equal(result.details.targetBranch, "main");
+		assert.equal(result.details.headCommit, "b".repeat(40));
+		assert.deepEqual(result.details.changedFiles, ["src/a.ts"]);
+		assert.equal(result.details.diffSummary, "Runtime diff summary.");
+		assert.deepEqual(result.details.validationResults, ["runtime validation"]);
+		assert.deepEqual(wakes, [`${projectPath}:pr-work`]);
+
+		await assert.rejects(
+			tools.get("khala_record_pull_request_review").execute(
+				"runtime-status",
+				{
+					workId: "pr-work",
+					executionId: "pr-execution",
+					missionId: "pr-mission",
+					status: "reviewable",
+					validationResults: [],
+					reviewFeedback: [],
+					unresolvedGaps: [],
+				},
+				null,
+				null,
+				userContext,
+			),
+			/Only the runtime may set draft or reviewable/,
+		);
+		await assert.rejects(
+			tools.get("khala_record_pull_request_review").execute(
+				"replace-url",
+				{
+					workId: "pr-work",
+					executionId: "pr-execution",
+					missionId: "pr-mission",
+					status: "closed",
+					url: "https://github.com/example/repo/pull/99",
+					validationResults: [],
+					reviewFeedback: [],
+					unresolvedGaps: [],
+				},
+				null,
+				null,
+				userContext,
+			),
+			/cannot replace the runtime-confirmed Pull Request URL/,
+		);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });

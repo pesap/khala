@@ -18,26 +18,22 @@ import { readExecutorRecord } from "./khala-executor-registry.js";
 import type { PullRequestRecord, PullRequestStatusValue, WorkOutcomeRecord } from "./khala-model.js";
 import { isUserSessionRole, type KhalaRoleValue, readSessionRole } from "./khala-role.js";
 
+// The User tool records only User-owned review outcome and evidence fields. Runtime-owned
+// bindings (publication URL/number, branches, commits, changed files, diff summary) and the
+// draft/reviewable statuses are written exclusively by the runtime and preserved here.
 const PULL_REQUEST_REVIEW_PARAMETERS = Type.Object({
 	workId: Type.String(),
 	executionId: Type.String(),
 	missionId: Type.String(),
 	status: Type.Union([
-		Type.Literal("reviewable"),
-		Type.Literal("draft"),
 		Type.Literal("open"),
 		Type.Literal("changes-requested"),
 		Type.Literal("merged"),
 		Type.Literal("closed"),
 	]),
 	url: Type.Optional(Type.String()),
-	number: Type.Optional(Type.Integer({ minimum: 1 })),
-	sourceBranch: Type.Optional(Type.String()),
-	targetBranch: Type.Optional(Type.String()),
 	headCommit: Type.Optional(Type.String()),
 	mergeCommit: Type.Optional(Type.String()),
-	changedFiles: Type.Array(Type.String()),
-	diffSummary: Type.String(),
 	validationResults: Type.Array(Type.String()),
 	reviewFeedback: Type.Array(Type.String()),
 	unresolvedGaps: Type.Array(Type.String()),
@@ -190,6 +186,9 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 		throw new Error("Only a User may record Pull Request review or merge evidence.");
 	}
 	const status = input.status as PullRequestStatusValue;
+	if (status === "draft" || status === "reviewable") {
+		throw new Error("Only the runtime may set draft or reviewable Pull Request state.");
+	}
 	if (
 		input.workId.trim().length === 0 ||
 		input.executionId.trim().length === 0 ||
@@ -197,13 +196,10 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 	) {
 		throw new Error("Pull Request review requires Work, Execution, and Mission identifiers.");
 	}
-	const reviewFeedback = normalizeArray(input.reviewFeedback);
-	const validationResults = normalizeArray(input.validationResults);
+	const reviewFeedback = normalizeArray(input.reviewFeedback ?? []);
+	const validationResults = normalizeArray(input.validationResults ?? []);
 	if (status === "merged" && (input.mergeCommit === undefined || input.mergeCommit.trim().length === 0)) {
 		throw new Error("A merged Pull Request requires a merge commit.");
-	}
-	if (status === "merged" && validationResults.length === 0) {
-		throw new Error("A merged Pull Request requires validation evidence.");
 	}
 	if (status === "merged" && (input.headCommit === undefined || input.headCommit.trim().length === 0)) {
 		throw new Error("A merged Pull Request requires the final head commit.");
@@ -228,6 +224,9 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 		throw new Error("The Pull Request review requires a matching Executor Mission execution.");
 	}
 	const existing = latestPullRequest(context.cwd, input.executionId, projectTrusted);
+	if (status === "merged" && validationResults.length === 0 && (existing?.validationResults?.length ?? 0) === 0) {
+		throw new Error("A merged Pull Request requires validation evidence.");
+	}
 	if (existing !== undefined && (existing.workId !== input.workId || existing.missionId !== input.missionId)) {
 		throw new Error("The Pull Request review does not match the registered Work Mission.");
 	}
@@ -276,21 +275,9 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 		executionId: input.executionId,
 		status,
 		...(input.url?.trim() ? { url: input.url.trim() } : existing?.url === undefined ? {} : { url: existing.url }),
-		...(input.number === undefined
-			? existing?.number === undefined
-				? {}
-				: { number: existing.number }
-			: { number: input.number }),
-		...(input.sourceBranch?.trim()
-			? { sourceBranch: input.sourceBranch.trim() }
-			: existing?.sourceBranch === undefined
-				? {}
-				: { sourceBranch: existing.sourceBranch }),
-		...(input.targetBranch?.trim()
-			? { targetBranch: input.targetBranch.trim() }
-			: existing?.targetBranch === undefined
-				? {}
-				: { targetBranch: existing.targetBranch }),
+		...(existing?.number === undefined ? {} : { number: existing.number }),
+		...(existing?.sourceBranch === undefined ? {} : { sourceBranch: existing.sourceBranch }),
+		...(existing?.targetBranch === undefined ? {} : { targetBranch: existing.targetBranch }),
 		...(input.headCommit?.trim()
 			? { headCommit: input.headCommit.trim() }
 			: existing?.headCommit === undefined
@@ -304,11 +291,14 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 			: existing?.mergeCommit === undefined
 				? {}
 				: { mergeCommit: existing.mergeCommit }),
-		changedFiles: normalizeArray(input.changedFiles),
-		diffSummary: input.diffSummary.trim(),
-		validationResults,
-		reviewFeedback,
-		unresolvedGaps: normalizeArray(input.unresolvedGaps),
+		changedFiles: existing?.changedFiles ?? [],
+		diffSummary: existing?.diffSummary ?? "",
+		validationResults: validationResults.length > 0 ? validationResults : (existing?.validationResults ?? []),
+		reviewFeedback: reviewFeedback.length > 0 ? reviewFeedback : (existing?.reviewFeedback ?? []),
+		unresolvedGaps:
+			normalizeArray(input.unresolvedGaps ?? []).length > 0
+				? normalizeArray(input.unresolvedGaps ?? [])
+				: (existing?.unresolvedGaps ?? []),
 		...(input.reviewer?.trim() ? { reviewer: input.reviewer.trim() } : {}),
 		recordedAt: new Date().toISOString(),
 	};
