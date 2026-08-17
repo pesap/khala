@@ -207,22 +207,22 @@ test("background Conclave recovery yields before storage access and contains sch
 	const root = mkdtempSync(join(tmpdir(), "khala-conclave-background-error-"));
 	const projectPath = join(root, "project");
 	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
-	let pendingReads = 0;
+	let recoveryReads = 0;
 	const fileStorage = createFileConclaveStorage();
 	const coordinator = createConclaveCoordinator(join(process.cwd(), "dist", "src", "index.js"), {
 		...fileStorage,
-		getPendingSubmissions() {
-			pendingReads += 1;
+		getRecoverableSubmissions() {
+			recoveryReads += 1;
 			throw new Error("instrumented recovery read failure");
 		},
 	});
 	try {
 		coordinator.resume(projectPath);
-		assert.equal(pendingReads, 0);
+		assert.equal(recoveryReads, 0);
 		await Promise.resolve();
-		assert.equal(pendingReads, 0);
+		assert.equal(recoveryReads, 0);
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.equal(pendingReads, 1);
+		assert.equal(recoveryReads, 1);
 	} finally {
 		await coordinator.dispose();
 		delete process.env.PI_CODING_AGENT_DIR;
