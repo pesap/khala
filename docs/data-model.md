@@ -14,8 +14,8 @@ bindings required when they were written. `executionId` is present when the
 record is execution-bound. Current record types are:
 
 ```text
-submission, conclave-wake, mandate, mission, execution, signal,
-verdict, verdict-delivery, learning, counsel, pull-request,
+submission, conclave-wake, conclave-recovery, mandate, mission, execution,
+signal, verdict, verdict-delivery, learning, counsel, pull-request,
 work-outcome, coordination, intervention
 ```
 
@@ -24,6 +24,13 @@ A local process-aware lock protects read-modify-append transitions and
 serializes Conclave model-session mapping rotation across local processes; the
 log is not a distributed transaction. Corrupt JSON, blank records, invalid envelopes,
 and invalid typed payloads fail closed rather than projecting as empty state.
+
+`khala_read_archive` exposes append-ordered bounded projections rather than raw
+records. It caps projected values and display identifiers, returns an exact
+record ID as the continuation cursor, and fails explicitly if authoritative
+cursor metadata cannot fit its byte budget. Payload and metadata truncation
+fields identify lossy record projections; callers continue with `nextCursor`
+for later records.
 
 ## Work and lifecycle records
 
@@ -40,6 +47,16 @@ and invalid typed payloads fail closed rather than projecting as empty state.
   imply admission or an Executor launch. If wake evidence cannot be appended,
   the persisted Conclave session retains the diagnostic without changing the
   queued submission.
+- **Conclave Recovery**: one durable automatic-recovery claim or exhaustion
+  decision for an exact submission transition. Claims carry an attempt count,
+  a per-process nonce owner, and a bounded lease. The active owner appends
+  lease renewals while its wake or outcome write is running. An expired lease
+  consumes its attempt and permits a new claimant; PID reuse cannot preserve
+  ownership. Wake outcomes are idempotent and fenced to the latest claim. A
+  live owner reconciles completion writes without repeating its wake; a crash
+  before the outcome is durable retains delivery uncertainty after lease
+  expiry. Three failed or abandoned attempts append one durable exhaustion
+  record.
 - **Mandate**: `mandateId`, `workId`, positive `revision`, source submission
   `recordId`, immutable copied `terms`, admitting Conclave participant, and
   `admittedAt`. Current admission creates revision one.

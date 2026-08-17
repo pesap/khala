@@ -1965,6 +1965,73 @@ test("Archive reads enforce a serialized byte budget with deterministic continua
 	}
 });
 
+test("Archive pagination retains forward progress with oversized visible identifiers", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-archive-identifier-bounds-"));
+	const projectPath = join(root, "project");
+	const workId = `work-${"w".repeat(80_000)}`;
+	const executionId = `execution-${"e".repeat(80_000)}`;
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	try {
+		const recordIds = [];
+		for (let index = 0; index < 2; index += 1) {
+			const record = appendArchiveRecord(projectPath, {
+				type: "signal",
+				workId,
+				executionId,
+				payload: {
+					signalId: `oversized-signal-${index}`,
+					workId,
+					executionId,
+					executorName: "Bounded Executor",
+					kind: "progress",
+					summary: "Bound identifier metadata.",
+					evidence: ["The page remains resumable."],
+					observedAt: new Date().toISOString(),
+				},
+			});
+			recordIds.push(record.recordId);
+		}
+		const tools = new Map();
+		createExtension(createPiStub(new Map(), tools));
+		const archiveTool = tools.get("khala_read_archive");
+		const context = {
+			cwd: projectPath,
+			isProjectTrusted: () => false,
+			sessionManager: {
+				getBranch: () => [{ type: "custom", customType: "khala-role", data: { role: "user" } }],
+			},
+		};
+
+		const first = await archiveTool.execute("archive", { workId, limit: 1 }, null, null, context);
+		const firstContent = JSON.parse(first.content[0].text);
+		assert.ok(Buffer.byteLength(JSON.stringify(first), "utf8") <= 40_000);
+		assert.equal(firstContent.page.hasMore, true);
+		assert.equal(firstContent.page.nextCursor, recordIds[0]);
+		assert.equal(firstContent.records[0].recordId, recordIds[0]);
+		assert.notEqual(firstContent.records[0].workId, workId);
+		assert.deepEqual(firstContent.records[0].metadataTruncation, {
+			workId: true,
+			executionId: true,
+			recordedAt: false,
+		});
+		assert.equal(first.details.summaries[0].metadataTruncated, true);
+
+		const second = await archiveTool.execute(
+			"archive",
+			{ workId, limit: 1, cursor: firstContent.page.nextCursor },
+			null,
+			null,
+			context,
+		);
+		const secondContent = JSON.parse(second.content[0].text);
+		assert.equal(secondContent.page.hasMore, false);
+		assert.equal(secondContent.records[0].recordId, recordIds[1]);
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("Users can submit Work intent without lifecycle authority", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-user-intent-"));
 	const projectPath = join(root, "project");
@@ -2078,6 +2145,80 @@ test("Work acknowledgement returns while the Conclave queue is blocked and leave
 	} finally {
 		clearTimeout(deadline);
 		await coordinator.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("coordinator disposal waits for an already-started submission wake", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-submit-disposal-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	let markWakeStarted;
+	let releaseWake;
+	const wakeStarted = new Promise((resolve) => {
+		markWakeStarted = resolve;
+	});
+	const wakeGate = new Promise((resolve) => {
+		releaseWake = resolve;
+	});
+	const coordinator = createConclaveCoordinator(
+		join(process.cwd(), "dist", "src", "index.js"),
+		createFileConclaveStorage(),
+		async () => {
+			markWakeStarted();
+			await wakeGate;
+		},
+	);
+	try {
+		await coordinator.submit({
+			workId: "dispose-tracked-work",
+			projectPath,
+			work: validWork({ title: "Tracked disposal" }),
+		});
+		await wakeStarted;
+		let disposalFinished = false;
+		const disposal = coordinator.dispose().then(() => {
+			disposalFinished = true;
+		});
+		await Promise.resolve();
+		assert.equal(disposalFinished, false);
+		releaseWake();
+		await disposal;
+		assert.equal(disposalFinished, true);
+		assert.equal(createFileConclaveStorage().getSubmission(projectPath, "dispose-tracked-work").submission.status, "queued");
+	} finally {
+		releaseWake();
+		await coordinator.dispose();
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("coordinator disposal cancels a submission wake that has not started", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-submit-cancelled-disposal-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	let wakeCount = 0;
+	const coordinator = createConclaveCoordinator(
+		join(process.cwd(), "dist", "src", "index.js"),
+		createFileConclaveStorage(),
+		async () => {
+			wakeCount += 1;
+		},
+	);
+	try {
+		await coordinator.submit({
+			workId: "dispose-cancelled-work",
+			projectPath,
+			work: validWork({ title: "Cancelled disposal" }),
+		});
+		await coordinator.dispose();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(wakeCount, 0);
+		assert.equal(createFileConclaveStorage().getSubmission(projectPath, "dispose-cancelled-work").submission.status, "queued");
+	} finally {
+		await coordinator.dispose();
+		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
 	}
 });

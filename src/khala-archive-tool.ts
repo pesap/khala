@@ -14,10 +14,11 @@ import { type Static, Type } from "typebox";
 import { listArchiveRecords } from "./khala-archive.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
 import type { KhalaArchiveRecord } from "./khala-model.js";
-import { projectDiagnosticValue, serializedByteLength } from "./khala-payload-projection.js";
+import { projectDiagnosticValue, serializedByteLength, truncateUtf8 } from "./khala-payload-projection.js";
 import { isUserSessionRole, KhalaRole, type KhalaRoleValue } from "./khala-role.js";
 
 const ARCHIVE_READ_RESULT_BYTE_LIMIT = 40_000;
+const ARCHIVE_METADATA_STRING_MAX_BYTES = 256;
 const DEFAULT_ARCHIVE_PAGE_LIMIT = 25;
 const MAX_ARCHIVE_PAGE_LIMIT = 100;
 const ARCHIVE_PROJECTION_OPTIONS = {
@@ -45,6 +46,11 @@ const USER_ARCHIVE_READ_PARAMETERS = Type.Object({
 });
 type ArchiveReadParameterSchema = typeof ARCHIVE_READ_PARAMETERS | typeof USER_ARCHIVE_READ_PARAMETERS;
 type ArchiveReadParameters = Static<typeof ARCHIVE_READ_PARAMETERS>;
+type ArchiveMetadataTruncation = Readonly<{
+	workId: boolean;
+	executionId: boolean;
+	recordedAt: boolean;
+}>;
 type ArchiveRecordProjection = Readonly<{
 	recordId: string;
 	schemaVersion?: KhalaArchiveRecord["schemaVersion"];
@@ -54,6 +60,7 @@ type ArchiveRecordProjection = Readonly<{
 	recordedAt: string;
 	payload: unknown;
 	projection: ReturnType<typeof projectDiagnosticValue>["truncation"];
+	metadataTruncation: ArchiveMetadataTruncation;
 }>;
 type ArchiveRecordSummary = Readonly<{
 	recordId: string;
@@ -62,6 +69,7 @@ type ArchiveRecordSummary = Readonly<{
 	executionId?: string;
 	recordedAt: string;
 	state?: string;
+	metadataTruncated: boolean;
 }>;
 type ArchiveReadPage = Readonly<{
 	order: "archive-append";
@@ -298,6 +306,9 @@ function createArchiveReadPage(
 			);
 		}
 		if (serializedByteLength(tentative) > ARCHIVE_READ_RESULT_BYTE_LIMIT) {
+			if (projections.length === 0) {
+				throw new Error("Archive record identifying metadata exceeds the serialized result byte budget.");
+			}
 			stoppedByByteBudget = true;
 			break;
 		}
@@ -321,19 +332,30 @@ function createArchiveReadPage(
 
 function projectArchiveRecord(record: KhalaArchiveRecord): ArchiveRecordProjection {
 	const projected = projectDiagnosticValue(record.payload, ARCHIVE_PROJECTION_OPTIONS);
+	const workId = truncateUtf8(record.workId, ARCHIVE_METADATA_STRING_MAX_BYTES);
+	const recordedAt = truncateUtf8(record.recordedAt, ARCHIVE_METADATA_STRING_MAX_BYTES);
+	let executionId: string | undefined;
+	if (record.executionId !== undefined) {
+		executionId = truncateUtf8(record.executionId, ARCHIVE_METADATA_STRING_MAX_BYTES);
+	}
 	let result: ArchiveRecordProjection = {
 		recordId: record.recordId,
 		type: record.type,
-		workId: record.workId,
-		recordedAt: record.recordedAt,
+		workId,
+		recordedAt,
 		payload: projected.value,
 		projection: projected.truncation,
+		metadataTruncation: {
+			workId: workId !== record.workId,
+			executionId: executionId !== record.executionId,
+			recordedAt: recordedAt !== record.recordedAt,
+		},
 	};
 	if (record.schemaVersion !== undefined) {
 		result = { ...result, schemaVersion: record.schemaVersion };
 	}
-	if (record.executionId !== undefined) {
-		result = { ...result, executionId: record.executionId };
+	if (executionId !== undefined) {
+		result = { ...result, executionId };
 	}
 	return result;
 }
@@ -357,6 +379,7 @@ function summarizeArchiveRecord(record: ArchiveRecordProjection): ArchiveRecordS
 		type: record.type,
 		workId: record.workId,
 		recordedAt: record.recordedAt,
+		metadataTruncated: Object.values(record.metadataTruncation).some(Boolean),
 	};
 	if (record.executionId !== undefined) {
 		result = { ...result, executionId: record.executionId };
@@ -374,7 +397,9 @@ function createArchiveReadMetadata(input: ArchiveReadMetadataInput): ArchiveRead
 	if (hasMore) {
 		nextCursor = input.projections.at(-1)?.recordId;
 	}
-	const projectedRecordsTruncated = input.projections.filter((record) => record.projection.truncated).length;
+	const projectedRecordsTruncated = input.projections.filter(
+		(record) => record.projection.truncated || Object.values(record.metadataTruncation).some(Boolean),
+	).length;
 	let result: ArchiveReadPage = {
 		order: "archive-append",
 		returned: input.projections.length,
@@ -418,8 +443,8 @@ function renderArchiveReadResult(details: ArchiveReadDetails, expanded: boolean,
 		theme.fg("muted", `Khala Archive: ${page.returned} of ${page.totalVisible} record(s)`),
 		theme.fg("dim", `Page types: ${formatArchiveCounts(typeCounts)}`),
 	];
-	if (page.hasMore) {
-		lines.push(theme.fg("dim", `Continuation: nextCursor=${shortArchiveId(page.nextCursor as string)}`));
+	if (page.hasMore && page.nextCursor !== undefined) {
+		lines.push(theme.fg("dim", `Continuation: nextCursor=${shortArchiveId(page.nextCursor)}`));
 	}
 	if (expanded) {
 		lines.push(theme.fg("dim", "Records:"));

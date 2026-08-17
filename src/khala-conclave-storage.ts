@@ -47,15 +47,16 @@ interface ConclaveStorage {
 	claimSubmissionRecovery: (
 		projectPath: string,
 		workId: string,
-		ownerProcessId: number,
+		ownerId: string,
 		projectTrusted?: boolean,
 	) => SubmissionRecoveryClaim | undefined;
+	renewSubmissionRecovery: (projectPath: string, claim: SubmissionRecoveryClaim, projectTrusted?: boolean) => boolean;
 	completeSubmissionRecovery: (
 		projectPath: string,
 		claim: SubmissionRecoveryClaim,
 		outcome: SubmissionRecoveryOutcome,
 		projectTrusted?: boolean,
-	) => void;
+	) => boolean;
 	claimSubmission: (projectPath: string, workId: string, projectTrusted?: boolean) => boolean;
 	markSubmissionReviewing: (
 		projectPath: string,

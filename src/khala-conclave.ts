@@ -21,7 +21,7 @@ import { buildPiArguments, disposeHeadlessRuntimes, getHeadlessRuntime, recoverH
 import { appendArchiveRecord, listArchiveRecords } from "./khala-archive.js";
 import { listSignalRecords } from "./khala-archive-projections.js";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
-import type { ConclaveStorage } from "./khala-conclave-storage.js";
+import type { ConclaveStorage, SubmissionRecoveryClaim, SubmissionRecoveryOutcome } from "./khala-conclave-storage.js";
 import { createFileConclaveStorage } from "./khala-conclave-storage-file.js";
 import { KhalaConfigError, loadKhalaConfig } from "./khala-config.js";
 import { formatError } from "./khala-error.js";
@@ -34,6 +34,7 @@ import {
 	writeExecutorRecord,
 } from "./khala-executor-registry.js";
 import {
+	CONCLAVE_RECOVERY_CLAIM_LEASE_MS,
 	type ConclaveWakeFailure,
 	type ConclaveWakeRecovery,
 	type ExecutorRecord,
@@ -125,6 +126,7 @@ function createConclaveCoordinator(
 ): ConclaveCoordinator {
 	const runtimes = new Map<string, Promise<ConclaveRuntime>>();
 	const backgroundTasks = new Set<Promise<void>>();
+	const backgroundAbort = new AbortController();
 	let disposed = false;
 	const submit = (
 		request: WorkSubmissionRequest & { projectTrusted?: boolean; signal?: AbortSignal | undefined },
@@ -139,6 +141,7 @@ function createConclaveCoordinator(
 			projectTrusted,
 		});
 		scheduleConclaveWake(
+			backgroundTasks,
 			{
 				projectPath,
 				projectTrusted,
@@ -215,6 +218,7 @@ function createConclaveCoordinator(
 				projectPath: resolvedProjectPath,
 				projectTrusted,
 				storage,
+				signal: backgroundAbort.signal,
 				wake: (submission) =>
 					wakeConclave({
 						projectPath: resolvedProjectPath,
@@ -257,6 +261,7 @@ function createConclaveCoordinator(
 		ensureConclaveSession,
 		dispose: async () => {
 			disposed = true;
+			backgroundAbort.abort();
 			await Promise.all([...backgroundTasks]);
 			const runtimesToDispose = [...runtimes.values()];
 			runtimes.clear();
@@ -467,12 +472,21 @@ async function getExistingRuntime(
 	}
 }
 
+const RECOVERY_OWNER_ID = `${process.pid}:${nanoid()}`;
+const RECOVERY_COMPLETION_RETRY_DELAY_MS = 250;
+const RECOVERY_LEASE_RENEWALS_PER_LEASE = 3;
+const RECOVERY_LEASE_RENEWAL_INTERVAL_MS = Math.floor(
+	CONCLAVE_RECOVERY_CLAIM_LEASE_MS / RECOVERY_LEASE_RENEWALS_PER_LEASE,
+);
+
 type PendingSubmissionRecoveryOptions = Readonly<{
 	projectPath: string;
 	projectTrusted: boolean;
 	storage: ConclaveStorage;
 	wake: (submission: KhalaWorkSubmission) => Promise<void>;
-	ownerProcessId?: number;
+	ownerId?: string;
+	leaseRenewalIntervalMs?: number;
+	signal?: AbortSignal;
 }>;
 
 async function recoverPendingSubmissions(options: PendingSubmissionRecoveryOptions): Promise<void> {
@@ -482,36 +496,113 @@ async function recoverPendingSubmissions(options: PendingSubmissionRecoveryOptio
 			const claim = options.storage.claimSubmissionRecovery(
 				options.projectPath,
 				submission.workId,
-				options.ownerProcessId ?? process.pid,
+				options.ownerId ?? RECOVERY_OWNER_ID,
 				options.projectTrusted,
 			);
 			if (claim === undefined) {
 				return;
 			}
-			const attemptedAt = new Date().toISOString();
+			const stopLeaseRenewal = maintainRecoveryLease(options, claim);
 			try {
-				await options.wake(claim.submission);
-				options.storage.completeSubmissionRecovery(
-					options.projectPath,
-					claim,
-					{ status: "woken", attemptedAt },
-					options.projectTrusted,
-				);
-			} catch (error) {
-				options.storage.completeSubmissionRecovery(
-					options.projectPath,
-					claim,
-					{
+				const attemptedAt = new Date().toISOString();
+				let outcome: SubmissionRecoveryOutcome;
+				try {
+					await options.wake(claim.submission);
+					outcome = { status: "woken", attemptedAt };
+				} catch (error) {
+					outcome = {
 						status: "failed",
 						attemptedAt,
 						failure: formatError(error),
 						recovery: conclaveWakeRecovery(error),
-					},
-					options.projectTrusted,
-				);
+					};
+				}
+				await persistRecoveryOutcome(options, claim, outcome);
+			} finally {
+				await stopLeaseRenewal();
 			}
 		}),
 	);
+}
+
+async function persistRecoveryOutcome(
+	options: PendingSubmissionRecoveryOptions,
+	claim: SubmissionRecoveryClaim,
+	outcome: SubmissionRecoveryOutcome,
+): Promise<void> {
+	for (;;) {
+		if (isRecoveryAborted(options)) {
+			return;
+		}
+		try {
+			options.storage.completeSubmissionRecovery(options.projectPath, claim, outcome, options.projectTrusted);
+			// A false result is definitive claim loss, not a retryable storage failure.
+			return;
+		} catch {
+			if (isRecoveryAborted(options)) {
+				return;
+			}
+			await waitForRecoveryRetry(options.signal);
+		}
+	}
+}
+
+function isRecoveryAborted(options: PendingSubmissionRecoveryOptions): boolean {
+	return options.signal?.aborted === true;
+}
+
+function waitForRecoveryRetry(signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolveRetry) => {
+		const timer = setTimeout(finish, RECOVERY_COMPLETION_RETRY_DELAY_MS);
+		function finish(): void {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", finish);
+			resolveRetry();
+		}
+		signal?.addEventListener("abort", finish, { once: true });
+	});
+}
+
+function maintainRecoveryLease(
+	options: PendingSubmissionRecoveryOptions,
+	claim: SubmissionRecoveryClaim,
+): () => Promise<void> {
+	let stopped = false;
+	let cancelDelay: (() => void) | undefined;
+	const wait = (milliseconds: number): Promise<void> =>
+		new Promise((resolveWait) => {
+			const timer = setTimeout(() => {
+				cancelDelay = undefined;
+				resolveWait();
+			}, milliseconds);
+			cancelDelay = () => {
+				clearTimeout(timer);
+				cancelDelay = undefined;
+				resolveWait();
+			};
+		});
+	const renewal = (async () => {
+		let delay = options.leaseRenewalIntervalMs ?? RECOVERY_LEASE_RENEWAL_INTERVAL_MS;
+		while (!(stopped || isRecoveryAborted(options))) {
+			await wait(delay);
+			if (stopped || isRecoveryAborted(options)) {
+				return;
+			}
+			try {
+				if (!options.storage.renewSubmissionRecovery(options.projectPath, claim, options.projectTrusted)) {
+					return;
+				}
+				delay = options.leaseRenewalIntervalMs ?? RECOVERY_LEASE_RENEWAL_INTERVAL_MS;
+			} catch {
+				delay = RECOVERY_COMPLETION_RETRY_DELAY_MS;
+			}
+		}
+	})();
+	return async () => {
+		stopped = true;
+		cancelDelay?.();
+		await renewal;
+	};
 }
 
 function scheduleConclaveBackgroundTask(
@@ -526,22 +617,27 @@ function scheduleConclaveBackgroundTask(
 	backgroundTasks.add(task);
 }
 
-function scheduleConclaveWake(request: SubmissionWakeRequest, processWake: SubmissionWakeProcessor): void {
-	setImmediate(() => {
-		processWake(request).then(
-			(failure) => {
-				if (failure !== undefined && !failure.archiveEvidencePersisted) {
-					recordScheduledWakeDiagnostic(request, failure);
-				}
-			},
-			(error: unknown) => {
-				recordScheduledWakeDiagnostic(request, {
-					message: `The scheduled Conclave wake failed unexpectedly: ${formatError(error)}`,
-					recovery: conclaveWakeRecovery(error),
-					archiveEvidencePersisted: false,
-				});
-			},
-		);
+function scheduleConclaveWake(
+	backgroundTasks: Set<Promise<void>>,
+	request: SubmissionWakeRequest,
+	processWake: SubmissionWakeProcessor,
+): void {
+	scheduleConclaveBackgroundTask(backgroundTasks, async () => {
+		if (request.disposed?.() === true) {
+			return;
+		}
+		try {
+			const failure = await processWake(request);
+			if (failure !== undefined && !failure.archiveEvidencePersisted) {
+				recordScheduledWakeDiagnostic(request, failure);
+			}
+		} catch (error) {
+			recordScheduledWakeDiagnostic(request, {
+				message: `The scheduled Conclave wake failed unexpectedly: ${formatError(error)}`,
+				recovery: conclaveWakeRecovery(error),
+				archiveEvidencePersisted: false,
+			});
+		}
 	});
 }
 

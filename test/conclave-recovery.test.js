@@ -7,6 +7,11 @@ import { appendArchiveRecord, listArchiveRecords } from "../dist/src/khala-archi
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { AUTOMATIC_RECOVERY_MAX_ATTEMPTS } from "../dist/src/khala-conclave-storage.js";
 import { recoverPendingSubmissions } from "../dist/src/khala-conclave.js";
+import {
+  CONCLAVE_RECOVERY_CLAIM_LEASE_MS,
+  isConclaveRecoveryRecord,
+  validateArchiveReplay,
+} from "../dist/src/khala-model.js";
 
 const work = {
   title: "Recovery fixture",
@@ -181,13 +186,249 @@ test("concurrent recovery initiators enqueue one wake for the same transition", 
   });
 });
 
-test("a process restart advances an abandoned durable claim without resetting its attempt count", async () => {
+test("an active recovery renews its durable lease while the wake is running", async () => {
+  await withFixture("khala-conclave-recovery-renewal-", async ({ projectPath, storage }) => {
+    storage.submit({ workId: "renewed-work", projectPath, work });
+    let releaseWake;
+    const wakeGate = new Promise((resolve) => {
+      releaseWake = resolve;
+    });
+    let wakeCount = 0;
+    const first = recoverPendingSubmissions({
+      projectPath,
+      projectTrusted: false,
+      storage,
+      ownerId: "first-process:nonce",
+      leaseRenewalIntervalMs: 5,
+      wake: async () => {
+        wakeCount += 1;
+        await wakeGate;
+      },
+    });
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (recoveryRecords(projectPath).some((record) => record.payload.status === "renewed")) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    await recoverPendingSubmissions({
+      projectPath,
+      projectTrusted: false,
+      storage: createFileConclaveStorage(),
+      ownerId: "second-process:nonce",
+      wake: async () => {
+        wakeCount += 1;
+      },
+    });
+    releaseWake();
+    await first;
+
+    assert.equal(wakeCount, 1);
+    assert.ok(recoveryRecords(projectPath).some((record) => record.payload.status === "renewed"));
+    assert.equal(wakeRecords(projectPath).length, 1);
+  });
+});
+
+test("recovery claims reject malformed or unbounded lease timestamps", () => {
+  const base = {
+    recoveryId: "recovery-lease",
+    workId: "lease-work",
+    submissionRecordId: "submission-lease",
+    status: "claimed",
+    attempt: 1,
+    maxAttempts: AUTOMATIC_RECOVERY_MAX_ATTEMPTS,
+    ownerId: "process:nonce",
+    claimedAt: new Date().toISOString(),
+  };
+  assert.equal(isConclaveRecoveryRecord({ ...base, leaseExpiresAt: "not-a-timestamp" }), false);
+  assert.equal(
+    isConclaveRecoveryRecord({
+      ...base,
+      leaseExpiresAt: new Date(Date.parse(base.claimedAt) + CONCLAVE_RECOVERY_CLAIM_LEASE_MS * 2).toISOString(),
+    }),
+    false,
+  );
+});
+
+test("Archive replay rejects future claims and non-extending renewals", async () => {
+  await withFixture("khala-conclave-recovery-chronology-", async ({ projectPath, storage }) => {
+    storage.submit({ workId: "chronology-work", projectPath, work });
+    const submissionRecord = listArchiveRecords(projectPath).at(-1);
+    const futureClaimedAt = new Date(Date.now() + 3_600_000);
+    assert.throws(
+      () =>
+        appendArchiveRecord(projectPath, {
+          schemaVersion: 2,
+          type: "conclave-recovery",
+          workId: "chronology-work",
+          payload: {
+            recoveryId: "future-recovery",
+            workId: "chronology-work",
+            submissionRecordId: submissionRecord.recordId,
+            status: "claimed",
+            attempt: 1,
+            maxAttempts: AUTOMATIC_RECOVERY_MAX_ATTEMPTS,
+            ownerId: "future-process:nonce",
+            claimedAt: futureClaimedAt.toISOString(),
+            leaseExpiresAt: new Date(
+              futureClaimedAt.getTime() + CONCLAVE_RECOVERY_CLAIM_LEASE_MS,
+            ).toISOString(),
+          },
+        }),
+      /invalid attempt sequence/,
+    );
+
+    const claim = storage.claimSubmissionRecovery(projectPath, "chronology-work", "current-process:nonce");
+    const renewedAt = new Date();
+    assert.throws(
+      () =>
+        appendArchiveRecord(projectPath, {
+          schemaVersion: 2,
+          type: "conclave-recovery",
+          workId: "chronology-work",
+          payload: {
+            recoveryId: claim.recovery.recoveryId,
+            workId: "chronology-work",
+            submissionRecordId: claim.recovery.submissionRecordId,
+            status: "renewed",
+            attempt: claim.recovery.attempt,
+            maxAttempts: claim.recovery.maxAttempts,
+            ownerId: claim.recovery.ownerId,
+            renewedAt: renewedAt.toISOString(),
+            leaseExpiresAt: new Date(renewedAt.getTime() + 30_000).toISOString(),
+          },
+        }),
+      /invalid lease renewal/,
+    );
+  });
+});
+
+test("Archive replay rejects overlapping claims, active exhaustion, and late renewal", async () => {
+  await withFixture("khala-conclave-recovery-replay-order-", async ({ projectPath, storage }) => {
+    storage.submit({ workId: "replay-order-work", projectPath, work });
+    const first = storage.claimSubmissionRecovery(projectPath, "replay-order-work", "first-owner:nonce");
+    const attemptedAt = new Date().toISOString();
+    assert.throws(
+      () =>
+        appendArchiveRecord(projectPath, {
+          schemaVersion: 2,
+          type: "conclave-recovery",
+          workId: "replay-order-work",
+          payload: {
+            ...first.recovery,
+            recoveryId: "overlapping-claim",
+            attempt: 2,
+            ownerId: "second-owner:nonce",
+            claimedAt: attemptedAt,
+            leaseExpiresAt: new Date(Date.parse(attemptedAt) + CONCLAVE_RECOVERY_CLAIM_LEASE_MS).toISOString(),
+          },
+        }),
+      /invalid attempt sequence/,
+    );
+
+    assert.equal(
+      storage.completeSubmissionRecovery(projectPath, first, {
+        status: "failed",
+        attemptedAt,
+        failure: "first wake failed",
+        recovery: "recreate",
+      }),
+      true,
+    );
+    const second = storage.claimSubmissionRecovery(projectPath, "replay-order-work", "second-owner:nonce");
+    assert.equal(
+      storage.completeSubmissionRecovery(projectPath, second, {
+        status: "failed",
+        attemptedAt: new Date().toISOString(),
+        failure: "second wake failed",
+        recovery: "recreate",
+      }),
+      true,
+    );
+    const third = storage.claimSubmissionRecovery(projectPath, "replay-order-work", "third-owner:nonce");
+    assert.throws(
+      () =>
+        appendArchiveRecord(projectPath, {
+          schemaVersion: 2,
+          type: "conclave-recovery",
+          workId: "replay-order-work",
+          payload: {
+            recoveryId: "premature-exhaustion",
+            workId: "replay-order-work",
+            submissionRecordId: third.recovery.submissionRecordId,
+            status: "exhausted",
+            attempt: AUTOMATIC_RECOVERY_MAX_ATTEMPTS,
+            maxAttempts: AUTOMATIC_RECOVERY_MAX_ATTEMPTS,
+            exhaustedAt: new Date().toISOString(),
+            reason: "premature",
+          },
+        }),
+      /exhausted before its retry limit/,
+    );
+
+    const submission = listArchiveRecords(projectPath)[0];
+    const claimRecordedAt = new Date(Date.parse(submission.recordedAt) + 1_000);
+    const leaseExpiresAt = new Date(claimRecordedAt.getTime() + CONCLAVE_RECOVERY_CLAIM_LEASE_MS);
+    const lateRenewalRecordedAt = new Date(leaseExpiresAt.getTime() + 1);
+    const lateRenewedAt = new Date(leaseExpiresAt.getTime() - 1_000);
+    const claimPayload = {
+      recoveryId: "late-renewal-claim",
+      workId: "replay-order-work",
+      submissionRecordId: submission.recordId,
+      status: "claimed",
+      attempt: 1,
+      maxAttempts: AUTOMATIC_RECOVERY_MAX_ATTEMPTS,
+      ownerId: "late-owner:nonce",
+      claimedAt: claimRecordedAt.toISOString(),
+      leaseExpiresAt: leaseExpiresAt.toISOString(),
+    };
+    assert.throws(
+      () =>
+        validateArchiveReplay([
+          submission,
+          {
+            recordId: "late-claim-record",
+            schemaVersion: 2,
+            type: "conclave-recovery",
+            projectPath: submission.projectPath,
+            workId: "replay-order-work",
+            recordedAt: claimRecordedAt.toISOString(),
+            payload: claimPayload,
+          },
+          {
+            recordId: "late-renewal-record",
+            schemaVersion: 2,
+            type: "conclave-recovery",
+            projectPath: submission.projectPath,
+            workId: "replay-order-work",
+            recordedAt: lateRenewalRecordedAt.toISOString(),
+            payload: {
+              ...claimPayload,
+              status: "renewed",
+              renewedAt: lateRenewedAt.toISOString(),
+              claimedAt: undefined,
+              leaseExpiresAt: new Date(lateRenewedAt.getTime() + CONCLAVE_RECOVERY_CLAIM_LEASE_MS).toISOString(),
+            },
+          },
+        ]),
+      /invalid lease renewal/,
+    );
+  });
+});
+
+test("a process restart advances an expired durable lease without trusting a reused PID", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await withFixture("khala-conclave-recovery-crash-", async ({ projectPath, storage }) => {
     storage.submit({ workId: "crashed-work", projectPath, work });
-    const abandoned = storage.claimSubmissionRecovery(projectPath, "crashed-work", 2_147_483_647);
-    assert.equal(abandoned.recovery.attempt, 1);
+    const abandonedClaim = storage.claimSubmissionRecovery(
+      projectPath,
+      "crashed-work",
+      `${process.pid}:prior-process-nonce`,
+    );
+    context.mock.timers.tick(CONCLAVE_RECOVERY_CLAIM_LEASE_MS * 2);
     let wakes = 0;
-
+    assert.equal(storage.renewSubmissionRecovery(projectPath, abandonedClaim), false);
     await recover(projectPath, createFileConclaveStorage(), async () => {
       wakes += 1;
     });
@@ -199,7 +440,104 @@ test("a process restart advances an abandoned durable claim without resetting it
         .map((record) => record.payload.attempt),
       [1, 2],
     );
+    assert.notEqual(recoveryRecords(projectPath)[1].payload.ownerId, `${process.pid}:prior-process-nonce`);
     assert.equal(wakeRecords(projectPath)[0].payload.wakeId, recoveryRecords(projectPath)[1].payload.recoveryId);
+  });
+});
+
+test("recovery retries a transient outcome persistence failure without repeating the wake", async () => {
+  await withFixture("khala-conclave-recovery-completion-", async ({ projectPath, storage }) => {
+    storage.submit({ workId: "completion-work", projectPath, work });
+    let completionAttempts = 0;
+    let wakeCount = 0;
+    const faultInjectingStorage = {
+      ...storage,
+      completeSubmissionRecovery(...args) {
+        completionAttempts += 1;
+        if (completionAttempts <= 4) {
+          throw new Error("transient Archive write failure");
+        }
+        return storage.completeSubmissionRecovery(...args);
+      },
+    };
+
+    await recover(projectPath, faultInjectingStorage, async () => {
+      wakeCount += 1;
+    });
+    await recover(projectPath, faultInjectingStorage, async () => {
+      wakeCount += 1;
+    });
+
+    assert.equal(completionAttempts, 5);
+    assert.equal(wakeCount, 1);
+    assert.equal(wakeRecords(projectPath).length, 1);
+    assert.equal(wakeRecords(projectPath)[0].payload.status, "woken");
+  });
+});
+
+test("completion reconciliation stops promptly when coordinator disposal aborts persistent retries", async () => {
+  await withFixture("khala-conclave-recovery-disposal-", async ({ projectPath, storage }) => {
+    storage.submit({ workId: "disposal-work", projectPath, work });
+    let completionAttempts = 0;
+    const unavailableStorage = {
+      ...storage,
+      completeSubmissionRecovery() {
+        completionAttempts += 1;
+        throw new Error("persistent Archive failure");
+      },
+    };
+    const controller = new AbortController();
+    const recovery = recoverPendingSubmissions({
+      projectPath,
+      projectTrusted: false,
+      storage: unavailableStorage,
+      signal: controller.signal,
+      wake: async () => {},
+    });
+    for (let attempt = 0; attempt < 100 && completionAttempts === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    controller.abort();
+    await Promise.race([
+      recovery,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("recovery disposal did not settle")), 100)),
+    ]);
+
+    assert.equal(completionAttempts, 1);
+    assert.equal(wakeRecords(projectPath).length, 0);
+  });
+});
+
+test("a fenced stale claim settles instead of retrying completion forever", async () => {
+  await withFixture("khala-conclave-recovery-stale-", async ({ projectPath, storage }) => {
+    storage.submit({ workId: "stale-work", projectPath, work });
+    let completionAttempts = 0;
+    const staleStorage = {
+      ...storage,
+      renewSubmissionRecovery() {
+        return false;
+      },
+      completeSubmissionRecovery() {
+        completionAttempts += 1;
+        return false;
+      },
+    };
+    let wakeCount = 0;
+
+    await recoverPendingSubmissions({
+      projectPath,
+      projectTrusted: false,
+      storage: staleStorage,
+      leaseRenewalIntervalMs: 1,
+      wake: async () => {
+        wakeCount += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    });
+
+    assert.equal(wakeCount, 1);
+    assert.equal(completionAttempts, 1);
+    assert.equal(wakeRecords(projectPath).length, 0);
   });
 });
 

@@ -1,4 +1,4 @@
-import process from "node:process";
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Recovery claims, renewals, and outcomes share one Archive-locked state machine.
 import { nanoid } from "nanoid";
 import { appendArchiveRecord, appendArchiveRecords, listArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import { activeCoordinationHolds, readCurrentMission } from "./khala-archive-projections.js";
@@ -10,6 +10,7 @@ import {
 } from "./khala-conclave-storage.js";
 import { listExecutorRecords } from "./khala-executor-registry.js";
 import {
+	CONCLAVE_RECOVERY_CLAIM_LEASE_MS,
 	type ConclaveRecoveryRecord,
 	ConclaveRecoveryStatus,
 	ConclaveWakeStatus,
@@ -35,21 +36,21 @@ function getRecoverableSubmissions(projectPath: string, projectTrusted = false):
 function claimSubmissionRecovery(
 	projectPath: string,
 	workId: string,
-	ownerProcessId: number,
+	ownerId: string,
 	projectTrusted = false,
 ): SubmissionRecoveryClaim | undefined {
-	if (!(Number.isSafeInteger(ownerProcessId) && ownerProcessId > 0)) {
-		throw new Error("A Conclave recovery claim requires a positive process ID.");
+	if (ownerId.trim().length === 0) {
+		throw new Error("A Conclave recovery claim requires a non-empty owner ID.");
 	}
 	return withArchiveLock(projectPath, projectTrusted, () =>
-		claimSubmissionRecoveryWithinLock(projectPath, workId, ownerProcessId, projectTrusted),
+		claimSubmissionRecoveryWithinLock(projectPath, workId, ownerId, projectTrusted),
 	);
 }
 
 function claimSubmissionRecoveryWithinLock(
 	projectPath: string,
 	workId: string,
-	ownerProcessId: number,
+	ownerId: string,
 	projectTrusted: boolean,
 ): SubmissionRecoveryClaim | undefined {
 	const records = listArchiveRecords(projectPath, projectTrusted);
@@ -66,7 +67,8 @@ function claimSubmissionRecoveryWithinLock(
 	if (
 		latestClaim !== undefined &&
 		!hasWakeResult(records, latestClaim.recoveryId) &&
-		isProcessAlive(latestClaim.ownerProcessId)
+		Date.parse(latestRecoveryLeaseExpiration(recoveries, latestClaim.recoveryId, latestClaim.leaseExpiresAt)) >
+			Date.now()
 	) {
 		return;
 	}
@@ -74,6 +76,7 @@ function claimSubmissionRecoveryWithinLock(
 		appendArchiveRecord(projectPath, recoveryExhaustionAppend(workId, snapshot.recordId), projectTrusted);
 		return;
 	}
+	const claimedAt = new Date();
 	const recovery = {
 		recoveryId: nanoid(),
 		workId,
@@ -81,8 +84,9 @@ function claimSubmissionRecoveryWithinLock(
 		status: ConclaveRecoveryStatus.claimed,
 		attempt: claims.length + 1,
 		maxAttempts: AUTOMATIC_RECOVERY_MAX_ATTEMPTS,
-		ownerProcessId,
-		claimedAt: new Date().toISOString(),
+		ownerId,
+		claimedAt: claimedAt.toISOString(),
+		leaseExpiresAt: new Date(claimedAt.getTime() + CONCLAVE_RECOVERY_CLAIM_LEASE_MS).toISOString(),
 	} as const;
 	appendArchiveRecord(
 		projectPath,
@@ -92,13 +96,52 @@ function claimSubmissionRecoveryWithinLock(
 	return { recovery, submission: snapshot.submission };
 }
 
+function renewSubmissionRecovery(projectPath: string, claim: SubmissionRecoveryClaim, projectTrusted = false): boolean {
+	return withArchiveLock(projectPath, projectTrusted, () => {
+		const records = listArchiveRecords(projectPath, projectTrusted);
+		const recoveries = recoveryRecordsFor(records, claim.recovery.submissionRecordId);
+		const latestClaim = recoveries.filter((candidate) => candidate.status === ConclaveRecoveryStatus.claimed).at(-1);
+		if (
+			latestClaim?.recoveryId !== claim.recovery.recoveryId ||
+			latestClaim.ownerId !== claim.recovery.ownerId ||
+			hasWakeResult(records, claim.recovery.recoveryId) ||
+			Date.parse(latestRecoveryLeaseExpiration(recoveries, latestClaim.recoveryId, latestClaim.leaseExpiresAt)) <=
+				Date.now()
+		) {
+			return false;
+		}
+		const renewedAt = new Date();
+		appendArchiveRecord(
+			projectPath,
+			{
+				schemaVersion: 2,
+				type: "conclave-recovery",
+				workId: claim.submission.workId,
+				payload: {
+					recoveryId: claim.recovery.recoveryId,
+					workId: claim.submission.workId,
+					submissionRecordId: claim.recovery.submissionRecordId,
+					status: ConclaveRecoveryStatus.renewed,
+					attempt: claim.recovery.attempt,
+					maxAttempts: claim.recovery.maxAttempts,
+					ownerId: claim.recovery.ownerId,
+					renewedAt: renewedAt.toISOString(),
+					leaseExpiresAt: new Date(renewedAt.getTime() + CONCLAVE_RECOVERY_CLAIM_LEASE_MS).toISOString(),
+				},
+			},
+			projectTrusted,
+		);
+		return true;
+	});
+}
+
 function completeSubmissionRecovery(
 	projectPath: string,
 	claim: SubmissionRecoveryClaim,
 	outcome: SubmissionRecoveryOutcome,
 	projectTrusted = false,
-): void {
-	withArchiveLock(projectPath, projectTrusted, () =>
+): boolean {
+	return withArchiveLock(projectPath, projectTrusted, () =>
 		completeSubmissionRecoveryWithinLock(projectPath, claim, outcome, projectTrusted),
 	);
 }
@@ -108,19 +151,25 @@ function completeSubmissionRecoveryWithinLock(
 	claim: SubmissionRecoveryClaim,
 	outcome: SubmissionRecoveryOutcome,
 	projectTrusted: boolean,
-): void {
+): boolean {
 	const records = listArchiveRecords(projectPath, projectTrusted);
-	const persistedClaim = recoveryRecordsFor(records, claim.recovery.submissionRecordId).some(
-		(candidate) =>
-			candidate.status === ConclaveRecoveryStatus.claimed &&
-			candidate.recoveryId === claim.recovery.recoveryId &&
-			candidate.workId === claim.submission.workId,
+	const claims = recoveryRecordsFor(records, claim.recovery.submissionRecordId).filter(
+		(candidate) => candidate.status === ConclaveRecoveryStatus.claimed,
 	);
-	if (!persistedClaim) {
+	const persistedClaim = claims.find(
+		(candidate) =>
+			candidate.recoveryId === claim.recovery.recoveryId &&
+			candidate.workId === claim.submission.workId &&
+			candidate.ownerId === claim.recovery.ownerId,
+	);
+	if (persistedClaim === undefined) {
 		throw new Error(`Conclave recovery ${claim.recovery.recoveryId} is not an authoritative claim.`);
 	}
+	if (claims.at(-1)?.recoveryId !== claim.recovery.recoveryId) {
+		return false;
+	}
 	if (hasWakeResult(records, claim.recovery.recoveryId)) {
-		return;
+		return true;
 	}
 	const inputs: KhalaArchiveAppend[] = [recoveryWakeAppend(claim, outcome)];
 	if (
@@ -131,6 +180,7 @@ function completeSubmissionRecoveryWithinLock(
 		inputs.push(recoveryExhaustionAppend(claim.submission.workId, claim.recovery.submissionRecordId));
 	}
 	appendArchiveRecords(projectPath, inputs, projectTrusted);
+	return true;
 }
 
 function recoveryWakeAppend(claim: SubmissionRecoveryClaim, outcome: SubmissionRecoveryOutcome): KhalaArchiveAppend {
@@ -222,6 +272,21 @@ function hasWakeResult(records: readonly KhalaArchiveRecord[], recoveryId: strin
 	);
 }
 
+function latestRecoveryLeaseExpiration(
+	recoveries: readonly ConclaveRecoveryRecord[],
+	recoveryId: string,
+	claimedLeaseExpiresAt: string,
+): string {
+	let leaseExpiresAt = claimedLeaseExpiresAt;
+	for (const recovery of recoveries) {
+		if (recovery.status === ConclaveRecoveryStatus.renewed && recovery.recoveryId === recoveryId) {
+			const { leaseExpiresAt: renewedLeaseExpiresAt } = recovery;
+			leaseExpiresAt = renewedLeaseExpiresAt;
+		}
+	}
+	return leaseExpiresAt;
+}
+
 function recoveryRecordsFor(
 	records: readonly KhalaArchiveRecord[],
 	submissionRecordId: string,
@@ -267,23 +332,4 @@ function recoveryExhaustionAppend(workId: string, submissionRecordId: string): K
 	};
 }
 
-function isProcessAlive(processId: number): boolean {
-	// Archive recovery coordinates processes on one host. A live owner keeps its
-	// claim; a dead owner consumes that durable attempt before another can claim.
-	try {
-		process.kill(processId, 0);
-		return true;
-	} catch (error) {
-		if (
-			typeof error === "object" &&
-			error !== null &&
-			"code" in error &&
-			(error as { code?: unknown }).code === "ESRCH"
-		) {
-			return false;
-		}
-		return true;
-	}
-}
-
-export { claimSubmissionRecovery, completeSubmissionRecovery, getRecoverableSubmissions };
+export { claimSubmissionRecovery, completeSubmissionRecovery, getRecoverableSubmissions, renewSubmissionRecovery };

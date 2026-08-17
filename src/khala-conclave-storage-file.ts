@@ -4,6 +4,7 @@ import {
 	claimSubmissionRecovery,
 	completeSubmissionRecovery,
 	getRecoverableSubmissions,
+	renewSubmissionRecovery,
 } from "./khala-conclave-recovery-storage.js";
 import {
 	getConclaveSessionPath,
@@ -25,6 +26,7 @@ function createFileConclaveStorage(): ConclaveStorage {
 		getPendingSubmission,
 		getRecoverableSubmissions,
 		claimSubmissionRecovery,
+		renewSubmissionRecovery,
 		completeSubmissionRecovery,
 		claimSubmission,
 		markSubmissionReviewing,
