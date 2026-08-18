@@ -56,8 +56,8 @@ for later records.
   ownership. Wake outcomes are idempotent and fenced to the latest claim. A
   live owner reconciles completion writes without repeating its wake; a crash
   before the outcome is durable retains delivery uncertainty after lease
-  expiry. Three failed or abandoned attempts append one durable exhaustion
-  record.
+  expiry. Three failed, abandoned, or delivered-but-unproductive attempts
+  append one durable exhaustion record.
 - **Mandate**: `mandateId`, `workId`, positive `revision`, source submission
   `recordId`, immutable copied `terms`, admitting Conclave participant, and
   `admittedAt`. Current admission creates revision one.

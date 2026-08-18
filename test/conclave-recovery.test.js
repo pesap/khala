@@ -224,6 +224,45 @@ test("an admitted current Mission remains recoverable after a successful wake wi
   });
 });
 
+test("bounded recovery exhausts after repeated delivered wakes and remains replayable", async () => {
+  await withFixture("khala-conclave-recovery-delivered-exhaustion-", async ({ projectPath, storage }) => {
+    admitWithMission(storage, projectPath, "delivered-exhaustion-work", false);
+    let wakeCount = 0;
+    for (let attempt = 0; attempt < AUTOMATIC_RECOVERY_MAX_ATTEMPTS; attempt += 1) {
+      await recover(projectPath, createFileConclaveStorage(), async () => {
+        wakeCount += 1;
+      });
+    }
+
+    await recover(projectPath, createFileConclaveStorage(), async () => {
+      wakeCount += 1;
+    });
+
+    const records = listArchiveRecords(projectPath);
+    assert.equal(wakeCount, AUTOMATIC_RECOVERY_MAX_ATTEMPTS);
+    assert.equal(
+      wakeRecords(projectPath).filter((record) => record.payload.status === "woken").length,
+      AUTOMATIC_RECOVERY_MAX_ATTEMPTS,
+    );
+    assert.equal(recoveryRecords(projectPath).filter((record) => record.payload.status === "exhausted").length, 1);
+    assert.doesNotThrow(() => validateArchiveReplay(records));
+  });
+});
+
+test("a finished current Mission without a terminal Verdict is not relaunched", async () => {
+  await withFixture("khala-conclave-recovery-finished-unresolved-", async ({ projectPath, storage }) => {
+    admitWithMission(storage, projectPath, "finished-unresolved-work", true, "finished");
+    let wakeCount = 0;
+
+    await recover(projectPath, storage, async () => {
+      wakeCount += 1;
+    });
+
+    assert.equal(wakeCount, 0);
+    assert.deepEqual(recoveryRecords(projectPath), []);
+  });
+});
+
 test("concurrent recovery initiators enqueue one wake for the same transition", async () => {
   await withFixture("khala-conclave-recovery-concurrent-", async ({ projectPath }) => {
     createFileConclaveStorage().submit({ workId: "concurrent-work", projectPath, work });

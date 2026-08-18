@@ -2178,6 +2178,7 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			} else {
 				const finalAttemptSettled =
 					state.latestWakeStatus === ConclaveWakeStatus.failed ||
+					state.latestWakeStatus === ConclaveWakeStatus.woken ||
 					(state.latestLeaseExpiresAt !== undefined &&
 						Date.parse(record.recordedAt) >= Date.parse(state.latestLeaseExpiresAt));
 				if (

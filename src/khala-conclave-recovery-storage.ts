@@ -244,11 +244,15 @@ function isAutomaticRecoveryEligible(
 	) {
 		return false;
 	}
+	// A finished Execution remains a no-duplicate fence until the Mission projection
+	// observes terminal Verdict evidence; only a failed Execution is recoverable here.
 	return !executions.some(
 		(execution) =>
 			execution.purpose?.kind === "mission" &&
 			execution.purpose.missionId === current.mission.missionId &&
-			(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
+			(execution.status === ExecutorStatus.starting ||
+				execution.status === ExecutorStatus.running ||
+				execution.status === ExecutorStatus.finished),
 	);
 }
 

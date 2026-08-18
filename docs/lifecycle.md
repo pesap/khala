@@ -143,10 +143,13 @@ yield. Startup does not synchronously scan the Archive or open the Conclave
 model session, and background scheduling failures are contained instead of
 becoming unhandled promise rejections. Eligible submission recovery uses one
 atomic leased claim per transition, a per-process nonce rather than PID
-ownership, and at most three durable automatic attempts. Timely successful
-renewal keeps a long-running wake claimed while its idempotent outcome is
-reconciled. A missed renewal can expire and permit another attempt; the stale
-owner is then fenced and settles without retrying an impossible completion.
+ownership, and at most three durable automatic attempts. A delivered wake that
+produces no durable Mission progress remains retryable, but it consumes one
+attempt; three failed, abandoned, or delivered-but-unproductive attempts append
+one durable exhaustion record. Timely successful renewal keeps a long-running
+wake claimed while its idempotent outcome is reconciled. A missed renewal can
+expire and permit another attempt; the stale owner is then fenced and settles
+without retrying an impossible completion.
 Submission wakes are tracked
 through coordinator disposal so no model session starts after shutdown.
 
