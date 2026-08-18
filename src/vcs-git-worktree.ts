@@ -254,7 +254,9 @@ async function closeSupersededPullRequest(previousUrl: string, successorUrl: str
 	) {
 		return;
 	}
-	throw new Error(`Predecessor Pull Request ${previousUrl} is not open or already linked to ${successorUrl}.`);
+	throw new Error(
+		`Predecessor Pull Request ${boundGitDiagnostic(previousUrl, MAX_CHILD_PROCESS_ERROR_MESSAGE_LENGTH)} is not open or already linked to ${boundGitDiagnostic(successorUrl, MAX_CHILD_PROCESS_ERROR_MESSAGE_LENGTH)}.`,
+	);
 }
 
 type PullRequestState = Readonly<{ state: string; body: string; comments: readonly string[] }>;
@@ -355,7 +357,7 @@ function redactGitDiagnostic(value: string): string {
 	return value
 		.replace(/(\bBearer\s+)[^\s,;&#"'()[\]{}]+/gi, "$1[REDACTED]")
 		.replace(
-			/(\b(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))\s*[:=]\s*)(?!Bearer\b)[^\s,;&#"'()[\]{}]+/gi,
+			/(\b(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|awssecuritytoken|securitytoken|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))\s*[:=]\s*)(?!Bearer\b)[^\s,;&#"'()[\]{}]+/gi,
 			"$1[REDACTED]",
 		)
 		.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
