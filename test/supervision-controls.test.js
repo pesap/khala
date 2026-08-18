@@ -390,6 +390,40 @@ test("peer-conflict Coordination accepts and persists the exact related active E
   }
 });
 
+test("peer-conflict Coordination rejects stale failed or finished related Execution identities", async () => {
+  for (const status of ["failed", "finished"]) {
+    const root = mkdtempSync(join(tmpdir(), `khala-supervision-controls-peer-conflict-related-${status}-`));
+    try {
+      const fixture = createFixture(root, `related-stale-primary-${status}`);
+      appendSide(root, `related-stale-${status}`, fixture.assignment);
+      const relatedExecutionId = `execution-related-stale-${status}`;
+      updateExecutorRecord(root, relatedExecutionId, { status });
+      await assert.rejects(
+        () => recordCoordination({
+          actionId: `coordinate-peer-conflict-related-stale-${status}`,
+          coordinationId: `coordination-peer-conflict-related-stale-${status}`,
+          phase: "decision",
+          relation: "peer-conflict",
+          workId: fixture.workId,
+          missionId: fixture.missionId,
+          executionId: fixture.executionId,
+          relatedWorkId: `work-related-stale-${status}`,
+          relatedMissionId: `mission-related-stale-${status}`,
+          relatedExecutionId,
+          selectedWorkId: fixture.workId,
+          selectedMissionId: fixture.missionId,
+          selectedExecutionId: fixture.executionId,
+          reason: `The related Mission is ${status} and has no active Execution.`,
+        }, fixture.context, { isDedicatedConclaveSession: () => true }),
+        /must omit the related Execution identity/,
+      );
+      assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("peer-conflict Coordination rejects an omitted primary active Execution identity", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-primary-required-"));
   try {
@@ -411,6 +445,35 @@ test("peer-conflict Coordination rejects an omitted primary active Execution ide
         reason: "Both active Missions overlap.",
       }, fixture.context, { isDedicatedConclaveSession: () => true }),
       /primary active Execution identity/,
+    );
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("peer-conflict Coordination rejects a stale finished primary Execution identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-primary-stale-"));
+  try {
+    const fixture = createFixture(root, "primary-stale");
+    appendSide(root, "primary-stale-related", fixture.assignment);
+    updateExecutorRecord(root, fixture.executionId, { status: "finished" });
+    await assert.rejects(
+      () => recordCoordination({
+        actionId: "coordinate-peer-conflict-primary-stale",
+        coordinationId: "coordination-peer-conflict-primary-stale",
+        phase: "decision",
+        relation: "peer-conflict",
+        workId: fixture.workId,
+        missionId: fixture.missionId,
+        executionId: fixture.executionId,
+        relatedWorkId: "work-primary-stale-related",
+        relatedMissionId: "mission-primary-stale-related",
+        selectedWorkId: fixture.workId,
+        selectedMissionId: fixture.missionId,
+        reason: "The primary Mission finished and has no active Execution.",
+      }, fixture.context, { isDedicatedConclaveSession: () => true }),
+      /not a current starting or running Executor/,
     );
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 0);
   } finally {

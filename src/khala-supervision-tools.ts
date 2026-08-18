@@ -1253,11 +1253,23 @@ function validatePeerConflictExecutionIdentities(
 	projectTrusted: boolean,
 ): void {
 	const primary = activeExecutionForMission(projectPath, params.workId, params.missionId, projectTrusted);
-	if (primary !== undefined && params.executionId !== primary.executionId) {
+	if (primary === undefined) {
+		if (params.executionId !== undefined) {
+			throw new Error(
+				"Peer-conflict Coordination must omit the primary Execution identity when no active Execution exists.",
+			);
+		}
+	} else if (params.executionId !== primary.executionId) {
 		throw new Error("Peer-conflict Coordination requires the exact primary active Execution identity.");
 	}
 	const related = activeExecutionForMission(projectPath, params.relatedWorkId, params.relatedMissionId, projectTrusted);
-	if (related !== undefined && params.relatedExecutionId !== related.executionId) {
+	if (related === undefined) {
+		if (params.relatedExecutionId !== undefined) {
+			throw new Error(
+				"Peer-conflict Coordination must omit the related Execution identity when no active Execution exists.",
+			);
+		}
+	} else if (params.relatedExecutionId !== related.executionId) {
 		throw new Error("Peer-conflict Coordination requires the exact related active Execution identity.");
 	}
 }
