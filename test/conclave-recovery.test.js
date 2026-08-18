@@ -55,7 +55,7 @@ async function recover(projectPath, storage, wake) {
   });
 }
 
-function admitWithMission(storage, projectPath, workId, withExecution) {
+function admitWithMission(storage, projectPath, workId, withExecution, executionStatus = "running") {
   storage.submit({ workId, projectPath, work });
   const submissionRecord = listArchiveRecords(projectPath).at(-1);
   const mandateId = `mandate-${workId}`;
@@ -107,7 +107,7 @@ function admitWithMission(storage, projectPath, workId, withExecution) {
         piSessionId: `session-${workId}`,
         sessionPath: join(projectPath, `${workId}.jsonl`),
         promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
-        status: "running",
+        status: executionStatus,
         startedAt: new Date().toISOString(),
       },
     });
@@ -129,19 +129,44 @@ test("queued Work without a completed decision receives one automatic recovery w
   });
 });
 
-test("admitted Work with a current Execution or completed Conclave decision is not recovered", async () => {
+test("admitted Work with a current Execution or terminal Mission is not recovered", async () => {
   await withFixture("khala-conclave-recovery-admitted-", async ({ projectPath, storage }) => {
     admitWithMission(storage, projectPath, "executing-work", true);
-    admitWithMission(storage, projectPath, "decided-work", false);
+    admitWithMission(storage, projectPath, "finished-work", true, "finished");
     appendArchiveRecord(projectPath, {
       schemaVersion: 2,
-      type: "conclave-wake",
-      workId: "decided-work",
+      type: "signal",
+      workId: "finished-work",
+      executionId: "execution-finished-work",
       payload: {
-        wakeId: "completed-launch-decision",
-        workId: "decided-work",
-        status: "woken",
-        attemptedAt: new Date().toISOString(),
+        signalId: "finished-signal",
+        workId: "finished-work",
+        executionId: "execution-finished-work",
+        executorName: "Recovery Executor",
+        missionId: "mission-finished-work",
+        participantId: "executor:mission-finished-work",
+        kind: "finished",
+        summary: "The Mission finished.",
+        evidence: ["The terminal fixture is complete."],
+        observedAt: new Date().toISOString(),
+      },
+    });
+    appendArchiveRecord(projectPath, {
+      schemaVersion: 2,
+      type: "verdict",
+      workId: "finished-work",
+      executionId: "execution-finished-work",
+      payload: {
+        verdictId: "finished-verdict",
+        workId: "finished-work",
+        executionId: "execution-finished-work",
+        signalId: "finished-signal",
+        missionId: "mission-finished-work",
+        governingMandateId: "mandate-finished-work",
+        issuedByParticipantId: "conclave:test",
+        decision: "finish",
+        reason: "The Mission finished.",
+        issuedAt: new Date().toISOString(),
       },
     });
     let wakes = 0;
@@ -152,6 +177,50 @@ test("admitted Work with a current Execution or completed Conclave decision is n
 
     assert.equal(wakes, 0);
     assert.deepEqual(recoveryRecords(projectPath), []);
+  });
+});
+
+test("an admitted current Mission remains recoverable after a successful wake without a live Execution", async () => {
+  await withFixture("khala-conclave-recovery-woken-admitted-", async ({ projectPath, storage }) => {
+    admitWithMission(storage, projectPath, "missing-execution-work", false);
+    admitWithMission(storage, projectPath, "failed-execution-work", false);
+
+    const firstWakes = [];
+    await recover(projectPath, storage, async (submission) => {
+      firstWakes.push(submission.workId);
+    });
+    appendArchiveRecord(projectPath, {
+      schemaVersion: 3,
+      type: "execution",
+      workId: "failed-execution-work",
+      executionId: "failed-execution",
+      payload: {
+        executionId: "failed-execution",
+        workId: "failed-execution-work",
+        executorName: "Recovery Executor",
+        kind: "executor",
+        participantId: "executor:mission-failed-execution-work",
+        purpose: { kind: "mission", missionId: "mission-failed-execution-work" },
+        missionId: "mission-failed-execution-work",
+        projectPath,
+        sandboxPath: join(projectPath, "sandbox-failed"),
+        launcher: "headless-rpc",
+        piSessionId: "session-failed-execution",
+        sessionPath: join(projectPath, "failed-execution.jsonl"),
+        promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+        status: "failed",
+        startedAt: new Date().toISOString(),
+      },
+    });
+
+    const secondWakes = [];
+    await recover(projectPath, storage, async (submission) => {
+      secondWakes.push(submission.workId);
+    });
+
+    assert.deepEqual(firstWakes.sort(), ["failed-execution-work", "missing-execution-work"]);
+    assert.deepEqual(secondWakes.sort(), ["failed-execution-work", "missing-execution-work"]);
+    assert.equal(wakeRecords(projectPath).filter((record) => record.payload.status === "woken").length, 4);
   });
 });
 

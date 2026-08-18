@@ -2079,7 +2079,6 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			attempts: number;
 			maxAttempts: number;
 			exhausted: boolean;
-			completed: boolean;
 			latestRecoveryId?: string;
 			latestLeaseExpiresAt?: string;
 			latestWakeStatus: ConclaveWakeStatusValue | undefined;
@@ -2117,18 +2116,21 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 					attempts: 0,
 					maxAttempts: recovery.maxAttempts,
 					exhausted: false,
-					completed: false,
 					latestWakeStatus: undefined,
 				};
 				recoveriesBySubmission.set(recovery.submissionRecordId, state);
 			}
-			if (state.maxAttempts !== recovery.maxAttempts || state.exhausted || state.completed) {
+			if (state.maxAttempts !== recovery.maxAttempts || state.exhausted) {
 				throw new Error(`Conclave recovery ${recovery.recoveryId} has invalid retry state.`);
 			}
 			if (recovery.status === ConclaveRecoveryStatus.claimed) {
+				// A successful wake records delivery, not a terminal Work decision. Recovery
+				// eligibility checks the current Mission and active Execution before allowing
+				// another bounded claim when delivery did not produce durable progress.
 				const previousAttemptSettled =
 					state.attempts === 0 ||
 					state.latestWakeStatus === ConclaveWakeStatus.failed ||
+					state.latestWakeStatus === ConclaveWakeStatus.woken ||
 					(state.latestLeaseExpiresAt !== undefined &&
 						Date.parse(record.recordedAt) >= Date.parse(state.latestLeaseExpiresAt));
 				if (
@@ -2205,16 +2207,10 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 					throw new Error(`Conclave wake ${record.payload.wakeId} changed its recovery binding.`);
 				}
 				const state = recoveriesBySubmission.get(claim.submissionRecordId);
-				if (
-					state === undefined ||
-					state.exhausted ||
-					state.completed ||
-					state.latestRecoveryId !== record.payload.wakeId
-				) {
+				if (state === undefined || state.exhausted || state.latestRecoveryId !== record.payload.wakeId) {
 					throw new Error(`Conclave wake ${record.payload.wakeId} has invalid recovery ordering.`);
 				}
 				state.latestWakeStatus = record.payload.status;
-				state.completed = record.payload.status === ConclaveWakeStatus.woken;
 			}
 		}
 		if (record.type === "coordination" && isCoordinationRecord(record.payload)) {

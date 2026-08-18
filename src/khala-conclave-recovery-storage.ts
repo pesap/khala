@@ -215,7 +215,10 @@ function isAutomaticRecoveryEligible(
 	if (submission.status !== WorkSubmissionStatus.queued && submission.status !== WorkSubmissionStatus.admitted) {
 		return false;
 	}
-	if (hasCompletedDecision(records, snapshot) || hasExhaustedRecovery(records, snapshot.recordId)) {
+	if (
+		(submission.status === WorkSubmissionStatus.queued && hasSuccessfulWake(records, snapshot)) ||
+		hasExhaustedRecovery(records, snapshot.recordId)
+	) {
 		return false;
 	}
 	const executions = listExecutorRecords(projectPath, projectTrusted);
@@ -242,11 +245,14 @@ function isAutomaticRecoveryEligible(
 		return false;
 	}
 	return !executions.some(
-		(execution) => execution.purpose?.kind === "mission" && execution.purpose.missionId === current.mission.missionId,
+		(execution) =>
+			execution.purpose?.kind === "mission" &&
+			execution.purpose.missionId === current.mission.missionId &&
+			(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
 	);
 }
 
-function hasCompletedDecision(records: readonly KhalaArchiveRecord[], snapshot: SubmissionSnapshot): boolean {
+function hasSuccessfulWake(records: readonly KhalaArchiveRecord[], snapshot: SubmissionSnapshot): boolean {
 	const transitionIndex = records.findIndex((record) => record.recordId === snapshot.recordId);
 	return records
 		.slice(transitionIndex + 1)
