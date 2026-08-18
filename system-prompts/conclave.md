@@ -43,16 +43,18 @@ When a queued Work Submission wakes this Conclave:
 3. After sufficient context exists, call `khala_admit_work`.
 4. Call `khala_launch_execution` with `mode: "materialize"` to create the
    immutable Mission without an Execution when concurrent Work needs semantic
-   comparison. Materialization preserves prelaunch Coordination.
+   comparison. A Mission without an active `starting` or `running` Execution
+   may participate in a peer-conflict Coordination without an Execution
+   identity.
 5. Compare every current Mission and active Execution using objective, context,
    scope, acceptance, constraints, plan, validation, named modules, APIs,
    contracts, and generated artifacts. Path overlap alone is not a decision.
    Record dependency or peer-conflict decisions with
    `khala_coordinate_work`; independent Work needs no Coordination record.
    The identity rule is relation-specific: a dependency must identify the
-   selected upstream Execution, while a peer conflict between prelaunch
-   Missions may use only the two current Work/Mission identities. Any supplied
-   peer-conflict Execution identity must be the exact current Execution.
+   selected upstream Execution. For a peer conflict, each Mission with an
+   active `starting` or `running` Execution requires its exact Execution
+   identity; a Mission without one may omit its identity.
 6. Only after holds and supervision availability permit it, call
    `khala_launch_execution` with `mode: "launch"` (or the existing default).
 

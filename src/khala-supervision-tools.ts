@@ -185,9 +185,8 @@ const COORDINATE_PARAMETERS = Type.Object({
 	relatedWorkId: Type.String(),
 	relatedMissionId: Type.String(),
 	// Dependency decisions require the related selected upstream Execution.
-	// Peer conflicts may compare two prelaunch Missions using Work/Mission
-	// identities only; Execution identities remain optional when either side has
-	// not launched.
+	// For peer conflicts, an Execution identity is optional only for a Mission
+	// with no active starting or running Execution.
 	relatedExecutionId: Type.Optional(Type.String()),
 	selectedWorkId: Type.String(),
 	selectedMissionId: Type.String(),
@@ -257,7 +256,7 @@ function registerKhalaSupervisionTools(pi: ExtensionAPI, options: SupervisionToo
 		name: "khala_coordinate_work",
 		label: "Coordinate Khala Work",
 		description:
-			"Record one Conclave autonomous dependency or peer-conflict decision. Dependency decisions require the selected upstream Execution; peer conflicts may use only current Work/Mission identities before launch, and any supplied Execution identity must be exact. Action kind: decision=coordinate.",
+			"Record one Conclave autonomous dependency or peer-conflict decision. Dependency decisions require the selected upstream Execution; for peer conflicts, each Mission with an active starting or running Execution requires its exact Execution identity, while a Mission without one may omit its identity. Action kind: decision=coordinate.",
 		promptSnippet: "Record a structured Conclave Work coordination decision",
 		executionMode: "sequential",
 		parameters: COORDINATE_PARAMETERS,
@@ -493,10 +492,29 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 	if (params.assessmentId !== undefined) {
 		validateAssessmentTarget(params as ActionTargetInput, context, options, "coordinate");
 	}
-	const target =
-		params.executionId === undefined
-			? undefined
-			: validateMissionExecution(context, params.workId, params.missionId, params.executionId);
+	let target: ReturnType<typeof validateMissionExecution> | undefined;
+	if (params.executionId !== undefined && !(params.relation === "peer-conflict" && params.assessmentId === undefined)) {
+		target = validateMissionExecution(context, params.workId, params.missionId, params.executionId);
+	}
+	if (params.relation === "peer-conflict" && params.executionId !== undefined && target === undefined) {
+		const primaryMission = currentMission(context.cwd, params.workId, params.missionId, projectTrusted);
+		const primaryExecution = currentExecution(
+			context.cwd,
+			params.workId,
+			params.missionId,
+			params.executionId,
+			projectTrusted,
+		);
+		if (primaryExecution.status === ExecutorStatus.running) {
+			validateMissionExecution(context, params.workId, params.missionId, params.executionId);
+		} else if (
+			primaryExecution.status !== ExecutorStatus.starting ||
+			primaryExecution.kind !== "executor" ||
+			primaryExecution.participantId !== primaryMission.mission.assignedParticipantId
+		) {
+			throw new Error("Supervision target is not a current starting or running Executor.");
+		}
+	}
 	if (params.relation === "dependency" && params.relatedExecutionId === undefined) {
 		throw new Error("A dependency Coordination requires the selected upstream Execution.");
 	}
@@ -519,6 +537,10 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 	}
 	if (params.workId === params.relatedWorkId && params.missionId === params.relatedMissionId) {
 		throw new Error("Coordination requires two distinct Work/Mission identities.");
+	}
+	if (params.relation === "peer-conflict") {
+		currentMission(context.cwd, params.workId, params.missionId, projectTrusted);
+		validatePeerConflictExecutionIdentities(context.cwd, params, projectTrusted);
 	}
 	const reason = boundedReason(params.reason, "Coordination reason");
 	if (params.relation === "dependency") {
@@ -610,6 +632,9 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 		);
 		if (primaryMission.state !== "current") throw new Error("Coordination requires a current primary Mission.");
 		if (lockedRelatedMission.state !== "current") throw new Error("Coordination requires a current related Mission.");
+		if (params.relation === "peer-conflict") {
+			validatePeerConflictExecutionIdentities(context.cwd, params, projectTrusted);
+		}
 		if (params.relatedExecutionId !== undefined) {
 			const lockedRelatedExecution = currentExecution(
 				context.cwd,
@@ -1202,6 +1227,39 @@ function currentExecution(
 		throw new Error("Supervision target references an unknown or cross-boundary Execution.");
 	}
 	return execution;
+}
+
+function activeExecutionForMission(
+	projectPath: string,
+	workId: string,
+	missionId: string,
+	projectTrusted: boolean,
+): ExecutorRecord | undefined {
+	const latestByExecutionId = new Map<string, ExecutorRecord>();
+	for (const execution of listExecutionRecords(projectPath, projectTrusted)) {
+		latestByExecutionId.set(execution.executionId, execution);
+	}
+	return [...latestByExecutionId.values()].find(
+		(execution) =>
+			execution.workId === workId &&
+			execution.missionId === missionId &&
+			(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
+	);
+}
+
+function validatePeerConflictExecutionIdentities(
+	projectPath: string,
+	params: CoordinateInput,
+	projectTrusted: boolean,
+): void {
+	const primary = activeExecutionForMission(projectPath, params.workId, params.missionId, projectTrusted);
+	if (primary !== undefined && params.executionId !== primary.executionId) {
+		throw new Error("Peer-conflict Coordination requires the exact primary active Execution identity.");
+	}
+	const related = activeExecutionForMission(projectPath, params.relatedWorkId, params.relatedMissionId, projectTrusted);
+	if (related !== undefined && params.relatedExecutionId !== related.executionId) {
+		throw new Error("Peer-conflict Coordination requires the exact related active Execution identity.");
+	}
 }
 
 function validateTriggeringEntries(params: SteerInput, context: ExtensionContext): void {

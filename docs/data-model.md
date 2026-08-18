@@ -121,8 +121,9 @@ Execution identities, exact remote/branch/upstream head, classification,
 reason, User entry and priority when it is a User Priority override,
 release/invalidation evidence, and causal resolution. A dependency hold may omit the waiting primary Execution but
 must identify the selected upstream Execution. A peer-conflict decision may
-omit Execution identities when neither current Mission has launched, and
-any supplied peer-conflict Execution identity must be exact. Direct invalidation
+omit each side's Execution identity only when that current Mission has no active
+`starting` or `running` Execution; otherwise it must identify the exact active
+Execution. Direct invalidation
 carries an
 exact remote observation; transitive invalidation instead cites the preceding
 upstream invalidation and omits unobserved replacement/ref evidence. A null

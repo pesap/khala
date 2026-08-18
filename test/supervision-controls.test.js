@@ -334,6 +334,90 @@ test("peer-conflict Coordination records current Mission identities before eithe
   }
 });
 
+test("peer-conflict Coordination rejects an omitted related active Execution identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-related-required-"));
+  try {
+    const fixture = createFixture(root, "related-required");
+    appendSide(root, "related-required-side", fixture.assignment);
+    await assert.rejects(
+      () => recordCoordination({
+        actionId: "coordinate-peer-conflict-related-required",
+        coordinationId: "coordination-peer-conflict-related-required",
+        phase: "decision",
+        relation: "peer-conflict",
+        workId: fixture.workId,
+        missionId: fixture.missionId,
+        executionId: fixture.executionId,
+        relatedWorkId: "work-related-required-side",
+        relatedMissionId: "mission-related-required-side",
+        selectedWorkId: fixture.workId,
+        selectedMissionId: fixture.missionId,
+        reason: "Both active Missions overlap.",
+      }, fixture.context, { isDedicatedConclaveSession: () => true }),
+      /related active Execution identity/,
+    );
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("peer-conflict Coordination accepts and persists the exact related active Execution identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-related-exact-"));
+  try {
+    const fixture = createFixture(root, "related-exact");
+    appendSide(root, "related-exact-side", fixture.assignment);
+    const result = await recordCoordination({
+      actionId: "coordinate-peer-conflict-related-exact",
+      coordinationId: "coordination-peer-conflict-related-exact",
+      phase: "decision",
+      relation: "peer-conflict",
+      workId: fixture.workId,
+      missionId: fixture.missionId,
+      executionId: fixture.executionId,
+      relatedWorkId: "work-related-exact-side",
+      relatedMissionId: "mission-related-exact-side",
+      relatedExecutionId: "execution-related-exact-side",
+      selectedWorkId: fixture.workId,
+      selectedMissionId: fixture.missionId,
+      selectedExecutionId: fixture.executionId,
+      reason: "Both active Missions overlap.",
+    }, fixture.context, { isDedicatedConclaveSession: () => true });
+    assert.equal(result.details.relatedExecutionId, "execution-related-exact-side");
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("peer-conflict Coordination rejects an omitted primary active Execution identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-primary-required-"));
+  try {
+    const fixture = createFixture(root, "primary-required");
+    appendSide(root, "primary-required-side", fixture.assignment);
+    await assert.rejects(
+      () => recordCoordination({
+        actionId: "coordinate-peer-conflict-primary-required",
+        coordinationId: "coordination-peer-conflict-primary-required",
+        phase: "decision",
+        relation: "peer-conflict",
+        workId: fixture.workId,
+        missionId: fixture.missionId,
+        relatedWorkId: "work-primary-required-side",
+        relatedMissionId: "mission-primary-required-side",
+        relatedExecutionId: "execution-primary-required-side",
+        selectedWorkId: fixture.workId,
+        selectedMissionId: fixture.missionId,
+        reason: "Both active Missions overlap.",
+      }, fixture.context, { isDedicatedConclaveSession: () => true }),
+      /primary active Execution identity/,
+    );
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("dependency Coordination still requires the selected upstream Execution", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-dependency-execution-"));
   try {

@@ -65,8 +65,9 @@ Execution.
 The existing `khala_launch_execution` tool has two structured modes:
 
 - `mode: "materialize"` creates or reuses the immutable Mission and creates no
-  Execution. Use it before comparing concurrent Work. This is the prelaunch
-  coordination point.
+  Execution. Use it before comparing concurrent Work. A peer-conflict decision
+  may omit a Mission's Execution identity only when that Mission has no active
+  `starting` or `running` Execution.
 - `mode: "launch"` (or omitted) validates the current Mission, Coordination
   holds, upstream release, and supervision availability, then creates and
   starts the headless Executor.

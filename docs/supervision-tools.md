@@ -18,8 +18,8 @@ runs through five controls:
 These are the only supervision controls and the only User Priority
 consumption tools. `khala_launch_execution` is the
 existing lifecycle tool: `mode: "materialize"` persists an admitted Mission
-without an Execution for prelaunch comparison; `mode: "launch"` (or omitted)
-starts the headless Executor. There is no standalone materialization tool.
+without an Execution for comparison; `mode: "launch"` (or omitted) starts the
+headless Executor. There is no standalone materialization tool.
 
 ## Authority and action IDs
 
@@ -60,9 +60,10 @@ synthesizes a Signal or silently prompts again.
 Coordination identity is relation-specific. Dependency decisions require
 current primary and related Missions plus the selected upstream Execution; the
 waiting primary Execution may be absent before launch. A peer-conflict decision
-requires the two current Work/Mission identities and may omit Execution
-identities when neither Mission has launched; any supplied peer-conflict
-Execution identity must be the exact current Execution. An active dependency
+requires the two current Work/Mission identities. For each side, the
+Execution identity may be omitted only when its Mission has no active
+`starting` or `running` Execution; otherwise the exact active Execution identity
+is required. An active dependency
 hold blocks launch, Retry, and recovery until the upstream Finish, publication,
 and exact head are verified.
 
