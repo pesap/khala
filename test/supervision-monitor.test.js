@@ -91,6 +91,7 @@ function coordination(phase = "invalidation") {
 function monitor(overrides = {}) {
   return projectExecutionMonitor({
     execution: { ...execution(), ...overrides },
+    runtimeAvailable: true,
     workTitle: "Monitor fixture",
     missions: [mission()],
     signals: [],
@@ -108,6 +109,7 @@ function monitor(overrides = {}) {
 test("Supervision monitor projects headless and supervision state independently, with exact stale base evidence", () => {
   const projected = projectExecutionMonitor({
     execution: execution(),
+    runtimeAvailable: true,
     workTitle: "Monitor fixture",
     missions: [mission()],
     signals: [],
@@ -122,9 +124,28 @@ test("Supervision monitor projects headless and supervision state independently,
   assert.equal(projected.coordination.requiredUpstreamCommit, HEAD);
 });
 
+test("Supervision monitor does not present an orphaned persisted Execution as running or connected", () => {
+  const projected = projectExecutionMonitor({
+    ...monitorInput("running"),
+    runtimeAvailable: false,
+  });
+
+  assert.equal(projected.runtimeState, "unavailable");
+  assert.equal(projected.supervisionState, "unavailable");
+  const text = renderExecutionDetails(
+    { identity: "execution-1", executionMonitor: projected },
+    80,
+    { fg: (_color, value) => value },
+  ).join("\n");
+  assert.match(text, /Runtime: headless unavailable/);
+  assert.doesNotMatch(text, /Runtime: headless running/);
+  assert.doesNotMatch(text, /Supervision: connected/);
+});
+
 test("Supervision monitor keeps grace unavailable, failed steer failed, and settlement incomplete", () => {
   const unavailable = projectExecutionMonitor({
     execution: execution(),
+    runtimeAvailable: true,
     workTitle: "Monitor fixture",
     missions: [mission()],
     signals: [],
@@ -201,6 +222,7 @@ test("Supervision monitor rendering stays plain and narrow while retaining full 
 function monitorInput(status) {
   return {
     execution: execution(status),
+    runtimeAvailable: true,
     workTitle: "Monitor fixture",
     missions: [mission()],
     signals: [],

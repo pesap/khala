@@ -16,11 +16,16 @@ branch, and base commit; stale or invalidated state; selected Conclave and
 Executor models; advisory per-turn limits; latest observed cost; supervision
 state (`connected`, `recovering`, `unavailable`, or `settled`); and significant
 steering, Coordination, lifecycle, failure, recovery, or budget evidence.
-Missing or zero pricing is `unavailable`; an overrun remains visible while work
-continues.
+An active Archive status is shown as `running` or `starting` only while the
+current Khala process owns its headless runtime controller. If the Archive still
+says an Execution is active but no controller exists, the monitor shows the
+runtime and supervision as `unavailable` and marks the row as possibly stalled.
+This display does not rewrite the authoritative Archive. Missing or zero pricing
+is `unavailable`; an overrun remains visible while work continues.
 
-The popup refreshes its roster only when the relevant session, Archive, or
-configuration state changes. While it is idle, it reuses the current roster and
+The popup refreshes its roster only when the relevant runtime ownership,
+session, Archive, or configuration state changes. While it is idle, it reuses
+the current roster and
 does not replay the persisted Conclave transcript. Active Executor details retain
 a compact projection of supervision entries and incrementally read newly
 appended session records. Replacing the Conclave session file discards that

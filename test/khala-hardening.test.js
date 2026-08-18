@@ -31,6 +31,7 @@ import { appendArchiveRecord, getArchivePath, listArchiveRecords, withArchiveLoc
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { readCurrentMission } from "../dist/src/khala-archive-projections.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
+import { registerHeadlessRuntime, unregisterHeadlessRuntime } from "../dist/src/executor-rpc.js";
 import {
 	createExecutorRecord,
 	listExecutorRecords,
@@ -289,9 +290,29 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 		assert.equal(executorSession?.sessionPathLabel, "separate Pi process");
 		assert.equal(executorSession?.sandboxPath, join(root, "sandbox"));
 		assert.equal(executorSession?.sandboxPathLabel, relative(projectPath, join(root, "sandbox")));
-		assert.equal(executorSession?.state, "working");
+		assert.equal(executorSession?.state, "stalled");
 		assert.equal(executorSession?.task, "Improve session roster");
+		assert.equal(executorSession?.executionMonitor?.runtimeState, "unavailable");
+		assert.equal(executorSession?.executionMonitor?.supervisionState, "unavailable");
 		assert.equal(executorSession?.executionMonitor?.latestTurnCost.executor.costUsd, 0.25);
+
+		const runtime = {};
+		registerHeadlessRuntime("execution-1", runtime);
+		try {
+			const liveExecutor = source
+				.getActiveSessions(sessionPath)
+				.find((session) => session.id === "executor:execution-1");
+			assert.equal(liveExecutor?.state, "working");
+			assert.equal(liveExecutor?.executionMonitor?.runtimeState, "running");
+			assert.equal(liveExecutor?.executionMonitor?.supervisionState, "connected");
+		} finally {
+			unregisterHeadlessRuntime("execution-1", runtime);
+		}
+		const orphanedExecutor = source
+			.getActiveSessions(sessionPath)
+			.find((session) => session.id === "executor:execution-1");
+		assert.equal(orphanedExecutor?.state, "stalled");
+		assert.equal(orphanedExecutor?.executionMonitor?.runtimeState, "unavailable");
 
 		const updatedBudget = JSON.stringify({
 			type: "custom",
@@ -365,7 +386,7 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 		);
 		const successorSessions = source.getActiveSessions(sessionPath);
 		assert.equal(successorSessions.some((session) => session.id === "executor:execution-1"), false);
-		assert.equal(successorSessions.find((session) => session.id === "executor:execution-2")?.state, "working");
+		assert.equal(successorSessions.find((session) => session.id === "executor:execution-2")?.state, "stalled");
 
 		updateExecutorRecord(projectPath, "execution-1", { status: "finished" });
 		const finishedExecutor = source

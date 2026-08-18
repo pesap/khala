@@ -4,6 +4,7 @@ import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { relative } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { ExtensionContext, FileEntry } from "@earendil-works/pi-coding-agent";
+import { getHeadlessRuntime, getHeadlessRuntimeRevision } from "./executor-rpc.js";
 import { getArchivePath } from "./khala-archive.js";
 import { createArchiveSnapshot, type projectMissions } from "./khala-archive-projections.js";
 import {
@@ -115,6 +116,7 @@ function createSessionListFingerprint(
 		input.currentPath,
 		input.projectTrusted ? "trusted" : "global",
 		getSessionIdleState(input.context) ? "idle" : "working",
+		`runtime:${getHeadlessRuntimeRevision()}`,
 		fileFingerprint(getKhalaConfigPath(ConfigScope.global)),
 		fileFingerprint(projectConfigPath),
 		fileFingerprint(archivePath),
@@ -594,7 +596,7 @@ function buildSessionList(
 	const conclaveEntries = needsConclaveMonitorEntries ? readConclaveMonitorEntries.read(conclavePath) : [];
 	for (const executor of activeExecutions) {
 		const latestSignal = latestSignals.get(executor.executionId);
-		const state = getExecutorSessionState(executor.status, latestSignal?.kind);
+		let state = getExecutorSessionState(executor.status, latestSignal?.kind);
 		const isObserver = executor.kind === "observer";
 		let idPrefix = "executor";
 		let role = "Executor";
@@ -611,6 +613,7 @@ function buildSessionList(
 		if (!isObserver) {
 			executionMonitor = projectExecutionMonitor({
 				execution: executor,
+				runtimeAvailable: getHeadlessRuntime(executor.executionId) !== undefined,
 				workTitle: task,
 				missions,
 				signals: archive.listSignals(),
@@ -618,6 +621,9 @@ function buildSessionList(
 				conclaveEntries,
 				config,
 			});
+			if (executionMonitor.runtimeState === "unavailable") {
+				state = KhalaSessionState.stalled;
+			}
 		}
 		let sessionPathLabel = "separate Pi process";
 		if (executor.sessionPath !== undefined) {

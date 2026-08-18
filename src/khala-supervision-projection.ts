@@ -40,7 +40,7 @@ const CONCLAVE_MONITOR_ENTRY_TYPES: ReadonlySet<string> = new Set([
 	"khala-supervision-critical",
 ]);
 
-type SupervisionRuntimeState = "starting" | "running" | "finished" | "failed";
+type SupervisionRuntimeState = "starting" | "running" | "finished" | "failed" | "unavailable";
 type SupervisionConnectionState = "connected" | "unavailable" | "recovering" | "settled";
 type CostObservation = Readonly<{
 	thresholdUsd?: number | undefined;
@@ -98,6 +98,7 @@ type KhalaExecutionMonitor = Readonly<{
 
 type SupervisionProjectionInput = Readonly<{
 	execution: ExecutorRecord;
+	runtimeAvailable: boolean;
 	workTitle: string;
 	missions: readonly MissionRecord[];
 	signals: readonly SignalRecord[];
@@ -136,7 +137,10 @@ function projectExecutionMonitor(input: SupervisionProjectionInput): KhalaExecut
 	const conclaveOverrun = budgets.some((budget) => budget.actor === "conclave" && budget.overrun);
 	const latestOverrun = budgets.filter((budget) => budget.overrun).at(-1);
 	const outage = latestRelevantOutage(input.conclaveEntries, execution);
-	const runtimeState = execution.status;
+	const runtimeState =
+		(execution.status === "starting" || execution.status === "running") && !input.runtimeAvailable
+			? "unavailable"
+			: execution.status;
 	const supervisionState = getSupervisionState(runtimeState, outage);
 	const relatedSignals = input.signals.filter(
 		(signal) => signal.executionId === execution.executionId && signal.workId === execution.workId,
@@ -171,7 +175,7 @@ function projectExecutionMonitor(input: SupervisionProjectionInput): KhalaExecut
 		latestOverrun,
 	);
 	const incomplete =
-		(runtimeState === "finished" || runtimeState === "failed") &&
+		(execution.status === "finished" || execution.status === "failed") &&
 		relatedSignals.length === 0 &&
 		relatedVerdicts.length === 0;
 	return {
@@ -229,6 +233,9 @@ function getSupervisionState(
 ): SupervisionConnectionState {
 	if (runtimeState === "finished" || runtimeState === "failed") {
 		return "settled";
+	}
+	if (runtimeState === "unavailable") {
+		return "unavailable";
 	}
 	if (outage === undefined) {
 		return "connected";

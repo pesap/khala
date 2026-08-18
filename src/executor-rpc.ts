@@ -59,6 +59,7 @@ const KHALA_HEADLESS_LAUNCHER = "headless-rpc";
 const RPC_START_TIMEOUT_MS = 10_000;
 const RPC_SHUTDOWN_TIMEOUT_MS = 1000;
 const headlessRuntimes = new Map<string, HeadlessExecutorRuntime>();
+let headlessRuntimeRevision = 0;
 
 /**
  * Decode Pi's RPC stream using LF only. U+2028 and U+2029 are valid JSON string
@@ -717,7 +718,11 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 }
 
 function registerHeadlessRuntime(executionId: string, runtime: HeadlessExecutorRuntime): void {
+	if (headlessRuntimes.get(executionId) === runtime) {
+		return;
+	}
 	headlessRuntimes.set(executionId, runtime);
+	headlessRuntimeRevision += 1;
 }
 
 // A replaced runtime may close late (recovery restarts the same execution ID); only the instance
@@ -725,7 +730,12 @@ function registerHeadlessRuntime(executionId: string, runtime: HeadlessExecutorR
 function unregisterHeadlessRuntime(executionId: string, runtime: HeadlessExecutorRuntime): void {
 	if (headlessRuntimes.get(executionId) === runtime) {
 		headlessRuntimes.delete(executionId);
+		headlessRuntimeRevision += 1;
 	}
+}
+
+function getHeadlessRuntimeRevision(): number {
+	return headlessRuntimeRevision;
 }
 
 function getHeadlessRuntime(executionId: string): HeadlessExecutorRuntime | undefined {
@@ -742,7 +752,10 @@ async function sendHeadlessExecutorMessage(executionId: string, message: string)
 
 async function disposeHeadlessRuntimes(): Promise<void> {
 	const runtimes = [...headlessRuntimes.entries()];
-	headlessRuntimes.clear();
+	if (runtimes.length > 0) {
+		headlessRuntimes.clear();
+		headlessRuntimeRevision += 1;
+	}
 	await Promise.all(runtimes.map(([, runtime]) => runtime.closeProcess()));
 }
 
@@ -779,6 +792,7 @@ export {
 	buildHeadlessPiArguments,
 	disposeHeadlessRuntimes,
 	getHeadlessRuntime,
+	getHeadlessRuntimeRevision,
 	HeadlessExecutorRuntime,
 	KHALA_HEADLESS_LAUNCHER,
 	readRpcSessionBinding,
