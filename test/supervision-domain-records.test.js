@@ -501,6 +501,9 @@ test("supervision Archive replay is idempotent, causal, and projected fail-close
 			relatedMissionId: "peer-priority-mission",
 			upstreamWorkId: undefined,
 			upstreamMissionId: undefined,
+			executionId: undefined,
+			relatedExecutionId: undefined,
+			selectedExecutionId: undefined,
 			remote: undefined,
 			branch: undefined,
 		};
@@ -558,6 +561,95 @@ test("supervision Archive replay is idempotent, causal, and projected fail-close
 			/invalid outcome order/,
 		);
 		assert.equal(listArchiveRecords(projectPath).length, 12);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("peer-conflict replay enforces point-in-time active Execution identities", () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-peer-conflict-replay-identities-"));
+	const assignment = {
+		title: "Peer conflict",
+		objective: "Validate peer replay",
+		context: "Controlled",
+		scope: "Only the fixture",
+		acceptanceCriteria: ["validated"],
+		constraints: [],
+		plan: ["run"],
+		validation: ["inspect"],
+	};
+	const appendPrelaunch = (projectPath, suffix) => {
+		const workId = `work-${suffix}`;
+		const missionId = `mission-${suffix}`;
+		const mandateId = `mandate-${suffix}`;
+		appendArchiveRecord(projectPath, { schemaVersion: 2, type: "mandate", workId, payload: { mandateId, workId, revision: 1, sourceSubmissionRecordId: `submission-${suffix}`, terms: assignment, admittedByParticipantId: "conclave:test", admittedAt: new Date().toISOString() } });
+		appendArchiveRecord(projectPath, { schemaVersion: 2, type: "mission", workId, payload: { missionId, workId, mandateId, assignment, assignedParticipantId: `executor:execution-${suffix}`, createdAt: new Date().toISOString() } });
+		return { workId, missionId, executionId: `execution-${suffix}` };
+	};
+	const appendActive = (projectPath, suffix) => {
+		const workId = `work-${suffix}`;
+		const missionId = `mission-${suffix}`;
+		const executionId = `execution-${suffix}`;
+		mkdirSync(projectPath, { recursive: true });
+		const sessionPath = join(projectPath, `${executionId}.jsonl`);
+		writeFileSync(sessionPath, `{"type":"session","version":3,"id":"${executionId}"}\n`);
+		appendArchiveRecord(projectPath, { schemaVersion: 2, type: "execution", workId, executionId, payload: { executionId, workId, executorName: "Fixture", kind: "executor", participantId: `executor:${executionId}`, purpose: { kind: "mission", missionId }, missionId, projectPath, sandboxPath: projectPath, launcher: "headless-rpc", piSessionId: `pi-${executionId}`, sessionPath, promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "running", startedAt: new Date().toISOString() } });
+	};
+	const appendSide = (projectPath, suffix) => {
+		const side = appendPrelaunch(projectPath, suffix);
+		appendActive(projectPath, suffix);
+		return side;
+	};
+	const decision = (coordinationId, a, b, identities = {}) => ({
+		coordinationId,
+		actionId: `action-${coordinationId}`,
+		phase: "decision",
+		relation: "peer-conflict",
+		workId: a.workId,
+		missionId: a.missionId,
+		...(identities.primary === undefined ? {} : { executionId: identities.primary, selectedExecutionId: identities.primary }),
+		selectedWorkId: a.workId,
+		selectedMissionId: a.missionId,
+		relatedWorkId: b.workId,
+		relatedMissionId: b.missionId,
+		...(identities.related === undefined ? {} : { relatedExecutionId: identities.related }),
+		reason: "Both current Missions overlap.",
+	});
+	try {
+		const prelaunch = join(root, "prelaunch");
+		const prelaunchA = appendPrelaunch(prelaunch, "replay-pre-a");
+		const prelaunchB = appendPrelaunch(prelaunch, "replay-pre-b");
+		appendArchiveRecord(prelaunch, { schemaVersion: 2, type: "coordination", workId: prelaunchA.workId, payload: decision("coord-prelaunch", prelaunchA, prelaunchB) });
+		appendActive(prelaunch, "replay-pre-a");
+		appendActive(prelaunch, "replay-pre-b");
+
+		const active = join(root, "active");
+		const activeA = appendSide(active, "replay-active-a");
+		const activeB = appendSide(active, "replay-active-b");
+		appendArchiveRecord(active, { schemaVersion: 2, type: "coordination", workId: activeA.workId, payload: decision("coord-active", activeA, activeB, { primary: activeA.executionId, related: activeB.executionId }) });
+
+		const omitted = join(root, "omitted");
+		const omittedA = appendSide(omitted, "replay-omitted-a");
+		const omittedB = appendSide(omitted, "replay-omitted-b");
+		assert.throws(
+			() => appendArchiveRecord(omitted, { schemaVersion: 2, type: "coordination", workId: omittedA.workId, payload: decision("coord-omitted", omittedA, omittedB) }),
+			/primary active Execution identity/,
+		);
+		assert.throws(
+			() => appendArchiveRecord(omitted, { schemaVersion: 2, type: "coordination", workId: omittedA.workId, payload: decision("coord-active-forged", omittedA, omittedB, { primary: "execution-forged", related: omittedB.executionId }) }),
+			/exact primary active Execution identity/,
+		);
+		assert.equal(listArchiveRecords(omitted).filter((record) => record.type === "coordination").length, 0);
+
+		const inactive = join(root, "inactive");
+		const inactiveA = appendSide(inactive, "replay-inactive-a");
+		const inactiveB = appendSide(inactive, "replay-inactive-b");
+		updateExecutorRecord(inactive, inactiveA.executionId, { status: "finished" });
+		assert.throws(
+			() => appendArchiveRecord(inactive, { schemaVersion: 2, type: "coordination", workId: inactiveA.workId, payload: decision("coord-inactive", inactiveA, inactiveB, { primary: inactiveA.executionId, related: inactiveB.executionId }) }),
+			/must omit the primary Execution identity/,
+		);
+		assert.equal(listArchiveRecords(inactive).filter((record) => record.type === "coordination").length, 0);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

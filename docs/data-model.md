@@ -123,7 +123,9 @@ release/invalidation evidence, and causal resolution. A dependency hold may omit
 must identify the selected upstream Execution. A peer-conflict decision may
 omit each side's Execution identity only when that current Mission has no active
 `starting` or `running` Execution; otherwise it must identify the exact active
-Execution. Direct invalidation
+Execution. Archive replay enforces this conditional identity rule at each
+peer-conflict decision's append position; a User Priority override is exempt
+because its identities are validated as a current snapshot. Direct invalidation
 carries an
 exact remote observation; transitive invalidation instead cites the preceding
 upstream invalidation and omits unobserved replacement/ref evidence. A null

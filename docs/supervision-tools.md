@@ -63,7 +63,11 @@ waiting primary Execution may be absent before launch. A peer-conflict decision
 requires the two current Work/Mission identities. For each side, the
 Execution identity may be omitted only when its Mission has no active
 `starting` or `running` Execution; otherwise the exact active Execution identity
-is required. An active dependency
+is required. When applying a User Priority, a decision's exact Execution identity
+must still be that side's current active Execution; a changed or disappeared
+identity makes the pending priority stale before any override is appended. A
+prelaunch decision that omitted an identity may snapshot a later active
+Execution. An active dependency
 hold blocks launch, Retry, and recovery until the upstream Finish, publication,
 and exact head are verified.
 

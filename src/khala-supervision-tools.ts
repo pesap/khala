@@ -1559,6 +1559,12 @@ async function applyUserPriority(
 			decision.relatedMissionId,
 			projectTrusted,
 		);
+		if (decision.executionId !== undefined && decision.executionId !== primaryExecution?.executionId) {
+			throw new Error(`User Priority ${priorityId} targets a stale primary Execution; dispose it instead.`);
+		}
+		if (decision.relatedExecutionId !== undefined && decision.relatedExecutionId !== relatedExecution?.executionId) {
+			throw new Error(`User Priority ${priorityId} targets a stale related Execution; dispose it instead.`);
+		}
 		const selectedIsPrimary = record.selectedWorkId === decision.workId;
 		const selectedExecutionId = selectedIsPrimary ? primaryExecution?.executionId : relatedExecution?.executionId;
 		const override: CoordinationRecord = {

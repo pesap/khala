@@ -19,7 +19,7 @@ import {
 	createConclaveCoordinator,
 	schedulePendingUserPriorityWakes,
 } from "../dist/src/khala-conclave.js";
-import { readExecutorRecord } from "../dist/src/khala-executor-registry.js";
+import { readExecutorRecord, updateExecutorRecord } from "../dist/src/khala-executor-registry.js";
 import { isUserPriorityRecord } from "../dist/src/khala-model.js";
 import createExtension from "../dist/src/index.js";
 
@@ -400,6 +400,45 @@ runTest("a User Priority resolves a newly active losing Execution from a prelaun
 	assert.equal(applied.details.relatedExecutionId, b.executionId);
 	assert.equal(runtime.received.length, 1);
 	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "intervention").length, 1);
+});
+
+runTest("a decision-bound primary Execution turnover makes a pending priority stale before append", async (projectPath) => {
+	const a = appendSide(projectPath, "turnover-a", "work-turnover-a");
+	const b = appendSide(projectPath, "turnover-b", "work-turnover-b");
+	appendDecisionCoordination(projectPath, "coord-turnover", a, b);
+	const result = await submitUserPriority(
+		{ selectedWorkId: a.workId, reason: "A over B" },
+		userContext(projectPath, [userEntry("u-turnover", "ab"), assistantEntry("a-turnover", "u-turnover", "t-turnover")]),
+		{ wakeUserPriority: async () => {} },
+		"t-turnover",
+	);
+	await updateExecutorRecord(projectPath, a.executionId, { status: "finished" });
+	appendActiveExecution(projectPath, { ...a, executionId: "execution-turnover-a-successor" });
+	const tools = supervisionTools();
+	await assert.rejects(
+		() => tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, conclaveContext(projectPath)),
+		/no longer matches|stale/,
+	);
+	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "coordination").length, 1);
+});
+
+runTest("a decision-bound disappeared related Execution makes a pending priority stale before append", async (projectPath) => {
+	const a = appendSide(projectPath, "disappeared-a", "work-disappeared-a");
+	const b = appendSide(projectPath, "disappeared-b", "work-disappeared-b");
+	appendDecisionCoordination(projectPath, "coord-disappeared", a, b);
+	const result = await submitUserPriority(
+		{ selectedWorkId: a.workId, reason: "A over B" },
+		userContext(projectPath, [userEntry("u-disappeared", "ab"), assistantEntry("a-disappeared", "u-disappeared", "t-disappeared")]),
+		{ wakeUserPriority: async () => {} },
+		"t-disappeared",
+	);
+	await updateExecutorRecord(projectPath, b.executionId, { status: "finished" });
+	const tools = supervisionTools();
+	await assert.rejects(
+		() => tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, conclaveContext(projectPath)),
+		/no longer matches|stale/,
+	);
+	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "coordination").length, 1);
 });
 
 runTest("a prelaunch User Priority with no active losing Execution keeps the no-stop enforcement path", async (projectPath) => {

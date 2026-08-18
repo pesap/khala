@@ -2030,6 +2030,49 @@ function interventionReplayIdentity(record: KhalaArchiveRecord, payload: Interve
 	});
 }
 
+function activeExecutionIdForMission(
+	latestExecutions: ReadonlyMap<string, ExecutorRecord>,
+	workId: string,
+	missionId: string,
+): string | undefined {
+	return [...latestExecutions.values()].find(
+		(execution) =>
+			execution.workId === workId &&
+			execution.missionId === missionId &&
+			(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
+	)?.executionId;
+}
+
+function validatePeerConflictDecisionExecutionIdentities(
+	decision: CoordinationRecord,
+	latestExecutions: ReadonlyMap<string, ExecutorRecord>,
+): void {
+	const primaryExecutionId = activeExecutionIdForMission(latestExecutions, decision.workId, decision.missionId);
+	if (primaryExecutionId === undefined) {
+		if (decision.executionId !== undefined) {
+			throw new Error(
+				"Peer-conflict Coordination must omit the primary Execution identity when no active Execution exists.",
+			);
+		}
+	} else if (decision.executionId !== primaryExecutionId) {
+		throw new Error("Peer-conflict Coordination requires the exact primary active Execution identity.");
+	}
+	const relatedExecutionId = activeExecutionIdForMission(
+		latestExecutions,
+		decision.relatedWorkId,
+		decision.relatedMissionId,
+	);
+	if (relatedExecutionId === undefined) {
+		if (decision.relatedExecutionId !== undefined) {
+			throw new Error(
+				"Peer-conflict Coordination must omit the related Execution identity when no active Execution exists.",
+			);
+		}
+	} else if (decision.relatedExecutionId !== relatedExecutionId) {
+		throw new Error("Peer-conflict Coordination requires the exact related active Execution identity.");
+	}
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Replay validation must inspect all supervision phases in append order.
 // biome-ignore lint/complexity/noExcessiveLinesPerFunction: Replay validation keeps append-order fences together.
 function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
@@ -2061,6 +2104,7 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 	const appliedPriorities = new Set<string>();
 	const appliedPriorityOverrides = new Map<string, CoordinationRecord>();
 	const coordinationDecisions = new Map<string, CoordinationRecord>();
+	const latestExecutorRecords = new Map<string, ExecutorRecord>();
 	const priorityEnforcementState = new Map<
 		string,
 		{
@@ -2099,6 +2143,9 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 		}
 	>();
 	for (const record of records) {
+		if (record.type === "execution" && isExecutorRecord(record.payload)) {
+			latestExecutorRecords.set(record.payload.executionId, record.payload);
+		}
 		if (record.type === "signal" && isSignal(record.payload)) {
 			signalRecords.set(record.payload.signalId, record.payload);
 		}
@@ -2235,6 +2282,9 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 				(record.executionId !== undefined && record.payload.executionId !== record.executionId)
 			) {
 				throw new Error(`Coordination ${record.payload.coordinationId} has inconsistent Archive bindings.`);
+			}
+			if (coordination.phase === "decision" && coordination.relation === "peer-conflict") {
+				validatePeerConflictDecisionExecutionIdentities(coordination, latestExecutorRecords);
 			}
 			if (coordination.phase === "override") {
 				const { priorityId } = coordination;
