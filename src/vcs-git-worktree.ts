@@ -16,8 +16,8 @@ const PULL_REQUEST_NUMBER_PATTERN = /\/pull\/(\d+)(?:$|[?#])/;
 // PATH_MAX is 4096 on Linux; most filesystems cap path components at 255 bytes.
 const MAX_PATH_LENGTH = 4096;
 const MAX_COMPONENT_LENGTH = 255;
-const MAX_GIT_ERROR_MESSAGE_LENGTH = 512;
-const MAX_GIT_OUTPUT_LENGTH = 2048;
+const MAX_CHILD_PROCESS_ERROR_MESSAGE_LENGTH = 512;
+const MAX_CHILD_PROCESS_OUTPUT_LENGTH = 2048;
 const FULL_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
 // Git worktrees are created from the same resolved PR target used by review preparation, so caller-only commits cannot leak into the PR.
 class GitWorktreeProvider extends VCSProvider {
@@ -292,7 +292,7 @@ async function gh(args: string[]): Promise<string> {
 	} catch (error) {
 		if (error instanceof Error) {
 			// biome-ignore lint/style/useErrorCause: Preserve the existing repository error style for Node strip-only compatibility.
-			throw new Error(`gh ${args.join(" ")} failed: ${error.message}`);
+			throw new Error(childProcessFailureDiagnostic("gh", args, error));
 		}
 		throw error;
 	}
@@ -337,10 +337,10 @@ async function findPullRequest(sourceBranch: string): Promise<PullRequestLookup 
 	return { url: record.url };
 }
 
-type GitProcessError = Error & Readonly<{ stdout?: unknown; stderr?: unknown }>;
+type ChildProcessError = Error & Readonly<{ stdout?: unknown; stderr?: unknown }>;
 
 function processOutput(error: Error, stream: "stdout" | "stderr"): string {
-	const value = (error as GitProcessError)[stream];
+	const value = (error as ChildProcessError)[stream];
 	if (typeof value === "string") {
 		return value;
 	}
@@ -355,7 +355,7 @@ function redactGitDiagnostic(value: string): string {
 	return value
 		.replace(/(\bBearer\s+)[^\s,;&#"'()[\]{}]+/gi, "$1[REDACTED]")
 		.replace(
-			/(\b(?:password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))\s*[:=]\s*)(?!Bearer\b)[^\s,;&#"'()[\]{}]+/gi,
+			/(\b(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))\s*[:=]\s*)(?!Bearer\b)[^\s,;&#"'()[\]{}]+/gi,
 			"$1[REDACTED]",
 		)
 		.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
@@ -369,10 +369,10 @@ function boundGitDiagnostic(value: string, maxLength: number): string {
 	return `${diagnostic.slice(0, maxLength)}… [truncated]`;
 }
 
-function gitFailureDiagnostic(error: Error, args: string[]): string {
-	const message = boundGitDiagnostic(error.message, MAX_GIT_ERROR_MESSAGE_LENGTH);
-	const stderr = boundGitDiagnostic(processOutput(error, "stderr"), MAX_GIT_OUTPUT_LENGTH);
-	const stdout = boundGitDiagnostic(processOutput(error, "stdout"), MAX_GIT_OUTPUT_LENGTH);
+function childProcessFailureDiagnostic(commandName: string, args: string[], error: Error): string {
+	const message = boundGitDiagnostic(error.message, MAX_CHILD_PROCESS_ERROR_MESSAGE_LENGTH);
+	const stderr = boundGitDiagnostic(processOutput(error, "stderr"), MAX_CHILD_PROCESS_OUTPUT_LENGTH);
+	const stdout = boundGitDiagnostic(processOutput(error, "stdout"), MAX_CHILD_PROCESS_OUTPUT_LENGTH);
 	const output: string[] = [];
 	if (stderr.length > 0) {
 		output.push(`stderr: ${stderr}`);
@@ -380,8 +380,8 @@ function gitFailureDiagnostic(error: Error, args: string[]): string {
 	if (stdout.length > 0) {
 		output.push(`stdout: ${stdout}`);
 	}
-	const command = args.map((arg) => boundGitDiagnostic(arg, MAX_GIT_OUTPUT_LENGTH)).join(" ");
-	let diagnostic = `git ${command} failed: ${message}`;
+	const command = args.map((arg) => boundGitDiagnostic(arg, MAX_CHILD_PROCESS_OUTPUT_LENGTH)).join(" ");
+	let diagnostic = `${commandName} ${command} failed: ${message}`;
 	if (output.length > 0) {
 		diagnostic += `\n${output.join("\n")}`;
 	}
@@ -397,7 +397,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
 		if (error instanceof Error) {
 			// The package targets ES2020, whose TypeScript lib omits ErrorOptions.cause.
 			// biome-ignore lint/style/useErrorCause: Preserve ES2020 compatibility.
-			throw new Error(gitFailureDiagnostic(error, args));
+			throw new Error(childProcessFailureDiagnostic("git", args, error));
 		}
 		throw error;
 	}

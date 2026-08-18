@@ -65,3 +65,52 @@ else if (command === "push") {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("GitHub publication failures redact Archive URL credentials and child diagnostics", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-gh-diagnostic-"));
+	const bin = join(root, "bin");
+	mkdirSync(bin);
+	writeFileSync(
+		join(bin, "gh"),
+		`#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "pr" && args[1] === "view") {
+  process.stderr.write("GitHub rejected awsaccesskeyid=stderr-access AWSSECRETACCESSKEY=stderr-secret note=stderr-context\\n");
+  process.stdout.write("response ACCESSKEYID=stdout-access aWsSeCrEtAcCeSsKeY=stdout-secret note=stdout-context\\n");
+  process.exit(1);
+}
+`,
+	);
+	chmodSync(join(bin, "gh"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	const previousUrl =
+		"https://github.com/pesap/khala/pull/16?AWSAccessKeyId=url-aws-access&accessKeyId=url-access&AWSSecretAccessKey=url-aws-secret&note=arbitrary-secret";
+	try {
+		const provider = createGitWorktreeProvider(join(root, "worktrees"), "khala-test/");
+		await assert.rejects(
+			provider.supersedePullRequest(previousUrl, "https://github.com/pesap/khala/pull/17"),
+			(error) => {
+				assert.match(error.message, /gh pr view/);
+				assert.match(error.message, /AWSAccessKeyId=\[REDACTED\]/i);
+				assert.match(error.message, /accessKeyId=\[REDACTED\]/i);
+				assert.match(error.message, /AWSSecretAccessKey=\[REDACTED\]/i);
+				assert.match(error.message, /note=arbitrary-secret/);
+				assert.match(error.message, /stderr: GitHub rejected/);
+				assert.match(error.message, /stdout: response/);
+				assert.match(error.message, /note=stderr-context/);
+				assert.match(error.message, /note=stdout-context/);
+				assert.doesNotMatch(
+					error.message,
+					/url-aws-access|url-access|url-aws-secret|stderr-access|stderr-secret|stdout-access|stdout-secret/,
+				);
+				assert.ok(error.message.length < 6000);
+				return true;
+			},
+		);
+	} finally {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
