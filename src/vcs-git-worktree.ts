@@ -19,6 +19,21 @@ const MAX_COMPONENT_LENGTH = 255;
 const MAX_CHILD_PROCESS_ERROR_MESSAGE_LENGTH = 512;
 const MAX_CHILD_PROCESS_OUTPUT_LENGTH = 2048;
 const FULL_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
+const CREDENTIAL_KEY_PATTERN = String.raw`(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|awssecuritytoken|securitytoken|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))`;
+const CREDENTIAL_VALUE_PATTERN = String.raw`[^\s,;&#"'()[\]{}]+`;
+const AUTHORIZATION_CREDENTIAL_PATTERN = new RegExp(
+	String.raw`(\bauthorization\b[ \t]*(?::|=)?[ \t]*)(Basic|Bearer)[ \t]+${CREDENTIAL_VALUE_PATTERN}`,
+	"gi",
+);
+const BEARER_CREDENTIAL_PATTERN = new RegExp(String.raw`(\bBearer[ \t]+)${CREDENTIAL_VALUE_PATTERN}`, "gi");
+const CREDENTIAL_PAIR_PATTERN = new RegExp(
+	String.raw`(\b${CREDENTIAL_KEY_PATTERN}\b[ \t]*(?:[:=][ \t]*|[ \t]+))(?!Bearer\b|Basic\b)${CREDENTIAL_VALUE_PATTERN}`,
+	"gi",
+);
+const CREDENTIAL_ARGUMENT_KEY_PATTERN = new RegExp(`^-{0,2}${CREDENTIAL_KEY_PATTERN}$`, "i");
+const INLINE_ARGUMENT_PATTERN = /^([^=\s]+)=(.*)$/;
+const AUTHORIZATION_ARGUMENT_KEY_PATTERN = /^-{0,2}authorization$/i;
+const AUTHORIZATION_SCHEME_PATTERN = /^(?:Basic|Bearer)$/i;
 // Git worktrees are created from the same resolved PR target used by review preparation, so caller-only commits cannot leak into the PR.
 class GitWorktreeProvider extends VCSProvider {
 	readonly #worktreeRoot: string;
@@ -353,14 +368,78 @@ function processOutput(error: Error, stream: "stdout" | "stderr"): string {
 }
 
 function redactGitDiagnostic(value: string): string {
-	// Match credential-shaped keys, including URL query parameters, without attempting arbitrary secret detection.
+	// Match credential-shaped keys, including separated command arguments and URL query parameters, without attempting arbitrary secret detection.
 	return value
-		.replace(/(\bBearer\s+)[^\s,;&#"'()[\]{}]+/gi, "$1[REDACTED]")
-		.replace(
-			/(\b(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|awssecuritytoken|securitytoken|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))\s*[:=]\s*)(?!Bearer\b)[^\s,;&#"'()[\]{}]+/gi,
-			"$1[REDACTED]",
-		)
+		.replace(AUTHORIZATION_CREDENTIAL_PATTERN, "$1$2 [REDACTED]")
+		.replace(BEARER_CREDENTIAL_PATTERN, "$1[REDACTED]")
+		.replace(CREDENTIAL_PAIR_PATTERN, "$1[REDACTED]")
 		.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
+}
+
+function isCredentialArgumentKey(value: string): boolean {
+	return CREDENTIAL_ARGUMENT_KEY_PATTERN.test(value);
+}
+
+type RedactedArgument = Readonly<{ values: readonly string[]; consumed: number }>;
+
+function redactInlineArgument(
+	key: string,
+	value: string,
+	following: string | undefined,
+	maxLength: number,
+): RedactedArgument {
+	const safeKey = boundGitDiagnostic(key, maxLength);
+	const safeValue = boundGitDiagnostic(value, maxLength);
+	if (!(AUTHORIZATION_ARGUMENT_KEY_PATTERN.test(key) && AUTHORIZATION_SCHEME_PATTERN.test(value))) {
+		return { values: [`${safeKey}=[REDACTED]`], consumed: 0 };
+	}
+	if (following === undefined || following.startsWith("-")) {
+		return { values: [`${safeKey}=${safeValue}`], consumed: 0 };
+	}
+	return { values: [`${safeKey}=${safeValue}`, "[REDACTED]"], consumed: 1 };
+}
+
+function redactSeparatedArgument(
+	args: readonly string[],
+	index: number,
+	key: string,
+	maxLength: number,
+): RedactedArgument {
+	const safeKey = boundGitDiagnostic(key, maxLength);
+	const next = args[index + 1];
+	if (next === undefined || next.startsWith("-")) {
+		return { values: [safeKey], consumed: 0 };
+	}
+	if (!(AUTHORIZATION_ARGUMENT_KEY_PATTERN.test(key) && AUTHORIZATION_SCHEME_PATTERN.test(next))) {
+		return { values: [safeKey, "[REDACTED]"], consumed: 1 };
+	}
+	const following = args[index + 2];
+	if (following === undefined) {
+		return { values: [safeKey, boundGitDiagnostic(next, maxLength)], consumed: 1 };
+	}
+	return { values: [safeKey, boundGitDiagnostic(next, maxLength), "[REDACTED]"], consumed: 2 };
+}
+
+function redactGitArguments(args: readonly string[], maxLength: number): string {
+	const redactedArgs: string[] = [];
+	for (let index = 0; index < args.length; index += 1) {
+		const argument = args[index] ?? "";
+		const inlineValue = INLINE_ARGUMENT_PATTERN.exec(argument);
+		const key = inlineValue?.[1] ?? argument;
+		if (isCredentialArgumentKey(key)) {
+			let result: RedactedArgument;
+			if (inlineValue === null) {
+				result = redactSeparatedArgument(args, index, key, maxLength);
+			} else {
+				result = redactInlineArgument(key, inlineValue[2] ?? "", args[index + 1], maxLength);
+			}
+			redactedArgs.push(...result.values);
+			index += result.consumed;
+		} else {
+			redactedArgs.push(boundGitDiagnostic(argument, maxLength));
+		}
+	}
+	return redactedArgs.join(" ");
 }
 
 function boundGitDiagnostic(value: string, maxLength: number): string {
@@ -382,7 +461,7 @@ function childProcessFailureDiagnostic(commandName: string, args: string[], erro
 	if (stdout.length > 0) {
 		output.push(`stdout: ${stdout}`);
 	}
-	const command = args.map((arg) => boundGitDiagnostic(arg, MAX_CHILD_PROCESS_OUTPUT_LENGTH)).join(" ");
+	const command = redactGitArguments(args, MAX_CHILD_PROCESS_OUTPUT_LENGTH);
 	let diagnostic = `${commandName} ${command} failed: ${message}`;
 	if (output.length > 0) {
 		diagnostic += `\n${output.join("\n")}`;
