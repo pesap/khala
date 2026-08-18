@@ -16,6 +16,8 @@ const PULL_REQUEST_NUMBER_PATTERN = /\/pull\/(\d+)(?:$|[?#])/;
 // PATH_MAX is 4096 on Linux; most filesystems cap path components at 255 bytes.
 const MAX_PATH_LENGTH = 4096;
 const MAX_COMPONENT_LENGTH = 255;
+const MAX_GIT_ERROR_MESSAGE_LENGTH = 512;
+const MAX_GIT_OUTPUT_LENGTH = 2048;
 const FULL_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
 // Git worktrees are created from the same resolved PR target used by review preparation, so caller-only commits cannot leak into the PR.
 class GitWorktreeProvider extends VCSProvider {
@@ -335,6 +337,53 @@ async function findPullRequest(sourceBranch: string): Promise<PullRequestLookup 
 	return { url: record.url };
 }
 
+type GitProcessError = Error & Readonly<{ stdout?: unknown; stderr?: unknown }>;
+
+function processOutput(error: Error, stream: "stdout" | "stderr"): string {
+	const value = (error as GitProcessError)[stream];
+	if (typeof value === "string") {
+		return value;
+	}
+	if (Buffer.isBuffer(value)) {
+		return value.toString("utf8");
+	}
+	return "";
+}
+
+function redactGitDiagnostic(value: string): string {
+	return value
+		.replace(/(\b(?:password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
+		.replace(/(\bBearer\s+)[^\s]+/gi, "$1[REDACTED]")
+		.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
+}
+
+function boundGitDiagnostic(value: string, maxLength: number): string {
+	const diagnostic = redactGitDiagnostic(value).trim();
+	if (diagnostic.length <= maxLength) {
+		return diagnostic;
+	}
+	return `${diagnostic.slice(0, maxLength)}… [truncated]`;
+}
+
+function gitFailureDiagnostic(error: Error, args: string[]): string {
+	const message = boundGitDiagnostic(error.message, MAX_GIT_ERROR_MESSAGE_LENGTH);
+	const stderr = boundGitDiagnostic(processOutput(error, "stderr"), MAX_GIT_OUTPUT_LENGTH);
+	const stdout = boundGitDiagnostic(processOutput(error, "stdout"), MAX_GIT_OUTPUT_LENGTH);
+	const output: string[] = [];
+	if (stderr.length > 0) {
+		output.push(`stderr: ${stderr}`);
+	}
+	if (stdout.length > 0) {
+		output.push(`stdout: ${stdout}`);
+	}
+	const command = args.map((arg) => boundGitDiagnostic(arg, MAX_GIT_OUTPUT_LENGTH)).join(" ");
+	let diagnostic = `git ${command} failed: ${message}`;
+	if (output.length > 0) {
+		diagnostic += `\n${output.join("\n")}`;
+	}
+	return diagnostic;
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
 	try {
 		// Git is invoked as an executable with argv, so this provider does not depend on Bash syntax either.
@@ -344,7 +393,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
 		if (error instanceof Error) {
 			// The package targets ES2020, whose TypeScript lib omits ErrorOptions.cause.
 			// biome-ignore lint/style/useErrorCause: Preserve ES2020 compatibility.
-			throw new Error(`git ${args.join(" ")} failed: ${error.message}`);
+			throw new Error(gitFailureDiagnostic(error, args));
 		}
 		throw error;
 	}
