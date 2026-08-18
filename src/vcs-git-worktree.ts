@@ -351,9 +351,13 @@ function processOutput(error: Error, stream: "stdout" | "stderr"): string {
 }
 
 function redactGitDiagnostic(value: string): string {
+	// Match credential-shaped keys, including URL query parameters, without attempting arbitrary secret detection.
 	return value
-		.replace(/(\b(?:password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
-		.replace(/(\bBearer\s+)[^\s]+/gi, "$1[REDACTED]")
+		.replace(/(\bBearer\s+)[^\s,;&#"'()[\]{}]+/gi, "$1[REDACTED]")
+		.replace(
+			/(\b(?:password|passwd|credential(?:s)?|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))\s*[:=]\s*)(?!Bearer\b)[^\s,;&#"'()[\]{}]+/gi,
+			"$1[REDACTED]",
+		)
 		.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
 }
 
