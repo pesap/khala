@@ -57,10 +57,14 @@ synthesizes a Signal or silently prompts again.
 
 ## Coordination and User Priority override
 
-Dependency decisions require current primary and related Missions plus the
-selected upstream Execution. The waiting primary Execution may be absent before
-launch. An active dependency hold blocks launch, Retry, and recovery until the
-upstream Finish, publication, and exact head are verified.
+Coordination identity is relation-specific. Dependency decisions require
+current primary and related Missions plus the selected upstream Execution; the
+waiting primary Execution may be absent before launch. A peer-conflict decision
+requires the two current Work/Mission identities and may omit Execution
+identities when neither Mission has launched; any supplied peer-conflict
+Execution identity must be the exact current Execution. An active dependency
+hold blocks launch, Retry, and recovery until the upstream Finish, publication,
+and exact head are verified.
 
 A User Priority is written from the ordinary User session with
 `khala_prioritize_work`. It binds to the exact causal persisted User turn

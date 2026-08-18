@@ -452,7 +452,7 @@ async function wakeConclave(request: WakeRequest): Promise<void> {
 				"If the Work has no context, first check the Archive for relevant learning.",
 				"If no sufficient learning exists, call khala_launch_observer with the queued workId.",
 				"If the Work is valid and has sufficient context or learning, call khala_admit_work, then call khala_launch_execution with mode materialize before comparing concurrent Work.",
-				"Read every current Mission and active Execution as structured Archive facts before launch. Compare objective, context, scope, acceptance, constraints, plan, validation, named modules, APIs, contracts, and generated artifacts. Use khala_coordinate_work for dependency or peer conflict; independent Work requires no coordination record. Only then call khala_launch_execution with mode launch.",
+				"Read every current Mission and active Execution as structured Archive facts before launch. Compare objective, context, scope, acceptance, constraints, plan, validation, named modules, APIs, contracts, and generated artifacts. Use khala_coordinate_work for dependency or peer conflict; independent Work requires no coordination record. Dependency decisions require the selected upstream Execution; a peer conflict between prelaunch Missions may use only current Work/Mission identities, and any supplied peer-conflict Execution identity must be exact. Only then call khala_launch_execution with mode launch.",
 				"If the authoritative submission is already admitted, skip admission and recover or launch its current Mission; if it is reviewing, wait for the current Observer attempt.",
 				"If it is invalid or stale, do not launch an agent; record the reason in your response.",
 			].join("\n");

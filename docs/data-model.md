@@ -116,11 +116,14 @@ for later records.
 ## Coordination and Intervention records
 
 **Coordination** records append-only phases for dependency or peer conflict,
-including the two current Missions, selected priority, optional Execution
-identities, exact remote/branch/upstream head, classification, reason, User
-entry and priority when it is a User Priority override,
+including the two current Missions, selected priority, relation-specific
+Execution identities, exact remote/branch/upstream head, classification,
+reason, User entry and priority when it is a User Priority override,
 release/invalidation evidence, and causal resolution. A dependency hold may omit the waiting primary Execution but
-must identify the selected upstream Execution. Direct invalidation carries an
+must identify the selected upstream Execution. A peer-conflict decision may
+omit Execution identities when neither current Mission has launched, and
+any supplied peer-conflict Execution identity must be exact. Direct invalidation
+carries an
 exact remote observation; transitive invalidation instead cites the preceding
 upstream invalidation and omits unobserved replacement/ref evidence. A null
 replacement means the exact ref was observed missing. The upstream base is the

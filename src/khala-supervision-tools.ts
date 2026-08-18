@@ -184,9 +184,11 @@ const COORDINATE_PARAMETERS = Type.Object({
 	executionId: Type.Optional(Type.String()),
 	relatedWorkId: Type.String(),
 	relatedMissionId: Type.String(),
-	// The related side is the selected upstream for dependency decisions. The
-	// primary execution remains optional for prelaunch waiting Work.
-	relatedExecutionId: Type.String(),
+	// Dependency decisions require the related selected upstream Execution.
+	// Peer conflicts may compare two prelaunch Missions using Work/Mission
+	// identities only; Execution identities remain optional when either side has
+	// not launched.
+	relatedExecutionId: Type.Optional(Type.String()),
 	selectedWorkId: Type.String(),
 	selectedMissionId: Type.String(),
 	selectedExecutionId: Type.Optional(Type.String()),
@@ -255,7 +257,7 @@ function registerKhalaSupervisionTools(pi: ExtensionAPI, options: SupervisionToo
 		name: "khala_coordinate_work",
 		label: "Coordinate Khala Work",
 		description:
-			"Record one Conclave autonomous dependency or peer-conflict decision. Action kind: decision=coordinate.",
+			"Record one Conclave autonomous dependency or peer-conflict decision. Dependency decisions require the selected upstream Execution; peer conflicts may use only current Work/Mission identities before launch, and any supplied Execution identity must be exact. Action kind: decision=coordinate.",
 		promptSnippet: "Record a structured Conclave Work coordination decision",
 		executionMode: "sequential",
 		parameters: COORDINATE_PARAMETERS,

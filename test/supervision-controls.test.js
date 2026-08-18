@@ -284,12 +284,92 @@ function appendSignal(root, fixture, signalId, kind) {
   });
 }
 
+test("peer-conflict Coordination records current Mission identities before either side has an Execution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-prelaunch-"));
+  try {
+    const assignment = {
+      title: "Peer-conflict fixture",
+      objective: "Compare concurrent Work",
+      context: "Controlled fixture",
+      scope: "Only the assigned fixture",
+      acceptanceCriteria: ["The fixture is validated"],
+      constraints: ["Do not change the fixture contract"],
+      plan: ["Run the fixture"],
+      validation: ["Inspect the persisted result"],
+    };
+    appendMissionOnly(root, "primary", assignment);
+    appendMissionOnly(root, "related", assignment);
+    const decision = {
+      actionId: "coordinate-peer-conflict-prelaunch",
+      coordinationId: "coordination-peer-conflict-prelaunch",
+      phase: "decision",
+      relation: "peer-conflict",
+      workId: "work-primary",
+      missionId: "mission-primary",
+      relatedWorkId: "work-related",
+      relatedMissionId: "mission-related",
+      selectedWorkId: "work-primary",
+      selectedMissionId: "mission-primary",
+      reason: "Both current Missions modify the same contract and neither side has launched.",
+    };
+    const result = await recordCoordination(
+      decision,
+      {
+        cwd: root,
+        sessionManager: {
+          getBranch: () => [{ type: "custom", customType: "khala-conclave", data: {} }],
+          getSessionFile: () => join(root, "conclave-session.jsonl"),
+        },
+        isProjectTrusted: () => false,
+      },
+      { isDedicatedConclaveSession: () => true },
+    );
+    assert.equal(result.details.relation, "peer-conflict");
+    assert.equal(result.details.executionId, undefined);
+    assert.equal(result.details.relatedExecutionId, undefined);
+    assert.equal(result.details.selectedExecutionId, undefined);
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dependency Coordination still requires the selected upstream Execution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-dependency-execution-"));
+  try {
+    const fixture = createFixture(root, "dependency-missing");
+    appendSide(root, "related", fixture.assignment);
+    await assert.rejects(
+      () => recordCoordination({
+        actionId: "coordinate-dependency-missing-execution",
+        coordinationId: "coordination-dependency-missing-execution",
+        phase: "decision",
+        relation: "dependency",
+        workId: fixture.workId,
+        missionId: fixture.missionId,
+        executionId: fixture.executionId,
+        relatedWorkId: "work-related",
+        relatedMissionId: "mission-related",
+        selectedWorkId: "work-related",
+        selectedMissionId: "mission-related",
+        reason: "The primary Work must wait for the related Work.",
+        remote: "origin",
+        branch: "feature/related",
+      }, fixture.context, { isDedicatedConclaveSession: () => true }),
+      /selected upstream Execution/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("dependency Coordination records exact upstream identity through the decision-only schema", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-coordinate-"));
   try {
     assert.equal(COORDINATE_PARAMETERS.properties.phase.const, "decision");
     assert.equal("userEntryId" in COORDINATE_PARAMETERS.properties, false);
     assert.equal("priorityId" in COORDINATE_PARAMETERS.properties, false);
+    assert.equal(COORDINATE_PARAMETERS.required.includes("relatedExecutionId"), false);
 
     const fixture = createFixture(root, "primary");
     appendSide(root, "related", fixture.assignment);
@@ -440,6 +520,15 @@ function steerParams(fixture, actionKind) {
   };
 }
 
+
+function appendMissionOnly(root, suffix, assignment) {
+  const workId = `work-${suffix}`;
+  const missionId = `mission-${suffix}`;
+  const mandateId = `mandate-${suffix}`;
+  const participantId = `executor:execution-${suffix}`;
+  appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId, payload: { mandateId, workId, revision: 1, sourceSubmissionRecordId: `submission-${suffix}`, terms: assignment, admittedByParticipantId: "conclave:test", admittedAt: NOW } });
+  appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId, payload: { missionId, workId, mandateId, assignment, assignedParticipantId: participantId, createdAt: NOW } });
+}
 
 function appendSide(root, suffix, assignment) {
   const workId = `work-${suffix}`;

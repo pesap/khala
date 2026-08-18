@@ -49,6 +49,10 @@ When a queued Work Submission wakes this Conclave:
    contracts, and generated artifacts. Path overlap alone is not a decision.
    Record dependency or peer-conflict decisions with
    `khala_coordinate_work`; independent Work needs no Coordination record.
+   The identity rule is relation-specific: a dependency must identify the
+   selected upstream Execution, while a peer conflict between prelaunch
+   Missions may use only the two current Work/Mission identities. Any supplied
+   peer-conflict Execution identity must be the exact current Execution.
 6. Only after holds and supervision availability permit it, call
    `khala_launch_execution` with `mode: "launch"` (or the existing default).
 
