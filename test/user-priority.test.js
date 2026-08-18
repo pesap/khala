@@ -77,6 +77,43 @@ function appendSide(projectPath, suffix, workId) {
 	return { workId, missionId, executionId };
 }
 
+function appendPrelaunchSide(projectPath, suffix, workId) {
+	const missionId = `mission-${suffix}`;
+	const mandateId = `mandate-${suffix}`;
+	mkdirSync(projectPath, { recursive: true });
+	appendArchiveRecord(projectPath, { schemaVersion: 2, type: "mandate", workId, payload: { mandateId, workId, revision: 1, sourceSubmissionRecordId: `submission-${suffix}`, terms: assignment, admittedByParticipantId: "conclave:test", admittedAt: NOW } }, false);
+	appendArchiveRecord(projectPath, { schemaVersion: 2, type: "mission", workId, payload: { missionId, workId, mandateId, assignment, assignedParticipantId: `executor:execution-${suffix}`, createdAt: NOW } }, false);
+	return { workId, missionId, executionId: `execution-${suffix}` };
+}
+
+function appendActiveExecution(projectPath, side) {
+	const sessionPath = join(projectPath, `${side.executionId}.jsonl`);
+	writeFileSync(sessionPath, `{"type":"session","version":3,"id":"${side.executionId}"}\n`);
+	appendArchiveRecord(projectPath, { schemaVersion: 2, type: "execution", workId: side.workId, executionId: side.executionId, payload: { executionId: side.executionId, workId: side.workId, executorName: "Fixture", kind: "executor", participantId: `executor:${side.executionId}`, purpose: { kind: "mission", missionId: side.missionId }, missionId: side.missionId, projectPath, sandboxPath: projectPath, launcher: "headless-rpc", piSessionId: `pi-${side.executionId}`, sessionPath, promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "running", startedAt: NOW } }, false);
+	return side;
+}
+
+function appendPrelaunchDecisionCoordination(projectPath, coordinationId, a, b) {
+	appendArchiveRecord(projectPath, {
+		schemaVersion: 2,
+		type: "coordination",
+		workId: a.workId,
+		payload: {
+			coordinationId,
+			actionId: `action-${coordinationId}`,
+			phase: "decision",
+			relation: "peer-conflict",
+			workId: a.workId,
+			missionId: a.missionId,
+			selectedWorkId: a.workId,
+			selectedMissionId: a.missionId,
+			relatedWorkId: b.workId,
+			relatedMissionId: b.missionId,
+			reason: "Both current Missions overlap before either side launches.",
+		},
+	}, false);
+}
+
 function appendDecisionCoordination(projectPath, coordinationId, a, b) {
 	appendArchiveRecord(
 		projectPath,
@@ -345,6 +382,36 @@ runTest("the model rejects malformed User Priority records at the boundary", asy
 	assert.equal(isUserPriorityRecord({ ...record, priorityId: "priority-short" }), false);
 	assert.equal(isUserPriorityRecord({ ...record, reason: "   " }), false);
 	assert.equal(isUserPriorityRecord({ ...record, coordinationId: undefined }), false);
+});
+
+runTest("a User Priority resolves a newly active losing Execution from a prelaunch decision", async (projectPath) => {
+	const a = appendPrelaunchSide(projectPath, "prelaunch-a", "work-prelaunch-a");
+	const b = appendPrelaunchSide(projectPath, "prelaunch-b", "work-prelaunch-b");
+	appendPrelaunchDecisionCoordination(projectPath, "coord-prelaunch-active-loser", a, b);
+	const result = await submitUserPriority({ selectedWorkId: a.workId, reason: "A over B" }, userContext(projectPath, [userEntry("u-prelaunch", "ab"), assistantEntry("a-prelaunch", "u-prelaunch", "t-prelaunch")]), { wakeUserPriority: async () => {} }, "t-prelaunch");
+	appendActiveExecution(projectPath, b);
+	const runtime = stopRuntime();
+	const tools = new Map();
+	registerKhalaSupervisionTools(
+		{ registerTool: (tool) => tools.set(tool.name, tool) },
+		{ isDedicatedConclaveSession: () => true, getRuntime: (executionId) => (executionId === b.executionId ? runtime : undefined) },
+	);
+	const applied = await tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, conclaveContext(projectPath));
+	assert.equal(applied.details.relatedExecutionId, b.executionId);
+	assert.equal(runtime.received.length, 1);
+	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "intervention").length, 1);
+});
+
+runTest("a prelaunch User Priority with no active losing Execution keeps the no-stop enforcement path", async (projectPath) => {
+	const a = appendPrelaunchSide(projectPath, "prelaunch-no-active-a", "work-prelaunch-no-active-a");
+	const b = appendPrelaunchSide(projectPath, "prelaunch-no-active-b", "work-prelaunch-no-active-b");
+	appendPrelaunchDecisionCoordination(projectPath, "coord-prelaunch-no-active", a, b);
+	const result = await submitUserPriority({ selectedWorkId: a.workId, reason: "A over B" }, userContext(projectPath, [userEntry("u-no-active", "ab"), assistantEntry("a-no-active", "u-no-active", "t-no-active")]), { wakeUserPriority: async () => {} }, "t-no-active");
+	const tools = supervisionTools();
+	const applied = await tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, conclaveContext(projectPath));
+	assert.equal(applied.details.relatedExecutionId, undefined);
+	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "intervention").length, 0);
+	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "user-priority-enforcement").at(-1).payload.phase, "enforced");
 });
 
 runTest("a true wake/apply applies the pending priority as a Coordination override without an assessment", async (projectPath, root) => {

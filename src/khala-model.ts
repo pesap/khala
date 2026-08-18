@@ -1920,19 +1920,30 @@ function isMissionRecord(value: unknown): value is MissionRecord {
 	);
 }
 
-function coordinationReplayIdentity(record: KhalaArchiveRecord, payload: CoordinationRecord): string {
-	const sides = [
-		{
-			workId: payload.workId,
-			missionId: payload.missionId,
-			executionId: payload.executionId,
-		},
-		{
-			workId: payload.relatedWorkId,
-			missionId: payload.relatedMissionId,
-			executionId: payload.relatedExecutionId,
-		},
-	].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+function coordinationReplayIdentity(
+	record: KhalaArchiveRecord,
+	payload: CoordinationRecord,
+	includeExecutionIdentity = true,
+): string {
+	const primarySide: { workId: string; missionId: string; executionId?: string } = {
+		workId: payload.workId,
+		missionId: payload.missionId,
+	};
+	const relatedSide: { workId: string; missionId: string; executionId?: string } = {
+		workId: payload.relatedWorkId,
+		missionId: payload.relatedMissionId,
+	};
+	if (includeExecutionIdentity) {
+		if (payload.executionId !== undefined) {
+			primarySide.executionId = payload.executionId;
+		}
+		if (payload.relatedExecutionId !== undefined) {
+			relatedSide.executionId = payload.relatedExecutionId;
+		}
+	}
+	const sides = [primarySide, relatedSide].sort((left, right) =>
+		JSON.stringify(left).localeCompare(JSON.stringify(right)),
+	);
 	let upstream: Readonly<Record<string, string | undefined>> | undefined;
 	if (payload.relation === "dependency") {
 		upstream = {
@@ -1955,18 +1966,21 @@ function samePriorityOverrideMissionBindings(
 	},
 ): boolean {
 	let selectedMissionId = decision.relatedMissionId;
-	let selectedExecutionId = decision.relatedExecutionId;
+	let selectedExecutionId = override.relatedExecutionId;
 	if (priority.selectedWorkId === decision.workId) {
 		selectedMissionId = decision.missionId;
-		selectedExecutionId = decision.executionId;
+		selectedExecutionId = override.executionId;
 	}
+	const primaryExecutionMatches = decision.executionId === undefined || override.executionId === decision.executionId;
+	const relatedExecutionMatches =
+		decision.relatedExecutionId === undefined || override.relatedExecutionId === decision.relatedExecutionId;
 	return (
 		override.workId === decision.workId &&
 		override.missionId === decision.missionId &&
-		override.executionId === decision.executionId &&
+		primaryExecutionMatches &&
 		override.relatedWorkId === decision.relatedWorkId &&
 		override.relatedMissionId === decision.relatedMissionId &&
-		override.relatedExecutionId === decision.relatedExecutionId &&
+		relatedExecutionMatches &&
 		override.selectedWorkId === priority.selectedWorkId &&
 		override.selectedMissionId === selectedMissionId &&
 		override.selectedExecutionId === selectedExecutionId
@@ -2022,7 +2036,7 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 	const actions = new Map<string, string>();
 	const coordinationGroups = new Map<
 		string,
-		{ decision: boolean; released: boolean; resolved: boolean; identity: string }
+		{ decision: boolean; released: boolean; resolved: boolean; identity: string; missionIdentity: string }
 	>();
 	const interventionGroups = new Map<string, { issuance: boolean; outcome: boolean; identity: string }>();
 	const coordinationInvalidations = new Map<string, CoordinationRecord>();
@@ -2301,10 +2315,15 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			actions.set(record.payload.actionId, action);
 			const identity = coordinationReplayIdentity(record, record.payload);
 			let group = coordinationGroups.get(record.payload.coordinationId);
+			const missionIdentity = coordinationReplayIdentity(record, record.payload, false);
 			if (group === undefined) {
-				group = { decision: false, released: false, resolved: false, identity };
+				group = { decision: false, released: false, resolved: false, identity, missionIdentity };
 				coordinationGroups.set(record.payload.coordinationId, group);
-			} else if (group.identity !== identity) {
+			} else if (
+				group.identity !== identity &&
+				// An override snapshots current Execution identities; its Mission pair remains decision-bound.
+				!(record.payload.phase === "override" && group.missionIdentity === missionIdentity)
+			) {
 				throw new Error(`Coordination ${record.payload.coordinationId} changed its identity bindings.`);
 			}
 			if (record.payload.phase === "decision") {

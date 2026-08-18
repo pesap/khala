@@ -334,6 +334,52 @@ test("peer-conflict Coordination records current Mission identities before eithe
   }
 });
 
+test("peer-conflict Coordination replay survives a later active Execution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-replay-after-launch-"));
+  try {
+    const assignment = {
+      title: "Peer-conflict replay fixture",
+      objective: "Compare concurrent Work",
+      context: "Controlled fixture",
+      scope: "Only the assigned fixture",
+      acceptanceCriteria: ["The fixture is validated"],
+      constraints: ["Do not change the fixture contract"],
+      plan: ["Run the fixture"],
+      validation: ["Inspect the persisted result"],
+    };
+    appendMissionOnly(root, "replay-primary", assignment);
+    appendMissionOnly(root, "replay-related", assignment);
+    const decision = {
+      actionId: "coordinate-peer-conflict-replay-after-launch",
+      coordinationId: "coordination-peer-conflict-replay-after-launch",
+      phase: "decision",
+      relation: "peer-conflict",
+      workId: "work-replay-primary",
+      missionId: "mission-replay-primary",
+      relatedWorkId: "work-replay-related",
+      relatedMissionId: "mission-replay-related",
+      selectedWorkId: "work-replay-primary",
+      selectedMissionId: "mission-replay-primary",
+      reason: "Both current Missions modify the same contract before either side launches.",
+    };
+    const context = {
+      cwd: root,
+      sessionManager: {
+        getBranch: () => [{ type: "custom", customType: "khala-conclave", data: {} }],
+        getSessionFile: () => join(root, "conclave-session.jsonl"),
+      },
+      isProjectTrusted: () => false,
+    };
+    const first = await recordCoordination(decision, context, { isDedicatedConclaveSession: () => true });
+    appendActiveExecution(root, "replay-related", assignment);
+    const replay = await recordCoordination(decision, context, { isDedicatedConclaveSession: () => true });
+    assert.equal(replay.details.coordinationId, first.details.coordinationId);
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("peer-conflict Coordination rejects an omitted related active Execution identity", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-peer-conflict-related-required-"));
   try {
@@ -675,6 +721,16 @@ function appendMissionOnly(root, suffix, assignment) {
   const participantId = `executor:execution-${suffix}`;
   appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId, payload: { mandateId, workId, revision: 1, sourceSubmissionRecordId: `submission-${suffix}`, terms: assignment, admittedByParticipantId: "conclave:test", admittedAt: NOW } });
   appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId, payload: { missionId, workId, mandateId, assignment, assignedParticipantId: participantId, createdAt: NOW } });
+}
+
+function appendActiveExecution(root, suffix, assignment) {
+  const workId = `work-${suffix}`;
+  const missionId = `mission-${suffix}`;
+  const executionId = `execution-${suffix}`;
+  const participantId = `executor:${executionId}`;
+  const sessionPath = join(root, `${executionId}.jsonl`);
+  writeFileSync(sessionPath, `{"type":"session","version":3,"id":"${executionId}","cwd":"${root}"}\n`);
+  appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId, executionId, payload: { executionId, workId, executorName: "Fixture", kind: "executor", participantId, purpose: { kind: "mission", missionId }, missionId, projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: `pi-${suffix}`, sessionPath, promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "running", startedAt: NOW } });
 }
 
 function appendSide(root, suffix, assignment) {

@@ -489,58 +489,26 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 	assertConclave(context, options);
 	const projectTrusted = isProjectTrusted(context);
 	assertActionRecordKind(context, params.actionId, "coordination");
-	if (params.assessmentId !== undefined) {
-		validateAssessmentTarget(params as ActionTargetInput, context, options, "coordinate");
-	}
-	let target: ReturnType<typeof validateMissionExecution> | undefined;
-	if (params.executionId !== undefined && !(params.relation === "peer-conflict" && params.assessmentId === undefined)) {
-		target = validateMissionExecution(context, params.workId, params.missionId, params.executionId);
-	}
-	if (params.relation === "peer-conflict" && params.executionId !== undefined && target === undefined) {
-		const primaryMission = currentMission(context.cwd, params.workId, params.missionId, projectTrusted);
-		const primaryExecution = currentExecution(
-			context.cwd,
-			params.workId,
-			params.missionId,
-			params.executionId,
-			projectTrusted,
-		);
-		if (primaryExecution.status === ExecutorStatus.running) {
-			validateMissionExecution(context, params.workId, params.missionId, params.executionId);
-		} else if (
-			primaryExecution.status !== ExecutorStatus.starting ||
-			primaryExecution.kind !== "executor" ||
-			primaryExecution.participantId !== primaryMission.mission.assignedParticipantId
-		) {
-			throw new Error("Supervision target is not a current starting or running Executor.");
+	const existingReplay = readCoordinationByAction(context.cwd, params.actionId, projectTrusted);
+	if (existingReplay !== undefined) {
+		if (!sameCoordinationReplay(existingReplay.payload, params)) {
+			throw new Error(`Coordination action ${params.actionId} has conflicting evidence.`);
 		}
+		const existingRecord = listArchiveRecords(context.cwd, projectTrusted).find(
+			(record) =>
+				record.type === "coordination" &&
+				typeof record.payload === "object" &&
+				record.payload !== null &&
+				(record.payload as { actionId?: unknown }).actionId === params.actionId,
+		);
+		if (existingRecord === undefined) throw new Error("Coordination replay evidence disappeared.");
+		return toolResult(`Coordination ${existingReplay.payload.coordinationId} replay reused.`, existingRecord.payload);
 	}
 	if (params.relation === "dependency" && params.relatedExecutionId === undefined) {
 		throw new Error("A dependency Coordination requires the selected upstream Execution.");
 	}
-	const relatedMission = currentMission(context.cwd, params.relatedWorkId, params.relatedMissionId, projectTrusted);
-	const relatedExecution =
-		params.relatedExecutionId === undefined
-			? undefined
-			: currentExecution(
-					context.cwd,
-					params.relatedWorkId,
-					params.relatedMissionId,
-					params.relatedExecutionId,
-					projectTrusted,
-				);
-	if (
-		relatedExecution !== undefined &&
-		relatedExecution.participantId !== relatedMission.mission.assignedParticipantId
-	) {
-		throw new Error("Related Execution is not the assigned Mission Executor.");
-	}
 	if (params.workId === params.relatedWorkId && params.missionId === params.relatedMissionId) {
 		throw new Error("Coordination requires two distinct Work/Mission identities.");
-	}
-	if (params.relation === "peer-conflict") {
-		currentMission(context.cwd, params.workId, params.missionId, projectTrusted);
-		validatePeerConflictExecutionIdentities(context.cwd, params, projectTrusted);
 	}
 	const reason = boundedReason(params.reason, "Coordination reason");
 	if (params.relation === "dependency") {
@@ -598,15 +566,7 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 		...(params.branch === undefined ? {} : { branch: params.branch.trim() }),
 		...(params.classification === undefined ? {} : { classification: params.classification }),
 	};
-	const actionStart =
-		target === undefined || params.assessmentId === undefined
-			? undefined
-			: reserveActionStart(
-					context,
-					params as ActionTargetInput,
-					params.phase === "decision" ? "coordinate" : "coordinate-override",
-					target,
-				);
+	let actionStart: ActionStart | undefined;
 	const archiveRecord = withArchiveLock(context.cwd, projectTrusted, () => {
 		const lockedExisting = readCoordinationByAction(context.cwd, params.actionId, projectTrusted);
 		if (lockedExisting !== undefined) {
@@ -623,7 +583,35 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 			}
 			throw new Error(`Coordination action ${params.actionId} has conflicting evidence.`);
 		}
+		if (params.assessmentId !== undefined) {
+			validateAssessmentTarget(params as ActionTargetInput, context, options, "coordinate");
+		}
+		let target: ReturnType<typeof validateMissionExecution> | undefined;
+		if (
+			params.executionId !== undefined &&
+			!(params.relation === "peer-conflict" && params.assessmentId === undefined)
+		) {
+			target = validateMissionExecution(context, params.workId, params.missionId, params.executionId);
+		}
 		const primaryMission = currentMission(context.cwd, params.workId, params.missionId, projectTrusted);
+		if (params.relation === "peer-conflict" && params.executionId !== undefined && target === undefined) {
+			const primaryExecution = currentExecution(
+				context.cwd,
+				params.workId,
+				params.missionId,
+				params.executionId,
+				projectTrusted,
+			);
+			if (primaryExecution.status === ExecutorStatus.running) {
+				validateMissionExecution(context, params.workId, params.missionId, params.executionId);
+			} else if (
+				primaryExecution.status !== ExecutorStatus.starting ||
+				primaryExecution.kind !== "executor" ||
+				primaryExecution.participantId !== primaryMission.mission.assignedParticipantId
+			) {
+				throw new Error("Supervision target is not a current starting or running Executor.");
+			}
+		}
 		const lockedRelatedMission = currentMission(
 			context.cwd,
 			params.relatedWorkId,
@@ -647,19 +635,19 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 				throw new Error("Related Execution is not the assigned current Mission Executor.");
 			}
 		}
-		if (target !== undefined) {
-			const lockedTarget = validateMissionExecution(
+		if (
+			target !== undefined &&
+			(target.mission.missionId !== primaryMission.mission.missionId || target.execution.workId !== params.workId)
+		) {
+			throw new Error("Coordination primary Execution does not match the current primary Mission.");
+		}
+		if (target !== undefined && params.assessmentId !== undefined) {
+			actionStart = reserveActionStart(
 				context,
-				params.workId,
-				params.missionId,
-				params.executionId as string,
+				params as ActionTargetInput,
+				params.phase === "decision" ? "coordinate" : "coordinate-override",
+				target,
 			);
-			if (
-				lockedTarget.mission.missionId !== primaryMission.mission.missionId ||
-				lockedTarget.execution.workId !== params.workId
-			) {
-				throw new Error("Coordination primary Execution does not match the current primary Mission.");
-			}
 		}
 		validateProspectiveCoordinationGraph(listCoordinationRecords(context.cwd, projectTrusted), coordination);
 		return coordination.executionId === undefined
@@ -1557,17 +1545,22 @@ async function applyUserPriority(
 			throw new Error(`User Priority ${priorityId} targets a stale Mission; dispose it instead.`);
 		}
 		if (appliedOverride !== undefined) {
-			return { kind: "replay" as const, details: appliedOverride, record, decision };
+			return { kind: "replay" as const, details: appliedOverride, record, decision, override: appliedOverride };
 		}
+		const primaryExecution = activeExecutionForMission(
+			context.cwd,
+			decision.workId,
+			decision.missionId,
+			projectTrusted,
+		);
+		const relatedExecution = activeExecutionForMission(
+			context.cwd,
+			decision.relatedWorkId,
+			decision.relatedMissionId,
+			projectTrusted,
+		);
 		const selectedIsPrimary = record.selectedWorkId === decision.workId;
-		let selectedExecutionId: string | undefined;
-		if (selectedIsPrimary) {
-			if (decision.executionId !== undefined) {
-				selectedExecutionId = decision.executionId;
-			}
-		} else if (decision.relatedExecutionId !== undefined) {
-			selectedExecutionId = decision.relatedExecutionId;
-		}
+		const selectedExecutionId = selectedIsPrimary ? primaryExecution?.executionId : relatedExecution?.executionId;
 		const override: CoordinationRecord = {
 			coordinationId: record.coordinationId,
 			actionId: record.actionId,
@@ -1575,10 +1568,10 @@ async function applyUserPriority(
 			relation: "peer-conflict",
 			workId: decision.workId,
 			missionId: decision.missionId,
-			...(decision.executionId === undefined ? {} : { executionId: decision.executionId }),
+			...(primaryExecution === undefined ? {} : { executionId: primaryExecution.executionId }),
 			relatedWorkId: decision.relatedWorkId,
 			relatedMissionId: decision.relatedMissionId,
-			...(decision.relatedExecutionId === undefined ? {} : { relatedExecutionId: decision.relatedExecutionId }),
+			...(relatedExecution === undefined ? {} : { relatedExecutionId: relatedExecution.executionId }),
 			selectedWorkId: record.selectedWorkId,
 			selectedMissionId: selectedIsPrimary ? decision.missionId : decision.relatedMissionId,
 			...(selectedExecutionId === undefined ? {} : { selectedExecutionId }),
@@ -1606,7 +1599,7 @@ async function applyUserPriority(
 	// returning, so a crash cannot turn an applied priority into a lost stop.
 	let stopError: string | undefined;
 	try {
-		await deliverPriorityStop(context, options, locked.record, locked.decision);
+		await deliverPriorityStop(context, options, locked.record, locked.override);
 	} catch (error) {
 		if (error instanceof Error) {
 			stopError = error.message;
