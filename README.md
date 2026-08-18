@@ -52,9 +52,9 @@ and makes the lifecycle visible and recoverable.
   launcher failures.
 - Recoverable lifecycle. Failed launches can return to the queue, and Retry
   creates a successor execution rather than rewriting history.
-- Observable by default. The minimum Khala monitor shows the Conclave, headless
-  Executors, Observer panes, states, Signals, sandboxes, supervision, and
-  recovery facts.
+- Observable by default. `/khala` or `Alt+K` shows a read-only attention summary
+  of review requests, stopped Work, and recovery needs without exposing runtime
+  internals.
 
 ## How it works
 
@@ -125,7 +125,7 @@ for an entity; the complete history remains available for review and recovery.
 - `/khala-triage` (also `/triage`) turns an issue into a WorkPacket, resolves uncertainty interactively, and sends approved Work to the Project Conclave.
 - A dedicated, persisted project Conclave reviews and admits submitted Work under Mandate revision one.
 - `/khala-demo` launches a three-lane lifecycle demonstration.
-- `/khala` or `Alt+K` opens the session monitor.
+- `/khala` or `Alt+K` shows the read-only project attention summary.
 - The bundled `pi-review` extension adds `/review` and `/end-review` for scoped code reviews.
 - The bundled `pi-clarify` extension rewrites rough prompts with `/clarify` or the `-clarify` message marker using the configured Conclave model.
 - Observers record repository Learning before an Executor starts when context is
@@ -165,10 +165,13 @@ session.
 | `khala_signal` | Submit evidence-bearing progress, blocked, or finished execution evidence. | Executor |
 | `khala_verdict` | Record a Continue, Retry, Finish, or Reject decision for a Signal. | Conclave |
 | `khala_steer_execution` | Send one bounded Mission-grounded correction or mandatory stop. | Conclave |
-| `khala_coordinate_work` | Record dependency, peer-conflict, or direct User override coordination. | Conclave |
+| `khala_coordinate_work` | Record Conclave autonomous dependency or peer-conflict decisions. | Conclave |
+| `khala_apply_user_priority` | Append the Coordination override for a pending User Priority. | Conclave |
+| `khala_dispose_user_priority` | Record the ignored disposition of a stale pending User Priority. | Conclave |
 | `khala_record_intervention_outcome` | Close one issued Intervention with observed evidence. | Conclave |
 | `khala_counsel` | Record source-backed advisory Counsel. | Preserver |
 | `khala_record_pull_request_review` | Record User review, merge, or closure evidence for a Pull Request. | User |
+| `khala_prioritize_work` | Record that selected Work proceeds before related Work in an active peer-conflict Coordination. | User |
 | `khala_record_work_outcome` | Record the durable acceptance statement after a verified Pull Request merge. | Conclave |
 
 ## Install
@@ -257,8 +260,9 @@ release to close the advisory range GHSA-rgw5-rvv9-x895. `npm audit
 4. For a manual Work, fill in the template, or ask the LLM to call `khala_submit_work` directly.
    `Objective`, `Scope`, `Acceptance criteria`, `Plan`, and `Validation` are required.
 5. The Work is persisted and queued for independent Project Conclave review. The acknowledgement does not imply admission or launch.
-6. Open `/khala` to watch the Conclave, headless Executor state, Observer panes,
-   supervision, and recovery facts. Executors do not create panes.
+6. Run `/khala` (or `Alt+K`) to see the attention summary: review requests,
+   stopped Work, and recovery needs, or explicit confirmation that no user
+   action is required.
 7. Inspect the Archive when you need the authoritative lifecycle history.
 
 For a deterministic walkthrough, run `/khala-demo`. It creates three dummy Work
@@ -349,18 +353,23 @@ replacement agent.
 
 Every Work enables Git push and the Executor-managed draft Pull Request
 workflow. The Executor must publish a reviewable Pull Request before Finish
-handoff. If model, RPC, Conclave, poll, or publication supervision fails, the
-monitor shows the affected state; Khala retries only within its bounded recovery
-policy, blocks dependent launches when required, and records a blocked/failure
-Signal rather than claiming success. Use `/khala-recreate` to recover a project
+handoff. Model, RPC, Conclave, poll, and publication supervision failures are
+retried within Khala's bounded recovery policy; Khala blocks dependent launches
+when required and records a blocked/failure Signal rather than claiming
+success. Retryable and raw Execution failures stay hidden from the attention
+summary, which surfaces only durable Work-level evidence: a reviewable Pull
+Request, a rejected Work or current Mission, an exhausted Conclave submission
+recovery, or a failed Conclave wake. Use `/khala-recreate` to recover a project
 Conclave after a runtime outage. Inspect the Archive for exact causal evidence.
 
 The package ships named Khala prompts and role system prompts. Generic packaged
 placeholder prompts are intentionally not included. The Conclave's supervision
 controls are tool-only and restricted to the exact allowlist in
 `system-prompts/conclave.md`; it supervises multiple asynchronous Executors but
-never implements their code. Direct User overrides are spoken in the dedicated
-Conclave session and can change priority only for peer conflict.
+never implements their code. Users stay in their ordinary session; a pending
+User Priority (`khala_prioritize_work`) lets the User prioritize selected Work
+over related Work in an active peer-conflict Coordination, and the Conclave
+applies or disposes it. Users never write inside the dedicated Conclave session.
 
 ## Documentation
 
@@ -372,8 +381,8 @@ Conclave session and can change priority only for peer conflict.
   statuses, validation, and append-only state.
 - [Supervision tools](docs/supervision-tools.md) — bounded controls, action IDs,
   User overrides, and failure semantics.
-- [Supervision monitor](docs/supervision-monitor.md) — minimum monitor and
-  headless Executor/Observer surfaces.
+- [Attention summary](docs/attention-summary.md) — the read-only `/khala`
+  surface, its actionable categories, and the working condition.
 - [Work template](templates/khala-work.md) — the structured request format.
 - [Pull Request template](templates/pull-request.md) — the bundled Executor PR description format.
 - [System prompts](system-prompts/) — role behavior and constraints.

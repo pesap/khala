@@ -100,6 +100,8 @@ test("Conclave supervision allowlist is exact and has no standalone materialize 
     "khala_steer_execution",
     "khala_coordinate_work",
     "khala_record_intervention_outcome",
+    "khala_apply_user_priority",
+    "khala_dispose_user_priority",
   ]);
   assert.equal(CONCLAVE_TOOL_ALLOWLIST.includes("khala_materialize_mission"), false);
 });

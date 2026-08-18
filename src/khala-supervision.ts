@@ -26,6 +26,7 @@ import { listArchiveRecords } from "./khala-archive.js";
 import {
 	activeCoordinationHolds,
 	listSignalRecords,
+	pendingUserPriorities,
 	projectCoordinations,
 	projectInterventions,
 	projectMissions,
@@ -121,11 +122,12 @@ type StopHandoffExpectation = Readonly<{
 	settlementObserved: boolean;
 	settlementTarget?: number;
 	assessmentId?: string;
+	onEnforced?: (blockedSignalId: string) => void | Promise<void>;
 }>;
 type StopHandoffSettlementObservation = Readonly<{ target?: number; observed: boolean }>;
 
 type SupervisionTask = Readonly<{
-	kind: "user" | "critical";
+	kind: "critical";
 	identity?: { workId: string; missionId: string; executionId: string };
 	reason: string;
 	run: () => Promise<void>;
@@ -140,15 +142,10 @@ type SupervisionBatch = Readonly<{
 type SchedulerItem = SupervisionTask | SupervisionBatch;
 
 class SupervisionScheduler {
-	private readonly userTasks: SupervisionTask[] = [];
 	private readonly criticalTasks: SupervisionTask[] = [];
 	private readonly normalTasks = new Map<string, TurnDelta[]>();
 	private readonly rotation: string[] = [];
 	private rotationIndex = 0;
-
-	enqueueUser(task: SupervisionTask): void {
-		this.userTasks.push(task);
-	}
 
 	enqueueCritical(task: SupervisionTask): void {
 		this.criticalTasks.push(task);
@@ -165,11 +162,7 @@ class SupervisionScheduler {
 	}
 
 	requeueTaskFront(task: SupervisionTask): void {
-		if (task.kind === "user") {
-			this.userTasks.unshift(task);
-		} else {
-			this.criticalTasks.unshift(task);
-		}
+		this.criticalTasks.unshift(task);
 	}
 
 	requeueNormalFront(batch: SupervisionBatch): void {
@@ -183,10 +176,6 @@ class SupervisionScheduler {
 	}
 
 	next(): SchedulerItem | undefined {
-		const user = this.userTasks.shift();
-		if (user !== undefined) {
-			return user;
-		}
 		const critical = this.criticalTasks.shift();
 		if (critical !== undefined) {
 			return critical;
@@ -222,7 +211,7 @@ class SupervisionScheduler {
 	}
 
 	get pendingCount(): number {
-		let count = this.userTasks.length + this.criticalTasks.length;
+		let count = this.criticalTasks.length;
 		for (const pending of this.normalTasks.values()) {
 			count += pending.length;
 		}
@@ -441,9 +430,6 @@ function isAssessmentStart(value: unknown): value is AssessmentStart {
 	const sourceEntryIds = candidate["sourceEntryIds"];
 	const actionIdNamespace = candidate["actionIdNamespace"];
 	const actionIdPattern = candidate["actionIdPattern"];
-	if (candidate["sourceKind"] === "direct-user") {
-		return false;
-	}
 	const actionNamespaceValid =
 		actionIdNamespace === `action:${assessmentId}:` &&
 		actionIdPattern === "action-<sha256(assessmentId\\u0000actionKind\\u0000ordinal)>";
@@ -488,6 +474,7 @@ type AssessmentPromptInput = Readonly<{
 	priorInterventions: readonly unknown[];
 	currentCoordination: readonly unknown[];
 	coordinationHolds: readonly unknown[];
+	userPriorities: readonly unknown[];
 	effectiveCostThreshold: number;
 	candidateMissions: readonly unknown[];
 }>;
@@ -530,6 +517,7 @@ type AssessmentProjectionReport = {
 		priorInterventions: AssessmentSectionProjection;
 		currentCoordination: AssessmentSectionProjection;
 		coordinationHolds: AssessmentSectionProjection;
+		userPriorities: AssessmentSectionProjection;
 		candidateMissions: AssessmentSectionProjection;
 	};
 };
@@ -548,6 +536,7 @@ type AssessmentPacket = {
 	priorInterventions: ProjectedAssessmentValue[];
 	currentCoordination: ProjectedAssessmentValue[];
 	coordinationHolds: ProjectedAssessmentValue[];
+	userPriorities: ProjectedAssessmentValue[];
 	candidateMissions: ProjectedAssessmentValue[];
 	projection: AssessmentProjectionReport;
 };
@@ -580,6 +569,7 @@ function createAssessmentPrompt(input: AssessmentPromptInput): AssessmentPrompt 
 			priorInterventions: createAssessmentSectionProjection(input.priorInterventions.length),
 			currentCoordination: createAssessmentSectionProjection(input.currentCoordination.length),
 			coordinationHolds: createAssessmentSectionProjection(input.coordinationHolds.length),
+			userPriorities: createAssessmentSectionProjection(input.userPriorities.length),
 			candidateMissions: createAssessmentSectionProjection(input.candidateMissions.length),
 		},
 	};
@@ -603,6 +593,7 @@ function createAssessmentPrompt(input: AssessmentPromptInput): AssessmentPrompt 
 		priorInterventions: [],
 		currentCoordination: [],
 		coordinationHolds: [],
+		userPriorities: [],
 		candidateMissions: [],
 		projection: report,
 	};
@@ -620,6 +611,7 @@ function createAssessmentPrompt(input: AssessmentPromptInput): AssessmentPrompt 
 		packet.priorInterventions,
 		report.sections.priorInterventions,
 	);
+	packAssessmentSection(packet, input.userPriorities, packet.userPriorities, report.sections.userPriorities);
 	packAssessmentSection(packet, input.candidateMissions, packet.candidateMissions, report.sections.candidateMissions);
 	report.truncated = assessmentProjectionWasTruncated(report);
 	const text = renderAssessmentPrompt(packet);
@@ -1466,15 +1458,6 @@ class SupervisionController {
 		}
 	}
 
-	noteDirectUserInput(): void {
-		this.scheduler.enqueueUser({
-			kind: "user",
-			reason: "direct interactive User input",
-			run: async () => this.options.session.waitForIdle(),
-		});
-		this.drain();
-	}
-
 	handleRuntimeFailure(identity: { workId: string; missionId: string; executionId: string }, error: Error): void {
 		this.enqueueCritical(identity, `Executor RPC failure: ${error.message}`);
 	}
@@ -1689,9 +1672,17 @@ class SupervisionController {
 		const execution = listExecutorRecords(expectation.projectPath, expectation.projectTrusted).find(
 			(record) => record.executionId === expectation.executionId,
 		);
+		const blockedSignalId =
+			laterSignals[0]?.payload !== undefined &&
+			typeof laterSignals[0].payload === "object" &&
+			laterSignals[0].payload !== null &&
+			typeof (laterSignals[0].payload as { signalId?: unknown }).signalId === "string"
+				? (laterSignals[0].payload as { signalId: string }).signalId
+				: undefined;
 		const valid =
 			issuanceIndex >= 0 &&
 			laterSignals.length === 1 &&
+			blockedSignalId !== undefined &&
 			currentMission?.state === "current" &&
 			currentMission.mission.missionId === expectation.missionId &&
 			execution?.workId === expectation.workId &&
@@ -1700,6 +1691,7 @@ class SupervisionController {
 			execution.participantId === expectation.participantId &&
 			isCurrentBlockedSignal(laterSignals[0]?.payload, expectation);
 		if (valid) {
+			await expectation.onEnforced?.(blockedSignalId);
 			return;
 		}
 		const failedExecutionRecordId = await failExecutionAndCloseInterventions(
@@ -1968,6 +1960,9 @@ class SupervisionController {
 					hold.workId === first.workId ||
 					hold.coordination.latest.relatedWorkId === first.workId ||
 					hold.coordination.latest.selectedWorkId === first.workId,
+			),
+			userPriorities: pendingUserPriorities(this.options.projectPath, this.options.projectTrusted).filter(
+				(priority) => priority.selectedWorkId === first.workId || priority.relatedWorkId === first.workId,
 			),
 			effectiveCostThreshold: budget.conclaveMaxCostUsdPerTurn,
 			candidateMissions,

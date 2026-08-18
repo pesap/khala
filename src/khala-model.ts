@@ -23,7 +23,9 @@ type ArchiveRecordType =
 	| "pull-request"
 	| "work-outcome"
 	| "coordination"
-	| "intervention";
+	| "intervention"
+	| "user-priority"
+	| "user-priority-enforcement";
 
 type KhalaArchiveRecord = Readonly<{
 	recordId: string;
@@ -454,6 +456,80 @@ type CoordinationRecord = Readonly<{
 	resolutionEvidenceRecordId?: string;
 	classification?: CoordinationClassification;
 	reason: string;
+	priorityId?: string;
+}>;
+
+// --- User Priority ---------------------------------------------------------
+
+const UserPriorityStatus = {
+	pending: "pending",
+	ignored: "ignored",
+} as const;
+type UserPriorityStatusValue = (typeof UserPriorityStatus)[keyof typeof UserPriorityStatus];
+
+const MAX_PRIORITY_REASON_LENGTH = 500;
+const USER_PRIORITY_ID_PATTERN = /^priority-[a-f0-9]{64}$/;
+const USER_PRIORITY_ACTION_PATTERN = /^action-[a-f0-9]{64}$/;
+
+type UserPriorityProvenance = Readonly<{
+	sessionId: string;
+	entryId: string;
+	contentSha256: string;
+}>;
+
+// One append-only User priority request. The pending phase is written by the
+// User tool from the exact persisted User turn; the ignored phase is the stale
+// terminal disposition written by the Conclave. Applied is derived from a
+// Coordination override that references priorityId, never stored on this record.
+type UserPriorityRecord = Readonly<{
+	priorityId: string;
+	workId: string;
+	selectedWorkId: string;
+	relatedWorkId: string;
+	coordinationId: string;
+	// The single deterministic Coordination action that may apply this priority.
+	actionId: string;
+	// The single deterministic stop action that may enforce this priority.
+	stopActionId: string;
+	reason: string;
+	provenance: UserPriorityProvenance;
+	status: UserPriorityStatusValue;
+	createdAt: string;
+	ignoredAt?: string;
+	ignoredReason?: string;
+}>;
+
+const UserPriorityEnforcementPhase = {
+	prepared: "prepared",
+	baseline: "baseline",
+	handoff: "handoff",
+	enforced: "enforced",
+	terminal: "terminal",
+} as const;
+type UserPriorityEnforcementPhaseValue =
+	(typeof UserPriorityEnforcementPhase)[keyof typeof UserPriorityEnforcementPhase];
+
+// Enforcement is a separate append-only phase stream so a Coordination override
+// cannot make a priority disappear while its lower-priority Execution still needs
+// the deterministic stop protocol. The phase identity is immutable; only the
+// bounded enforcement evidence advances.
+type UserPriorityEnforcementRecord = Readonly<{
+	priorityId: string;
+	coordinationId: string;
+	workId: string;
+	selectedWorkId: string;
+	relatedWorkId: string;
+	losingWorkId: string;
+	losingMissionId: string;
+	losingExecutionId?: string;
+	actionId: string;
+	marker: string;
+	phase: UserPriorityEnforcementPhaseValue;
+	baselineSignalIds: readonly string[];
+	stopEntryIds?: readonly string[];
+	interventionId?: string;
+	blockedSignalId?: string;
+	terminalExecutionRecordId?: string;
 }>;
 
 type InterventionFailureCategory =
@@ -675,10 +751,30 @@ type GuardRecord = Record<string, unknown> &
 		resultingExecutionId?: unknown;
 		failedExecutionRecordId?: unknown;
 		interventionId?: unknown;
+		priorityId?: unknown;
+		provenance?: unknown;
+		sessionId?: unknown;
+		entryId?: unknown;
+		contentSha256?: unknown;
+		ignoredAt?: unknown;
+		ignoredReason?: unknown;
+		stopActionId?: unknown;
+		losingWorkId?: unknown;
+		losingMissionId?: unknown;
+		losingExecutionId?: unknown;
+		marker?: unknown;
+		baselineSignalIds?: unknown;
+		stopEntryIds?: unknown;
+		blockedSignalId?: unknown;
+		terminalExecutionRecordId?: unknown;
 	}>;
 
 function isStringArray(value: unknown): value is readonly string[] {
 	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function isNonEmptyStringArray(value: unknown): value is readonly string[] {
@@ -700,6 +796,8 @@ function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 		value === "mission" ||
 		value === "pull-request" ||
 		value === "work-outcome" ||
+		value === "user-priority" ||
+		value === "user-priority-enforcement" ||
 		value === "coordination" ||
 		value === "intervention"
 	);
@@ -752,7 +850,9 @@ function isImplicitV2ArchiveRecordType(type: ArchiveRecordType): boolean {
 		type === "mandate" ||
 		type === "mission" ||
 		type === "pull-request" ||
-		type === "work-outcome"
+		type === "work-outcome" ||
+		type === "user-priority" ||
+		type === "user-priority-enforcement"
 	);
 }
 
@@ -778,48 +878,30 @@ function isArchivePayloadLegacy(type: ArchiveRecordType, payload: unknown): bool
 	return false;
 }
 
+type ArchivePayloadGuard = (payload: unknown) => boolean;
+const archivePayloadV2Guards: Partial<Record<ArchiveRecordType, ArchivePayloadGuard>> = {
+	"conclave-wake": isConclaveWakeRecord,
+	"conclave-recovery": isConclaveRecoveryRecord,
+	coordination: isCoordinationRecord,
+	intervention: isInterventionRecord,
+	submission: isV2WorkSubmission,
+	execution: isV2ExecutorRecord,
+	signal: isV2Signal,
+	counsel: isCounselRecord,
+	verdict: isV2Verdict,
+	learning: isLearningRecord,
+	"verdict-delivery": isVerdictDelivery,
+	mandate: isMandateRecord,
+	mission: isMissionRecord,
+	"pull-request": isPullRequestRecord,
+	"user-priority": isUserPriorityRecord,
+	"user-priority-enforcement": isUserPriorityEnforcementRecord,
+};
+
 function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean {
-	if (type === "conclave-wake") {
-		return isConclaveWakeRecord(payload);
-	}
-	if (type === "conclave-recovery") {
-		return isConclaveRecoveryRecord(payload);
-	}
-	if (type === "coordination") {
-		return isCoordinationRecord(payload);
-	}
-	if (type === "intervention") {
-		return isInterventionRecord(payload);
-	}
-	if (type === "submission") {
-		return isV2WorkSubmission(payload);
-	}
-	if (type === "execution") {
-		return isV2ExecutorRecord(payload);
-	}
-	if (type === "signal") {
-		return isV2Signal(payload);
-	}
-	if (type === "counsel") {
-		return isCounselRecord(payload);
-	}
-	if (type === "verdict") {
-		return isV2Verdict(payload);
-	}
-	if (type === "learning") {
-		return isLearningRecord(payload);
-	}
-	if (type === "verdict-delivery") {
-		return isVerdictDelivery(payload);
-	}
-	if (type === "mandate") {
-		return isMandateRecord(payload);
-	}
-	if (type === "mission") {
-		return isMissionRecord(payload);
-	}
-	if (type === "pull-request") {
-		return isPullRequestRecord(payload);
+	const guard = archivePayloadV2Guards[type];
+	if (guard !== undefined) {
+		return guard(payload);
 	}
 	return isWorkOutcomeRecord(payload);
 }
@@ -1409,13 +1491,20 @@ function isCoordinationRecord(value: unknown): value is CoordinationRecord {
 			isNonEmptyString(record.replacementHead)) &&
 		(record.causedByCoordinationId === undefined ||
 			(record.phase === "invalidation" && isNonEmptyString(record.causedByCoordinationId))) &&
-		(record.userEntryId === undefined || isNonEmptyString(record.userEntryId)) &&
+		coordinationPriorityBindingValid(record) &&
 		(record.releasedExecutionId === undefined || isNonEmptyString(record.releasedExecutionId)) &&
 		(record.resolutionEvidenceRecordId === undefined || isNonEmptyString(record.resolutionEvidenceRecordId)) &&
 		(record.classification === undefined || isCoordinationClassification(record.classification)) &&
 		(record.remoteObservation === undefined || isCoordinationRemoteObservation(record.remoteObservation)) &&
 		(record.affectedDependents === undefined || isCoordinationDependents(record.affectedDependents))
 	);
+}
+
+function coordinationPriorityBindingValid(record: GuardRecord): boolean {
+	if (record.phase === "override") {
+		return isNonEmptyString(record.priorityId) && isNonEmptyString(record.userEntryId);
+	}
+	return record.priorityId === undefined && record.userEntryId === undefined;
 }
 
 function isCoordinationDependents(value: unknown): value is readonly CoordinationDependent[] {
@@ -1526,6 +1615,200 @@ function isInterventionRecord(value: unknown): value is InterventionRecord {
 		(record.resultingCoordinationId === undefined || isNonEmptyString(record.resultingCoordinationId)) &&
 		(record.resultingExecutionId === undefined || isNonEmptyString(record.resultingExecutionId))
 	);
+}
+
+function isUserPriorityProvenance(value: unknown): value is UserPriorityProvenance {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const provenance = value as Readonly<{ sessionId?: unknown; entryId?: unknown; contentSha256?: unknown }>;
+	return (
+		isNonEmptyString(provenance.sessionId) &&
+		isNonEmptyString(provenance.entryId) &&
+		typeof provenance.contentSha256 === "string" &&
+		SHA256_PATTERN.test(provenance.contentSha256)
+	);
+}
+
+function isUserPriorityStatus(value: unknown): value is UserPriorityStatusValue {
+	return value === UserPriorityStatus.pending || value === UserPriorityStatus.ignored;
+}
+
+function sameUserPriorityImmutableEvidence(
+	priority: UserPriorityRecord,
+	prior: {
+		workId: string;
+		selectedWorkId: string;
+		relatedWorkId: string;
+		coordinationId: string;
+		actionId: string;
+		stopActionId: string;
+		reason: string;
+		entryId: string;
+		sessionId: string;
+		contentSha256: string;
+		createdAt: string;
+	},
+): boolean {
+	return (
+		priority.workId === prior.workId &&
+		priority.selectedWorkId === prior.selectedWorkId &&
+		priority.relatedWorkId === prior.relatedWorkId &&
+		priority.coordinationId === prior.coordinationId &&
+		priority.actionId === prior.actionId &&
+		priority.stopActionId === prior.stopActionId &&
+		priority.reason === prior.reason &&
+		priority.provenance.entryId === prior.entryId &&
+		priority.provenance.sessionId === prior.sessionId &&
+		priority.provenance.contentSha256 === prior.contentSha256 &&
+		priority.createdAt === prior.createdAt
+	);
+}
+
+function isUserPriorityEnforcementPhase(value: unknown): value is UserPriorityEnforcementPhaseValue {
+	return (
+		value === UserPriorityEnforcementPhase.prepared ||
+		value === UserPriorityEnforcementPhase.baseline ||
+		value === UserPriorityEnforcementPhase.handoff ||
+		value === UserPriorityEnforcementPhase.enforced ||
+		value === UserPriorityEnforcementPhase.terminal
+	);
+}
+
+function isUserPriorityEnforcementRecord(value: unknown): value is UserPriorityEnforcementRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	if (!isUserPriorityEnforcementCommon(record)) {
+		return false;
+	}
+	if (!isStringArray(record.baselineSignalIds)) {
+		return false;
+	}
+	if (record.losingExecutionId === undefined) {
+		return (
+			record.phase === UserPriorityEnforcementPhase.enforced &&
+			record.baselineSignalIds.length === 0 &&
+			record.stopEntryIds === undefined &&
+			record.interventionId === undefined &&
+			record.blockedSignalId === undefined &&
+			record.terminalExecutionRecordId === undefined
+		);
+	}
+	return isUserPriorityEnforcementPhaseEvidenceValid(record);
+}
+
+function isUserPriorityEnforcementCommon(record: GuardRecord): boolean {
+	return (
+		isNonEmptyString(record.priorityId) &&
+		isNonEmptyString(record.coordinationId) &&
+		isNonEmptyString(record.workId) &&
+		isNonEmptyString(record.selectedWorkId) &&
+		isNonEmptyString(record.relatedWorkId) &&
+		isNonEmptyString(record.losingWorkId) &&
+		isNonEmptyString(record.losingMissionId) &&
+		(record.losingExecutionId === undefined || isNonEmptyString(record.losingExecutionId)) &&
+		typeof record.actionId === "string" &&
+		USER_PRIORITY_ACTION_PATTERN.test(record.actionId) &&
+		record.marker === `\u0000KHALA_SUPERVISION:stop:${record.actionId}:` &&
+		isUserPriorityEnforcementPhase(record.phase) &&
+		isStringArray(record.baselineSignalIds) &&
+		new Set(record.baselineSignalIds).size === record.baselineSignalIds.length
+	);
+}
+
+function isUserPriorityEnforcementPhaseEvidenceValid(record: GuardRecord): boolean {
+	if (!isStringArray(record.baselineSignalIds)) {
+		return false;
+	}
+	if (record.phase === UserPriorityEnforcementPhase.prepared) {
+		return (
+			record.baselineSignalIds.length === 0 &&
+			record.stopEntryIds === undefined &&
+			record.interventionId === undefined &&
+			record.blockedSignalId === undefined &&
+			record.terminalExecutionRecordId === undefined
+		);
+	}
+	if (record.phase === UserPriorityEnforcementPhase.baseline) {
+		return (
+			record.stopEntryIds === undefined &&
+			record.interventionId === undefined &&
+			record.blockedSignalId === undefined &&
+			record.terminalExecutionRecordId === undefined
+		);
+	}
+	if (record.phase === UserPriorityEnforcementPhase.handoff) {
+		return (
+			isNonEmptyStringArray(record.stopEntryIds) &&
+			record.interventionId === undefined &&
+			record.blockedSignalId === undefined &&
+			record.terminalExecutionRecordId === undefined
+		);
+	}
+	if (record.phase === UserPriorityEnforcementPhase.enforced) {
+		return (
+			isNonEmptyStringArray(record.stopEntryIds) &&
+			isNonEmptyString(record.interventionId) &&
+			isNonEmptyString(record.blockedSignalId) &&
+			record.terminalExecutionRecordId === undefined
+		);
+	}
+	return (
+		isNonEmptyString(record.terminalExecutionRecordId) &&
+		record.blockedSignalId === undefined &&
+		(record.stopEntryIds === undefined || isNonEmptyStringArray(record.stopEntryIds)) &&
+		(record.interventionId === undefined || isNonEmptyString(record.interventionId))
+	);
+}
+
+function isUserPriorityRecord(value: unknown): value is UserPriorityRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as Readonly<{
+		priorityId?: unknown;
+		workId?: unknown;
+		selectedWorkId?: unknown;
+		relatedWorkId?: unknown;
+		coordinationId?: unknown;
+		actionId?: unknown;
+		stopActionId?: unknown;
+		reason?: unknown;
+		provenance?: unknown;
+		status?: unknown;
+		createdAt?: unknown;
+		ignoredAt?: unknown;
+		ignoredReason?: unknown;
+	}>;
+	if (
+		!(
+			typeof record.priorityId === "string" &&
+			USER_PRIORITY_ID_PATTERN.test(record.priorityId) &&
+			isNonEmptyString(record.workId) &&
+			isNonEmptyString(record.selectedWorkId) &&
+			isNonEmptyString(record.relatedWorkId) &&
+			record.selectedWorkId !== record.relatedWorkId &&
+			isNonEmptyString(record.coordinationId) &&
+			typeof record.actionId === "string" &&
+			USER_PRIORITY_ACTION_PATTERN.test(record.actionId) &&
+			typeof record.stopActionId === "string" &&
+			USER_PRIORITY_ACTION_PATTERN.test(record.stopActionId) &&
+			typeof record.reason === "string" &&
+			record.reason.trim().length > 0 &&
+			record.reason.length <= MAX_PRIORITY_REASON_LENGTH &&
+			isUserPriorityProvenance(record.provenance) &&
+			isUserPriorityStatus(record.status) &&
+			isNonEmptyString(record.createdAt)
+		)
+	) {
+		return false;
+	}
+	if (record.status === UserPriorityStatus.pending) {
+		return record.ignoredAt === undefined && record.ignoredReason === undefined;
+	}
+	return isNonEmptyString(record.ignoredAt) && isNonEmptyString(record.ignoredReason);
 }
 
 function isWorkOutcomeRecord(value: unknown): value is WorkOutcomeRecord {
@@ -1663,6 +1946,57 @@ function coordinationReplayIdentity(record: KhalaArchiveRecord, payload: Coordin
 	return JSON.stringify({ projectPath: record.projectPath, relation: payload.relation, sides, upstream });
 }
 
+function samePriorityOverrideMissionBindings(
+	override: CoordinationRecord,
+	decision: CoordinationRecord,
+	priority: {
+		selectedWorkId: string;
+		relatedWorkId: string;
+	},
+): boolean {
+	let selectedMissionId = decision.relatedMissionId;
+	let selectedExecutionId = decision.relatedExecutionId;
+	if (priority.selectedWorkId === decision.workId) {
+		selectedMissionId = decision.missionId;
+		selectedExecutionId = decision.executionId;
+	}
+	return (
+		override.workId === decision.workId &&
+		override.missionId === decision.missionId &&
+		override.executionId === decision.executionId &&
+		override.relatedWorkId === decision.relatedWorkId &&
+		override.relatedMissionId === decision.relatedMissionId &&
+		override.relatedExecutionId === decision.relatedExecutionId &&
+		override.selectedWorkId === priority.selectedWorkId &&
+		override.selectedMissionId === selectedMissionId &&
+		override.selectedExecutionId === selectedExecutionId
+	);
+}
+
+function priorityLosingBinding(
+	override: CoordinationRecord,
+	selectedWorkId: string,
+): { workId: string; missionId: string; executionId?: string } {
+	if (selectedWorkId === override.workId) {
+		const result: { workId: string; missionId: string; executionId?: string } = {
+			workId: override.relatedWorkId,
+			missionId: override.relatedMissionId,
+		};
+		if (override.relatedExecutionId !== undefined) {
+			result.executionId = override.relatedExecutionId;
+		}
+		return result;
+	}
+	const result: { workId: string; missionId: string; executionId?: string } = {
+		workId: override.workId,
+		missionId: override.missionId,
+	};
+	if (override.executionId !== undefined) {
+		result.executionId = override.executionId;
+	}
+	return result;
+}
+
 function interventionReplayIdentity(record: KhalaArchiveRecord, payload: InterventionRecord): string {
 	return JSON.stringify({
 		projectPath: record.projectPath,
@@ -1693,6 +2027,45 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 	const interventionGroups = new Map<string, { issuance: boolean; outcome: boolean; identity: string }>();
 	const coordinationInvalidations = new Map<string, CoordinationRecord>();
 	const submissionWorkIds = new Set<string>();
+	const userPriorityState = new Map<
+		string,
+		{
+			status: UserPriorityStatusValue;
+			workId: string;
+			selectedWorkId: string;
+			relatedWorkId: string;
+			coordinationId: string;
+			actionId: string;
+			stopActionId: string;
+			reason: string;
+			entryId: string;
+			sessionId: string;
+			contentSha256: string;
+			createdAt: string;
+		}
+	>();
+	const appliedPriorities = new Set<string>();
+	const appliedPriorityOverrides = new Map<string, CoordinationRecord>();
+	const coordinationDecisions = new Map<string, CoordinationRecord>();
+	const priorityEnforcementState = new Map<
+		string,
+		{
+			coordinationId: string;
+			workId: string;
+			selectedWorkId: string;
+			relatedWorkId: string;
+			losingWorkId: string;
+			losingMissionId: string;
+			losingExecutionId?: string;
+			actionId: string;
+			marker: string;
+			phase: UserPriorityEnforcementPhaseValue;
+			baselineSignalIds: readonly string[];
+		}
+	>();
+	const signalRecords = new Map<string, SignalRecord>();
+	const interventionIssuances = new Map<string, InterventionIssuanceRecord>();
+	const terminalExecutionRecords = new Map<string, ExecutorRecord>();
 	const submissionRecordWorkIds = new Map<string, string>();
 	const wakeIds = new Set<string>();
 	const recoveryIds = new Set<string>();
@@ -1713,6 +2086,16 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 		}
 	>();
 	for (const record of records) {
+		if (record.type === "signal" && isSignal(record.payload)) {
+			signalRecords.set(record.payload.signalId, record.payload);
+		}
+		if (
+			record.type === "execution" &&
+			isExecutorRecord(record.payload) &&
+			(record.payload.status === ExecutorStatus.failed || record.payload.status === ExecutorStatus.finished)
+		) {
+			terminalExecutionRecords.set(record.recordId, record.payload);
+		}
 		if (record.type === "submission" && isWorkSubmission(record.payload)) {
 			if (record.payload.workId !== record.workId) {
 				throw new Error(`Submission ${record.recordId} has inconsistent Archive bindings.`);
@@ -1842,6 +2225,48 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			) {
 				throw new Error(`Coordination ${record.payload.coordinationId} has inconsistent Archive bindings.`);
 			}
+			if (coordination.phase === "override") {
+				const { priorityId } = coordination;
+				let prior:
+					| {
+							status: UserPriorityStatusValue;
+							coordinationId: string;
+							selectedWorkId: string;
+							relatedWorkId: string;
+							actionId: string;
+							stopActionId: string;
+							entryId: string;
+					  }
+					| undefined;
+				if (priorityId !== undefined) {
+					prior = userPriorityState.get(priorityId);
+				}
+				if (
+					priorityId === undefined ||
+					prior === undefined ||
+					prior.status !== UserPriorityStatus.pending ||
+					appliedPriorities.has(priorityId) ||
+					coordination.coordinationId !== prior.coordinationId ||
+					coordination.actionId !== prior.actionId ||
+					coordination.selectedWorkId !== prior.selectedWorkId ||
+					coordination.userEntryId !== prior.entryId ||
+					coordinationDecisions.get(coordination.coordinationId) === undefined ||
+					!samePriorityOverrideMissionBindings(
+						coordination,
+						coordinationDecisions.get(coordination.coordinationId) as CoordinationRecord,
+						prior,
+					) ||
+					!(
+						(coordination.workId === prior.selectedWorkId && coordination.relatedWorkId === prior.relatedWorkId) ||
+						(coordination.workId === prior.relatedWorkId && coordination.relatedWorkId === prior.selectedWorkId)
+					)
+				) {
+					throw new Error(
+						`Coordination ${record.payload.coordinationId} references an invalid or already-applied User Priority.`,
+					);
+				}
+				appliedPriorities.add(priorityId);
+			}
 			if (coordination.phase === "invalidation" && coordination.causedByCoordinationId !== undefined) {
 				const cause = coordinationInvalidations.get(coordination.causedByCoordinationId);
 				const adjacentDependent = cause?.affectedDependents?.some(
@@ -1886,6 +2311,7 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 				throw new Error(`Coordination ${record.payload.coordinationId} changed its identity bindings.`);
 			}
 			if (record.payload.phase === "decision") {
+				coordinationDecisions.set(record.payload.coordinationId, record.payload);
 				if (group.decision) {
 					throw new Error(`Coordination ${record.payload.coordinationId} has duplicate decisions.`);
 				}
@@ -1908,6 +2334,9 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			}
 			if (record.payload.phase === "invalidation") {
 				coordinationInvalidations.set(record.payload.coordinationId, record.payload);
+			}
+			if (record.payload.phase === "override" && record.payload.priorityId !== undefined) {
+				appliedPriorityOverrides.set(record.payload.priorityId, record.payload);
 			}
 		}
 		if (record.type === "intervention" && isInterventionRecord(record.payload)) {
@@ -1941,6 +2370,7 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 				throw new Error(`Intervention ${record.payload.interventionId} changed its identity bindings.`);
 			}
 			if (record.payload.phase === "issuance") {
+				interventionIssuances.set(record.payload.interventionId, record.payload);
 				if (group.issuance || group.outcome) {
 					throw new Error(`Intervention ${record.payload.interventionId} has invalid issuance order.`);
 				}
@@ -1950,6 +2380,202 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			} else {
 				group.outcome = true;
 			}
+		}
+		if (record.type === "user-priority" && isUserPriorityRecord(record.payload)) {
+			const priority = record.payload;
+			if (priority.workId !== record.workId || priority.selectedWorkId !== record.workId) {
+				throw new Error(`User Priority ${priority.priorityId} has inconsistent Archive bindings.`);
+			}
+			const prior = userPriorityState.get(priority.priorityId);
+			if (prior === undefined) {
+				if (priority.status !== UserPriorityStatus.pending) {
+					throw new Error(`User Priority ${priority.priorityId} must start as pending.`);
+				}
+				userPriorityState.set(priority.priorityId, {
+					status: priority.status,
+					workId: priority.workId,
+					selectedWorkId: priority.selectedWorkId,
+					relatedWorkId: priority.relatedWorkId,
+					coordinationId: priority.coordinationId,
+					actionId: priority.actionId,
+					stopActionId: priority.stopActionId,
+					reason: priority.reason,
+					entryId: priority.provenance.entryId,
+					sessionId: priority.provenance.sessionId,
+					contentSha256: priority.provenance.contentSha256,
+					createdAt: priority.createdAt,
+				});
+			} else {
+				if (
+					prior.status !== UserPriorityStatus.pending ||
+					priority.status !== UserPriorityStatus.ignored ||
+					appliedPriorities.has(priority.priorityId) ||
+					!sameUserPriorityImmutableEvidence(priority, prior)
+				) {
+					throw new Error(`User Priority ${priority.priorityId} has an invalid phase sequence.`);
+				}
+				userPriorityState.set(priority.priorityId, {
+					...prior,
+					status: priority.status,
+				});
+			}
+		}
+		if (record.type === "user-priority-enforcement" && isUserPriorityEnforcementRecord(record.payload)) {
+			const enforcement = record.payload;
+			if (enforcement.workId !== record.workId) {
+				throw new Error(`User Priority enforcement ${enforcement.priorityId} has inconsistent Archive bindings.`);
+			}
+			const priority = userPriorityState.get(enforcement.priorityId);
+			const override = appliedPriorityOverrides.get(enforcement.priorityId);
+			let losing: ReturnType<typeof priorityLosingBinding> | undefined;
+			if (override !== undefined) {
+				losing = priorityLosingBinding(override, enforcement.selectedWorkId);
+			}
+			const expectedLosingWorkId = losing?.workId;
+			const expectedLosingMissionId = losing?.missionId;
+			const expectedLosingExecutionId = losing?.executionId;
+			if (
+				priority === undefined ||
+				priority.status !== UserPriorityStatus.pending ||
+				override === undefined ||
+				!appliedPriorities.has(enforcement.priorityId) ||
+				enforcement.coordinationId !== priority.coordinationId ||
+				enforcement.workId !== priority.workId ||
+				enforcement.selectedWorkId !== priority.selectedWorkId ||
+				enforcement.relatedWorkId !== priority.relatedWorkId ||
+				enforcement.actionId !== priority.stopActionId ||
+				enforcement.losingWorkId !== expectedLosingWorkId ||
+				enforcement.losingMissionId !== expectedLosingMissionId ||
+				enforcement.losingExecutionId !== expectedLosingExecutionId
+			) {
+				throw new Error(`User Priority enforcement ${enforcement.priorityId} has forged target evidence.`);
+			}
+			const prior = priorityEnforcementState.get(enforcement.priorityId);
+			if (prior === undefined) {
+				if (
+					(enforcement.losingExecutionId === undefined &&
+						enforcement.phase !== UserPriorityEnforcementPhase.enforced) ||
+					(enforcement.losingExecutionId !== undefined && enforcement.phase !== UserPriorityEnforcementPhase.prepared)
+				) {
+					throw new Error(`User Priority enforcement ${enforcement.priorityId} has an invalid initial phase.`);
+				}
+			} else {
+				const sameIdentity =
+					prior.coordinationId === enforcement.coordinationId &&
+					prior.workId === enforcement.workId &&
+					prior.selectedWorkId === enforcement.selectedWorkId &&
+					prior.relatedWorkId === enforcement.relatedWorkId &&
+					prior.losingWorkId === enforcement.losingWorkId &&
+					prior.losingMissionId === enforcement.losingMissionId &&
+					prior.losingExecutionId === enforcement.losingExecutionId &&
+					prior.actionId === enforcement.actionId &&
+					prior.marker === enforcement.marker;
+				const validTransition =
+					(prior.phase === UserPriorityEnforcementPhase.prepared &&
+						(enforcement.phase === UserPriorityEnforcementPhase.baseline ||
+							enforcement.phase === UserPriorityEnforcementPhase.terminal)) ||
+					(prior.phase === UserPriorityEnforcementPhase.baseline &&
+						(enforcement.phase === UserPriorityEnforcementPhase.handoff ||
+							enforcement.phase === UserPriorityEnforcementPhase.terminal)) ||
+					(prior.phase === UserPriorityEnforcementPhase.handoff &&
+						(enforcement.phase === UserPriorityEnforcementPhase.enforced ||
+							enforcement.phase === UserPriorityEnforcementPhase.terminal));
+				const establishesBaseline =
+					prior.phase === UserPriorityEnforcementPhase.prepared &&
+					enforcement.phase === UserPriorityEnforcementPhase.baseline;
+				const baselinePreserved =
+					establishesBaseline || sameStringArray(prior.baselineSignalIds, enforcement.baselineSignalIds);
+				if (!(sameIdentity && validTransition && baselinePreserved)) {
+					throw new Error(`User Priority enforcement ${enforcement.priorityId} has an invalid phase sequence.`);
+				}
+			}
+			if (enforcement.phase === UserPriorityEnforcementPhase.enforced && enforcement.losingExecutionId !== undefined) {
+				let blockedSignal: SignalRecord | undefined;
+				if (enforcement.blockedSignalId !== undefined) {
+					blockedSignal = signalRecords.get(enforcement.blockedSignalId);
+				}
+				const baselineSignalIds = new Set(enforcement.baselineSignalIds);
+				const newTargetSignals = [...signalRecords.values()].filter(
+					(signal) =>
+						signal.workId === enforcement.losingWorkId &&
+						signal.missionId === enforcement.losingMissionId &&
+						signal.executionId === enforcement.losingExecutionId &&
+						!baselineSignalIds.has(signal.signalId),
+				);
+				if (
+					blockedSignal === undefined ||
+					blockedSignal.workId !== enforcement.losingWorkId ||
+					blockedSignal.missionId !== enforcement.losingMissionId ||
+					blockedSignal.executionId !== enforcement.losingExecutionId ||
+					blockedSignal.kind !== "blocked" ||
+					blockedSignal.evidence.length === 0 ||
+					newTargetSignals.length !== 1 ||
+					newTargetSignals[0]?.signalId !== enforcement.blockedSignalId
+				) {
+					throw new Error(
+						`User Priority enforcement ${enforcement.priorityId} lacks one causal current blocked Signal.`,
+					);
+				}
+				let issuance: InterventionIssuanceRecord | undefined;
+				if (enforcement.interventionId !== undefined) {
+					issuance = interventionIssuances.get(enforcement.interventionId);
+				}
+				if (
+					issuance === undefined ||
+					issuance.actionId !== enforcement.actionId ||
+					issuance.mode !== "stop" ||
+					issuance.workId !== enforcement.losingWorkId ||
+					issuance.executionId !== enforcement.losingExecutionId
+				) {
+					throw new Error(
+						`User Priority enforcement ${enforcement.priorityId} lacks its deterministic stop Intervention.`,
+					);
+				}
+			}
+			if (enforcement.phase === UserPriorityEnforcementPhase.terminal) {
+				let terminal: ExecutorRecord | undefined;
+				if (enforcement.terminalExecutionRecordId !== undefined) {
+					terminal = terminalExecutionRecords.get(enforcement.terminalExecutionRecordId);
+				}
+				if (
+					terminal === undefined ||
+					terminal.executionId !== enforcement.losingExecutionId ||
+					terminal.workId !== enforcement.losingWorkId ||
+					(terminal.status !== ExecutorStatus.failed && terminal.status !== ExecutorStatus.finished)
+				) {
+					throw new Error(
+						`User Priority enforcement ${enforcement.priorityId} lacks durable terminal Execution evidence.`,
+					);
+				}
+			}
+			const nextState: {
+				coordinationId: string;
+				workId: string;
+				selectedWorkId: string;
+				relatedWorkId: string;
+				losingWorkId: string;
+				losingMissionId: string;
+				losingExecutionId?: string;
+				actionId: string;
+				marker: string;
+				phase: UserPriorityEnforcementPhaseValue;
+				baselineSignalIds: readonly string[];
+			} = {
+				coordinationId: enforcement.coordinationId,
+				workId: enforcement.workId,
+				selectedWorkId: enforcement.selectedWorkId,
+				relatedWorkId: enforcement.relatedWorkId,
+				losingWorkId: enforcement.losingWorkId,
+				losingMissionId: enforcement.losingMissionId,
+				actionId: enforcement.actionId,
+				marker: enforcement.marker,
+				phase: enforcement.phase,
+				baselineSignalIds: enforcement.baselineSignalIds,
+			};
+			if (enforcement.losingExecutionId !== undefined) {
+				nextState.losingExecutionId = enforcement.losingExecutionId;
+			}
+			priorityEnforcementState.set(enforcement.priorityId, nextState);
 		}
 	}
 }
@@ -1998,6 +2624,11 @@ export type {
 	SignalKind,
 	SignalRecord,
 	UpstreamExecutionBase,
+	UserPriorityEnforcementPhaseValue,
+	UserPriorityEnforcementRecord,
+	UserPriorityProvenance,
+	UserPriorityRecord,
+	UserPriorityStatusValue,
 	VerdictDecision,
 	VerdictDeliveryRecord,
 	VerdictDeliveryStatusValue,
@@ -2031,6 +2662,8 @@ export {
 	isSignal,
 	isStringArray,
 	isUpstreamExecutionBase,
+	isUserPriorityEnforcementRecord,
+	isUserPriorityRecord,
 	isV2ExecutorRecord,
 	isV2Signal,
 	isV2Verdict,
@@ -2043,7 +2676,10 @@ export {
 	isWorkSubmission,
 	KhalaWorkEntryStatus,
 	KhalaWorkLaunchStatus,
+	MAX_PRIORITY_REASON_LENGTH,
 	PullRequestStatus,
+	UserPriorityEnforcementPhase,
+	UserPriorityStatus,
 	VerdictDeliveryStatus,
 	validateArchiveReplay,
 	WorkSubmissionStatus,

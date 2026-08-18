@@ -1,7 +1,7 @@
 # Khala lifecycle
 
 Khala records a durable, append-only lifecycle. Runtime reachability, prompts,
-transcripts, pane output, and monitor projections are evidence surfaces only;
+transcripts, pane output, and runtime projections are evidence surfaces only;
 they do not authorize transitions.
 
 ```text
@@ -42,7 +42,8 @@ queued processing and restart recovery use the same atomic claim for the
 submission transition before waking the model. Each wake records durable
 `conclave-wake` evidence when the Archive is writable. A later
 wake failure does not change the queued acknowledgement or the authoritative
-submission. Inspect the Archive and monitor under the returned Work ID. Missing
+submission. Inspect the Archive under the returned Work ID and use `/khala` for
+the attention summary. Missing
 configuration requires `npx --yes --silent github:pesap/khala setup` before
 `/khala-recreate`; a configured runtime outage requires only `/khala-recreate`.
 When wake evidence cannot be appended, Khala records a diagnostic in the
@@ -73,9 +74,11 @@ The existing `khala_launch_execution` tool has two structured modes:
 There is no standalone Mission materialization tool. A Mission pins exactly one
 Mandate revision and complete assignment. Independent Work creates no
 Coordination record. A dependency or peer conflict creates a Coordination;
-dependency holds may exist before the waiting primary Execution exists. A direct
-User override must reference the exact current Conclave User entry and may
-change priority only for a peer conflict.
+dependency holds may exist before the waiting primary Execution exists. A User
+Priority (written from the ordinary User session) records intent to change
+priority for exactly one active peer-conflict Coordination; only the Conclave
+applies it as an override or disposes it as stale, and it may change priority
+only for a peer conflict.
 
 A dependency hold blocks launch, Retry, and recovery until the Conclave runtime
 verifies the upstream Finish, Pull Request publication, and exact remote head.
@@ -103,8 +106,11 @@ The three supervision controls are:
 - `khala_steer_execution`: one bounded Mission-grounded correction or mandatory
   stop. A stop aborts and settles before one handoff; it cannot mutate Mission
   authority.
-- `khala_coordinate_work`: dependency/peer-conflict scheduling evidence or a
-  legal direct User override.
+- `khala_coordinate_work`: Conclave autonomous dependency or peer-conflict
+  decisions only.
+- `khala_apply_user_priority`: appends the Coordination override for a pending
+  User Priority; `khala_dispose_user_priority` records its stale ignored
+  disposition.
 - `khala_record_intervention_outcome`: observed closure of an issued
   Intervention.
 

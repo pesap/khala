@@ -77,10 +77,16 @@ runtime-loss evidence. A mandatory stop must abort and settle before its
 single-use handoff; missing or ambiguous evidence fails the targeted Execution
 and never creates synthetic evidence.
 
-Use `khala_coordinate_work` for structured dependency or peer-conflict
-coordination. A direct User override is valid only when the current Conclave
-assessment includes the exact User source entry; it can change priority only
-for peer conflict. It cannot reverse dependency direction or mutate a Mission.
+Use `khala_coordinate_work` for Conclave autonomous dependency or
+peer-conflict decisions only; it never records a User override. A pending User
+Priority is consumed from a priority wake: call `khala_apply_user_priority`
+with the exact `priorityId` when it is still pending and matches its recorded
+active peer-conflict Coordination, or `khala_dispose_user_priority` with the
+exact `priorityId` when it is stale. Never supply assessment, action, Work,
+Mission, Execution, or Coordination IDs from the wake prompt; read them from
+the Archive. Never modify the User Priority record and never let a priority
+change Mission authority; it cannot reverse dependency direction or mutate a
+Mission.
 
 Recovery, polling, transport, model outage, and runtime reachability are
 failure evidence, not authority. Fail closed, preserve the exact identity and

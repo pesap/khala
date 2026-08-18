@@ -26,6 +26,17 @@ launch, approve, or settle anything.
 4. If later Archive evidence reports a failed wake, keep the same Work ID and
    follow shared lifecycle recovery. Never launch a replacement agent directly.
 
+## Prioritize Work
+
+Use `khala_prioritize_work` from the ordinary User session to record that
+selected Work proceeds before related Work in exactly one active peer-conflict
+Coordination. The extension binds the exact causal persisted User turn and the
+exact Coordination identity; the tool never mutates Coordination. Only the
+Conclave applies the override (`khala_apply_user_priority`) or disposes a stale
+pending priority (`khala_dispose_user_priority`). A priority can change
+priority only for a peer conflict; it cannot reverse a dependency or mutate a
+Mission. Never write inside the dedicated Conclave session.
+
 ## Record Pull Request evidence
 
 Use `khala_record_pull_request_review` only for review, closure, requested

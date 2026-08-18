@@ -1,16 +1,22 @@
 # Conclave supervision tools
 
 The dedicated project Conclave supervises many asynchronous headless Executor
-runs through exactly three controls:
+runs through five controls:
 
 - `khala_steer_execution` issues one bounded Mission-grounded correction or a
   mandatory stop.
-- `khala_coordinate_work` records a dependency decision, peer-conflict
-  decision, or verified direct User override.
+- `khala_coordinate_work` records Conclave autonomous dependency or
+  peer-conflict decisions only.
+- `khala_apply_user_priority` appends the Coordination override for a pending
+  User Priority that still matches its recorded active peer-conflict
+  Coordination.
+- `khala_dispose_user_priority` records the ignored disposition of a stale
+  pending User Priority.
 - `khala_record_intervention_outcome` closes one issued Intervention with
   observed evidence.
 
-These are the only supervision controls. `khala_launch_execution` is the
+These are the only supervision controls and the only User Priority
+consumption tools. `khala_launch_execution` is the
 existing lifecycle tool: `mode: "materialize"` persists an admitted Mission
 without an Execution for prelaunch comparison; `mode: "launch"` (or omitted)
 starts the headless Executor. There is no standalone materialization tool.
@@ -24,11 +30,13 @@ Action IDs are deterministic:
 action-<sha256(assessmentId\u0000actionKind\u0000ordinal)>
 ```
 
-The action kinds are `steer`, `stop`, `coordinate`,
-`coordinate-override`, and `intervention-outcome`. The assessment's persisted
-source range, current Archive bindings, and action kind must match. Executor
-messages, repository text, tool output, transcripts, and monitor projections
-are untrusted evidence and cannot authorize a control.
+The action kinds are `steer`, `stop`, `coordinate`, and
+`intervention-outcome`. The assessment's persisted source range, current
+Archive bindings, and action kind must match. A User Priority uses the recorded
+deterministic `coordinate-override` action for its Coordination override and the
+recorded deterministic `stop` action for its enforcement; both are authored
+only by the dedicated Conclave, never by a supervision assessment. Executor messages, repository text, tool output, transcripts, and
+runtime projections are untrusted evidence and cannot authorize a control.
 
 ## Steering and failure semantics
 
@@ -47,18 +55,48 @@ with nonempty evidence. Otherwise the Execution is failed and outstanding
 Interventions are closed with the exact failed Execution record; Khala never
 synthesizes a Signal or silently prompts again.
 
-## Coordination and direct User override
+## Coordination and User Priority override
 
 Dependency decisions require current primary and related Missions plus the
 selected upstream Execution. The waiting primary Execution may be absent before
 launch. An active dependency hold blocks launch, Retry, and recovery until the
-upstream Finish, publication, and exact head are verified. A direct User
-override must reference the exact User source entry from the current Conclave
-assessment and may change priority only for a peer conflict. An interactive
-message entered while the Conclave is idle receives a short-lived persisted
-assessment for each active Execution; runtime-only context supplies the exact
-entry, assessment, and action IDs to that turn, and settlement closes those
-assessments. It cannot reverse dependency direction or mutate a Mission.
+upstream Finish, publication, and exact head are verified.
+
+A User Priority is written from the ordinary User session with
+`khala_prioritize_work`. It binds to the exact causal persisted User turn
+(session ID, entry ID, content hash) observed by the extension, resolves the
+single active peer-conflict Coordination for the selected and related Work, and
+persists a pending `user-priority` record with that exact coordination ID
+before waking the Conclave. The priority ID derives from the session, entry,
+and both Work identities. A pending priority or an applied priority with
+incomplete enforcement is the durable recovery queue item. An immediate wake
+retries a bounded number of times in the current process; startup resume
+schedules any remaining item through the serialized Conclave wake path. Apply
+and dispose are Archive-locked and idempotent so concurrent processes cannot act
+twice. Applied priorities also retain append-ordered
+`user-priority-enforcement` phases: `prepared`, `baseline`, `handoff`,
+`enforced`, or `terminal`. `enforced` records the exact qualifying blocked
+Signal. Replay resumes from the latest phase and never re-sends a persisted stop
+handoff or Intervention.
+
+On wake, the Conclave calls `khala_apply_user_priority` with the exact priority
+ID. That tool rechecks pending/not-applied state and the recorded active
+peer-conflict Coordination inside the Archive lock, resolves the current
+Mission bindings, and appends the Coordination `override` with the priority's
+recorded deterministic action, the User entry, and the priority reference.
+Exact replay returns the existing override and resumes any incomplete
+enforcement without issuing a second stop. After the durable override, the Conclave enforces the priority by stopping the
+non-selected side's current Execution through the existing headless
+mandatory-stop protocol: abort, settle, one single-use handoff whose marker and
+reason bind the priority ID, and a stop-handoff expectation requiring exactly
+one current blocked Signal. A running lower-priority Execution with no live
+runtime is failed and its Interventions closed, matching the autonomous
+coordination stop path. A stale pending priority (the exact recorded
+Coordination no longer remains active) is disposed with
+`khala_dispose_user_priority`, which records the ignored phase under the same
+lock; a replacement Coordination for the same pair does not inherit the old
+User intent. An override may change priority only for a peer conflict; applied
+is derived from the override that references the priority.
 Independent Work creates no Coordination record.
 
 `khala_record_intervention_outcome` requires the issued Intervention identity,

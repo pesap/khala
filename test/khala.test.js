@@ -31,9 +31,9 @@ import {
 	writeExecutorRecord,
 } from "../dist/src/khala-executor-registry.js";
 import { appendPullRequestRecord, canRecordPullRequestReview, registerKhalaReview } from "../dist/src/khala-review.js";
-import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { listSignals, readSignal } from "../dist/src/khala-signal.js";
 import { isSignal, isV2Verdict, EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
+import { buildKhalaAttention } from "../dist/src/khala-attention.js";
 import { buildOracleArguments, buildOracleCommand, parseOracleOutput, registerKhalaOracle } from "../dist/src/khala-oracle.js";
 import { materializeMissingRetrySuccessor } from "../dist/src/khala-verdict-recovery.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
@@ -270,13 +270,21 @@ test("sessions expose only role-authorized Khala tools and schemas", () => {
 	const expectedByRole = new Map([
 		[
 			"user",
-			["khala_oracle", "khala_read_archive", "khala_record_pull_request_review", "khala_submit_work"],
+			[
+				"khala_oracle",
+				"khala_prioritize_work",
+				"khala_read_archive",
+				"khala_record_pull_request_review",
+				"khala_submit_work",
+			],
 		],
 		[
 			"conclave",
 			[
 				"khala_admit_work",
+				"khala_apply_user_priority",
 				"khala_coordinate_work",
+				"khala_dispose_user_priority",
 				"khala_launch_execution",
 				"khala_launch_observer",
 				"khala_read_archive",
@@ -427,85 +435,15 @@ test("Conclave recreation reports setup before scheduling recovery", async () =>
 	}
 });
 
-test("an idle direct User turn receives persisted override provenance for every active Execution", () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-direct-user-test-"));
-	const projectPath = join(root, "project");
+test("the direct Conclave-session input path is removed and User sessions get khala_prioritize_work", () => {
 	const events = new Map();
-	const branch = [
-		{ id: "role", type: "custom", customType: "khala-role", data: { role: "conclave" } },
-		{ id: "conclave", type: "custom", customType: "khala-conclave", data: { projectPath } },
-	];
-	let entryOrdinal = 0;
-	try {
-		writeExecutorRecord(
-			createExecutorRecord(
-				{
-					executionId: "direct-execution",
-					workId: "direct-work",
-					executorName: "Direct Executor",
-					kind: "executor",
-					participantId: "direct-participant",
-					purpose: { kind: "mission", missionId: "direct-mission" },
-					missionId: "direct-mission",
-					projectPath,
-					sandboxPath: join(root, "sandbox"),
-					launcher: "headless-rpc",
-					piSessionId: "direct-executor-session",
-					sessionPath: join(root, "executor.jsonl"),
-					promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
-				},
-				"running",
-			),
-		);
-		const pi = createPiStub(new Map(), new Map(), new Map(), {
-			events,
-			appendEntry(customType, data) {
-				entryOrdinal += 1;
-				branch.push({ id: `custom-${entryOrdinal}`, type: "custom", customType, data });
-			},
-		});
-		createExtension(pi);
-		const sessionManager = {
-			getBranch: () => branch,
-			getEntries: () => branch,
-			getEntry: (id) => branch.find((entry) => entry.id === id),
-			getSessionId: () => "direct-conclave-session",
-			getSessionFile: () => join(root, "conclave.jsonl"),
-		};
-		const context = { cwd: projectPath, sessionManager };
-		const userMessage = { role: "user", content: "Prioritize direct-work over its peer conflict." };
-		events.get("input")({ source: "interactive", text: userMessage.content }, context);
-		branch.push({ id: "direct-user-entry", type: "message", message: userMessage });
-		events.get("message_end")({ message: userMessage }, context);
-
-		const assessment = branch.find(
-			(entry) =>
-				entry.type === "custom" &&
-				entry.customType === "khala-supervision-assessment-start" &&
-				entry.data.sourceKind === "direct-user",
-		);
-		assert.ok(assessment);
-		const marker = branch.find(
-			(entry) => entry.type === "custom" && entry.customType === "khala-conclave-direct-user-entry",
-		);
-		assert.equal(marker.data.entryId, "direct-user-entry");
-		assert.equal(marker.data.assessmentId, assessment.data.assessmentId);
-		const transformed = events.get("context")({ messages: [userMessage] }, context);
-		assert.match(transformed.messages.at(-1).content, /coordinate-override actionId=/);
-		assert.match(transformed.messages.at(-1).content, /userEntryId=direct-user-entry/);
-
-		events.get("agent_settled")({}, context);
-		assert.ok(
-			branch.some(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === "khala-supervision-assessment-complete" &&
-					entry.data.assessmentId === assessment.data.assessmentId,
-			),
-		);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+	const tools = new Map();
+	createExtension(createPiStub(new Map(), tools, new Map(), { events }));
+	assert.equal(events.has("input"), false);
+	assert.equal(events.has("context"), false);
+	assert.equal(events.has("agent_settled"), false);
+	assert.equal(tools.has("khala_prioritize_work"), true);
+	assert.equal(tools.has("khala_coordinate_work"), true);
 });
 
 test("launched Executor status uses the Executor name after marker registration", () => {
@@ -2417,43 +2355,24 @@ test("failed Conclave wakes are durable without assuming Executor state", async 
 				}),
 			/is duplicated/,
 		);
-		const context = {
-			cwd: projectPath,
-			isIdle: () => true,
-			isProjectTrusted: () => false,
-			sessionManager: { getSessionFile: () => undefined },
-		};
-		const setupSessionSource = createSessionSource(
-			context,
-			coordinator.getConclaveSessionPath,
-			coordinator.getConclaveUserSessionPath,
-		);
-		const setupConclave = setupSessionSource.getActiveSessions("").find((session) => session.role === "Conclave");
-		assert.equal(setupConclave.state, "failed");
-		assert.equal(setupConclave.action, "run setup");
-		assert.equal(setupConclave.displayOnly, true);
-		assert.notEqual(setupConclave.sessionPath, "");
-		assert.match(setupConclave.task, /supervision configuration is incomplete/);
+
+		const attention = buildKhalaAttention(projectPath, false);
+		assert.equal(attention.condition, "action-required");
+		assert.equal(attention.recovery?.kind, "setup");
+		assert.match(attention.recovery?.message ?? "", /supervision configuration is incomplete/);
 
 		appendWake(projectPath, "later-successful-work", "woken");
-		const unresolvedConclave = setupSessionSource
-			.getActiveSessions("")
-			.find((session) => session.role === "Conclave");
-		assert.equal(unresolvedConclave.state, "failed");
-		assert.equal(unresolvedConclave.action, "run setup");
-		assert.match(unresolvedConclave.task, /supervision configuration is incomplete/);
+		const unresolvedAttention = buildKhalaAttention(projectPath, false);
+		assert.equal(unresolvedAttention.condition, "action-required");
+		assert.equal(unresolvedAttention.recovery?.kind, "setup");
 
 		appendWake(projectPath, "wake-failure-work", "failed", {
 			failure: "The configured Conclave runtime failed.",
 			recovery: "recreate",
 		});
-		const recreateSessionSource = createSessionSource(context, () => undefined, () => undefined);
-		const recreateConclave = recreateSessionSource
-			.getActiveSessions("")
-			.find((session) => session.role === "Conclave");
-		assert.equal(recreateConclave.action, "run /khala-recreate");
-		assert.equal(recreateConclave.displayOnly, true);
-		assert.equal(recreateConclave.sessionPath, "");
+		const recreateAttention = buildKhalaAttention(projectPath, false);
+		assert.equal(recreateAttention.condition, "action-required");
+		assert.equal(recreateAttention.recovery?.kind, "recreate");
 	} finally {
 		await coordinator.dispose();
 		delete process.env.PI_CODING_AGENT_DIR;

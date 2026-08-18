@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +8,7 @@ import { appendArchiveRecord, listArchiveRecords } from "../dist/src/khala-archi
 import { updateExecutorRecord } from "../dist/src/khala-executor-registry.js";
 import { deterministicActionId, deterministicAssessmentId, SupervisionController } from "../dist/src/khala-supervision.js";
 import {
-  DIRECT_USER_SOURCE_ENTRY,
+  COORDINATE_PARAMETERS,
   mandatoryStopPrompt,
   registerKhalaSupervisionTools,
   recordCoordination,
@@ -30,11 +29,13 @@ function fakePi() {
   };
 }
 
-test("Supervision control registers exactly the three Conclave supervision tools", () => {
+test("Supervision control registers the five dedicated Conclave control tools", () => {
   const pi = fakePi();
   registerKhalaSupervisionTools(pi, { isDedicatedConclaveSession: () => true });
   assert.deepEqual(toolsByName(pi), [
+    "khala_apply_user_priority",
     "khala_coordinate_work",
+    "khala_dispose_user_priority",
     "khala_record_intervention_outcome",
     "khala_steer_execution",
   ]);
@@ -283,9 +284,13 @@ function appendSignal(root, fixture, signalId, kind) {
   });
 }
 
-test("dependency Coordination records exact upstream identity and rejects User priority override", async () => {
+test("dependency Coordination records exact upstream identity through the decision-only schema", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-coordinate-"));
   try {
+    assert.equal(COORDINATE_PARAMETERS.properties.phase.const, "decision");
+    assert.equal("userEntryId" in COORDINATE_PARAMETERS.properties, false);
+    assert.equal("priorityId" in COORDINATE_PARAMETERS.properties, false);
+
     const fixture = createFixture(root, "primary");
     appendSide(root, "related", fixture.assignment);
     const decision = {
@@ -309,13 +314,6 @@ test("dependency Coordination records exact upstream identity and rejects User p
     };
     const first = await recordCoordination(decision, fixture.context, { isDedicatedConclaveSession: () => true });
     assert.equal(first.details.upstreamWorkId, "work-related");
-    const userEntryId = fixture.context.sessionManager.appendMessage({ role: "user", content: "Override the selected priority", timestamp: Date.now() });
-    fixture.context.sessionManager.appendCustomEntry(DIRECT_USER_SOURCE_ENTRY, { entryId: userEntryId, source: "interactive", sessionId: fixture.context.sessionManager.getSessionId(), contentSha256: sha256("Override the selected priority"), assessmentId: fixture.assessmentId, assessmentStartEntryId: fixture.context.sessionManager.getEntries().find((entry) => entry.type === "custom" && entry.customType === "khala-supervision-assessment-start").id });
-    const override = { ...decision, actionId: deterministicActionId(fixture.assessmentId, "coordinate-override"), phase: "override", selectedWorkId: fixture.workId, selectedMissionId: fixture.missionId, selectedExecutionId: fixture.executionId, userEntryId, reason: "The User explicitly selected the primary Work priority for this review window." };
-    await assert.rejects(
-      () => recordCoordination(override, fixture.context, { isDedicatedConclaveSession: () => true }),
-      /only for peer-conflict/,
-    );
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -397,37 +395,6 @@ test("steering rejects authority-changing mutation language while retaining cano
   }
 });
 
-test("direct User override rejects mismatched exact content and assessment provenance", async () => {
-  const root = mkdtempSync(join(tmpdir(), "khala-supervision-controls-user-fence-"));
-  try {
-    const fixture = createFixture(root, "user-fence");
-    const userEntryId = fixture.context.sessionManager.appendMessage({ role: "user", content: "Choose this side", timestamp: Date.now() });
-    fixture.context.sessionManager.appendCustomEntry(DIRECT_USER_SOURCE_ENTRY, { entryId: userEntryId, source: "interactive", sessionId: fixture.context.sessionManager.getSessionId(), contentSha256: sha256("wrong content"), assessmentId: fixture.assessmentId });
-    const base = {
-      assessmentId: fixture.assessmentId,
-      actionId: deterministicActionId(fixture.assessmentId, "coordinate-override"),
-      coordinationId: "coordination-user-fence",
-      phase: "override",
-      relation: "peer-conflict",
-      workId: fixture.workId,
-      missionId: fixture.missionId,
-      executionId: fixture.executionId,
-      relatedWorkId: "work-related",
-      relatedMissionId: "mission-related",
-      relatedExecutionId: "execution-related",
-      selectedWorkId: fixture.workId,
-      selectedMissionId: fixture.missionId,
-      selectedExecutionId: fixture.executionId,
-      reason: "The User explicitly selected this priority.",
-      userEntryId,
-    };
-    appendSide(root, "related", fixture.assignment);
-    await assert.rejects(() => recordCoordination(base, fixture.context, { isDedicatedConclaveSession: () => true }), /marker does not match/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("supervision control authorization fails closed before inspecting untrusted parameters", async () => {
   const params = {
     assessmentId: "assessment-1",
@@ -473,9 +440,6 @@ function steerParams(fixture, actionKind) {
   };
 }
 
-function sha256(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
 
 function appendSide(root, suffix, assignment) {
   const workId = `work-${suffix}`;

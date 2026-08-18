@@ -1,21 +1,16 @@
 import assert from "node:assert/strict";
 import {
-	appendFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
-	readFileSync,
-	renameSync,
-	statSync,
 	readdirSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
-import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import reviewExtension, {
 	applyReviewState,
 	createBranchSelectorItems,
@@ -31,7 +26,6 @@ import { appendArchiveRecord, getArchivePath, listArchiveRecords, withArchiveLoc
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { readCurrentMission } from "../dist/src/khala-archive-projections.js";
 import { createExecutorStarter } from "../dist/src/executor.js";
-import { registerHeadlessRuntime, unregisterHeadlessRuntime } from "../dist/src/executor-rpc.js";
 import {
 	createExecutorRecord,
 	listExecutorRecords,
@@ -46,9 +40,6 @@ import {
 } from "../dist/src/khala-review.js";
 import { registerKhalaLearning } from "../dist/src/khala-learning.js";
 import { registerKhalaObserver } from "../dist/src/khala-observer.js";
-import { KhalaSessionList } from "../dist/src/khala-session-list.js";
-import { toggleKhalaPopup } from "../dist/src/khala-popup.js";
-import { createSessionSource } from "../dist/src/khala-sessions.js";
 import { registerKhalaWork } from "../dist/src/khala-work.js";
 
 function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}) {
@@ -165,11 +156,10 @@ test("reviewable Pull Requests require runtime-confirmed publication evidence", 
 	}
 });
 
-test("/khala creates and exposes a persisted project Conclave when absent", async () => {
+test("/khala shows a read-only attention summary without creating a Conclave session", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-test-"));
 	const agentDir = join(root, "agent");
 	const projectPath = join(root, "project");
-	const userSessionPath = join(root, "user.jsonl");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 
 	try {
@@ -179,64 +169,23 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 		const context = {
 			cwd: projectPath,
 			mode: "print",
-			sessionManager: {
-				getSessionFile() {
-					return userSessionPath;
-				},
-				getBranch() {
-					return [];
-				},
-			},
+			isProjectTrusted: () => false,
 			ui: {
-				notify(message) {
-					notifications.push(message);
+				notify(message, level) {
+					notifications.push({ message, level });
 				},
 			},
 		};
 
 		await commands.get("khala").handler("", context);
-
 		assert.equal(notifications.length, 1);
+		assert.equal(notifications[0].level, "info");
+		assert.match(notifications[0].message, /no active Work/);
+		assert.match(notifications[0].message, /No user action required/);
+		// The read-only summary must not create a Conclave session as a side effect.
 		const [projectDirectory] = readdirSync(join(agentDir, "khala", "conclaves"));
-		const mappingPath = join(agentDir, "khala", "conclaves", projectDirectory, "session.json");
-		const mapping = JSON.parse(readFileSync(mappingPath, "utf8"));
-		const { sessionPath } = mapping;
-		assert.equal(typeof sessionPath, "string");
-		assert.equal(mapping.userSessionPath, userSessionPath);
-		const entries = readFileSync(sessionPath, "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line));
-		assert.ok(entries.some((entry) => entry.customType === "khala-conclave"));
-		assert.ok(entries.some((entry) => entry.name === "Khala Conclave"));
+		assert.equal(existsSync(join(agentDir, "khala", "conclaves", projectDirectory, "session.json")), false);
 
-		writeExecutorRecord(
-			createExecutorRecord({
-				executionId: "execution-1",
-				workId: "work-1",
-				executorName: "Artanis",
-				projectPath,
-				sandboxPath: join(root, "sandbox"),
-				launcher: "tmux",
-			}),
-		);
-		appendFileSync(
-			sessionPath,
-			`${JSON.stringify({
-				type: "custom",
-				id: "executor-budget",
-				parentId: null,
-				timestamp: "2026-01-01T00:00:00.000Z",
-				customType: "khala-supervision-budget",
-				data: {
-					executionId: "execution-1",
-					actor: "executor",
-					costUsd: 0.25,
-					thresholdUsd: 1,
-					overrun: false,
-				},
-			})}\n`,
-		);
 		appendArchiveRecord(projectPath, {
 			type: "submission",
 			workId: "work-1",
@@ -245,277 +194,23 @@ test("/khala creates and exposes a persisted project Conclave when absent", asyn
 				projectPath,
 				status: "queued",
 				work: {
-					title: "Improve session roster",
-					objective: "Make active sessions easier to scan.",
+					title: "Improve the attention summary",
+					objective: "Make active Work easier to scan.",
 					context: "",
-					scope: "Khala session list",
+					scope: "Khala attention summary",
 					acceptanceCriteria: ["Active work is visible."],
 					constraints: [],
 					plan: ["Render active work titles."],
-					validation: ["Run the session tests."],
+					validation: ["Run the attention tests."],
 				},
-				archivePath: join(root, "archive.jsonl"),
+				archivePath: join(projectPath, "archive.jsonl"),
 			},
 		});
-
-		const source = createSessionSource(
-			{
-				cwd: projectPath,
-				sessionManager: {
-					getSessionFile() {
-						return sessionPath;
-					},
-				},
-			},
-			() => sessionPath,
-			() => mapping.userSessionPath,
-		);
-		const sessions = source.getActiveSessions(sessionPath);
-		const userSession = sessions.find((session) => session.id === "user");
-		const conclaveSession = sessions.find((session) => session.id === "conclave");
-		const executorSession = sessions.find((session) => session.id === "executor:execution-1");
-		assert.equal(userSession?.sessionPath, userSessionPath);
-		assert.equal(userSession?.isCurrent, false);
-		assert.equal(userSession?.displayOnly, false);
-		assert.equal(userSession?.action, "context switch");
-		assert.equal(userSession?.sessionPathLabel, relative(projectPath, userSessionPath));
-		assert.equal(conclaveSession?.sessionPath, sessionPath);
-		assert.equal(conclaveSession?.isCurrent, true);
-		assert.equal(conclaveSession?.displayOnly, false);
-		assert.equal(conclaveSession?.state, "input");
-		assert.equal(conclaveSession?.stateLabel, "Input Required");
-		assert.equal(conclaveSession?.action, "context switch");
-		assert.equal(executorSession?.displayOnly, true);
-		assert.equal(executorSession?.sessionPath, "");
-		assert.equal(executorSession?.sessionPathLabel, "separate Pi process");
-		assert.equal(executorSession?.sandboxPath, join(root, "sandbox"));
-		assert.equal(executorSession?.sandboxPathLabel, relative(projectPath, join(root, "sandbox")));
-		assert.equal(executorSession?.state, "stalled");
-		assert.equal(executorSession?.task, "Improve session roster");
-		assert.equal(executorSession?.executionMonitor?.runtimeState, "unavailable");
-		assert.equal(executorSession?.executionMonitor?.supervisionState, "unavailable");
-		assert.equal(executorSession?.executionMonitor?.latestTurnCost.executor.costUsd, 0.25);
-
-		const runtime = {};
-		registerHeadlessRuntime("execution-1", runtime);
-		try {
-			const liveExecutor = source
-				.getActiveSessions(sessionPath)
-				.find((session) => session.id === "executor:execution-1");
-			assert.equal(liveExecutor?.state, "working");
-			assert.equal(liveExecutor?.executionMonitor?.runtimeState, "running");
-			assert.equal(liveExecutor?.executionMonitor?.supervisionState, "connected");
-		} finally {
-			unregisterHeadlessRuntime("execution-1", runtime);
-		}
-		const orphanedExecutor = source
-			.getActiveSessions(sessionPath)
-			.find((session) => session.id === "executor:execution-1");
-		assert.equal(orphanedExecutor?.state, "stalled");
-		assert.equal(orphanedExecutor?.executionMonitor?.runtimeState, "unavailable");
-
-		const updatedBudget = JSON.stringify({
-			type: "custom",
-			id: "executor-budget-updated",
-			parentId: null,
-			timestamp: "2026-01-01T00:01:00.000Z",
-			customType: "khala-supervision-budget",
-			data: {
-				executionId: "execution-1",
-				actor: "executor",
-				costUsd: 0.5,
-				thresholdUsd: 1,
-				overrun: false,
-			},
-		});
-		const splitIndex = Math.floor(updatedBudget.length / 2);
-		appendFileSync(sessionPath, updatedBudget.slice(0, splitIndex));
-		assert.equal(
-			source
-				.getActiveSessions(sessionPath)
-				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
-			0.25,
-		);
-		appendFileSync(sessionPath, `${updatedBudget.slice(splitIndex)}\n`);
-		assert.equal(
-			source
-				.getActiveSessions(sessionPath)
-				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
-			0.5,
-		);
-
-		const fixedSessionTime = new Date("2026-01-01T00:02:00.000Z");
-		utimesSync(sessionPath, fixedSessionTime, fixedSessionTime);
-		assert.equal(
-			source
-				.getActiveSessions(sessionPath)
-				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
-			0.5,
-		);
-		const replacementSessionPath = join(root, "replacement-conclave.jsonl");
-		const sessionStats = statSync(sessionPath);
-		writeFileSync(replacementSessionPath, readFileSync(sessionPath, "utf8").replaceAll("0.5", "0.7"));
-		utimesSync(replacementSessionPath, fixedSessionTime, fixedSessionTime);
-		const replacementStats = statSync(replacementSessionPath);
-		assert.equal(replacementStats.size, sessionStats.size);
-		assert.equal(replacementStats.mtimeMs, sessionStats.mtimeMs);
-		renameSync(replacementSessionPath, sessionPath);
-		assert.equal(
-			source
-				.getActiveSessions(sessionPath)
-				.find((session) => session.id === "executor:execution-1")?.executionMonitor?.latestTurnCost.executor.costUsd,
-			0.7,
-		);
-
-		updateExecutorRecord(projectPath, "execution-1", { status: "failed" });
-		const failedExecutor = source
-			.getActiveSessions(sessionPath)
-			.find((session) => session.id === "executor:execution-1");
-		assert.equal(failedExecutor?.state, "failed");
-		assert.equal(failedExecutor?.displayOnly, true);
-
-		writeExecutorRecord(
-			createExecutorRecord({
-				executionId: "execution-2",
-				workId: "work-1",
-				executorName: "Fenix",
-				projectPath,
-				sandboxPath: join(root, "sandbox-2"),
-				launcher: "tmux",
-			}),
-		);
-		const successorSessions = source.getActiveSessions(sessionPath);
-		assert.equal(successorSessions.some((session) => session.id === "executor:execution-1"), false);
-		assert.equal(successorSessions.find((session) => session.id === "executor:execution-2")?.state, "stalled");
-
-		updateExecutorRecord(projectPath, "execution-1", { status: "finished" });
-		const finishedExecutor = source
-			.getActiveSessions(sessionPath)
-			.find((session) => session.id === "executor:execution-1");
-		assert.equal(finishedExecutor, undefined);
-
-		updateExecutorRecord(projectPath, "execution-2", { status: "finished" });
-		const pullRequest = {
-			pullRequestId: "pr-execution-2",
-			workId: "work-1",
-			missionId: "mission-2",
-			executionId: "execution-2",
-			status: "draft",
-			url: "https://github.com/example/repo/pull/2",
-			remoteConfirmedAt: new Date().toISOString(),
-			changedFiles: [],
-			diffSummary: "",
-			validationResults: [],
-			reviewFeedback: [],
-			unresolvedGaps: [],
-			recordedAt: new Date().toISOString(),
-		};
-		appendPullRequestRecord(projectPath, pullRequest, false);
-		assert.ok(source.getActiveSessions(sessionPath).some((session) => session.id === "executor:execution-2"));
-		appendPullRequestRecord(
-			projectPath,
-			{ ...pullRequest, status: "closed", recordedAt: new Date().toISOString() },
-			false,
-		);
-		assert.equal(source.getActiveSessions(sessionPath).some((session) => session.id === "executor:execution-2"), false);
-
-		const unavailableSource = createSessionSource(
-			{
-				cwd: projectPath,
-				sessionManager: {
-					getSessionFile() {
-						return undefined;
-					},
-				},
-			},
-			() => sessionPath,
-			() => undefined,
-		);
-		const unavailableUser = unavailableSource.getActiveSessions("").find((session) => session.id === "user");
-		assert.equal(unavailableUser?.sessionPathLabel, "unavailable");
-		assert.equal(unavailableUser?.isCurrent, false);
-		const idleUserSource = createSessionSource(
-			{
-				cwd: projectPath,
-				isIdle() {
-					return true;
-				},
-				sessionManager: {
-					getSessionFile() {
-						return userSessionPath;
-					},
-				},
-			},
-			() => undefined,
-			() => userSessionPath,
-		);
-		const idleUser = idleUserSource.getActiveSessions(userSessionPath).find((session) => session.id === "user");
-		assert.equal(idleUser?.state, "input");
-
-		const busyUserSource = createSessionSource(
-			{
-				cwd: projectPath,
-				isIdle() {
-					return false;
-				},
-				sessionManager: {
-					getSessionFile() {
-						return userSessionPath;
-					},
-				},
-			},
-			() => undefined,
-			() => userSessionPath,
-		);
-		const busyUser = busyUserSource.getActiveSessions(userSessionPath).find((session) => session.id === "user");
-		assert.equal(busyUser?.state, "working");
-	} finally {
-		delete process.env.PI_CODING_AGENT_DIR;
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("Khala monitor reuses its roster until persisted state changes", () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-session-roster-cache-"));
-	const agentDir = join(root, "agent");
-	const projectPath = join(root, "project");
-	const conclavePath = join(root, "conclave.jsonl");
-	process.env.PI_CODING_AGENT_DIR = agentDir;
-	try {
-		writeFileSync(
-			conclavePath,
-			`${JSON.stringify({ type: "session", version: 3, id: "conclave", timestamp: "2026-01-01T00:00:00.000Z" })}\n`,
-		);
-		const source = createSessionSource(
-			{
-				cwd: projectPath,
-				sessionManager: {
-					getSessionFile() {
-						return conclavePath;
-					},
-				},
-			},
-			() => conclavePath,
-			() => undefined,
-		);
-
-		const initial = source.getActiveSessions(conclavePath);
-		assert.equal(initial.find((session) => session.id === "conclave")?.state, "input");
-		assert.strictEqual(source.getActiveSessions(conclavePath), initial);
-
-		appendFileSync(
-			conclavePath,
-			`${JSON.stringify({
-				type: "message",
-				id: "assistant-message",
-				parentId: null,
-				timestamp: "2026-01-01T00:01:00.000Z",
-				message: { role: "assistant", stopReason: "stop" },
-			})}\n`,
-		);
-		const refreshed = source.getActiveSessions(conclavePath);
-		assert.notStrictEqual(refreshed, initial);
-		assert.equal(refreshed.find((session) => session.id === "conclave")?.state, "review");
+		notifications.length = 0;
+		await commands.get("khala").handler("", context);
+		assert.equal(notifications.length, 1);
+		assert.match(notifications[0].message, /1 active Work submission/);
+		assert.doesNotMatch(notifications[0].message, /headless|supervision|unavailable|recovering|Executor/);
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
@@ -597,180 +292,6 @@ test("post-launch cleanup retries only resources whose cleanup failed", async ()
 	await launched.cleanup();
 	assert.equal(closeAttempts, 2);
 	assert.equal(sandboxRemovals, 1);
-});
-
-test("KhalaSessionList renders one flat session list, scrolls, and blocks display-only confirmation", () => {
-	const theme = {
-		fg(_color, text) {
-			return text;
-		},
-		bg(_color, text) {
-			return text;
-		},
-	};
-	const makeSession = (id, displayOnly, isCurrent = false) => ({
-		id,
-		name: id,
-		role: displayOnly ? "Executor" : "Conclave",
-		state: displayOnly ? "working" : "input",
-		stateLabel: "Active",
-		action: displayOnly ? "display only" : "context switch",
-		displayOnly,
-		isCurrent,
-		task: id === "user" ? "current project" : `Task ${id}`,
-		...(id === "executor-1"
-			? { latestSignal: { kind: "progress", summary: "checking fixtures", observedAt: "2026-01-01T00:00:00.000Z" } }
-			: {}),
-	});
-	const sessions = [
-		makeSession("user", false, true),
-		makeSession("conclave", false),
-		makeSession("executor-1", true),
-		makeSession("executor-2", true),
-		makeSession("executor-3", true),
-	];
-	const list = new KhalaSessionList(sessions, theme, getKeybindings());
-	const selected = [];
-	const confirmed = [];
-	list.onSelectionChange = (session) => selected.push(session.id);
-	list.onSelect = (session) => confirmed.push(session.id);
-
-	const initialRender = list.render(80).join("\n");
-	assert.doesNotMatch(initialRender, /CURRENT CONTEXT|AGENTS · DISPLAY ONLY/);
-	assert.match(initialRender, /user/);
-	assert.match(initialRender, /conclave/);
-	assert.match(initialRender, /executor-1/);
-	assert.match(initialRender, /progress/);
-	assert.match(initialRender, /sessions 1-4\/5/);
-
-	list.handleInput("\u001b[B");
-	list.handleInput("\u001b[B");
-	list.handleInput("\u001b[B");
-	list.handleInput("\u001b[B");
-	assert.equal(list.getSelectedSession()?.id, "executor-3");
-	assert.match(list.render(80).join("\n"), /sessions 2-5\/5/);
-	list.handleInput("\r");
-	assert.deepEqual(confirmed, []);
-	assert.deepEqual(selected, ["conclave", "executor-1", "executor-2", "executor-3"]);
-
-	list.updateSessions([sessions[0], sessions[1], makeSession("executor-new", true)]);
-	assert.equal(list.getSelectedSession()?.id, "user");
-	list.updateSessions(sessions.slice(0, 2));
-	assert.equal(list.getSelectedSession()?.id, "user");
-	assert.doesNotMatch(list.render(80).join("\n"), /AGENTS/);
-	assert.ok(list.render(20).every((line) => visibleWidth(line) <= 20));
-});
-
-test("Khala popup refreshes its session roster while open", async () => {
-	const theme = {
-		fg(_color, text) {
-			return text;
-		},
-		bg(_color, text) {
-			return text;
-		},
-		bold(text) {
-			return text;
-		},
-	};
-	const userSession = {
-		id: "user",
-		name: "You",
-		role: "User",
-		state: "input",
-		stateLabel: "Input Required",
-		action: "context switch",
-		displayOnly: false,
-		isCurrent: true,
-		task: "current project",
-		skills: [],
-		sessionPath: "/tmp/user.jsonl",
-		sessionPathLabel: "../../user.jsonl",
-	};
-	const executorSession = {
-		id: "executor:1",
-		name: "Executor",
-		role: "Executor",
-		state: "working",
-		stateLabel: "Active",
-		action: "display only",
-		displayOnly: true,
-		isCurrent: false,
-		task: "Work work-1",
-		skills: ["signals"],
-		sessionPath: "",
-		sessionPathLabel: "separate Pi process",
-		latestSignal: { kind: "progress", summary: "checking", observedAt: "2026-01-01T00:00:00.000Z" },
-	};
-	let sessions = [userSession];
-	const defaultKeybindings = getKeybindings();
-	const popupKeys = new Map([
-		["tui.select.up", ["ctrl+p"]],
-		["tui.select.down", ["ctrl+n"]],
-		["tui.select.confirm", ["ctrl+o"]],
-	]);
-	const popupKeybindings = {
-		matches(data, keybinding) {
-			return defaultKeybindings.matches(data, keybinding);
-		},
-		getKeys(keybinding) {
-			return popupKeys.get(keybinding) ?? defaultKeybindings.getKeys(keybinding);
-		},
-	};
-	let component;
-	let finish;
-	let customOptions;
-	let renderRequests = 0;
-	const source = {
-		getActiveSessions() {
-			return sessions;
-		},
-	};
-	const context = {
-		mode: "tui",
-		sessionManager: {
-			getSessionFile() {
-				return userSession.sessionPath;
-			},
-		},
-		ui: {
-			custom(factory, options) {
-				customOptions = options;
-				return new Promise((resolve) => {
-					finish = resolve;
-					component = factory(
-						{
-							requestRender() {
-								renderRequests += 1;
-							},
-						},
-						theme,
-						popupKeybindings,
-						finish,
-					);
-				});
-			},
-		},
-	};
-
-	const popupPromise = toggleKhalaPopup(context, source);
-	await new Promise((resolve) => setTimeout(resolve, 1100));
-	assert.equal(renderRequests, 0);
-	sessions = [userSession, executorSession];
-	await new Promise((resolve) => setTimeout(resolve, 1100));
-	assert.equal(renderRequests, 1);
-	const renderedPopup = component.render(80).join("\n");
-	assert.doesNotMatch(renderedPopup, /CURRENT CONTEXT|AGENTS · DISPLAY ONLY/);
-	assert.match(renderedPopup, /Executor/);
-	assert.match(renderedPopup, /progress/);
-	assert.match(renderedPopup, /ctrl\+o to switch context/);
-	assert.match(renderedPopup, /ctrl\+p\/ctrl\+n select/);
-	assert.match(renderedPopup, /ctrl\+o switch\/view/);
-	assert.ok(component.render(20).every((line) => visibleWidth(line) <= 20));
-	component.handleInput("\u001b");
-	finish?.(null);
-	await popupPromise;
-	assert.equal(customOptions, undefined);
 });
 
 test("ownerless and malformed stale Archive locks are recovered", () => {

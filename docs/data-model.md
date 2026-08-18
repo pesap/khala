@@ -16,7 +16,7 @@ record is execution-bound. Current record types are:
 ```text
 submission, conclave-wake, conclave-recovery, mandate, mission, execution,
 signal, verdict, verdict-delivery, learning, counsel, pull-request,
-work-outcome, coordination, intervention
+work-outcome, coordination, intervention, user-priority, user-priority-enforcement
 ```
 
 Append order is the historical authority. Timestamps do not repair ordering.
@@ -92,14 +92,34 @@ for later records.
 - **Work Outcome**: verified merged Pull Request evidence, Work/Mandate/
   Mission/Execution bindings, validation and review evidence, accepting actor,
   and timestamp. It is the acceptance record; Finish is not acceptance.
+- **User Priority**: selected and related Work, the exact Coordination it
+  targets, a bounded reason, exact User provenance (session ID, entry ID,
+  content hash), and a `pending` or `ignored` phase. The deterministic
+  `priorityId` derives from the session, entry, and both Work identities.
+  Pending is written by the User tool; `ignored` is the stale terminal
+  disposition written by the Conclave. Applied is derived from the Coordination
+  override that references `priorityId`; it is never stored on this record.
+  A pending priority or an applied priority with incomplete enforcement is the
+  durable recovery queue item. Immediate wakes use bounded process-local retry;
+  startup resume reschedules any remaining item through the serialized Conclave
+  wake. Apply and dispose are Archive-locked and idempotent, so recovery never
+  applies a priority twice.
+- **User Priority Enforcement**: append-ordered `prepared`, `baseline`,
+  `handoff`, `enforced`, or `terminal` evidence for the deterministic stop of
+  the non-selected side. It binds the exact priority, Coordination, losing
+  Work/Mission/Execution, stop action, marker, baseline Signals, persisted stop
+  entries, qualifying blocked Signal, Intervention, or terminal Execution
+  record. Replay resumes from the latest phase; `enforced` requires the issued
+  stop Intervention and one causal blocked Signal, while `terminal` requires a
+  durable failed or finished Execution.
 
 ## Coordination and Intervention records
 
 **Coordination** records append-only phases for dependency or peer conflict,
 including the two current Missions, selected priority, optional Execution
 identities, exact remote/branch/upstream head, classification, reason, User
-source entry when it is a direct override, release/invalidation evidence, and
-causal resolution. A dependency hold may omit the waiting primary Execution but
+entry and priority when it is a User Priority override,
+release/invalidation evidence, and causal resolution. A dependency hold may omit the waiting primary Execution but
 must identify the selected upstream Execution. Direct invalidation carries an
 exact remote observation; transitive invalidation instead cites the preceding
 upstream invalidation and omits unobserved replacement/ref evidence. A null
@@ -121,8 +141,9 @@ Signals, Verdicts, or Coordination decisions.
 A persisted Conclave session contains hidden mission context, assessment start
 and completion entries, source entry IDs, deterministic assessment/action ID
 namespace, action reservations/completions, outage checkpoints, budget facts,
-settlement handoffs, and direct User source entries. It is a control audit
-surface, not a transcript mirror.
+settlement handoffs. User Priority provenance lives in the Archive, not the
+Conclave session transcript. The session is a control audit surface, not a
+transcript mirror.
 
 The Conclave model session is a disposable projection over Archive authority.
 Before opening it with Pi, Khala rotates the mapped session when its file is at
@@ -137,10 +158,11 @@ Executor Pi sessions remain in their own JSONL files. Supervision stores stable
 entry IDs, bounded message hashes, usage/cost facts, source ranges, prompt
 identity, and causal references needed for assessment and recovery. It does not
 copy raw prompts, assistant transcripts, tool output, or pane output into the
-Archive. Runtime events and monitor rows are projections over these bindings.
+Archive. Runtime events and supervision recovery are projections over these
+bindings. The attention summary derives only from authoritative Archive
+records; it does not read Executor sessions or expose supervision state.
 
-Supervision state (`connected`, `recovering`, `unavailable`, `settled`) is a
-projection, not a lifecycle record. Recovery validates the exact persisted Pi
+Recovery validates the exact persisted Pi
 session ID/path, catches up from the stable cursor, and fails only the affected
 Execution when the binding is missing, corrupt, or unrestartable.
 

@@ -33,13 +33,7 @@ path. A Retry creates a successor Mission; it never rewrites its predecessor.
 
 One runtime attempt to perform a Mission. An Execution has its own Participant
 Identity, isolated working environment, persisted Pi session and prompt
-binding, and headless RPC supervision state.
-
-### Supervision state
-
-The projected relationship between a current Execution and its Conclave
-supervisor: `connected`, `recovering`, `unavailable`, or `settled`. It is a
-monitor projection, not an authority record or lifecycle decision.
+binding, and headless RPC supervision.
 
 ### Upstream base
 
@@ -63,9 +57,25 @@ authority and is not a Signal or Verdict.
 ### Coordination
 
 Structured Conclave scheduling evidence relating current Work and Missions. A
-Coordination may record a dependency, a peer conflict, or a direct User
-priority override. Dependency holds preserve the selected upstream Execution
-and exact published base; User overrides are legal only for peer conflicts.
+Coordination records a dependency or peer-conflict decision by the Conclave and
+a User priority override authored by `khala_apply_user_priority`. Dependency
+holds preserve the selected upstream Execution and exact published base;
+overrides are legal only for peer conflicts and are authorized by a pending
+User Priority record.
+
+### User Priority
+
+Archive-backed User intent, written from the ordinary User session, that
+selected Work proceeds before related Work in exactly one active peer-conflict
+Coordination. It binds to the exact causal persisted User turn (session ID,
+entry ID, content hash) observed by the extension and records the exact
+Coordination identity. The priority ID derives from the session, entry, and
+both Work identities. The Conclave is the only actor that applies it as a
+Coordination override (`khala_apply_user_priority`) or records its stale
+ignored disposition (`khala_dispose_user_priority`). Applied is derived from
+the override that references the priority; it is never stored on the priority
+record itself. Pending unapplied priorities are the durable recovery queue item
+rescheduled on startup resume.
 
 ### Verdict
 
@@ -130,7 +140,7 @@ Counsel, but cannot admit Work, launch executions, or issue Verdicts.
 ## Record authorship
 
 ```text
-User      → queued Work, Pull Request review, and merge evidence
+User      → queued Work, Pull Request review, merge evidence, and User Priority
 Conclave  → admission Mandate, Verdict, and Work Outcome
 Khala runtime → Verdict Delivery and Pull Request handoff evidence
 Executor  → Signal

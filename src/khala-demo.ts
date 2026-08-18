@@ -49,7 +49,7 @@ type SubmitDemoWork = (
 type KhalaDemoDependencies = Readonly<{
 	ensureConclaveSession: EnsureConclaveSession;
 	submitWork: SubmitDemoWork;
-	openMonitor: (context: ExtensionContext) => Promise<void>;
+	openAttention: (context: ExtensionContext) => Promise<void>;
 }>;
 
 const DEMO_WORKFLOWS: readonly DemoWorkflow[] = [
@@ -102,13 +102,12 @@ function registerKhalaDemo(pi: ExtensionAPI, dependencies: KhalaDemoDependencies
 					[
 						`Khala live demo ${result.demoId} launched.`,
 						`${result.workIds.length} dummy Work submissions sent to the Conclave.`,
-						"Watch the Conclave, headless Executors, Signals, and Verdicts in the Khala monitor.",
 						"The demo does not add messages or entries to your current session.",
 						`Archive: ${result.archivePath}`,
 					].join("\n"),
 					"info",
 				);
-				await dependencies.openMonitor(context);
+				await dependencies.openAttention(context);
 			} catch (error) {
 				context.ui.notify(`Khala demo failed: ${formatError(error)}`, "error");
 			}

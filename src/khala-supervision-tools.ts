@@ -20,13 +20,17 @@ import { type Static, Type } from "typebox";
 import { getHeadlessRuntime, type HeadlessExecutorRuntime } from "./executor-rpc.js";
 import { appendArchiveRecord, listArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import {
+	isUserPriorityApplied,
 	listCoordinationRecords,
 	listExecutionRecords,
 	listInterventionRecords,
 	listSignalRecords,
 	listVerdictRecords,
+	projectCoordinations,
 	readCurrentMission,
 	readMandate,
+	readUserPriority,
+	readUserPriorityEnforcement,
 	validateProspectiveCoordinationGraph,
 } from "./khala-archive-projections.js";
 import { readExecutorRecord } from "./khala-executor-registry.js";
@@ -38,13 +42,16 @@ import {
 	type InterventionIssuanceRecord,
 	type InterventionMode,
 	type InterventionOutcomeRecord,
+	isSignal,
 	type MissionRecord,
+	UserPriorityEnforcementPhase,
+	type UserPriorityEnforcementRecord,
+	type UserPriorityRecord,
 } from "./khala-model.js";
 import { KhalaRole, readSessionRole } from "./khala-role.js";
 import { deterministicActionId, deterministicAssessmentId } from "./khala-supervision.js";
 import { failExecutionAndCloseInterventions } from "./khala-supervision-recovery.js";
 
-const DIRECT_USER_SOURCE_ENTRY = "khala-conclave-direct-user-entry";
 const SUPERVISION_ACTION_START_ENTRY = "khala-supervision-action-start";
 const SUPERVISION_ACTION_RECOVERY_ENTRY = "khala-supervision-action-recovery";
 const SUPERVISION_ACTION_COMPLETE_ENTRY = "khala-supervision-action-complete";
@@ -61,6 +68,8 @@ const MUTATION_PATTERN =
 const MUTATION_AUTHORITY_PATTERN =
 	/\b(no\s+longer\s+applies?|disregard|optional|not\s+required|different\s+deliverable|new\s+deliverable|instead\s+of|substitute|redefine)\b/i;
 const SAFE_ID = /^[A-Za-z0-9._:-]+$/;
+const priorityStopExpectationRegistrations = new WeakMap<object, Set<string>>();
+const priorityStopDeliveries = new Map<string, Promise<void>>();
 
 type SteerInput = Static<typeof STEER_PARAMETERS>;
 type CoordinateInput = Static<typeof COORDINATE_PARAMETERS>;
@@ -102,6 +111,7 @@ type StopHandoffExpectation = Readonly<{
 	settlementObserved: boolean;
 	settlementTarget?: number;
 	assessmentId?: string;
+	onEnforced?: (blockedSignalId: string) => void | Promise<void>;
 }>;
 
 type RuntimeControl = Pick<
@@ -116,6 +126,7 @@ type RuntimeControl = Pick<
 	| "getEntries"
 > & {
 	getStopHandoffSettlementObservation?: () => Readonly<{ target?: number; observed: boolean }>;
+	isStopPending?: boolean;
 	stopForRecovery?: () => Promise<boolean>;
 };
 
@@ -166,7 +177,7 @@ const COORDINATE_PARAMETERS = Type.Object({
 	assessmentId: Type.Optional(Type.String()),
 	actionId: Type.String(),
 	coordinationId: Type.String(),
-	phase: Type.Union([Type.Literal("decision"), Type.Literal("override")]),
+	phase: Type.Literal("decision"),
 	relation: Type.Union([Type.Literal("dependency"), Type.Literal("peer-conflict")]),
 	workId: Type.String(),
 	missionId: Type.String(),
@@ -182,7 +193,6 @@ const COORDINATE_PARAMETERS = Type.Object({
 	reason: Type.String(),
 	remote: Type.Optional(Type.String()),
 	branch: Type.Optional(Type.String()),
-	userEntryId: Type.Optional(Type.String()),
 	classification: Type.Optional(
 		Type.Object({
 			observedFiles: Type.Array(Type.String()),
@@ -215,6 +225,18 @@ const OUTCOME_PARAMETERS = Type.Object({
 	failedExecutionRecordId: Type.Optional(Type.String()),
 });
 
+const DISPOSE_USER_PRIORITY_PARAMETERS = Type.Object({
+	priorityId: Type.String(),
+	reason: Type.String(),
+});
+
+type DisposeUserPriorityInput = Static<typeof DISPOSE_USER_PRIORITY_PARAMETERS>;
+
+const APPLY_USER_PRIORITY_PARAMETERS = Type.Object({
+	priorityId: Type.String(),
+});
+type ApplyUserPriorityInput = Static<typeof APPLY_USER_PRIORITY_PARAMETERS>;
+
 function registerKhalaSupervisionTools(pi: ExtensionAPI, options: SupervisionToolOptions): void {
 	pi.registerTool({
 		name: "khala_steer_execution",
@@ -233,8 +255,8 @@ function registerKhalaSupervisionTools(pi: ExtensionAPI, options: SupervisionToo
 		name: "khala_coordinate_work",
 		label: "Coordinate Khala Work",
 		description:
-			"Record one Conclave dependency, peer-conflict decision, or verified direct User override. Action kind: decision=coordinate; override=coordinate-override.",
-		promptSnippet: "Record a structured Khala Work coordination decision or User override",
+			"Record one Conclave autonomous dependency or peer-conflict decision. Action kind: decision=coordinate.",
+		promptSnippet: "Record a structured Conclave Work coordination decision",
 		executionMode: "sequential",
 		parameters: COORDINATE_PARAMETERS,
 		execute: (...args) => {
@@ -255,10 +277,91 @@ function registerKhalaSupervisionTools(pi: ExtensionAPI, options: SupervisionToo
 			return recordInterventionOutcome(params, context, options);
 		},
 	});
+	pi.registerTool({
+		name: "khala_dispose_user_priority",
+		label: "Dispose stale Khala User Priority",
+		description:
+			"Record the ignored disposition of a pending User Priority whose peer-conflict Coordination no longer matches.",
+		promptSnippet: "Dispose a stale pending User Priority",
+		executionMode: "sequential",
+		parameters: DISPOSE_USER_PRIORITY_PARAMETERS,
+		execute: (...args) => {
+			const [, params, , , context] = args;
+			return Promise.resolve().then(() => disposeUserPriority(params, context, options));
+		},
+	});
+	pi.registerTool({
+		name: "khala_apply_user_priority",
+		label: "Apply Khala User Priority",
+		description:
+			"Append the Coordination override for a pending User Priority that still matches its recorded active peer-conflict Coordination.",
+		promptSnippet: "Apply a pending User Priority as a Coordination override",
+		executionMode: "sequential",
+		parameters: APPLY_USER_PRIORITY_PARAMETERS,
+		execute: (...args) => {
+			const [, params, , , context] = args;
+			return Promise.resolve().then(() => applyUserPriority(params, context, options));
+		},
+	});
 }
 
 function steerExecution(params: SteerInput, context: ExtensionContext, options: SupervisionToolOptions) {
 	return steerExecutionInternal(params, context, options, false);
+}
+
+// Shared mandatory-stop protocol: barrier, abort, settlement, baseline, and one
+// single-use handoff. The stop-handoff expectation enforces exactly one current
+// blocked Signal after settlement.
+async function deliverMandatoryStop(
+	context: ExtensionContext,
+	options: SupervisionToolOptions,
+	control: RuntimeControl,
+	marker: string,
+	targetMessage: string,
+	executionId: string,
+	onBaselineSignalIds?: (signalIds: readonly string[]) => void | Promise<void>,
+): Promise<Readonly<{ persistedEntryIds: readonly string[]; baselineSignalIds: readonly string[] }>> {
+	control.setStopPending();
+	emitStopEvent(options, executionId, "barrier-set");
+	emitStopEvent(options, executionId, "abort-requested");
+	await control.sendAbort();
+	await control.waitForSettled(options.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS);
+	emitStopEvent(options, executionId, "agent-settled");
+	const baselineSignalIds = listSignalRecords(context.cwd, isProjectTrusted(context)).map((signal) => signal.signalId);
+	await onBaselineSignalIds?.(baselineSignalIds);
+	const persistedEntryIds = await deliverStopHandoff(control, marker, targetMessage, options);
+	emitStopEvent(options, executionId, "handoff-delivered");
+	return { persistedEntryIds, baselineSignalIds };
+}
+
+async function registerStopExpectation(
+	context: ExtensionContext,
+	options: SupervisionToolOptions,
+	params: Readonly<{ workId: string; missionId: string; executionId: string; assessmentId: string }>,
+	target: ReturnType<typeof validateMissionExecution>,
+	issuance: InterventionIssuanceRecord,
+	archiveRecord: { recordId: string; recordedAt: string },
+	control: RuntimeControl,
+	baselineSignalIds: readonly string[],
+	onEnforced?: (blockedSignalId: string) => void | Promise<void>,
+): Promise<void> {
+	const settlement = control.getStopHandoffSettlementObservation?.() ?? { observed: false };
+	await options.registerStopHandoffExpectation?.(context, {
+		projectPath: context.cwd,
+		projectTrusted: isProjectTrusted(context),
+		workId: params.workId,
+		missionId: params.missionId,
+		executionId: params.executionId,
+		participantId: target.executorParticipantId,
+		interventionId: issuance.interventionId,
+		issuanceRecordId: archiveRecord.recordId,
+		assessmentId: params.assessmentId,
+		issuanceRecordedAt: archiveRecord.recordedAt,
+		baselineSignalIds,
+		settlementObserved: settlement.observed,
+		...(settlement.target === undefined ? {} : { settlementTarget: settlement.target }),
+		...(onEnforced === undefined ? {} : { onEnforced }),
+	});
 }
 
 async function steerExecutionInternal(
@@ -345,15 +448,16 @@ async function steerExecutionInternal(
 			persistedEntryIds = await deliverCorrection(context, control, marker, actionStart, targetMessage, options);
 			transport = "steer-acknowledged";
 		} else {
-			control.setStopPending();
-			emitStopEvent(options, params.executionId, "barrier-set");
-			emitStopEvent(options, params.executionId, "abort-requested");
-			await control.sendAbort();
-			await control.waitForSettled(options.deliveryTimeoutMs ?? DELIVERY_TIMEOUT_MS);
-			emitStopEvent(options, params.executionId, "agent-settled");
-			baselineSignalIds = listSignalRecords(context.cwd, isProjectTrusted(context)).map((signal) => signal.signalId);
-			persistedEntryIds = await deliverStopHandoff(control, marker, targetMessage, options);
-			emitStopEvent(options, params.executionId, "handoff-delivered");
+			const delivered = await deliverMandatoryStop(
+				context,
+				options,
+				control,
+				marker,
+				targetMessage,
+				params.executionId,
+			);
+			baselineSignalIds = delivered.baselineSignalIds;
+			persistedEntryIds = delivered.persistedEntryIds;
 			transport = "abort-settled-prompt-acknowledged";
 		}
 	} catch (error) {
@@ -384,16 +488,8 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 	assertConclave(context, options);
 	const projectTrusted = isProjectTrusted(context);
 	assertActionRecordKind(context, params.actionId, "coordination");
-	if (params.phase === "override" && params.relation !== "peer-conflict") {
-		throw new Error("A User override may change priority only for peer-conflict Coordination.");
-	}
 	if (params.assessmentId !== undefined) {
-		validateAssessmentTarget(
-			params as ActionTargetInput,
-			context,
-			options,
-			params.phase === "decision" ? "coordinate" : "coordinate-override",
-		);
+		validateAssessmentTarget(params as ActionTargetInput, context, options, "coordinate");
 	}
 	const target =
 		params.executionId === undefined
@@ -421,12 +517,6 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 	}
 	if (params.workId === params.relatedWorkId && params.missionId === params.relatedMissionId) {
 		throw new Error("Coordination requires two distinct Work/Mission identities.");
-	}
-	if (params.phase === "override") {
-		if (params.assessmentId === undefined) throw new Error("A User override requires an active assessment.");
-		validateDirectUserOverride(context, params.userEntryId, params.assessmentId);
-	} else if (params.userEntryId !== undefined) {
-		throw new Error("A decision cannot contain a User override entry.");
 	}
 	const reason = boundedReason(params.reason, "Coordination reason");
 	if (params.relation === "dependency") {
@@ -482,7 +572,6 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 		reason,
 		...(params.remote === undefined ? {} : { remote: params.remote.trim() }),
 		...(params.branch === undefined ? {} : { branch: params.branch.trim() }),
-		...(params.phase === "override" && params.userEntryId !== undefined ? { userEntryId: params.userEntryId } : {}),
 		...(params.classification === undefined ? {} : { classification: params.classification }),
 	};
 	const actionStart =
@@ -495,9 +584,9 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 					target,
 				);
 	const archiveRecord = withArchiveLock(context.cwd, projectTrusted, () => {
-		const existing = readCoordinationByAction(context.cwd, params.actionId, projectTrusted);
-		if (existing !== undefined) {
-			if (sameCoordinationReplay(existing.payload, params)) {
+		const lockedExisting = readCoordinationByAction(context.cwd, params.actionId, projectTrusted);
+		if (lockedExisting !== undefined) {
+			if (sameCoordinationReplay(lockedExisting.payload, params)) {
 				const existingRecord = listArchiveRecords(context.cwd, projectTrusted).find(
 					(record) =>
 						record.type === "coordination" &&
@@ -963,22 +1052,16 @@ async function finalizeSteerIssuance(
 	);
 	appendActionComplete(context, actionStart, archiveRecord.recordId);
 	if (params.mode === "stop") {
-		const settlement = control.getStopHandoffSettlementObservation?.() ?? { observed: false };
-		await options.registerStopHandoffExpectation?.(context, {
-			projectPath: context.cwd,
-			projectTrusted: isProjectTrusted(context),
-			workId: params.workId,
-			missionId: params.missionId,
-			executionId: params.executionId,
-			participantId: target.executorParticipantId,
-			interventionId: issuance.interventionId,
-			issuanceRecordId: archiveRecord.recordId,
-			assessmentId: params.assessmentId,
-			issuanceRecordedAt: archiveRecord.recordedAt,
+		await registerStopExpectation(
+			context,
+			options,
+			params,
+			target,
+			issuance,
+			archiveRecord,
+			control,
 			baselineSignalIds,
-			settlementObserved: settlement.observed,
-			...(settlement.target === undefined ? {} : { settlementTarget: settlement.target }),
-		});
+		);
 	}
 	return toolResult(
 		`Intervention ${issuance.interventionId} delivered to persisted Pi entries ${piEntryIds.join(", ")}.`,
@@ -1343,60 +1426,545 @@ function userMessageText(content: unknown): string {
 		.join("");
 }
 
-function validateDirectUserOverride(
+function samePeerConflictSides(
+	coordination: CoordinationRecord,
+	selectedWorkId: string,
+	relatedWorkId: string,
+): boolean {
+	return (
+		(coordination.workId === selectedWorkId && coordination.relatedWorkId === relatedWorkId) ||
+		(coordination.workId === relatedWorkId && coordination.relatedWorkId === selectedWorkId)
+	);
+}
+
+async function applyUserPriority(
+	params: ApplyUserPriorityInput,
 	context: ExtensionContext,
-	userEntryId: string | undefined,
-	assessmentId: string,
-): void {
-	if (userEntryId === undefined || userEntryId.trim().length === 0) {
-		throw new Error("A User override requires userEntryId.");
+	options: SupervisionToolOptions,
+) {
+	assertConclave(context, options);
+	const projectTrusted = isProjectTrusted(context);
+	const priorityId = requireId(params.priorityId, "priorityId");
+	const locked = withArchiveLock(context.cwd, projectTrusted, () => {
+		const record = readUserPriority(context.cwd, priorityId, projectTrusted);
+		if (record === undefined) {
+			throw new Error(`No User Priority record exists for ID ${priorityId}.`);
+		}
+		if (record.status !== "pending") {
+			throw new Error(`User Priority ${priorityId} is not pending (${record.status}).`);
+		}
+		const appliedOverride = listCoordinationRecords(context.cwd, projectTrusted).find(
+			(candidate) => candidate.phase === "override" && candidate.priorityId === priorityId,
+		);
+		const coordination = projectCoordinations(context.cwd, projectTrusted).find(
+			(candidate) =>
+				candidate.coordinationId === record.coordinationId &&
+				candidate.active &&
+				candidate.latest.relation === "peer-conflict" &&
+				samePeerConflictSides(candidate.latest, record.selectedWorkId, record.relatedWorkId),
+		);
+		if (coordination === undefined) {
+			throw new Error(
+				`User Priority ${priorityId} no longer matches its recorded active peer-conflict Coordination; dispose it instead.`,
+			);
+		}
+		const decision = coordination.records.find((item) => item.phase === "decision");
+		if (decision === undefined) {
+			throw new Error(`Coordination ${record.coordinationId} has no recorded decision phase.`);
+		}
+		const primary = readCurrentMission(context.cwd, decision.workId, projectTrusted);
+		const related = readCurrentMission(context.cwd, decision.relatedWorkId, projectTrusted);
+		if (
+			primary === undefined ||
+			primary.state !== "current" ||
+			primary.mission.missionId !== decision.missionId ||
+			related === undefined ||
+			related.state !== "current" ||
+			related.mission.missionId !== decision.relatedMissionId
+		) {
+			throw new Error(`User Priority ${priorityId} targets a stale Mission; dispose it instead.`);
+		}
+		if (appliedOverride !== undefined) {
+			return { kind: "replay" as const, details: appliedOverride, record, decision };
+		}
+		const selectedIsPrimary = record.selectedWorkId === decision.workId;
+		let selectedExecutionId: string | undefined;
+		if (selectedIsPrimary) {
+			if (decision.executionId !== undefined) {
+				selectedExecutionId = decision.executionId;
+			}
+		} else if (decision.relatedExecutionId !== undefined) {
+			selectedExecutionId = decision.relatedExecutionId;
+		}
+		const override: CoordinationRecord = {
+			coordinationId: record.coordinationId,
+			actionId: record.actionId,
+			phase: "override",
+			relation: "peer-conflict",
+			workId: decision.workId,
+			missionId: decision.missionId,
+			...(decision.executionId === undefined ? {} : { executionId: decision.executionId }),
+			relatedWorkId: decision.relatedWorkId,
+			relatedMissionId: decision.relatedMissionId,
+			...(decision.relatedExecutionId === undefined ? {} : { relatedExecutionId: decision.relatedExecutionId }),
+			selectedWorkId: record.selectedWorkId,
+			selectedMissionId: selectedIsPrimary ? decision.missionId : decision.relatedMissionId,
+			...(selectedExecutionId === undefined ? {} : { selectedExecutionId }),
+			reason: `Applied pending User Priority ${priorityId}.`,
+			userEntryId: record.provenance.entryId,
+			priorityId,
+		};
+		const envelopeExecutionId = override.executionId;
+		appendArchiveRecord(
+			context.cwd,
+			{
+				schemaVersion: 2,
+				type: "coordination",
+				workId: override.workId,
+				...(envelopeExecutionId === undefined ? {} : { executionId: envelopeExecutionId }),
+				payload: override,
+			},
+			projectTrusted,
+		);
+		return { kind: "applied" as const, record, decision, override };
+	});
+	// The durable override is appended first; only then does the Conclave enforce
+	// the priority by stopping the non-selected side through the mandatory-stop
+	// protocol. Replays reconcile any persisted handoff or Intervention before
+	// returning, so a crash cannot turn an applied priority into a lost stop.
+	let stopError: string | undefined;
+	try {
+		await deliverPriorityStop(context, options, locked.record, locked.decision);
+	} catch (error) {
+		if (error instanceof Error) {
+			stopError = error.message;
+		} else {
+			stopError = String(error);
+		}
 	}
-	const branch = context.sessionManager.getBranch();
-	const entry = context.sessionManager.getEntry(userEntryId);
-	if (!(isSessionMessageUserEntry(entry) && branch.some((candidate) => candidate.id === userEntryId))) {
+	let text =
+		locked.kind === "replay"
+			? `User Priority ${priorityId} was already applied; enforcement replay reused.`
+			: `Coordination override applied for User Priority ${priorityId}.`;
+	if (stopError !== undefined) {
+		text += ` The lower-priority Execution stop failed: ${stopError}.`;
+	}
+	const result = {
+		content: [{ type: "text" as const, text }],
+		details: locked.details ?? locked.override,
+	};
+	if (stopError !== undefined) {
+		return { ...result, isError: true };
+	}
+	return result;
+}
+
+// Conclave-authorized consequence of an applied User Priority: the non-selected
+// side is stopped through the existing mandatory-stop protocol and stop-handoff
+// expectation. The Archive enforcement phases make replay continue from the last
+// durable boundary instead of treating the Coordination override as completion.
+function appendPriorityEnforcement(
+	context: ExtensionContext,
+	record: UserPriorityRecord,
+	losing: Readonly<{ workId: string; missionId: string; executionId?: string }>,
+	phase: (typeof UserPriorityEnforcementPhase)[keyof typeof UserPriorityEnforcementPhase],
+	baselineSignalIds: readonly string[],
+	evidence: Readonly<{
+		stopEntryIds?: readonly string[];
+		interventionId?: string;
+		blockedSignalId?: string;
+		terminalExecutionRecordId?: string;
+	}>,
+): UserPriorityEnforcementRecord {
+	return withArchiveLock(context.cwd, isProjectTrusted(context), () => {
+		const current = readUserPriorityEnforcement(context.cwd, record.priorityId, isProjectTrusted(context));
+		const payload: UserPriorityEnforcementRecord = {
+			priorityId: record.priorityId,
+			coordinationId: record.coordinationId,
+			workId: record.workId,
+			selectedWorkId: record.selectedWorkId,
+			relatedWorkId: record.relatedWorkId,
+			losingWorkId: losing.workId,
+			losingMissionId: losing.missionId,
+			...(losing.executionId === undefined ? {} : { losingExecutionId: losing.executionId }),
+			actionId: record.stopActionId,
+			marker: supervisionMarker(record.stopActionId, "stop"),
+			phase,
+			baselineSignalIds: [...baselineSignalIds],
+			...(evidence.stopEntryIds === undefined ? {} : { stopEntryIds: [...evidence.stopEntryIds] }),
+			...(evidence.interventionId === undefined ? {} : { interventionId: evidence.interventionId }),
+			...(evidence.blockedSignalId === undefined ? {} : { blockedSignalId: evidence.blockedSignalId }),
+			...(evidence.terminalExecutionRecordId === undefined
+				? {}
+				: { terminalExecutionRecordId: evidence.terminalExecutionRecordId }),
+		};
+		if (current !== undefined) {
+			if (JSON.stringify(current) === JSON.stringify(payload)) {
+				return current;
+			}
+			if (current.phase === phase) {
+				throw new Error(`User Priority ${record.priorityId} has conflicting enforcement evidence.`);
+			}
+		}
+		appendArchiveRecord(
+			context.cwd,
+			{ schemaVersion: 2, type: "user-priority-enforcement", workId: record.workId, payload },
+			isProjectTrusted(context),
+		);
+		return payload;
+	});
+}
+
+function latestExecutionRecordId(
+	projectPath: string,
+	executionId: string,
+	projectTrusted: boolean,
+): string | undefined {
+	return [...listArchiveRecords(projectPath, projectTrusted)]
+		.reverse()
+		.find((candidate) => candidate.type === "execution" && candidate.executionId === executionId)?.recordId;
+}
+
+function readPriorityBlockedSignalId(
+	projectPath: string,
+	projectTrusted: boolean,
+	enforcement: UserPriorityEnforcementRecord,
+	execution: ExecutorRecord,
+): string | undefined {
+	const missionProjection = readCurrentMission(projectPath, enforcement.losingWorkId, projectTrusted);
+	if (
+		missionProjection === undefined ||
+		missionProjection.state !== "current" ||
+		missionProjection.mission.missionId !== enforcement.losingMissionId ||
+		execution.status !== ExecutorStatus.running ||
+		execution.participantId === undefined
+	) {
+		return;
+	}
+	const baseline = new Set(enforcement.baselineSignalIds);
+	const candidates = listArchiveRecords(projectPath, projectTrusted).flatMap((archiveRecord) => {
+		if (
+			archiveRecord.type !== "signal" ||
+			!isSignal(archiveRecord.payload) ||
+			baseline.has(archiveRecord.payload.signalId) ||
+			archiveRecord.payload.workId !== enforcement.losingWorkId ||
+			archiveRecord.payload.missionId !== enforcement.losingMissionId ||
+			archiveRecord.payload.executionId !== enforcement.losingExecutionId ||
+			archiveRecord.payload.participantId !== execution.participantId
+		) {
+			return [];
+		}
+		return [archiveRecord.payload];
+	});
+	if (candidates.length !== 1 || candidates[0]?.kind !== "blocked" || candidates[0].evidence.length === 0) {
+		return;
+	}
+	return candidates[0].signalId;
+}
+
+async function deliverPriorityStop(
+	context: ExtensionContext,
+	options: SupervisionToolOptions,
+	record: UserPriorityRecord,
+	decision: CoordinationRecord,
+): Promise<void> {
+	const key = `${resolve(context.cwd)}\u0000${record.priorityId}`;
+	const existing = priorityStopDeliveries.get(key);
+	if (existing !== undefined) {
+		return existing;
+	}
+	const delivery = deliverPriorityStopOnce(context, options, record, decision);
+	priorityStopDeliveries.set(key, delivery);
+	try {
+		await delivery;
+	} finally {
+		if (priorityStopDeliveries.get(key) === delivery) {
+			priorityStopDeliveries.delete(key);
+		}
+	}
+}
+
+async function deliverPriorityStopOnce(
+	context: ExtensionContext,
+	options: SupervisionToolOptions,
+	record: UserPriorityRecord,
+	decision: CoordinationRecord,
+): Promise<void> {
+	let losingWorkId = decision.workId;
+	let losingMissionId = decision.missionId;
+	let losingExecutionId = decision.executionId;
+	if (record.selectedWorkId === decision.workId) {
+		losingWorkId = decision.relatedWorkId;
+		losingMissionId = decision.relatedMissionId;
+		losingExecutionId = decision.relatedExecutionId;
+	}
+	const losing = {
+		workId: losingWorkId,
+		missionId: losingMissionId,
+		...(losingExecutionId === undefined ? {} : { executionId: losingExecutionId }),
+	};
+	const projectTrusted = isProjectTrusted(context);
+	let enforcement = readUserPriorityEnforcement(context.cwd, record.priorityId, projectTrusted);
+	if (
+		enforcement?.phase === UserPriorityEnforcementPhase.enforced ||
+		enforcement?.phase === UserPriorityEnforcementPhase.terminal
+	) {
+		return;
+	}
+	if (losingExecutionId === undefined) {
+		appendPriorityEnforcement(context, record, losing, UserPriorityEnforcementPhase.enforced, [], {});
+		return;
+	}
+	if (enforcement === undefined) {
+		enforcement = appendPriorityEnforcement(context, record, losing, UserPriorityEnforcementPhase.prepared, [], {});
+	}
+	const execution = readExecutorRecord(context.cwd, losingExecutionId, projectTrusted);
+	if (execution?.status === ExecutorStatus.failed || execution?.status === ExecutorStatus.finished) {
+		const terminalExecutionRecordId = latestExecutionRecordId(context.cwd, losingExecutionId, projectTrusted);
+		if (terminalExecutionRecordId !== undefined) {
+			appendPriorityEnforcement(
+				context,
+				record,
+				losing,
+				UserPriorityEnforcementPhase.terminal,
+				enforcement.baselineSignalIds,
+				{ terminalExecutionRecordId },
+			);
+		}
+		return;
+	}
+	const control = (options.getRuntime ?? getHeadlessRuntime)(losingExecutionId);
+	if (control === undefined) {
+		let terminalExecutionRecordId = latestExecutionRecordId(context.cwd, losingExecutionId, projectTrusted);
+		if (execution?.status === ExecutorStatus.starting || execution?.status === ExecutorStatus.running) {
+			terminalExecutionRecordId = await failExecutionAndCloseInterventions(
+				context.cwd,
+				losingExecutionId,
+				projectTrusted,
+			);
+		}
+		if (terminalExecutionRecordId !== undefined) {
+			appendPriorityEnforcement(
+				context,
+				record,
+				losing,
+				UserPriorityEnforcementPhase.terminal,
+				enforcement.baselineSignalIds,
+				{ terminalExecutionRecordId },
+			);
+		}
+		return;
+	}
+	if (execution === undefined) {
+		throw new Error(`Priority stop target Execution ${losingExecutionId} is unavailable.`);
+	}
+	const target = validateMissionExecution(context, losingWorkId, losingMissionId, losingExecutionId);
+	const actionId = record.stopActionId;
+	const reason = `Applied User Priority ${record.priorityId}; stop this lower-priority attempt.`;
+	const message = "Submit the required blocked Signal before any further changes.";
+	const stopParams: SteerInput = {
+		assessmentId: record.priorityId,
+		actionId,
+		workId: losingWorkId,
+		missionId: losingMissionId,
+		executionId: losingExecutionId,
+		mode: "stop",
+		category: "dependency",
+		missionTerm: target.mission.assignment.scope,
+		reason,
+		message,
+		triggeringExecutorEntryIds: [],
+	};
+	validateSteerText(stopParams, target.mission);
+	const marker = supervisionMarker(actionId, "stop");
+	const targetMessage = mandatoryStopPrompt(reason, message);
+	const existingInterventionRecord = listArchiveRecords(context.cwd, projectTrusted).find(
+		(
+			archiveRecordCandidate,
+		): archiveRecordCandidate is typeof archiveRecordCandidate & {
+			payload: InterventionIssuanceRecord;
+		} =>
+			archiveRecordCandidate.type === "intervention" &&
+			typeof archiveRecordCandidate.payload === "object" &&
+			archiveRecordCandidate.payload !== null &&
+			(archiveRecordCandidate.payload as { phase?: unknown }).phase === "issuance" &&
+			(archiveRecordCandidate.payload as { actionId?: unknown }).actionId === actionId,
+	);
+	let persistedEntryIds: readonly string[] = existingInterventionRecord?.payload.piEntryIds ?? [];
+	let baselineSignalIds = enforcement.baselineSignalIds;
+	try {
+		if (existingInterventionRecord === undefined) {
+			const persistedBeforeSend = await readMarkedEntriesFromRuntime(control, marker);
+			const runtimeStopPending = control.isStopPending;
+			const canReusePersistedHandoff = persistedBeforeSend.length > 0;
+			if (canReusePersistedHandoff) {
+				persistedEntryIds = persistedBeforeSend;
+			} else if (runtimeStopPending === true) {
+				throw new Error("Priority stop is already pending without a persisted handoff.");
+			} else if (enforcement.phase === UserPriorityEnforcementPhase.baseline) {
+				persistedEntryIds = await deliverStopHandoff(control, marker, targetMessage, options);
+			} else {
+				const delivered = await deliverMandatoryStop(
+					context,
+					options,
+					control,
+					marker,
+					targetMessage,
+					losingExecutionId,
+					(signalIds) => {
+						appendPriorityEnforcement(context, record, losing, UserPriorityEnforcementPhase.baseline, signalIds, {});
+					},
+				);
+				baselineSignalIds = delivered.baselineSignalIds;
+				persistedEntryIds = delivered.persistedEntryIds;
+			}
+		}
+		if (enforcement.phase === UserPriorityEnforcementPhase.prepared) {
+			enforcement = appendPriorityEnforcement(
+				context,
+				record,
+				losing,
+				UserPriorityEnforcementPhase.baseline,
+				baselineSignalIds,
+				{},
+			);
+			baselineSignalIds = enforcement.baselineSignalIds;
+		}
+		if (enforcement.phase === UserPriorityEnforcementPhase.baseline) {
+			enforcement = appendPriorityEnforcement(
+				context,
+				record,
+				losing,
+				UserPriorityEnforcementPhase.handoff,
+				baselineSignalIds,
+				{ stopEntryIds: persistedEntryIds },
+			);
+		}
+	} catch (error) {
+		emitStopEvent(options, losingExecutionId, "failed", errorMessage(error));
+		const failedExecutionRecordId = await failRuntime(context, losingExecutionId, control);
+		if (failedExecutionRecordId !== undefined) {
+			appendPriorityEnforcement(context, record, losing, UserPriorityEnforcementPhase.terminal, baselineSignalIds, {
+				terminalExecutionRecordId: failedExecutionRecordId,
+			});
+		}
 		throw new Error(
-			"userEntryId must resolve to a persisted direct interactive User entry on the current session branch.",
+			`Priority stop delivery failed; Execution ${losingExecutionId} was marked failed: ${errorMessage(error)}`,
 		);
 	}
-	const marker = branch.find(
-		(candidate) =>
-			isDirectUserSourceEntry(candidate) &&
-			candidate.data.entryId === userEntryId &&
-			candidate.data.assessmentId === assessmentId,
-	);
-	if (marker === undefined) {
-		throw new Error("The User entry lacks the exact persisted direct-interactive source marker.");
+	const issuance =
+		existingInterventionRecord?.payload ??
+		createIssuance(context.cwd, stopParams, target, persistedEntryIds, targetMessage);
+	const archiveRecord =
+		existingInterventionRecord ??
+		appendArchiveRecord(
+			context.cwd,
+			{
+				schemaVersion: 2,
+				type: "intervention",
+				workId: issuance.workId,
+				executionId: issuance.executionId,
+				payload: issuance,
+			},
+			projectTrusted,
+		);
+	const establishedBlockedSignalId = readPriorityBlockedSignalId(context.cwd, projectTrusted, enforcement, execution);
+	if (establishedBlockedSignalId !== undefined) {
+		appendPriorityEnforcement(context, record, losing, UserPriorityEnforcementPhase.enforced, baselineSignalIds, {
+			stopEntryIds: persistedEntryIds,
+			interventionId: issuance.interventionId,
+			blockedSignalId: establishedBlockedSignalId,
+		});
+		return;
 	}
-	const markerData = (
-		marker as unknown as {
-			data: {
-				sessionId?: unknown;
-				contentSha256?: unknown;
-				assessmentId?: unknown;
-				assessmentStartEntryId?: unknown;
-			};
+	const expectationKey = `${losingExecutionId}:${issuance.interventionId}`;
+	const registered = priorityStopExpectationRegistrations.get(options);
+	if (registered?.has(expectationKey)) {
+		return;
+	}
+	await registerStopExpectation(
+		context,
+		options,
+		stopParams,
+		target,
+		issuance,
+		archiveRecord,
+		control,
+		baselineSignalIds,
+		async (enforcedSignalId) => {
+			const current = readUserPriorityEnforcement(context.cwd, record.priorityId, projectTrusted);
+			if (
+				current?.phase === UserPriorityEnforcementPhase.enforced ||
+				current?.phase === UserPriorityEnforcementPhase.terminal
+			) {
+				return;
+			}
+			appendPriorityEnforcement(context, record, losing, UserPriorityEnforcementPhase.enforced, baselineSignalIds, {
+				stopEntryIds: persistedEntryIds,
+				interventionId: issuance.interventionId,
+				blockedSignalId: enforcedSignalId,
+			});
+		},
+	);
+	if (options.registerStopHandoffExpectation !== undefined) {
+		const next = registered ?? new Set<string>();
+		next.add(expectationKey);
+		priorityStopExpectationRegistrations.set(options, next);
+	}
+}
+
+function disposeUserPriority(
+	params: DisposeUserPriorityInput,
+	context: ExtensionContext,
+	options: SupervisionToolOptions,
+) {
+	assertConclave(context, options);
+	const projectTrusted = isProjectTrusted(context);
+	const priorityId = requireId(params.priorityId, "priorityId");
+	const reason = boundedReason(params.reason, "Priority disposition reason");
+	return withArchiveLock(context.cwd, projectTrusted, () => {
+		const existing = readUserPriority(context.cwd, priorityId, projectTrusted);
+		if (existing === undefined) {
+			throw new Error(`No User Priority record exists for ID ${priorityId}.`);
 		}
-	).data;
-	const markerSessionId = markerData.sessionId;
-	const markerContentSha256 = markerData.contentSha256;
-	if (
-		markerSessionId !== context.sessionManager.getSessionId() ||
-		typeof markerContentSha256 !== "string" ||
-		markerContentSha256 !== exactContentSha256(entry.message.content) ||
-		markerData.assessmentId !== assessmentId
-	) {
-		throw new Error("The User override marker does not match this session, exact content, or assessment.");
-	}
-	const assessment = branch.find(
-		(candidate) => isAssessmentEntry(candidate) && candidate.data.assessmentId === assessmentId,
-	);
-	if (
-		assessment === undefined ||
-		markerData.assessmentStartEntryId !== assessment.id ||
-		branch.some((candidate) => isAssessmentCompleteEntry(candidate, assessmentId))
-	) {
-		throw new Error("The User override assessment is stale or incomplete evidence is unavailable.");
-	}
+		if (existing.status === "ignored") {
+			if (existing.ignoredReason === reason) {
+				return toolResult(`User Priority ${priorityId} ignored disposition replay reused.`, existing);
+			}
+			throw new Error(`User Priority ${priorityId} was already ignored with different evidence.`);
+		}
+		if (existing.status !== "pending") {
+			throw new Error(`User Priority ${priorityId} is not pending.`);
+		}
+		if (isUserPriorityApplied(context.cwd, priorityId, projectTrusted)) {
+			throw new Error(`User Priority ${priorityId} is already applied; it cannot be ignored.`);
+		}
+		// Disposal is refused only while the exact recorded Coordination remains
+		// active and matches the Work pair; a replacement Coordination for the
+		// same pair does not inherit old User intent.
+		const active = projectCoordinations(context.cwd, projectTrusted).some(
+			(candidate) =>
+				candidate.coordinationId === existing.coordinationId &&
+				candidate.active &&
+				candidate.latest.relation === "peer-conflict" &&
+				samePeerConflictSides(candidate.latest, existing.selectedWorkId, existing.relatedWorkId),
+		);
+		if (active) {
+			throw new Error("User Priority still matches an active peer-conflict Coordination; record the override instead.");
+		}
+		const ignored: UserPriorityRecord = {
+			...existing,
+			status: "ignored",
+			ignoredAt: new Date().toISOString(),
+			ignoredReason: reason,
+		};
+		appendArchiveRecord(
+			context.cwd,
+			{ schemaVersion: 2, type: "user-priority", workId: existing.workId, payload: ignored },
+			projectTrusted,
+		);
+		return toolResult(`User Priority ${priorityId} marked ignored.`, ignored);
+	});
 }
 
 function validateObservedEntries(
@@ -1636,7 +2204,6 @@ function sameCoordinationReplay(record: CoordinationRecord, params: CoordinateIn
 			...(params.classification === undefined ? {} : { classification: params.classification }),
 			...(params.remote === undefined ? {} : { remote: params.remote.trim() }),
 			...(params.branch === undefined ? {} : { branch: params.branch.trim() }),
-			...(params.phase === "override" && params.userEntryId !== undefined ? { userEntryId: params.userEntryId } : {}),
 		})
 	);
 }
@@ -1689,8 +2256,12 @@ function listInterventionProjections(
 	return [...map.values()];
 }
 
-async function failRuntime(context: ExtensionContext, executionId: string, control: RuntimeControl): Promise<void> {
-	await failExecutionAndCloseInterventions(context.cwd, executionId, isProjectTrusted(context), async () => {
+async function failRuntime(
+	context: ExtensionContext,
+	executionId: string,
+	control: RuntimeControl,
+): Promise<string | undefined> {
+	return failExecutionAndCloseInterventions(context.cwd, executionId, isProjectTrusted(context), async () => {
 		try {
 			await control.closeProcess();
 		} catch {
@@ -1709,16 +2280,6 @@ type AssessmentStartData = Readonly<{
 	sourceEntryIds: readonly string[];
 	actionIdNamespace: string;
 }>;
-
-function isAssessmentCompleteEntry(value: SessionEntry, assessmentId: string): boolean {
-	if (value.type !== "custom" || value.customType !== "khala-supervision-assessment-complete") {
-		return false;
-	}
-	const data = (value as { data?: unknown }).data;
-	return (
-		typeof data === "object" && data !== null && (data as { assessmentId?: unknown }).assessmentId === assessmentId
-	);
-}
 
 function isAssessmentStartData(value: unknown): value is AssessmentStartData {
 	if (typeof value !== "object" || value === null) return false;
@@ -1799,24 +2360,6 @@ function isActionComplete(
 	);
 }
 
-function isDirectUserSourceEntry(value: SessionEntry): value is SessionEntry & {
-	type: "custom";
-	customType: typeof DIRECT_USER_SOURCE_ENTRY;
-	data: {
-		entryId: string;
-		source: "interactive";
-		sessionId?: unknown;
-		contentSha256?: unknown;
-		assessmentId?: unknown;
-	};
-} {
-	if (value.type !== "custom" || value.customType !== DIRECT_USER_SOURCE_ENTRY) return false;
-	const data = (value as { data?: unknown }).data;
-	if (typeof data !== "object" || data === null) return false;
-	const dataRecord = data as Record<string, unknown>;
-	return typeof dataRecord["entryId"] === "string" && dataRecord["source"] === "interactive";
-}
-
 function emitStopEvent(
 	options: SupervisionToolOptions,
 	executionId: string,
@@ -1866,10 +2409,6 @@ function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
-function exactContentSha256(content: unknown): string {
-	return sha256(typeof content === "string" ? content : JSON.stringify(content));
-}
-
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -1881,7 +2420,6 @@ function delay(milliseconds: number): Promise<void> {
 export type { CoordinateInput, OutcomeInput, SteerInput, SupervisionStopEvent, SupervisionToolOptions };
 export {
 	COORDINATE_PARAMETERS,
-	DIRECT_USER_SOURCE_ENTRY,
 	mandatoryStopPrompt,
 	OUTCOME_PARAMETERS,
 	recordCoordination,

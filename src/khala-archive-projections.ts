@@ -18,6 +18,8 @@ import {
 	isMissionRecord,
 	isPullRequestRecord,
 	isSignal,
+	isUserPriorityEnforcementRecord,
+	isUserPriorityRecord,
 	isVerdict,
 	isVerdictDelivery,
 	isWorkOutcomeRecord,
@@ -30,6 +32,8 @@ import {
 	type PullRequestRecord,
 	type SignalRecord,
 	type UpstreamExecutionBase,
+	type UserPriorityEnforcementRecord,
+	type UserPriorityRecord,
 	type VerdictDeliveryRecord,
 	type VerdictRecord,
 	type WorkOutcomeRecord,
@@ -147,6 +151,85 @@ function listPullRequestRecords(projectPath: string, projectTrusted = false): Pu
 
 function listWorkOutcomeRecords(projectPath: string, projectTrusted = false): WorkOutcomeRecord[] {
 	return projectRecords(projectPath, "work-outcome", isWorkOutcomeRecord, projectTrusted);
+}
+
+function listUserPriorityRecords(projectPath: string, projectTrusted = false): UserPriorityRecord[] {
+	return projectRecords(projectPath, "user-priority", isUserPriorityRecord, projectTrusted);
+}
+
+function listUserPriorityEnforcementRecords(
+	projectPath: string,
+	projectTrusted = false,
+): UserPriorityEnforcementRecord[] {
+	return projectRecords(projectPath, "user-priority-enforcement", isUserPriorityEnforcementRecord, projectTrusted);
+}
+
+function readUserPriorityEnforcement(
+	projectPath: string,
+	priorityId: string,
+	projectTrusted = false,
+): UserPriorityEnforcementRecord | undefined {
+	let latest: UserPriorityEnforcementRecord | undefined;
+	for (const record of listUserPriorityEnforcementRecords(projectPath, projectTrusted)) {
+		if (record.priorityId === priorityId) {
+			latest = record;
+		}
+	}
+	return latest;
+}
+
+function isUserPriorityEnforced(projectPath: string, priorityId: string, projectTrusted = false): boolean {
+	const enforcement = readUserPriorityEnforcement(projectPath, priorityId, projectTrusted);
+	return enforcement?.phase === "enforced" || enforcement?.phase === "terminal";
+}
+
+// The current phase of a User Priority is its latest append-ordered record.
+function readUserPriority(
+	projectPath: string,
+	priorityId: string,
+	projectTrusted = false,
+): UserPriorityRecord | undefined {
+	let latest: UserPriorityRecord | undefined;
+	for (const record of listUserPriorityRecords(projectPath, projectTrusted)) {
+		if (record.priorityId === priorityId) {
+			latest = record;
+		}
+	}
+	return latest;
+}
+
+// Applied is derived from a Coordination override that references the priority;
+// it is never stored on the User Priority record.
+function isUserPriorityApplied(projectPath: string, priorityId: string, projectTrusted = false): boolean {
+	return listCoordinationRecords(projectPath, projectTrusted).some(
+		(record) => record.phase === "override" && record.priorityId === priorityId,
+	);
+}
+
+function pendingUserPriorities(projectPath: string, projectTrusted = false): UserPriorityRecord[] {
+	const latest = new Map<string, UserPriorityRecord>();
+	for (const record of listUserPriorityRecords(projectPath, projectTrusted)) {
+		latest.set(record.priorityId, record);
+	}
+	return [...latest.values()].filter(
+		(record) =>
+			record.status === "pending" &&
+			!isUserPriorityApplied(projectPath, record.priorityId, projectTrusted) &&
+			!isUserPriorityEnforced(projectPath, record.priorityId, projectTrusted),
+	);
+}
+
+function pendingUserPriorityEnforcements(projectPath: string, projectTrusted = false): UserPriorityRecord[] {
+	const latest = new Map<string, UserPriorityRecord>();
+	for (const record of listUserPriorityRecords(projectPath, projectTrusted)) {
+		latest.set(record.priorityId, record);
+	}
+	return [...latest.values()].filter(
+		(record) =>
+			record.status === "pending" &&
+			isUserPriorityApplied(projectPath, record.priorityId, projectTrusted) &&
+			!isUserPriorityEnforced(projectPath, record.priorityId, projectTrusted),
+	);
 }
 
 function listCoordinationRecords(projectPath: string, projectTrusted = false): CoordinationRecord[] {
@@ -608,6 +691,8 @@ export {
 	activeCoordinationHolds,
 	createArchiveSnapshot,
 	findArchiveRecords,
+	isUserPriorityApplied,
+	isUserPriorityEnforced,
 	listCoordinationRecords,
 	listExecutionRecords,
 	listInterventionRecords,
@@ -618,9 +703,13 @@ export {
 	listPullRequestRecords,
 	listSignalRecords,
 	listSubmissionRecords,
+	listUserPriorityEnforcementRecords,
+	listUserPriorityRecords,
 	listVerdictDeliveryRecords,
 	listVerdictRecords,
 	listWorkOutcomeRecords,
+	pendingUserPriorities,
+	pendingUserPriorityEnforcements,
 	projectActiveUpstreamBases,
 	projectCoordinations,
 	projectCoordinationsFromRecords,
@@ -632,6 +721,8 @@ export {
 	readLatestMandate,
 	readMandate,
 	readMission,
+	readUserPriority,
+	readUserPriorityEnforcement,
 	validateCoordinationGraph,
 	validateProspectiveCoordinationGraph,
 };

@@ -95,15 +95,13 @@ function fakeSession() {
   };
 }
 
-test("scheduler gives User and critical work priority, then rotates fair bounded Executor batches", () => {
+test("critical supervision tasks run before fair bounded Executor batches", () => {
   const scheduler = new SupervisionScheduler();
   const order = [];
   scheduler.enqueueNormal(delta("a", "a1"));
   scheduler.enqueueNormal(delta("a", "a2"));
   scheduler.enqueueNormal(delta("b", "b1"));
   scheduler.enqueueCritical({ kind: "critical", reason: "budget", run: async () => order.push("critical") });
-  scheduler.enqueueUser({ kind: "user", reason: "User", run: async () => order.push("user") });
-  assert.equal(scheduler.next().kind, "user");
   assert.equal(scheduler.next().kind, "critical");
   const first = scheduler.next();
   assert.deepEqual(first.deltas.map((item) => item.lastSourceEntryId), ["a1", "a2"]);
@@ -198,6 +196,12 @@ test("assessment prompts and persisted inputs use deterministic bounded diagnost
       })),
       currentCoordination: [{ coordinationId: "coordination-1", phase: "decision", status: "active", reason: hugeDiagnostic }],
       coordinationHolds: [{ workId: currentMission.workId, missionId: currentMission.missionId, relation: "dependency", reason: hugeDiagnostic }],
+      userPriorities: [{
+        priorityId: `priority-${"a".repeat(64)}`,
+        selectedWorkId: currentMission.workId,
+        relatedWorkId: "work-related",
+        status: "pending",
+      }],
       effectiveCostThreshold: 1,
       candidateMissions: Array.from({ length: 50 }, (_, index) => ({
         mission: { ...currentMission, missionId: `candidate-${index}`, createdAt: `2026-01-02T00:00:${String(index).padStart(2, "0")}.000Z` },
@@ -213,6 +217,7 @@ test("assessment prompts and persisted inputs use deterministic bounded diagnost
     assert.match(firstPrompt, /"workId":"work-bounded"/);
     assert.match(firstPrompt, /"missionId":"mission-bounded"/);
     assert.match(firstPrompt, /"executionId":"bounded"/);
+    assert.match(firstPrompt, /"userPriorities":\[/);
     assert.match(firstPrompt, /"toolName":"bash"/);
     assert.match(firstPrompt, /"isError":true/);
     assert.match(firstPrompt, /"timestamp":1767225600000/);
@@ -282,18 +287,6 @@ test("restart cursor advances only from completed assessment entries and catch-u
   sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.assessmentStart, start);
   assert.deepEqual(readCompletedCursors(sessionManager.getEntries()), new Map());
   sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.assessmentComplete, start);
-  assert.deepEqual(readCompletedCursors(sessionManager.getEntries()), new Map([["e", "entry-2"]]));
-  const directStart = {
-    ...start,
-    assessmentId: "assessment-direct",
-    firstSourceEntryId: "conclave-user-entry",
-    lastSourceEntryId: "conclave-user-entry",
-    sourceEntryIds: ["conclave-user-entry"],
-    actionIdNamespace: "action:assessment-direct:",
-    sourceKind: "direct-user",
-  };
-  sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.assessmentStart, directStart);
-  sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.assessmentComplete, directStart);
   assert.deepEqual(readCompletedCursors(sessionManager.getEntries()), new Map([["e", "entry-2"]]));
   const entries = [
     { type: "message", id: "u1", message: { role: "user", content: "one", timestamp: 1 } },
@@ -403,7 +396,7 @@ test("turn cost includes nested tool-result usage without inventing unavailable 
   assert.equal(computeTurnCost({ ...base, cost: { ...base.cost, total: 0 } }, [tool]), undefined);
 });
 
-test("compaction rehydrates registered Mission context and User input remains prioritized", async () => {
+test("compaction rehydrates registered Mission context", async () => {
   const session = fakeSession();
   const controller = new SupervisionController({ projectPath: "/tmp/khala-supervision-compaction", projectTrusted: false, session, conclaveParticipantId: "conclave:test", conclaveMaxCostUsdPerTurn: 1, executorMaxCostUsdPerTurn: 1 });
   const currentMission = mission("compaction");
@@ -411,13 +404,6 @@ test("compaction rehydrates registered Mission context and User input remains pr
   session.emit({ type: "compaction_end", aborted: false });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(session.calls.some((call) => call.message.customType === "khala-supervision-context"));
-  const scheduler = new SupervisionScheduler();
-  const order = [];
-  scheduler.enqueueNormal(delta("compaction", "turn"));
-  scheduler.enqueueCritical({ kind: "critical", reason: "critical", run: async () => order.push("critical") });
-  scheduler.enqueueUser({ kind: "user", reason: "user", run: async () => order.push("user") });
-  assert.equal(scheduler.next().kind, "user");
-  assert.equal(scheduler.next().kind, "critical");
   controller.dispose();
 });
 

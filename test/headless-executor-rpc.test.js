@@ -554,7 +554,9 @@ test("the Conclave session activates only the effective supervision tool set", a
 		});
 		assert.deepEqual(session.getActiveToolNames().sort(), [
 			"khala_admit_work",
+			"khala_apply_user_priority",
 			"khala_coordinate_work",
+			"khala_dispose_user_priority",
 			"khala_launch_execution",
 			"khala_launch_observer",
 			"khala_read_archive",
@@ -580,6 +582,8 @@ test("Conclave supervision allowlist excludes implementation and shell tools", (
 		"khala_steer_execution",
 		"khala_coordinate_work",
 		"khala_record_intervention_outcome",
+		"khala_apply_user_priority",
+		"khala_dispose_user_priority",
 	]);
 	assert.equal(CONCLAVE_TOOL_ALLOWLIST.includes("read"), false);
 	assert.equal(CONCLAVE_TOOL_ALLOWLIST.includes("bash"), false);

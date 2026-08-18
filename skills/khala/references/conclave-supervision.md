@@ -34,12 +34,16 @@ or ambiguous evidence fails the Execution without a synthetic Signal.
 
 ## Record Coordination
 
-Use `khala_coordinate_work` for a `dependency` or `peer-conflict` decision, or
-for a legal direct User priority `override` to a peer conflict. A dependency
-identifies the selected upstream Work, Mission, and Execution and can hold a
-waiting Work before its primary Execution exists. A direct User override must
-cite the exact current User source entry. It can change priority only for a peer
-conflict; it cannot reverse a dependency or mutate a Mission.
+Use `khala_coordinate_work` for a Conclave autonomous `dependency` or
+`peer-conflict` decision. A dependency identifies the selected upstream Work,
+Mission, and Execution and can hold a waiting Work before its primary Execution
+exists. A User Priority is consumed from a priority wake:
+`khala_apply_user_priority` appends the override for a pending record that
+still matches its recorded active peer-conflict Coordination;
+`khala_dispose_user_priority` records the stale ignored disposition. The
+override is deterministic from the priority ID and never authored through a
+supervision assessment. It can change priority only for a peer conflict; it
+cannot reverse a dependency or mutate a Mission.
 
 ## Close an Intervention
 

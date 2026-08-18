@@ -19,7 +19,13 @@ import { nanoid } from "nanoid";
 import packageMetadata from "../package.json" with { type: "json" };
 import { buildPiArguments, disposeHeadlessRuntimes, getHeadlessRuntime, recoverHeadlessExecutor } from "./executor.js";
 import { listArchiveRecords } from "./khala-archive.js";
-import { listSignalRecords } from "./khala-archive-projections.js";
+import {
+	isUserPriorityEnforced,
+	listSignalRecords,
+	pendingUserPriorities,
+	pendingUserPriorityEnforcements,
+	readUserPriority,
+} from "./khala-archive-projections.js";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
 import type { ConclaveStorage, SubmissionRecoveryClaim, SubmissionRecoveryOutcome } from "./khala-conclave-storage.js";
 import { createFileConclaveStorage } from "./khala-conclave-storage-file.js";
@@ -65,6 +71,14 @@ import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delive
 import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
 const CONCLAVE_PARTICIPANT_HASH_LENGTH = 16;
+const USER_PRIORITY_WAKE_RETRY_FIRST_DELAY_MS = 50;
+const USER_PRIORITY_WAKE_RETRY_SECOND_DELAY_MS = 100;
+const USER_PRIORITY_WAKE_RETRY_THIRD_DELAY_MS = 250;
+const USER_PRIORITY_WAKE_RETRY_DELAYS_MS = [
+	USER_PRIORITY_WAKE_RETRY_FIRST_DELAY_MS,
+	USER_PRIORITY_WAKE_RETRY_SECOND_DELAY_MS,
+	USER_PRIORITY_WAKE_RETRY_THIRD_DELAY_MS,
+] as const;
 const CONCLAVE_BASE_TOOL_ALLOWLIST = [
 	"khala_read_archive",
 	"khala_admit_work",
@@ -83,6 +97,8 @@ const CONCLAVE_TOOL_ALLOWLIST = [
 	"khala_steer_execution",
 	"khala_coordinate_work",
 	"khala_record_intervention_outcome",
+	"khala_apply_user_priority",
+	"khala_dispose_user_priority",
 ] as const;
 type ConclaveCoordinator = Readonly<{
 	submit: (
@@ -92,6 +108,12 @@ type ConclaveCoordinator = Readonly<{
 	wakeSignal: (projectPath: string, signal: SignalRecord, projectTrusted?: boolean) => Promise<void>;
 	wakeLearning: (projectPath: string, learning: LearningRecord, projectTrusted?: boolean) => Promise<void>;
 	wakeReview: (projectPath: string, workId: string, projectTrusted?: boolean) => Promise<void>;
+	wakeUserPriority: (
+		projectPath: string,
+		priorityId: string,
+		workId: string,
+		projectTrusted?: boolean,
+	) => Promise<void>;
 	deliverVerdict: (projectPath: string, verdict: VerdictRecord, projectTrusted?: boolean) => Promise<void>;
 	getSubmission: ConclaveStorage["getSubmission"];
 	getPendingSubmission: ConclaveStorage["getPendingSubmission"];
@@ -121,6 +143,7 @@ function createConclaveCoordinator(
 	extensionPath: string,
 	storage: ConclaveStorage = createFileConclaveStorage(),
 	processSubmissionWake: SubmissionWakeProcessor = wakeWorkSubmission,
+	processUserPriorityWake?: UserPriorityWakeProcessor,
 ): ConclaveCoordinator {
 	const runtimes = new Map<string, Promise<ConclaveRuntime>>();
 	const backgroundTasks = new Set<Promise<void>>();
@@ -181,6 +204,35 @@ function createConclaveCoordinator(
 			runtimes,
 			disposed: () => disposed,
 		});
+	const wakeUserPriority = (
+		projectPath: string,
+		priorityId: string,
+		workId: string,
+		projectTrusted = false,
+	): Promise<void> => {
+		const resolvedProjectPath = resolve(projectPath);
+		return retryUserPriorityWake({
+			projectPath: resolvedProjectPath,
+			projectTrusted,
+			priorityId,
+			wake: () => {
+				if (processUserPriorityWake !== undefined) {
+					return processUserPriorityWake(resolvedProjectPath, priorityId, workId, projectTrusted);
+				}
+				return wakeConclave({
+					projectPath: resolvedProjectPath,
+					projectTrusted,
+					workId,
+					userPriorityId: priorityId,
+					extensionPath,
+					storage,
+					runtimes,
+					disposed: () => disposed,
+				});
+			},
+			shouldStop: () => disposed,
+		});
+	};
 	const pollBeforeDependentLaunch = async (
 		projectPath: string,
 		projectTrusted = false,
@@ -247,6 +299,12 @@ function createConclaveCoordinator(
 						error,
 					),
 			});
+			await schedulePendingUserPriorityWakes(
+				backgroundTasks,
+				resolvedProjectPath,
+				projectTrusted,
+				(priorityId, workId) => wakeUserPriority(resolvedProjectPath, priorityId, workId, projectTrusted),
+			);
 		});
 	};
 
@@ -263,6 +321,7 @@ function createConclaveCoordinator(
 		wakeSignal,
 		wakeLearning,
 		wakeReview,
+		wakeUserPriority,
 		deliverVerdict,
 		getSubmission: storage.getSubmission,
 		getPendingSubmission: storage.getPendingSubmission,
@@ -305,6 +364,7 @@ interface WakeRequest {
 	signal?: SignalRecord;
 	learning?: LearningRecord;
 	review?: boolean;
+	userPriorityId?: string;
 	extensionPath: string;
 	storage: ConclaveStorage;
 	runtimes: Map<string, Promise<ConclaveRuntime>>;
@@ -313,6 +373,12 @@ interface WakeRequest {
 }
 type SubmissionWakeRequest = WakeRequest & Readonly<{ workId: string; archivePath: string }>;
 type SubmissionWakeProcessor = (request: SubmissionWakeRequest) => Promise<void>;
+type UserPriorityWakeProcessor = (
+	projectPath: string,
+	priorityId: string,
+	workId: string,
+	projectTrusted?: boolean,
+) => Promise<void>;
 type SubmissionWakeDiagnostic = Readonly<{ message: string; recovery: ConclaveWakeRecovery }>;
 type SubmissionWakeDiagnosticRequest = Readonly<{
 	projectPath: string;
@@ -359,6 +425,16 @@ async function wakeConclave(request: WakeRequest): Promise<void> {
 				`The learning concerns Work ${request.learning.workId}, observation ${request.learning.executionId}.`,
 				"Check whether this learning is relevant and whether equivalent learning already exists in the Archive.",
 				"If it is sufficient, call khala_admit_work, then call khala_launch_execution; otherwise do not launch the Executor yet.",
+			].join("\n");
+		} else if (request.userPriorityId !== undefined) {
+			prompt = [
+				"A User Priority request has arrived.",
+				`Read the authoritative Archive at ${join(getConclaveDirectory(request.projectPath, request.projectTrusted), "archive.jsonl")}.`,
+				`The priority record is ${request.userPriorityId} for Work ${request.workId}.`,
+				"If it is still pending and matches its recorded active peer-conflict Coordination, call khala_apply_user_priority with the exact priorityId.",
+				"If it is stale (no matching active peer-conflict Coordination remains), call khala_dispose_user_priority with the exact priorityId.",
+				"Do not supply assessment, action, Work, Mission, Execution, or Coordination IDs from this prompt; read them from the Archive.",
+				"Never modify the User Priority record and never let a priority change Mission authority.",
 			].join("\n");
 		} else if (request.review === true) {
 			prompt = [
@@ -639,6 +715,68 @@ function scheduleConclaveBackgroundTask(
 		.catch(() => undefined)
 		.finally(() => backgroundTasks.delete(task));
 	backgroundTasks.add(task);
+}
+
+type PendingPriorityWake = (priorityId: string, workId: string, projectTrusted: boolean) => Promise<void>;
+
+type UserPriorityWakeRetryOptions = Readonly<{
+	projectPath: string;
+	projectTrusted: boolean;
+	priorityId: string;
+	wake: () => Promise<void>;
+	shouldStop: () => boolean;
+}>;
+
+async function retryUserPriorityWake(options: UserPriorityWakeRetryOptions): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 0; attempt <= USER_PRIORITY_WAKE_RETRY_DELAYS_MS.length; attempt += 1) {
+		const priority = readUserPriority(options.projectPath, options.priorityId, options.projectTrusted);
+		if (
+			priority === undefined ||
+			priority.status !== "pending" ||
+			isUserPriorityEnforced(options.projectPath, options.priorityId, options.projectTrusted)
+		) {
+			return;
+		}
+		try {
+			await options.wake();
+			return;
+		} catch (error) {
+			lastError = error;
+		}
+		if (options.shouldStop()) {
+			throw lastError;
+		}
+		const delayMs = USER_PRIORITY_WAKE_RETRY_DELAYS_MS[attempt];
+		if (delayMs === undefined) {
+			throw lastError;
+		}
+		await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, delayMs));
+	}
+	throw lastError;
+}
+
+// A pending User Priority or an applied priority with incomplete enforcement is
+// the durable at-least-once recovery queue item. Every remaining item is
+// scheduled through the same serialized wake path on startup/resume; apply and
+// dispose are Archive-locked and idempotent, so concurrent processes cannot
+// apply or ignore it twice.
+function schedulePendingUserPriorityWakes(
+	backgroundTasks: Set<Promise<void>>,
+	projectPath: string,
+	projectTrusted: boolean,
+	wake: PendingPriorityWake,
+): void {
+	const pending = new Map<string, string>();
+	for (const priority of [
+		...pendingUserPriorities(projectPath, projectTrusted),
+		...pendingUserPriorityEnforcements(projectPath, projectTrusted),
+	]) {
+		pending.set(priority.priorityId, priority.workId);
+	}
+	for (const [priorityId, workId] of pending) {
+		scheduleConclaveBackgroundTask(backgroundTasks, () => wake(priorityId, workId, projectTrusted));
+	}
 }
 
 function scheduleConclaveWake(
@@ -1251,4 +1389,5 @@ export {
 	createConclaveCoordinator,
 	enqueueConclaveWake,
 	recoverPendingSubmissions,
+	schedulePendingUserPriorityWakes,
 };

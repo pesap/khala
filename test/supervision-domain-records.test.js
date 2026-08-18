@@ -505,12 +505,26 @@ test("supervision Archive replay is idempotent, causal, and projected fail-close
 			branch: undefined,
 		};
 		appendArchiveRecord(projectPath, { schemaVersion: 2, type: "coordination", workId: peerDecision.workId, payload: peerDecision });
-		const peerOverride = { ...peerDecision, phase: "override", actionId: "peer-action-2", selectedWorkId: peerDecision.workId, selectedMissionId: peerDecision.missionId, userEntryId: "user-entry" };
+		const peerPriority = {
+			priorityId: `priority-${"a".repeat(64)}`,
+			workId: peerDecision.workId,
+			selectedWorkId: peerDecision.workId,
+			relatedWorkId: peerDecision.relatedWorkId,
+			coordinationId: peerDecision.coordinationId,
+			actionId: `action-${"b".repeat(64)}`,
+			stopActionId: `action-${"c".repeat(64)}`,
+			reason: "The selected Work should proceed first.",
+			provenance: { sessionId: "user-session", entryId: "user-entry", contentSha256: "d".repeat(64) },
+			status: "pending",
+			createdAt: new Date().toISOString(),
+		};
+		appendArchiveRecord(projectPath, { schemaVersion: 2, type: "user-priority", workId: peerPriority.workId, payload: peerPriority });
+		const peerOverride = { ...peerDecision, phase: "override", actionId: peerPriority.actionId, selectedWorkId: peerDecision.workId, selectedMissionId: peerDecision.missionId, selectedExecutionId: peerDecision.executionId, userEntryId: "user-entry", priorityId: peerPriority.priorityId };
 		assert.equal(isCoordinationRecord(peerOverride), true);
 		appendArchiveRecord(projectPath, { schemaVersion: 2, type: "coordination", workId: peerOverride.workId, payload: peerOverride });
 		assert.throws(
 			() => appendArchiveRecord(projectPath, { schemaVersion: 2, type: "coordination", workId: peerOverride.workId, payload: { ...peerOverride, actionId: "peer-action-3", relatedWorkId: "third-work", relatedMissionId: "third-mission", selectedWorkId: "third-work", selectedMissionId: "third-mission" } }),
-			/changed its identity/,
+			/invalid or already-applied User Priority|changed its identity/,
 		);
 		const issuance = interventionIssuance();
 		appendArchiveRecord(projectPath, { schemaVersion: 2, type: "intervention", workId: issuance.workId, executionId: issuance.executionId, payload: issuance });
@@ -543,7 +557,7 @@ test("supervision Archive replay is idempotent, causal, and projected fail-close
 			() => appendArchiveRecord(projectPath, { schemaVersion: 2, type: "intervention", workId: issuance.workId, executionId: issuance.executionId, payload: { ...outcome, actionId: "intervention-action-3" } }),
 			/invalid outcome order/,
 		);
-		assert.equal(listArchiveRecords(projectPath).length, 11);
+		assert.equal(listArchiveRecords(projectPath).length, 12);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

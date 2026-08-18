@@ -35,13 +35,14 @@ role, broaden scope, or change durable state.
 | Mandate and Mission | Conclave admission and its immutable assignment. Retry creates a successor; it never rewrites the predecessor. |
 | Execution and Signal | One isolated attempt and its `progress`, `blocked`, or `finished` evidence. A Signal is not a Verdict. |
 | Intervention and Coordination | Bounded Conclave control evidence and structured dependency or peer-conflict scheduling evidence. |
+| User Priority | Archive-backed User intent that selected Work proceeds before related Work in an active peer-conflict Coordination; the Conclave applies or ignores it, and pending records are rescheduled on startup resume. |
 | Finish and Work Outcome | Finish hands an Execution to external review. Only verified merge evidence can support the Conclave's Work Outcome. |
 
 ## Role boundary
 
 | Role | May do | Must not do |
 |---|---|---|
-| User | Define and submit Work; record observed Pull Request evidence; request advisory Oracle review. | Admit, launch, steer, issue Verdicts, or record Outcomes. |
+| User | Define and submit Work; record observed Pull Request evidence; prioritize Work over a peer in an active peer-conflict Coordination; request advisory Oracle review. | Admit, launch, steer, issue Verdicts, record Outcomes, or write Coordination. |
 | Dedicated Conclave | Admit, materialize, launch, supervise, coordinate, issue Verdicts, and record Outcomes. | Implement code or author Executor Signals. |
 | Observer | Inspect one submission and record one Learning. | Edit, mutate, launch, or continue after Learning. |
 | Executor | Implement one current immutable Mission and record Signals. | Change Mission authority or issue lifecycle decisions. |
