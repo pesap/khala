@@ -139,6 +139,30 @@ test("critical supervision failures enter outage recovery and retain the task fo
   controller.dispose();
 });
 
+test("normal Executor supervision preserves a bounded redacted runtime diagnostic", async () => {
+  const session = fakeSession();
+  const controller = new SupervisionController({
+    projectPath: "/tmp/khala-normal-runtime-diagnostic",
+    projectTrusted: false,
+    session,
+    conclaveParticipantId: "conclave:test",
+    conclaveMaxCostUsdPerTurn: 1,
+    executorMaxCostUsdPerTurn: 1,
+  });
+  controller.handleRuntimeFailure(
+    { workId: "work-normal", missionId: "mission-normal", executionId: "execution-normal" },
+    new Error(`runtime failure {"dbPassword":"NORMAL_SECRET"} ${"x".repeat(10_000)}`),
+  );
+  for (let attempt = 0; attempt < 100 && session.calls.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const diagnostic = session.calls.map((call) => JSON.stringify(call.message.content)).join("\\n");
+  assert.match(diagnostic, /Executor RPC failure/);
+  assert.doesNotMatch(diagnostic, /NORMAL_SECRET/);
+  assert.ok(diagnostic.length <= 5000);
+  controller.dispose();
+});
+
 test("turn deltas preserve ordered tool calls/results and stable deterministic IDs", () => {
   const message = { ...assistant("call"), content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "x" } }] };
   const result = { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "x" }], isError: false, timestamp: Date.now() };

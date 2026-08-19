@@ -49,6 +49,8 @@ interface ExecutorRequest {
 	onRpcReady?: (binding: RpcSessionBinding) => Promise<void> | void;
 	onRpcEvent?: (event: unknown) => Promise<void> | void;
 	onRpcFailure?: (error: Error) => Promise<void> | void;
+	/** Fresh recovery reports its own bounded failure instead of entering generic critical supervision. */
+	suppressRuntimeFailureSupervision?: boolean;
 	onReviewPrepared?: (preparation: ReviewPreparation, sandbox: Sandbox) => Promise<void> | void;
 	reviewWorkflow?: Readonly<{
 		publish: boolean;
@@ -248,14 +250,19 @@ function createExecutorStarter(
 				if (request.onRpcFailure !== undefined || supervision !== undefined) {
 					runtimeOptions.onFailure = (error) => {
 						const explicitResult = request.onRpcFailure?.(error);
-						const supervisedResult = supervision?.handleRuntimeFailure(
-							{
-								workId: request.workId,
-								missionId: request.missionId ?? "unknown-mission",
-								executionId: request.executionId,
-							},
-							error,
-						);
+						let supervisedResult: void | Promise<void>;
+						if (request.suppressRuntimeFailureSupervision) {
+							supervisedResult = undefined;
+						} else {
+							supervisedResult = supervision?.handleRuntimeFailure(
+								{
+									workId: request.workId,
+									missionId: request.missionId ?? "unknown-mission",
+									executionId: request.executionId,
+								},
+								error,
+							);
+						}
 						return Promise.all([explicitResult, supervisedResult]).then(() => undefined);
 					};
 				}

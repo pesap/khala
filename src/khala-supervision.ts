@@ -33,6 +33,7 @@ import {
 	readCurrentMission,
 } from "./khala-archive-projections.js";
 import { resolveEffectiveWorkBudget } from "./khala-config.js";
+import { boundDiagnostic, formatError } from "./khala-error.js";
 import { listExecutorRecords } from "./khala-executor-registry.js";
 import {
 	type ExecutorRecord,
@@ -1579,7 +1580,7 @@ class SupervisionController {
 	}
 
 	handleRuntimeFailure(identity: { workId: string; missionId: string; executionId: string }, error: Error): void {
-		this.enqueueCritical(identity, `Executor RPC failure: ${error.message}`);
+		this.enqueueCritical(identity, boundDiagnostic(`Executor RPC failure: ${formatError(error)}`, 4096));
 	}
 
 	handleRuntimeEvent(

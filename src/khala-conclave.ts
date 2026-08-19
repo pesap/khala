@@ -169,6 +169,13 @@ function isPendingRecoveryLaunchEligible(
 			candidate.mission.missionId === pending.missionId,
 	);
 }
+function isCurrentMissionAuthority(projectPath: string, projectTrusted: boolean, mission: MissionRecord): boolean {
+	return withArchiveLock(projectPath, projectTrusted, () => {
+		const currentMission = readCurrentMission(projectPath, mission.workId, projectTrusted);
+		return currentMission?.state === "current" && currentMission.mission.missionId === mission.missionId;
+	});
+}
+
 function createConclaveCoordinator(
 	extensionPath: string,
 	storage: ConclaveStorage = createFileConclaveStorage(),
@@ -1277,6 +1284,23 @@ async function initializeRuntime(
 	};
 }
 
+async function cleanupFreshRecoveryResources(
+	supervision: SupervisionController,
+	executionId: string,
+	launched: { cleanup?: () => Promise<void> } | undefined,
+	runtimeOwnerRegistered: boolean,
+): Promise<void> {
+	try {
+		if (runtimeOwnerRegistered) {
+			await supervision.closeRuntimeOwner(executionId);
+		} else {
+			await launched?.cleanup?.();
+		}
+	} catch {
+		// The failed Execution remains authoritative even when cleanup is unavailable.
+	}
+}
+
 async function startFreshSameMissionExecution(
 	input: Readonly<{
 		projectPath: string;
@@ -1360,6 +1384,26 @@ async function startFreshSameMissionExecution(
 	}
 	let launched: { cleanup?: () => Promise<void> } | undefined;
 	let runtimeOwnerRegistered = false;
+	let staleAuthority = false;
+	let failureReported = false;
+	const reportFreshRecoveryFailure = (error: unknown): void => {
+		if (staleAuthority || failureReported) {
+			return;
+		}
+		failureReported = true;
+		try {
+			input.onLaunchFailure?.({
+				kind: "fresh-executor-recovery-failed",
+				workId: input.mission.workId,
+				missionId: input.mission.missionId,
+				predecessorExecutionId: input.failedExecution.executionId,
+				replacementExecutionId: executionId,
+				error: formatBoundedDiagnostic(error),
+			});
+		} catch {
+			// Session reporting cannot replace the authoritative failed Execution.
+		}
+	};
 	try {
 		input.supervision.registerExecution(input.mission, executionId);
 		const starter = createConfiguredExecutorStarter({
@@ -1378,6 +1422,7 @@ async function startFreshSameMissionExecution(
 			participantId,
 			projectTrusted: input.projectTrusted,
 			kind: "executor",
+			suppressRuntimeFailureSupervision: true,
 			reviewWorkflow: {
 				publish: true,
 				...(recoveryConfig.pullRequestTargetBranch.trim().length === 0
@@ -1418,11 +1463,15 @@ async function startFreshSameMissionExecution(
 					input.projectTrusted,
 				);
 			},
-			onRpcFailure: () => {
+			onRpcFailure: (error) => {
+				reportFreshRecoveryFailure(error);
 				updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
-				supervision.closeRuntimeOwner(executionId).catch(() => undefined);
+				return supervision.closeRuntimeOwner(executionId).catch(() => undefined);
 			},
 		});
+		if (failureReported) {
+			throw new Error("Fresh recovery RPC failed during startup.");
+		}
 		if (launched.cleanup !== undefined) {
 			input.supervision.registerRuntimeOwner(executionId, launched.cleanup);
 			runtimeOwnerRegistered = true;
@@ -1430,31 +1479,17 @@ async function startFreshSameMissionExecution(
 		if (input.isSupervisionAvailable?.() === false) {
 			throw new Error("Supervision became unavailable after fresh recovery registration.");
 		}
+		if (!isCurrentMissionAuthority(input.projectPath, input.projectTrusted, input.mission)) {
+			staleAuthority = true;
+			throw new Error("Fresh recovery Mission was superseded during startup.");
+		}
 		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.running }, input.projectTrusted);
 		return true;
 	} catch (error) {
-		const primaryError = formatBoundedDiagnostic(error);
-		try {
-			if (runtimeOwnerRegistered) {
-				await input.supervision.closeRuntimeOwner(executionId);
-			} else {
-				await launched?.cleanup?.();
-			}
-		} catch {
-			// The failed Execution remains authoritative even when cleanup is unavailable.
-		}
+		await cleanupFreshRecoveryResources(input.supervision, executionId, launched, runtimeOwnerRegistered);
 		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
-		try {
-			input.onLaunchFailure?.({
-				kind: "fresh-executor-recovery-failed",
-				workId: input.mission.workId,
-				missionId: input.mission.missionId,
-				predecessorExecutionId: input.failedExecution.executionId,
-				replacementExecutionId: executionId,
-				error: primaryError,
-			});
-		} catch {
-			// Session reporting cannot replace the authoritative failed Execution.
+		if (!staleAuthority) {
+			reportFreshRecoveryFailure(error);
 		}
 		return false;
 	}
