@@ -34,7 +34,7 @@ import {
 } from "./khala-archive-projections.js";
 import { resolveEffectiveWorkBudget } from "./khala-config.js";
 import { listExecutorRecords } from "./khala-executor-registry.js";
-import { type ExecutorRecord, ExecutorStatus, type MissionRecord } from "./khala-model.js";
+import { type ExecutorRecord, ExecutorStatus, isExecutorRecord, type MissionRecord } from "./khala-model.js";
 import { type ProjectionTruncation, projectDiagnosticValue, serializedByteLength } from "./khala-payload-projection.js";
 import type { UpstreamRefPoller } from "./khala-supervision-recovery.js";
 import { failExecutionAndCloseInterventions, validatePersistedExecutorSession } from "./khala-supervision-recovery.js";
@@ -1058,6 +1058,53 @@ function incompleteAssessmentStarts(entries: readonly SessionEntry[]): Assessmen
 	return result;
 }
 
+function listEligibleFailedExecutorRecoveries(
+	projectPath: string,
+	projectTrusted = false,
+): readonly { execution: ExecutorRecord; mission: MissionRecord }[] {
+	const currentMissions = projectMissions(projectPath, projectTrusted)
+		.filter((projection) => projection.state === "current")
+		.map((projection) => projection.mission);
+	const currentByMission = new Map(currentMissions.map((mission) => [mission.missionId, mission]));
+	const latestExecutions = new Map<string, { execution: ExecutorRecord; archiveIndex: number }>();
+	for (const [archiveIndex, record] of listArchiveRecords(projectPath, projectTrusted).entries()) {
+		if (record.type === "execution" && isExecutorRecord(record.payload)) {
+			latestExecutions.set(record.payload.executionId, { execution: record.payload, archiveIndex });
+		}
+	}
+	const activeMissionIds = new Set(
+		[...latestExecutions.values()]
+			.filter(
+				(candidate) =>
+					candidate.execution.kind === "executor" &&
+					candidate.execution.missionId !== undefined &&
+					(candidate.execution.status === ExecutorStatus.starting ||
+						candidate.execution.status === ExecutorStatus.running),
+			)
+			.map((candidate) => candidate.execution.missionId as string),
+	);
+	const latestFailedByMission = new Map<string, { execution: ExecutorRecord; archiveIndex: number }>();
+	for (const candidate of [...latestExecutions.values()].sort(
+		(left, right) => left.archiveIndex - right.archiveIndex,
+	)) {
+		const missionId = candidate.execution.missionId;
+		if (
+			candidate.execution.kind !== "executor" ||
+			missionId === undefined ||
+			candidate.execution.status !== ExecutorStatus.failed ||
+			!currentByMission.has(missionId) ||
+			activeMissionIds.has(missionId)
+		) {
+			continue;
+		}
+		latestFailedByMission.set(missionId, candidate);
+	}
+	return [...latestFailedByMission.values()].map((candidate) => ({
+		execution: candidate.execution,
+		mission: currentByMission.get(candidate.execution.missionId as string) as MissionRecord,
+	}));
+}
+
 class SupervisionController {
 	readonly scheduler = new SupervisionScheduler();
 	private readonly executions = new Map<string, ExecutionState>();
@@ -1102,7 +1149,7 @@ class SupervisionController {
 
 	async recover(): Promise<void> {
 		this.drainStopped = false;
-		await this.rehydrateMissions(true, false);
+		await this.rehydrateMissions(true, false, true);
 		this.restoreStopHandoffExpectations();
 		await this.options.upstreamPoller?.start();
 		await this.recoverRegisteredExecutors();
@@ -1328,16 +1375,27 @@ class SupervisionController {
 			.catch(() => undefined);
 	}
 
-	async rehydrateMissions(forceContext: boolean, recoverExecutors = false): Promise<void> {
+	async rehydrateMissions(
+		forceContext: boolean,
+		recoverExecutors = false,
+		includeFailedExecutors = false,
+	): Promise<void> {
 		const active = projectMissions(this.options.projectPath, this.options.projectTrusted).filter(
 			(projection) => projection.state === "current",
 		);
 		const activeByMission = new Map(active.map((projection) => [projection.mission.missionId, projection.mission]));
-		for (const execution of listExecutorRecords(this.options.projectPath, this.options.projectTrusted)) {
+		const executions = listExecutorRecords(this.options.projectPath, this.options.projectTrusted);
+		const failedRecoveries = includeFailedExecutors
+			? listEligibleFailedExecutorRecoveries(this.options.projectPath, this.options.projectTrusted)
+			: [];
+		const failedExecutionIds = new Set(failedRecoveries.map((recovery) => recovery.execution.executionId));
+		for (const execution of executions) {
 			if (
 				execution.kind !== "executor" ||
 				execution.missionId === undefined ||
-				(execution.status !== ExecutorStatus.starting && execution.status !== ExecutorStatus.running)
+				(execution.status !== ExecutorStatus.starting &&
+					execution.status !== ExecutorStatus.running &&
+					!(includeFailedExecutors && failedExecutionIds.has(execution.executionId)))
 			) {
 				continue;
 			}
@@ -1346,7 +1404,7 @@ class SupervisionController {
 				continue;
 			}
 			let reader: ExecutorSessionReader | undefined =
-				execution.sessionPath === undefined
+				execution.status === ExecutorStatus.failed || execution.sessionPath === undefined
 					? undefined
 					: {
 							getEntries: (since?: string) =>
@@ -1376,7 +1434,11 @@ class SupervisionController {
 			if (execution?.kind !== "executor") {
 				continue;
 			}
+			const alreadyFailed = execution.status === ExecutorStatus.failed;
 			try {
+				if (alreadyFailed) {
+					throw new Error("Failed Executor requires fresh same-Mission recovery.");
+				}
 				if (execution.piSessionId === undefined || execution.sessionPath === undefined) {
 					throw new Error("Executor has no persisted Pi session binding.");
 				}
@@ -1387,22 +1449,24 @@ class SupervisionController {
 				state.reader = await this.options.recoverExecutor(execution, state.mission);
 			} catch (error) {
 				const normalized = error instanceof Error ? error : new Error(String(error));
-				const failedExecutionRecordId = await failExecutionAndCloseInterventions(
-					this.options.projectPath,
-					execution.executionId,
-					this.options.projectTrusted,
-					state.reader?.closeProcess === undefined
-						? undefined
-						: async () => {
-								await state.reader?.closeProcess?.();
-							},
-				);
+				const failedExecutionRecordId = alreadyFailed
+					? undefined
+					: await failExecutionAndCloseInterventions(
+							this.options.projectPath,
+							execution.executionId,
+							this.options.projectTrusted,
+							state.reader?.closeProcess === undefined
+								? undefined
+								: async () => {
+										await state.reader?.closeProcess?.();
+									},
+						);
 				this.options.session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, {
 					kind: "executor-recovery-failed",
 					workId: state.mission.workId,
 					missionId: state.mission.missionId,
 					executionId,
-					failedExecutionRecordId,
+					...(failedExecutionRecordId === undefined ? {} : { failedExecutionRecordId }),
 					error: normalized.message,
 				});
 				await this.options.onExecutorRecoveryFailure?.(execution, state.mission, normalized);
@@ -2375,6 +2439,7 @@ export {
 	formatAssessmentPrompt,
 	getSupervisionController,
 	hideAlignedAssessmentResponse,
+	listEligibleFailedExecutorRecoveries,
 	parseRuntimeTurnEnd,
 	readCompletedCursors,
 	readExecutorSessionFile,

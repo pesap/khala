@@ -6,9 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import createExtension from "../dist/src/index.js";
+import { appendArchiveRecord, listArchiveRecords } from "../dist/src/khala-archive.js";
 import { createConclaveCoordinator } from "../dist/src/khala-conclave.js";
 import { getConclaveDirectory } from "../dist/src/khala-conclave-directory.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
+import { AUTOMATIC_RECOVERY_MAX_ATTEMPTS } from "../dist/src/khala-conclave-storage.js";
 import {
 	CONCLAVE_MODEL_SESSION_MAX_BYTES,
 	CONCLAVE_MODEL_SESSION_MAX_IDLE_MS,
@@ -225,6 +227,104 @@ test("background Conclave recovery yields before storage access and contains sch
 		assert.equal(recoveryReads, 1);
 	} finally {
 		await coordinator.dispose();
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("exhausted submission recovery still bootstraps supervision for a failed current Executor", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-failed-bootstrap-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	let sessionLoads = 0;
+	try {
+		const work = {
+			title: "Failed bootstrap",
+			objective: "Recover the failed Executor.",
+			context: "The Executor failed before Pi RPC startup.",
+			scope: "Recovery bootstrap.",
+			acceptanceCriteria: ["Supervision initializes."],
+			constraints: [],
+			plan: ["Recover the current Mission."],
+			validation: ["Inspect the new Executor attempt."],
+		};
+		const storage = createFileConclaveStorage();
+		storage.submit({ workId: "failed-bootstrap", projectPath, work });
+		for (let attempt = 0; attempt < AUTOMATIC_RECOVERY_MAX_ATTEMPTS; attempt += 1) {
+			const claim = storage.claimSubmissionRecovery(projectPath, "failed-bootstrap", `test-owner-${attempt}`);
+			assert.ok(claim);
+			storage.completeSubmissionRecovery(projectPath, claim, {
+				status: "failed",
+				attemptedAt: new Date().toISOString(),
+				failure: "Conclave unavailable.",
+				recovery: "recreate",
+			});
+		}
+		const now = new Date().toISOString();
+		const submission = listArchiveRecords(projectPath).find((record) => record.type === "submission");
+		assert.ok(submission);
+		const assignment = { ...work };
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mandate",
+			workId: "failed-bootstrap",
+			payload: {
+				mandateId: "mandate-failed-bootstrap",
+				workId: "failed-bootstrap",
+				revision: 1,
+				sourceSubmissionRecordId: submission.recordId,
+				terms: assignment,
+				admittedByParticipantId: "conclave:test",
+				admittedAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "failed-bootstrap",
+			payload: {
+				missionId: "mission-failed-bootstrap",
+				workId: "failed-bootstrap",
+				mandateId: "mandate-failed-bootstrap",
+				assignment,
+				assignedParticipantId: "executor:failed-bootstrap",
+				createdAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "execution",
+			workId: "failed-bootstrap",
+			executionId: "failed-execution",
+			payload: {
+				executionId: "failed-execution",
+				workId: "failed-bootstrap",
+				executorName: "Failed Executor",
+				kind: "executor",
+				participantId: "executor:failed-bootstrap",
+				purpose: { kind: "mission", missionId: "mission-failed-bootstrap" },
+				missionId: "mission-failed-bootstrap",
+				projectPath,
+				sandboxPath: projectPath,
+				launcher: "pending",
+				status: "failed",
+				startedAt: now,
+			},
+		});
+		const fileStorage = createFileConclaveStorage();
+		const coordinator = createConclaveCoordinator(join(process.cwd(), "dist", "src", "index.js"), {
+			...fileStorage,
+			loadConclaveSession(...args) {
+				sessionLoads += 1;
+				return fileStorage.loadConclaveSession(...args);
+			},
+		});
+		coordinator.resume(projectPath);
+		assert.equal(sessionLoads, 0);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(sessionLoads, 1);
+		await coordinator.dispose();
+	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;
 		rmSync(root, { recursive: true, force: true });
 	}

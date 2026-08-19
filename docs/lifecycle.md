@@ -152,7 +152,12 @@ wake claimed while its idempotent outcome is reconciled. A missed renewal can
 expire and permit another attempt; the stale owner is then fenced and settles
 without retrying an impossible completion.
 Submission wakes are tracked
-through coordinator disposal so no model session starts after shutdown.
+through coordinator disposal so no model session starts after shutdown. A
+background startup or `/khala-recreate` recovery also bootstraps supervision
+when the current Mission's latest failed Executor has no active replacement,
+even after submission wake exhaustion. It registers only that latest failed
+attempt per Mission; the fresh same-Mission path preserves the failed Archive
+history and does not launch while another Executor is starting or running.
 
 Session recovery validates the persisted Pi session identity and path, catches
 up its stable entry cursor, and resumes supervision. Missing, corrupt, or

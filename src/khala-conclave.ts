@@ -18,7 +18,7 @@ import {
 import { nanoid } from "nanoid";
 import packageMetadata from "../package.json" with { type: "json" };
 import { buildPiArguments, disposeHeadlessRuntimes, getHeadlessRuntime, recoverHeadlessExecutor } from "./executor.js";
-import { listArchiveRecords } from "./khala-archive.js";
+import { listArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import {
 	isUserPriorityEnforced,
 	listSignalRecords,
@@ -56,6 +56,7 @@ import { resolvePackageRoot } from "./khala-package.js";
 import { latestPullRequest, recordReviewPreparation } from "./khala-review.js";
 import { readRolePrompt } from "./khala-role.js";
 import {
+	listEligibleFailedExecutorRecoveries,
 	registerSupervisionController,
 	SupervisionController,
 	unregisterSupervisionController,
@@ -270,6 +271,9 @@ function createConclaveCoordinator(
 				return;
 			}
 			recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
+			if (listEligibleFailedExecutorRecoveries(resolvedProjectPath, projectTrusted).length > 0) {
+				await getRuntime(resolvedProjectPath, projectTrusted, extensionPath, storage, runtimes);
+			}
 			await recoverPendingSubmissions({
 				projectPath: resolvedProjectPath,
 				projectTrusted,
@@ -1264,28 +1268,44 @@ async function startFreshSameMissionExecution(
 		packageVersion: packageMetadata.version,
 		promptSha256: createHash("sha256").update(input.executorSystemPrompt).digest("hex"),
 	};
-	writeExecutorRecord(
-		createExecutorRecord(
-			{
-				executionId,
-				workId: input.mission.workId,
-				executorName,
-				kind: "executor",
-				participantId,
-				purpose: { kind: "mission", missionId: input.mission.missionId },
-				missionId: input.mission.missionId,
-				projectPath: input.projectPath,
-				sandboxPath: "",
-				launcher: "pending",
-				promptIdentity,
-				...(input.failedExecution.upstreamBase === undefined
-					? {}
-					: { upstreamBase: input.failedExecution.upstreamBase }),
-			},
-			ExecutorStatus.starting,
-		),
-		input.projectTrusted,
-	);
+	let registered = false;
+	withArchiveLock(input.projectPath, input.projectTrusted, () => {
+		const competing = listExecutorRecords(input.projectPath, input.projectTrusted).find(
+			(candidate) =>
+				candidate.kind === "executor" &&
+				candidate.missionId === input.mission.missionId &&
+				(candidate.status === ExecutorStatus.starting || candidate.status === ExecutorStatus.running),
+		);
+		if (competing !== undefined) {
+			return;
+		}
+		writeExecutorRecord(
+			createExecutorRecord(
+				{
+					executionId,
+					workId: input.mission.workId,
+					executorName,
+					kind: "executor",
+					participantId,
+					purpose: { kind: "mission", missionId: input.mission.missionId },
+					missionId: input.mission.missionId,
+					projectPath: input.projectPath,
+					sandboxPath: "",
+					launcher: "pending",
+					promptIdentity,
+					...(input.failedExecution.upstreamBase === undefined
+						? {}
+						: { upstreamBase: input.failedExecution.upstreamBase }),
+				},
+				ExecutorStatus.starting,
+			),
+			input.projectTrusted,
+		);
+		registered = true;
+	});
+	if (!registered) {
+		return false;
+	}
 	input.supervision.registerExecution(input.mission, executionId);
 	const starter = createConfiguredExecutorStarter({
 		cwd: input.projectPath,
