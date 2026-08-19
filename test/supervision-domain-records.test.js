@@ -491,6 +491,7 @@ test("supervision Archive replay is idempotent, causal, and projected fail-close
 		const peerDecision = {
 			...decision,
 			coordinationId: "peer-coordination",
+			peerConflictExecutionIdentityPolicy: "active-execution",
 			actionId: "peer-action-1",
 			relation: "peer-conflict",
 			workId: "peer-waiting",
@@ -600,7 +601,7 @@ test("peer-conflict replay enforces point-in-time active Execution identities", 
 		appendActive(projectPath, suffix);
 		return side;
 	};
-	const decision = (coordinationId, a, b, identities = {}) => ({
+	const decision = (coordinationId, a, b, identities = {}, includePolicy = true) => ({
 		coordinationId,
 		actionId: `action-${coordinationId}`,
 		phase: "decision",
@@ -614,6 +615,7 @@ test("peer-conflict replay enforces point-in-time active Execution identities", 
 		relatedMissionId: b.missionId,
 		...(identities.related === undefined ? {} : { relatedExecutionId: identities.related }),
 		reason: "Both current Missions overlap.",
+		...(includePolicy ? { peerConflictExecutionIdentityPolicy: "active-execution" } : {}),
 	});
 	try {
 		const prelaunch = join(root, "prelaunch");
@@ -650,6 +652,22 @@ test("peer-conflict replay enforces point-in-time active Execution identities", 
 			/must omit the primary Execution identity/,
 		);
 		assert.equal(listArchiveRecords(inactive).filter((record) => record.type === "coordination").length, 0);
+
+		const historical = join(root, "historical");
+		const historicalA = appendSide(historical, "replay-historical-a");
+		const historicalB = appendSide(historical, "replay-historical-b");
+		updateExecutorRecord(historical, historicalA.executionId, { status: "finished" });
+		updateExecutorRecord(historical, historicalB.executionId, { status: "finished" });
+		const historicalDecision = decision(
+			"coord-historical-terminal-identities",
+			historicalA,
+			historicalB,
+			{ primary: historicalA.executionId, related: historicalB.executionId },
+			false,
+		);
+		appendArchiveRecord(historical, { schemaVersion: 2, type: "coordination", workId: historicalA.workId, payload: historicalDecision });
+		assert.equal(listArchiveRecords(historical).at(-1).payload.peerConflictExecutionIdentityPolicy, undefined);
+		assert.equal(listArchiveRecords(historical).filter((record) => record.type === "coordination").length, 1);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

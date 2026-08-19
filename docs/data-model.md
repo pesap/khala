@@ -120,15 +120,21 @@ including the two current Missions, selected priority, relation-specific
 Execution identities, exact remote/branch/upstream head, classification,
 reason, User entry and priority when it is a User Priority override,
 release/invalidation evidence, and causal resolution. A dependency hold may omit the waiting primary Execution but
-must identify the selected upstream Execution. A peer-conflict decision may
-omit each side's Execution identity only when that current Mission has no active
-`starting` or `running` Execution; otherwise it must identify the exact active
-Execution. Archive replay enforces this conditional identity rule at each
-peer-conflict decision's append position; a User Priority override is exempt
-because its identities are validated as a current snapshot. Direct invalidation
-carries an
-exact remote observation; transitive invalidation instead cites the preceding
-upstream invalidation and omits unobserved replacement/ref evidence. A null
+must identify the selected upstream Execution. Newly written peer-conflict
+decisions carry the immutable
+`peerConflictExecutionIdentityPolicy: "active-execution"` discriminator. Such
+a decision may omit each side's Execution identity only when that current
+Mission has no active `starting` or `running` Execution; otherwise it must
+identify the exact active Execution. Archive replay enforces this rule only for
+decisions carrying the discriminator. Historical schema-v2 peer-conflict
+decisions without it remain readable as legacy evidence, including records whose
+identities are terminal; replay does not infer a rule from timestamps or current
+Execution status. A User Priority override preserves the decision's policy
+when present, and replay requires the override policy to match without changing
+User Priority authority. Override identities remain a current snapshot. Direct
+invalidation carries an exact remote observation; transitive invalidation
+instead cites the preceding upstream invalidation and omits unobserved
+replacement/ref evidence. A null
 replacement means the exact ref was observed missing. The upstream base is the
 causal immutable remote, branch, and full commit used for a dependent sandbox;
 it is not the Pull Request target branch.

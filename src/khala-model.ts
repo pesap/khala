@@ -408,6 +408,11 @@ type LearningRecord = Readonly<{
 type CoordinationPhase = "decision" | "override" | "release" | "invalidation" | "resolution";
 type CoordinationRelation = "dependency" | "peer-conflict";
 type CoordinationResolution = "released" | "terminal-failure";
+const CoordinationExecutionIdentityPolicy = {
+	activeExecution: "active-execution",
+} as const;
+type CoordinationExecutionIdentityPolicyValue =
+	(typeof CoordinationExecutionIdentityPolicy)[keyof typeof CoordinationExecutionIdentityPolicy];
 type CoordinationClassification = Readonly<{
 	observedFiles: readonly string[];
 	observedModules: readonly string[];
@@ -455,6 +460,9 @@ type CoordinationRecord = Readonly<{
 	resolution?: CoordinationResolution;
 	resolutionEvidenceRecordId?: string;
 	classification?: CoordinationClassification;
+	// New peer-conflict decisions self-describe the active-Execution identity rule;
+	// legacy schema-v2 decisions omit this field and remain historical evidence.
+	peerConflictExecutionIdentityPolicy?: CoordinationExecutionIdentityPolicyValue;
 	reason: string;
 	priorityId?: string;
 }>;
@@ -1386,6 +1394,10 @@ function isCoordinationRelation(value: unknown): value is CoordinationRelation {
 	return value === "dependency" || value === "peer-conflict";
 }
 
+function isCoordinationExecutionIdentityPolicy(value: unknown): value is CoordinationExecutionIdentityPolicyValue {
+	return value === CoordinationExecutionIdentityPolicy.activeExecution;
+}
+
 function isCoordinationClassification(value: unknown): value is CoordinationClassification {
 	if (typeof value !== "object" || value === null) {
 		return false;
@@ -1496,7 +1508,20 @@ function isCoordinationRecord(value: unknown): value is CoordinationRecord {
 		(record.resolutionEvidenceRecordId === undefined || isNonEmptyString(record.resolutionEvidenceRecordId)) &&
 		(record.classification === undefined || isCoordinationClassification(record.classification)) &&
 		(record.remoteObservation === undefined || isCoordinationRemoteObservation(record.remoteObservation)) &&
-		(record.affectedDependents === undefined || isCoordinationDependents(record.affectedDependents))
+		(record.affectedDependents === undefined || isCoordinationDependents(record.affectedDependents)) &&
+		coordinationExecutionIdentityPolicyValid(record)
+	);
+}
+
+function coordinationExecutionIdentityPolicyValid(record: GuardRecord): boolean {
+	const policy = (record as { peerConflictExecutionIdentityPolicy?: unknown }).peerConflictExecutionIdentityPolicy;
+	if (policy === undefined) {
+		return true;
+	}
+	return (
+		record.relation === "peer-conflict" &&
+		(record.phase === "decision" || record.phase === "override") &&
+		isCoordinationExecutionIdentityPolicy(policy)
 	);
 }
 
@@ -2283,11 +2308,16 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			) {
 				throw new Error(`Coordination ${record.payload.coordinationId} has inconsistent Archive bindings.`);
 			}
-			if (coordination.phase === "decision" && coordination.relation === "peer-conflict") {
+			if (
+				coordination.phase === "decision" &&
+				coordination.relation === "peer-conflict" &&
+				coordination.peerConflictExecutionIdentityPolicy === CoordinationExecutionIdentityPolicy.activeExecution
+			) {
 				validatePeerConflictDecisionExecutionIdentities(coordination, latestExecutorRecords);
 			}
 			if (coordination.phase === "override") {
 				const { priorityId } = coordination;
+				const decision = coordinationDecisions.get(coordination.coordinationId);
 				let prior:
 					| {
 							status: UserPriorityStatusValue;
@@ -2303,20 +2333,25 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 					prior = userPriorityState.get(priorityId);
 				}
 				if (
+					decision !== undefined &&
+					coordination.peerConflictExecutionIdentityPolicy !== decision.peerConflictExecutionIdentityPolicy
+				) {
+					throw new Error(
+						`Coordination ${record.payload.coordinationId} changed its peer-conflict execution identity policy.`,
+					);
+				}
+				if (
 					priorityId === undefined ||
 					prior === undefined ||
 					prior.status !== UserPriorityStatus.pending ||
 					appliedPriorities.has(priorityId) ||
 					coordination.coordinationId !== prior.coordinationId ||
 					coordination.actionId !== prior.actionId ||
+					decision === undefined ||
+					coordination.peerConflictExecutionIdentityPolicy !== decision.peerConflictExecutionIdentityPolicy ||
 					coordination.selectedWorkId !== prior.selectedWorkId ||
 					coordination.userEntryId !== prior.entryId ||
-					coordinationDecisions.get(coordination.coordinationId) === undefined ||
-					!samePriorityOverrideMissionBindings(
-						coordination,
-						coordinationDecisions.get(coordination.coordinationId) as CoordinationRecord,
-						prior,
-					) ||
+					!samePriorityOverrideMissionBindings(coordination, decision, prior) ||
 					!(
 						(coordination.workId === prior.selectedWorkId && coordination.relatedWorkId === prior.relatedWorkId) ||
 						(coordination.workId === prior.relatedWorkId && coordination.relatedWorkId === prior.selectedWorkId)
@@ -2659,6 +2694,7 @@ export type {
 	ConclaveWakeStatusValue,
 	CoordinationClassification,
 	CoordinationDependent,
+	CoordinationExecutionIdentityPolicyValue,
 	CoordinationPhase,
 	CoordinationRecord,
 	CoordinationRelation,
@@ -2708,6 +2744,7 @@ export {
 	CONCLAVE_RECOVERY_CLAIM_LEASE_MS,
 	ConclaveRecoveryStatus,
 	ConclaveWakeStatus,
+	CoordinationExecutionIdentityPolicy,
 	EXECUTION_SCHEMA_VERSION,
 	ExecutorStatus,
 	isArchiveRecord,

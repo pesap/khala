@@ -35,6 +35,7 @@ import {
 } from "./khala-archive-projections.js";
 import { readExecutorRecord } from "./khala-executor-registry.js";
 import {
+	CoordinationExecutionIdentityPolicy,
 	type CoordinationRecord,
 	type ExecutorRecord,
 	ExecutorStatus,
@@ -560,6 +561,9 @@ async function recordCoordination(params: CoordinateInput, context: ExtensionCon
 					upstreamMissionId: params.relatedMissionId,
 					upstreamExecutionId: params.relatedExecutionId,
 				}
+			: {}),
+		...(params.relation === "peer-conflict" && params.phase === "decision"
+			? { peerConflictExecutionIdentityPolicy: CoordinationExecutionIdentityPolicy.activeExecution }
 			: {}),
 		reason,
 		...(params.remote === undefined ? {} : { remote: params.remote.trim() }),
@@ -1581,6 +1585,9 @@ async function applyUserPriority(
 			selectedWorkId: record.selectedWorkId,
 			selectedMissionId: selectedIsPrimary ? decision.missionId : decision.relatedMissionId,
 			...(selectedExecutionId === undefined ? {} : { selectedExecutionId }),
+			...(decision.peerConflictExecutionIdentityPolicy === undefined
+				? {}
+				: { peerConflictExecutionIdentityPolicy: decision.peerConflictExecutionIdentityPolicy }),
 			reason: `Applied pending User Priority ${priorityId}.`,
 			userEntryId: record.provenance.entryId,
 			priorityId,
@@ -2270,6 +2277,9 @@ function sameCoordinationReplay(record: CoordinationRecord, params: CoordinateIn
 						upstreamMissionId: params.relatedMissionId,
 						upstreamExecutionId: params.relatedExecutionId,
 					}
+				: {}),
+			...(params.relation === "peer-conflict" && params.phase === "decision"
+				? { peerConflictExecutionIdentityPolicy: CoordinationExecutionIdentityPolicy.activeExecution }
 				: {}),
 			reason: params.reason.trim(),
 			...(params.classification === undefined ? {} : { classification: params.classification }),

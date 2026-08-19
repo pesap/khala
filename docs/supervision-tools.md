@@ -63,11 +63,14 @@ waiting primary Execution may be absent before launch. A peer-conflict decision
 requires the two current Work/Mission identities. For each side, the
 Execution identity may be omitted only when its Mission has no active
 `starting` or `running` Execution; otherwise the exact active Execution identity
-is required. When applying a User Priority, a decision's exact Execution identity
-must still be that side's current active Execution; a changed or disappeared
-identity makes the pending priority stale before any override is appended. A
-prelaunch decision that omitted an identity may snapshot a later active
-Execution. An active dependency
+is required for new decisions. New decisions carry the immutable
+`peerConflictExecutionIdentityPolicy: "active-execution"` discriminator, so
+Archive replay applies this identity fence only to self-describing records;
+historical schema-v2 decisions without it remain readable as legacy evidence.
+When applying a User Priority, a decision's exact Execution identity must still
+be that side's current active Execution; a changed or disappeared identity
+makes the pending priority stale before any override is appended. A prelaunch
+decision that omitted an identity may snapshot a later active Execution. An active dependency
 hold blocks launch, Retry, and recovery until the upstream Finish, publication,
 and exact head are verified.
 
@@ -92,8 +95,10 @@ On wake, the Conclave calls `khala_apply_user_priority` with the exact priority
 ID. That tool rechecks pending/not-applied state and the recorded active
 peer-conflict Coordination inside the Archive lock, resolves the current
 Mission bindings, and appends the Coordination `override` with the priority's
-recorded deterministic action, the User entry, and the priority reference.
-Exact replay returns the existing override and resumes any incomplete
+recorded deterministic action, the User entry, the priority reference, and the
+same peer-conflict identity policy as its decision when one is present. Replay
+validates that policy continuity without changing User Priority authority. Exact
+replay returns the existing override and resumes any incomplete
 enforcement without issuing a second stop. After the durable override, the Conclave enforces the priority by stopping the
 non-selected side's current Execution through the existing headless
 mandatory-stop protocol: abort, settle, one single-use handoff whose marker and

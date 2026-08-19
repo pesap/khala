@@ -114,7 +114,7 @@ function appendPrelaunchDecisionCoordination(projectPath, coordinationId, a, b) 
 	}, false);
 }
 
-function appendDecisionCoordination(projectPath, coordinationId, a, b) {
+function appendDecisionCoordination(projectPath, coordinationId, a, b, includePolicy = false) {
 	appendArchiveRecord(
 		projectPath,
 		{
@@ -137,6 +137,7 @@ function appendDecisionCoordination(projectPath, coordinationId, a, b) {
 				relatedMissionId: b.missionId,
 				relatedExecutionId: b.executionId,
 				reason: "Both current Missions overlap.",
+				...(includePolicy ? { peerConflictExecutionIdentityPolicy: "active-execution" } : {}),
 			},
 		},
 		false,
@@ -470,6 +471,35 @@ runTest("a true wake/apply applies the pending priority as a Coordination overri
 	const replay = await tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, context);
 	assert.equal(replay.details.actionId, applied.details.actionId);
 	assert.throws(() => appendArchiveRecord(projectPath, { schemaVersion: 2, type: "coordination", workId: a.workId, executionId: a.executionId, payload: { ...applied.details, actionId: "action-forged" } }, false), /invalid or already-applied User Priority/);
+});
+
+runTest("a policy-bearing Coordination carries its identity policy through a User Priority override", async (projectPath) => {
+	const a = appendSide(projectPath, "policy-a", "work-policy-a");
+	const b = appendSide(projectPath, "policy-b", "work-policy-b");
+	appendDecisionCoordination(projectPath, "coord-policy", a, b, true);
+	const result = await submitUserPriority(
+		{ selectedWorkId: a.workId, reason: "A over B" },
+		userContext(projectPath, [userEntry("u-policy", "ab"), assistantEntry("a-policy", "u-policy", "t-policy")]),
+		{ wakeUserPriority: async () => {} },
+		"t-policy",
+	);
+	const tools = supervisionTools();
+	const applied = await tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, conclaveContext(projectPath));
+	assert.equal(applied.details.peerConflictExecutionIdentityPolicy, "active-execution");
+	assert.throws(
+		() => appendArchiveRecord(
+			projectPath,
+			{
+				schemaVersion: 2,
+				type: "coordination",
+				workId: a.workId,
+				executionId: a.executionId,
+				payload: { ...applied.details, actionId: "action-policy-forged", peerConflictExecutionIdentityPolicy: undefined },
+			},
+			false,
+		),
+		/identity policy/,
+	);
 });
 
 runTest("a stale pending priority cannot be applied and is durably ignored", async (projectPath, root) => {

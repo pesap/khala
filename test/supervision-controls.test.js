@@ -328,6 +328,7 @@ test("peer-conflict Coordination records current Mission identities before eithe
     assert.equal(result.details.executionId, undefined);
     assert.equal(result.details.relatedExecutionId, undefined);
     assert.equal(result.details.selectedExecutionId, undefined);
+    assert.equal(result.details.peerConflictExecutionIdentityPolicy, "active-execution");
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -371,9 +372,11 @@ test("peer-conflict Coordination replay survives a later active Execution", asyn
       isProjectTrusted: () => false,
     };
     const first = await recordCoordination(decision, context, { isDedicatedConclaveSession: () => true });
+    assert.equal(first.details.peerConflictExecutionIdentityPolicy, "active-execution");
     appendActiveExecution(root, "replay-related", assignment);
     const replay = await recordCoordination(decision, context, { isDedicatedConclaveSession: () => true });
     assert.equal(replay.details.coordinationId, first.details.coordinationId);
+    assert.equal(replay.details.peerConflictExecutionIdentityPolicy, "active-execution");
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "coordination").length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
