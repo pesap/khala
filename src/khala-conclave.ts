@@ -1359,6 +1359,7 @@ async function startFreshSameMissionExecution(
 		return false;
 	}
 	let launched: { cleanup?: () => Promise<void> } | undefined;
+	let runtimeOwnerRegistered = false;
 	try {
 		input.supervision.registerExecution(input.mission, executionId);
 		const starter = createConfiguredExecutorStarter({
@@ -1424,18 +1425,21 @@ async function startFreshSameMissionExecution(
 		});
 		if (launched.cleanup !== undefined) {
 			input.supervision.registerRuntimeOwner(executionId, launched.cleanup);
+			runtimeOwnerRegistered = true;
 		}
 		if (input.isSupervisionAvailable?.() === false) {
-			await input.supervision.closeRuntimeOwner(executionId);
-			updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
-			return false;
+			throw new Error("Supervision became unavailable after fresh recovery registration.");
 		}
 		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.running }, input.projectTrusted);
 		return true;
 	} catch (error) {
 		const primaryError = formatBoundedDiagnostic(error);
 		try {
-			await launched?.cleanup?.();
+			if (runtimeOwnerRegistered) {
+				await input.supervision.closeRuntimeOwner(executionId);
+			} else {
+				await launched?.cleanup?.();
+			}
 		} catch {
 			// The failed Execution remains authoritative even when cleanup is unavailable.
 		}

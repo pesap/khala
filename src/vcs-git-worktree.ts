@@ -20,7 +20,7 @@ const MAX_COMPONENT_LENGTH = 255;
 const MAX_CHILD_PROCESS_ERROR_MESSAGE_LENGTH = 512;
 const MAX_CHILD_PROCESS_OUTPUT_LENGTH = 2048;
 const FULL_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
-const CREDENTIAL_KEY_PATTERN = String.raw`(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|awssecuritytoken|securitytoken|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))`;
+const CREDENTIAL_KEY_PATTERN = String.raw`(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|awssecuritytoken|aws[_-](?:access[_-]key[_-]id|secret[_-]access[_-]key|session[_-]token)|securitytoken|password|passwd|(?:[a-z\d]+[_-])*(?:password|passwd)|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))`;
 const CREDENTIAL_ARGUMENT_KEY_PATTERN = new RegExp(`^-{0,2}${CREDENTIAL_KEY_PATTERN}$`, "i");
 const INLINE_ARGUMENT_PATTERN = /^([^=\s]+)=(.*)$/;
 const AUTHORIZATION_ARGUMENT_KEY_PATTERN = /^-{0,2}authorization$/i;

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -26,21 +27,21 @@ import { EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
 const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
 
-test("diagnostic redaction covers quoted JSON credentials and exact bounds", () => {
+test("diagnostic redaction covers compound JSON credentials and exact bounds", () => {
   const diagnostic = redactDiagnostic(
-    '{"access_token":"ACCESS","Authorization":"Bearer BEARER","password":"PASSWORD"}',
+    '{"access_token":"ACCESS","Authorization":"Bearer BEARER","password":"PASSWORD","db_password":"DB_PASSWORD","db-passwd":"DB_PASSWD","aws_access_key_id":"AWS_ACCESS","aws-secret-access-key":"AWS_SECRET","aws_session_token":"AWS_SESSION","db_note":"ARBITRARY"}',
   );
   assert.equal(
     diagnostic,
-    '{"access_token":"[REDACTED]","Authorization":"Bearer [REDACTED]","password":"[REDACTED]"}',
+    '{"access_token":"[REDACTED]","Authorization":"Bearer [REDACTED]","password":"[REDACTED]","db_password":"[REDACTED]","db-passwd":"[REDACTED]","aws_access_key_id":"[REDACTED]","aws-secret-access-key":"[REDACTED]","aws_session_token":"[REDACTED]","db_note":"ARBITRARY"}',
   );
-  assert.doesNotMatch(diagnostic, /ACCESS|BEARER|PASSWORD/);
+  assert.doesNotMatch(diagnostic, /ACCESS|BEARER|PASSWORD|DB_PASSWORD|DB_PASSWD|AWS_ACCESS|AWS_SECRET|AWS_SESSION/);
   assert.equal(boundDiagnostic("x".repeat(100), 20).length, 20);
   assert.equal(boundDiagnostic("x".repeat(100), 5).length, 5);
   assert.equal(boundDiagnostic("x".repeat(100), 0), "");
 });
 
-function configureRecoveryTest(root) {
+function configureRecoveryTest(root, overrides = {}) {
   const agentDir = join(root, "agent");
   mkdirSync(agentDir, { recursive: true });
   writeFileSync(join(agentDir, "khala.json"), JSON.stringify({
@@ -50,6 +51,7 @@ function configureRecoveryTest(root) {
     executorMaxCostUsdPerTurn: 1,
     archiveRoot: join(root, "archive"),
     worktreeRoot: join(root, "worktrees"),
+    ...overrides,
   }));
   const previous = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -733,6 +735,100 @@ test("fresh recovery registration failures fail the replacement and persist one 
     assert.equal(diagnostics[0].replacementExecutionId, replacement.executionId);
     assert.doesNotMatch(diagnostics[0].error, /SECRET/);
     assert.match(diagnostics[0].error, /registration failed/);
+  } finally {
+    restoreConfig();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh recovery availability loss after registration fails the replacement and persists one diagnostic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-availability-failure-"));
+  const rpcScript = join(root, "pi");
+  const restoreConfig = configureRecoveryTest(root, { piCommand: [rpcScript] });
+  try {
+    writeFileSync(rpcScript, `#!/usr/bin/env node
+const sessionFile = process.cwd() + "/session.jsonl";
+let buffer = "";
+function respond(request, data = {}) {
+  process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data }) + "\\n");
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  const lines = buffer.split("\\n");
+  buffer = lines.pop() ?? "";
+  for (const line of lines) {
+    if (line.length === 0) continue;
+    const request = JSON.parse(line);
+    if (request.type === "get_state") respond(request, { sessionId: "fake-session", sessionFile });
+    else respond(request);
+  }
+});
+`);
+    chmodSync(rpcScript, 0o755);
+    execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
+    writeFileSync(join(root, "README.md"), "test\n");
+    execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "Khala Test"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["add", "README.md"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: root, stdio: "ignore" });
+    const remote = join(root, "remote.git");
+    execFileSync("git", ["init", "--bare", remote], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["push", "--set-upstream", "origin", "main"], { cwd: root, stdio: "ignore" });
+
+    const { mission, failedExecution } = failedRecoveryFixture(root);
+    const diagnostics = [];
+    const runtimeOwners = new Map();
+    let availabilityChecks = 0;
+    const supervision = {
+      registerExecution() {},
+      registerRuntimeOwner(executionId, cleanup) { runtimeOwners.set(executionId, cleanup); },
+      async closeRuntimeOwner(executionId) {
+        const cleanup = runtimeOwners.get(executionId);
+        runtimeOwners.delete(executionId);
+        await cleanup?.();
+      },
+    };
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision,
+      isSupervisionAvailable: () => {
+        availabilityChecks += 1;
+        return availabilityChecks === 1;
+      },
+      onLaunchFailure: (failure) => diagnostics.push(failure),
+    });
+
+    assert.equal(result, false);
+    assert.equal(availabilityChecks, 2);
+    const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
+    assert.equal(replacement.payload.status, "failed");
+    assert.equal(runtimeOwners.size, 0);
+    assert.equal(diagnostics.length, 1);
+    assert.deepEqual(
+      {
+        kind: diagnostics[0].kind,
+        workId: diagnostics[0].workId,
+        missionId: diagnostics[0].missionId,
+        predecessorExecutionId: diagnostics[0].predecessorExecutionId,
+        replacementExecutionId: diagnostics[0].replacementExecutionId,
+      },
+      {
+        kind: "fresh-executor-recovery-failed",
+        workId: "work",
+        missionId: "mission",
+        predecessorExecutionId: "failed",
+        replacementExecutionId: replacement.executionId,
+      },
+    );
+    assert.match(diagnostics[0].error, /Supervision became unavailable after fresh recovery registration/);
+    assert.ok(diagnostics[0].error.length <= 4096);
   } finally {
     restoreConfig();
     rmSync(root, { recursive: true, force: true });
