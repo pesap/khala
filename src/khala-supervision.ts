@@ -34,7 +34,13 @@ import {
 } from "./khala-archive-projections.js";
 import { resolveEffectiveWorkBudget } from "./khala-config.js";
 import { listExecutorRecords } from "./khala-executor-registry.js";
-import { type ExecutorRecord, ExecutorStatus, isExecutorRecord, type MissionRecord } from "./khala-model.js";
+import {
+	type ExecutorRecord,
+	ExecutorStatus,
+	isExecutorRecord,
+	isMissionExecutorRecord,
+	type MissionRecord,
+} from "./khala-model.js";
 import { type ProjectionTruncation, projectDiagnosticValue, serializedByteLength } from "./khala-payload-projection.js";
 import type { UpstreamRefPoller } from "./khala-supervision-recovery.js";
 import { failExecutionAndCloseInterventions, validatePersistedExecutorSession } from "./khala-supervision-recovery.js";
@@ -1086,7 +1092,7 @@ function listEligibleFailedExecutorRecoveries(
 		latestExecutions
 			.filter(
 				(candidate) =>
-					candidate.execution.kind === "executor" &&
+					isMissionExecutorRecord(candidate.execution) &&
 					candidate.execution.missionId !== undefined &&
 					(candidate.execution.status === ExecutorStatus.starting ||
 						candidate.execution.status === ExecutorStatus.running),
@@ -1096,7 +1102,7 @@ function listEligibleFailedExecutorRecoveries(
 	const latestByMission = new Map<string, LatestExecutorRecord>();
 	for (const candidate of [...latestExecutions].sort((left, right) => left.archiveIndex - right.archiveIndex)) {
 		const missionId = candidate.execution.missionId;
-		if (candidate.execution.kind !== "executor" || missionId === undefined || !currentByMission.has(missionId)) {
+		if (!isMissionExecutorRecord(candidate.execution) || missionId === undefined || !currentByMission.has(missionId)) {
 			continue;
 		}
 		latestByMission.set(missionId, candidate);
@@ -1401,7 +1407,7 @@ class SupervisionController {
 		const failedExecutionIds = new Set(failedRecoveries.map((recovery) => recovery.execution.executionId));
 		for (const execution of executions) {
 			if (
-				execution.kind !== "executor" ||
+				!isMissionExecutorRecord(execution) ||
 				execution.missionId === undefined ||
 				(execution.status !== ExecutorStatus.starting &&
 					execution.status !== ExecutorStatus.running &&
@@ -1420,7 +1426,7 @@ class SupervisionController {
 							getEntries: (since?: string) =>
 								Promise.resolve(readExecutorSessionFile(execution.sessionPath as string, since)),
 						};
-			if (recoverExecutors && this.options.recoverExecutor !== undefined && execution.kind === "executor") {
+			if (recoverExecutors && this.options.recoverExecutor !== undefined && isMissionExecutorRecord(execution)) {
 				reader = await this.options.recoverExecutor(execution, mission);
 			}
 			this.registerExecution(mission, execution.executionId, reader);
@@ -1452,7 +1458,7 @@ class SupervisionController {
 		const latestByMission = new Map<string, LatestExecutorRecord>();
 		for (const candidate of [...latestExecutions].sort((left, right) => left.archiveIndex - right.archiveIndex)) {
 			const missionId = candidate.execution.missionId;
-			if (candidate.execution.kind !== "executor" || missionId === undefined || !currentMissions.has(missionId)) {
+			if (!isMissionExecutorRecord(candidate.execution) || missionId === undefined || !currentMissions.has(missionId)) {
 				continue;
 			}
 			latestByMission.set(missionId, candidate);
@@ -1468,7 +1474,8 @@ class SupervisionController {
 			const latestForMission =
 				execution?.missionId === undefined ? undefined : latestByMission.get(execution.missionId);
 			if (
-				execution?.kind !== "executor" ||
+				execution === undefined ||
+				!isMissionExecutorRecord(execution) ||
 				mission === undefined ||
 				state.mission.missionId !== mission.missionId ||
 				latestForMission?.execution.executionId !== executionId ||

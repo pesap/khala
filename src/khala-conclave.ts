@@ -45,6 +45,7 @@ import {
 	type ConclaveWakeRecovery,
 	type ExecutorRecord,
 	ExecutorStatus,
+	isMissionExecutorRecord,
 	type KhalaWorkSubmission,
 	type LearningRecord,
 	type MissionRecord,
@@ -938,7 +939,7 @@ async function initializeRuntime(
 	const activeSupervisedExecutions = (): ExecutorRecord[] =>
 		listExecutorRecords(projectPath, projectTrusted).filter(
 			(execution) =>
-				execution.kind === "executor" &&
+				isMissionExecutorRecord(execution) &&
 				(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
 		);
 	let poller: UpstreamRefPoller | undefined;
@@ -1055,7 +1056,7 @@ async function initializeRuntime(
 					? listExecutorRecords(projectPath, projectTrusted)
 							.filter(
 								(execution) =>
-									execution.kind === "executor" &&
+									isMissionExecutorRecord(execution) &&
 									(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
 							)
 							.map((execution) => execution.executionId)
@@ -1311,7 +1312,7 @@ async function startFreshSameMissionExecution(
 		}
 		const competing = listExecutorRecords(input.projectPath, input.projectTrusted).find(
 			(candidate) =>
-				candidate.kind === "executor" &&
+				isMissionExecutorRecord(candidate) &&
 				candidate.missionId === input.mission.missionId &&
 				(candidate.status === ExecutorStatus.starting || candidate.status === ExecutorStatus.running),
 		);

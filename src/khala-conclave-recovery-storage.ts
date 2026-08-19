@@ -17,6 +17,7 @@ import {
 	ExecutorStatus,
 	isConclaveRecoveryRecord,
 	isConclaveWakeRecord,
+	isMissionExecutorRecord,
 	isWorkSubmission,
 	type KhalaArchiveAppend,
 	type KhalaArchiveRecord,
@@ -248,7 +249,7 @@ function isAutomaticRecoveryEligible(
 	// observes terminal Verdict evidence; only a failed Execution is recoverable here.
 	return !executions.some(
 		(execution) =>
-			execution.purpose?.kind === "mission" &&
+			isMissionExecutorRecord(execution) &&
 			execution.purpose.missionId === current.mission.missionId &&
 			(execution.status === ExecutorStatus.starting ||
 				execution.status === ExecutorStatus.running ||

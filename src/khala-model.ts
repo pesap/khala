@@ -1150,6 +1150,12 @@ function isExecutorRecord(value: unknown): value is ExecutorRecord {
 	);
 }
 
+function isMissionExecutorRecord(
+	record: ExecutorRecord,
+): record is ExecutorRecord & Readonly<{ purpose: Extract<ExecutionPurpose, { kind: "mission" }> }> {
+	return record.kind !== "observer" && record.purpose?.kind === "mission";
+}
+
 function isExecutionPurpose(value: unknown): value is ExecutionPurpose {
 	if (typeof value !== "object" || value === null || !("kind" in value)) {
 		return false;
@@ -2773,6 +2779,7 @@ export {
 	isKhalaWork,
 	isLearningRecord,
 	isMandateRecord,
+	isMissionExecutorRecord,
 	isMissionRecord,
 	isPromptIdentity,
 	isPullRequestRecord,
