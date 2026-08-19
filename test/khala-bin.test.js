@@ -11,6 +11,8 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const sourceJiti = createJiti(import.meta.url);
 const standaloneKhalaConfig = await sourceJiti.import("../src/khala-config.ts");
 const projectBin = join(projectRoot, "bin", "khala.js");
+// Leave room for the 10-second child discovery timeout plus scheduling delay under concurrent CI load.
+const SETUP_SUBPROCESS_TIMEOUT_MS = 15_000;
 
 function runKhala(args = []) {
 	const root = mkdtempSync(join(tmpdir(), "khala-bin-"));
@@ -203,7 +205,7 @@ test("non-interactive setup rejects an explicit thinking level when Pi capabilit
 		const result = spawnSync(process.execPath, [projectBin, "--project", "--yes"], {
 			cwd: projectDir,
 			encoding: "utf8",
-			timeout: 2_000,
+			timeout: SETUP_SUBPROCESS_TIMEOUT_MS,
 			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
 		});
 		assert.equal(result.status, 2, result.stderr);
@@ -244,7 +246,7 @@ test("non-interactive setup rejects explicit thinking without returned model met
 		const result = spawnSync(process.execPath, [projectBin, "--project", "--yes"], {
 			cwd: projectDir,
 			encoding: "utf8",
-			timeout: 2_000,
+			timeout: SETUP_SUBPROCESS_TIMEOUT_MS,
 			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
 		});
 		assert.equal(result.status, 2, result.stderr);
@@ -288,7 +290,7 @@ test("setup releases model-discovery streams after a Pi wrapper exits", () => {
 		const result = spawnSync(process.execPath, [projectBin, "--project", "--yes"], {
 			cwd: projectDir,
 			encoding: "utf8",
-			timeout: 2_000,
+			timeout: SETUP_SUBPROCESS_TIMEOUT_MS,
 			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
 		});
 		assert.equal(result.status, 2);
@@ -333,7 +335,7 @@ test("setup force-terminates a signal-ignoring model-discovery child", async () 
 		const result = spawnSync(process.execPath, [projectBin, "--project", "--yes"], {
 			cwd: projectDir,
 			encoding: "utf8",
-			timeout: 2_000,
+			timeout: SETUP_SUBPROCESS_TIMEOUT_MS,
 			env: { ...process.env, KHALA_PI_PID: piProcessIdPath, PI_CODING_AGENT_DIR: agentDir },
 		});
 		rpcProcessId = Number(readFileSync(piProcessIdPath, "utf8"));
