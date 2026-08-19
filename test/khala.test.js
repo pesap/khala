@@ -1747,7 +1747,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 				observedAt: new Date().toISOString(),
 			},
 		});
-		appendArchiveRecord(projectPath, {
+		const otherRecord = appendArchiveRecord(projectPath, {
 			type: "signal",
 			workId: "work-other",
 			executionId: "execution-other",
@@ -1832,6 +1832,29 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 		assert.doesNotMatch(expandedText, /bound evidence/);
 		const unscopedResult = await archiveTool.execute("archive", {}, null, null, executorContext);
 		assert.deepEqual(unscopedResult.details.summaries.map((record) => record.type), ["counsel", "signal"]);
+		const conclaveContext = {
+			cwd: projectPath,
+			sessionManager: {
+				getBranch() {
+					return [{ type: "custom", customType: "khala-role", data: { role: "conclave" } }];
+				},
+			},
+		};
+		const emptyFirstPage = await archiveTool.execute(
+			"archive",
+			{ workId: "work-bound", executionId: "", cursor: " \t " },
+			null,
+			null,
+			conclaveContext,
+		);
+		assert.deepEqual(emptyFirstPage.details.summaries.map((record) => record.type), ["counsel", "signal"]);
+		const emptyFirstPageContent = JSON.parse(emptyFirstPage.content[0].text);
+		assert.equal(emptyFirstPageContent.page.cursor, undefined);
+		assert.equal(emptyFirstPageContent.page.hasMore, false);
+		assert.throws(
+			() => archiveTool.execute("archive", { workId: "work-bound", cursor: "not-a-record" }, null, null, conclaveContext),
+			/Archive cursor is not present in the role-visible filtered record set/,
+		);
 		const userContext = {
 			cwd: projectPath,
 			sessionManager: {
@@ -1857,7 +1880,7 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			},
 		};
 		assert.throws(
-			() => archiveTool.execute("archive", {}, null, null, userRoleContext),
+			() => archiveTool.execute("archive", { executionId: "", cursor: "" }, null, null, userRoleContext),
 			/A User must specify a workId/,
 		);
 		const userRoleWorkResult = await archiveTool.execute(
@@ -1876,6 +1899,25 @@ test("Executor Archive reads stay bound to the marker Project and execution", as
 			userRoleContext,
 		);
 		assert.deepEqual(userRoleExecutionResult.details.summaries.map((record) => record.type), ["signal"]);
+		const crossBoundaryExecutionResult = await archiveTool.execute(
+			"archive",
+			{ workId: "work-bound", executionId: "execution-other" },
+			null,
+			null,
+			userRoleContext,
+		);
+		assert.equal(crossBoundaryExecutionResult.details.page.totalVisible, 0);
+		assert.throws(
+			() =>
+				archiveTool.execute(
+					"archive",
+					{ workId: "work-bound", cursor: otherRecord.recordId },
+					null,
+					null,
+					userRoleContext,
+				),
+			/Archive cursor is not present in the role-visible filtered record set/,
+		);
 		assert.throws(
 			() => archiveTool.execute("archive", { executionId: "execution-other" }, null, null, executorContext),
 			/An Executor may only read its bound execution/,

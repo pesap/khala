@@ -30,16 +30,28 @@ const ARCHIVE_PROJECTION_OPTIONS = {
 } as const;
 const ARCHIVE_READ_PARAMETERS = Type.Object({
 	workId: Type.Optional(Type.String({ description: "Required in User sessions; optional for project-scoped roles." })),
-	executionId: Type.Optional(Type.String()),
-	cursor: Type.Optional(Type.String({ description: "Continue after this visible Archive record ID." })),
+	executionId: Type.Optional(
+		Type.String({ description: "Optional execution filter. Omit it on the first page; use a nonblank ID to filter." }),
+	),
+	cursor: Type.Optional(
+		Type.String({
+			description: "Optional continuation cursor. Omit it on the first page; use the returned nextCursor.",
+		}),
+	),
 	limit: Type.Optional(
 		Type.Integer({ minimum: 1, maximum: MAX_ARCHIVE_PAGE_LIMIT, description: "Maximum records in this page." }),
 	),
 });
 const USER_ARCHIVE_READ_PARAMETERS = Type.Object({
 	workId: Type.String({ description: "Work whose authorized Archive records the User needs to inspect." }),
-	executionId: Type.Optional(Type.String()),
-	cursor: Type.Optional(Type.String({ description: "Continue after this visible Archive record ID." })),
+	executionId: Type.Optional(
+		Type.String({ description: "Optional execution filter. Omit it on the first page; use a nonblank ID to filter." }),
+	),
+	cursor: Type.Optional(
+		Type.String({
+			description: "Optional continuation cursor. Omit it on the first page; use the returned nextCursor.",
+		}),
+	),
 	limit: Type.Optional(
 		Type.Integer({ minimum: 1, maximum: MAX_ARCHIVE_PAGE_LIMIT, description: "Maximum records in this page." }),
 	),
@@ -98,6 +110,32 @@ type ArchiveReadMetadataInput = Readonly<{
 type SessionRoleReader = (context: ExtensionContext) => KhalaRoleValue | null;
 type ExecutorBinding = Readonly<{ executionId: string; projectPath: string; workId: string }>;
 
+function normalizeOptionalArchiveSelector(value: string | undefined): string | undefined {
+	if (value === undefined || value.trim().length === 0) {
+		return;
+	}
+	return value;
+}
+
+function normalizeArchiveReadParameters(params: ArchiveReadParameters): ArchiveReadParameters {
+	const normalized: ArchiveReadParameters = {};
+	if (params.workId !== undefined) {
+		normalized.workId = params.workId;
+	}
+	const executionId = normalizeOptionalArchiveSelector(params.executionId);
+	if (executionId !== undefined) {
+		normalized.executionId = executionId;
+	}
+	const cursor = normalizeOptionalArchiveSelector(params.cursor);
+	if (cursor !== undefined) {
+		normalized.cursor = cursor;
+	}
+	if (params.limit !== undefined) {
+		normalized.limit = params.limit;
+	}
+	return normalized;
+}
+
 function registerKhalaArchiveRead(pi: ExtensionAPI, readSessionRole: SessionRoleReader): void {
 	pi.registerTool(createArchiveReadTool(pi, readSessionRole, ARCHIVE_READ_PARAMETERS));
 }
@@ -140,6 +178,7 @@ function executeArchiveRead(
 	params: ArchiveReadParameters,
 	context: ExtensionContext,
 ): AgentToolResult<ArchiveReadDetails> {
+	const normalizedParams = normalizeArchiveReadParameters(params);
 	const role = readSessionRole(context);
 	let projectPath = context.cwd;
 	let boundExecutionId: string | undefined;
@@ -149,7 +188,7 @@ function executeArchiveRead(
 		const configuredProjectPath = pi.getFlag("khala-project-path");
 		if (
 			binding === undefined ||
-			(params.executionId !== undefined && params.executionId !== binding.executionId) ||
+			(normalizedParams.executionId !== undefined && normalizedParams.executionId !== binding.executionId) ||
 			typeof configuredProjectPath !== "string" ||
 			resolve(configuredProjectPath) !== resolve(binding.projectPath)
 		) {
@@ -168,17 +207,17 @@ function executeArchiveRead(
 	}
 	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
 	const records = listArchiveRecords(projectPath, projectTrusted).filter((record) =>
-		isVisibleArchiveRecord(record, { params, projectPath, boundWorkId, boundExecutionId }),
+		isVisibleArchiveRecord(record, { params: normalizedParams, projectPath, boundWorkId, boundExecutionId }),
 	);
 	let startIndex = 0;
-	if (params.cursor !== undefined) {
-		const cursorIndex = records.findIndex((record) => record.recordId === params.cursor);
+	if (normalizedParams.cursor !== undefined) {
+		const cursorIndex = records.findIndex((record) => record.recordId === normalizedParams.cursor);
 		if (cursorIndex < 0) {
 			throw new Error("Archive cursor is not present in the role-visible filtered record set.");
 		}
 		startIndex = cursorIndex + 1;
 	}
-	return createArchiveReadPage(records, startIndex, limit, params.cursor);
+	return createArchiveReadPage(records, startIndex, limit, normalizedParams.cursor);
 }
 
 function renderArchiveReadCall(args: ArchiveReadParameters, theme: Theme): Component {
@@ -186,11 +225,13 @@ function renderArchiveReadCall(args: ArchiveReadParameters, theme: Theme): Compo
 	if (args.workId !== undefined) {
 		filters.push(`work=${args.workId}`);
 	}
-	if (args.executionId !== undefined) {
-		filters.push(`execution=${args.executionId}`);
+	const executionId = normalizeOptionalArchiveSelector(args.executionId);
+	if (executionId !== undefined) {
+		filters.push(`execution=${executionId}`);
 	}
-	if (args.cursor !== undefined) {
-		filters.push(`after=${shortArchiveId(args.cursor)}`);
+	const cursor = normalizeOptionalArchiveSelector(args.cursor);
+	if (cursor !== undefined) {
+		filters.push(`after=${shortArchiveId(cursor)}`);
 	}
 	if (args.limit !== undefined) {
 		filters.push(`limit=${args.limit}`);

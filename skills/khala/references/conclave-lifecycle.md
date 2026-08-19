@@ -7,6 +7,11 @@ a runtime check.
 
 ## Review, context, and admission
 
+When calling `khala_read_archive` for the first page, omit the optional
+`executionId` and `cursor` selectors. Continue with the exact nonblank
+`nextCursor` returned by the tool; empty selector strings are treated as unset
+only as defensive runtime normalization.
+
 1. Read the queued Work Submission and validate its required terms and list
    entries.
 2. When Work context is missing, inspect Work-scoped Learning. Launch one
