@@ -754,6 +754,43 @@ test("fresh recovery registration failures fail the replacement and persist one 
   }
 });
 
+test("fresh recovery configuration failure after registration fails the replacement and persists one diagnostic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-config-failure-"));
+  const restoreConfig = configureRecoveryTest(root);
+  try {
+    const { mission, failedExecution } = failedRecoveryFixture(root);
+    writeFileSync(join(root, "agent", "khala.json"), JSON.stringify({ archiveRoot: join(root, "archive") }));
+    const registrations = [];
+    const diagnostics = [];
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision: {
+        registerExecution() {
+          registrations.push(listArchiveRecords(root).filter((record) => record.type === "execution").length);
+        },
+      },
+      isSupervisionAvailable: () => true,
+      onLaunchFailure: (failure) => diagnostics.push(failure),
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(registrations, [2]);
+    const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
+    assert.equal(replacement.payload.status, "failed");
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].replacementExecutionId, replacement.executionId);
+    assert.match(diagnostics[0].error, /configuration|model|setup/i);
+  } finally {
+    restoreConfig();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("fresh recovery availability loss after registration fails the replacement and persists one diagnostic", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-availability-failure-"));
   const rpcScript = join(root, "pi");
@@ -1084,6 +1121,117 @@ process.stdin.on("data", (chunk) => {
     assert.equal(replacement.status, "failed");
     assert.equal(diagnostics.length, 1);
     assert.ok(diagnostics[0].error.length <= 4096);
+    assert.equal(genericFailures, 0);
+    assert.equal(owners.size, 0);
+  } finally {
+    unregisterSupervisionController(root, false);
+    restoreConfig();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh RPC failure after a successor Mission is created fails the replacement without a diagnostic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-rpc-successor-failure-"));
+  const restoreConfig = configureRecoveryTest(root, { piCommand: [join(root, "pi")] });
+  try {
+    const { mission, failedExecution } = failedRecoveryFixture(root);
+    initializeRecoveryRepository(root);
+    const markerPath = join(root, "first-rpc-process");
+    const rpcScript = join(root, "pi");
+    writeFileSync(rpcScript, `#!/usr/bin/env node
+const fs = require("node:fs");
+const markerPath = ${JSON.stringify(markerPath)};
+const first = !fs.existsSync(markerPath);
+if (first) fs.writeFileSync(markerPath, "started");
+let buffer = "";
+function respond(request, data = {}) {
+  process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data }) + "\\n");
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  const lines = buffer.split("\\n");
+  buffer = lines.pop() ?? "";
+  for (const line of lines) {
+    if (line.length === 0) continue;
+    const request = JSON.parse(line);
+    if (!first) {
+      process.exit(1);
+    }
+    if (request.type === "get_state") respond(request, { sessionId: "successor-late-session", sessionFile: process.cwd() + "/session.jsonl" });
+    else {
+      respond(request);
+      setTimeout(() => process.exit(1), 30);
+    }
+  }
+});
+`);
+    chmodSync(rpcScript, 0o755);
+    let genericFailures = 0;
+    registerSupervisionController(root, false, {
+      handleRuntimeFailure() { genericFailures += 1; },
+      handleRuntimeEvent() {},
+      handleRuntimeRestart() {},
+    });
+    const diagnostics = [];
+    const owners = new Map();
+    const supervision = {
+      registerExecution() {},
+      registerRuntimeOwner(executionId, cleanup) { owners.set(executionId, cleanup); },
+      async closeRuntimeOwner(executionId) { const cleanup = owners.get(executionId); owners.delete(executionId); await cleanup?.(); },
+    };
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision,
+      isSupervisionAvailable: () => true,
+      onLaunchFailure: (failure) => diagnostics.push(failure),
+    });
+    assert.equal(result, true);
+
+    appendArchiveRecord(root, {
+      schemaVersion: 2,
+      type: "verdict",
+      workId: "work",
+      executionId: "failed",
+      payload: {
+        workId: "work",
+        executionId: "failed",
+        signalId: "signal",
+        missionId: "mission",
+        governingMandateId: "mandate",
+        issuedByParticipantId: "conclave",
+        decision: "retry",
+        reason: "Retry.",
+        verdictId: "retry-verdict",
+        issuedAt: mission.createdAt,
+        retryHandoff: { failedCriteria: ["A"], completedWork: ["B"], requiredChanges: ["C"], nonGoals: ["D"], validation: ["E"] },
+        successorAssignment: mission.assignment,
+      },
+    });
+    appendArchiveRecord(root, {
+      schemaVersion: 2,
+      type: "mission",
+      workId: "work",
+      payload: {
+        ...mission,
+        missionId: "successor",
+        predecessorMissionId: mission.missionId,
+        causedByVerdictId: "retry-verdict",
+        createdAt: new Date(Date.now() + 1).toISOString(),
+      },
+    });
+    for (let attempt = 0; attempt < 100 && owners.size > 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1).payload;
+    assert.equal(replacement.status, "failed");
+    assert.deepEqual(diagnostics, []);
     assert.equal(genericFailures, 0);
     assert.equal(owners.size, 0);
   } finally {

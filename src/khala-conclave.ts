@@ -1326,8 +1326,6 @@ async function startFreshSameMissionExecution(
 		new Set(listExecutorRecords(input.projectPath, input.projectTrusted).map((execution) => execution.executorName)),
 	);
 	const participantId = input.mission.assignedParticipantId;
-	const recoveryConfig = loadKhalaConfig(input.projectPath, input.projectTrusted);
-	const previousReview = latestPullRequest(input.projectPath, input.failedExecution.executionId, input.projectTrusted);
 	const promptIdentity = {
 		packageVersion: packageMetadata.version,
 		promptSha256: createHash("sha256").update(input.executorSystemPrompt).digest("hex"),
@@ -1406,6 +1404,12 @@ async function startFreshSameMissionExecution(
 	};
 	try {
 		input.supervision.registerExecution(input.mission, executionId);
+		const recoveryConfig = loadKhalaConfig(input.projectPath, input.projectTrusted);
+		const previousReview = latestPullRequest(
+			input.projectPath,
+			input.failedExecution.executionId,
+			input.projectTrusted,
+		);
 		const starter = createConfiguredExecutorStarter({
 			cwd: input.projectPath,
 			isProjectTrusted: () => input.projectTrusted,
@@ -1464,8 +1468,14 @@ async function startFreshSameMissionExecution(
 				);
 			},
 			onRpcFailure: (error) => {
-				reportFreshRecoveryFailure(error);
+				try {
+					staleAuthority = !isCurrentMissionAuthority(input.projectPath, input.projectTrusted, input.mission);
+				} catch {
+					// Preserve the RPC failure diagnostic when authority cannot be re-read.
+					staleAuthority = false;
+				}
 				updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
+				reportFreshRecoveryFailure(error);
 				return supervision.closeRuntimeOwner(executionId).catch(() => undefined);
 			},
 		});
