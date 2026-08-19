@@ -24,6 +24,7 @@ import { isUserPriorityRecord } from "../dist/src/khala-model.js";
 import createExtension from "../dist/src/index.js";
 
 const NOW = new Date().toISOString();
+const USER_PRIORITY_WAKE_TIMEOUT_MS = 1000;
 
 function createPiStub(commands, tools = new Map(), flags = new Map(), hooks = {}) {
 	const activeTools = new Set(hooks.activeTools ?? ["read", "bash", "edit", "write", "grep", "find", "ls"]);
@@ -615,10 +616,38 @@ runTest("startup resume schedules every pending unapplied priority and skips app
 	await supervisionTools().get("khala_apply_user_priority").execute("t", { priorityId: appliedResult.details.priorityId }, undefined, undefined, conclaveContext(projectPath));
 	const pendingResult = await submitUserPriority({ selectedWorkId: "work-a", reason: "A over B again" }, userContext(projectPath, [userEntry("u2", "ab2"), assistantEntry("a2", "u2", "t2")]), { wakeUserPriority: async () => {} }, "t2");
 	const scheduled = [];
-	schedulePendingUserPriorityWakes(new Set(), projectPath, false, (priorityId) => scheduled.push(priorityId));
-	await new Promise((resolve) => setTimeout(resolve, 10));
-	assert.ok(scheduled.includes(pendingResult.details.priorityId));
-	assert.equal(scheduled.includes(appliedResult.details.priorityId), false);
+	let cancelWakeTimeout = () => {};
+	const pendingWake = new Promise((resolve, reject) => {
+		const timeout = setTimeout(
+			() => reject(new Error(`Timed out waiting for pending User Priority ${pendingResult.details.priorityId} to be scheduled.`)),
+			USER_PRIORITY_WAKE_TIMEOUT_MS,
+		);
+		cancelWakeTimeout = () => clearTimeout(timeout);
+		try {
+			schedulePendingUserPriorityWakes(new Set(), projectPath, false, (priorityId) => {
+				scheduled.push(priorityId);
+				if (priorityId === appliedResult.details.priorityId) {
+					clearTimeout(timeout);
+					reject(new Error(`Applied User Priority ${priorityId} was unexpectedly scheduled during startup.`));
+				} else if (priorityId === pendingResult.details.priorityId) {
+					setImmediate(() => {
+						clearTimeout(timeout);
+						resolve();
+					});
+				}
+			});
+		} catch (error) {
+			clearTimeout(timeout);
+			reject(error);
+		}
+	});
+	try {
+		await pendingWake;
+		assert.ok(scheduled.includes(pendingResult.details.priorityId));
+		assert.equal(scheduled.includes(appliedResult.details.priorityId), false);
+	} finally {
+		cancelWakeTimeout();
+	}
 });
 
 function stopRuntime() {
@@ -791,21 +820,44 @@ runTest("startup resume schedules a pending priority before failed Executor boot
 	await supervisionTools().get("khala_apply_user_priority").execute("t", { priorityId: appliedResult.details.priorityId }, undefined, undefined, conclaveContext(projectPath));
 	const pendingResult = await submitUserPriority({ selectedWorkId: "work-a", reason: "A over B again" }, userContext(projectPath, [userEntry("u2", "ab2"), assistantEntry("a2", "u2", "t2")]), { wakeUserPriority: async () => {} }, "t2");
 	const woken = [];
-	const coordinator = createConclaveCoordinator(
-		join(process.cwd(), "dist", "src", "index.js"),
-		undefined,
-		async () => {},
-		async (_projectPath, priorityId) => {
+	let observeWake = () => {};
+	let cancelWakeTimeout = () => {};
+	const pendingWake = new Promise((resolve, reject) => {
+		const timeout = setTimeout(
+			() => reject(new Error(`Timed out waiting for pending User Priority ${pendingResult.details.priorityId} wake during resume.`)),
+			USER_PRIORITY_WAKE_TIMEOUT_MS,
+		);
+		cancelWakeTimeout = () => clearTimeout(timeout);
+		observeWake = (priorityId) => {
 			woken.push(priorityId);
-		},
-	);
+			if (priorityId === appliedResult.details.priorityId) {
+				clearTimeout(timeout);
+				reject(new Error(`Applied User Priority ${priorityId} was unexpectedly woken during resume.`));
+			} else if (priorityId === pendingResult.details.priorityId) {
+				setImmediate(() => {
+					clearTimeout(timeout);
+					resolve();
+				});
+			}
+		};
+	});
+	let coordinator;
 	try {
+		coordinator = createConclaveCoordinator(
+			join(process.cwd(), "dist", "src", "index.js"),
+			undefined,
+			async () => {},
+			async (_projectPath, priorityId) => {
+				observeWake(priorityId);
+			},
+		);
 		coordinator.resume(projectPath, false);
-		await new Promise((resolve) => setTimeout(resolve, 25));
+		await pendingWake;
 		assert.ok(woken.includes(pendingResult.details.priorityId));
 		assert.equal(woken.includes(appliedResult.details.priorityId), false);
 	} finally {
-		await coordinator.dispose();
+		cancelWakeTimeout();
+		await coordinator?.dispose();
 	}
 });
 
