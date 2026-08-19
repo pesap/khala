@@ -86,6 +86,12 @@ function appendPrelaunchSide(projectPath, suffix, workId) {
 	return { workId, missionId, executionId: `execution-${suffix}` };
 }
 
+function appendFailedExecution(projectPath, suffix, workId) {
+	const failed = appendSide(projectPath, suffix, workId);
+	updateExecutorRecord(projectPath, failed.executionId, { status: "failed" });
+	return failed;
+}
+
 function appendActiveExecution(projectPath, side) {
 	const sessionPath = join(projectPath, `${side.executionId}.jsonl`);
 	writeFileSync(sessionPath, `{"type":"session","version":3,"id":"${side.executionId}"}\n`);
@@ -776,9 +782,10 @@ runTest("priority wake retries a transient immediate wake failure without restar
 	await coordinator.dispose();
 });
 
-runTest("startup resume on the real coordinator schedules pending priorities only", async (projectPath, root) => {
+runTest("startup resume schedules a pending priority before failed Executor bootstrap", async (projectPath, root) => {
 	const a = appendSide(projectPath, "a", "work-a");
 	const b = appendSide(projectPath, "b", "work-b");
+	appendFailedExecution(projectPath, "failed-unrelated", "work-failed-unrelated");
 	appendDecisionCoordination(projectPath, "coord-ab", a, b);
 	const appliedResult = await submitUserPriority({ selectedWorkId: "work-a", reason: "A over B" }, userContext(projectPath, [userEntry("u1", "ab"), assistantEntry("a1", "u1", "t1")]), { wakeUserPriority: async () => {} }, "t1");
 	await supervisionTools().get("khala_apply_user_priority").execute("t", { priorityId: appliedResult.details.priorityId }, undefined, undefined, conclaveContext(projectPath));
@@ -792,11 +799,14 @@ runTest("startup resume on the real coordinator schedules pending priorities onl
 			woken.push(priorityId);
 		},
 	);
-	coordinator.resume(projectPath, false);
-	await new Promise((resolve) => setTimeout(resolve, 25));
-	await coordinator.dispose();
-	assert.ok(woken.includes(pendingResult.details.priorityId));
-	assert.equal(woken.includes(appliedResult.details.priorityId), false);
+	try {
+		coordinator.resume(projectPath, false);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.ok(woken.includes(pendingResult.details.priorityId));
+		assert.equal(woken.includes(appliedResult.details.priorityId), false);
+	} finally {
+		await coordinator.dispose();
+	}
 });
 
 runTest("archive replay rejects forged selected side, forged action, and mutated ignored evidence", async (projectPath) => {

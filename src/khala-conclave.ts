@@ -270,6 +270,9 @@ function createConclaveCoordinator(
 			if (disposed) {
 				return;
 			}
+			schedulePendingUserPriorityWakes(backgroundTasks, resolvedProjectPath, projectTrusted, (priorityId, workId) =>
+				wakeUserPriority(resolvedProjectPath, priorityId, workId, projectTrusted),
+			);
 			recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
 			if (listEligibleFailedExecutorRecoveries(resolvedProjectPath, projectTrusted).length > 0) {
 				await getRuntime(resolvedProjectPath, projectTrusted, extensionPath, storage, runtimes);
@@ -303,12 +306,6 @@ function createConclaveCoordinator(
 						error,
 					),
 			});
-			await schedulePendingUserPriorityWakes(
-				backgroundTasks,
-				resolvedProjectPath,
-				projectTrusted,
-				(priorityId, workId) => wakeUserPriority(resolvedProjectPath, priorityId, workId, projectTrusted),
-			);
 		});
 	};
 
