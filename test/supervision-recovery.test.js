@@ -19,6 +19,7 @@ import { directRevisionDependents, recordUpstreamRevision } from "../dist/src/kh
 import { failExecutionAndCloseInterventions } from "../dist/src/khala-supervision-recovery.js";
 import { SupervisionController } from "../dist/src/khala-supervision.js";
 import { isPendingRecoveryLaunchEligible, startFreshSameMissionExecution } from "../dist/src/khala-conclave.js";
+import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
 import { EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
 
 const HEAD_A = "a".repeat(40);
@@ -640,6 +641,93 @@ test("omitted-kind failed v2 Mission Executor enters fresh recovery", async () =
     assert.deepEqual(freshRecoveryRequests, [failedExecution.executionId]);
     controller.dispose();
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh recovery launch failures persist bounded diagnostics with replacement identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-launch-failure-"));
+  const restoreConfig = configureRecoveryTest(root);
+  try {
+    const { mission, failedExecution } = failedRecoveryFixture(root);
+    const storage = createFileConclaveStorage();
+    const session = storage.loadConclaveSession(root);
+    const supervision = { registerExecution() {} };
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision,
+      isSupervisionAvailable: () => true,
+      onLaunchFailure: (failure) => session.appendCustomEntry("khala-supervision-critical-event", failure),
+    });
+
+    assert.equal(result, false);
+    const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
+    assert.equal(replacement.payload.status, "failed");
+    const reopened = storage.loadConclaveSession(root);
+    const failures = reopened.getEntries().filter(
+      (entry) => entry.type === "custom" && entry.customType === "khala-supervision-critical-event" && entry.data.kind === "fresh-executor-recovery-failed",
+    );
+    assert.equal(failures.length, 1);
+    assert.deepEqual(failures[0].data, {
+      kind: "fresh-executor-recovery-failed",
+      workId: "work",
+      missionId: "mission",
+      predecessorExecutionId: "failed",
+      replacementExecutionId: replacement.executionId,
+      error: failures[0].data.error,
+    });
+    assert.match(failures[0].data.error, /git rev-parse --show-toplevel failed/);
+    assert.ok(failures[0].data.error.length <= 4096);
+  } finally {
+    restoreConfig();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stale fresh recovery is a no-op and does not persist a launch diagnostic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-stale-diagnostic-"));
+  const restoreConfig = configureRecoveryTest(root);
+  try {
+    const { now, assignment, mission, failedExecution } = failedRecoveryFixture(root);
+    const retryVerdict = {
+      workId: "work",
+      executionId: "failed",
+      signalId: "signal",
+      missionId: "mission",
+      governingMandateId: "mandate",
+      issuedByParticipantId: "conclave",
+      decision: "retry",
+      reason: "Retry.",
+      verdictId: "retry-verdict",
+      issuedAt: now,
+      retryHandoff: { failedCriteria: ["A"], completedWork: ["B"], requiredChanges: ["C"], nonGoals: ["D"], validation: ["E"] },
+      successorAssignment: assignment,
+    };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "verdict", workId: "work", executionId: "failed", payload: retryVerdict });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: { ...mission, missionId: "successor", predecessorMissionId: mission.missionId, causedByVerdictId: retryVerdict.verdictId, createdAt: new Date(Date.now() + 1).toISOString() } });
+    const diagnostics = [];
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision: { registerExecution() {} },
+      isSupervisionAvailable: () => true,
+      onLaunchFailure: (failure) => diagnostics.push(failure),
+    });
+
+    assert.equal(result, false);
+    assert.deepEqual(diagnostics, []);
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, 1);
+  } finally {
+    restoreConfig();
     rmSync(root, { recursive: true, force: true });
   }
 });

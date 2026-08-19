@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import type { Sandbox, SandboxRequest } from "./executor.js";
+import { boundDiagnostic } from "./khala-error.js";
 import { type ReviewFinalization, type ReviewPreparation, type ReviewWorkflowRequest, VCSProvider } from "./vcs.js";
 
 const execFileAsync = promisify(execFile);
@@ -20,16 +21,6 @@ const MAX_CHILD_PROCESS_ERROR_MESSAGE_LENGTH = 512;
 const MAX_CHILD_PROCESS_OUTPUT_LENGTH = 2048;
 const FULL_COMMIT_PATTERN = /^[0-9a-f]{40}$/i;
 const CREDENTIAL_KEY_PATTERN = String.raw`(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|awssecuritytoken|securitytoken|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))`;
-const CREDENTIAL_VALUE_PATTERN = String.raw`(?:"(?:\\[\s\S]|[^"\\\r\n])*"|'(?:\\[\s\S]|[^'\\\r\n])*'|[^\s,;&#"'()[\]{}]+)`;
-const AUTHORIZATION_CREDENTIAL_PATTERN = new RegExp(
-	String.raw`(\bauthorization\b[ \t]*(?::|=)?[ \t]*)((?:Basic|Bearer)[ \t]+)(${CREDENTIAL_VALUE_PATTERN})`,
-	"gi",
-);
-const BEARER_CREDENTIAL_PATTERN = new RegExp(String.raw`(\bBearer[ \t]+)(${CREDENTIAL_VALUE_PATTERN})`, "gi");
-const CREDENTIAL_PAIR_PATTERN = new RegExp(
-	String.raw`(\b${CREDENTIAL_KEY_PATTERN}\b[ \t]*(?:[:=][ \t]*|[ \t]+))(?!Bearer\b|Basic\b)(${CREDENTIAL_VALUE_PATTERN})`,
-	"gi",
-);
 const CREDENTIAL_ARGUMENT_KEY_PATTERN = new RegExp(`^-{0,2}${CREDENTIAL_KEY_PATTERN}$`, "i");
 const INLINE_ARGUMENT_PATTERN = /^([^=\s]+)=(.*)$/;
 const AUTHORIZATION_ARGUMENT_KEY_PATTERN = /^-{0,2}authorization$/i;
@@ -367,33 +358,6 @@ function processOutput(error: Error, stream: "stdout" | "stderr"): string {
 	return "";
 }
 
-function redactCredentialValue(value: string): string {
-	const [quote] = value;
-	if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
-		return `${quote}[REDACTED]${quote}`;
-	}
-	return "[REDACTED]";
-}
-
-function redactGitDiagnostic(value: string): string {
-	// Match credential-shaped keys, including separated command arguments and URL query parameters, without attempting arbitrary secret detection.
-	return value
-		.replace(
-			AUTHORIZATION_CREDENTIAL_PATTERN,
-			(_match, prefix: string, scheme: string, credential: string) =>
-				`${prefix}${scheme}${redactCredentialValue(credential)}`,
-		)
-		.replace(
-			BEARER_CREDENTIAL_PATTERN,
-			(_match, prefix: string, credential: string) => `${prefix}${redactCredentialValue(credential)}`,
-		)
-		.replace(
-			CREDENTIAL_PAIR_PATTERN,
-			(_match, prefix: string, credential: string) => `${prefix}${redactCredentialValue(credential)}`,
-		)
-		.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
-}
-
 function isCredentialArgumentKey(value: string): boolean {
 	return CREDENTIAL_ARGUMENT_KEY_PATTERN.test(value);
 }
@@ -461,11 +425,7 @@ function redactGitArguments(args: readonly string[], maxLength: number): string 
 }
 
 function boundGitDiagnostic(value: string, maxLength: number): string {
-	const diagnostic = redactGitDiagnostic(value).trim();
-	if (diagnostic.length <= maxLength) {
-		return diagnostic;
-	}
-	return `${diagnostic.slice(0, maxLength)}… [truncated]`;
+	return boundDiagnostic(value, maxLength);
 }
 
 function childProcessFailureDiagnostic(commandName: string, args: string[], error: Error): string {

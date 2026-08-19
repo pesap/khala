@@ -31,7 +31,7 @@ import { getConclaveDirectory } from "./khala-conclave-directory.js";
 import type { ConclaveStorage, SubmissionRecoveryClaim, SubmissionRecoveryOutcome } from "./khala-conclave-storage.js";
 import { createFileConclaveStorage } from "./khala-conclave-storage-file.js";
 import { KhalaConfigError, loadKhalaConfig } from "./khala-config.js";
-import { formatError } from "./khala-error.js";
+import { formatBoundedDiagnostic, formatError } from "./khala-error.js";
 import { createConfiguredExecutorStarter, sendConfiguredExecutorMessage } from "./khala-executor.js";
 import {
 	createExecutorRecord,
@@ -60,6 +60,7 @@ import { readRolePrompt } from "./khala-role.js";
 import {
 	listEligibleFailedExecutorRecoveries,
 	registerSupervisionController,
+	SUPERVISION_ENTRY_TYPES,
 	SupervisionController,
 	unregisterSupervisionController,
 } from "./khala-supervision.js";
@@ -146,6 +147,14 @@ type PendingRecoveryIdentity = Readonly<{
 	workId: string;
 	missionId: string;
 	executionId: string;
+}>;
+type FreshRecoveryLaunchFailure = Readonly<{
+	kind: "fresh-executor-recovery-failed";
+	workId: string;
+	missionId: string;
+	predecessorExecutionId: string;
+	replacementExecutionId: string;
+	error: string;
 }>;
 
 function isPendingRecoveryLaunchEligible(
@@ -1236,6 +1245,8 @@ async function initializeRuntime(
 						),
 						supervision,
 						isSupervisionAvailable: () => recoveryLaunchAvailable(pending),
+						onLaunchFailure: (failure) =>
+							session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, failure),
 					}),
 			};
 			if (recoveryLaunchAvailable(pending)) {
@@ -1276,6 +1287,7 @@ async function startFreshSameMissionExecution(
 		executorSystemPrompt: string;
 		supervision: SupervisionController | undefined;
 		isSupervisionAvailable?: () => boolean;
+		onLaunchFailure?: (failure: FreshRecoveryLaunchFailure) => void;
 	}>,
 ): Promise<boolean> {
 	if (input.supervision === undefined || input.executorModel.trim().length === 0) {
@@ -1420,13 +1432,26 @@ async function startFreshSameMissionExecution(
 		}
 		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.running }, input.projectTrusted);
 		return true;
-	} catch {
+	} catch (error) {
+		const primaryError = formatBoundedDiagnostic(error);
 		try {
 			await launched?.cleanup?.();
 		} catch {
 			// The failed Execution remains authoritative even when cleanup is unavailable.
 		}
 		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
+		try {
+			input.onLaunchFailure?.({
+				kind: "fresh-executor-recovery-failed",
+				workId: input.mission.workId,
+				missionId: input.mission.missionId,
+				predecessorExecutionId: input.failedExecution.executionId,
+				replacementExecutionId: executionId,
+				error: primaryError,
+			});
+		} catch {
+			// Session reporting cannot replace the authoritative failed Execution.
+		}
 		return false;
 	}
 }
@@ -1442,7 +1467,7 @@ function resolveConfiguredModel(modelRuntime: ModelRuntime, modelId: string) {
 	return modelRuntime.getModel(modelId.slice(0, separator), modelId.slice(separator + 1));
 }
 
-export type { ConclaveCoordinator };
+export type { ConclaveCoordinator, FreshRecoveryLaunchFailure };
 export {
 	CONCLAVE_BASE_TOOL_ALLOWLIST,
 	CONCLAVE_TOOL_ALLOWLIST,

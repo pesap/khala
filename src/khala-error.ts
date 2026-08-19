@@ -1,8 +1,58 @@
+const CREDENTIAL_KEY_PATTERN = String.raw`(?:awsaccesskeyid|accesskeyid|awssecretaccesskey|awssecuritytoken|securitytoken|password|passwd|credential(?:s)?|auth(?:orization)?|signature|sig|x-amz-(?:signature|credential|security-token)|(?:[a-z\d]+[_-])*(?:token|key|secret|credential(?:s)?)|(?:access|api|auth|client|id|oauth|private|refresh|session)(?:token|key|secret|credential(?:s)?))`;
+const CREDENTIAL_VALUE_PATTERN = String.raw`(?:"(?:\\[\s\S]|[^"\\\r\n])*"|'(?:\\[\s\S]|[^'\\\r\n])*'|[^\s,;&#"'()[\]{}]+)`;
+const AUTHORIZATION_CREDENTIAL_PATTERN = new RegExp(
+	String.raw`(\bauthorization\b[ \t]*(?::|=)?[ \t]*)((?:Basic|Bearer)[ \t]+)(${CREDENTIAL_VALUE_PATTERN})`,
+	"gi",
+);
+const BEARER_CREDENTIAL_PATTERN = new RegExp(String.raw`(\bBearer[ \t]+)(${CREDENTIAL_VALUE_PATTERN})`, "gi");
+const CREDENTIAL_PAIR_PATTERN = new RegExp(
+	String.raw`(\b${CREDENTIAL_KEY_PATTERN}\b[ \t]*(?:[:=][ \t]*|[ \t]+))(?!Bearer\b|Basic\b)(${CREDENTIAL_VALUE_PATTERN})`,
+	"gi",
+);
+
 function formatError(error: unknown): string {
 	if (error instanceof Error) {
 		return error.message;
 	}
 	return String(error);
+}
+
+function redactCredentialValue(value: string): string {
+	const [quote] = value;
+	if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+		return `${quote}[REDACTED]${quote}`;
+	}
+	return "[REDACTED]";
+}
+
+function redactDiagnostic(value: string): string {
+	return value
+		.replace(
+			AUTHORIZATION_CREDENTIAL_PATTERN,
+			(_match: string, prefix: string, scheme: string, credential: string) =>
+				`${prefix}${scheme}${redactCredentialValue(credential)}`,
+		)
+		.replace(
+			BEARER_CREDENTIAL_PATTERN,
+			(_match: string, prefix: string, credential: string) => `${prefix}${redactCredentialValue(credential)}`,
+		)
+		.replace(
+			CREDENTIAL_PAIR_PATTERN,
+			(_match: string, prefix: string, credential: string) => `${prefix}${redactCredentialValue(credential)}`,
+		)
+		.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
+}
+
+function boundDiagnostic(value: string, maxLength: number): string {
+	const diagnostic = redactDiagnostic(value).trim();
+	if (diagnostic.length <= maxLength) {
+		return diagnostic;
+	}
+	return `${diagnostic.slice(0, maxLength)}… [truncated]`;
+}
+
+function formatBoundedDiagnostic(error: unknown, maxLength = 4096): string {
+	return boundDiagnostic(formatError(error), maxLength);
 }
 
 function formatAttachedCleanupDiagnostic(error: unknown): string {
@@ -18,4 +68,11 @@ function errorWithCause(message: string, cause: unknown): Error {
 	return error;
 }
 
-export { errorWithCause, formatAttachedCleanupDiagnostic, formatError };
+export {
+	boundDiagnostic,
+	errorWithCause,
+	formatAttachedCleanupDiagnostic,
+	formatBoundedDiagnostic,
+	formatError,
+	redactDiagnostic,
+};

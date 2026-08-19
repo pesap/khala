@@ -157,7 +157,11 @@ background startup or `/khala-recreate` recovery also bootstraps supervision
 when the current Mission's latest failed Executor has no active replacement,
 even after submission wake exhaustion. It registers only that latest failed
 attempt per Mission; the fresh same-Mission path preserves the failed Archive
-history and does not launch while another Executor is starting or running.
+history and does not launch while another Executor is starting or running. If
+that fresh launch fails, the replacement Execution is durably failed and the
+Conclave session records a bounded, credential-redacted diagnostic with the
+Work, Mission, predecessor Execution, replacement Execution, and primary
+launch error. A stale eligibility check records no launch diagnostic.
 
 Session recovery validates the persisted Pi session identity and path, catches
 up its stable entry cursor, and resumes supervision. Missing, corrupt, or
