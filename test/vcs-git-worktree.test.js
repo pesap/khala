@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +10,7 @@ function git(cwd, args) {
 	return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 }
 
-function createRepository(root, withDependencies) {
+function createRepository(root, withDependencies, trackDependencies = false) {
 	const repo = join(root, "project");
 	const remote = join(root, "origin.git");
 	mkdirSync(repo);
@@ -27,7 +27,12 @@ function createRepository(root, withDependencies) {
 		);
 		chmodSync(join(repo, "node_modules", ".bin", "tsc"), 0o755);
 	}
+	if (trackDependencies) {
+		mkdirSync(join(repo, "node_modules"), { recursive: true });
+		writeFileSync(join(repo, "node_modules", "tracked.txt"), "tracked dependency\n");
+	}
 	git(repo, ["add", "package.json"]);
+	if (trackDependencies) git(repo, ["add", "-f", "node_modules/tracked.txt"]);
 	git(repo, ["commit", "-qm", "initial"]);
 	git(repo, ["branch", "-M", "main"]);
 	git(repo, ["remote", "add", "origin", remote]);
@@ -81,6 +86,30 @@ test("Git worktrees keep generic behavior when the primary has no node_modules",
 		assert.doesNotMatch(git(repo, ["branch", "--list"]), /khala-test\//);
 	} finally {
 		if (sandbox !== undefined) await createGitWorktreeProvider(worktrees, "khala-test/").removeSandbox(sandbox);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Git worktree dependency-link failures roll back the new worktree and branch", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worktree-dependency-rollback-"));
+	const repo = createRepository(root, true, true);
+	const worktrees = join(root, "worktrees");
+	const primaryDependencies = realpathSync(join(repo, "node_modules"));
+	try {
+		const provider = createGitWorktreeProvider(worktrees, "khala-test/");
+		await assert.rejects(
+			provider.createSandbox({ projectPath: repo, name: "dependency-link-failure" }),
+			(error) => {
+				assert.match(error.message, /EEXIST|already exists|file exists/i);
+				return true;
+			},
+		);
+		assert.deepEqual(readdirSync(worktrees), []);
+		assert.doesNotMatch(git(repo, ["worktree", "list", "--porcelain"]), /worktrees/);
+		assert.equal(git(repo, ["branch", "--list", "khala-test/*"]), "");
+		assert.equal(existsSync(join(repo, "node_modules", "tracked.txt")), true);
+		assert.equal(realpathSync(join(repo, "node_modules")), primaryDependencies);
+	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 });

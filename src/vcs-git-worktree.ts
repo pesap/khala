@@ -72,8 +72,14 @@ class GitWorktreeProvider extends VCSProvider {
 		} else {
 			baseRef = await resolveExactRef(projectRoot, request.baseRef);
 		}
-		await git(projectRoot, ["worktree", "add", "-b", `${this.#branchPrefix}${name}`, sandboxPath, baseRef]);
-		await linkPrimaryDependencies(projectRoot, sandboxPath);
+		const branchName = `${this.#branchPrefix}${name}`;
+		await git(projectRoot, ["worktree", "add", "-b", branchName, sandboxPath, baseRef]);
+		try {
+			await linkPrimaryDependencies(projectRoot, sandboxPath);
+		} catch (error) {
+			await rollbackSandboxCreation(projectRoot, sandboxPath, branchName, error);
+			throw error;
+		}
 		const actualHead = await git(sandboxPath, ["rev-parse", "HEAD"]);
 		if (request.baseCommit !== undefined && actualHead !== request.baseCommit) {
 			throw new Error(
@@ -164,6 +170,24 @@ async function assertMainWorktree(projectPath: string, projectRoot: string): Pro
 	}
 }
 
+async function rollbackSandboxCreation(
+	projectRoot: string,
+	sandboxPath: string,
+	branchName: string,
+	originalError: unknown,
+): Promise<void> {
+	try {
+		await git(projectRoot, ["worktree", "remove", "--force", sandboxPath]);
+	} catch (cleanupError) {
+		attachCleanupDiagnostic(originalError, cleanupError);
+	}
+	try {
+		await git(projectRoot, ["branch", "-D", branchName]);
+	} catch (cleanupError) {
+		attachCleanupDiagnostic(originalError, cleanupError);
+	}
+}
+
 async function linkPrimaryDependencies(projectRoot: string, sandboxPath: string): Promise<void> {
 	const primaryDependencies = join(projectRoot, "node_modules");
 	let target: string;
@@ -180,6 +204,31 @@ async function linkPrimaryDependencies(projectRoot: string, sandboxPath: string)
 		linkType = "junction";
 	}
 	await symlink(target, join(sandboxPath, "node_modules"), linkType);
+}
+
+function attachCleanupDiagnostic(error: unknown, cleanupError: unknown): void {
+	if (!(error instanceof Error)) {
+		return;
+	}
+	try {
+		const existing = (error as Error & { cleanupErrors?: unknown[] }).cleanupErrors ?? [];
+		Object.defineProperty(error, "cleanupErrors", {
+			configurable: true,
+			enumerable: false,
+			value: [...existing, cleanupError],
+			writable: false,
+		});
+		if (!("cleanupError" in error)) {
+			Object.defineProperty(error, "cleanupError", {
+				configurable: true,
+				enumerable: false,
+				value: cleanupError,
+				writable: false,
+			});
+		}
+	} catch {
+		// Diagnostics must not replace the original link failure.
+	}
 }
 
 function assertWorktreeRootDoesNotContainProject(worktreeRoot: string, projectRoot: string): void {
