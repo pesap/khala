@@ -18,7 +18,7 @@ import { listCoordinationRecords } from "../dist/src/khala-archive-projections.j
 import { directRevisionDependents, recordUpstreamRevision } from "../dist/src/khala-coordination.js";
 import { failExecutionAndCloseInterventions } from "../dist/src/khala-supervision-recovery.js";
 import { SupervisionController } from "../dist/src/khala-supervision.js";
-import { startFreshSameMissionExecution } from "../dist/src/khala-conclave.js";
+import { isPendingRecoveryLaunchEligible, startFreshSameMissionExecution } from "../dist/src/khala-conclave.js";
 import { EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
 
 const HEAD_A = "a".repeat(40);
@@ -613,6 +613,77 @@ test("failed recovery uses the final state of one historical Executor stream", a
     assert.deepEqual(freshRecoveryRequests, [{ executionId: "execution", status: "failed" }]);
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, 3);
     controller.dispose();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Executor recovery revalidates the Archive after upstream polling mutates state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-poll-race-"));
+  try {
+    const now = new Date().toISOString();
+    const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+    const mission = { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now };
+    const execution = { executionId: "execution", workId: "work", executorName: "Executor", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "session", sessionPath: join(root, "session.jsonl"), promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "running", startedAt: now };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: mission });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: execution.executionId, payload: execution });
+    const sessionManager = SessionManager.inMemory(root);
+    let persistedRecoveryAttempts = 0;
+    let freshRecoveryRequests = 0;
+    const controller = new SupervisionController({
+      projectPath: root,
+      projectTrusted: false,
+      session: { sessionManager, subscribe: () => () => {}, async sendCustomMessage() {}, async waitForIdle() {} },
+      conclaveParticipantId: "conclave",
+      conclaveMaxCostUsdPerTurn: 1,
+      executorMaxCostUsdPerTurn: 1,
+      upstreamPoller: {
+        async start() {
+          appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: execution.executionId, payload: { ...execution, status: "finished" } });
+        },
+        dispose() {},
+      },
+      recoverExecutor: async () => {
+        persistedRecoveryAttempts += 1;
+        return { async getEntries() { return { entries: [], leafId: null }; } };
+      },
+      onExecutorRecoveryFailure: async () => { freshRecoveryRequests += 1; },
+    });
+
+    await controller.recover();
+
+    assert.equal(persistedRecoveryAttempts, 0);
+    assert.equal(freshRecoveryRequests, 0);
+    controller.dispose();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pending fresh recovery expires when a successor Mission supersedes its failed Executor", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-pending-stale-"));
+  try {
+    const { now, assignment, mission, failedExecution } = failedRecoveryFixture(root);
+    const pending = { workId: failedExecution.workId, missionId: mission.missionId, executionId: failedExecution.executionId };
+    assert.equal(isPendingRecoveryLaunchEligible(root, false, pending), true);
+    const retryVerdict = {
+      workId: "work",
+      executionId: "failed",
+      signalId: "signal",
+      missionId: "mission",
+      governingMandateId: "mandate",
+      issuedByParticipantId: "conclave",
+      decision: "retry",
+      reason: "Retry.",
+      verdictId: "retry-verdict",
+      issuedAt: now,
+      retryHandoff: { failedCriteria: ["A"], completedWork: ["B"], requiredChanges: ["C"], nonGoals: ["D"], validation: ["E"] },
+      successorAssignment: assignment,
+    };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "verdict", workId: "work", executionId: "failed", payload: retryVerdict });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: { ...mission, missionId: "successor", predecessorMissionId: mission.missionId, causedByVerdictId: retryVerdict.verdictId, createdAt: new Date(Date.now() + 1).toISOString() } });
+    assert.equal(isPendingRecoveryLaunchEligible(root, false, pending), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

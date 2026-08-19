@@ -141,6 +141,24 @@ interface ConclaveRuntime {
 	supervision: SupervisionController;
 	isLaunchBlocked: (workId?: string) => boolean;
 }
+type PendingRecoveryIdentity = Readonly<{
+	workId: string;
+	missionId: string;
+	executionId: string;
+}>;
+
+function isPendingRecoveryLaunchEligible(
+	projectPath: string,
+	projectTrusted: boolean,
+	pending: PendingRecoveryIdentity,
+): boolean {
+	return listEligibleFailedExecutorRecoveries(projectPath, projectTrusted).some(
+		(candidate) =>
+			candidate.execution.workId === pending.workId &&
+			candidate.execution.executionId === pending.executionId &&
+			candidate.mission.missionId === pending.missionId,
+	);
+}
 function createConclaveCoordinator(
 	extensionPath: string,
 	storage: ConclaveStorage = createFileConclaveStorage(),
@@ -925,13 +943,14 @@ async function initializeRuntime(
 		);
 	let poller: UpstreamRefPoller | undefined;
 	let supervision: SupervisionController | undefined;
-	type PendingRecoveryLaunch = Readonly<{
-		workId: string;
-		executionId: string;
-		upstreamBase?: ExecutorRecord["upstreamBase"];
-		launch: () => Promise<boolean>;
-	}>;
+	type PendingRecoveryLaunch = PendingRecoveryIdentity &
+		Readonly<{
+			upstreamBase?: ExecutorRecord["upstreamBase"];
+			launch: () => Promise<boolean>;
+		}>;
 	const pendingRecoveryLaunches: PendingRecoveryLaunch[] = [];
+	const recoveryPendingEligible = (pending: PendingRecoveryLaunch): boolean =>
+		isPendingRecoveryLaunchEligible(projectPath, projectTrusted, pending);
 	const recoveryOutageAffects = (
 		pending: PendingRecoveryLaunch,
 		outageRecord: ReturnType<typeof outage.getOpen>[number],
@@ -951,17 +970,26 @@ async function initializeRuntime(
 		!outage
 			.getOpen()
 			.some((outageRecord) => outageRecord.kind === "conclave-model" || recoveryOutageAffects(pending, outageRecord));
+	const drainPendingRecovery = async (pending: PendingRecoveryLaunch): Promise<void> => {
+		const index = pendingRecoveryLaunches.indexOf(pending);
+		if (index < 0) {
+			return;
+		}
+		if (!recoveryPendingEligible(pending)) {
+			pendingRecoveryLaunches.splice(index, 1);
+			return;
+		}
+		if (!recoveryLaunchAvailable(pending)) {
+			return;
+		}
+		pendingRecoveryLaunches.splice(index, 1);
+		if (!(await pending.launch()) && recoveryPendingEligible(pending)) {
+			pendingRecoveryLaunches.push(pending);
+		}
+	};
 	const drainPendingRecoveries = async (): Promise<void> => {
 		for (const pending of [...pendingRecoveryLaunches]) {
-			if (recoveryLaunchAvailable(pending)) {
-				const index = pendingRecoveryLaunches.indexOf(pending);
-				if (index >= 0) {
-					pendingRecoveryLaunches.splice(index, 1);
-					if (!(await pending.launch())) {
-						pendingRecoveryLaunches.push(pending);
-					}
-				}
-			}
+			await drainPendingRecovery(pending);
 		}
 	};
 	const stopWithoutIntervention = async (executionId: string, reason: string): Promise<void> => {
@@ -1191,6 +1219,7 @@ async function initializeRuntime(
 		onExecutorRecoveryFailure: async (execution, mission) => {
 			const pending: PendingRecoveryLaunch = {
 				workId: execution.workId,
+				missionId: mission.missionId,
 				executionId: execution.executionId,
 				...(execution.upstreamBase === undefined ? {} : { upstreamBase: execution.upstreamBase }),
 				launch: () =>
@@ -1209,10 +1238,10 @@ async function initializeRuntime(
 					}),
 			};
 			if (recoveryLaunchAvailable(pending)) {
-				if (!(await pending.launch())) {
+				if (!(await pending.launch()) && recoveryPendingEligible(pending)) {
 					pendingRecoveryLaunches.push(pending);
 				}
-			} else {
+			} else if (recoveryPendingEligible(pending)) {
 				pendingRecoveryLaunches.push(pending);
 			}
 		},
@@ -1418,6 +1447,7 @@ export {
 	CONCLAVE_TOOL_ALLOWLIST,
 	createConclaveCoordinator,
 	enqueueConclaveWake,
+	isPendingRecoveryLaunchEligible,
 	recoverPendingSubmissions,
 	schedulePendingUserPriorityWakes,
 	startFreshSameMissionExecution,

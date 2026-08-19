@@ -1161,7 +1161,7 @@ class SupervisionController {
 		await this.rehydrateMissions(true, false, true, latestExecutions);
 		this.restoreStopHandoffExpectations();
 		await this.options.upstreamPoller?.start();
-		await this.recoverRegisteredExecutors(latestExecutions);
+		await this.recoverRegisteredExecutors();
 		const conclaveEntries = this.options.session.sessionManager.getEntries();
 		const cursors = readCompletedCursors(conclaveEntries);
 		const incomplete = incompleteAssessmentStarts(conclaveEntries);
@@ -1433,20 +1433,54 @@ class SupervisionController {
 		}
 	}
 
-	private async recoverRegisteredExecutors(
-		latestExecutions = listLatestExecutorRecords(this.options.projectPath, this.options.projectTrusted),
-	): Promise<void> {
+	private async recoverRegisteredExecutors(): Promise<void> {
 		if (this.options.recoverExecutor === undefined) {
 			return;
 		}
+		// Polling can append a terminal Executor record or a successor Mission after the
+		// initial rehydration. Recovery must use a new Archive projection, not the snapshot
+		// that was used to populate the in-memory states before polling.
+		const latestExecutions = listLatestExecutorRecords(this.options.projectPath, this.options.projectTrusted);
 		const executionById = new Map(
 			latestExecutions.map((candidate) => [candidate.execution.executionId, candidate.execution]),
 		);
-		for (const [executionId, state] of [...this.executions]) {
-			const execution = executionById.get(executionId);
-			if (execution?.kind !== "executor") {
+		const currentMissions = new Map(
+			projectMissions(this.options.projectPath, this.options.projectTrusted)
+				.filter((projection) => projection.state === "current")
+				.map((projection) => [projection.mission.missionId, projection.mission]),
+		);
+		const latestByMission = new Map<string, LatestExecutorRecord>();
+		for (const candidate of [...latestExecutions].sort((left, right) => left.archiveIndex - right.archiveIndex)) {
+			const missionId = candidate.execution.missionId;
+			if (candidate.execution.kind !== "executor" || missionId === undefined || !currentMissions.has(missionId)) {
 				continue;
 			}
+			latestByMission.set(missionId, candidate);
+		}
+		const eligibleFailedExecutionIds = new Set(
+			listEligibleFailedExecutorRecoveries(this.options.projectPath, this.options.projectTrusted, latestExecutions).map(
+				(candidate) => candidate.execution.executionId,
+			),
+		);
+		for (const [executionId, state] of [...this.executions]) {
+			const execution = executionById.get(executionId);
+			const mission = execution?.missionId === undefined ? undefined : currentMissions.get(execution.missionId);
+			const latestForMission =
+				execution?.missionId === undefined ? undefined : latestByMission.get(execution.missionId);
+			if (
+				execution?.kind !== "executor" ||
+				mission === undefined ||
+				state.mission.missionId !== mission.missionId ||
+				latestForMission?.execution.executionId !== executionId ||
+				(execution.status !== ExecutorStatus.starting &&
+					execution.status !== ExecutorStatus.running &&
+					execution.status !== ExecutorStatus.failed) ||
+				(execution.status === ExecutorStatus.failed && !eligibleFailedExecutionIds.has(executionId))
+			) {
+				this.executions.delete(executionId);
+				continue;
+			}
+			state.mission = mission;
 			const alreadyFailed = execution.status === ExecutorStatus.failed;
 			try {
 				if (alreadyFailed) {
