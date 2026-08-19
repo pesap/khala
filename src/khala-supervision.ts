@@ -1473,16 +1473,18 @@ class SupervisionController {
 			const mission = execution?.missionId === undefined ? undefined : currentMissions.get(execution.missionId);
 			const latestForMission =
 				execution?.missionId === undefined ? undefined : latestByMission.get(execution.missionId);
+			const activeExecutor =
+				execution?.status === ExecutorStatus.starting || execution?.status === ExecutorStatus.running;
+			const eligibleFailedRecovery =
+				execution?.status === ExecutorStatus.failed &&
+				latestForMission?.execution.executionId === executionId &&
+				eligibleFailedExecutionIds.has(executionId);
 			if (
 				execution === undefined ||
 				!isMissionExecutorRecord(execution) ||
 				mission === undefined ||
 				state.mission.missionId !== mission.missionId ||
-				latestForMission?.execution.executionId !== executionId ||
-				(execution.status !== ExecutorStatus.starting &&
-					execution.status !== ExecutorStatus.running &&
-					execution.status !== ExecutorStatus.failed) ||
-				(execution.status === ExecutorStatus.failed && !eligibleFailedExecutionIds.has(executionId))
+				!(activeExecutor || eligibleFailedRecovery)
 			) {
 				this.executions.delete(executionId);
 				continue;

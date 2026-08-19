@@ -859,7 +859,7 @@ test("newer finished Executor blocks recovery of an older failed Executor", asyn
   }
 });
 
-test("failed Executor recovery is a no-op when the current Mission has an active Executor", async () => {
+test("active Executor remains recovered when a later failed Executor shares its current Mission", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-failed-active-"));
   try {
     const now = new Date().toISOString();
@@ -867,13 +867,13 @@ test("failed Executor recovery is a no-op when the current Mission has an active
     const mission = { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now };
     appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
     appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: mission });
-    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "failed", payload: { executionId: "failed", workId: "work", executorName: "failed", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "pending", status: "failed", startedAt: now } });
     const sessionPath = join(root, "active.jsonl");
     writeFileSync(sessionPath, JSON.stringify({ type: "session", version: 3, id: "active-session", cwd: root }) + "\n");
     appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "active", payload: { executionId: "active", workId: "work", executorName: "active", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "active-session", sessionPath, promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "running", startedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "failed", payload: { executionId: "failed", workId: "work", executorName: "failed", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "pending", status: "failed", startedAt: now } });
     const sessionManager = SessionManager.inMemory(root);
     const recoveryFailures = [];
-    let recoveryAttempts = 0;
+    const recoveredExecutionIds = [];
     const controller = new SupervisionController({
       projectPath: root,
       projectTrusted: false,
@@ -881,8 +881,8 @@ test("failed Executor recovery is a no-op when the current Mission has an active
       conclaveParticipantId: "conclave",
       conclaveMaxCostUsdPerTurn: 1,
       executorMaxCostUsdPerTurn: 1,
-      recoverExecutor: async () => {
-        recoveryAttempts += 1;
+      recoverExecutor: async (execution) => {
+        recoveredExecutionIds.push(execution.executionId);
         return { async getEntries() { return { entries: [], leafId: null }; } };
       },
       onExecutorRecoveryFailure: async (execution) => { recoveryFailures.push(execution.executionId); },
@@ -891,7 +891,7 @@ test("failed Executor recovery is a no-op when the current Mission has an active
     await controller.recover();
 
     assert.deepEqual(recoveryFailures, []);
-    assert.equal(recoveryAttempts, 1);
+    assert.deepEqual(recoveredExecutionIds, ["active"]);
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, 2);
     controller.dispose();
   } finally {
