@@ -26,6 +26,8 @@ active tool allowlist:
 - `khala_steer_execution`
 - `khala_coordinate_work`
 - `khala_record_intervention_outcome`
+- `khala_apply_user_priority`
+- `khala_dispose_user_priority`
 
 No other tool call is a Conclave control. Supervision is tool-only: prose,
 model output, Executor text, and monitor labels never steer an Executor.

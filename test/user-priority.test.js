@@ -93,7 +93,7 @@ function appendActiveExecution(projectPath, side) {
 	return side;
 }
 
-function appendPrelaunchDecisionCoordination(projectPath, coordinationId, a, b) {
+function appendPrelaunchDecisionCoordination(projectPath, coordinationId, a, b, includePolicy = false) {
 	appendArchiveRecord(projectPath, {
 		schemaVersion: 2,
 		type: "coordination",
@@ -110,6 +110,7 @@ function appendPrelaunchDecisionCoordination(projectPath, coordinationId, a, b) 
 			relatedWorkId: b.workId,
 			relatedMissionId: b.missionId,
 			reason: "Both current Missions overlap before either side launches.",
+			...(includePolicy ? { peerConflictExecutionIdentityPolicy: "active-execution" } : {}),
 		},
 	}, false);
 }
@@ -445,11 +446,13 @@ runTest("a decision-bound disappeared related Execution makes a pending priority
 runTest("a prelaunch User Priority with no active losing Execution keeps the no-stop enforcement path", async (projectPath) => {
 	const a = appendPrelaunchSide(projectPath, "prelaunch-no-active-a", "work-prelaunch-no-active-a");
 	const b = appendPrelaunchSide(projectPath, "prelaunch-no-active-b", "work-prelaunch-no-active-b");
-	appendPrelaunchDecisionCoordination(projectPath, "coord-prelaunch-no-active", a, b);
+	appendPrelaunchDecisionCoordination(projectPath, "coord-prelaunch-no-active", a, b, true);
 	const result = await submitUserPriority({ selectedWorkId: a.workId, reason: "A over B" }, userContext(projectPath, [userEntry("u-no-active", "ab"), assistantEntry("a-no-active", "u-no-active", "t-no-active")]), { wakeUserPriority: async () => {} }, "t-no-active");
 	const tools = supervisionTools();
 	const applied = await tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, conclaveContext(projectPath));
+	assert.equal(applied.details.peerConflictExecutionIdentityPolicy, "active-execution");
 	assert.equal(applied.details.relatedExecutionId, undefined);
+	assert.equal(applied.details.selectedExecutionId, undefined);
 	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "intervention").length, 0);
 	assert.equal(listArchiveRecords(projectPath, false).filter((record) => record.type === "user-priority-enforcement").at(-1).payload.phase, "enforced");
 });
@@ -471,6 +474,59 @@ runTest("a true wake/apply applies the pending priority as a Coordination overri
 	const replay = await tools.get("khala_apply_user_priority").execute("t", { priorityId: result.details.priorityId }, undefined, undefined, context);
 	assert.equal(replay.details.actionId, applied.details.actionId);
 	assert.throws(() => appendArchiveRecord(projectPath, { schemaVersion: 2, type: "coordination", workId: a.workId, executionId: a.executionId, payload: { ...applied.details, actionId: "action-forged" } }, false), /invalid or already-applied User Priority/);
+});
+
+runTest("archive replay validates policy-bearing User Priority override identities at append order", async (projectPath) => {
+	const a = appendPrelaunchSide(projectPath, "policy-prelaunch-a", "work-policy-prelaunch-a");
+	const b = appendPrelaunchSide(projectPath, "policy-prelaunch-b", "work-policy-prelaunch-b");
+	appendPrelaunchDecisionCoordination(projectPath, "coord-policy-prelaunch", a, b, true);
+	const result = await submitUserPriority(
+		{ selectedWorkId: a.workId, reason: "A over B" },
+		userContext(projectPath, [userEntry("u-policy-prelaunch", "ab"), assistantEntry("a-policy-prelaunch", "u-policy-prelaunch", "t-policy-prelaunch")]),
+		{ wakeUserPriority: async () => {} },
+		"t-policy-prelaunch",
+	);
+	appendActiveExecution(projectPath, a);
+	appendActiveExecution(projectPath, b);
+	const priority = readUserPriority(projectPath, result.details.priorityId, false);
+	const appendOverride = (executionId, relatedExecutionId, selectedExecutionId) =>
+		appendArchiveRecord(
+			projectPath,
+			{
+				schemaVersion: 2,
+				type: "coordination",
+				workId: a.workId,
+				executionId,
+				payload: {
+					coordinationId: priority.coordinationId,
+					actionId: priority.actionId,
+					phase: "override",
+					relation: "peer-conflict",
+					workId: a.workId,
+					missionId: a.missionId,
+					executionId,
+					relatedWorkId: b.workId,
+					relatedMissionId: b.missionId,
+					relatedExecutionId,
+					selectedWorkId: a.workId,
+					selectedMissionId: a.missionId,
+					selectedExecutionId,
+					peerConflictExecutionIdentityPolicy: "active-execution",
+					reason: priority.reason,
+					userEntryId: priority.provenance.entryId,
+					priorityId: priority.priorityId,
+				},
+			},
+			false,
+		);
+	for (const [label, executionIds, message] of [
+		["primary", ["execution-forged-primary", b.executionId, a.executionId], /exact primary active Execution identity/],
+		["related", [a.executionId, "execution-forged-related", a.executionId], /exact related active Execution identity/],
+		["selected", [a.executionId, b.executionId, "execution-forged-selected"], /exact selected active Execution identity/],
+	]) {
+		assert.throws(() => appendOverride(...executionIds), message, label);
+	}
+	assert.doesNotThrow(() => appendOverride(a.executionId, b.executionId, a.executionId));
 });
 
 runTest("a policy-bearing Coordination carries its identity policy through a User Priority override", async (projectPath) => {

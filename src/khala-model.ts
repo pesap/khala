@@ -2068,33 +2068,47 @@ function activeExecutionIdForMission(
 	)?.executionId;
 }
 
-function validatePeerConflictDecisionExecutionIdentities(
-	decision: CoordinationRecord,
+function validatePeerConflictExecutionIdentities(
+	coordination: CoordinationRecord,
 	latestExecutions: ReadonlyMap<string, ExecutorRecord>,
 ): void {
-	const primaryExecutionId = activeExecutionIdForMission(latestExecutions, decision.workId, decision.missionId);
+	const primaryExecutionId = activeExecutionIdForMission(latestExecutions, coordination.workId, coordination.missionId);
 	if (primaryExecutionId === undefined) {
-		if (decision.executionId !== undefined) {
+		if (coordination.executionId !== undefined) {
 			throw new Error(
 				"Peer-conflict Coordination must omit the primary Execution identity when no active Execution exists.",
 			);
 		}
-	} else if (decision.executionId !== primaryExecutionId) {
+	} else if (coordination.executionId !== primaryExecutionId) {
 		throw new Error("Peer-conflict Coordination requires the exact primary active Execution identity.");
 	}
 	const relatedExecutionId = activeExecutionIdForMission(
 		latestExecutions,
-		decision.relatedWorkId,
-		decision.relatedMissionId,
+		coordination.relatedWorkId,
+		coordination.relatedMissionId,
 	);
 	if (relatedExecutionId === undefined) {
-		if (decision.relatedExecutionId !== undefined) {
+		if (coordination.relatedExecutionId !== undefined) {
 			throw new Error(
 				"Peer-conflict Coordination must omit the related Execution identity when no active Execution exists.",
 			);
 		}
-	} else if (decision.relatedExecutionId !== relatedExecutionId) {
+	} else if (coordination.relatedExecutionId !== relatedExecutionId) {
 		throw new Error("Peer-conflict Coordination requires the exact related active Execution identity.");
+	}
+	const selectedExecutionId = activeExecutionIdForMission(
+		latestExecutions,
+		coordination.selectedWorkId,
+		coordination.selectedMissionId,
+	);
+	if (selectedExecutionId === undefined) {
+		if (coordination.selectedExecutionId !== undefined) {
+			throw new Error(
+				"Peer-conflict Coordination must omit the selected Execution identity when no active Execution exists.",
+			);
+		}
+	} else if (coordination.selectedExecutionId !== selectedExecutionId) {
+		throw new Error("Peer-conflict Coordination requires the exact selected active Execution identity.");
 	}
 }
 
@@ -2309,11 +2323,11 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 				throw new Error(`Coordination ${record.payload.coordinationId} has inconsistent Archive bindings.`);
 			}
 			if (
-				coordination.phase === "decision" &&
+				(coordination.phase === "decision" || coordination.phase === "override") &&
 				coordination.relation === "peer-conflict" &&
 				coordination.peerConflictExecutionIdentityPolicy === CoordinationExecutionIdentityPolicy.activeExecution
 			) {
-				validatePeerConflictDecisionExecutionIdentities(coordination, latestExecutorRecords);
+				validatePeerConflictExecutionIdentities(coordination, latestExecutorRecords);
 			}
 			if (coordination.phase === "override") {
 				const { priorityId } = coordination;
