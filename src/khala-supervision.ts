@@ -1058,22 +1058,32 @@ function incompleteAssessmentStarts(entries: readonly SessionEntry[]): Assessmen
 	return result;
 }
 
+type LatestExecutorRecord = Readonly<{
+	execution: ExecutorRecord;
+	archiveIndex: number;
+}>;
+
+function listLatestExecutorRecords(projectPath: string, projectTrusted = false): readonly LatestExecutorRecord[] {
+	const latest = new Map<string, LatestExecutorRecord>();
+	for (const [archiveIndex, record] of listArchiveRecords(projectPath, projectTrusted).entries()) {
+		if (record.type === "execution" && isExecutorRecord(record.payload)) {
+			latest.set(record.payload.executionId, { execution: record.payload, archiveIndex });
+		}
+	}
+	return [...latest.values()];
+}
+
 function listEligibleFailedExecutorRecoveries(
 	projectPath: string,
 	projectTrusted = false,
+	latestExecutions = listLatestExecutorRecords(projectPath, projectTrusted),
 ): readonly { execution: ExecutorRecord; mission: MissionRecord }[] {
 	const currentMissions = projectMissions(projectPath, projectTrusted)
 		.filter((projection) => projection.state === "current")
 		.map((projection) => projection.mission);
 	const currentByMission = new Map(currentMissions.map((mission) => [mission.missionId, mission]));
-	const latestExecutions = new Map<string, { execution: ExecutorRecord; archiveIndex: number }>();
-	for (const [archiveIndex, record] of listArchiveRecords(projectPath, projectTrusted).entries()) {
-		if (record.type === "execution" && isExecutorRecord(record.payload)) {
-			latestExecutions.set(record.payload.executionId, { execution: record.payload, archiveIndex });
-		}
-	}
 	const activeMissionIds = new Set(
-		[...latestExecutions.values()]
+		latestExecutions
 			.filter(
 				(candidate) =>
 					candidate.execution.kind === "executor" &&
@@ -1084,9 +1094,7 @@ function listEligibleFailedExecutorRecoveries(
 			.map((candidate) => candidate.execution.missionId as string),
 	);
 	const latestFailedByMission = new Map<string, { execution: ExecutorRecord; archiveIndex: number }>();
-	for (const candidate of [...latestExecutions.values()].sort(
-		(left, right) => left.archiveIndex - right.archiveIndex,
-	)) {
+	for (const candidate of [...latestExecutions].sort((left, right) => left.archiveIndex - right.archiveIndex)) {
 		const missionId = candidate.execution.missionId;
 		if (
 			candidate.execution.kind !== "executor" ||
@@ -1149,10 +1157,11 @@ class SupervisionController {
 
 	async recover(): Promise<void> {
 		this.drainStopped = false;
-		await this.rehydrateMissions(true, false, true);
+		const latestExecutions = listLatestExecutorRecords(this.options.projectPath, this.options.projectTrusted);
+		await this.rehydrateMissions(true, false, true, latestExecutions);
 		this.restoreStopHandoffExpectations();
 		await this.options.upstreamPoller?.start();
-		await this.recoverRegisteredExecutors();
+		await this.recoverRegisteredExecutors(latestExecutions);
 		const conclaveEntries = this.options.session.sessionManager.getEntries();
 		const cursors = readCompletedCursors(conclaveEntries);
 		const incomplete = incompleteAssessmentStarts(conclaveEntries);
@@ -1379,14 +1388,15 @@ class SupervisionController {
 		forceContext: boolean,
 		recoverExecutors = false,
 		includeFailedExecutors = false,
+		latestExecutors = listLatestExecutorRecords(this.options.projectPath, this.options.projectTrusted),
 	): Promise<void> {
 		const active = projectMissions(this.options.projectPath, this.options.projectTrusted).filter(
 			(projection) => projection.state === "current",
 		);
 		const activeByMission = new Map(active.map((projection) => [projection.mission.missionId, projection.mission]));
-		const executions = listExecutorRecords(this.options.projectPath, this.options.projectTrusted);
+		const executions = latestExecutors.map((candidate) => candidate.execution);
 		const failedRecoveries = includeFailedExecutors
-			? listEligibleFailedExecutorRecoveries(this.options.projectPath, this.options.projectTrusted)
+			? listEligibleFailedExecutorRecoveries(this.options.projectPath, this.options.projectTrusted, latestExecutors)
 			: [];
 		const failedExecutionIds = new Set(failedRecoveries.map((recovery) => recovery.execution.executionId));
 		for (const execution of executions) {
@@ -1423,14 +1433,17 @@ class SupervisionController {
 		}
 	}
 
-	private async recoverRegisteredExecutors(): Promise<void> {
+	private async recoverRegisteredExecutors(
+		latestExecutions = listLatestExecutorRecords(this.options.projectPath, this.options.projectTrusted),
+	): Promise<void> {
 		if (this.options.recoverExecutor === undefined) {
 			return;
 		}
+		const executionById = new Map(
+			latestExecutions.map((candidate) => [candidate.execution.executionId, candidate.execution]),
+		);
 		for (const [executionId, state] of [...this.executions]) {
-			const execution = listExecutorRecords(this.options.projectPath, this.options.projectTrusted).find(
-				(candidate) => candidate.executionId === executionId,
-			);
+			const execution = executionById.get(executionId);
 			if (execution?.kind !== "executor") {
 				continue;
 			}

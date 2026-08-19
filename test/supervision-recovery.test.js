@@ -543,19 +543,23 @@ test("schema v2 running Executions without Pi identity fail recovery without inv
   }
 });
 
-test("failed pre-RPC recovery selects only the latest failed Executor for a current Mission", async () => {
-  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-failed-prerpc-"));
+test("failed recovery uses the final state of one historical Executor stream", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-failed-history-"));
   try {
     const now = new Date().toISOString();
     const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
     const mission = { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now };
+    const sessionPath = join(root, "persisted.jsonl");
+    writeFileSync(sessionPath, JSON.stringify({ type: "session", version: 3, id: "persisted-session", cwd: root }) + "\n");
     appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
     appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: mission });
-    for (const executionId of ["failed-old", "failed-latest"]) {
-      appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId, payload: { executionId, workId: "work", executorName: executionId, kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "pending", status: "failed", startedAt: now } });
+    const execution = { executionId: "execution", workId: "work", executorName: "Executor", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "persisted-session", sessionPath, promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, startedAt: now };
+    for (const status of ["starting", "running", "failed"]) {
+      appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "execution", payload: { ...execution, status } });
     }
     const sessionManager = SessionManager.inMemory(root);
-    const recoveryFailures = [];
+    const persistedRecoveryAttempts = [];
+    const freshRecoveryRequests = [];
     const controller = new SupervisionController({
       projectPath: root,
       projectTrusted: false,
@@ -563,14 +567,20 @@ test("failed pre-RPC recovery selects only the latest failed Executor for a curr
       conclaveParticipantId: "conclave",
       conclaveMaxCostUsdPerTurn: 1,
       executorMaxCostUsdPerTurn: 1,
-      recoverExecutor: async () => { throw new Error("failed pre-RPC Executors must use fresh recovery"); },
-      onExecutorRecoveryFailure: async (execution) => { recoveryFailures.push(execution.executionId); },
+      recoverExecutor: async () => {
+        persistedRecoveryAttempts.push("persisted");
+        throw new Error("the persisted-session recovery path must not run for a failed Executor");
+      },
+      onExecutorRecoveryFailure: async (failedExecution) => {
+        freshRecoveryRequests.push({ executionId: failedExecution.executionId, status: failedExecution.status });
+      },
     });
 
     await controller.recover();
 
-    assert.deepEqual(recoveryFailures, ["failed-latest"]);
-    assert.deepEqual(listArchiveRecords(root).filter((record) => record.type === "execution").map((record) => record.executionId), ["failed-old", "failed-latest"]);
+    assert.deepEqual(persistedRecoveryAttempts, []);
+    assert.deepEqual(freshRecoveryRequests, [{ executionId: "execution", status: "failed" }]);
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, 3);
     controller.dispose();
   } finally {
     rmSync(root, { recursive: true, force: true });
