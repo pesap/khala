@@ -116,6 +116,86 @@ function fakeTimers() {
   };
 }
 
+function createRuntimeOwnerTracker() {
+  const owners = new Map();
+  let cleanupError;
+  let resolveClosed;
+  const closed = new Promise((resolve) => { resolveClosed = resolve; });
+  return {
+    owners,
+    supervision: {
+      registerExecution() {},
+      registerRuntimeOwner(executionId, cleanup) { owners.set(executionId, cleanup); },
+      async closeRuntimeOwner(executionId) {
+        const cleanup = owners.get(executionId);
+        owners.delete(executionId);
+        try {
+          await cleanup?.();
+        } catch (error) {
+          cleanupError = error;
+          throw error;
+        } finally {
+          resolveClosed();
+        }
+      },
+    },
+    async waitForClose(timeoutMs = 1_000) {
+      let timeout;
+      let timedOut = false;
+      try {
+        timedOut = await Promise.race([
+          closed.then(() => false),
+          new Promise((resolve) => {
+            timeout = setTimeout(() => resolve(true), timeoutMs);
+          }),
+        ]);
+        if (timedOut) {
+          await closed;
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (cleanupError !== undefined) {
+        throw cleanupError;
+      }
+      if (timedOut) {
+        throw new Error("Timed out waiting for recovered Executor sandbox cleanup.");
+      }
+    },
+  };
+}
+
+test("runtime owner tracker preserves cleanup failures", async () => {
+  const tracker = createRuntimeOwnerTracker();
+  tracker.supervision.registerRuntimeOwner("execution", async () => { throw new Error("cleanup failed"); });
+
+  await assert.rejects(tracker.supervision.closeRuntimeOwner("execution"), /cleanup failed/);
+  await assert.rejects(tracker.waitForClose(0), /cleanup failed/);
+  assert.equal(tracker.owners.size, 0);
+});
+
+test("runtime owner tracker waits for cleanup before reporting a timeout", async () => {
+  const tracker = createRuntimeOwnerTracker();
+  let releaseCleanup;
+  const cleanup = new Promise((resolve) => { releaseCleanup = resolve; });
+  tracker.supervision.registerRuntimeOwner("execution", async () => cleanup);
+
+  const close = tracker.supervision.closeRuntimeOwner("execution");
+  const waiting = tracker.waitForClose(0);
+  let waitSettled = false;
+  void waiting.then(
+    () => { waitSettled = true; },
+    () => { waitSettled = true; },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(waitSettled, false);
+
+  releaseCleanup();
+  await close;
+  await assert.rejects(waiting, /Timed out waiting for recovered Executor sandbox cleanup/);
+  assert.equal(tracker.owners.size, 0);
+});
+
 test("Supervision recovery parses only one exact ls-remote line and distinguishes missing refs", () => {
   assert.equal(parseLsRemoteOutput("", "feature/upstream"), null);
   assert.equal(parseLsRemoteOutput("\n", "feature/upstream"), null);
@@ -1096,12 +1176,7 @@ process.stdin.on("data", (chunk) => {
       handleRuntimeRestart() {},
     });
     const diagnostics = [];
-    const owners = new Map();
-    const supervision = {
-      registerExecution() {},
-      registerRuntimeOwner(executionId, cleanup) { owners.set(executionId, cleanup); },
-      async closeRuntimeOwner(executionId) { const cleanup = owners.get(executionId); owners.delete(executionId); await cleanup?.(); },
-    };
+    const { owners, supervision, waitForClose } = createRuntimeOwnerTracker();
     const result = await startFreshSameMissionExecution({
       projectPath: root,
       projectTrusted: false,
@@ -1114,9 +1189,7 @@ process.stdin.on("data", (chunk) => {
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
     assert.equal(result, true);
-    for (let attempt = 0; attempt < 100 && diagnostics.length === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await waitForClose();
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1).payload;
     assert.equal(replacement.status, "failed");
     assert.equal(diagnostics.length, 1);
@@ -1174,12 +1247,7 @@ process.stdin.on("data", (chunk) => {
       handleRuntimeRestart() {},
     });
     const diagnostics = [];
-    const owners = new Map();
-    const supervision = {
-      registerExecution() {},
-      registerRuntimeOwner(executionId, cleanup) { owners.set(executionId, cleanup); },
-      async closeRuntimeOwner(executionId) { const cleanup = owners.get(executionId); owners.delete(executionId); await cleanup?.(); },
-    };
+    const { owners, supervision, waitForClose } = createRuntimeOwnerTracker();
     const result = await startFreshSameMissionExecution({
       projectPath: root,
       projectTrusted: false,
@@ -1225,9 +1293,7 @@ process.stdin.on("data", (chunk) => {
         createdAt: new Date(Date.now() + 1).toISOString(),
       },
     });
-    for (let attempt = 0; attempt < 100 && owners.size > 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    await waitForClose();
 
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1).payload;
     assert.equal(replacement.status, "failed");
