@@ -1358,13 +1358,13 @@ async function startFreshSameMissionExecution(
 	if (!registered) {
 		return false;
 	}
-	input.supervision.registerExecution(input.mission, executionId);
-	const starter = createConfiguredExecutorStarter({
-		cwd: input.projectPath,
-		isProjectTrusted: () => input.projectTrusted,
-	});
-	let launched: Awaited<ReturnType<typeof starter>> | undefined;
+	let launched: { cleanup?: () => Promise<void> } | undefined;
 	try {
+		input.supervision.registerExecution(input.mission, executionId);
+		const starter = createConfiguredExecutorStarter({
+			cwd: input.projectPath,
+			isProjectTrusted: () => input.projectTrusted,
+		});
 		launched = await starter({
 			projectPath: input.projectPath,
 			workId: input.mission.workId,

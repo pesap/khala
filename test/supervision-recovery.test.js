@@ -20,10 +20,25 @@ import { failExecutionAndCloseInterventions } from "../dist/src/khala-supervisio
 import { SupervisionController } from "../dist/src/khala-supervision.js";
 import { isPendingRecoveryLaunchEligible, startFreshSameMissionExecution } from "../dist/src/khala-conclave.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
+import { boundDiagnostic, redactDiagnostic } from "../dist/src/khala-error.js";
 import { EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
 
 const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
+
+test("diagnostic redaction covers quoted JSON credentials and exact bounds", () => {
+  const diagnostic = redactDiagnostic(
+    '{"access_token":"ACCESS","Authorization":"Bearer BEARER","password":"PASSWORD"}',
+  );
+  assert.equal(
+    diagnostic,
+    '{"access_token":"[REDACTED]","Authorization":"Bearer [REDACTED]","password":"[REDACTED]"}',
+  );
+  assert.doesNotMatch(diagnostic, /ACCESS|BEARER|PASSWORD/);
+  assert.equal(boundDiagnostic("x".repeat(100), 20).length, 20);
+  assert.equal(boundDiagnostic("x".repeat(100), 5).length, 5);
+  assert.equal(boundDiagnostic("x".repeat(100), 0), "");
+});
 
 function configureRecoveryTest(root) {
   const agentDir = join(root, "agent");
@@ -683,6 +698,41 @@ test("fresh recovery launch failures persist bounded diagnostics with replacemen
     });
     assert.match(failures[0].data.error, /git rev-parse --show-toplevel failed/);
     assert.ok(failures[0].data.error.length <= 4096);
+  } finally {
+    restoreConfig();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh recovery registration failures fail the replacement and persist one diagnostic", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-registration-failure-"));
+  const restoreConfig = configureRecoveryTest(root);
+  try {
+    const { mission, failedExecution } = failedRecoveryFixture(root);
+    const diagnostics = [];
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision: {
+        registerExecution() {
+          throw new Error('registration failed with {"access_token":"SECRET"}');
+        },
+      },
+      isSupervisionAvailable: () => true,
+      onLaunchFailure: (failure) => diagnostics.push(failure),
+    });
+
+    assert.equal(result, false);
+    const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
+    assert.equal(replacement.payload.status, "failed");
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].replacementExecutionId, replacement.executionId);
+    assert.doesNotMatch(diagnostics[0].error, /SECRET/);
+    assert.match(diagnostics[0].error, /registration failed/);
   } finally {
     restoreConfig();
     rmSync(root, { recursive: true, force: true });
