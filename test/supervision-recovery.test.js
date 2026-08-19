@@ -587,6 +587,44 @@ test("failed recovery uses the final state of one historical Executor stream", a
   }
 });
 
+test("newer finished Executor blocks recovery of an older failed Executor", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-failed-finished-"));
+  try {
+    const now = new Date().toISOString();
+    const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+    const mission = { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: mission });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "failed-old", payload: { executionId: "failed-old", workId: "work", executorName: "failed-old", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "pending", status: "failed", startedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "finished-new", payload: { executionId: "finished-new", workId: "work", executorName: "finished-new", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "pending", status: "finished", startedAt: now } });
+    const sessionManager = SessionManager.inMemory(root);
+    const persistedRecoveryAttempts = [];
+    const freshRecoveryBootstraps = [];
+    const controller = new SupervisionController({
+      projectPath: root,
+      projectTrusted: false,
+      session: { sessionManager, subscribe: () => () => {}, async sendCustomMessage() {}, async waitForIdle() {} },
+      conclaveParticipantId: "conclave",
+      conclaveMaxCostUsdPerTurn: 1,
+      executorMaxCostUsdPerTurn: 1,
+      recoverExecutor: async () => {
+        persistedRecoveryAttempts.push("persisted");
+        return { async getEntries() { return { entries: [], leafId: null }; } };
+      },
+      onExecutorRecoveryFailure: async (execution) => { freshRecoveryBootstraps.push(execution.executionId); },
+    });
+
+    await controller.recover();
+
+    assert.deepEqual(persistedRecoveryAttempts, []);
+    assert.deepEqual(freshRecoveryBootstraps, []);
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, 2);
+    controller.dispose();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("failed Executor recovery is a no-op when the current Mission has an active Executor", async () => {
   const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-failed-active-"));
   try {

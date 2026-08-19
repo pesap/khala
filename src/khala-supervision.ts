@@ -1093,24 +1093,24 @@ function listEligibleFailedExecutorRecoveries(
 			)
 			.map((candidate) => candidate.execution.missionId as string),
 	);
-	const latestFailedByMission = new Map<string, { execution: ExecutorRecord; archiveIndex: number }>();
+	const latestByMission = new Map<string, LatestExecutorRecord>();
 	for (const candidate of [...latestExecutions].sort((left, right) => left.archiveIndex - right.archiveIndex)) {
 		const missionId = candidate.execution.missionId;
-		if (
-			candidate.execution.kind !== "executor" ||
-			missionId === undefined ||
-			candidate.execution.status !== ExecutorStatus.failed ||
-			!currentByMission.has(missionId) ||
-			activeMissionIds.has(missionId)
-		) {
+		if (candidate.execution.kind !== "executor" || missionId === undefined || !currentByMission.has(missionId)) {
 			continue;
 		}
-		latestFailedByMission.set(missionId, candidate);
+		latestByMission.set(missionId, candidate);
 	}
-	return [...latestFailedByMission.values()].map((candidate) => ({
-		execution: candidate.execution,
-		mission: currentByMission.get(candidate.execution.missionId as string) as MissionRecord,
-	}));
+	return [...latestByMission.values()]
+		.filter(
+			(candidate) =>
+				candidate.execution.status === ExecutorStatus.failed &&
+				!activeMissionIds.has(candidate.execution.missionId as string),
+		)
+		.map((candidate) => ({
+			execution: candidate.execution,
+			mission: currentByMission.get(candidate.execution.missionId as string) as MissionRecord,
+		}));
 }
 
 class SupervisionController {
