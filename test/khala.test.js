@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createRequire } from "node:module";
 import { DefaultResourceLoader, initTheme } from "@earendil-works/pi-coding-agent";
@@ -231,6 +242,44 @@ test("direct dependencies stay exact-pinned and the lockfile matches the manifes
 		path.endsWith("node_modules/brace-expansion") || path === "node_modules/brace-expansion",
 	)?.[1];
 	assert.equal(braceEntry?.version, "5.0.9", "lockfile must resolve the brace-expansion override");
+});
+
+test("package resources and dependency selections match the reviewed install surface", () => {
+	const root = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+	const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+	const lockfile = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+	for (const resource of manifest.files) {
+		assert.equal(existsSync(join(root, resource)), true, `packaged resource is missing: ${resource}`);
+	}
+	for (const resource of [...manifest.pi.extensions, ...manifest.pi.prompts, ...manifest.pi.themes, ...manifest.pi.skills]) {
+		assert.equal(existsSync(join(root, resource)), true, `Pi resource is missing: ${resource}`);
+	}
+	assert.equal(lockfile.lockfileVersion, 3);
+
+	const packageName = (lockPath) => {
+		const relativePath = lockPath.slice(lockPath.lastIndexOf("node_modules/") + "node_modules/".length);
+		return relativePath.startsWith("@") ? relativePath.split("/", 2).join("/") : relativePath.split("/", 1)[0];
+	};
+	const expectedVersions = new Map([
+		["@google/genai", "1.52.0"],
+		["protobufjs", "7.6.5"],
+		["node-domexception", "1.0.0"],
+		["brace-expansion", "5.0.9"],
+	]);
+	for (const [name, version] of expectedVersions) {
+		const entries = Object.entries(lockfile.packages).filter(
+			([lockPath]) => lockPath !== "" && packageName(lockPath) === name,
+		);
+		assert.ok(entries.length > 0, `lockfile should contain ${name}`);
+		for (const [lockPath, entry] of entries) {
+			assert.equal(entry.version, version, `${lockPath} must resolve ${name}@${version}`);
+		}
+	}
+	for (const [lockPath, entry] of Object.entries(lockfile.packages)) {
+		if (lockPath !== "" && packageName(lockPath) === "node-domexception") {
+			assert.equal(entry.dev, true, "node-domexception must remain dev-only");
+		}
+	}
 });
 
 test("Pi discovers and loads the Khala triage prompt as a dynamic template resource", async () => {

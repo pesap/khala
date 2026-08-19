@@ -249,9 +249,20 @@ available and the polyfill path is unused.
 
 Direct dependencies and devDependencies are exact-pinned and `package-lock.json`
 matches `package.json`. The `brace-expansion` override pins the fixed `5.0.9`
-release to close the advisory range GHSA-rgw5-rvv9-x895. `npm audit
---audit-level=high` reports zero vulnerabilities for both
-`npm audit --omit=dev` and the complete tree.
+release to close the advisory range GHSA-rgw5-rvv9-x895. A clean checkout can
+reproduce the supported package surface with:
+
+```sh
+npm ci
+npm audit --omit=dev --audit-level=high
+npm audit --omit=dev --json
+npm ls @google/genai protobufjs node-domexception brace-expansion --all
+```
+
+The audit commands report zero high- or critical-severity vulnerabilities for
+the production tree and the complete install. `npm ci` runs only the reviewed
+transitive scripts listed above; use `npm ci --ignore-scripts` when inspecting
+the dependency tree without running lifecycle scripts.
 
 ## Quick start
 
