@@ -1,8 +1,9 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Git VCS and Pull Request publication share one provider boundary.
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { mkdir, symlink } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import process from "node:process";
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import type { Sandbox, SandboxRequest } from "./executor.js";
@@ -72,6 +73,7 @@ class GitWorktreeProvider extends VCSProvider {
 			baseRef = await resolveExactRef(projectRoot, request.baseRef);
 		}
 		await git(projectRoot, ["worktree", "add", "-b", `${this.#branchPrefix}${name}`, sandboxPath, baseRef]);
+		await linkPrimaryDependencies(projectRoot, sandboxPath);
 		const actualHead = await git(sandboxPath, ["rev-parse", "HEAD"]);
 		if (request.baseCommit !== undefined && actualHead !== request.baseCommit) {
 			throw new Error(
@@ -160,6 +162,24 @@ async function assertMainWorktree(projectPath: string, projectRoot: string): Pro
 	if (gitDirectory !== commonDirectory) {
 		throw new Error(`Cannot create a sandbox from an existing worktree: ${projectRoot}`);
 	}
+}
+
+async function linkPrimaryDependencies(projectRoot: string, sandboxPath: string): Promise<void> {
+	const primaryDependencies = join(projectRoot, "node_modules");
+	let target: string;
+	try {
+		if (!statSync(primaryDependencies).isDirectory()) {
+			return;
+		}
+		target = realpathSync(primaryDependencies);
+	} catch {
+		return;
+	}
+	let linkType: "dir" | "junction" = "dir";
+	if (process.platform === "win32") {
+		linkType = "junction";
+	}
+	await symlink(target, join(sandboxPath, "node_modules"), linkType);
 }
 
 function assertWorktreeRootDoesNotContainProject(worktreeRoot: string, projectRoot: string): void {

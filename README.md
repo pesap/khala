@@ -131,7 +131,9 @@ for an entity; the complete history remains available for review and recovery.
 - Observers record repository Learning before an Executor starts when context is
   incomplete.
 - Zellij, tmux, and Herdr launchers are supported.
-- Git worktrees provide Executor isolation.
+- Git worktrees provide Executor isolation and link the primary project's
+  existing `node_modules` directory when available, so sandbox hooks can use
+  local tools without installing or copying dependencies.
 - The Archive is stored as inspectable JSONL rather than hidden in a service.
 
 ## Pi tools

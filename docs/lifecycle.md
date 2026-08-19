@@ -91,8 +91,13 @@ never rebases an active attempt in place.
 
 Each Executor is a headless child Pi RPC runtime in its isolated worktree. It
 has a persisted Pi session ID and path, explicit configured model, prompt
-package/hash identity, participant binding, and optional upstream base. Zellij,
-tmux, and Herdr panes remain Observer-only launch and viewing surfaces.
+package/hash identity, participant binding, and optional upstream base. When the
+primary project root has a usable `node_modules` directory, Git worktree
+creation adds a directory link to that existing directory so local hooks and
+project tooling are visible in the sandbox. The link is not a dependency copy
+or installation; sandbox cleanup removes only the link. If the primary has no
+usable `node_modules`, the sandbox is created without one. Zellij, tmux, and
+Herdr panes remain Observer-only launch and viewing surfaces.
 
 ## Execution, assessment, and control
 

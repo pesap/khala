@@ -1,9 +1,89 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createGitWorktreeProvider } from "../dist/src/vcs-git-worktree.js";
+
+function git(cwd, args) {
+	return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+}
+
+function createRepository(root, withDependencies) {
+	const repo = join(root, "project");
+	const remote = join(root, "origin.git");
+	mkdirSync(repo);
+	execFileSync("git", ["init", "--bare", "-q", remote]);
+	execFileSync("git", ["init", "-q", repo]);
+	git(repo, ["config", "user.email", "test@example.invalid"]);
+	git(repo, ["config", "user.name", "Khala Test"]);
+	writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }));
+	if (withDependencies) {
+		mkdirSync(join(repo, "node_modules", ".bin"), { recursive: true });
+		writeFileSync(
+			join(repo, "node_modules", ".bin", "tsc"),
+			"#!/bin/sh\nprintf 'ran\\n' > \"$PWD/.tsc-ran\"\n",
+		);
+		chmodSync(join(repo, "node_modules", ".bin", "tsc"), 0o755);
+	}
+	git(repo, ["add", "package.json"]);
+	git(repo, ["commit", "-qm", "initial"]);
+	git(repo, ["branch", "-M", "main"]);
+	git(repo, ["remote", "add", "origin", remote]);
+	git(repo, ["push", "-q", "-u", "origin", "main"]);
+	writeFileSync(join(repo, ".git", "hooks", "pre-push"), "#!/bin/sh\nset -eu\nnpm run build\n");
+	chmodSync(join(repo, ".git", "hooks", "pre-push"), 0o755);
+	return repo;
+}
+
+test("Git worktrees expose primary dependencies to pre-push builds without owning them", { skip: process.platform === "win32" }, async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worktree-dependencies-"));
+	const repo = createRepository(root, true);
+	const worktrees = join(root, "worktrees");
+	const primaryDependencies = realpathSync(join(repo, "node_modules"));
+	let sandbox;
+	try {
+		const provider = createGitWorktreeProvider(worktrees, "khala-test/");
+		sandbox = await provider.createSandbox({ projectPath: repo, name: "dependency-visibility" });
+		const sandboxDependencies = join(sandbox.path, "node_modules");
+		assert.equal(lstatSync(sandboxDependencies).isSymbolicLink(), true);
+		assert.equal(realpathSync(sandboxDependencies), primaryDependencies);
+
+		const branch = git(sandbox.path, ["branch", "--show-current"]);
+		git(sandbox.path, ["push", "-q", "origin", branch]);
+		assert.equal(readFileSync(join(sandbox.path, ".tsc-ran"), "utf8"), "ran\n");
+
+		await provider.removeSandbox(sandbox);
+		sandbox = undefined;
+		assert.equal(existsSync(join(repo, "node_modules", ".bin", "tsc")), true);
+		assert.equal(realpathSync(join(repo, "node_modules")), primaryDependencies);
+		assert.equal(existsSync(sandboxDependencies), false);
+		assert.doesNotMatch(git(repo, ["branch", "--list"]), /khala-test\//);
+	} finally {
+		if (sandbox !== undefined) await createGitWorktreeProvider(worktrees, "khala-test/").removeSandbox(sandbox);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Git worktrees keep generic behavior when the primary has no node_modules", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worktree-no-dependencies-"));
+	const repo = createRepository(root, false);
+	const worktrees = join(root, "worktrees");
+	let sandbox;
+	try {
+		const provider = createGitWorktreeProvider(worktrees, "khala-test/");
+		sandbox = await provider.createSandbox({ projectPath: repo, name: "no-dependencies" });
+		assert.equal(existsSync(join(sandbox.path, "node_modules")), false);
+		await provider.removeSandbox(sandbox);
+		sandbox = undefined;
+		assert.equal(existsSync(join(repo, "node_modules")), false);
+		assert.doesNotMatch(git(repo, ["branch", "--list"]), /khala-test\//);
+	} finally {
+		if (sandbox !== undefined) await createGitWorktreeProvider(worktrees, "khala-test/").removeSandbox(sandbox);
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("Git publication failures preserve bounded, redacted child diagnostics", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-git-diagnostic-"));
