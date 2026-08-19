@@ -24,6 +24,7 @@ import {
 	listSignalRecords,
 	pendingUserPriorities,
 	pendingUserPriorityEnforcements,
+	readCurrentMission,
 	readUserPriority,
 } from "./khala-archive-projections.js";
 import { getConclaveDirectory } from "./khala-conclave-directory.js";
@@ -1267,6 +1268,18 @@ async function startFreshSameMissionExecution(
 	};
 	let registered = false;
 	withArchiveLock(input.projectPath, input.projectTrusted, () => {
+		const currentMission = readCurrentMission(input.projectPath, input.mission.workId, input.projectTrusted);
+		if (currentMission?.state !== "current" || currentMission.mission.missionId !== input.mission.missionId) {
+			return;
+		}
+		const eligibleRecovery = listEligibleFailedExecutorRecoveries(input.projectPath, input.projectTrusted).some(
+			(candidate) =>
+				candidate.mission.missionId === input.mission.missionId &&
+				candidate.execution.executionId === input.failedExecution.executionId,
+		);
+		if (!eligibleRecovery) {
+			return;
+		}
 		const competing = listExecutorRecords(input.projectPath, input.projectTrusted).find(
 			(candidate) =>
 				candidate.kind === "executor" &&
@@ -1407,4 +1420,5 @@ export {
 	enqueueConclaveWake,
 	recoverPendingSubmissions,
 	schedulePendingUserPriorityWakes,
+	startFreshSameMissionExecution,
 };

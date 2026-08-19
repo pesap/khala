@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,10 +18,41 @@ import { listCoordinationRecords } from "../dist/src/khala-archive-projections.j
 import { directRevisionDependents, recordUpstreamRevision } from "../dist/src/khala-coordination.js";
 import { failExecutionAndCloseInterventions } from "../dist/src/khala-supervision-recovery.js";
 import { SupervisionController } from "../dist/src/khala-supervision.js";
+import { startFreshSameMissionExecution } from "../dist/src/khala-conclave.js";
 import { EXECUTION_SCHEMA_VERSION } from "../dist/src/khala-model.js";
 
 const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
+
+function configureRecoveryTest(root) {
+  const agentDir = join(root, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "khala.json"), JSON.stringify({
+    conclaveModel: "test/model",
+    conclaveMaxCostUsdPerTurn: 1,
+    executorModel: "test/model",
+    executorMaxCostUsdPerTurn: 1,
+    archiveRoot: join(root, "archive"),
+    worktreeRoot: join(root, "worktrees"),
+  }));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  return () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  };
+}
+
+function failedRecoveryFixture(root) {
+  const now = new Date().toISOString();
+  const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+  const mission = { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now };
+  const failedExecution = { executionId: "failed", workId: "work", executorName: "failed", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "pending", status: "failed", startedAt: now };
+  appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+  appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: mission });
+  appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: failedExecution.executionId, payload: failedExecution });
+  return { now, assignment, mission, failedExecution };
+}
 
 function base(id, head = HEAD_A) {
   return {
@@ -583,6 +614,76 @@ test("failed recovery uses the final state of one historical Executor stream", a
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, 3);
     controller.dispose();
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("successor Mission replacement blocks stale fresh recovery registration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-successor-race-"));
+  const restoreConfig = configureRecoveryTest(root);
+  try {
+    const { now, assignment, mission, failedExecution } = failedRecoveryFixture(root);
+    const retryVerdict = {
+      workId: "work",
+      executionId: "failed",
+      signalId: "signal",
+      missionId: "mission",
+      governingMandateId: "mandate",
+      issuedByParticipantId: "conclave",
+      decision: "retry",
+      reason: "Retry.",
+      verdictId: "retry-verdict",
+      issuedAt: now,
+      retryHandoff: { failedCriteria: ["A"], completedWork: ["B"], requiredChanges: ["C"], nonGoals: ["D"], validation: ["E"] },
+      successorAssignment: assignment,
+    };
+    const successor = { ...mission, missionId: "successor", predecessorMissionId: mission.missionId, causedByVerdictId: retryVerdict.verdictId, createdAt: new Date(Date.now() + 1).toISOString() };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "verdict", workId: "work", executionId: "failed", payload: retryVerdict });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: successor });
+    const before = listArchiveRecords(root).filter((record) => record.type === "execution").length;
+    const registered = [];
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision: { registerExecution: (...args) => registered.push(args) },
+      isSupervisionAvailable: () => true,
+    });
+    assert.equal(result, false);
+    assert.deepEqual(registered, []);
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, before);
+  } finally {
+    restoreConfig();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("newer terminal Executor history blocks stale fresh recovery registration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-terminal-race-"));
+  const restoreConfig = configureRecoveryTest(root);
+  try {
+    const { mission, failedExecution } = failedRecoveryFixture(root);
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: failedExecution.executionId, payload: { ...failedExecution, status: "finished" } });
+    const before = listArchiveRecords(root).filter((record) => record.type === "execution").length;
+    const registered = [];
+    const result = await startFreshSameMissionExecution({
+      projectPath: root,
+      projectTrusted: false,
+      failedExecution,
+      mission,
+      executorModel: "test/model",
+      executorSystemPrompt: "test prompt",
+      supervision: { registerExecution: (...args) => registered.push(args) },
+      isSupervisionAvailable: () => true,
+    });
+    assert.equal(result, false);
+    assert.deepEqual(registered, []);
+    assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, before);
+  } finally {
+    restoreConfig();
     rmSync(root, { recursive: true, force: true });
   }
 });
