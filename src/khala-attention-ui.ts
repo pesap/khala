@@ -129,10 +129,10 @@ function renderKhalaAttentionSummary(summary: KhalaAttentionSummary): string {
 	}
 	const lines = ["Khala — action required"];
 	for (const item of summary.reviewRequested) {
-		lines.push(`Review requested: ${item.title} — ${item.detail}`);
+		lines.push(`Review requested [${item.workId}]: ${item.title} — ${item.detail}`);
 	}
 	for (const item of summary.stoppedWork) {
-		lines.push(`Stopped Work: ${item.title} — ${item.detail}`);
+		lines.push(`Stopped Work [${item.workId}]: ${item.title} — ${item.detail}`);
 	}
 	if (summary.recovery !== undefined) {
 		lines.push(renderRecovery(summary.recovery));

@@ -225,7 +225,7 @@ runTest("review requested is reported first and draft Pull Requests stay hidden"
 	const text = renderKhalaAttentionSummary(summary);
 	const lines = text.split("\n");
 	assert.equal(lines[0], "Khala — action required");
-	assert.match(lines[1], /^Review requested: Test Work — .*pull\/42/);
+	assert.match(lines[1], /^Review requested \[work-2\]: Test Work — .*pull\/42/);
 	assert.doesNotMatch(text, /draft/);
 });
 
@@ -493,6 +493,7 @@ runTest("exhausted Conclave submission recovery marks the Work stopped", (projec
 	assert.equal(summary.stoppedWork.length, 1);
 	assert.equal(summary.stoppedWork[0].workId, "exhausted-work");
 	assert.match(summary.stoppedWork[0].detail, /recovery for this Work was exhausted/);
+	assert.match(renderKhalaAttentionSummary(summary), /Stopped Work \[exhausted-work\]: Test Work/);
 	// The Work is already stopped through exhaustion, so the failed wake must
 	// not also offer duplicate /khala-recreate guidance.
 	assert.equal(summary.recovery, undefined);

@@ -36,14 +36,15 @@ Otherwise the summary states the number of active Work submissions and says
 explicitly that no user action is required.
 
 The surface keeps one two-level public condition: working (no user action
-required) or action required. Category details explain the review or stopped
-Work behind each action. Retryable and raw Execution failures, headless and
-supervision state, recovery labels, Participant identities, and raw Executor
-rows stay out of the normal surface. A model-unavailable Executor failure is
-surfaced only when it has a current Mission and requires User selection.
-Conclave submission-wake recovery and its exhaustion are distinct from
-Executor run recovery; only durable evidence for an actionable recovery is
-surfaced here.
+required) or action required. Review and stopped Work lines include the stable
+Work ID in brackets, so the User can inspect the exact Archive projection.
+Category details explain the review or stopped Work behind each action.
+Retryable and raw Execution failures, headless and supervision state, recovery
+labels, Participant identities, and raw Executor rows stay out of the normal
+surface. A model-unavailable Executor failure is surfaced only when it has a
+current Mission and requires User selection. Conclave submission-wake recovery
+and its exhaustion are distinct from Executor run recovery; only durable
+evidence for an actionable recovery is surfaced here.
 
 Running Observers with a focusable pane appear only as a clearly secondary
 read-only selection ("Inspect Observer pane"). The Archive has no durable
