@@ -11,6 +11,7 @@ import {
 	readCurrentMission,
 	type readMandate,
 } from "./khala-archive-projections.js";
+import { loadKhalaConfig } from "./khala-config.js";
 import { formatAttachedCleanupDiagnostic, formatError } from "./khala-error.js";
 import {
 	createExecutorRecord,
@@ -150,6 +151,7 @@ function prepareExecutorRuntime(
 	);
 	const attemptNumber =
 		listExecutorRecords(context.cwd, projectTrusted).filter((execution) => execution.workId === workId).length + 1;
+	const executorModel = loadKhalaConfig(context.cwd, projectTrusted).executorModel;
 	const startingRecordBase: Omit<ExecutorRecord, "status" | "startedAt"> = {
 		executionId,
 		workId,
@@ -161,6 +163,7 @@ function prepareExecutorRuntime(
 		projectPath: context.cwd,
 		sandboxPath: "",
 		launcher: "pending",
+		model: executorModel,
 	};
 	let startingRecord: Omit<ExecutorRecord, "status" | "startedAt"> = startingRecordBase;
 	withArchiveLock(context.cwd, projectTrusted, () => {

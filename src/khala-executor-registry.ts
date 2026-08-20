@@ -17,6 +17,11 @@ type ExecutorRuntimeUpdate = Readonly<{
 	sessionPath?: string;
 	promptIdentity?: ExecutorPromptIdentity;
 	upstreamBase?: UpstreamExecutionBase;
+	model?: string;
+	recoveryOfExecutionId?: string;
+	recoveryRequestId?: string;
+	failureCategory?: "model-unavailable";
+	failureMessage?: string;
 	lastSignalAt?: string;
 }>;
 

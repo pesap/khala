@@ -12,6 +12,11 @@ import {
 } from "./khala-attention.js";
 import { LauncherName, type LauncherNameValue } from "./khala-config.js";
 import { type ExecutorRecord, ExecutorStatus } from "./khala-model.js";
+import {
+	listAvailableExecutorModelIds,
+	listPendingExecutorModelRecoveries,
+	recordUserExecutorModelRecovery,
+} from "./khala-model-recovery.js";
 
 type KhalaObserverInspection = Readonly<{
 	executorName: string;
@@ -24,6 +29,7 @@ type KhalaAttentionOption = Readonly<{
 	detail?: string;
 	level?: "info" | "warning";
 	observer?: KhalaObserverInspection;
+	modelRecovery?: Readonly<{ workId: string; missionId: string; executionId: string }>;
 }>;
 
 type ObserverViewer = (launcher: LauncherNameValue, target: string) => Promise<void>;
@@ -52,6 +58,10 @@ async function showKhalaAttention(context: ExtensionContext, viewObserver: Obser
 	}
 	if (option.observer !== undefined) {
 		await viewObserverPane(option.observer, viewObserver, context);
+		return;
+	}
+	if (option.modelRecovery !== undefined) {
+		await selectExecutorRecoveryModel(option.modelRecovery, context);
 		return;
 	}
 	context.ui.notify(option.detail ?? option.label, option.level ?? "info");
@@ -146,6 +156,9 @@ function pluralSuffix(count: number): string {
 }
 
 function renderRecovery(recovery: KhalaRecoveryAttention): string {
+	if (recovery.kind === "executor-model") {
+		return `Khala recovery needed: select a different Executor model. ${recovery.message}`;
+	}
 	if (recovery.kind === "setup") {
 		return `Khala recovery needed: run npx --yes --silent github:pesap/khala setup. ${recovery.message}`;
 	}
@@ -203,18 +216,77 @@ function stoppedOption(item: KhalaAttentionItem): KhalaAttentionOption {
 }
 
 function recoveryOption(recovery: KhalaRecoveryAttention): KhalaAttentionOption {
-	return {
+	const option: KhalaAttentionOption = {
 		label: `Khala recovery needed: ${recoveryShortInstruction(recovery.kind)}`,
 		detail: renderRecovery(recovery),
 		level: "warning",
 	};
+	if (
+		recovery.kind === "executor-model" &&
+		recovery.workId !== undefined &&
+		recovery.missionId !== undefined &&
+		recovery.executionId !== undefined
+	) {
+		return {
+			...option,
+			modelRecovery: {
+				workId: recovery.workId,
+				missionId: recovery.missionId,
+				executionId: recovery.executionId,
+			},
+		};
+	}
+	return option;
 }
 
-function recoveryShortInstruction(kind: "setup" | "recreate"): string {
+function recoveryShortInstruction(kind: "setup" | "recreate" | "executor-model"): string {
+	if (kind === "executor-model") {
+		return "select a different Executor model";
+	}
 	if (kind === "setup") {
 		return "run setup";
 	}
 	return "run /khala-recreate";
+}
+
+async function selectExecutorRecoveryModel(
+	recovery: Readonly<{ workId: string; missionId: string; executionId: string }>,
+	context: ExtensionContext,
+): Promise<boolean> {
+	try {
+		const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+		const pending = listPendingExecutorModelRecoveries(context.cwd, projectTrusted).find(
+			(candidate) =>
+				candidate.execution.executionId === recovery.executionId && candidate.mission.missionId === recovery.missionId,
+		);
+		if (pending === undefined) {
+			throw new Error("The failed Executor recovery is no longer current.");
+		}
+		const models = (await listAvailableExecutorModelIds()).filter((model) => model !== pending.execution.model);
+		if (models.length === 0) {
+			throw new Error("No alternate authenticated Executor model is available.");
+		}
+		const selected = await context.ui.select("Select an Executor model for this recovery", [...models]);
+		if (selected === undefined) {
+			return false;
+		}
+		await recordUserExecutorModelRecovery({
+			projectPath: context.cwd,
+			projectTrusted,
+			pending,
+			model: selected,
+		});
+		context.ui.notify(`Selected Executor model ${selected}. Run /khala-recreate to resume this Work.`, "info");
+		return true;
+	} catch (error) {
+		let message = String(error);
+		if (error instanceof Error) {
+			const { message: errorMessage } = error;
+			message = errorMessage;
+		}
+		context.ui.notify(message, "error");
+		return false;
+	}
 }
 
 function observerOption(observer: KhalaObserverInspection): KhalaAttentionOption {
@@ -225,4 +297,4 @@ function observerOption(observer: KhalaObserverInspection): KhalaAttentionOption
 }
 
 export type { KhalaAttentionOption };
-export { renderKhalaAttentionSummary, showKhalaAttention };
+export { renderKhalaAttentionSummary, selectExecutorRecoveryModel, showKhalaAttention };

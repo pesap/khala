@@ -56,6 +56,8 @@ function execution(projectPath, id, startedAt, status, overrides = {}) {
 		sessionPath: overrides.sessionPath ?? join(projectPath, `${id}.jsonl`),
 		promptIdentity: overrides.promptIdentity ?? { packageVersion: "test", promptSha256: "a".repeat(64) },
 		...(overrides.target === undefined ? {} : { target: overrides.target }),
+		...(overrides.failureCategory === undefined ? {} : { failureCategory: overrides.failureCategory }),
+		...(overrides.failureMessage === undefined ? {} : { failureMessage: overrides.failureMessage }),
 		status,
 		startedAt,
 	};
@@ -559,6 +561,26 @@ runTest("a Work Outcome takes precedence over historical exhausted recovery", (p
 	assert.deepEqual(summary.stoppedWork, []);
 	assert.equal(summary.activeWorkCount, 0);
 	assert.equal(summary.condition, "working");
+});
+
+runTest("model-unavailable Executor surfaces scoped model recovery", (projectPath) => {
+	append(projectPath, "submission", "work-1", submission(projectPath, "work-1", "admitted"));
+	append(projectPath, "mission", "work-1", mission("work-1", "mission-1"));
+	writeExecutorRecord(
+		execution(projectPath, "execution-1", NOW, "failed", {
+			failureCategory: "model-unavailable",
+			failureMessage: "429 quota exceeded",
+			missionId: "mission-1",
+		}),
+		false,
+	);
+
+	const summary = buildKhalaAttention(projectPath, false);
+	assert.equal(summary.condition, "action-required");
+	assert.equal(summary.recovery?.kind, "executor-model");
+	assert.equal(summary.recovery?.workId, "work-1");
+	assert.equal(summary.recovery?.missionId, "mission-1");
+	assert.match(renderKhalaAttentionSummary(summary), /different Executor model/);
 });
 
 runTest("failed Conclave wakes surface recovery attention", (projectPath) => {

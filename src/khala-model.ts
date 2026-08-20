@@ -25,7 +25,8 @@ type ArchiveRecordType =
 	| "coordination"
 	| "intervention"
 	| "user-priority"
-	| "user-priority-enforcement";
+	| "user-priority-enforcement"
+	| "user-model-recovery";
 
 type KhalaArchiveRecord = Readonly<{
 	recordId: string;
@@ -226,6 +227,7 @@ const ExecutorStatus = {
 type ExecutorStatusValue = (typeof ExecutorStatus)[keyof typeof ExecutorStatus];
 
 type ExecutorKind = "executor" | "observer";
+type ExecutorFailureCategory = "model-unavailable";
 
 type ExecutorRecord = Readonly<{
 	executionId: string;
@@ -243,9 +245,27 @@ type ExecutorRecord = Readonly<{
 	sessionPath?: string;
 	promptIdentity?: ExecutorPromptIdentity;
 	upstreamBase?: UpstreamExecutionBase;
+	model?: string;
+	recoveryOfExecutionId?: string;
+	recoveryRequestId?: string;
+	failureCategory?: ExecutorFailureCategory;
+	failureMessage?: string;
 	status: ExecutorStatusValue;
 	startedAt: string;
 	lastSignalAt?: string;
+}>;
+
+type UserModelRecoveryRecord = Readonly<{
+	requestId: string;
+	role: "executor";
+	model: string;
+	status: "selected" | "applied";
+	workId: string;
+	missionId: string;
+	predecessorExecutionId: string;
+	replacementExecutionId?: string;
+	requestedAt: string;
+	appliedAt?: string;
 }>;
 
 // --- Signals (payload: "signal") --------------------------------------------
@@ -775,6 +795,17 @@ type GuardRecord = Record<string, unknown> &
 		stopEntryIds?: unknown;
 		blockedSignalId?: unknown;
 		terminalExecutionRecordId?: unknown;
+		model?: unknown;
+		recoveryOfExecutionId?: unknown;
+		recoveryRequestId?: unknown;
+		failureCategory?: unknown;
+		failureMessage?: unknown;
+		requestId?: unknown;
+		role?: unknown;
+		predecessorExecutionId?: unknown;
+		requestedAt?: unknown;
+		replacementExecutionId?: unknown;
+		appliedAt?: unknown;
 	}>;
 
 function isStringArray(value: unknown): value is readonly string[] {
@@ -860,7 +891,8 @@ function isImplicitV2ArchiveRecordType(type: ArchiveRecordType): boolean {
 		type === "pull-request" ||
 		type === "work-outcome" ||
 		type === "user-priority" ||
-		type === "user-priority-enforcement"
+		type === "user-priority-enforcement" ||
+		type === "user-model-recovery"
 	);
 }
 
@@ -904,6 +936,7 @@ const archivePayloadV2Guards: Partial<Record<ArchiveRecordType, ArchivePayloadGu
 	"pull-request": isPullRequestRecord,
 	"user-priority": isUserPriorityRecord,
 	"user-priority-enforcement": isUserPriorityEnforcementRecord,
+	"user-model-recovery": isUserModelRecoveryRecord,
 };
 
 function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean {
@@ -1142,6 +1175,11 @@ function isExecutorRecord(value: unknown): value is ExecutorRecord {
 		(record.sessionPath === undefined || isNonEmptyString(record.sessionPath)) &&
 		(record.promptIdentity === undefined || isPromptIdentity(record.promptIdentity)) &&
 		(record.upstreamBase === undefined || isUpstreamExecutionBase(record.upstreamBase)) &&
+		(record.model === undefined || isNonEmptyString(record.model)) &&
+		(record.recoveryOfExecutionId === undefined || isNonEmptyString(record.recoveryOfExecutionId)) &&
+		(record.recoveryRequestId === undefined || isNonEmptyString(record.recoveryRequestId)) &&
+		(record.failureCategory === undefined || record.failureCategory === "model-unavailable") &&
+		(record.failureMessage === undefined || isNonEmptyString(record.failureMessage)) &&
 		(record.status === ExecutorStatus.starting ||
 			record.status === ExecutorStatus.running ||
 			record.status === ExecutorStatus.finished ||
@@ -1276,6 +1314,25 @@ function isRetryHandoff(value: unknown): value is RetryHandoff {
 		isNonEmptyStringArray(record.requiredChanges) &&
 		isNonEmptyStringArray(record.nonGoals) &&
 		isNonEmptyStringArray(record.validation)
+	);
+}
+
+function isUserModelRecoveryRecord(value: unknown): value is UserModelRecoveryRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		isNonEmptyString(record.requestId) &&
+		record.role === "executor" &&
+		isNonEmptyString(record.model) &&
+		isNonEmptyString(record.workId) &&
+		isNonEmptyString(record.missionId) &&
+		isNonEmptyString(record.predecessorExecutionId) &&
+		(record.status === "selected" || record.status === "applied") &&
+		(record.replacementExecutionId === undefined || isNonEmptyString(record.replacementExecutionId)) &&
+		isNonEmptyString(record.requestedAt) &&
+		(record.appliedAt === undefined || isNonEmptyString(record.appliedAt))
 	);
 }
 
@@ -2722,6 +2779,7 @@ export type {
 	CoordinationResolution,
 	CounselRecord,
 	ExecutionPurpose,
+	ExecutorFailureCategory,
 	ExecutorKind,
 	ExecutorPromptIdentity,
 	ExecutorRecord,
@@ -2746,6 +2804,7 @@ export type {
 	SignalKind,
 	SignalRecord,
 	UpstreamExecutionBase,
+	UserModelRecoveryRecord,
 	UserPriorityEnforcementPhaseValue,
 	UserPriorityEnforcementRecord,
 	UserPriorityProvenance,
@@ -2786,6 +2845,7 @@ export {
 	isSignal,
 	isStringArray,
 	isUpstreamExecutionBase,
+	isUserModelRecoveryRecord,
 	isUserPriorityEnforcementRecord,
 	isUserPriorityRecord,
 	isV2ExecutorRecord,

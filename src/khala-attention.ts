@@ -1,10 +1,12 @@
 // The Khala attention projection is the read-only data model behind /khala and
 // Alt+K. It derives actionable project state only from authoritative Archive
 // evidence. Retryable/raw Execution failures stay out of this surface.
+// biome-ignore-all lint/style/noExcessiveLinesPerFile: Attention projection keeps one read-only summary contract together.
 import { type ArchiveSnapshot, createArchiveSnapshot, type MissionProjection } from "./khala-archive-projections.js";
 import {
 	ConclaveRecoveryStatus,
 	type ConclaveWakeRecovery,
+	ExecutorStatus,
 	isConclaveRecoveryRecord,
 	isWorkOutcomeRecord,
 	type KhalaWorkSubmission,
@@ -14,7 +16,13 @@ import {
 
 type KhalaAttentionItem = Readonly<{ workId: string; title: string; detail: string }>;
 
-type KhalaRecoveryAttention = Readonly<{ kind: "setup" | "recreate"; message: string }>;
+type KhalaRecoveryAttention = Readonly<{
+	kind: "setup" | "recreate" | "executor-model";
+	message: string;
+	workId?: string;
+	missionId?: string;
+	executionId?: string;
+}>;
 
 interface KhalaAttentionSummary {
 	condition: "action-required" | "working";
@@ -184,6 +192,10 @@ function projectRecovery(
 	archive: ArchiveSnapshot,
 	exhaustedWorkIds: ReadonlySet<string>,
 ): KhalaRecoveryAttention | undefined {
+	const modelRecovery = projectExecutorModelRecovery(archive);
+	if (modelRecovery !== undefined) {
+		return modelRecovery;
+	}
 	const wake = archive.latestUnresolvedConclaveWake();
 	if (wake === undefined || wake.status !== "failed" || wake.recovery === undefined) {
 		return;
@@ -198,6 +210,31 @@ function projectRecovery(
 		kind: recoveryKind(wake.recovery),
 		message: wake.failure ?? "The Conclave wake failed.",
 	};
+}
+
+function projectExecutorModelRecovery(archive: ArchiveSnapshot): KhalaRecoveryAttention | undefined {
+	const latest = new Map<string, ReturnType<ArchiveSnapshot["listExecutions"]>[number]>();
+	for (const execution of archive.listExecutions()) {
+		latest.set(execution.executionId, execution);
+	}
+	for (const execution of [...latest.values()].reverse()) {
+		if (
+			execution.kind !== "observer" &&
+			execution.status === ExecutorStatus.failed &&
+			execution.failureCategory === "model-unavailable" &&
+			execution.missionId !== undefined
+		) {
+			return {
+				kind: "executor-model",
+				message: execution.failureMessage ?? "The configured Executor model is unavailable.",
+				workId: execution.workId,
+				missionId: execution.missionId,
+				executionId: execution.executionId,
+			};
+		}
+	}
+	// biome-ignore lint/complexity/noUselessUndefined: Explicitly satisfy strict return analysis for no matching recovery.
+	return undefined;
 }
 
 function recoveryKind(recovery: ConclaveWakeRecovery): "setup" | "recreate" {

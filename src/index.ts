@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
 import { registerKhalaArchiveRead, registerRoleKhalaArchiveRead } from "./khala-archive-tool.js";
-import { showKhalaAttention } from "./khala-attention-ui.js";
+import { selectExecutorRecoveryModel, showKhalaAttention } from "./khala-attention-ui.js";
 import {
 	CONCLAVE_BASE_TOOL_ALLOWLIST,
 	CONCLAVE_TOOL_ALLOWLIST,
@@ -35,6 +35,7 @@ import {
 import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
 import { KHALA_TOGGLE_SHORTCUT } from "./khala-keybindings.js";
 import { registerKhalaLearning } from "./khala-learning.js";
+import { listPendingExecutorModelRecoveries, selectedUserExecutorModelRecovery } from "./khala-model-recovery.js";
 import { registerKhalaObserver } from "./khala-observer.js";
 import { registerKhalaOracle } from "./khala-oracle.js";
 import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
@@ -126,7 +127,7 @@ function setRoleActiveTools(pi: ExtensionAPI, role: KhalaRoleValue | null, dedic
 function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
 	pi.registerCommand("khala-recreate", {
 		description: "Recover the project Conclave and resume pending Work.",
-		handler: (args, context) => {
+		handler: async (args, context) => {
 			if (args.trim().length > 0) {
 				context.ui.notify("Usage: /khala-recreate", "warning");
 				return Promise.resolve();
@@ -141,16 +142,44 @@ function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: Conclav
 				context.ui.notify(message, "error");
 				return Promise.resolve();
 			}
+			const projectTrusted = isTrustedProject(context);
+			const pendingModelRecoveries = listPendingExecutorModelRecoveries(context.cwd, projectTrusted);
+			const pending = pendingModelRecoveries.find(
+				(candidate) =>
+					selectedUserExecutorModelRecovery({
+						projectPath: context.cwd,
+						workId: candidate.execution.workId,
+						missionId: candidate.mission.missionId,
+						predecessorExecutionId: candidate.execution.executionId,
+						projectTrusted,
+					}) === undefined,
+			);
+			if (pending !== undefined) {
+				if (context.mode !== "tui") {
+					context.ui.notify(
+						`Executor model selection is required for Work ${pending.execution.workId}; use /khala in interactive mode.`,
+						"warning",
+					);
+					return;
+				}
+				const choseModel = await selectExecutorRecoveryModel(
+					{
+						workId: pending.execution.workId,
+						missionId: pending.mission.missionId,
+						executionId: pending.execution.executionId,
+					},
+					context,
+				);
+				if (!choseModel) {
+					return;
+				}
+			}
 			let userSessionPath: string | undefined;
 			if (!isDedicatedConclaveSession(context)) {
 				userSessionPath = context.sessionManager.getSessionFile();
 			}
-			const sessionPath = conclaveCoordinator.ensureConclaveSession(
-				context.cwd,
-				userSessionPath,
-				isTrustedProject(context),
-			);
-			conclaveCoordinator.resume(context.cwd, isTrustedProject(context));
+			const sessionPath = conclaveCoordinator.ensureConclaveSession(context.cwd, userSessionPath, projectTrusted);
+			conclaveCoordinator.resume(context.cwd, projectTrusted);
 			if (sessionPath === undefined) {
 				context.ui.notify("Khala could not create the project Conclave.", "error");
 			} else {

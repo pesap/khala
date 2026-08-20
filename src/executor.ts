@@ -45,6 +45,7 @@ interface ExecutorRequest {
 	participantId?: string;
 	projectTrusted?: boolean;
 	kind: KhalaAgentKind;
+	awaitInitialResponse?: boolean;
 	onSandboxCreated?: (sandbox: Sandbox, launcherName: string) => void;
 	onRpcReady?: (binding: RpcSessionBinding) => Promise<void> | void;
 	onRpcEvent?: (event: unknown) => Promise<void> | void;
@@ -151,44 +152,6 @@ function createExecutorStarter(
 				activeLauncherName = KHALA_HEADLESS_LAUNCHER;
 			}
 			request.onSandboxCreated?.(sandbox, activeLauncherName);
-			if (request.reviewWorkflow !== undefined) {
-				const reviewRequest: {
-					sandbox: Sandbox;
-					name: string;
-					workId: string;
-					executionId: string;
-					mission: string;
-					publish: boolean;
-					targetBranch?: string;
-					supersedesPullRequestUrl?: string;
-					commitConvention?: string;
-					baseCommit?: string;
-				} = {
-					sandbox,
-					name: request.name,
-					workId: request.workId,
-					executionId: request.executionId,
-					mission: request.mission,
-					publish: request.reviewWorkflow.publish,
-				};
-				if (request.reviewWorkflow.supersedesPullRequestUrl !== undefined) {
-					reviewRequest.supersedesPullRequestUrl = request.reviewWorkflow.supersedesPullRequestUrl;
-				}
-				if (request.reviewWorkflow.commitConvention !== undefined) {
-					reviewRequest.commitConvention = request.reviewWorkflow.commitConvention;
-				}
-				if (request.reviewWorkflow.baseCommit !== undefined) {
-					reviewRequest.baseCommit = request.reviewWorkflow.baseCommit;
-				}
-				if (request.reviewWorkflow.targetBranch !== undefined) {
-					reviewRequest.targetBranch = request.reviewWorkflow.targetBranch;
-				}
-				const preparation = await vcsProvider.prepareReview(reviewRequest);
-				if (preparation !== undefined) {
-					await request.onReviewPrepared?.(preparation, sandbox);
-				}
-			}
-
 			if (request.kind === "executor") {
 				if (model === undefined || model.trim().length === 0) {
 					throw new Error("A configured executorModel is required for headless Executor launch.");
@@ -205,6 +168,7 @@ function createExecutorStarter(
 					model: string;
 					mission: string;
 					executionId: string;
+					awaitInitialResponse?: boolean;
 					onReady?: (binding: RpcSessionBinding) => Promise<void> | void;
 					onEvent?: (event: unknown, runtime: HeadlessExecutorRuntime) => Promise<void> | void;
 					onFailure?: (error: Error) => Promise<void> | void;
@@ -217,6 +181,9 @@ function createExecutorStarter(
 					mission: request.mission,
 					executionId: request.executionId,
 				};
+				if (request.awaitInitialResponse !== undefined) {
+					runtimeOptions.awaitInitialResponse = request.awaitInitialResponse;
+				}
 				const supervision = getSupervisionController(request.projectPath, request.projectTrusted ?? false);
 				if (request.onRpcEvent !== undefined || supervision !== undefined) {
 					runtimeOptions.onEvent = (event, runtime) => {
@@ -293,6 +260,43 @@ function createExecutorStarter(
 			}
 			if (launched === undefined) {
 				throw new Error("Executor launch did not return a session.");
+			}
+			if (request.reviewWorkflow !== undefined) {
+				const reviewRequest: {
+					sandbox: Sandbox;
+					name: string;
+					workId: string;
+					executionId: string;
+					mission: string;
+					publish: boolean;
+					targetBranch?: string;
+					supersedesPullRequestUrl?: string;
+					commitConvention?: string;
+					baseCommit?: string;
+				} = {
+					sandbox,
+					name: request.name,
+					workId: request.workId,
+					executionId: request.executionId,
+					mission: request.mission,
+					publish: request.reviewWorkflow.publish,
+				};
+				if (request.reviewWorkflow.supersedesPullRequestUrl !== undefined) {
+					reviewRequest.supersedesPullRequestUrl = request.reviewWorkflow.supersedesPullRequestUrl;
+				}
+				if (request.reviewWorkflow.commitConvention !== undefined) {
+					reviewRequest.commitConvention = request.reviewWorkflow.commitConvention;
+				}
+				if (request.reviewWorkflow.baseCommit !== undefined) {
+					reviewRequest.baseCommit = request.reviewWorkflow.baseCommit;
+				}
+				if (request.reviewWorkflow.targetBranch !== undefined) {
+					reviewRequest.targetBranch = request.reviewWorkflow.targetBranch;
+				}
+				const preparation = await vcsProvider.prepareReview(reviewRequest);
+				if (preparation !== undefined) {
+					await request.onReviewPrepared?.(preparation, sandbox);
+				}
 			}
 			const runningLaunch = launched;
 

@@ -19,7 +19,10 @@ import { createZellijLauncher } from "./launch-zellij.js";
 import type { Launcher } from "./launcher.js";
 import { createGitWorktreeProvider } from "./vcs-git-worktree.js";
 
-type ExecutorStarterFactory = (context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) => ExecutorStarter;
+type ExecutorStarterFactory = (
+	context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+	modelOverride?: string,
+) => ExecutorStarter;
 type ObserverViewer = (launcherName: LauncherNameValue, target: string) => Promise<void>;
 type ObserverCloser = (launcherName: LauncherNameValue, target: string) => Promise<void>;
 type LauncherFactory = () => Launcher;
@@ -31,8 +34,11 @@ const LAUNCHER_FACTORIES: Record<LauncherNameValue, LauncherFactory> = {
 };
 
 // Concrete providers are composed here once; Work and UI flows depend only on ExecutorStarterFactory.
-function createConfiguredExecutorStarter(context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ExecutorStarter {
-	return createConfiguredStarter(context, false);
+function createConfiguredExecutorStarter(
+	context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+	modelOverride?: string,
+): ExecutorStarter {
+	return createConfiguredStarter(context, false, modelOverride);
 }
 
 function createConfiguredObserverStarter(context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): ExecutorStarter {
@@ -42,6 +48,7 @@ function createConfiguredObserverStarter(context: Pick<ExtensionContext, "cwd" |
 function createConfiguredStarter(
 	context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
 	observer: boolean,
+	modelOverride?: string,
 ): ExecutorStarter {
 	const config = loadKhalaConfig(context.cwd, context.isProjectTrusted(), !observer);
 	const {
@@ -57,7 +64,7 @@ function createConfiguredStarter(
 		launcher = LAUNCHER_FACTORIES[launcherName]();
 	}
 	let piCommand = configuredPiCommand;
-	let model: string | undefined = executorModel;
+	let model: string | undefined = modelOverride ?? executorModel;
 	let thinkingLevel: string | undefined = executorThinking || undefined;
 	if (observer) {
 		model = observerModel || undefined;

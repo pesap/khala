@@ -23,6 +23,11 @@ User can act on:
   is reported only from these durable terminal or exhausted records, never from
   an Execution failure alone, and never for a Work that already has an accepted
   Work Outcome.
+- Executor model recovery needed — the latest current-Mission Executor failed
+  because its model was unavailable. Selecting the item lets the User choose a
+  different authenticated model. The selection is scoped to that one Mission
+  recovery; run `/khala-recreate` afterward. It does not change global
+  configuration.
 - Khala recovery needed — a failed Conclave submission wake. Selecting the item
   shows the recovery command: `/khala-recreate`, or the setup command when
   configuration is missing.
@@ -34,9 +39,11 @@ The surface keeps one two-level public condition: working (no user action
 required) or action required. Category details explain the review or stopped
 Work behind each action. Retryable and raw Execution failures, headless and
 supervision state, recovery labels, Participant identities, and raw Executor
-rows stay out of the normal surface. Conclave submission-wake recovery and its
-exhaustion are distinct from Executor run recovery; only the durable
-submission-wake evidence is surfaced here.
+rows stay out of the normal surface. A model-unavailable Executor failure is
+surfaced only when it has a current Mission and requires User selection.
+Conclave submission-wake recovery and its exhaustion are distinct from
+Executor run recovery; only durable evidence for an actionable recovery is
+surfaced here.
 
 Running Observers with a focusable pane appear only as a clearly secondary
 read-only selection ("Inspect Observer pane"). The Archive has no durable

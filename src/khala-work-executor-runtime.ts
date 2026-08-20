@@ -11,6 +11,7 @@ import { listVerdictRecords, projectCoordinations } from "./khala-archive-projec
 import { loadKhalaConfig } from "./khala-config.js";
 import { resolveCoordination } from "./khala-coordination.js";
 import { KhalaEntryType } from "./khala-entry-types.js";
+import { formatBoundedDiagnostic } from "./khala-error.js";
 import { updateExecutorRecord } from "./khala-executor-registry.js";
 import {
 	ExecutorStatus,
@@ -21,6 +22,7 @@ import {
 	type RetryHandoff,
 	type UpstreamExecutionBase,
 } from "./khala-model.js";
+import { isModelUnavailableError } from "./khala-model-recovery.js";
 import {
 	latestPullRequest,
 	latestPullRequestForMission,
@@ -211,8 +213,17 @@ function startExecutor(input: {
 		onRpcReady: ({ sessionId, sessionPath }) => {
 			updateExecutorRecord(context.cwd, executionId, { piSessionId: sessionId, sessionPath }, projectTrusted);
 		},
-		onRpcFailure: (_error) => {
-			updateExecutorRecord(context.cwd, executionId, { status: ExecutorStatus.failed }, projectTrusted);
+		onRpcFailure: (error) => {
+			const failure: {
+				status: typeof ExecutorStatus.failed;
+				failureCategory?: "model-unavailable";
+				failureMessage?: string;
+			} = { status: ExecutorStatus.failed };
+			if (isModelUnavailableError(error)) {
+				failure.failureCategory = "model-unavailable";
+				failure.failureMessage = formatBoundedDiagnostic(error);
+			}
+			updateExecutorRecord(context.cwd, executionId, failure, projectTrusted);
 		},
 		reviewWorkflow,
 		onReviewPrepared: (preparation: ReviewPreparation) => {

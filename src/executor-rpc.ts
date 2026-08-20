@@ -49,6 +49,7 @@ type HeadlessRuntimeOptions = Readonly<{
 	onRestart?: (runtime: HeadlessExecutorRuntime) => Promise<void> | void;
 	onEvent?: (event: unknown, runtime: HeadlessExecutorRuntime) => Promise<void> | void;
 	onFailure?: (error: Error) => Promise<void> | void;
+	awaitInitialResponse?: boolean;
 	spawnProcess?: RpcChildFactory;
 }>;
 
@@ -57,6 +58,7 @@ const MAX_CAPTURED_STDERR_BYTES = 64 * 1024;
 
 const KHALA_HEADLESS_LAUNCHER = "headless-rpc";
 const RPC_START_TIMEOUT_MS = 10_000;
+const INITIAL_RESPONSE_WAIT_MS = 25;
 const RPC_SHUTDOWN_TIMEOUT_MS = 1000;
 const headlessRuntimes = new Map<string, HeadlessExecutorRuntime>();
 let headlessRuntimeRevision = 0;
@@ -140,6 +142,8 @@ class HeadlessExecutorRuntime {
 	private eventChain: Promise<void> = Promise.resolve();
 	private eventFailure: Error | undefined;
 	private eventReadyError: Error | undefined;
+	private initialResponseResolve: (() => void) | undefined;
+	private initialResponseReject: ((error: Error) => void) | undefined;
 	private settledSequence = 0;
 	private settledWaitTarget: number | undefined;
 	private readonly settledWaiters = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
@@ -382,7 +386,25 @@ class HeadlessExecutorRuntime {
 				await this.options.onRestart?.(this);
 			} else {
 				await this.options.onReady?.(binding);
+				let initialResponse: Promise<void> | undefined;
+				if (this.options.awaitInitialResponse === true) {
+					initialResponse = new Promise<void>((resolve, reject) => {
+						this.initialResponseResolve = resolve;
+						this.initialResponseReject = reject;
+					});
+				}
 				await this.sendPrompt(this.options.mission);
+				if (initialResponse !== undefined) {
+					try {
+						await Promise.race([
+							initialResponse,
+							new Promise<void>((resolve) => setTimeout(resolve, INITIAL_RESPONSE_WAIT_MS)),
+						]);
+					} finally {
+						this.initialResponseResolve = undefined;
+						this.initialResponseReject = undefined;
+					}
+				}
 			}
 			this.started = true;
 			this.eventReadyResolve?.();
@@ -390,6 +412,9 @@ class HeadlessExecutorRuntime {
 			await this.eventChain;
 			if (this.eventFailure !== undefined) {
 				throw this.eventFailure;
+			}
+			if (this.eventReadyError !== undefined) {
+				throw this.eventReadyError;
 			}
 		} catch (error) {
 			const normalized = normalizeError(error, "Executor RPC startup failed");
@@ -401,6 +426,8 @@ class HeadlessExecutorRuntime {
 			}
 			throw normalized;
 		} finally {
+			this.initialResponseResolve = undefined;
+			this.initialResponseReject = undefined;
 			this.eventReadyResolve?.();
 			this.eventReadyResolve = undefined;
 			this.starting = false;
@@ -487,7 +514,27 @@ class HeadlessExecutorRuntime {
 		if (typeof record !== "object" || record === null || !("type" in record)) {
 			return;
 		}
-		const candidate = record as { type?: unknown; id?: unknown };
+		const candidate = record as { type?: unknown; id?: unknown; message?: unknown };
+		if (candidate.type === "message_end") {
+			const message = candidate.message as { stopReason?: unknown; errorMessage?: unknown } | undefined;
+			if (message?.stopReason === "error") {
+				let errorMessage = "Pi model request failed.";
+				const { errorMessage: responseError } = message;
+				if (typeof responseError === "string" && responseError.length > 0) {
+					errorMessage = responseError;
+				}
+				const error = new Error(errorMessage);
+				this.eventReadyError = error;
+				this.initialResponseReject?.(error);
+				this.initialResponseResolve = undefined;
+				this.initialResponseReject = undefined;
+				this.reportFailure(error);
+			} else {
+				this.initialResponseResolve?.();
+				this.initialResponseResolve = undefined;
+				this.initialResponseReject = undefined;
+			}
+		}
 		if (candidate.type === "agent_settled") {
 			this.settledSequence += 1;
 			const waiter = this.settledWaiters.get(this.settledSequence);
@@ -505,7 +552,19 @@ class HeadlessExecutorRuntime {
 				return;
 			}
 			this.pending.delete(candidate.id);
-			pending.resolve(record as RpcResponse);
+			const response = record as RpcResponse;
+			if (response.command === "prompt" && this.initialResponseResolve !== undefined) {
+				const resolve = this.initialResponseResolve;
+				const reject = this.initialResponseReject;
+				this.initialResponseResolve = undefined;
+				this.initialResponseReject = undefined;
+				if (response.success) {
+					resolve();
+				} else {
+					reject?.(new Error(response.error ?? "Pi rejected the initial prompt."));
+				}
+			}
+			pending.resolve(response);
 			return;
 		}
 		if (this.options.onEvent === undefined) {
@@ -531,9 +590,20 @@ class HeadlessExecutorRuntime {
 			return;
 		}
 		this.child = undefined;
-		const error = new Error("Executor RPC child process exited unexpectedly.");
+		const stderr = this.capturedStderr.toString("utf8").trim();
+		let message = "Executor RPC child process exited unexpectedly.";
+		if (stderr.length > 0) {
+			message = `Executor RPC child process exited unexpectedly: ${stderr}`;
+		}
+		const error = new Error(message);
 		rejectPending(error, this.pending);
-		if (this.closed || !this.started) {
+		if (this.closed) {
+			return;
+		}
+		if (!this.started) {
+			this.eventReadyError = error;
+			this.initialResponseReject?.(error);
+			this.reportFailure(error);
 			return;
 		}
 		this.restartFromSession()

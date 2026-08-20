@@ -1,5 +1,6 @@
 // biome-ignore-all lint/style/noExcessiveLinesPerFile: Conclave runtime wiring keeps lifecycle coordination in one module.
 // biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Recovery ordering remains one auditable runtime transaction.
+// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Recovery selection preserves exact Mission and model fences.
 // biome-ignore-all lint/performance/noAwaitInLoops: Fail-safe shutdown and durable outage closure preserve identity order.
 // biome-ignore-all lint/style/noTernary: Optional identity fields stay explicit at lifecycle boundaries.
 // biome-ignore-all lint/complexity/useOptionalChain: Recovery availability is intentionally fail-closed.
@@ -53,6 +54,11 @@ import {
 	type VerdictRecord,
 	type WorkSubmissionRequest,
 } from "./khala-model.js";
+import {
+	isModelUnavailableError,
+	markUserExecutorModelRecoveryApplied,
+	selectedUserExecutorModelRecovery,
+} from "./khala-model-recovery.js";
 import { randomProtossName } from "./khala-names.js";
 import { resolvePackageRoot } from "./khala-package.js";
 import { latestPullRequest, recordReviewPreparation } from "./khala-review.js";
@@ -1162,12 +1168,13 @@ async function initializeRuntime(
 				throw new Error("Executor recovery lacks its persisted Pi session binding.");
 			}
 			const [command, ...commandArgs] = config.piCommand;
+			const recoveryModel = execution.model ?? config.executorModel;
 			return recoverHeadlessExecutor({
 				executionId: execution.executionId,
 				sessionId: execution.piSessionId,
 				sessionPath: execution.sessionPath,
 				cwd: execution.sandboxPath,
-				model: config.executorModel,
+				model: recoveryModel,
 				mission: `Resume immutable Mission ${mission.missionId} for Work ${mission.workId}.`,
 				command,
 				args: [
@@ -1210,7 +1217,17 @@ async function initializeRuntime(
 						runtime,
 					),
 				onFailure: (error) => {
-					updateExecutorRecord(projectPath, execution.executionId, { status: ExecutorStatus.failed }, projectTrusted);
+					updateExecutorRecord(
+						projectPath,
+						execution.executionId,
+						{
+							status: ExecutorStatus.failed,
+							...(isModelUnavailableError(error)
+								? { failureCategory: "model-unavailable", failureMessage: formatBoundedDiagnostic(error) }
+								: {}),
+						},
+						projectTrusted,
+					);
 					throw error;
 				},
 			});
@@ -1234,6 +1251,19 @@ async function initializeRuntime(
 			supervision?.resumeAfterOutage();
 		},
 		onExecutorRecoveryFailure: async (execution, mission) => {
+			let selectedModelRecovery: ReturnType<typeof selectedUserExecutorModelRecovery>;
+			if (execution.failureCategory === "model-unavailable") {
+				selectedModelRecovery = selectedUserExecutorModelRecovery({
+					projectPath,
+					workId: execution.workId,
+					missionId: mission.missionId,
+					predecessorExecutionId: execution.executionId,
+					projectTrusted,
+				});
+				if (selectedModelRecovery === undefined) {
+					return;
+				}
+			}
 			const pending: PendingRecoveryLaunch = {
 				workId: execution.workId,
 				missionId: mission.missionId,
@@ -1245,7 +1275,7 @@ async function initializeRuntime(
 						projectTrusted,
 						failedExecution: execution,
 						mission,
-						executorModel: config.executorModel,
+						executorModel: selectedModelRecovery?.model ?? config.executorModel,
 						executorSystemPrompt: readRolePrompt(
 							resolvePackageRoot(dirname(fileURLToPath(import.meta.url))),
 							"executor",
@@ -1254,10 +1284,21 @@ async function initializeRuntime(
 						isSupervisionAvailable: () => recoveryLaunchAvailable(pending),
 						onLaunchFailure: (failure) =>
 							session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, failure),
+						onLaunchSuccess: (replacementExecutionId) => {
+							if (selectedModelRecovery !== undefined) {
+								markUserExecutorModelRecoveryApplied(
+									projectPath,
+									selectedModelRecovery,
+									replacementExecutionId,
+									projectTrusted,
+								);
+							}
+						},
 					}),
 			};
 			if (recoveryLaunchAvailable(pending)) {
-				if (!(await pending.launch()) && recoveryPendingEligible(pending)) {
+				const launched = await pending.launch();
+				if (!launched && recoveryPendingEligible(pending)) {
 					pendingRecoveryLaunches.push(pending);
 				}
 			} else if (recoveryPendingEligible(pending)) {
@@ -1312,6 +1353,7 @@ async function startFreshSameMissionExecution(
 		supervision: SupervisionController | undefined;
 		isSupervisionAvailable?: () => boolean;
 		onLaunchFailure?: (failure: FreshRecoveryLaunchFailure) => void;
+		onLaunchSuccess?: (executionId: string) => void;
 	}>,
 ): Promise<boolean> {
 	if (input.supervision === undefined || input.executorModel.trim().length === 0) {
@@ -1366,6 +1408,8 @@ async function startFreshSameMissionExecution(
 					projectPath: input.projectPath,
 					sandboxPath: "",
 					launcher: "pending",
+					model: input.executorModel,
+					recoveryOfExecutionId: input.failedExecution.executionId,
 					promptIdentity,
 					...(input.failedExecution.upstreamBase === undefined
 						? {}
@@ -1384,6 +1428,10 @@ async function startFreshSameMissionExecution(
 	let runtimeOwnerRegistered = false;
 	let staleAuthority = false;
 	let failureReported = false;
+	let rpcFailureObserved = false;
+	let rpcFailureError: Error | undefined;
+	let starterReturned = false;
+	let runtimeFailureScheduled = false;
 	const reportFreshRecoveryFailure = (error: unknown): void => {
 		if (staleAuthority || failureReported) {
 			return;
@@ -1402,6 +1450,30 @@ async function startFreshSameMissionExecution(
 			// Session reporting cannot replace the authoritative failed Execution.
 		}
 	};
+	const finishRuntimeFailure = (error: Error): Promise<void> =>
+		supervision
+			.closeRuntimeOwner(executionId)
+			.catch(() => undefined)
+			.then(() => {
+				try {
+					staleAuthority = !isCurrentMissionAuthority(input.projectPath, input.projectTrusted, input.mission);
+				} catch {
+					// Preserve the RPC failure diagnostic when authority cannot be re-read.
+					staleAuthority = false;
+				}
+				if (!staleAuthority) {
+					reportFreshRecoveryFailure(error);
+				}
+			});
+	const scheduleRuntimeFailure = (error: Error): void => {
+		if (runtimeFailureScheduled) {
+			return;
+		}
+		runtimeFailureScheduled = true;
+		setImmediate(() => {
+			finishRuntimeFailure(error).catch(() => undefined);
+		});
+	};
 	try {
 		input.supervision.registerExecution(input.mission, executionId);
 		const recoveryConfig = loadKhalaConfig(input.projectPath, input.projectTrusted);
@@ -1410,10 +1482,13 @@ async function startFreshSameMissionExecution(
 			input.failedExecution.executionId,
 			input.projectTrusted,
 		);
-		const starter = createConfiguredExecutorStarter({
-			cwd: input.projectPath,
-			isProjectTrusted: () => input.projectTrusted,
-		});
+		const starter = createConfiguredExecutorStarter(
+			{
+				cwd: input.projectPath,
+				isProjectTrusted: () => input.projectTrusted,
+			},
+			input.executorModel,
+		);
 		launched = await starter({
 			projectPath: input.projectPath,
 			workId: input.mission.workId,
@@ -1426,6 +1501,7 @@ async function startFreshSameMissionExecution(
 			participantId,
 			projectTrusted: input.projectTrusted,
 			kind: "executor",
+			awaitInitialResponse: true,
 			suppressRuntimeFailureSupervision: true,
 			reviewWorkflow: {
 				publish: true,
@@ -1467,24 +1543,33 @@ async function startFreshSameMissionExecution(
 					input.projectTrusted,
 				);
 			},
-			onRpcFailure: (error) => {
-				try {
-					staleAuthority = !isCurrentMissionAuthority(input.projectPath, input.projectTrusted, input.mission);
-				} catch {
-					// Preserve the RPC failure diagnostic when authority cannot be re-read.
-					staleAuthority = false;
+			onRpcFailure: (error): Promise<void> | void => {
+				rpcFailureObserved = true;
+				rpcFailureError = error;
+				updateExecutorRecord(
+					input.projectPath,
+					executionId,
+					{
+						status: ExecutorStatus.failed,
+						...(isModelUnavailableError(error)
+							? { failureCategory: "model-unavailable", failureMessage: formatBoundedDiagnostic(error) }
+							: {}),
+					},
+					input.projectTrusted,
+				);
+				if (starterReturned) {
+					scheduleRuntimeFailure(error);
 				}
-				updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
-				reportFreshRecoveryFailure(error);
-				return supervision.closeRuntimeOwner(executionId).catch(() => undefined);
 			},
 		});
-		if (failureReported) {
-			throw new Error("Fresh recovery RPC failed during startup.");
-		}
+		starterReturned = true;
 		if (launched.cleanup !== undefined) {
 			input.supervision.registerRuntimeOwner(executionId, launched.cleanup);
 			runtimeOwnerRegistered = true;
+		}
+		if (rpcFailureObserved && rpcFailureError !== undefined) {
+			scheduleRuntimeFailure(rpcFailureError);
+			return true;
 		}
 		if (input.isSupervisionAvailable?.() === false) {
 			throw new Error("Supervision became unavailable after fresh recovery registration.");
@@ -1494,10 +1579,21 @@ async function startFreshSameMissionExecution(
 			throw new Error("Fresh recovery Mission was superseded during startup.");
 		}
 		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.running }, input.projectTrusted);
+		input.onLaunchSuccess?.(executionId);
 		return true;
 	} catch (error) {
 		await cleanupFreshRecoveryResources(input.supervision, executionId, launched, runtimeOwnerRegistered);
-		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.failed }, input.projectTrusted);
+		updateExecutorRecord(
+			input.projectPath,
+			executionId,
+			{
+				status: ExecutorStatus.failed,
+				...(isModelUnavailableError(error)
+					? { failureCategory: "model-unavailable", failureMessage: formatBoundedDiagnostic(error) }
+					: {}),
+			},
+			input.projectTrusted,
+		);
 		if (!staleAuthority) {
 			reportFreshRecoveryFailure(error);
 		}
