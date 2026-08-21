@@ -26,7 +26,9 @@ type ArchiveRecordType =
 	| "intervention"
 	| "user-priority"
 	| "user-priority-enforcement"
-	| "user-model-recovery";
+	| "user-model-recovery"
+	| "user-worker-action"
+	| "attention-dismissal";
 
 type KhalaArchiveRecord = Readonly<{
 	recordId: string;
@@ -266,6 +268,42 @@ type UserModelRecoveryRecord = Readonly<{
 	replacementExecutionId?: string;
 	requestedAt: string;
 	appliedAt?: string;
+}>;
+
+type UserWorkerActionKind = "try-current-execution" | "continue-current-mission" | "stop-current-execution";
+type UserWorkerActionRequest = Readonly<{
+	phase: "request";
+	actionId: string;
+	kind: UserWorkerActionKind;
+	conditionId: string;
+	workId: string;
+	expectedMissionId: string;
+	expectedExecutionId?: string;
+	model?: string;
+	requestedAt: string;
+}>;
+type UserWorkerActionOutcome = Readonly<{
+	phase: "outcome";
+	actionId: string;
+	kind: UserWorkerActionKind;
+	conditionId: string;
+	workId: string;
+	requestRecordId: string;
+	status: "applied" | "rejected" | "failed";
+	missionId?: string;
+	executionId?: string;
+	predecessorExecutionId?: string;
+	reason?: string;
+	recordedAt: string;
+}>;
+type UserWorkerActionRecord = UserWorkerActionRequest | UserWorkerActionOutcome;
+
+type AttentionDismissalRecord = Readonly<{
+	dismissalId: string;
+	conditionId: string;
+	workId?: string;
+	kind: string;
+	dismissedAt: string;
 }>;
 
 // --- Signals (payload: "signal") --------------------------------------------
@@ -806,6 +844,12 @@ type GuardRecord = Record<string, unknown> &
 		requestedAt?: unknown;
 		replacementExecutionId?: unknown;
 		appliedAt?: unknown;
+		conditionId?: unknown;
+		expectedMissionId?: unknown;
+		expectedExecutionId?: unknown;
+		requestRecordId?: unknown;
+		dismissalId?: unknown;
+		dismissedAt?: unknown;
 	}>;
 
 function isStringArray(value: unknown): value is readonly string[] {
@@ -837,8 +881,11 @@ function isArchiveRecordType(value: unknown): value is ArchiveRecordType {
 		value === "work-outcome" ||
 		value === "user-priority" ||
 		value === "user-priority-enforcement" ||
+		value === "user-model-recovery" ||
 		value === "coordination" ||
-		value === "intervention"
+		value === "intervention" ||
+		value === "user-worker-action" ||
+		value === "attention-dismissal"
 	);
 }
 
@@ -892,7 +939,9 @@ function isImplicitV2ArchiveRecordType(type: ArchiveRecordType): boolean {
 		type === "work-outcome" ||
 		type === "user-priority" ||
 		type === "user-priority-enforcement" ||
-		type === "user-model-recovery"
+		type === "user-model-recovery" ||
+		type === "user-worker-action" ||
+		type === "attention-dismissal"
 	);
 }
 
@@ -937,6 +986,8 @@ const archivePayloadV2Guards: Partial<Record<ArchiveRecordType, ArchivePayloadGu
 	"user-priority": isUserPriorityRecord,
 	"user-priority-enforcement": isUserPriorityEnforcementRecord,
 	"user-model-recovery": isUserModelRecoveryRecord,
+	"user-worker-action": isUserWorkerActionRecord,
+	"attention-dismissal": isAttentionDismissalRecord,
 };
 
 function isArchivePayloadV2(type: ArchiveRecordType, payload: unknown): boolean {
@@ -1333,6 +1384,66 @@ function isUserModelRecoveryRecord(value: unknown): value is UserModelRecoveryRe
 		(record.replacementExecutionId === undefined || isNonEmptyString(record.replacementExecutionId)) &&
 		isNonEmptyString(record.requestedAt) &&
 		(record.appliedAt === undefined || isNonEmptyString(record.appliedAt))
+	);
+}
+
+function isUserWorkerActionKind(value: unknown): value is UserWorkerActionKind {
+	return (
+		value === "try-current-execution" || value === "continue-current-mission" || value === "stop-current-execution"
+	);
+}
+
+function isUserWorkerActionRecord(value: unknown): value is UserWorkerActionRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	const common =
+		isNonEmptyString(record.actionId) &&
+		isUserWorkerActionKind(record.kind) &&
+		isNonEmptyString(record.conditionId) &&
+		isNonEmptyString(record.workId);
+	if (!common) {
+		return false;
+	}
+	if (record.phase === "request") {
+		return (
+			isNonEmptyString(record.expectedMissionId) &&
+			(record.expectedExecutionId === undefined || isNonEmptyString(record.expectedExecutionId)) &&
+			(record.model === undefined || isNonEmptyString(record.model)) &&
+			isNonEmptyString(record.requestedAt) &&
+			record.requestRecordId === undefined &&
+			record.status === undefined &&
+			record.recordedAt === undefined
+		);
+	}
+	return (
+		record.phase === "outcome" &&
+		isNonEmptyString(record.requestRecordId) &&
+		(record.status === "applied" || record.status === "rejected" || record.status === "failed") &&
+		(record.missionId === undefined || isNonEmptyString(record.missionId)) &&
+		(record.executionId === undefined || isNonEmptyString(record.executionId)) &&
+		(record.predecessorExecutionId === undefined || isNonEmptyString(record.predecessorExecutionId)) &&
+		(record.reason === undefined || isNonEmptyString(record.reason)) &&
+		isNonEmptyString(record.recordedAt) &&
+		record.expectedMissionId === undefined &&
+		record.expectedExecutionId === undefined &&
+		record.model === undefined &&
+		record.requestedAt === undefined
+	);
+}
+
+function isAttentionDismissalRecord(value: unknown): value is AttentionDismissalRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as GuardRecord;
+	return (
+		isNonEmptyString(record.dismissalId) &&
+		isNonEmptyString(record.conditionId) &&
+		(record.workId === undefined || isNonEmptyString(record.workId)) &&
+		isNonEmptyString(record.kind) &&
+		isNonEmptyString(record.dismissedAt)
 	);
 }
 
@@ -2229,6 +2340,11 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 	const submissionRecordWorkIds = new Map<string, string>();
 	const wakeIds = new Set<string>();
 	const recoveryIds = new Set<string>();
+	const workerActions = new Map<
+		string,
+		{ requestRecordId: string; request: UserWorkerActionRequest; outcome: boolean }
+	>();
+	const dismissalIds = new Set<string>();
 	const recoveryClaims = new Map<
 		string,
 		{ submissionRecordId: string; workId: string; ownerId: string; attempt: number; leaseExpiresAt: string }
@@ -2264,6 +2380,41 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 			}
 			submissionWorkIds.add(record.workId);
 			submissionRecordWorkIds.set(record.recordId, record.workId);
+		}
+		if (record.type === "user-worker-action" && isUserWorkerActionRecord(record.payload)) {
+			const action = record.payload;
+			if (action.workId !== record.workId) {
+				throw new Error(`User Worker action ${action.actionId} has inconsistent Archive bindings.`);
+			}
+			if (action.phase === "request") {
+				if (workerActions.has(action.actionId)) {
+					throw new Error(`User Worker action ${action.actionId} has duplicate requests.`);
+				}
+				workerActions.set(action.actionId, { requestRecordId: record.recordId, request: action, outcome: false });
+			} else {
+				const request = workerActions.get(action.actionId);
+				if (
+					request === undefined ||
+					action.requestRecordId !== request.requestRecordId ||
+					request.outcome ||
+					action.kind !== request.request.kind ||
+					action.conditionId !== request.request.conditionId ||
+					action.workId !== request.request.workId
+				) {
+					throw new Error(`User Worker action ${action.actionId} has an invalid outcome sequence.`);
+				}
+				request.outcome = true;
+			}
+		}
+		if (record.type === "attention-dismissal" && isAttentionDismissalRecord(record.payload)) {
+			const dismissal = record.payload;
+			if (dismissal.workId !== undefined && dismissal.workId !== record.workId) {
+				throw new Error(`Attention dismissal ${dismissal.dismissalId} has inconsistent Archive bindings.`);
+			}
+			if (dismissalIds.has(dismissal.dismissalId)) {
+				throw new Error(`Attention dismissal ${dismissal.dismissalId} is duplicated.`);
+			}
+			dismissalIds.add(dismissal.dismissalId);
 		}
 		if (record.type === "conclave-recovery" && isConclaveRecoveryRecord(record.payload)) {
 			const recovery = record.payload;
@@ -2761,6 +2912,7 @@ function validateArchiveReplay(records: readonly KhalaArchiveRecord[]): void {
 export type {
 	ArchiveRecordType,
 	ArchiveSchemaVersion,
+	AttentionDismissalRecord,
 	ConclaveRecoveryClaimRecord,
 	ConclaveRecoveryExhaustedRecord,
 	ConclaveRecoveryRecord,
@@ -2810,6 +2962,10 @@ export type {
 	UserPriorityProvenance,
 	UserPriorityRecord,
 	UserPriorityStatusValue,
+	UserWorkerActionKind,
+	UserWorkerActionOutcome,
+	UserWorkerActionRecord,
+	UserWorkerActionRequest,
 	VerdictDecision,
 	VerdictDeliveryRecord,
 	VerdictDeliveryStatusValue,
@@ -2827,6 +2983,7 @@ export {
 	EXECUTION_SCHEMA_VERSION,
 	ExecutorStatus,
 	isArchiveRecord,
+	isAttentionDismissalRecord,
 	isConclaveRecoveryRecord,
 	isConclaveWakeRecord,
 	isCoordinationClassification,
@@ -2848,6 +3005,7 @@ export {
 	isUserModelRecoveryRecord,
 	isUserPriorityEnforcementRecord,
 	isUserPriorityRecord,
+	isUserWorkerActionRecord,
 	isV2ExecutorRecord,
 	isV2Signal,
 	isV2Verdict,

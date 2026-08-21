@@ -14,7 +14,7 @@ A successful Work submission acknowledgement means the queued submission is
 durable even when its independently scheduled wake later fails. Signal or review
 evidence may likewise already be durable when a wake reports an error. Keep the
 same Work ID, read the Archive, and inspect the monitor. Follow the returned
-setup or `/khala-recreate` guidance; never start a replacement agent from a
+setup or `/khala-recover` guidance; never start a replacement agent from a
 shell or another delegation tool.
 
 ## Observer or Executor launch fails

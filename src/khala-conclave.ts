@@ -19,8 +19,10 @@ import {
 import { nanoid } from "nanoid";
 import packageMetadata from "../package.json" with { type: "json" };
 import { buildPiArguments, disposeHeadlessRuntimes, getHeadlessRuntime, recoverHeadlessExecutor } from "./executor.js";
+import type { ExecutionRuntimeState } from "./executor-rpc.js";
 import { listArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import {
+	activeCoordinationHolds,
 	isUserPriorityEnforced,
 	listSignalRecords,
 	pendingUserPriorities,
@@ -77,6 +79,12 @@ import {
 	UpstreamRefPoller,
 } from "./khala-supervision-recovery.js";
 import { isSupportedThinkingLevel } from "./khala-thinking.js";
+import {
+	executeUserWorkerAction,
+	type SameMissionRecoveryResult,
+	type UserWorkerActionRequestInput,
+	type UserWorkerActionResult,
+} from "./khala-user-worker-action.js";
 import { deliverVerdict as persistVerdictDelivery } from "./khala-verdict-delivery.js";
 import { recoverTerminalExecutionStates } from "./khala-verdict-recovery.js";
 
@@ -125,6 +133,16 @@ type ConclaveCoordinator = Readonly<{
 		projectTrusted?: boolean,
 	) => Promise<void>;
 	deliverVerdict: (projectPath: string, verdict: VerdictRecord, projectTrusted?: boolean) => Promise<void>;
+	executeWorkerAction: (
+		projectPath: string,
+		request: UserWorkerActionRequestInput,
+		projectTrusted?: boolean,
+	) => Promise<UserWorkerActionResult>;
+	probeExecutionRuntime: (
+		projectPath: string,
+		executionId: string,
+		projectTrusted?: boolean,
+	) => Promise<ExecutionRuntimeState>;
 	getSubmission: ConclaveStorage["getSubmission"];
 	getPendingSubmission: ConclaveStorage["getPendingSubmission"];
 	claimSubmission: ConclaveStorage["claimSubmission"];
@@ -197,7 +215,7 @@ function createConclaveCoordinator(
 	): Promise<{ archivePath: string }> => {
 		if (disposed) {
 			return Promise.reject(
-				new Error("The Khala Conclave coordinator has been disposed; run /khala-recreate to recover it."),
+				new Error("The Khala Conclave coordinator has been disposed; run /khala-recover to recover it."),
 			);
 		}
 		request.signal?.throwIfAborted();
@@ -294,6 +312,112 @@ function createConclaveCoordinator(
 			sendConfiguredExecutorMessage(executor, message),
 		);
 	};
+	const executeWorkerAction = (
+		projectPath: string,
+		request: UserWorkerActionRequestInput,
+		projectTrusted = false,
+	): Promise<UserWorkerActionResult> => {
+		const resolvedProjectPath = resolve(projectPath);
+		return executeUserWorkerAction({
+			...request,
+			projectPath: resolvedProjectPath,
+			projectTrusted,
+			services: {
+				getRuntime: async (executionId) => {
+					let runtime: ReturnType<typeof getHeadlessRuntime>;
+					try {
+						await getRuntime(resolvedProjectPath, projectTrusted, extensionPath, storage, runtimes);
+						runtime = getHeadlessRuntime(executionId);
+					} catch {
+						// The action boundary reports the missing runtime as unreachable.
+					}
+					return runtime;
+				},
+				continueMission: async (input) => {
+					let runtime: ConclaveRuntime;
+					try {
+						runtime = await getRuntime(resolvedProjectPath, projectTrusted, extensionPath, storage, runtimes);
+					} catch (error) {
+						return {
+							status: "held",
+							missionId: input.mission.missionId,
+							reason: formatError(error),
+						};
+					}
+					const config = loadKhalaConfig(resolvedProjectPath, projectTrusted);
+					const executorModel = input.model ?? config.executorModel;
+					const selectedRecovery =
+						input.model === undefined
+							? undefined
+							: selectedUserExecutorModelRecovery({
+									projectPath: resolvedProjectPath,
+									workId: input.failedExecution.workId,
+									missionId: input.mission.missionId,
+									predecessorExecutionId: input.failedExecution.executionId,
+									projectTrusted,
+								});
+					return startFreshSameMissionExecution({
+						projectPath: resolvedProjectPath,
+						projectTrusted,
+						failedExecution: input.failedExecution,
+						mission: input.mission,
+						executorModel,
+						executorSystemPrompt: readRolePrompt(
+							resolvePackageRoot(dirname(fileURLToPath(import.meta.url))),
+							"executor",
+						),
+						supervision: runtime.supervision,
+						isSupervisionAvailable: () => !runtime.isLaunchBlocked(input.mission.workId),
+						onLaunchFailure: (failure) =>
+							runtime.session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, failure),
+						onLaunchSuccess: (replacementExecutionId) => {
+							if (selectedRecovery !== undefined) {
+								markUserExecutorModelRecoveryApplied(
+									resolvedProjectPath,
+									selectedRecovery,
+									replacementExecutionId,
+									projectTrusted,
+								);
+							}
+						},
+					});
+				},
+				failExecution: async (executionId) => {
+					const runtime = getHeadlessRuntime(executionId);
+					await failExecutionAndCloseInterventions(
+						resolvedProjectPath,
+						executionId,
+						projectTrusted,
+						runtime === undefined ? undefined : () => runtime.closeProcess(),
+					);
+				},
+			},
+		});
+	};
+	const probeExecutionRuntime = (
+		_projectPath: string,
+		executionId: string,
+		_projectTrusted = false,
+	): Promise<ExecutionRuntimeState> => {
+		// Attention probing is read-only: never bootstrap a Conclave session just to inspect a Work.
+		try {
+			const runtime = getHeadlessRuntime(executionId);
+			if (runtime === undefined) {
+				return Promise.resolve({
+					kind: "unreachable",
+					executionId,
+					reason: "The supervised runtime is not reachable.",
+				});
+			}
+			return runtime.probeRuntime().catch((error: unknown) => ({
+				kind: "unknown",
+				executionId,
+				reason: formatError(error),
+			}));
+		} catch (error) {
+			return Promise.resolve({ kind: "unknown", executionId, reason: formatError(error) });
+		}
+	};
 	const wakeLearning = (projectPath: string, learning: LearningRecord, projectTrusted = false): Promise<void> => {
 		storage.markSubmissionQueued(resolve(projectPath), learning.workId, learning.executionId, projectTrusted);
 		return wakeConclave({
@@ -366,6 +490,8 @@ function createConclaveCoordinator(
 		wakeReview,
 		wakeUserPriority,
 		deliverVerdict,
+		executeWorkerAction,
+		probeExecutionRuntime,
 		getSubmission: storage.getSubmission,
 		getPendingSubmission: storage.getPendingSubmission,
 		claimSubmission: storage.claimSubmission,
@@ -444,7 +570,7 @@ function conclaveWakeRecovery(error: unknown): ConclaveWakeRecovery {
 
 function assertConclaveCoordinatorActive(request: WakeRequest): void {
 	if (request.disposed?.() === true) {
-		throw new Error("The Khala Conclave coordinator has been disposed; run /khala-recreate to recover it.");
+		throw new Error("The Khala Conclave coordinator has been disposed; run /khala-recover to recover it.");
 	}
 }
 
@@ -969,7 +1095,7 @@ async function initializeRuntime(
 	type PendingRecoveryLaunch = PendingRecoveryIdentity &
 		Readonly<{
 			upstreamBase?: ExecutorRecord["upstreamBase"];
-			launch: () => Promise<boolean>;
+			launch: () => Promise<SameMissionRecoveryResult>;
 		}>;
 	const pendingRecoveryLaunches: PendingRecoveryLaunch[] = [];
 	const recoveryPendingEligible = (pending: PendingRecoveryLaunch): boolean =>
@@ -1006,7 +1132,8 @@ async function initializeRuntime(
 			return;
 		}
 		pendingRecoveryLaunches.splice(index, 1);
-		if (!(await pending.launch()) && recoveryPendingEligible(pending)) {
+		const result = await pending.launch();
+		if (result.status !== "started" && result.status !== "already-active" && recoveryPendingEligible(pending)) {
 			pendingRecoveryLaunches.push(pending);
 		}
 	};
@@ -1297,8 +1424,8 @@ async function initializeRuntime(
 					}),
 			};
 			if (recoveryLaunchAvailable(pending)) {
-				const launched = await pending.launch();
-				if (!launched && recoveryPendingEligible(pending)) {
+				const result = await pending.launch();
+				if (result.status !== "started" && result.status !== "already-active" && recoveryPendingEligible(pending)) {
 					pendingRecoveryLaunches.push(pending);
 				}
 			} else if (recoveryPendingEligible(pending)) {
@@ -1355,12 +1482,15 @@ async function startFreshSameMissionExecution(
 		onLaunchFailure?: (failure: FreshRecoveryLaunchFailure) => void;
 		onLaunchSuccess?: (executionId: string) => void;
 	}>,
-): Promise<boolean> {
-	if (input.supervision === undefined || input.executorModel.trim().length === 0) {
-		return false;
+): Promise<SameMissionRecoveryResult> {
+	if (input.supervision === undefined) {
+		return { status: "not-allowed", reason: "Supervision is unavailable for same-Mission recovery." };
+	}
+	if (input.executorModel.trim().length === 0) {
+		return { status: "not-allowed", reason: "No Executor model is available for same-Mission recovery." };
 	}
 	if (input.isSupervisionAvailable?.() === false) {
-		return false;
+		return { status: "held", missionId: input.mission.missionId, reason: "Supervision recovery is currently held." };
 	}
 	const { supervision } = input;
 	const executionId = nanoid();
@@ -1373,9 +1503,22 @@ async function startFreshSameMissionExecution(
 		promptSha256: createHash("sha256").update(input.executorSystemPrompt).digest("hex"),
 	};
 	let registered = false;
+	let preflightResult: SameMissionRecoveryResult | undefined;
 	withArchiveLock(input.projectPath, input.projectTrusted, () => {
 		const currentMission = readCurrentMission(input.projectPath, input.mission.workId, input.projectTrusted);
 		if (currentMission?.state !== "current" || currentMission.mission.missionId !== input.mission.missionId) {
+			preflightResult = { status: "stale", reason: "The Mission is no longer current." };
+			return;
+		}
+		const hold = activeCoordinationHolds(input.projectPath, input.projectTrusted).find(
+			(candidate) => candidate.workId === input.mission.workId && candidate.missionId === input.mission.missionId,
+		);
+		if (hold !== undefined) {
+			preflightResult = {
+				status: "held",
+				missionId: input.mission.missionId,
+				reason: hold.coordination.latest.reason,
+			};
 			return;
 		}
 		const eligibleRecovery = listEligibleFailedExecutorRecoveries(input.projectPath, input.projectTrusted).some(
@@ -1383,9 +1526,6 @@ async function startFreshSameMissionExecution(
 				candidate.mission.missionId === input.mission.missionId &&
 				candidate.execution.executionId === input.failedExecution.executionId,
 		);
-		if (!eligibleRecovery) {
-			return;
-		}
 		const competing = listExecutorRecords(input.projectPath, input.projectTrusted).find(
 			(candidate) =>
 				isMissionExecutorRecord(candidate) &&
@@ -1393,6 +1533,15 @@ async function startFreshSameMissionExecution(
 				(candidate.status === ExecutorStatus.starting || candidate.status === ExecutorStatus.running),
 		);
 		if (competing !== undefined) {
+			preflightResult = {
+				status: "already-active",
+				missionId: input.mission.missionId,
+				executionId: competing.executionId,
+			};
+			return;
+		}
+		if (!eligibleRecovery) {
+			preflightResult = { status: "stale", reason: "The predecessor Execution is no longer eligible for recovery." };
 			return;
 		}
 		writeExecutorRecord(
@@ -1421,8 +1570,11 @@ async function startFreshSameMissionExecution(
 		);
 		registered = true;
 	});
+	if (preflightResult !== undefined) {
+		return preflightResult;
+	}
 	if (!registered) {
-		return false;
+		return { status: "stale", reason: "The same-Mission recovery reservation was not created." };
 	}
 	let launched: { cleanup?: () => Promise<void> } | undefined;
 	let runtimeOwnerRegistered = false;
@@ -1569,7 +1721,13 @@ async function startFreshSameMissionExecution(
 		}
 		if (rpcFailureObserved && rpcFailureError !== undefined) {
 			scheduleRuntimeFailure(rpcFailureError);
-			return true;
+			return {
+				status: "launch-failed",
+				missionId: input.mission.missionId,
+				executionId,
+				predecessorExecutionId: input.failedExecution.executionId,
+				reason: formatBoundedDiagnostic(rpcFailureError),
+			};
 		}
 		if (input.isSupervisionAvailable?.() === false) {
 			throw new Error("Supervision became unavailable after fresh recovery registration.");
@@ -1580,7 +1738,12 @@ async function startFreshSameMissionExecution(
 		}
 		updateExecutorRecord(input.projectPath, executionId, { status: ExecutorStatus.running }, input.projectTrusted);
 		input.onLaunchSuccess?.(executionId);
-		return true;
+		return {
+			status: "started",
+			missionId: input.mission.missionId,
+			executionId,
+			predecessorExecutionId: input.failedExecution.executionId,
+		};
 	} catch (error) {
 		await cleanupFreshRecoveryResources(input.supervision, executionId, launched, runtimeOwnerRegistered);
 		updateExecutorRecord(
@@ -1597,7 +1760,16 @@ async function startFreshSameMissionExecution(
 		if (!staleAuthority) {
 			reportFreshRecoveryFailure(error);
 		}
-		return false;
+		if (staleAuthority) {
+			return { status: "stale", reason: "The Mission changed during same-Mission recovery startup." };
+		}
+		return {
+			status: "launch-failed",
+			missionId: input.mission.missionId,
+			executionId,
+			predecessorExecutionId: input.failedExecution.executionId,
+			reason: formatBoundedDiagnostic(error),
+		};
 	}
 }
 

@@ -291,7 +291,7 @@ async function recordPullRequestReview(input: PullRequestReviewInput, context: E
 	}
 	let text = `Pull Request ${record.pullRequestId} recorded as ${record.status}.`;
 	if (wakeError !== undefined) {
-		text += ` Conclave wake failed: ${wakeError}. Recovery is available with /khala-recreate.`;
+		text += ` Conclave wake failed: ${wakeError}. Recovery is available with /khala-recover.`;
 	}
 	return {
 		content: [{ type: "text" as const, text }],

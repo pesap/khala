@@ -409,13 +409,13 @@ test("launched Executor and Observer sessions activate role tools on first start
 });
 
 test("Conclave recreation reports setup before scheduling recovery", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-recreate-config-"));
+	const root = mkdtempSync(join(tmpdir(), "khala-recover-config-"));
 	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 	try {
 		const commands = new Map();
 		const notifications = [];
 		createExtension(createPiStub(commands));
-		await commands.get("khala-recreate").handler("", {
+		await commands.get("khala-recover").handler("", {
 			cwd: join(root, "project"),
 			isProjectTrusted: () => false,
 			sessionManager: { getSessionFile: () => undefined },

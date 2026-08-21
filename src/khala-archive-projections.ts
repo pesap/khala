@@ -51,6 +51,7 @@ type ArchiveSnapshot = Readonly<{
 	listPullRequests: () => PullRequestRecord[];
 	listSubmissions: () => KhalaWorkSubmission[];
 	listCoordinations: () => CoordinationRecord[];
+	activeCoordinationHolds: () => CoordinationHold[];
 	listInterventions: () => (InterventionIssuanceRecord | InterventionOutcomeRecord)[];
 	missions: () => MissionProjection[];
 }>;
@@ -89,6 +90,7 @@ function createArchiveSnapshot(projectPath: string, projectTrusted = false): Arc
 		listPullRequests: () => projectRecordsFromRecords(records, "pull-request", isPullRequestRecord),
 		listSubmissions: () => projectRecordsFromRecords(records, "submission", isWorkSubmission),
 		listCoordinations: () => projectRecordsFromRecords(records, "coordination", isCoordinationRecord),
+		activeCoordinationHolds: () => activeCoordinationHoldsFromRecords(records),
 		listInterventions: () => projectRecordsFromRecords(records, "intervention", isInterventionRecord),
 		missions: () => projectMissionsFromRecords(records),
 	};
@@ -319,8 +321,11 @@ function upstreamBaseKey(workId: string, missionId: string, executionId: string,
 }
 
 function activeCoordinationHolds(projectPath: string, projectTrusted = false): CoordinationHold[] {
+	return activeCoordinationHoldsFromRecords(listArchiveRecords(projectPath, projectTrusted));
+}
+
+function activeCoordinationHoldsFromRecords(records: readonly KhalaArchiveRecord[]): CoordinationHold[] {
 	const holds: CoordinationHold[] = [];
-	const records = listArchiveRecords(projectPath, projectTrusted);
 	const missions = projectMissionsFromRecords(records);
 	for (const coordination of projectCoordinationsFromRecords(records)) {
 		const { latest } = coordination;

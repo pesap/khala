@@ -23,7 +23,7 @@ function emit(value) { process.stdout.write(JSON.stringify(value) + "\\n"); }
 function handle(line) {
   const command = JSON.parse(line);
   if (command.type === "get_state") {
-    emit({ type: "response", id: command.id, command: "get_state", success: true, data: { sessionId: "session-stable", sessionFile: process.env.SESSION_FILE ?? process.cwd() + "/executor-session.jsonl" } });
+    emit({ type: "response", id: command.id, command: "get_state", success: true, data: { sessionId: "session-stable", sessionFile: process.env.SESSION_FILE ?? process.cwd() + "/executor-session.jsonl", isStreaming: process.env.RUNTIME_STATE === "busy", isCompacting: false, pendingMessageCount: 0 } });
   } else if (command.type === "prompt" || command.type === "steer") {
     if (process.env.EMIT_EVENT === "1") emit({ type: "turn_end", execution: "event-visible" });
     const rejected = (command.type === "prompt" && process.env.REJECT_INITIAL_PROMPT === "1") || (command.type === "steer" && process.env.REJECT_STEER === "1");
@@ -78,6 +78,49 @@ async function waitFor(predicate, description) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 }
+
+test("headless runtime probe distinguishes busy and idle state", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-runtime-probe-"));
+	try {
+		const busyStarts = [];
+		const busy = new HeadlessExecutorRuntime({
+			command: process.execPath,
+			args: [],
+			cwd: root,
+			model: "test/model",
+			mission: "probe",
+			executionId: "busy-execution",
+			spawnProcess: createChildFactory(root, busyStarts, { RUNTIME_STATE: "busy" }),
+		});
+		await busy.start();
+		assert.deepEqual(await busy.probeRuntime(), {
+			kind: "busy",
+			executionId: "busy-execution",
+			sessionId: "session-stable",
+		});
+		await busy.closeProcess();
+
+		const idleStarts = [];
+		const idle = new HeadlessExecutorRuntime({
+			command: process.execPath,
+			args: [],
+			cwd: root,
+			model: "test/model",
+			mission: "probe",
+			executionId: "idle-execution",
+			spawnProcess: createChildFactory(root, idleStarts, { RUNTIME_STATE: "idle" }),
+		});
+		await idle.start();
+		assert.deepEqual(await idle.probeRuntime(), {
+			kind: "idle",
+			executionId: "idle-execution",
+			sessionId: "session-stable",
+		});
+		await idle.closeProcess();
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 function physicalTempPath(root, filename) {
 	return join(realpathSync(root), filename);

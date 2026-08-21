@@ -91,7 +91,7 @@ async function submitUserPriority(
 	}
 	let text = `User Priority ${priorityId} recorded: prioritize Work ${target.selectedWorkId} over Work ${target.relatedWorkId}.`;
 	if (wakeError !== undefined) {
-		text += ` Conclave wake failed: ${wakeError}. Recovery is available with /khala-recreate.`;
+		text += ` Conclave wake failed: ${wakeError}. Recovery is available with /khala-recover.`;
 	}
 	const result: {
 		content: [{ type: "text"; text: string }];

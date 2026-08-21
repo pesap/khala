@@ -16,7 +16,8 @@ record is execution-bound. Current record types are:
 ```text
 submission, conclave-wake, conclave-recovery, mandate, mission, execution,
 signal, verdict, verdict-delivery, learning, counsel, pull-request,
-work-outcome, coordination, intervention, user-priority, user-priority-enforcement
+work-outcome, coordination, intervention, user-priority, user-priority-enforcement,
+user-model-recovery, user-worker-action, attention-dismissal
 ```
 
 Append order is the historical authority. Timestamps do not repair ordering.
@@ -104,6 +105,18 @@ for later records.
   startup resume reschedules any remaining item through the serialized Conclave
   wake. Apply and dispose are Archive-locked and idempotent, so recovery never
   applies a priority twice.
+- **User Model Recovery**: one selected Executor model override for one failed
+  current-Mission predecessor. The record is append-only and changes from
+  `selected` to `applied` only after the replacement Execution is started. It
+  does not modify project configuration.
+- **User Worker Action**: an append-only request or outcome for a User action
+  against a current Mission. Requests bind a deterministic action ID, Work,
+  expected Mission/Execution, condition, action kind, and optional model.
+  Outcomes record `applied`, `rejected`, or `failed`; replay never sends a
+  request again after an existing outcome or an uncertain request.
+- **Attention Dismissal**: an append-only dismissal for one projected
+  attention condition. The condition identity includes the current evidence,
+  so changed lifecycle evidence can surface a new condition.
 - **User Priority Enforcement**: append-ordered `prepared`, `baseline`,
   `handoff`, `enforced`, or `terminal` evidence for the deterministic stop of
   the non-selected side. It binds the exact priority, Coordination, losing

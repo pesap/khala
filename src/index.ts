@@ -85,12 +85,17 @@ function isDedicatedConclaveSession(context: ExtensionContext): boolean {
 		.some((entry) => entry.type === "custom" && entry.customType === KhalaEntryType.conclave);
 }
 
-function registerKhalaAttentionControls(pi: ExtensionAPI): (context: ExtensionContext) => Promise<void> {
+function registerKhalaAttentionControls(
+	pi: ExtensionAPI,
+	conclaveCoordinator: ConclaveCoordinator,
+): (context: ExtensionContext) => Promise<void> {
 	const showAttention = (context: ExtensionContext): Promise<void> => {
+		const recoverConclave = (recoveryContext: ExtensionContext): Promise<void> =>
+			runConclaveRecovery(recoveryContext, conclaveCoordinator);
 		if (context.mode === "tui") {
-			return showKhalaAttention(context, createObserverViewer());
+			return showKhalaAttention(context, createObserverViewer(), conclaveCoordinator, recoverConclave);
 		}
-		return showKhalaAttention(context, undefined);
+		return showKhalaAttention(context, undefined, conclaveCoordinator, recoverConclave);
 	};
 	pi.registerCommand("khala", {
 		description: "Show the Khala project attention summary.",
@@ -124,69 +129,67 @@ function setRoleActiveTools(pi: ExtensionAPI, role: KhalaRoleValue | null, dedic
 	pi.setActiveTools(pi.getActiveTools().filter((name) => allowedTools.has(name)));
 }
 
-function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
-	pi.registerCommand("khala-recreate", {
-		description: "Recover the project Conclave and resume pending Work.",
-		handler: async (args, context) => {
-			if (args.trim().length > 0) {
-				context.ui.notify("Usage: /khala-recreate", "warning");
-				return Promise.resolve();
-			}
-			try {
-				loadKhalaConfig(context.cwd, isTrustedProject(context));
-			} catch (error) {
-				let message = String(error);
-				if (error instanceof Error) {
-					({ message } = error);
-				}
-				context.ui.notify(message, "error");
-				return Promise.resolve();
-			}
-			const projectTrusted = isTrustedProject(context);
-			const pendingModelRecoveries = listPendingExecutorModelRecoveries(context.cwd, projectTrusted);
-			const pending = pendingModelRecoveries.find(
-				(candidate) =>
-					selectedUserExecutorModelRecovery({
-						projectPath: context.cwd,
-						workId: candidate.execution.workId,
-						missionId: candidate.mission.missionId,
-						predecessorExecutionId: candidate.execution.executionId,
-						projectTrusted,
-					}) === undefined,
+async function runConclaveRecovery(context: ExtensionContext, conclaveCoordinator: ConclaveCoordinator): Promise<void> {
+	try {
+		loadKhalaConfig(context.cwd, isTrustedProject(context));
+	} catch (error) {
+		let message = String(error);
+		if (error instanceof Error) {
+			({ message } = error);
+		}
+		context.ui.notify(message, "error");
+		return;
+	}
+	const projectTrusted = isTrustedProject(context);
+	const pendingModelRecoveries = listPendingExecutorModelRecoveries(context.cwd, projectTrusted);
+	const pending = pendingModelRecoveries.find(
+		(candidate) =>
+			selectedUserExecutorModelRecovery({
+				projectPath: context.cwd,
+				workId: candidate.execution.workId,
+				missionId: candidate.mission.missionId,
+				predecessorExecutionId: candidate.execution.executionId,
+				projectTrusted,
+			}) === undefined,
+	);
+	if (pending !== undefined) {
+		if (context.mode !== "tui") {
+			context.ui.notify(
+				`Executor model selection is required for Work ${pending.execution.workId}; use /khala in interactive mode.`,
+				"warning",
 			);
-			if (pending !== undefined) {
-				if (context.mode !== "tui") {
-					context.ui.notify(
-						`Executor model selection is required for Work ${pending.execution.workId}; use /khala in interactive mode.`,
-						"warning",
-					);
-					return;
-				}
-				const choseModel = await selectExecutorRecoveryModel(
-					{
-						workId: pending.execution.workId,
-						missionId: pending.mission.missionId,
-						executionId: pending.execution.executionId,
-					},
-					context,
-				);
-				if (!choseModel) {
-					return;
-				}
-			}
-			let userSessionPath: string | undefined;
-			if (!isDedicatedConclaveSession(context)) {
-				userSessionPath = context.sessionManager.getSessionFile();
-			}
-			const sessionPath = conclaveCoordinator.ensureConclaveSession(context.cwd, userSessionPath, projectTrusted);
-			conclaveCoordinator.resume(context.cwd, projectTrusted);
-			if (sessionPath === undefined) {
-				context.ui.notify("Khala could not create the project Conclave.", "error");
-			} else {
-				context.ui.notify("Khala configuration is valid; pending Work recovery was scheduled.", "info");
-			}
-			return Promise.resolve();
-		},
+			return;
+		}
+		const choseModel = await selectExecutorRecoveryModel(
+			{
+				workId: pending.execution.workId,
+				missionId: pending.mission.missionId,
+				executionId: pending.execution.executionId,
+			},
+			context,
+			conclaveCoordinator,
+		);
+		if (!choseModel) {
+			return;
+		}
+	}
+	let userSessionPath: string | undefined;
+	if (!isDedicatedConclaveSession(context)) {
+		userSessionPath = context.sessionManager.getSessionFile();
+	}
+	const sessionPath = conclaveCoordinator.ensureConclaveSession(context.cwd, userSessionPath, projectTrusted);
+	conclaveCoordinator.resume(context.cwd, projectTrusted);
+	if (sessionPath === undefined) {
+		context.ui.notify("Khala could not create the project Conclave.", "error");
+	} else {
+		context.ui.notify("Khala configuration is valid; pending Work recovery was scheduled.", "info");
+	}
+}
+
+function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
+	pi.registerCommand("khala-recover", {
+		description: "Recover the project Conclave and resume pending Work.",
+		handler: (_args, context) => runConclaveRecovery(context, conclaveCoordinator),
 	});
 }
 
@@ -195,7 +198,7 @@ function createExtension(pi: ExtensionAPI): void {
 	registerKhalaDynamicResources(pi);
 	registerKhalaFlags(pi);
 	registerKhalaTools(pi, conclaveCoordinator);
-	const showAttention = registerKhalaAttentionControls(pi);
+	const showAttention = registerKhalaAttentionControls(pi, conclaveCoordinator);
 	registerKhalaSessionEvents(pi, showAttention, conclaveCoordinator);
 }
 

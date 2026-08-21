@@ -775,7 +775,7 @@ test("fresh recovery launch failures persist bounded diagnostics with replacemen
       onLaunchFailure: (failure) => session.appendCustomEntry("khala-supervision-critical-event", failure),
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
     assert.equal(replacement.payload.status, "failed");
     const reopened = storage.loadConclaveSession(root);
@@ -821,7 +821,7 @@ test("fresh recovery registration failures fail the replacement and persist one 
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
     assert.equal(replacement.payload.status, "failed");
     assert.equal(diagnostics.length, 1);
@@ -858,7 +858,7 @@ test("fresh recovery configuration failure after registration fails the replacem
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     assert.deepEqual(registrations, [2]);
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
     assert.equal(replacement.payload.status, "failed");
@@ -935,7 +935,7 @@ process.stdin.on("data", (chunk) => {
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     assert.equal(availabilityChecks, 2);
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1);
     assert.equal(replacement.payload.status, "failed");
@@ -999,7 +999,7 @@ test("stale fresh recovery is a no-op and does not persist a launch diagnostic",
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     assert.deepEqual(diagnostics, []);
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, 1);
   } finally {
@@ -1085,7 +1085,7 @@ process.stdin.on("data", (chunk) => {
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1).payload;
     assert.equal(replacement.status, "failed");
     assert.equal(owners.size, 0);
@@ -1120,7 +1120,7 @@ test("fresh RPC startup failure emits one diagnostic without generic supervision
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     assert.equal(diagnostics.length, 1);
     assert.match(diagnostics[0].error, /RPC|stdin|child process/i);
     assert.ok(diagnostics[0].error.length <= 4096);
@@ -1188,7 +1188,7 @@ process.stdin.on("data", (chunk) => {
       isSupervisionAvailable: () => true,
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
-    assert.equal(result, true);
+    assert.equal(result.status, "launch-failed");
     await waitForClose();
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1).payload;
     assert.equal(replacement.status, "failed");
@@ -1259,7 +1259,7 @@ process.stdin.on("data", (chunk) => {
       isSupervisionAvailable: () => true,
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
-    assert.equal(result, true);
+    assert.equal(result.status, "launch-failed");
 
     appendArchiveRecord(root, {
       schemaVersion: 2,
@@ -1334,7 +1334,7 @@ test("omitted-kind active v2 Mission Executor prevents duplicate fresh recovery 
       isSupervisionAvailable: () => true,
     });
 
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     assert.deepEqual(registered, []);
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, before);
   } finally {
@@ -1448,7 +1448,7 @@ test("successor Mission replacement blocks stale fresh recovery registration", a
       supervision: { registerExecution: (...args) => registered.push(args) },
       isSupervisionAvailable: () => true,
     });
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     assert.deepEqual(registered, []);
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, before);
   } finally {
@@ -1475,7 +1475,7 @@ test("newer terminal Executor history blocks stale fresh recovery registration",
       supervision: { registerExecution: (...args) => registered.push(args) },
       isSupervisionAvailable: () => true,
     });
-    assert.equal(result, false);
+    assert.notEqual(result.status, "started");
     assert.deepEqual(registered, []);
     assert.equal(listArchiveRecords(root).filter((record) => record.type === "execution").length, before);
   } finally {

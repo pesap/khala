@@ -24,7 +24,13 @@ type RpcResponse = Readonly<{
 	data?: unknown;
 	error?: string;
 }>;
-type RpcState = Readonly<{ sessionFile?: unknown; sessionId?: unknown }>;
+type RpcState = Readonly<{
+	sessionFile?: unknown;
+	sessionId?: unknown;
+	isStreaming?: unknown;
+	isCompacting?: unknown;
+	pendingMessageCount?: unknown;
+}>;
 type RpcSessionEntry = Readonly<{
 	type: string;
 	id: string;
@@ -35,6 +41,11 @@ type RpcSessionEntry = Readonly<{
 }>;
 type RpcEntries = Readonly<{ entries: readonly RpcSessionEntry[]; leafId: string | null }>;
 type StopHandoffSettlementObservation = Readonly<{ target?: number; observed: boolean }>;
+type ExecutionRuntimeState =
+	| Readonly<{ kind: "busy"; executionId: string; sessionId: string }>
+	| Readonly<{ kind: "idle"; executionId: string; sessionId: string }>
+	| Readonly<{ kind: "unreachable"; executionId: string; reason: string }>
+	| Readonly<{ kind: "unknown"; executionId: string; reason: string }>;
 type RpcChildFactory = (command: string, args: readonly string[], cwd: string) => ChildProcess;
 type HeadlessRuntimeOptions = Readonly<{
 	command: string;
@@ -183,6 +194,39 @@ class HeadlessExecutorRuntime {
 		const response = await this.send({ type: "prompt", message });
 		if (!response.success) {
 			throw new Error(response.error ?? "Pi rejected prompt.");
+		}
+	}
+
+	async probeRuntime(): Promise<ExecutionRuntimeState> {
+		const executionId = this.options.executionId ?? "unknown-execution";
+		try {
+			const state = await this.requestState();
+			if (
+				this.binding === undefined ||
+				typeof state.sessionId !== "string" ||
+				state.sessionId !== this.binding.sessionId
+			) {
+				return {
+					kind: "unknown",
+					executionId,
+					reason: "The runtime did not return a verifiable persisted session identity.",
+				};
+			}
+			if (
+				typeof state.isStreaming !== "boolean" ||
+				typeof state.isCompacting !== "boolean" ||
+				typeof state.pendingMessageCount !== "number" ||
+				!Number.isInteger(state.pendingMessageCount) ||
+				state.pendingMessageCount < 0
+			) {
+				return { kind: "unknown", executionId, reason: "The runtime did not expose a complete activity state." };
+			}
+			if (state.isStreaming || state.isCompacting || state.pendingMessageCount > 0) {
+				return { kind: "busy", executionId, sessionId: this.binding.sessionId };
+			}
+			return { kind: "idle", executionId, sessionId: this.binding.sessionId };
+		} catch (error) {
+			return { kind: "unreachable", executionId, reason: errorMessage(error) };
 		}
 	}
 
@@ -829,6 +873,13 @@ async function disposeHeadlessRuntimes(): Promise<void> {
 	await Promise.all(runtimes.map(([, runtime]) => runtime.closeProcess()));
 }
 
+function errorMessage(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	return String(error);
+}
+
 function readRpcEntries(value: unknown): RpcEntries {
 	if (typeof value !== "object" || value === null) {
 		throw new Error("Pi RPC get_entries returned invalid data.");
@@ -852,6 +903,7 @@ function isRpcSessionEntry(value: unknown): value is RpcSessionEntry {
 }
 
 export type {
+	ExecutionRuntimeState,
 	HeadlessRuntimeOptions,
 	RpcEntries,
 	RpcSessionBinding,

@@ -52,9 +52,8 @@ and makes the lifecycle visible and recoverable.
   launcher failures.
 - Recoverable lifecycle. Failed launches can return to the queue, and Retry
   creates a successor execution rather than rewriting history.
-- Observable by default. `/khala` or `Alt+K` shows a read-only attention summary
-  of review requests, stopped Work, and recovery needs without exposing runtime
-  internals.
+- Observable by default. `/khala` or `Alt+K` shows a Work-first attention view
+  with safe recovery actions, while hiding raw Executor and runtime internals.
 
 ## How it works
 
@@ -125,7 +124,9 @@ for an entity; the complete history remains available for review and recovery.
 - `/khala-triage` (also `/triage`) turns an issue into a WorkPacket, resolves uncertainty interactively, and sends approved Work to the Project Conclave.
 - A dedicated, persisted project Conclave reviews and admits submitted Work under Mandate revision one.
 - `/khala-demo` launches a three-lane lifecycle demonstration.
-- `/khala` or `Alt+K` shows the read-only project attention summary.
+- `/khala` or `Alt+K` shows the Work-first attention view. Select a Work to
+  review its Pull Request, retry or stop its worker, continue its current Mission
+  with a new worker, inspect attempts, or dismiss the current condition.
 - The bundled `pi-review` extension adds `/review` and `/end-review` for scoped code reviews.
 - The bundled `pi-clarify` extension rewrites rough prompts with `/clarify` or the `-clarify` message marker using the configured Conclave model.
 - Observers record repository Learning before an Executor starts when context is
@@ -262,9 +263,10 @@ release to close the advisory range GHSA-rgw5-rvv9-x895. `npm audit
 4. For a manual Work, fill in the template, or ask the LLM to call `khala_submit_work` directly.
    `Objective`, `Scope`, `Acceptance criteria`, `Plan`, and `Validation` are required.
 5. The Work is persisted and queued for independent Project Conclave review. The acknowledgement does not imply admission or launch.
-6. Run `/khala` (or `Alt+K`) to see the attention summary: review requests,
-   stopped Work, and recovery needs, or explicit confirmation that no user
-   action is required.
+6. Run `/khala` (or `Alt+K`) to see the Work-first attention view. Actions are
+   Archive-backed and idempotent; model recovery starts the same Mission directly
+   and does not require `/khala-recover`. When no action is needed, Khala says
+   so explicitly.
 7. Inspect the Archive when you need the authoritative lifecycle history.
 
 For a deterministic walkthrough, run `/khala-demo`. It creates three dummy Work
@@ -349,8 +351,8 @@ Khala records a failed `conclave-wake` event and leaves the Work available for
 inspection and recovery under the same ID. When wake evidence cannot be
 appended, the persisted Conclave session retains the diagnostic. Run
 `npx --yes --silent github:pesap/khala setup` first when configuration is
-missing, then run `/khala-recreate`. For a runtime outage with valid
-configuration, run `/khala-recreate` directly. Do not launch an unsupervised
+missing, then run `/khala-recover`. For a runtime outage with valid
+configuration, run `/khala-recover` directly. Do not launch an unsupervised
 replacement agent.
 
 Every Work enables Git push and the Executor-managed draft Pull Request
@@ -361,7 +363,7 @@ when required and records a blocked/failure Signal rather than claiming
 success. Retryable and raw Execution failures stay hidden from the attention
 summary, which surfaces only durable Work-level evidence: a reviewable Pull
 Request, a rejected Work or current Mission, an exhausted Conclave submission
-recovery, or a failed Conclave wake. Use `/khala-recreate` to recover a project
+recovery, or a failed Conclave wake. Use `/khala-recover` to recover a project
 Conclave after a runtime outage. Inspect the Archive for exact causal evidence.
 
 The package ships named Khala prompts and role system prompts. Generic packaged

@@ -29,7 +29,7 @@ queued acknowledgement means only that the submission is durable and Conclave
 processing was scheduled independently. It is not Mandate admission, Mission
 materialization, Executor launch, or another lifecycle decision. If the Archive
 later records a failed Conclave wake, treat Executor state as unknown, inspect
-the Archive and monitor, follow its setup or `/khala-recreate` guidance, and
+the Archive and monitor, follow its setup or `/khala-recover` guidance, and
 never launch a replacement agent through shell or another delegation tool. The
 Conclave alone launches Observers, admits Work, launches Missions, and issues
 Verdicts.

@@ -45,7 +45,7 @@ wake failure does not change the queued acknowledgement or the authoritative
 submission. Inspect the Archive under the returned Work ID and use `/khala` for
 the attention summary. Missing
 configuration requires `npx --yes --silent github:pesap/khala setup` before
-`/khala-recreate`; a configured runtime outage requires only `/khala-recreate`.
+`/khala-recover`; a configured runtime outage requires only `/khala-recover`.
 When wake evidence cannot be appended, Khala records a diagnostic in the
 persisted Conclave session. An unsupervised direct-agent launch is not a
 recovery path.
@@ -158,7 +158,7 @@ expire and permit another attempt; the stale owner is then fenced and settles
 without retrying an impossible completion.
 Submission wakes are tracked
 through coordinator disposal so no model session starts after shutdown. A
-background startup or `/khala-recreate` recovery also bootstraps supervision
+background startup or `/khala-recover` recovery also bootstraps supervision
 when the current Mission's latest failed Executor has no active replacement,
 even after submission wake exhaustion. It registers only that latest failed
 attempt per Mission; the fresh same-Mission path preserves the failed Archive
@@ -166,7 +166,11 @@ history and does not launch while another Executor is starting or running. If
 an Executor model is unavailable, Khala records the failed Execution as model
 unavailable and waits for an explicit User model selection in `/khala`; the
 selection is an append-only, one-time override for that Mission recovery and
-does not change global configuration or the immutable Mission. Conclave-model
+starts the replacement directly, so `/khala-recover` is not required afterward.
+It does not change global configuration or the immutable Mission. The same
+attention view can continue an idle current worker, ask it to stop through one
+bounded blocked-Signal handoff, or start a new Executor for a failed current
+Mission. Each action persists an idempotent request and outcome. Conclave-model
 outages remain a separate recovery condition. If a fresh launch fails, the
 replacement Execution is durably failed and the Conclave session records a
 bounded, credential-redacted diagnostic with the Work, Mission, predecessor
