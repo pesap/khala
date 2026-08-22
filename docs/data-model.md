@@ -75,9 +75,13 @@ for later records.
   `upstreamBase { kind, workId, missionId, executionId, remote, branch,
   headCommit }`. Schema 3 requires those Pi identity bindings for a running
   mission Executor; recovery treats a historical schema 2 record without them
-  as unavailable rather than assuming its runtime is recoverable. An Executor
-  uses `launcher: "headless-rpc"`; Observer records retain their configured
-  zellij, tmux, or Herdr pane target.
+  as unavailable rather than assuming its runtime is recoverable. The durable
+  status records lifecycle and recovery eligibility; a live runtime observation
+  is required before presenting probe-derived idle or unreachable states. A
+  live-process registry entry may suppress an already-projected recovery action,
+  but it does not make the Executor appear running. An Executor uses
+  `launcher: "headless-rpc"`; Observer records retain their configured zellij,
+  tmux, or Herdr pane target.
 - **Signal**: `signalId`, exact Work/Execution identity, optional Mission and
   participant, kind (`progress`, `blocked`, or `finished`), summary, nonempty
   evidence where required, and `observedAt`.
@@ -184,8 +188,12 @@ entry IDs, bounded message hashes, usage/cost facts, source ranges, prompt
 identity, and causal references needed for assessment and recovery. It does not
 copy raw prompts, assistant transcripts, tool output, or pane output into the
 Archive. Runtime events and supervision recovery are projections over these
-bindings. The attention summary derives only from authoritative Archive
-records; it does not read Executor sessions or expose supervision state.
+bindings. The attention summary derives durable conditions from
+authoritative Archive records. It may probe the current headless runtime to
+distinguish idle and unreachable workers, and it may consult live process
+liveness only to gate stale recovery actions already projected by the Archive.
+It does not use liveness as a running badge, does not read Executor session
+contents, and does not expose supervision state.
 
 Recovery validates the exact persisted Pi
 session ID/path, catches up from the stable cursor, and fails only the affected

@@ -158,15 +158,21 @@ expire and permit another attempt; the stale owner is then fenced and settles
 without retrying an impossible completion.
 Submission wakes are tracked
 through coordinator disposal so no model session starts after shutdown. A
-background startup or `/khala-recover` recovery also bootstraps supervision
-when the current Mission's latest failed Executor has no active replacement,
-even after submission wake exhaustion. It registers only that latest failed
-attempt per Mission; the fresh same-Mission path preserves the failed Archive
-history and does not launch while another Executor is starting or running. If
-an Executor model is unavailable, Khala records the failed Execution as model
-unavailable and waits for an explicit User model selection in `/khala`; the
-selection is an append-only, one-time override for that Mission recovery and
-starts the replacement directly, so `/khala-recover` is not required afterward.
+background startup or `/khala-recover` recovery bootstraps supervision for each
+current `starting` or `running` Mission Executor and for the current Mission's
+latest failed Executor when it has no active replacement, even after submission
+wake exhaustion. A durable `starting` or `running` record is a recovery
+reservation, not proof that a child is still live: recovery validates its
+persisted Pi binding and fails an unavailable runtime before applying the
+same-Mission recovery path. Live process liveness may hide an already-projected
+`Recover Conclave` action while the current runtime is live, but it does not
+change the probe-derived idle or unreachable status or hide idle/stop actions.
+The fresh same-Mission path preserves failed Archive history and does not
+launch while another Executor is starting or running. If an Executor model is
+unavailable, Khala records the failed Execution as model unavailable and waits
+for an explicit User model selection in `/khala`; the selection is an
+append-only, one-time override for that Mission recovery and starts the
+replacement directly, so `/khala-recover` is not required afterward.
 It does not change global configuration or the immutable Mission. The same
 attention view can continue an idle current worker, ask it to stop through one
 bounded blocked-Signal handoff, or start a new Executor for a failed current

@@ -27,6 +27,7 @@ import {
 	listSignalRecords,
 	pendingUserPriorities,
 	pendingUserPriorityEnforcements,
+	projectMissions,
 	readCurrentMission,
 	readUserPriority,
 } from "./khala-archive-projections.js";
@@ -143,6 +144,7 @@ type ConclaveCoordinator = Readonly<{
 		executionId: string,
 		projectTrusted?: boolean,
 	) => Promise<ExecutionRuntimeState>;
+	hasLiveExecutionRuntime: (projectPath: string, executionId: string, projectTrusted?: boolean) => boolean;
 	getSubmission: ConclaveStorage["getSubmission"];
 	getPendingSubmission: ConclaveStorage["getPendingSubmission"];
 	claimSubmission: ConclaveStorage["claimSubmission"];
@@ -198,6 +200,28 @@ function isCurrentMissionAuthority(projectPath: string, projectTrusted: boolean,
 		const currentMission = readCurrentMission(projectPath, mission.workId, projectTrusted);
 		return currentMission?.state === "current" && currentMission.mission.missionId === mission.missionId;
 	});
+}
+
+function hasExecutionsNeedingSupervision(projectPath: string, projectTrusted: boolean): boolean {
+	const currentMissionIdsByWork = new Map<string, Set<string>>();
+	for (const projection of projectMissions(projectPath, projectTrusted)) {
+		if (projection.state === "current") {
+			const currentMissionIds = currentMissionIdsByWork.get(projection.mission.workId) ?? new Set<string>();
+			currentMissionIds.add(projection.mission.missionId);
+			currentMissionIdsByWork.set(projection.mission.workId, currentMissionIds);
+		}
+	}
+	const hasActiveCurrentExecutor = listExecutorRecords(projectPath, projectTrusted).some((execution) => {
+		if (
+			!isMissionExecutorRecord(execution) ||
+			execution.missionId === undefined ||
+			(execution.status !== ExecutorStatus.starting && execution.status !== ExecutorStatus.running)
+		) {
+			return false;
+		}
+		return currentMissionIdsByWork.get(execution.workId)?.has(execution.missionId) === true;
+	});
+	return hasActiveCurrentExecutor || listEligibleFailedExecutorRecoveries(projectPath, projectTrusted).length > 0;
 }
 
 function createConclaveCoordinator(
@@ -394,6 +418,13 @@ function createConclaveCoordinator(
 			},
 		});
 	};
+	const hasLiveExecutionRuntime = (projectPath: string, executionId: string, projectTrusted = false): boolean => {
+		const execution = readExecutorRecord(resolve(projectPath), executionId, projectTrusted);
+		if (execution === undefined || !isMissionExecutorRecord(execution) || execution.status !== ExecutorStatus.running) {
+			return false;
+		}
+		return getHeadlessRuntime(executionId)?.isLive === true;
+	};
 	const probeExecutionRuntime = (
 		_projectPath: string,
 		executionId: string,
@@ -402,7 +433,7 @@ function createConclaveCoordinator(
 		// Attention probing is read-only: never bootstrap a Conclave session just to inspect a Work.
 		try {
 			const runtime = getHeadlessRuntime(executionId);
-			if (runtime === undefined) {
+			if (runtime === undefined || runtime.isLive === false) {
 				return Promise.resolve({
 					kind: "unreachable",
 					executionId,
@@ -440,8 +471,13 @@ function createConclaveCoordinator(
 				wakeUserPriority(resolvedProjectPath, priorityId, workId, projectTrusted),
 			);
 			recoverTerminalExecutionStates(resolvedProjectPath, projectTrusted);
-			if (listEligibleFailedExecutorRecoveries(resolvedProjectPath, projectTrusted).length > 0) {
-				await getRuntime(resolvedProjectPath, projectTrusted, extensionPath, storage, runtimes);
+			try {
+				if (hasExecutionsNeedingSupervision(resolvedProjectPath, projectTrusted)) {
+					await getRuntime(resolvedProjectPath, projectTrusted, extensionPath, storage, runtimes);
+				}
+			} catch {
+				// Queued submission recovery records its own durable wake failure. Candidate
+				// discovery or active Executor bootstrap must not skip that recovery queue.
 			}
 			await recoverPendingSubmissions({
 				projectPath: resolvedProjectPath,
@@ -492,6 +528,7 @@ function createConclaveCoordinator(
 		deliverVerdict,
 		executeWorkerAction,
 		probeExecutionRuntime,
+		hasLiveExecutionRuntime,
 		getSubmission: storage.getSubmission,
 		getPendingSubmission: storage.getPendingSubmission,
 		claimSubmission: storage.claimSubmission,

@@ -5,16 +5,22 @@ read-only with respect to the User's session: it does not switch sessions, show
 raw Executor rows, expose a writable Conclave session path, or display internal
 runtime labels.
 
-The view is derived from the authoritative Archive. It shows one top-level
-option per actionable Work. Each option shows the Pull Request reference when
-available, the Work name, and a dim lowercase status tag such as `[stalled]`,
-`[failed]`, or `[review]`. A Work with active mission Executors also shows a
-plain-text badge such as `[2 running]`; the badge is refreshed while the
-selector is open and does not rely on color. Type to fuzzy-filter the mission
-list. Up and Down wrap around the filtered missions, and Enter opens the
-selected Work. Selecting
+The view derives durable Work conditions from the authoritative Archive and
+uses the local runtime registry only to corroborate live process liveness. It
+shows one top-level option per actionable Work. Each option shows the Pull
+Request reference when available, the Work name, and a dim lowercase status tag
+such as `[stalled]`, `[failed]`, `[review]`, `[idle]`, or `[unreachable]`.
+Khala does not render a live-process badge as a running or activity indicator;
+orphaned or idle runtimes keep their probe-derived presentation. Type to
+fuzzy-filter the mission list. Up and Down wrap around the filtered missions,
+and Enter opens the selected Work. Selecting
 a Work opens a focused detail menu with its Mission ID, Pull Request, current
 explanation, and available actions:
+
+Before presenting the action menu, Khala re-checks the selected Work’s current
+attention and runtime activity so stale idle or unreachable actions are not
+shown after a state change. Process liveness only gates an already-projected
+`Recover Conclave` action; it does not hide idle or stop actions.
 
 - **Review** — shows the current reviewable Pull Request URL. The Pull Request
   must belong to the current, finished Mission and the Work must not already
@@ -59,8 +65,10 @@ Project-level recovery conditions remain separate from Work actions:
   `/khala-recover` command is required afterward.
 
 The view also reports stopped Work when a Submission or Mission was rejected,
-or when automatic Conclave submission recovery was exhausted. A Work Outcome
-always suppresses stopped and review attention for that Work.
+or when automatic Conclave submission recovery was exhausted. Archive-backed
+recovery conditions can offer `Recover Conclave`; the live-process gate only
+hides that action while the current runtime is live. A Work Outcome always
+suppresses stopped and review attention for that Work.
 
 The view does not infer user action from session transcripts. Retryable or raw
 Execution failures without a current actionable condition, unknown runtime

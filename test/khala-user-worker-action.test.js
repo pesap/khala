@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { appendArchiveRecord } from "../dist/src/khala-archive.js";
 import { appendUserWorkerActionOutcome, appendUserWorkerActionRequest, executeUserWorkerAction } from "../dist/src/khala-user-worker-action.js";
-import { writeExecutorRecord } from "../dist/src/khala-executor-registry.js";
+import { readExecutorRecord, updateExecutorRecord, writeExecutorRecord } from "../dist/src/khala-executor-registry.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 
@@ -130,6 +130,98 @@ test("Continue starts one replacement for the same Mission and replays its outco
 	}
 });
 
+test("Continue replaces an orphaned running Executor after recording failure", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worker-action-orphaned-running-"));
+	try {
+		append(root, "mission", "work-1", mission());
+		writeExecutorRecord(execution(root));
+		let failures = 0;
+		let starts = 0;
+		const result = await executeUserWorkerAction({
+			actionId: "worker-action-orphaned-running-1",
+			kind: "continue-current-mission",
+			conditionId: "condition-orphaned-running-1",
+			workId: "work-1",
+			expectedMissionId: "mission-1",
+			expectedExecutionId: "execution-1",
+			projectPath: root,
+			projectTrusted: false,
+			services: {
+				async getRuntime() {
+					return {
+						isLive: false,
+						async probeRuntime() {
+							throw new Error("A closing runtime must not block recovery.");
+						},
+					};
+				},
+				async failExecution(executionId) {
+					failures += 1;
+					updateExecutorRecord(root, executionId, { status: "failed" });
+				},
+				async continueMission({ failedExecution }) {
+					starts += 1;
+					assert.equal(failedExecution.status, "failed");
+					return {
+						status: "started",
+						missionId: "mission-1",
+						executionId: "replacement-1",
+						predecessorExecutionId: failedExecution.executionId,
+					};
+				},
+			},
+		});
+		assert.equal(result.status, "started");
+		assert.equal(failures, 1);
+		assert.equal(starts, 1);
+		assert.equal(readExecutorRecord(root, "execution-1").status, "failed");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Continue leaves a concurrent starting Executor under its launch owner's control", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worker-action-starting-"));
+	try {
+		append(root, "mission", "work-1", mission());
+		writeExecutorRecord({ ...execution(root), status: "starting" });
+		let failures = 0;
+		let starts = 0;
+		const result = await executeUserWorkerAction({
+			actionId: "worker-action-starting-1",
+			kind: "continue-current-mission",
+			conditionId: "condition-starting-1",
+			workId: "work-1",
+			expectedMissionId: "mission-1",
+			expectedExecutionId: "execution-1",
+			projectPath: root,
+			projectTrusted: false,
+			services: {
+				getRuntime: async () => undefined,
+				async failExecution(executionId) {
+					failures += 1;
+					updateExecutorRecord(root, executionId, { status: "failed" });
+				},
+				async continueMission() {
+					starts += 1;
+					return {
+						status: "started",
+						missionId: "mission-1",
+						executionId: "replacement-1",
+						predecessorExecutionId: "execution-1",
+					};
+				},
+			},
+		});
+		assert.equal(result.status, "already-active");
+		assert.equal(failures, 0);
+		assert.equal(starts, 0);
+		assert.equal(readExecutorRecord(root, "execution-1").status, "starting");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("Try current worker again sends one identified continuation without replaying prior text", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-worker-action-try-"));
 	try {
@@ -137,6 +229,7 @@ test("Try current worker again sends one identified continuation without replayi
 		writeExecutorRecord(execution(root));
 		const prompts = [];
 		const runtime = {
+			isLive: true,
 			async probeRuntime() {
 				return { kind: "idle", executionId: "execution-1", sessionId: "session-1" };
 			},
@@ -168,6 +261,105 @@ test("Try current worker again sends one identified continuation without replayi
 		assert.equal(prompts.length, 1);
 		assert.match(prompts[0], /worker-action-try-1/);
 		assert.doesNotMatch(prompts[0], /previous model request|last prompt/i);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Try current worker action is unreachable when runtime is not live", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worker-action-try-unreachable-"));
+	try {
+		append(root, "mission", "work-1", mission());
+		writeExecutorRecord(execution(root));
+		let probeCalls = 0;
+		let sendPromptCalls = 0;
+		let getEntriesCalls = 0;
+		let continues = 0;
+		let failures = 0;
+		const runtime = {
+			isLive: false,
+			async probeRuntime() {
+				probeCalls += 1;
+				throw new Error("runtime probe must not be called");
+			},
+			async sendPrompt() {
+				sendPromptCalls += 1;
+			},
+			async getEntries() {
+				getEntriesCalls += 1;
+				return { entries: [] };
+			},
+		};
+		const result = await executeUserWorkerAction({
+			actionId: "worker-action-try-unreachable-1",
+			kind: "try-current-execution",
+			conditionId: "condition-try-unreachable-1",
+			workId: "work-1",
+			expectedMissionId: "mission-1",
+			expectedExecutionId: "execution-1",
+			projectPath: root,
+			projectTrusted: false,
+			services: {
+				getRuntime: async () => runtime,
+				continueMission: async () => {
+					continues += 1;
+					return { status: "stale", reason: "not used" };
+				},
+				failExecution: async () => {
+					failures += 1;
+				},
+			},
+		});
+		assert.equal(result.status, "unreachable");
+		assert.equal(probeCalls, 0);
+		assert.equal(sendPromptCalls, 0);
+		assert.equal(getEntriesCalls, 0);
+		assert.equal(continues, 0);
+		assert.equal(failures, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Stop current execution is unreachable when runtime is not live", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-worker-action-stop-unreachable-"));
+	try {
+		append(root, "mission", "work-1", mission());
+		writeExecutorRecord(execution(root));
+		let probeCalls = 0;
+		let stopCalls = 0;
+		let continues = 0;
+		const runtime = {
+			isLive: false,
+			async probeRuntime() {
+				probeCalls += 1;
+				throw new Error("runtime probe must not be called");
+			},
+		};
+		const result = await executeUserWorkerAction({
+			actionId: "worker-action-stop-unreachable-1",
+			kind: "stop-current-execution",
+			conditionId: "condition-stop-unreachable-1",
+			workId: "work-1",
+			expectedMissionId: "mission-1",
+			expectedExecutionId: "execution-1",
+			projectPath: root,
+			projectTrusted: false,
+			services: {
+				getRuntime: async () => runtime,
+				continueMission: async () => {
+					continues += 1;
+					return { status: "stale", reason: "not used" };
+				},
+				failExecution: async () => {
+					stopCalls += 1;
+				},
+			},
+		});
+		assert.equal(result.status, "unreachable");
+		assert.equal(probeCalls, 0);
+		assert.equal(stopCalls, 0);
+		assert.equal(continues, 0);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

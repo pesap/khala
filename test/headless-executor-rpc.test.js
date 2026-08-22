@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { createAgentSession, DefaultResourceLoader, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
@@ -276,10 +277,75 @@ test("headless Executor becomes ready from get_state and closes by ending its pi
 			},
 		});
 		await runtime.start();
+		assert.equal(runtime.isLive, true);
 		assert.deepEqual(binding, { sessionId: "session-stable", sessionPath: physicalTempPath(root, "executor-session.jsonl") });
 		assert.equal(starts[0].includes("--mode"), true);
 		assert.equal(starts[0].includes("rpc"), true);
 		assert.equal(starts[0].includes("provider/executor"), true);
+		await runtime.closeProcess();
+		assert.equal(runtime.isLive, false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("liveness rejects a child with a terminal status before its exit event", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-rpc-terminal-status-"));
+	try {
+		const child = new EventEmitter();
+		const stdout = new EventEmitter();
+		const stderr = new EventEmitter();
+		const stdin = new EventEmitter();
+		stdin.destroyed = false;
+		stdin.write = (raw, callback) => {
+			const command = JSON.parse(raw);
+			const response =
+				command.type === "get_state"
+					? {
+							type: "response",
+							id: command.id,
+							command: "get_state",
+							success: true,
+							data: {
+								sessionId: "terminal-status-session",
+								sessionFile: join(root, "terminal-status.jsonl"),
+								isStreaming: false,
+								isCompacting: false,
+								pendingMessageCount: 0,
+							},
+						}
+					: { type: "response", id: command.id, command: command.type, success: true };
+			stdout.emit("data", Buffer.from(`${JSON.stringify(response)}\n`));
+			callback?.();
+			return true;
+		};
+		stdin.end = () => {
+			stdin.destroyed = true;
+			child.exitCode = 0;
+			child.emit("exit");
+		};
+		child.stdout = stdout;
+		child.stderr = stderr;
+		child.stdin = stdin;
+		child.exitCode = null;
+		child.signalCode = null;
+		child.kill = () => {
+			child.signalCode = "SIGKILL";
+			child.emit("exit");
+			return true;
+		};
+		const runtime = new HeadlessExecutorRuntime({
+			command: "fake-pi",
+			args: [],
+			cwd: root,
+			model: "provider/executor",
+			mission: "Mission identity",
+			spawnProcess: () => child,
+		});
+		await runtime.start();
+		child.exitCode = 1;
+		assert.equal(runtime.isLive, false);
+		child.exitCode = null;
 		await runtime.closeProcess();
 	} finally {
 		rmSync(root, { recursive: true, force: true });

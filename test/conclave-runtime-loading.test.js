@@ -330,6 +330,278 @@ test("exhausted submission recovery still bootstraps supervision for a failed cu
 	}
 });
 
+test("startup bootstraps supervision for a current running Executor", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-running-bootstrap-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	let sessionLoads = 0;
+	try {
+		const work = {
+			title: "Running bootstrap",
+			objective: "Resume the active Executor.",
+			context: "The previous Conclave process exited.",
+			scope: "Recovery bootstrap.",
+			acceptanceCriteria: ["Supervision initializes for the active attempt."],
+			constraints: [],
+			plan: ["Recover the current Mission."],
+			validation: ["Inspect the persisted Execution."],
+		};
+		const storage = createFileConclaveStorage();
+		storage.submit({ workId: "running-bootstrap", projectPath, work });
+		const submission = listArchiveRecords(projectPath).find((record) => record.type === "submission");
+		assert.ok(submission);
+		const now = new Date().toISOString();
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mandate",
+			workId: "running-bootstrap",
+			payload: {
+				mandateId: "mandate-running-bootstrap",
+				workId: "running-bootstrap",
+				revision: 1,
+				sourceSubmissionRecordId: submission.recordId,
+				terms: work,
+				admittedByParticipantId: "conclave:test",
+				admittedAt: now,
+			},
+		});
+		assert.equal(storage.admitSubmission(projectPath, "running-bootstrap", "mandate-running-bootstrap"), true);
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "running-bootstrap",
+			payload: {
+				missionId: "mission-running-bootstrap",
+				workId: "running-bootstrap",
+				mandateId: "mandate-running-bootstrap",
+				assignment: work,
+				assignedParticipantId: "executor:running-bootstrap",
+				createdAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "execution",
+			workId: "running-bootstrap",
+			executionId: "running-execution",
+			payload: {
+				executionId: "running-execution",
+				workId: "running-bootstrap",
+				executorName: "Running Executor",
+				kind: "executor",
+				participantId: "executor:running-bootstrap",
+				purpose: { kind: "mission", missionId: "mission-running-bootstrap" },
+				missionId: "mission-running-bootstrap",
+				projectPath,
+				sandboxPath: projectPath,
+				launcher: "headless-rpc",
+				piSessionId: "running-session",
+				sessionPath: join(projectPath, "running-session.jsonl"),
+				promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+				status: "running",
+				startedAt: now,
+			},
+		});
+		const fileStorage = createFileConclaveStorage();
+		const coordinator = createConclaveCoordinator(join(process.cwd(), "dist", "src", "index.js"), {
+			...fileStorage,
+			loadConclaveSession(...args) {
+				sessionLoads += 1;
+				return fileStorage.loadConclaveSession(...args);
+			},
+		});
+		coordinator.resume(projectPath);
+		assert.equal(sessionLoads, 0);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(sessionLoads, 1);
+		await coordinator.dispose();
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("startup ignores an active Executor without a current Mission", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-orphaned-bootstrap-"));
+	const projectPath = join(root, "project");
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	let sessionLoads = 0;
+	try {
+		const now = new Date().toISOString();
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "execution",
+			workId: "orphaned-work",
+			executionId: "orphaned-execution",
+			payload: {
+				executionId: "orphaned-execution",
+				workId: "orphaned-work",
+				executorName: "Orphaned Executor",
+				kind: "executor",
+				participantId: "executor:orphaned",
+				purpose: { kind: "mission", missionId: "orphaned-mission" },
+				missionId: "orphaned-mission",
+				projectPath,
+				sandboxPath: projectPath,
+				launcher: "headless-rpc",
+				piSessionId: "orphaned-session",
+				sessionPath: join(projectPath, "orphaned-session.jsonl"),
+				promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+				status: "running",
+				startedAt: now,
+			},
+		});
+		const fileStorage = createFileConclaveStorage();
+		const coordinator = createConclaveCoordinator(join(process.cwd(), "dist", "src", "index.js"), {
+			...fileStorage,
+			loadConclaveSession(...args) {
+				sessionLoads += 1;
+				return fileStorage.loadConclaveSession(...args);
+			},
+		});
+		coordinator.resume(projectPath);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(sessionLoads, 0);
+		await coordinator.dispose();
+	} finally {
+		delete process.env.PI_CODING_AGENT_DIR;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("startup continues queued submission recovery when active supervision bootstrap fails", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-bootstrap-failure-"));
+	const projectPath = join(root, "project");
+	let coordinator;
+	try {
+		const work = {
+			title: "Queued recovery",
+			objective: "Keep queued recovery independent from active supervision.",
+			context: "An active Executor cannot start its Conclave runtime.",
+			scope: "Coordinator startup.",
+			acceptanceCriteria: ["The queued Work records its recovery failure."],
+			constraints: [],
+			plan: ["Resume the queued Work."],
+			validation: ["Inspect the recovery wake."],
+		};
+		const storage = createFileConclaveStorage();
+		storage.submit({ workId: "queued-work", projectPath, work });
+		const now = new Date().toISOString();
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: "active-work",
+			payload: {
+				missionId: "active-mission",
+				workId: "active-work",
+				mandateId: "active-mandate",
+				assignment: work,
+				assignedParticipantId: "executor:active",
+				createdAt: now,
+			},
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "execution",
+			workId: "active-work",
+			executionId: "active-execution",
+			payload: {
+				executionId: "active-execution",
+				workId: "active-work",
+				executorName: "Active Executor",
+				kind: "executor",
+				participantId: "executor:active",
+				purpose: { kind: "mission", missionId: "active-mission" },
+				missionId: "active-mission",
+				projectPath,
+				sandboxPath: projectPath,
+				launcher: "headless-rpc",
+				piSessionId: "active-session",
+				sessionPath: join(projectPath, "active-session.jsonl"),
+				promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) },
+				status: "running",
+				startedAt: now,
+			},
+		});
+		coordinator = createConclaveCoordinator(join(process.cwd(), "dist", "src", "index.js"), {
+			...storage,
+			loadConclaveSession() {
+				throw new Error("Active supervision bootstrap is unavailable.");
+			},
+		});
+		coordinator.resume(projectPath);
+		let wake;
+		for (let attempt = 0; attempt < 10 && wake === undefined; attempt += 1) {
+			await new Promise((resolve) => setImmediate(resolve));
+			wake = listArchiveRecords(projectPath).find(
+				(record) => record.type === "conclave-wake" && record.workId === "queued-work",
+			);
+		}
+		assert.equal(wake?.payload.status, "failed");
+	} finally {
+		await coordinator?.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("startup continues queued submission recovery when supervision candidate discovery fails", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-conclave-candidate-discovery-failure-"));
+	const projectPath = join(root, "project");
+	let coordinator;
+	try {
+		const work = {
+			title: "Queued recovery",
+			objective: "Keep queued recovery independent from invalid unrelated history.",
+			context: "Mission projection cannot read a duplicate unrelated Mission.",
+			scope: "Coordinator startup.",
+			acceptanceCriteria: ["The queued Work records its recovery failure."],
+			constraints: [],
+			plan: ["Resume the queued Work."],
+			validation: ["Inspect the recovery wake."],
+		};
+		const storage = createFileConclaveStorage();
+		storage.submit({ workId: "queued-work", projectPath, work });
+		const malformedMission = {
+			missionId: "duplicate-mission",
+			workId: "unrelated-work",
+			mandateId: "unrelated-mandate",
+			assignment: work,
+			assignedParticipantId: "executor:unrelated",
+			createdAt: new Date().toISOString(),
+		};
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: malformedMission.workId,
+			payload: malformedMission,
+		});
+		appendArchiveRecord(projectPath, {
+			schemaVersion: 2,
+			type: "mission",
+			workId: malformedMission.workId,
+			payload: malformedMission,
+		});
+		coordinator = createConclaveCoordinator(join(process.cwd(), "dist", "src", "index.js"), {
+			...storage,
+			loadConclaveSession() {
+				throw new Error("Conclave runtime is unavailable.");
+			},
+		});
+		coordinator.resume(projectPath);
+		let wake;
+		for (let attempt = 0; attempt < 10 && wake === undefined; attempt += 1) {
+			await new Promise((resolve) => setImmediate(resolve));
+			wake = listArchiveRecords(projectPath).find(
+				(record) => record.type === "conclave-wake" && record.workId === "queued-work",
+			);
+		}
+		assert.equal(wake?.payload.status, "failed");
+	} finally {
+		await coordinator?.dispose();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("ordinary session_start defers oversized Conclave model-session initialization past its first yield", async () => {
 	const root = mkdtempSync(join(tmpdir(), "khala-conclave-startup-yield-"));
 	const projectPath = join(root, "project");

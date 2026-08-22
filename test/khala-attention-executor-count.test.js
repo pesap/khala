@@ -8,6 +8,22 @@ import { appendArchiveRecord } from "../dist/src/khala-archive.js";
 import { writeExecutorRecord } from "../dist/src/khala-executor-registry.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
+const theme = {
+	fg: (_color, text) => text,
+	bold: (text) => text,
+	italic: (text) => text,
+};
+const keys = {
+	matches(data, keybinding) {
+		return (
+			(data === "enter" && keybinding === "tui.select.confirm") ||
+			(data === "escape" && keybinding === "tui.select.cancel")
+		);
+	},
+	getKeys(keybinding) {
+		return [keybinding];
+	},
+};
 
 function work(title) {
 	return {
@@ -50,211 +66,302 @@ function execution(projectPath, executionId, status, missionId = "mission-1") {
 	};
 }
 
-test("mission selector refreshes its plain-text running Executor count", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-attention-executor-count-"));
+function setupMission(projectPath, title, submissionStatus = "admitted") {
+	const submission = append(projectPath, "submission", "work-1", {
+		workId: "work-1",
+		projectPath,
+		status: submissionStatus,
+		work: work(title),
+		archivePath: join(projectPath, "archive.jsonl"),
+		mandateId: "mandate-1",
+	});
+	append(projectPath, "mission", "work-1", {
+		missionId: "mission-1",
+		workId: "work-1",
+		mandateId: "mandate-1",
+		assignment: work("Mission work"),
+		assignedParticipantId: "executor-1",
+		createdAt: NOW,
+	});
+	return submission;
+}
+
+function controller(liveExecutions, probeRuntime) {
+	return {
+		hasLiveExecutionRuntime(_projectPath, executionId) {
+			return liveExecutions.has(executionId);
+		},
+		async probeExecutionRuntime(_projectPath, executionId) {
+			return probeRuntime(executionId);
+		},
+		async executeWorkerAction() {
+			throw new Error("No worker action should be executed while selecting.");
+		},
+	};
+}
+
+function context(projectPath, onCustom) {
+	let customCount = 0;
+	const ui = {
+		theme,
+		async custom(factory) {
+			return new Promise((resolve) => {
+				customCount += 1;
+				const component = factory({ requestRender() {} }, theme, keys, resolve);
+				onCustom(component, customCount);
+			});
+		},
+		notify() {},
+	};
+	return { cwd: projectPath, mode: "tui", ui, isProjectTrusted: () => false };
+}
+
+async function runAttention(projectPath, runtimeController, onCustom) {
+	await showKhalaAttention(context(projectPath, onCustom), undefined, runtimeController);
+}
+
+function cleanup(root) {
+	rmSync(root, { recursive: true, force: true });
+}
+
+test("a live-but-idle runtime shows idle status without a running badge", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-attention-idle-runtime-"));
 	const projectPath = join(root, "project");
 	try {
-		append(projectPath, "submission", "work-1", {
-			workId: "work-1",
+		setupMission(projectPath, "Test Work");
+		writeExecutorRecord(execution(projectPath, "execution-1", "running"), false);
+		let selectorRender;
+		let menuRender;
+		await runAttention(
 			projectPath,
-			status: "admitted",
-			work: work("Test Work"),
-			archivePath: join(projectPath, "archive.jsonl"),
-			mandateId: "mandate-1",
-		});
-		append(projectPath, "mission", "work-1", {
-			missionId: "mission-1",
-			workId: "work-1",
-			mandateId: "mandate-1",
-			assignment: work("Mission work"),
-			assignedParticipantId: "executor-1",
-			createdAt: NOW,
-		});
-		writeExecutorRecord(execution(projectPath, "running-1", "running"), false);
-		writeExecutorRecord(execution(projectPath, "running-2", "running"), false);
-		writeExecutorRecord(
-			{
-				...execution(projectPath, "observer-1", "running"),
-				kind: "observer",
-				purpose: { kind: "observation", submissionRecordId: "submission-1" },
-				missionId: undefined,
+			controller(new Set(["execution-1"]), (executionId) => ({
+				kind: "idle",
+				executionId,
+				sessionId: `${executionId}-session`,
+			})),
+			(component, count) => {
+				if (count === 1) {
+					selectorRender = component.render(200).join("\n");
+					component.handleInput?.("enter");
+				} else if (count === 2) {
+					menuRender = component.render(200).join("\n");
+					component.handleInput?.("escape");
+				} else {
+					component.handleInput?.("escape");
+				}
 			},
-			false,
 		);
-		writeExecutorRecord(execution(projectPath, "failed-1", "failed"), false);
-
-		const theme = {
-			fg: (_color, text) => text,
-			bold: (text) => text,
-			italic: (text) => text,
-		};
-		let initialRender;
-		let refreshedRender;
-		let requestRenders = 0;
-		const ui = {
-			theme,
-			async custom(factory) {
-				return new Promise((resolve) => {
-					const component = factory(
-						{ requestRender() { requestRenders += 1; } },
-						theme,
-						{
-							matches(data, keybinding) {
-								return data === "escape" && keybinding === "tui.select.cancel";
-							},
-							getKeys(keybinding) {
-								return [keybinding];
-							},
-						},
-						resolve,
-					);
-					initialRender = component.render(200).join("\n");
-					setTimeout(() => {
-						writeExecutorRecord(execution(projectPath, "running-1", "failed"), false);
-					}, 50);
-					const refreshDeadline = Date.now() + 2_500;
-					const checkRefresh = () => {
-						refreshedRender = component.render(200).join("\n");
-						if (/\[1 running\]/u.test(refreshedRender) || Date.now() >= refreshDeadline) {
-							component.handleInput?.("escape");
-							return;
-						}
-						setTimeout(checkRefresh, 50);
-					};
-					setTimeout(checkRefresh, 75);
-				});
-			},
-			notify() {},
-		};
-
-		await showKhalaAttention(
-			{
-				cwd: projectPath,
-				mode: "tui",
-				ui,
-				isProjectTrusted: () => false,
-			},
-			undefined,
-		);
-		assert.match(initialRender, /Test Work  \[2 running\]/u);
-		assert.doesNotMatch(initialRender, /Test Work  \[failed\]/u);
-		assert.match(refreshedRender, /Test Work  \[1 running\]/u);
-		const requestRendersAfterClose = requestRenders;
-		await new Promise((resolve) => setTimeout(resolve, 1_100));
-		assert.equal(requestRenders, requestRendersAfterClose);
+		assert.match(selectorRender, /Test Work\s+\[idle\]/u);
+		assert.match(menuRender, /Test Work\s+\[idle\]/u);
+		assert.match(menuRender, /Status\s+Current worker is available; the current attempt can continue/u);
+		assert.doesNotMatch(selectorRender, /\[\d+ running\]|Executor(?:s)? running/u);
+		assert.doesNotMatch(menuRender, /\[\d+ running\]|Executor(?:s)? running/u);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		cleanup(root);
 	}
 });
 
-test("a running Executor replaces exhausted recovery status in the Work menu", async () => {
-	const root = mkdtempSync(join(tmpdir(), "khala-attention-running-status-"));
+test("a runtime that becomes unreachable between selector and menu keeps the unreachable projection", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-attention-runtime-transition-"));
 	const projectPath = join(root, "project");
 	try {
-		const submissionRecord = append(projectPath, "submission", "work-1", {
-			workId: "work-1",
+		setupMission(projectPath, "Runtime transition Work");
+		writeExecutorRecord(execution(projectPath, "execution-1", "running"), false);
+		let probeCount = 0;
+		let selectorRender;
+		let menuRender;
+		await runAttention(
 			projectPath,
-			status: "admitted",
-			work: work("Make Oracle review output useful and robust"),
-			archivePath: join(projectPath, "archive.jsonl"),
-			mandateId: "mandate-1",
-		});
-		append(projectPath, "mission", "work-1", {
-			missionId: "mission-1",
-			workId: "work-1",
-			mandateId: "mandate-1",
-			assignment: work("Mission work"),
-			assignedParticipantId: "executor-1",
-			createdAt: NOW,
-		});
-		const recoveryNow = new Date().toISOString();
-		const recoveryLease = new Date(Date.now() + 60_000).toISOString();
-		append(projectPath, "conclave-recovery", "work-1", {
-			recoveryId: "recovery-1",
-			workId: "work-1",
-			submissionRecordId: submissionRecord.recordId,
-			status: "claimed",
-			attempt: 1,
-			maxAttempts: 1,
-			ownerId: "owner-1",
-			claimedAt: recoveryNow,
-			leaseExpiresAt: recoveryLease,
-		});
-		append(projectPath, "conclave-wake", "work-1", {
-			wakeId: "recovery-1",
-			workId: "work-1",
-			status: "failed",
-			attemptedAt: recoveryNow,
-			failure: "Automatic Conclave recovery failed.",
-			recovery: "recreate",
-		});
-		append(projectPath, "conclave-recovery", "work-1", {
-			recoveryId: "recovery-2",
-			workId: "work-1",
-			submissionRecordId: submissionRecord.recordId,
-			status: "exhausted",
-			attempt: 1,
-			maxAttempts: 1,
-			exhaustedAt: recoveryNow,
-			reason: "Automatic Conclave submission recovery was exhausted.",
-		});
-		writeExecutorRecord(execution(projectPath, "running-1", "running"), false);
-
-		const theme = {
-			fg: (_color, text) => text,
-			bold: (text) => text,
-			italic: (text) => text,
-		};
-		let customCalls = 0;
-		let detailRender;
-		const ui = {
-			theme,
-			async custom(factory) {
-				customCalls += 1;
-				return new Promise((resolve) => {
-					const component = factory(
-						{ requestRender() {} },
-						theme,
-						{
-							matches(data, keybinding) {
-								return (
-									(data === "enter" && keybinding === "tui.select.confirm") ||
-									(data === "escape" && keybinding === "tui.select.cancel")
-								);
-							},
-							getKeys(keybinding) {
-								return [keybinding];
-							},
-						},
-						resolve,
-					);
-					if (customCalls === 1) {
-						assert.match(component.render(200).join("\n"), /\[1 running\]/u);
-						component.handleInput?.("enter");
-					} else if (customCalls === 2) {
-						detailRender = component.render(200).join("\n");
-						component.handleInput?.("escape");
-					} else {
-						component.handleInput?.("escape");
-					}
-				});
+			controller(new Set(), (executionId) => {
+				probeCount += 1;
+				return probeCount === 1
+					? { kind: "idle", executionId, sessionId: `${executionId}-session` }
+					: { kind: "unreachable", executionId, reason: "The runtime exited." };
+			}),
+			(component, count) => {
+				if (count === 1) {
+					selectorRender = component.render(200).join("\n");
+					component.handleInput?.("enter");
+				} else if (count === 2) {
+					menuRender = component.render(200).join("\n");
+					component.handleInput?.("escape");
+				} else {
+					component.handleInput?.("escape");
+				}
 			},
-			notify() {},
-		};
-
-		await showKhalaAttention(
-			{
-				cwd: projectPath,
-				mode: "tui",
-				ui,
-				isProjectTrusted: () => false,
-			},
-			undefined,
 		);
-		assert.match(detailRender, /Make Oracle review output useful and robust  \[1 running\]/u);
-		assert.match(detailRender, /Status        1 Executor running/u);
-		assert.doesNotMatch(detailRender, /\[stalled\]|recovery was exhausted|Recover Conclave/u);
+		assert.match(selectorRender, /Runtime transition Work\s+\[idle\]/u);
+		assert.match(menuRender, /Runtime transition Work\s+\[unreachable\]/u);
+		assert.match(menuRender, /Status\s+Current worker could not be reached; the Mission can continue/u);
+		assert.match(menuRender, /Continue with a new worker/u);
+		assert.doesNotMatch(menuRender, /Recover Conclave/u);
+		assert.doesNotMatch(menuRender, /\[\d+ running\]|Executor(?:s)? running/u);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		cleanup(root);
+	}
+});
+
+test("an orphaned exhausted recovery condition offers Recover Conclave but live liveness hides it", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-attention-recovery-action-"));
+	const projectPath = join(root, "project");
+	try {
+		const submission = setupMission(projectPath, "Recovery Work", "queued");
+		const now = new Date().toISOString();
+		const lease = new Date(Date.now() + 60_000).toISOString();
+		for (const attempt of [1, 2]) {
+			append(projectPath, "conclave-recovery", "work-1", {
+				recoveryId: `recovery-${attempt}`,
+				workId: "work-1",
+				submissionRecordId: submission.recordId,
+				status: "claimed",
+				attempt,
+				maxAttempts: 2,
+				ownerId: "owner-1",
+				claimedAt: now,
+				leaseExpiresAt: lease,
+			});
+			append(projectPath, "conclave-wake", "work-1", {
+				wakeId: `recovery-${attempt}`,
+				workId: "work-1",
+				status: "failed",
+				attemptedAt: now,
+				failure: `Recovery attempt ${attempt} failed.`,
+				recovery: "recreate",
+			});
+		}
+		append(projectPath, "conclave-recovery", "work-1", {
+			recoveryId: "recovery-3",
+			workId: "work-1",
+			submissionRecordId: submission.recordId,
+			status: "exhausted",
+			attempt: 2,
+			maxAttempts: 2,
+			exhaustedAt: now,
+			reason: "Automatic Conclave recovery exhausted its durable retry limit.",
+		});
+		writeExecutorRecord(execution(projectPath, "execution-1", "running"), false);
+
+		let orphanedMenu;
+		await runAttention(
+			projectPath,
+			controller(new Set(), (executionId) => ({
+				kind: "unreachable",
+				executionId,
+				reason: "The runtime exited.",
+			})),
+			(component, count) => {
+				if (count === 1) {
+					assert.match(component.render(200).join("\n"), /Recovery Work\s+\[stalled\]/u);
+					component.handleInput?.("enter");
+				} else if (count === 2) {
+					orphanedMenu = component.render(200).join("\n");
+					component.handleInput?.("escape");
+				} else {
+					component.handleInput?.("escape");
+				}
+			},
+		);
+		assert.match(orphanedMenu, /Recovery Work\s+\[stalled\]/u);
+		assert.match(orphanedMenu, /Recover Conclave/u);
+		assert.doesNotMatch(orphanedMenu, /\[\d+ running\]|Executor(?:s)? running/u);
+
+		let liveMenu;
+		await runAttention(
+			projectPath,
+			controller(new Set(["execution-1"]), (executionId) => ({
+				kind: "idle",
+				executionId,
+				sessionId: `${executionId}-session`,
+			})),
+			(component, count) => {
+				if (count === 1) {
+					component.handleInput?.("enter");
+				} else if (count === 2) {
+					liveMenu = component.render(200).join("\n");
+					component.handleInput?.("escape");
+				} else {
+					component.handleInput?.("escape");
+				}
+			},
+		);
+		assert.match(liveMenu, /Recovery Work\s+\[stalled\]/u);
+		assert.doesNotMatch(liveMenu, /Recover Conclave/u);
+	} finally {
+		cleanup(root);
+	}
+});
+
+test("a live stale runtime from a finished Mission does not replace review", async () => {
+	const root = mkdtempSync(join(tmpdir(), "khala-attention-review-status-"));
+	const projectPath = join(root, "project");
+	try {
+		setupMission(projectPath, "Review Work");
+		append(
+			projectPath,
+			"verdict",
+			"work-1",
+			{
+				verdictId: "verdict-1",
+				workId: "work-1",
+				executionId: "execution-1",
+				signalId: "signal-1",
+				missionId: "mission-1",
+				governingMandateId: "mandate-1",
+				issuedByParticipantId: "conclave-1",
+				decision: "finish",
+				reason: "Ready for review.",
+				issuedAt: NOW,
+			},
+			"execution-1",
+		);
+		append(
+			projectPath,
+			"pull-request",
+			"work-1",
+			{
+				pullRequestId: "pull-request-1",
+				workId: "work-1",
+				missionId: "mission-1",
+				executionId: "execution-1",
+				status: "reviewable",
+				url: "https://github.com/example/repo/pull/1",
+				remoteConfirmedAt: NOW,
+				changedFiles: [],
+				diffSummary: "Ready for review.",
+				validationResults: [],
+				reviewFeedback: [],
+				unresolvedGaps: [],
+				recordedAt: NOW,
+			},
+			"execution-1",
+		);
+		writeExecutorRecord(execution(projectPath, "execution-1", "running"), false);
+
+		let selectorRender;
+		let menuRender;
+		await runAttention(
+			projectPath,
+			controller(new Set(["execution-1"]), (executionId) => ({
+				kind: "idle",
+				executionId,
+				sessionId: `${executionId}-session`,
+			})),
+			(component, count) => {
+				if (count === 1) {
+					selectorRender = component.render(200).join("\n");
+					component.handleInput?.("enter");
+				} else if (count === 2) {
+					menuRender = component.render(200).join("\n");
+					component.handleInput?.("escape");
+				} else {
+					component.handleInput?.("escape");
+				}
+			},
+		);
+		assert.match(selectorRender, /Review Work\s+\[review\]/u);
+		assert.match(menuRender, /Status\s+Ready for your review/u);
+		assert.doesNotMatch(menuRender, /\[idle\]|\[unreachable\]|Recover Conclave|\[\d+ running\]/u);
+	} finally {
+		cleanup(root);
 	}
 });

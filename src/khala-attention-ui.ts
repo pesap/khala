@@ -55,7 +55,10 @@ type WorkerActionKind = Extract<
 	WorkAttentionAction,
 	"try-current-execution" | "continue-current-mission" | "stop-current-execution"
 >;
-type KhalaAttentionController = Pick<ConclaveCoordinator, "executeWorkerAction" | "probeExecutionRuntime">;
+type KhalaAttentionController = Pick<
+	ConclaveCoordinator,
+	"executeWorkerAction" | "hasLiveExecutionRuntime" | "probeExecutionRuntime"
+>;
 type ConclaveRecoveryTrigger = (context: ExtensionContext) => void | Promise<void>;
 
 async function showKhalaAttention(
@@ -166,21 +169,34 @@ function observerView(execution: ExecutorRecord): KhalaObserverInspection | unde
 	return { executorName: execution.executorName, launcher: execution.launcher, target: execution.target };
 }
 
-function runningMissionExecutorCounts(projectPath: string, projectTrusted = false): ReadonlyMap<string, number> {
-	// Archive snapshots preserve append order, so the last record for an Execution is its current state.
+function hasLiveMissionExecutor(
+	item: WorkAttention,
+	context: ExtensionContext,
+	controller: KhalaAttentionController | undefined,
+): boolean {
+	if (item.missionId === undefined || controller === undefined) {
+		return false;
+	}
+	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+	const liveRuntime = (executionId: string): boolean => {
+		try {
+			return controller.hasLiveExecutionRuntime(context.cwd, executionId, projectTrusted);
+		} catch {
+			return false;
+		}
+	};
 	const latestByExecution = new Map<string, ExecutorRecord>();
-	for (const execution of createArchiveSnapshot(projectPath, projectTrusted).listExecutions()) {
+	for (const execution of createArchiveSnapshot(context.cwd, projectTrusted).listExecutions()) {
 		latestByExecution.set(execution.executionId, execution);
 	}
-	const counts = new Map<string, number>();
-	for (const execution of latestByExecution.values()) {
-		if (execution.status !== ExecutorStatus.running || !isMissionExecutorRecord(execution)) {
-			continue;
-		}
-		const missionId = execution.missionId ?? execution.purpose.missionId;
-		counts.set(missionId, (counts.get(missionId) ?? 0) + 1);
-	}
-	return counts;
+	return [...latestByExecution.values()].some(
+		(execution) =>
+			execution.status === ExecutorStatus.running &&
+			isMissionExecutorRecord(execution) &&
+			execution.workId === item.workId &&
+			(execution.missionId ?? execution.purpose.missionId) === item.missionId &&
+			liveRuntime(execution.executionId),
+	);
 }
 
 function renderKhalaAttentionSummary(summary: KhalaAttentionSummary): string {
@@ -269,36 +285,16 @@ function buildAttentionOptions(
 	];
 }
 
-function currentRunningMissionCount(item: WorkAttention, context: ExtensionContext): number {
-	if (item.missionId === undefined) {
-		return 0;
-	}
-	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
-	return runningMissionExecutorCounts(context.cwd, projectTrusted).get(item.missionId) ?? 0;
-}
-
-function attentionOptionLabel(candidate: KhalaAttentionOption, counts: ReadonlyMap<string, number>): string {
-	const { work } = candidate;
-	const missionId = work?.missionId;
-	if (work === undefined || missionId === undefined) {
-		return candidate.label;
-	}
-	const count = counts.get(missionId) ?? 0;
-	if (count === 0) {
-		return candidate.label;
-	}
-	const reference =
-		work.pullRequestReference === undefined ? work.title : `${work.pullRequestReference}  ${work.title}`;
-	return `${reference}  [${count} running]`;
+function attentionOptionLabel(candidate: KhalaAttentionOption): string {
+	return candidate.label;
 }
 
 function attentionSelectorEntries(
 	options: readonly KhalaAttentionOption[],
-	counts: ReadonlyMap<string, number>,
 ): KhalaSelectorEntry<KhalaAttentionOption>[] {
-	const labels = uniqueOptionLabels(options.map((candidate) => attentionOptionLabel(candidate, counts)));
+	const labels = uniqueOptionLabels(options.map((candidate) => attentionOptionLabel(candidate)));
 	return options.map((candidate, index) => {
-		const label = attentionOptionLabel(candidate, counts);
+		const label = attentionOptionLabel(candidate);
 		return {
 			value: candidate,
 			label: labels[index] ?? label,
@@ -312,13 +308,10 @@ function selectAttentionOption(
 	view: KhalaAttentionView,
 	options: readonly KhalaAttentionOption[],
 ): Promise<KhalaAttentionOption | undefined> {
-	const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
-	const entries = attentionSelectorEntries(options, runningMissionExecutorCounts(context.cwd, projectTrusted));
-	return selectKhalaItem(context, attentionTitle(view), entries, {
+	return selectKhalaItem(context, attentionTitle(view), attentionSelectorEntries(options), {
 		filter: true,
 		filterLabel: "Filter missions",
 		noMatchText: "No matching missions",
-		refresh: () => attentionSelectorEntries(options, runningMissionExecutorCounts(context.cwd, projectTrusted)),
 	});
 }
 
@@ -546,34 +539,55 @@ async function openWorkAttention(
 	recoverConclave: ConclaveRecoveryTrigger | undefined,
 ): Promise<boolean> {
 	for (;;) {
-		let actions: readonly WorkAttentionAction[];
-		let runningExecutors = 0;
+		let currentItem: WorkAttention | undefined = item;
 		try {
-			actions = await visibleWorkActions(item, context);
-			runningExecutors = currentRunningMissionCount(item, context);
+			const projectTrusted = typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
+			const refreshed = await resolveKhalaAttention(
+				context.cwd,
+				projectTrusted,
+				controller?.probeExecutionRuntime === undefined
+					? undefined
+					: (executionId) => controller.probeExecutionRuntime(context.cwd, executionId, projectTrusted),
+			);
+			currentItem =
+				refreshed.work.find(
+					(candidate) => candidate.workId === item.workId && candidate.conditionId === item.conditionId,
+				) ?? refreshed.work.find((candidate) => candidate.workId === item.workId);
+			if (currentItem === undefined) {
+				return true;
+			}
+		} catch (error) {
+			context.ui.notify(errorMessage(error), "error");
+			return false;
+		}
+		let actions: readonly WorkAttentionAction[];
+		let liveExecutor = false;
+		try {
+			liveExecutor = hasLiveMissionExecutor(currentItem, context, controller);
+			actions = visibleWorkActions(currentItem, context, liveExecutor);
 		} catch (error) {
 			context.ui.notify(errorMessage(error), "error");
 			return false;
 		}
 		const entries = actions.map((workAction) => ({ value: workAction, label: workActionLabel(workAction) }));
-		const selectedAction = await selectKhalaItem(
-			context,
-			workAttentionTitle(item, context.ui.theme, runningExecutors),
-			entries,
-		);
+		const selectedAction = await selectKhalaItem(context, workAttentionTitle(currentItem, context.ui.theme), entries);
 		if (selectedAction === undefined) {
 			return true;
 		}
 		if (selectedAction === "review") {
-			context.ui.notify(item.pullRequestUrl ?? "The Pull Request URL is not available.", "info");
+			context.ui.notify(currentItem.pullRequestUrl ?? "The Pull Request URL is not available.", "info");
 			return false;
 		}
 		if (selectedAction === "view-attempts") {
-			await showAttempts(item, context);
+			await showAttempts(currentItem, context);
 			continue;
 		}
 		if (selectedAction === "dismiss") {
-			appendAttentionDismissal(context.cwd, { conditionId: item.conditionId, workId: item.workId, kind: "work" });
+			appendAttentionDismissal(context.cwd, {
+				conditionId: currentItem.conditionId,
+				workId: currentItem.workId,
+				kind: "work",
+			});
 			context.ui.notify("Dismissed this Work attention condition.", "info");
 			return false;
 		}
@@ -592,10 +606,10 @@ async function openWorkAttention(
 			return false;
 		}
 		if (selectedAction === "select-model") {
-			return !(await selectExecutorRecoveryModel(item, context, controller));
+			return !(await selectExecutorRecoveryModel(currentItem, context, controller));
 		}
 		if (selectedAction === "try-same-model") {
-			return !(await trySameModelRecovery(item, context, controller));
+			return !(await trySameModelRecovery(currentItem, context, controller));
 		}
 		if (
 			selectedAction !== "try-current-execution" &&
@@ -604,7 +618,7 @@ async function openWorkAttention(
 		) {
 			return true;
 		}
-		await executeAttentionWorkerAction(item, selectedAction, context, controller);
+		await executeAttentionWorkerAction(currentItem, selectedAction, context, controller);
 		return false;
 	}
 }
@@ -687,9 +701,12 @@ function selectNativeExecutorModel(
 	});
 }
 
-function visibleWorkActions(item: WorkAttention, context: ExtensionContext): readonly WorkAttentionAction[] {
-	const runningExecutors = currentRunningMissionCount(item, context);
-	const withoutStaleRecovery = item.actions.filter((action) => action !== "recover-conclave" || runningExecutors === 0);
+function visibleWorkActions(
+	item: WorkAttention,
+	context: ExtensionContext,
+	liveExecutor: boolean,
+): readonly WorkAttentionAction[] {
+	const withoutStaleRecovery = item.actions.filter((action) => action !== "recover-conclave" || !liveExecutor);
 	if (!(item.actions.includes("select-model") || item.actions.includes("try-same-model"))) {
 		return withoutStaleRecovery;
 	}
@@ -1034,17 +1051,12 @@ function workAttentionLabel(item: WorkAttention, theme?: Theme): string {
 	return `${reference}  ${attentionTag(workAttentionTag(item), theme)}`;
 }
 
-function workAttentionTitle(item: WorkAttention, theme?: Theme, runningExecutors = 0): string {
-	const tag = runningExecutors === 0 ? attentionTag(workAttentionTag(item), theme) : `[${runningExecutors} running]`;
-	const status =
-		runningExecutors === 0
-			? attentionDetail(item)
-			: `${runningExecutors} ${runningExecutors === 1 ? "Executor" : "Executors"} running`;
+function workAttentionTitle(item: WorkAttention, theme?: Theme): string {
 	const lines = [
-		`${item.title}  ${tag}`,
+		`${item.title}  ${attentionTag(workAttentionTag(item), theme)}`,
 		item.missionId === undefined ? undefined : `Mission       ${item.missionId}`,
 		item.pullRequestReference === undefined ? undefined : `Pull Request  ${item.pullRequestReference}`,
-		`${item.summary.includes("Mission is held") ? "Reason" : "Status"}        ${status}`,
+		`${item.summary.includes("Mission is held") ? "Reason" : "Status"}        ${attentionDetail(item)}`,
 	].filter((value): value is string => value !== undefined);
 	return lines.join("\n");
 }

@@ -24,7 +24,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
 import type { RpcSessionBinding } from "./executor-rpc.js";
-import { appendArchiveRecord, listArchiveRecords } from "./khala-archive.js";
+import { appendArchiveRecord, listArchiveRecords, withArchiveLock } from "./khala-archive.js";
 import { projectActiveUpstreamBases } from "./khala-archive-projections.js";
 import {
 	buildCoordinationDependencyGraph,
@@ -754,13 +754,38 @@ async function failExecutionAndCloseInterventions(
 	closeRuntime?: () => Promise<void>,
 ): Promise<string | undefined> {
 	await closeRuntime?.().catch(() => undefined);
-	const currentExecution = readExecutorRecord(projectPath, executionId, projectTrusted);
-	if (currentExecution?.status !== ExecutorStatus.failed) {
-		updateExecutorRecord(projectPath, executionId, { status: ExecutorStatus.failed }, projectTrusted);
-	}
-	const failedExecutionRecordId = [...listArchiveRecords(projectPath, projectTrusted)]
-		.reverse()
-		.find((record) => record.type === "execution" && record.executionId === executionId)?.recordId;
+	let failedExecutionRecordId: string | undefined;
+	withArchiveLock(projectPath, projectTrusted, () => {
+		const currentExecution = readExecutorRecord(projectPath, executionId, projectTrusted);
+		if (currentExecution === undefined) {
+			return;
+		}
+		if (currentExecution.status === ExecutorStatus.finished) {
+			return;
+		}
+		if (currentExecution.status === ExecutorStatus.starting || currentExecution.status === ExecutorStatus.running) {
+			updateExecutorRecord(projectPath, executionId, { status: ExecutorStatus.failed }, projectTrusted);
+		}
+		if (
+			currentExecution.status !== ExecutorStatus.failed &&
+			currentExecution.status !== ExecutorStatus.starting &&
+			currentExecution.status !== ExecutorStatus.running
+		) {
+			return;
+		}
+		failedExecutionRecordId = [...listArchiveRecords(projectPath, projectTrusted)].reverse().find((record) => {
+			if (
+				record.type !== "execution" ||
+				record.executionId !== executionId ||
+				typeof record.payload !== "object" ||
+				record.payload === null
+			) {
+				return false;
+			}
+			const payload = record.payload as { status?: unknown };
+			return payload.status === "failed";
+		})?.recordId;
+	});
 	if (failedExecutionRecordId === undefined) {
 		return;
 	}

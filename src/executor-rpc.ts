@@ -187,6 +187,11 @@ class HeadlessExecutorRuntime {
 		return this.binding?.sessionPath;
 	}
 
+	get isLive(): boolean {
+		const { child } = this;
+		return !this.closed && child !== undefined && child.exitCode === null && child.signalCode === null;
+	}
+
 	async sendPrompt(message: string): Promise<void> {
 		if (this.stopPending) {
 			throw new Error("Executor runtime is stop-pending; no new prompt may start.");

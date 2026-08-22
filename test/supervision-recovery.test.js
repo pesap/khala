@@ -18,6 +18,7 @@ import { appendArchiveRecord, getArchivePath, listArchiveRecords } from "../dist
 import { listCoordinationRecords } from "../dist/src/khala-archive-projections.js";
 import { directRevisionDependents, recordUpstreamRevision } from "../dist/src/khala-coordination.js";
 import { failExecutionAndCloseInterventions } from "../dist/src/khala-supervision-recovery.js";
+import { updateExecutorRecord } from "../dist/src/khala-executor-registry.js";
 import { registerSupervisionController, SupervisionController, unregisterSupervisionController } from "../dist/src/khala-supervision.js";
 import { isPendingRecoveryLaunchEligible, startFreshSameMissionExecution } from "../dist/src/khala-conclave.js";
 import { createFileConclaveStorage } from "../dist/src/khala-conclave-storage-file.js";
@@ -1578,6 +1579,69 @@ test("runtime-loss closure records the exact failed Execution and closes outstan
     assert.equal(records.at(-2).payload.status, "failed");
     assert.equal(records.at(-1).payload.outcome, "escalated");
     assert.equal(records.at(-1).payload.failedExecutionRecordId, failedRecordId);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime-loss closure leaves concurrent finished status and no replacement record", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-loss-finished-race-"));
+  try {
+    const now = new Date().toISOString();
+    const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "execution", payload: { executionId: "execution", workId: "work", executorName: "E", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "session", sessionPath: join(root, "session.jsonl"), promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "running", startedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "intervention", workId: "work", executionId: "execution", payload: { interventionId: "intervention", phase: "issuance", actionId: "issue", workId: "work", mandateId: "mandate", missionId: "mission", executionId: "execution", conclaveParticipantId: "conclave", executorParticipantId: "executor", piSessionId: "session", assessmentId: "assessment", failureSummary: "A specific runtime failure.", category: "other", missionTerm: "S", message: "Bounded", promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, mode: "correction", piEntryIds: ["entry"], sentAt: now, transportResult: "confirmed" } });
+    const failedRecordId = await failExecutionAndCloseInterventions(root, "execution", false, async () => {
+      await Promise.resolve();
+      updateExecutorRecord(root, "execution", { status: "finished" });
+    });
+    assert.equal(failedRecordId, undefined);
+    const records = listArchiveRecords(root);
+    const executionRecords = records.filter((record) => record.type === "execution" && record.executionId === "execution");
+    assert.equal(executionRecords.at(-1).payload.status, "finished");
+    assert.equal(executionRecords.filter((record) => record.payload.status === "failed").length, 0);
+    assert.equal(records.filter((record) => record.type === "intervention" && record.payload.phase === "outcome").length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime-loss closure uses existing failed record when already failed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "khala-supervision-recovery-loss-failed-"));
+  try {
+    const now = new Date().toISOString();
+    const assignment = { title: "T", objective: "O", context: "C", scope: "S", acceptanceCriteria: ["A"], constraints: [], plan: ["P"], validation: ["V"] };
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mandate", workId: "work", payload: { mandateId: "mandate", workId: "work", revision: 1, sourceSubmissionRecordId: "submission", terms: assignment, admittedByParticipantId: "conclave", admittedAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "mission", workId: "work", payload: { missionId: "mission", workId: "work", mandateId: "mandate", assignment, assignedParticipantId: "executor", createdAt: now } });
+    appendArchiveRecord(root, { schemaVersion: 2, type: "execution", workId: "work", executionId: "execution", payload: { executionId: "execution", workId: "work", executorName: "E", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "session", sessionPath: join(root, "session.jsonl"), promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "running", startedAt: now } });
+    const failedExecution = appendArchiveRecord(root, {
+      schemaVersion: 2,
+      type: "execution",
+      workId: "work",
+      executionId: "execution",
+      payload: { executionId: "execution", workId: "work", executorName: "E", kind: "executor", participantId: "executor", purpose: { kind: "mission", missionId: "mission" }, missionId: "mission", projectPath: root, sandboxPath: root, launcher: "headless-rpc", piSessionId: "session", sessionPath: join(root, "session.jsonl"), promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, status: "failed", startedAt: now },
+    });
+    const executionCountBefore = listArchiveRecords(root).filter((record) => record.type === "execution").length;
+    appendArchiveRecord(root, { schemaVersion: 2, type: "intervention", workId: "work", executionId: "execution", payload: { interventionId: "intervention", phase: "issuance", actionId: "issue", workId: "work", mandateId: "mandate", missionId: "mission", executionId: "execution", conclaveParticipantId: "conclave", executorParticipantId: "executor", piSessionId: "session", assessmentId: "assessment", failureSummary: "A specific runtime failure.", category: "other", missionTerm: "S", message: "Bounded", promptIdentity: { packageVersion: "test", promptSha256: "a".repeat(64) }, mode: "correction", piEntryIds: ["entry"], sentAt: now, transportResult: "confirmed" } });
+    const failedRecordId = await failExecutionAndCloseInterventions(root, "execution");
+    const records = listArchiveRecords(root);
+    const executionRecords = records.filter((record) => record.type === "execution" && record.executionId === "execution");
+    const outcome = records.find(
+      (record) =>
+        record.type === "intervention" &&
+        typeof record.payload === "object" &&
+        record.payload !== null &&
+        record.payload.phase === "outcome",
+    );
+
+    assert.equal(failedRecordId, failedExecution.recordId);
+    assert.equal(executionRecords.length, executionCountBefore);
+    assert.equal(executionRecords.at(-1).recordId, failedExecution.recordId);
+    assert.equal(executionRecords.filter((record) => record.payload.status === "failed").length, 1);
+    assert.equal(outcome?.type, "intervention");
+    assert.equal(outcome?.payload.failedExecutionRecordId, failedExecution.recordId);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

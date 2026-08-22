@@ -4,6 +4,7 @@
 // biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Worker action preconditions fail closed at one authoritative seam.
 // biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Each action keeps its Archive and runtime fence together.
 // biome-ignore-all lint/complexity/useMaxParams: Result helpers preserve explicit lifecycle identity fields.
+// biome-ignore-all lint/performance/noAwaitInLoops: Active Execution reconciliation closes records serially before considering a replacement.
 // biome-ignore-all lint/suspicious/useAwait: Async action dispatch keeps one uniform coordinator contract.
 import { createHash } from "node:crypto";
 import type { HeadlessExecutorRuntime } from "./executor-rpc.js";
@@ -395,7 +396,7 @@ async function executeTryCurrentExecution(
 		);
 	}
 	const runtime = await input.services.getRuntime(execution.executionId);
-	if (runtime === undefined) {
+	if (runtime === undefined || runtime.isLive === false) {
 		return runtimeUnavailableResult(input, request, current.mission.missionId, execution.executionId);
 	}
 	const runtimeState = await runtime.probeRuntime();
@@ -470,29 +471,11 @@ async function executeContinueCurrentMission(
 			"held",
 		);
 	}
-	const active = latestMissionExecutions(input.projectPath, input.projectTrusted).find(
-		(execution) =>
-			execution.missionId === current.mission.missionId &&
-			(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
-	);
-	if (active !== undefined) {
-		if (blockedAwaitingVerdict(input, active)) {
-			return rejectWorkerAction(
-				input,
-				request,
-				"The current Execution is blocked and awaits an authoritative Conclave Verdict.",
-				current.mission.missionId,
-				active.executionId,
-			);
-		}
-		return completeRejectedWorkerAction(input, request, {
-			status: "already-active",
-			actionId: request.actionId,
-			missionId: current.mission.missionId,
-			executionId: active.executionId,
-		});
+	const activeResult = await reconcileActiveMissionExecutions(input, request, current.mission.missionId);
+	if (activeResult !== null) {
+		return activeResult;
 	}
-	let predecessor = predecessorForContinue(input, request, current.mission.missionId);
+	const predecessor = predecessorForContinue(input, request, current.mission.missionId);
 	if (predecessor === undefined) {
 		return rejectWorkerAction(
 			input,
@@ -501,16 +484,7 @@ async function executeContinueCurrentMission(
 			current.mission.missionId,
 		);
 	}
-	if (predecessor.status === ExecutorStatus.running) {
-		const runtime = await input.services.getRuntime(predecessor.executionId);
-		const runtimeState = runtime === undefined ? undefined : await runtime.probeRuntime();
-		if (runtimeState !== undefined && runtimeState.kind !== "unreachable") {
-			return runtimeObservationResult(input, request, current.mission.missionId, predecessor.executionId, runtimeState);
-		}
-		await input.services.failExecution(predecessor.executionId);
-		predecessor = readExecutorRecord(input.projectPath, predecessor.executionId, input.projectTrusted);
-	}
-	if (predecessor === undefined || predecessor.status !== ExecutorStatus.failed) {
+	if (predecessor.status !== ExecutorStatus.failed) {
 		return rejectWorkerAction(
 			input,
 			request,
@@ -542,6 +516,60 @@ async function executeContinueCurrentMission(
 		...(request.model === undefined ? {} : { model: request.model }),
 	});
 	return completeRecoveryAction(input, request, result);
+}
+
+async function reconcileActiveMissionExecutions(
+	input: ExecuteUserWorkerActionInput,
+	request: UserWorkerActionRequest,
+	missionId: string,
+): Promise<WorkerActionResult | null> {
+	const active = latestMissionExecutions(input.projectPath, input.projectTrusted).filter(
+		(execution) =>
+			isMissionExecutorRecord(execution) &&
+			execution.missionId === missionId &&
+			(execution.status === ExecutorStatus.starting || execution.status === ExecutorStatus.running),
+	);
+	for (const execution of active) {
+		if (blockedAwaitingVerdict(input, execution)) {
+			return rejectWorkerAction(
+				input,
+				request,
+				"The current Execution is blocked and awaits an authoritative Conclave Verdict.",
+				missionId,
+				execution.executionId,
+			);
+		}
+		if (execution.status === ExecutorStatus.starting) {
+			// Fresh recovery writes its durable reservation before registering its child.
+			// Its launch owner, or startup recovery after a restart, settles this state.
+			return completeRejectedWorkerAction(input, request, {
+				status: "already-active",
+				actionId: request.actionId,
+				missionId,
+				executionId: execution.executionId,
+			});
+		}
+		const runtime = await input.services.getRuntime(execution.executionId);
+		if (runtime === undefined || runtime.isLive === false) {
+			await input.services.failExecution(execution.executionId);
+			continue;
+		}
+		const runtimeState = await runtime.probeRuntime();
+		if (runtimeState.kind === "unreachable") {
+			await input.services.failExecution(execution.executionId);
+			continue;
+		}
+		if (runtimeState.kind === "unknown") {
+			return runtimeObservationResult(input, request, missionId, execution.executionId, runtimeState);
+		}
+		return completeRejectedWorkerAction(input, request, {
+			status: "already-active",
+			actionId: request.actionId,
+			missionId,
+			executionId: execution.executionId,
+		});
+	}
+	return null;
 }
 
 async function executeStopCurrentExecution(
@@ -584,7 +612,7 @@ async function executeStopCurrentExecution(
 		);
 	}
 	const runtime = await input.services.getRuntime(execution.executionId);
-	if (runtime === undefined) {
+	if (runtime === undefined || runtime.isLive === false) {
 		return runtimeUnavailableResult(input, request, current.mission.missionId, execution.executionId);
 	}
 	const runtimeState = await runtime.probeRuntime();
