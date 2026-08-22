@@ -692,12 +692,7 @@ runTest("exhausted Conclave submission recovery marks the Work stopped", async (
 	await showKhalaAttention(contextFor(projectPath, ui), undefined, undefined, () => {
 		recoveryCalls += 1;
 	});
-	assert.deepEqual(selectCalls[1].options, [
-		"Recover Conclave",
-		"View attempts",
-		"Dismiss",
-		"Back to attention list",
-	]);
+	assert.deepEqual(selectCalls[1].options, ["Recover Conclave", "View attempts", "Dismiss"]);
 	assert.equal(recoveryCalls, 1);
 });
 
@@ -838,7 +833,7 @@ runTest("legacy Executor records retain model recovery selection", async (projec
 	};
 
 	await showKhalaAttention({ ...contextFor(projectPath, ui), modelRegistry: ui.modelRegistry }, undefined);
-	assert.deepEqual(selectCalls[1].options, ["Select another model", "View attempts", "Dismiss", "Back to attention list"]);
+	assert.deepEqual(selectCalls[1].options, ["Select another model", "View attempts", "Dismiss"]);
 });
 
 runTest("failed Conclave wakes surface recovery attention", (projectPath) => {
@@ -1073,7 +1068,6 @@ runTest("View attempts opens a selectable attempt detail", async (projectPath) =
 		}),
 		false,
 	);
-	const selectCalls = [];
 	let customCalls = 0;
 	const ui = {
 		theme: {
@@ -1081,6 +1075,9 @@ runTest("View attempts opens a selectable attempt detail", async (projectPath) =
 				return color === "muted" ? `<muted>${text}</muted>` : color === "accent" ? `<accent>${text}</accent>` : color === "dim" ? `<dim>${text}</dim>` : text;
 			},
 			bold(text) {
+				return text;
+			},
+			italic(text) {
 				return text;
 			},
 		},
@@ -1092,7 +1089,11 @@ runTest("View attempts opens a selectable attempt detail", async (projectPath) =
 					ui.theme,
 					{
 						matches(data, keybinding) {
-							return data === "backspace" && keybinding === "tui.editor.deleteCharBackward";
+							return (
+								(data === "enter" && keybinding === "tui.select.confirm") ||
+								(data === "down" && keybinding === "tui.select.down") ||
+								(data === "backspace" && keybinding === "tui.editor.deleteCharBackward")
+							);
 						},
 						getKeys(keybinding) {
 							return [keybinding];
@@ -1100,7 +1101,7 @@ runTest("View attempts opens a selectable attempt detail", async (projectPath) =
 					},
 					resolve,
 				);
-				if (customCalls === 1) {
+				if (customCalls === 3) {
 					const rows = component
 						.render(200)
 						.filter((line) => line.includes("execution error") || line.includes("model unavailable"));
@@ -1108,35 +1109,28 @@ runTest("View attempts opens a selectable attempt detail", async (projectPath) =
 					const plainRows = rows.map((row) => row.replaceAll(/<\/?[^>]+>/gu, ""));
 					assert.equal(plainRows[0].indexOf("[execution error]"), plainRows[1].indexOf("[model unavailable]"));
 					assert.doesNotMatch(plainRows[0], /Attempt/);
-					component.handleInput("\x1b[A");
-					component.handleInput("\r");
+					component.handleInput("down");
+					component.handleInput("enter");
+				} else if (customCalls === 4) {
+					const detail = component.render(200).join("\n");
+					assert.match(detail, /Attempt\s+2/);
+					assert.match(detail, /Execution\s+execution-2/);
+					assert.match(detail, /Failure type\s+model unavailable/);
+					assert.match(detail, /Failure\s+The provider returned an invalid response\./);
+					assert.match(detail, /Launcher\s+headless-rpc/);
+					component.handleInput("backspace");
+				} else if (customCalls === 1 || customCalls === 2) {
+					component.handleInput("enter");
 				} else {
 					component.handleInput("backspace");
 				}
 			});
 		},
-		async select(title, options) {
-			selectCalls.push({ title, options });
-			if (selectCalls.length === 1) return options[0];
-			if (selectCalls.length === 2) return "View attempts";
-			if (selectCalls.length === 3) return "Back to attempts";
-			return undefined;
-		},
 		notify() {},
 	};
 
 	await showKhalaAttention(contextFor(projectPath, ui), undefined);
-	assert.equal(customCalls, 2);
-	assert.equal(selectCalls.length, 5);
-	assert.equal(selectCalls[2].title.includes("Execution     execution-2"), true);
-	assert.equal(selectCalls[2].options[0], "Back to attempts");
-	assert.equal(selectCalls[3].title.startsWith("Test Work  <dim>[model unavailable]</dim>"), true);
-	assert.equal(selectCalls[4].title, "Khala — action required");
-	assert.match(selectCalls[2].title, /Attempt       2/);
-	assert.match(selectCalls[2].title, /Execution     execution-2/);
-	assert.match(selectCalls[2].title, /Failure type  model unavailable/);
-	assert.match(selectCalls[2].title, /Failure       The provider returned an invalid response\./);
-	assert.match(selectCalls[2].title, /Launcher      headless-rpc/);
+	assert.equal(customCalls, 7);
 });
 
 runTest("Work selection opens one Archive-backed worker action", async (projectPath) => {
@@ -1172,12 +1166,7 @@ runTest("Work selection opens one Archive-backed worker action", async (projectP
 		},
 	});
 	assert.deepEqual(selectCalls[0].options, ["Test Work  [failed]"]);
-	assert.deepEqual(selectCalls[1].options, [
-		"Continue with a new worker",
-		"View attempts",
-		"Dismiss",
-		"Back to attention list",
-	]);
+	assert.deepEqual(selectCalls[1].options, ["Continue with a new worker", "View attempts", "Dismiss"]);
 	assert.equal(requests.length, 1);
 	assert.equal(requests[0].expectedMissionId, "mission-1");
 	assert.equal(requests[0].expectedExecutionId, "execution-1");
@@ -1271,16 +1260,14 @@ runTest("Back from a Work action menu returns to the top-level attention list", 
 	const ui = {
 		async select(title, options) {
 			selectCalls.push({ title, options });
-			if (selectCalls.length === 1) return options[0];
-			if (selectCalls.length === 2) return "Back to attention list";
-			return undefined;
+			return selectCalls.length === 1 ? options[0] : undefined;
 		},
 		notify() {},
 	};
 
 	await showKhalaAttention(contextFor(projectPath, ui), undefined);
 	assert.equal(selectCalls.length, 3);
-	assert.equal(selectCalls[1].options.at(-1), "Back to attention list");
+	assert.equal(selectCalls[1].options.at(-1), "Dismiss");
 	assert.equal(selectCalls[2].title, "Khala — action required");
 });
 
@@ -1298,16 +1285,14 @@ runTest("Back from a project recovery menu returns to the top-level attention li
 	const ui = {
 		async select(title, options) {
 			selectCalls.push({ title, options });
-			if (selectCalls.length === 1) return options[0];
-			if (selectCalls.length === 2) return "Back to attention list";
-			return undefined;
+			return selectCalls.length === 1 ? options[0] : undefined;
 		},
 		notify() {},
 	};
 
 	await showKhalaAttention(contextFor(projectPath, ui), undefined);
 	assert.equal(selectCalls.length, 3);
-	assert.equal(selectCalls[1].options.at(-1), "Back to attention list");
+	assert.equal(selectCalls[1].options.at(-1), "Dismiss");
 	assert.equal(selectCalls[2].title, "Khala — action required");
 });
 

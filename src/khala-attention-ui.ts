@@ -85,7 +85,7 @@ async function showKhalaAttention(
 			context.ui.notify(renderKhalaAttentionView(view), "info");
 			return;
 		}
-		const options = buildAttentionOptions(view, observers);
+		const options = buildAttentionOptions(view, observers, context.ui.theme);
 		const option = await selectAttentionOption(context, view, options);
 		if (option === undefined) {
 			return;
@@ -268,15 +268,16 @@ function uniqueOptionLabels(labels: readonly string[]): string[] {
 function buildAttentionOptions(
 	view: KhalaAttentionView,
 	observers: readonly KhalaObserverInspection[],
+	theme?: Theme,
 ): KhalaAttentionOption[] {
 	return [
 		...view.work.map((item) => ({
-			label: workAttentionLabel(item),
+			label: workAttentionLabel(item, theme),
 			detail: item.summary,
 			work: item,
 		})),
 		...view.project.map((item) => ({
-			label: projectAttentionLabel(item),
+			label: projectAttentionLabel(item, theme),
 			detail: item.summary,
 			level: "warning" as const,
 			project: item,
@@ -344,6 +345,14 @@ function selectKhalaItem<T>(
 	options: KhalaSelectorOptions<T> = {},
 ): Promise<T | undefined> {
 	const filter = options.filter === true;
+	if (typeof context.ui.custom !== "function") {
+		return context.ui
+			.select(
+				title,
+				entries.map((entry) => entry.label),
+			)
+			.then((selectedLabel) => entries.find((entry) => entry.label === selectedLabel)?.value);
+	}
 	return context.ui.custom<T | undefined>((tui, theme, keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((text) => theme.fg("accent", text)));
