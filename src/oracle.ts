@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentRuntimePort, OraclePacket, OraclePort, OracleResult } from "./ports.js";
 import { promptIdentity } from "./runtime.js";
 
@@ -27,16 +30,26 @@ class PiOracle implements OraclePort {
 			role: "oracle",
 			promptIdentity: promptIdentity(this.prompt, this.packageVersion),
 			tools: [],
+			sessionPath: join(
+				tmpdir(),
+				"khala-sessions",
+				createHash("sha256").update(this.projectPath).digest("hex").slice(0, 24),
+				`khala-oracle-${createHash("sha256").update(packet.mission.missionId).digest("hex").slice(0, 24)}-session.jsonl`,
+			),
 		});
-		const output = await this.runtime.send(binding, buildPrompt(packet));
-		const parsed = parseVerdict(output);
-		return {
-			verdict: parsed?.verdict ?? "incomplete",
-			findings: parsed?.findings ?? [],
-			validationGaps: parsed?.validationGaps ?? [],
-			durationMs: Date.now() - started,
-			output: output.slice(0, MAX_PACKET_TEXT),
-		};
+		try {
+			const output = await this.runtime.send(binding, buildPrompt(packet));
+			const parsed = parseVerdict(output);
+			return {
+				verdict: parsed?.verdict ?? "incomplete",
+				findings: parsed?.findings ?? [],
+				validationGaps: parsed?.validationGaps ?? [],
+				durationMs: Date.now() - started,
+				output: output.slice(0, MAX_PACKET_TEXT),
+			};
+		} finally {
+			await this.runtime.requestStop(binding).catch(() => undefined);
+		}
 	}
 }
 

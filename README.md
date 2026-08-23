@@ -48,13 +48,16 @@ is scheduled independently.
    validation, context, and the Work token cap may be supplied explicitly.
 2. The Conclave admits complete terms into one immutable Mission. Missing
    repository facts may launch one read-only Observer assessment.
-3. FIFO scheduling starts at most the configured number of Executions and never
-   exceeds the Work token cap.
-4. The Executor works in a Git worktree, creates a draft GitHub Pull Request or
+3. FIFO scheduling reserves an Execution before launch, starts at most the
+   configured number of Executions, and never exceeds the Work token cap.
+4. The persistent parent supervisor launches the Executor from the durable
+   outbox; a Conclave child never owns the Executor runtime. The Executor works
+   in a Git worktree, creates a draft GitHub Pull Request or
    GitLab Merge Request, validates the change, and sends a `ready` Signal.
 5. The Conclave may continue, replace, hand off, or reject the current
    Execution. Handoff enters User review; it is not acceptance.
 6. User review evidence and provider merge evidence are recorded separately.
+   Poll the provider with `khala_poll_provider` after recording review status.
    Only the Conclave can record the succeeded Work Outcome.
 
 `/khala` is quiet and on demand. It opens a Work list, then stable `Overview`,
@@ -88,7 +91,11 @@ navigation by default.
 - `src/service.ts` owns lifecycle and actor authorization.
 - `src/ports.ts` defines runtime, workspace, code-host, model, and Oracle ports.
 - `src/adapters.ts` provides Git and GitHub/GitLab adapters.
-- `src/runtime.ts` supervises isolated Pi JSON-RPC children.
+- `src/runtime.ts` supervises isolated Pi JSON-RPC children with bounded RPC and
+  agent-turn timeouts.
+- Child role sessions inherit the parent project identity and carry a
+  parent-signed role, Work, and Execution capability; Archive reads and
+  mutations remain service-authorized.
 - `src/tui.ts` provides the on-demand Work-first view.
 
 The SQLite file is under `archiveRoot` (default `~/.pi/agent/khala`) and is

@@ -103,6 +103,10 @@ export type Sandbox = Readonly<{
 export type PiBinding = Readonly<{
 	sessionId: string;
 	sessionPath: string;
+	processGroupId?: number | undefined;
+	processStartTime?: string | undefined;
+	capabilityNonce?: string | undefined;
+	processMarker?: string | undefined;
 }>;
 
 export type Execution = Readonly<{
@@ -125,6 +129,7 @@ export type ReviewRequest = Readonly<{
 	principalId: string;
 	providerId: string;
 	url: string;
+	repository: string;
 	status: "draft" | "open" | "merged" | "closed";
 	sourceBranch: string;
 	targetBranch: string;
@@ -150,6 +155,11 @@ export type ProviderObservation = Readonly<{
 	summary: string;
 	changed: boolean;
 	observedAt: string;
+	repository?: string | undefined;
+	sourceBranch?: string | undefined;
+	targetBranch?: string | undefined;
+	headCommit?: string | undefined;
+	mergeCommit?: string | undefined;
 }>;
 
 export type WorkView = Readonly<{
@@ -161,9 +171,12 @@ export type WorkView = Readonly<{
 	mission?: Mission | undefined;
 	missionState?: MissionState | undefined;
 	execution?: Execution | undefined;
+	observer?: PiBinding | undefined;
+	observerInFlight?: boolean | undefined;
 	reviewRequest?: ReviewRequest | undefined;
 	lastSignal?: Signal | undefined;
 	lastObservation?: ProviderObservation | undefined;
+	providerOutcome?: ProviderObservation | undefined;
 	nextAction: string;
 	queuedSequence: number;
 }>;
@@ -182,6 +195,10 @@ export type CommandMeta = Readonly<{
 	commandId: string;
 	actor: Actor;
 	expectedWorkRevision?: number | undefined;
+	roleToken?: string | undefined;
+	roleNonce?: string | undefined;
+	boundWorkId?: string | undefined;
+	boundExecutionId?: string | undefined;
 	schemaVersion: 1;
 }>;
 

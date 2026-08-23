@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -17,6 +17,7 @@ const rolePromptFiles = {
 	executor: "executor.md",
 	oracle: "oracle.md",
 } as const;
+const roleToken = readRoleToken();
 
 const submitSchema = Type.Object({
 	workId: Type.Optional(Type.String()),
@@ -36,6 +37,7 @@ const readArchiveSchema = Type.Object({
 	missionId: Type.Optional(Type.String()),
 	executionId: Type.Optional(Type.String()),
 	kinds: Type.Optional(Type.Array(Type.String())),
+	states: Type.Optional(Type.Array(Type.String())),
 	from: Type.Optional(Type.String()),
 	to: Type.Optional(Type.String()),
 	cursor: Type.Optional(Type.String()),
@@ -121,7 +123,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params: ReadArchiveParams, _signal, _onUpdate, context) {
 			try {
 				const actor = sessionActor(pi);
-				const query = readArchiveQuery(params);
+				const query = readArchiveQuery(params, actor);
 				const page = getRuntime(context).service.readRecords(
 					query,
 					meta(actor, `tool:archive:${toolCallId}`, 0),
@@ -138,6 +140,27 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "khala_poll_provider",
+		label: "Poll Provider",
+		description: "Poll the current review provider for changed observations and merge evidence.",
+		parameters: Type.Object({ workId: Type.String(), expectedWorkRevision: Type.Integer({ minimum: 0 }) }),
+		async execute(toolCallId, params, _signal, _onUpdate, context) {
+			try {
+				const service = getRuntime(context).service;
+				const work = await service.pollProvider(
+					params.workId,
+					meta("user", `tool:poll:${toolCallId}`, params.expectedWorkRevision),
+				);
+				schedulePendingEffects(service);
+				return toolResult(work, false);
+			} catch (error) {
+				if (error instanceof ApplicationError) return toolError(error.envelope);
+				return toolErrorText(error instanceof Error ? error.message : "Provider polling failed.");
+			}
+		},
+	});
+
+	pi.registerTool({
 		name: "khala_perform_action",
 		label: "Perform Khala Action",
 		description: "Perform one actor-authorized, revision-checked Khala application action.",
@@ -145,12 +168,14 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params: PerformParams, _signal, _onUpdate, context) {
 			try {
 				const actor = sessionActor(pi);
-				const result = await getRuntime(context).service.perform({
+				const service = getRuntime(context).service;
+				const result = await service.perform({
 					action: params.action,
 					workId: params.workId,
 					input: params.input,
 					meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision),
 				});
+				if (!("error" in result) && actor === "user") schedulePendingEffects(service);
 				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
 			} catch (error) {
 				if (error instanceof ApplicationError) {
@@ -247,7 +272,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 					const current = service.inspectWork(item.workId);
 					await service.recoverWork(
 						item.workId,
-						meta("conclave", `recover:${item.workId}:${current.revision}`, current.revision),
+						meta("user", `recover:${item.workId}:${current.revision}`, current.revision),
 					);
 				}
 				context.ui.notify(
@@ -304,30 +329,16 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 }
 
-function scheduleWake(service: ApplicationRuntime["service"], workId: string, context: ExtensionContext): void {
+function scheduleWake(service: ApplicationRuntime["service"], _workId: string, context: ExtensionContext): void {
 	queueMicrotask(() => {
-		void (async () => {
-			try {
-				const work = service.inspectWork(workId);
-				await service.wakeConclave(
-					workId,
-					`wake:${workId}:${work.revision}`,
-					meta("conclave", `wake:${workId}:${work.revision}`, work.revision),
-				);
-			} catch (error) {
-				try {
-					const current = service.inspectWork(workId);
-					service.recordWakeFailure(
-						workId,
-						error instanceof Error ? error.message : String(error),
-						meta("conclave", `wake-failure:${workId}:${current.revision}`, current.revision),
-					);
-				} catch (failure) {
-					context.ui.notify(failure instanceof Error ? failure.message : String(failure), "warning");
-				}
-			}
-		})();
+		void service.processPendingEffects().catch((error: Error) => {
+			context.ui.notify(error.message, "warning");
+		});
 	});
+}
+
+function schedulePendingEffects(service: ApplicationRuntime["service"]): void {
+	queueMicrotask(() => void service.processPendingEffects());
 }
 
 function sessionRole(pi: ExtensionAPI): "user" | "conclave" | "observer" | "executor" | "oracle" {
@@ -346,7 +357,7 @@ function setRoleTools(pi: ExtensionAPI): void {
 	const role = sessionRole(pi);
 	const allowed =
 		role === "user"
-			? new Set(["khala_submit_work", "khala_read_archive", "khala_perform_action"])
+			? new Set(["khala_submit_work", "khala_read_archive", "khala_perform_action", "khala_poll_provider"])
 			: role === "conclave"
 				? new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle"])
 				: role === "executor"
@@ -357,16 +368,40 @@ function setRoleTools(pi: ExtensionAPI): void {
 	pi.setActiveTools(pi.getActiveTools().filter((name) => !name.startsWith("khala_") || allowed.has(name)));
 }
 
-function meta(actor: Actor, commandId: string, expectedWorkRevision: number): CommandMeta {
-	return { actor, commandId, expectedWorkRevision, schemaVersion: 1 };
+function readRoleToken(): string | undefined {
+	const path = process.env["KHALA_ROLE_TOKEN_FILE"];
+	if (path === undefined) return;
+	try {
+		const token = readFileSync(path, "utf8").trim();
+		unlinkSync(path);
+		return token.length === 0 ? undefined : token;
+	} catch {
+		return;
+	}
 }
 
-function readArchiveQuery(params: ReadArchiveParams): MutableRecordQuery {
+function meta(actor: Actor, commandId: string, expectedWorkRevision: number): CommandMeta {
+	return {
+		actor,
+		commandId,
+		expectedWorkRevision,
+		roleToken: actor === "user" ? undefined : roleToken,
+		roleNonce: actor === "user" ? undefined : process.env["KHALA_ROLE_NONCE"],
+		boundWorkId: process.env["KHALA_BOUND_WORK_ID"],
+		boundExecutionId: process.env["KHALA_BOUND_EXECUTION_ID"],
+		schemaVersion: 1,
+	};
+}
+
+function readArchiveQuery(params: ReadArchiveParams, actor: Actor): MutableRecordQuery {
 	const query: MutableRecordQuery = {};
 	if (params.workId !== undefined) query.workId = params.workId;
+	if ((actor === "observer" || actor === "executor") && query.workId === undefined)
+		query.workId = process.env["KHALA_BOUND_WORK_ID"];
 	if (params.missionId !== undefined) query.missionId = params.missionId;
 	if (params.executionId !== undefined) query.executionId = params.executionId;
 	if (params.kinds !== undefined) query.kinds = readRecordKinds(params.kinds);
+	if (params.states !== undefined) query.states = params.states;
 	if (params.from !== undefined) query.from = params.from;
 	if (params.to !== undefined) query.to = params.to;
 	return query;

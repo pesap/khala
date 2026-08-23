@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codeHostForOrigin, GitWorkspace } from "./adapters.js";
@@ -21,9 +22,27 @@ export function createApplication(
 	packageRoot: string,
 	options?: Readonly<{ requireModels?: boolean }>,
 ): ApplicationRuntime {
-	const config = loadConfig(projectPath, trusted, options?.requireModels ?? true);
-	const archive = new SQLiteArchive(archivePath(config, projectPath));
-	const runtime = new PiRpcRuntime({ command: config.piCommand, extensionPath: join(packageRoot, "src", "index.ts") });
+	const childContext = process.env["KHALA_BOUND_WORK_ID"] !== undefined;
+	const effectiveProjectPath = childContext ? (process.env["KHALA_PROJECT_PATH"] ?? projectPath) : projectPath;
+	const trustedValue = childContext ? process.env["KHALA_PROJECT_TRUSTED"] : undefined;
+	const effectiveTrusted = trustedValue === undefined ? trusted : trustedValue === "1";
+	const configuredPublicKey = process.env["KHALA_ROLE_PUBLIC_KEY"];
+	const authority = configuredPublicKey === undefined ? generateKeyPairSync("ed25519") : undefined;
+	const rolePublicKey =
+		configuredPublicKey ?? authority?.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
+	if (rolePublicKey === undefined) throw new Error("Khala could not establish its role authority.");
+	const config = loadConfig(effectiveProjectPath, effectiveTrusted, options?.requireModels ?? true);
+	const archive = new SQLiteArchive(archivePath(config, effectiveProjectPath));
+	const runtime = new PiRpcRuntime({
+		command: config.piCommand,
+		extensionPath: join(packageRoot, "src", "index.ts"),
+		authorityPrivateKey: authority?.privateKey,
+		baseEnvironment: {
+			KHALA_PROJECT_PATH: effectiveProjectPath,
+			KHALA_PROJECT_TRUSTED: effectiveTrusted ? "1" : "0",
+			KHALA_ROLE_PUBLIC_KEY: rolePublicKey,
+		},
+	});
 	const version = packageVersion(packageRoot);
 	const conclavePromptIdentity = promptIdentity(
 		readFileSync(join(packageRoot, "system-prompts", "conclave.md"), "utf8"),
@@ -39,14 +58,14 @@ export function createApplication(
 	);
 	const oraclePrompt = readFileSync(join(packageRoot, "system-prompts", "oracle.md"), "utf8");
 	const ports: ServicePorts = {
-		workspace: new GitWorkspace(config.worktreeRoot, config.worktreeBranchPrefix),
-		codeHost: new LazyCodeHost(projectPath, config.targetBranch),
+		workspace: new GitWorkspace(config.worktreeRoot, config.worktreeBranchPrefix, effectiveProjectPath),
+		codeHost: new LazyCodeHost(effectiveProjectPath, config.targetBranch),
 		runtime,
 		models: new ConfiguredModels(config),
-		oracle: new PiOracle(runtime, projectPath, version, oraclePrompt),
+		oracle: new PiOracle(runtime, effectiveProjectPath, version, oraclePrompt),
 	};
 	const serviceOptions: ServiceOptions = {
-		projectPath,
+		projectPath: effectiveProjectPath,
 		targetBranch: config.targetBranch,
 		maxConcurrentExecutions: config.maxConcurrentExecutions,
 		defaultWorkTokens: config.defaultWorkTokens,
@@ -61,6 +80,7 @@ export function createApplication(
 		conclavePromptIdentity,
 		executorPromptIdentity,
 		observerPromptIdentity,
+		rolePublicKey,
 	};
 	return { service: new ApplicationService(archive, ports, serviceOptions), config };
 }
@@ -132,13 +152,18 @@ class LazyCodeHost implements CodeHostPort {
 			return this.adapter;
 		}
 		const origin = await new Promise<string>((resolve, reject) => {
-			execFile("git", ["remote", "get-url", "origin"], { cwd: this.projectPath }, (error, stdout) => {
-				if (error !== null) {
-					reject(error);
-					return;
-				}
-				resolve(stdout.trim());
-			});
+			execFile(
+				"git",
+				["remote", "get-url", "origin"],
+				{ cwd: this.projectPath, timeout: 120_000, killSignal: "SIGKILL" },
+				(error, stdout) => {
+					if (error !== null) {
+						reject(error);
+						return;
+					}
+					resolve(stdout.trim());
+				},
+			);
 		});
 		this.adapter = codeHostForOrigin(origin, this.projectPath);
 		return this.adapter;

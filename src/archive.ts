@@ -7,6 +7,7 @@ import {
 	type JsonObject,
 	type JsonValue,
 	type Page,
+	type ProviderObservation,
 	type RecordKind,
 	type RecordQuery,
 	type RecordView,
@@ -34,6 +35,7 @@ export type ArchiveAppend = Readonly<{
 	payload: JsonValue;
 	projection: WorkView;
 	effects?: readonly ArchiveEffect[] | undefined;
+	executionGuard?: Readonly<{ maxConcurrentExecutions: number; enforceFifo?: boolean }> | undefined;
 }>;
 
 export type ArchiveAppendResult = Readonly<{
@@ -52,10 +54,17 @@ export type PendingArchiveEffect = Readonly<{
 export interface ArchivePort {
 	append: (input: ArchiveAppend) => ArchiveAppendResult;
 	findCommand: (commandId: string) => ArchiveAppendResult | undefined;
-	pendingEffects: () => readonly PendingArchiveEffect[];
-	completeEffect: (effectId: string) => void;
+	pendingEffects: (owner?: string) => readonly PendingArchiveEffect[];
+	completeEffect: (effectId: string, owner?: string) => boolean;
+	releaseEffect: (effectId: string, owner?: string) => void;
+	renewEffect: (effectId: string, owner?: string) => boolean;
 	query: (query?: RecordQuery, cursor?: string) => Page<RecordView>;
 	project: (workId: string) => WorkView | undefined;
+	findLatestObservation: (
+		workId: string,
+		kind: ProviderObservation["kind"],
+		providerId: string,
+	) => ProviderObservation | undefined;
 	listProjects: () => readonly WorkView[];
 	close: () => void;
 }
@@ -93,9 +102,16 @@ CREATE TABLE IF NOT EXISTS outbox (
 	effect_id TEXT PRIMARY KEY,
 	kind TEXT NOT NULL,	payload_json TEXT NOT NULL,	created_at TEXT NOT NULL,	completed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS outbox_claim (
+	effect_id TEXT PRIMARY KEY,
+	owner TEXT NOT NULL,
+	claimed_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS archive_records_work_sequence ON archive_records(work_id, sequence);
 CREATE INDEX IF NOT EXISTS archive_records_kind_sequence ON archive_records(kind, sequence);
 `;
+
+const EFFECT_LEASE_MS = 120_000;
 
 export class SQLiteArchive implements ArchivePort {
 	private readonly database: SqlDatabase;
@@ -125,6 +141,14 @@ export class SQLiteArchive implements ArchivePort {
 			return { record, projection, duplicate: true };
 		}
 
+		validateProjection(input.projection, input.workId, input.expectedWorkRevision + 1);
+		const serializedPayload = JSON.stringify(input.payload);
+		if (serializedPayload.length > 64_000) {
+			throw new Error("Archive payload exceeds the 64 KB limit.");
+		}
+		if (JSON.stringify(input.projection).length > 128_000) {
+			throw new Error("Archive projection exceeds the 128 KB limit.");
+		}
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const concurrentDuplicate = this.database
@@ -151,9 +175,14 @@ export class SQLiteArchive implements ArchivePort {
 			if (currentRevision !== input.expectedWorkRevision) {
 				throw new RevisionConflict(input.workId, input.expectedWorkRevision, currentRevision);
 			}
+			if (input.executionGuard !== undefined && input.projection.execution?.state === "queued") {
+				this.assertExecutionAdmission(input.workId, input.executionGuard);
+			}
 			const now = new Date().toISOString();
 			const recordId = randomUUID();
-			const evidenceRefs = JSON.stringify((input.evidenceRefs ?? []).slice(0, 20));
+			const evidenceRefs = JSON.stringify(
+				(input.evidenceRefs ?? []).slice(0, 20).map((entry) => boundText(entry, 500)),
+			);
 			const payload = JSON.stringify(input.payload);
 			const inserted = this.database
 				.prepare(
@@ -188,9 +217,12 @@ export class SQLiteArchive implements ArchivePort {
 				)
 				.run(input.workId, projection.revision, projection.queuedSequence, JSON.stringify(projection));
 			for (const effect of input.effects ?? []) {
+				const effectPayload = JSON.stringify(effect.payload);
+				if (effectPayload.length > 16_000)
+					throw new Error(`Archive effect ${effect.effectId} exceeds the 16 KB limit.`);
 				this.database
 					.prepare("INSERT INTO outbox(effect_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)")
-					.run(effect.effectId, effect.kind, JSON.stringify(effect.payload), now);
+					.run(effect.effectId, boundText(effect.kind, 200), effectPayload, now);
 			}
 			this.database.exec("COMMIT");
 			return { record: this.readRecord(sequence), projection, duplicate: false };
@@ -200,30 +232,86 @@ export class SQLiteArchive implements ArchivePort {
 		}
 	}
 
-	pendingEffects(): readonly PendingArchiveEffect[] {
-		const rows = this.database
-			.prepare(
-				"SELECT effect_id, kind, payload_json, created_at FROM outbox WHERE completed_at IS NULL ORDER BY created_at, effect_id LIMIT 100",
-			)
-			.all();
-		return rows.map((row) => {
-			const payload = parseJson(readString(row, "payload_json"));
-			if (!isJsonObject(payload)) {
-				throw new Error(`Archive effect ${readString(row, "effect_id")} has an invalid payload.`);
+	pendingEffects(owner = "archive-reader"): readonly PendingArchiveEffect[] {
+		const now = Date.now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare("DELETE FROM outbox_claim WHERE claimed_at < ?").run(now - EFFECT_LEASE_MS);
+			const rows = this.database
+				.prepare(
+					"SELECT effect_id, kind, payload_json, created_at FROM outbox WHERE completed_at IS NULL AND NOT EXISTS (SELECT 1 FROM outbox_claim WHERE outbox_claim.effect_id = outbox.effect_id) ORDER BY created_at, effect_id LIMIT 1",
+				)
+				.all();
+			for (const row of rows) {
+				this.database
+					.prepare("INSERT INTO outbox_claim(effect_id, owner, claimed_at) VALUES (?, ?, ?)")
+					.run(readString(row, "effect_id"), owner, now);
 			}
-			return {
-				effectId: readString(row, "effect_id"),
-				kind: readString(row, "kind"),
-				payload,
-				createdAt: readString(row, "created_at"),
-			};
-		});
+			const effects = rows.map((row) => {
+				const payload = parseJson(readString(row, "payload_json"));
+				if (!isJsonObject(payload)) {
+					throw new Error(`Archive effect ${readString(row, "effect_id")} has an invalid payload.`);
+				}
+				return {
+					effectId: readString(row, "effect_id"),
+					kind: readString(row, "kind"),
+					payload,
+					createdAt: readString(row, "created_at"),
+				};
+			});
+			this.database.exec("COMMIT");
+			return effects;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
-	completeEffect(effectId: string): void {
-		this.database
-			.prepare("UPDATE outbox SET completed_at = ? WHERE effect_id = ? AND completed_at IS NULL")
-			.run(new Date().toISOString(), effectId);
+	completeEffect(effectId: string, owner = "archive-reader"): boolean {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const claim = this.database
+				.prepare("SELECT effect_id FROM outbox_claim WHERE effect_id = ? AND owner = ?")
+				.get(effectId, owner);
+			if (claim === undefined) {
+				this.database.exec("COMMIT");
+				return false;
+			}
+			this.database
+				.prepare("UPDATE outbox SET completed_at = ? WHERE effect_id = ? AND completed_at IS NULL")
+				.run(new Date().toISOString(), effectId);
+			this.database.prepare("DELETE FROM outbox_claim WHERE effect_id = ? AND owner = ?").run(effectId, owner);
+			this.database.exec("COMMIT");
+			return true;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	releaseEffect(effectId: string, owner = "archive-reader"): void {
+		this.database.prepare("DELETE FROM outbox_claim WHERE effect_id = ? AND owner = ?").run(effectId, owner);
+	}
+
+	renewEffect(effectId: string, owner = "archive-reader"): boolean {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const claim = this.database
+				.prepare("SELECT effect_id FROM outbox_claim WHERE effect_id = ? AND owner = ?")
+				.get(effectId, owner);
+			if (claim === undefined) {
+				this.database.exec("COMMIT");
+				return false;
+			}
+			this.database
+				.prepare("UPDATE outbox_claim SET claimed_at = ? WHERE effect_id = ? AND owner = ?")
+				.run(Date.now(), effectId, owner);
+			this.database.exec("COMMIT");
+			return true;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	findCommand(commandId: string): ArchiveAppendResult | undefined {
@@ -304,6 +392,23 @@ export class SQLiteArchive implements ArchivePort {
 		return parseWorkView(readString(row, "view_json"));
 	}
 
+	findLatestObservation(
+		workId: string,
+		kind: ProviderObservation["kind"],
+		providerId: string,
+	): ProviderObservation | undefined {
+		const rows = this.database
+			.prepare(
+				"SELECT payload_json FROM archive_records WHERE work_id = ? AND kind = 'observation' ORDER BY sequence DESC",
+			)
+			.all(workId);
+		for (const row of rows) {
+			const payload = parseJson(readString(row, "payload_json"));
+			if (isObservation(payload) && payload.kind === kind && payload.providerId === providerId) return payload;
+		}
+		return;
+	}
+
 	listProjects(): readonly WorkView[] {
 		const rows = this.database.prepare("SELECT view_json FROM work_projection ORDER BY queued_sequence").all();
 		return rows.map((row) => parseWorkView(readString(row, "view_json")));
@@ -311,6 +416,31 @@ export class SQLiteArchive implements ArchivePort {
 
 	close(): void {
 		this.database.close();
+	}
+
+	private assertExecutionAdmission(
+		workId: string,
+		guard: Readonly<{ maxConcurrentExecutions: number; enforceFifo?: boolean }>,
+	): void {
+		assertPositiveInteger(guard.maxConcurrentExecutions, "maxConcurrentExecutions");
+		const projects = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
+		const views = projects.map((row) => parseWorkView(readString(row, "view_json")));
+		const active = views.filter(
+			(view) => view.execution?.state === "queued" || view.execution?.state === "running",
+		).length;
+		if (active >= guard.maxConcurrentExecutions) {
+			throw new ExecutionAdmissionConflict(
+				`Project execution limit ${guard.maxConcurrentExecutions} is already reserved.`,
+			);
+		}
+		if (guard.enforceFifo === true) {
+			const first = views
+				.filter((view) => view.state === "queued")
+				.sort((left, right) => left.queuedSequence - right.queuedSequence)[0];
+			if (first !== undefined && first.workId !== workId) {
+				throw new ExecutionAdmissionConflict(`Work ${first.workId} is ahead of Work ${workId} in the FIFO queue.`);
+			}
+		}
 	}
 
 	private latestSequence(): number {
@@ -355,6 +485,13 @@ export class SQLiteArchive implements ArchivePort {
 			recordedAt: readString(row, "recorded_at"),
 			payload: boundedPayload,
 		};
+	}
+}
+
+export class ExecutionAdmissionConflict extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ExecutionAdmissionConflict";
 	}
 }
 
@@ -478,11 +615,209 @@ function isJsonObject(value: JsonValue | undefined): value is JsonObject {
 
 function parseWorkView(value: string): WorkView {
 	const parsed = parseJson(value);
-	if (!isJsonObject(parsed)) {
+	if (!isWorkViewProjection(parsed)) {
 		throw new Error("Archive Work projection is invalid.");
 	}
-	// SAFETY: the service is the sole writer of this projection and validates the domain shape before persistence.
-	return Object.assign({} as WorkView, parsed);
+	return parsed;
+}
+
+function validateProjection(projection: WorkView, workId: string, revision: number): void {
+	if (projection.workId !== workId || projection.revision !== revision || !isWorkViewProjection(projection)) {
+		throw new Error("Archive projection does not match the expected Work revision.");
+	}
+	if (
+		projection.terms.maxTokens <= 0 ||
+		projection.budget.maxTokens <= 0 ||
+		projection.budget.reservedTokens < 0 ||
+		projection.budget.consumedTokens < 0 ||
+		projection.budget.reservedTokens + projection.budget.consumedTokens > projection.budget.maxTokens ||
+		projection.budget.maxTokens !== projection.terms.maxTokens ||
+		projection.queuedSequence < 0 ||
+		(projection.mission !== undefined && projection.mission.workId !== workId) ||
+		(projection.execution !== undefined &&
+			(projection.execution.workId !== workId || projection.mission?.missionId !== projection.execution.missionId))
+	) {
+		throw new Error("Archive Work projection contains invalid budget or queue values.");
+	}
+}
+
+function isWorkViewProjection(value: JsonValue): value is WorkView {
+	if (!isJsonObject(value)) return false;
+	return (
+		isText(value["workId"]) &&
+		isInteger(value["revision"]) &&
+		isWorkState(value["state"]) &&
+		(value["missionState"] === undefined || isMissionState(value["missionState"])) &&
+		isTerms(value["terms"]) &&
+		isBudget(value["budget"]) &&
+		isText(value["nextAction"]) &&
+		isInteger(value["queuedSequence"]) &&
+		(value["mission"] === undefined || isMission(value["mission"])) &&
+		(value["execution"] === undefined || isExecution(value["execution"])) &&
+		(value["observer"] === undefined || isPiBinding(value["observer"])) &&
+		(value["observerInFlight"] === undefined || isBoolean(value["observerInFlight"])) &&
+		(value["reviewRequest"] === undefined || isReviewRequest(value["reviewRequest"])) &&
+		(value["lastSignal"] === undefined || isSignal(value["lastSignal"])) &&
+		(value["lastObservation"] === undefined || isObservation(value["lastObservation"])) &&
+		(value["providerOutcome"] === undefined || isObservation(value["providerOutcome"]))
+	);
+}
+
+function isTerms(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return (
+		isText(value["title"]) &&
+		isText(value["objective"]) &&
+		isText(value["context"]) &&
+		isText(value["scope"]) &&
+		isTextList(value["acceptanceCriteria"]) &&
+		isTextList(value["constraints"]) &&
+		isTextList(value["validation"]) &&
+		isInteger(value["maxTokens"]) &&
+		Number(value["maxTokens"]) > 0
+	);
+}
+
+function isBudget(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return (
+		isInteger(value["maxTokens"]) &&
+		isInteger(value["reservedTokens"]) &&
+		isInteger(value["consumedTokens"]) &&
+		Number(value["maxTokens"]) > 0 &&
+		Number(value["reservedTokens"]) >= 0 &&
+		Number(value["consumedTokens"]) >= 0
+	);
+}
+
+function isMission(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return (
+		isText(value["missionId"]) &&
+		isText(value["workId"]) &&
+		isTerms(value["assignment"]) &&
+		isInteger(value["mandateRevision"]) &&
+		isText(value["createdAt"])
+	);
+}
+
+function isExecution(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	const sandbox = value["sandbox"];
+	const prompt = value["promptIdentity"];
+	return (
+		isText(value["executionId"]) &&
+		isText(value["workId"]) &&
+		isText(value["missionId"]) &&
+		isExecutionState(value["state"]) &&
+		isText(value["model"]) &&
+		isText(value["thinking"]) &&
+		isInteger(value["tokenAllowance"]) &&
+		isJsonObject(prompt) &&
+		isText(prompt["packageVersion"]) &&
+		isText(prompt["promptSha256"]) &&
+		isJsonObject(sandbox) &&
+		isText(sandbox["path"]) &&
+		isText(sandbox["baseCommit"]) &&
+		isText(sandbox["branch"]) &&
+		(value["pi"] === undefined || isPiBinding(value["pi"]))
+	);
+}
+
+function isPiBinding(value: JsonValue | undefined): boolean {
+	return (
+		isJsonObject(value) &&
+		isText(value["sessionId"]) &&
+		isText(value["sessionPath"]) &&
+		(value["processGroupId"] === undefined || (isInteger(value["processGroupId"]) && value["processGroupId"] > 0)) &&
+		(value["processStartTime"] === undefined || isText(value["processStartTime"])) &&
+		(value["capabilityNonce"] === undefined || isText(value["capabilityNonce"])) &&
+		(value["processMarker"] === undefined || isText(value["processMarker"]))
+	);
+}
+
+function isReviewRequest(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return (
+		["github", "gitlab"].includes(String(value["provider"])) &&
+		isText(value["principalId"]) &&
+		isText(value["providerId"]) &&
+		isText(value["url"]) &&
+		isText(value["repository"]) &&
+		["draft", "open", "merged", "closed"].includes(String(value["status"])) &&
+		isText(value["sourceBranch"]) &&
+		isText(value["targetBranch"]) &&
+		isText(value["headCommit"]) &&
+		isText(value["diffSummary"]) &&
+		isTextList(value["validation"])
+	);
+}
+
+function isSignal(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return (
+		isText(value["signalId"]) &&
+		isText(value["executionId"]) &&
+		isText(value["kind"]) &&
+		isText(value["summary"]) &&
+		isTextList(value["evidence"]) &&
+		isText(value["observedAt"])
+	);
+}
+
+function isObservation(value: JsonValue | undefined): value is ProviderObservation {
+	if (!isJsonObject(value)) return false;
+	return (
+		isText(value["observationId"]) &&
+		isText(value["kind"]) &&
+		isText(value["providerId"]) &&
+		isText(value["status"]) &&
+		isText(value["summary"]) &&
+		isBoolean(value["changed"]) &&
+		isText(value["observedAt"]) &&
+		(value["repository"] === undefined || isText(value["repository"])) &&
+		(value["sourceBranch"] === undefined || isText(value["sourceBranch"])) &&
+		(value["targetBranch"] === undefined || isText(value["targetBranch"])) &&
+		(value["headCommit"] === undefined || isText(value["headCommit"])) &&
+		(value["mergeCommit"] === undefined || isText(value["mergeCommit"]))
+	);
+}
+
+function isText(value: JsonValue | undefined): value is string {
+	return value !== undefined && value === String(value);
+}
+
+function isInteger(value: JsonValue | undefined): value is number {
+	return value !== undefined && value === Number(value) && Number.isSafeInteger(Number(value));
+}
+
+function isBoolean(value: JsonValue | undefined): value is boolean {
+	return value === true || value === false;
+}
+
+function isTextList(value: JsonValue | undefined): boolean {
+	return Array.isArray(value) && value.every((entry) => isText(entry));
+}
+
+function isMissionState(value: JsonValue | undefined): boolean {
+	return ["admitted", "active", "awaiting-review", "succeeded", "rejected", "superseded"].includes(String(value));
+}
+
+function isWorkState(value: JsonValue | undefined): boolean {
+	return [
+		"submitted",
+		"needs-input",
+		"queued",
+		"active",
+		"awaiting-review",
+		"succeeded",
+		"failed",
+		"cancelled",
+	].includes(String(value));
+}
+
+function isExecutionState(value: JsonValue | undefined): boolean {
+	return ["queued", "running", "awaiting-review", "completed", "blocked", "failed", "stopped"].includes(String(value));
 }
 
 function readString(row: SqlRow, key: string): string {

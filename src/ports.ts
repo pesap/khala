@@ -19,6 +19,8 @@ export interface WorkspacePort {
 		}>,
 	) => Promise<Execution["sandbox"]>;
 	inspectHead: (path: string) => Promise<string>;
+	publishSandbox: (sandbox: Execution["sandbox"]) => Promise<string>;
+	removeSandbox: (sandbox: Execution["sandbox"]) => Promise<void>;
 }
 
 export type ReviewRequestInput = Readonly<{
@@ -27,6 +29,7 @@ export type ReviewRequestInput = Readonly<{
 	execution: Execution;
 	terms: WorkTerms;
 	sandbox: Execution["sandbox"];
+	headCommit: string;
 	targetBranch: string;
 	draftMarker: string;
 }>;
@@ -44,6 +47,10 @@ export type RuntimeState = "working" | "pending" | "idle" | "unreachable" | "unk
 export type RuntimeBinding = Readonly<{
 	sessionId: string;
 	sessionPath: string;
+	processGroupId?: number | undefined;
+	processStartTime?: string | undefined;
+	capabilityNonce?: string | undefined;
+	processMarker?: string | undefined;
 }>;
 
 export interface AgentRuntimePort {
@@ -55,7 +62,12 @@ export interface AgentRuntimePort {
 			role: "conclave" | "observer" | "executor" | "oracle";
 			promptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 			tools: readonly string[];
-			sessionPath?: string;
+			bindingScope?: Readonly<{
+				workId?: string | undefined;
+				executionId?: string | undefined;
+				nonce?: string | undefined;
+			}>;
+			sessionPath?: string | undefined;
 		}>,
 	) => Promise<RuntimeBinding>;
 	send: (binding: RuntimeBinding, message: string) => Promise<string>;

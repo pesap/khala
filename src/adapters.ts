@@ -7,17 +7,25 @@ import type { Execution, JsonValue, Mission, ProviderObservation, ReviewRequest 
 import type { CodeHostPort, ReviewRequestInput, WorkspacePort, WorkspacePreflight } from "./ports.js";
 
 const execFileAsync = promisify(execFile);
+const COMMAND_TIMEOUT_MS = 120_000;
+
+function commandOptions(cwd: string) {
+	return { cwd, timeout: COMMAND_TIMEOUT_MS, killSignal: "SIGKILL" as const, maxBuffer: 1_000_000 };
+}
 
 export class GitWorkspace implements WorkspacePort {
 	private readonly worktreeRoot: string;
 	private readonly branchPrefix: string;
+	private projectPath: string | undefined;
 
-	constructor(worktreeRoot: string, branchPrefix: string) {
+	constructor(worktreeRoot: string, branchPrefix: string, projectPath?: string) {
 		this.worktreeRoot = worktreeRoot;
 		this.branchPrefix = branchPrefix;
+		this.projectPath = projectPath;
 	}
 
 	async preflight(projectPath: string, targetBranch: string): Promise<WorkspacePreflight> {
+		this.projectPath = projectPath;
 		const origin = await git(projectPath, ["remote", "get-url", "origin"]);
 		await git(projectPath, ["rev-parse", "--verify", targetBranch]);
 		const headCommit = await git(projectPath, ["rev-parse", targetBranch]);
@@ -41,7 +49,11 @@ export class GitWorkspace implements WorkspacePort {
 			.then(() => true)
 			.catch(() => false);
 		if (!exists) {
-			await execFileAsync("git", ["worktree", "add", "-b", branch, path, input.baseCommit], { cwd: input.projectPath });
+			await execFileAsync(
+				"git",
+				["worktree", "add", "-b", branch, path, input.baseCommit],
+				commandOptions(input.projectPath),
+			);
 		} else {
 			const existingBranch = await git(path, ["branch", "--show-current"]);
 			if (existingBranch !== branch) {
@@ -58,11 +70,34 @@ export class GitWorkspace implements WorkspacePort {
 	async inspectHead(path: string): Promise<string> {
 		return git(path, ["rev-parse", "HEAD"]);
 	}
+
+	async publishSandbox(sandbox: Execution["sandbox"]): Promise<string> {
+		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch]);
+		return this.inspectHead(sandbox.path);
+	}
+
+	async removeSandbox(sandbox: Execution["sandbox"]): Promise<void> {
+		if (this.projectPath === undefined) {
+			throw new Error("Workspace project path is not initialized.");
+		}
+		const exists = await stat(sandbox.path)
+			.then(() => true)
+			.catch(() => false);
+		if (exists) {
+			await execFileAsync("git", ["worktree", "remove", "--force", sandbox.path], commandOptions(this.projectPath));
+		}
+		try {
+			await git(this.projectPath, ["branch", "-D", sandbox.branch]);
+		} catch (error) {
+			if (!(error instanceof Error) || !/branch .* not found/i.test(error.message)) throw error;
+		}
+	}
 }
 
 export class CommandCodeHost implements CodeHostPort {
 	readonly provider: "github" | "gitlab";
 	private readonly cwd: string;
+	private repositoryName: string | undefined;
 
 	constructor(provider: "github" | "gitlab", cwd: string) {
 		this.provider = provider;
@@ -102,6 +137,7 @@ export class CommandCodeHost implements CodeHostPort {
 			throw new Error("The authenticated code-host identity is not verified.");
 		}
 		if (this.provider === "github") {
+			const repository = await this.repository();
 			const existing = await run(
 				"gh",
 				[
@@ -117,15 +153,29 @@ export class CommandCodeHost implements CodeHostPort {
 				this.cwd,
 			);
 			const rows = parseJsonArray(existing);
-			const first = rows[0];
+			const first = rows.find(
+				(row) => row["headRefName"] === input.sandbox.branch && row["baseRefName"] === input.targetBranch,
+			);
 			if (first !== undefined) {
-				const request = githubReview(first, input, principal.principalId);
+				const request = githubReview(first, input, principal.principalId, repository);
 				return { ...request, diffSummary: await this.readDiff(request.providerId) };
 			}
 			const url = (
 				await run(
 					"gh",
-					["pr", "create", "--draft", "--title", title, "--body", body, "--base", input.targetBranch],
+					[
+						"pr",
+						"create",
+						"--draft",
+						"--title",
+						title,
+						"--body",
+						body,
+						"--base",
+						input.targetBranch,
+						"--head",
+						input.sandbox.branch,
+					],
 					this.cwd,
 				)
 			).trim();
@@ -138,7 +188,7 @@ export class CommandCodeHost implements CodeHostPort {
 			if (createdRow === undefined) {
 				throw new Error("GitHub did not return review request metadata.");
 			}
-			const request = githubReview(createdRow, input, principal.principalId);
+			const request = githubReview(createdRow, input, principal.principalId, repository);
 			return { ...request, diffSummary: await this.readDiff(request.providerId) };
 		}
 		const existing = await run(
@@ -147,33 +197,51 @@ export class CommandCodeHost implements CodeHostPort {
 			this.cwd,
 		);
 		const rows = parseJsonArray(existing);
-		const first = rows[0];
+		const first = rows.find(
+			(row) => row["source_branch"] === input.sandbox.branch && row["target_branch"] === input.targetBranch,
+		);
 		if (first !== undefined) {
 			const request = gitlabReview(first, input, principal.principalId);
 			return { ...request, diffSummary: await this.readDiff(request.providerId) };
 		}
 		const created = await run(
 			"glab",
-			["mr", "create", "--draft", "--title", title, "--description", body, "--target-branch", input.targetBranch],
+			[
+				"mr",
+				"create",
+				"--draft",
+				"--title",
+				title,
+				"--description",
+				body,
+				"--source-branch",
+				input.sandbox.branch,
+				"--target-branch",
+				input.targetBranch,
+			],
 			this.cwd,
 		);
 		const url = created.trim().split(/\s+/).at(-1);
 		if (url === undefined || url.length === 0) {
 			throw new Error("GitLab did not return a review request URL.");
 		}
-		const request: ReviewRequest = {
-			provider: "gitlab",
-			principalId: principal.principalId,
-			providerId: url,
-			url,
-			status: "draft",
-			sourceBranch: input.sandbox.branch,
-			targetBranch: input.targetBranch,
-			headCommit: input.sandbox.baseCommit,
-			diffSummary: body,
-			validation: input.terms.validation,
-		};
+		const viewed = await run("glab", ["mr", "view", url, "--output", "json"], this.cwd);
+		const createdRow = parseJsonArray(`[${viewed}]`)[0];
+		if (createdRow === undefined) {
+			throw new Error("GitLab did not return merge request metadata.");
+		}
+		const request = gitlabReview(createdRow, input, principal.principalId);
 		return { ...request, diffSummary: await this.readDiff(request.providerId) };
+	}
+
+	private async repository(): Promise<string> {
+		if (this.repositoryName !== undefined) return this.repositoryName;
+		const repository = (
+			await run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], this.cwd)
+		).trim();
+		if (repository.length === 0) throw new Error("GitHub did not return repository identity.");
+		this.repositoryName = repository;
+		return repository;
 	}
 
 	private async readDiff(providerId: string): Promise<string> {
@@ -199,19 +267,35 @@ export class CommandCodeHost implements CodeHostPort {
 		if (this.provider === "github") {
 			const data = await run(
 				"gh",
-				["pr", "view", reviewRequest.providerId, "--json", "state,mergedAt,mergeCommit"],
+				[
+					"pr",
+					"view",
+					reviewRequest.providerId,
+					"--json",
+					"state,mergedAt,mergeCommit,headRefName,baseRefName,headRefOid",
+				],
 				this.cwd,
 			);
-			if (!data.includes("mergedAt") || data.includes('"mergedAt":null')) {
-				return;
-			}
-			return observation("provider-outcome", reviewRequest.providerId, data);
+			const row = parseJsonArray(`[${data}]`)[0];
+			if (row === undefined || readValue(row, "state").toLowerCase() !== "merged" || row["mergedAt"] === null) return;
+			return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
+				repository: reviewRequest.repository,
+				sourceBranch: readTextValue(row, "headRefName"),
+				targetBranch: readTextValue(row, "baseRefName"),
+				headCommit: readTextValue(row, "headRefOid"),
+				mergeCommit: readMergeCommit(row),
+			});
 		}
 		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
-		if (!data.toLowerCase().includes("merged")) {
-			return;
-		}
-		return observation("provider-outcome", reviewRequest.providerId, data);
+		const row = parseJsonArray(`[${data}]`)[0];
+		if (row === undefined || readValue(row, "state").toLowerCase() !== "merged") return;
+		return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
+			repository: readRepository(row),
+			sourceBranch: readTextValue(row, "source_branch"),
+			targetBranch: readTextValue(row, "target_branch"),
+			headCommit: readTextValue(row, "sha"),
+			mergeCommit: readTextValue(row, "merge_commit_sha"),
+		});
 	}
 }
 
@@ -240,12 +324,12 @@ function originHost(origin: string): string {
 }
 
 async function git(cwd: string, args: readonly string[]): Promise<string> {
-	return (await execFileAsync("git", [...args], { cwd })).stdout.trim();
+	return (await execFileAsync("git", [...args], commandOptions(cwd))).stdout.trim();
 }
 
 async function run(command: string, args: readonly string[], cwd: string): Promise<string> {
 	try {
-		return (await execFileAsync(command, [...args], { cwd })).stdout;
+		return (await execFileAsync(command, [...args], commandOptions(cwd))).stdout;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`${command} failed: ${message}`);
@@ -269,16 +353,22 @@ function isJsonObject(value: JsonValue | undefined): value is Record<string, Jso
 	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
 }
 
-function githubReview(row: Record<string, JsonValue>, input: ReviewRequestInput, principalId: string): ReviewRequest {
+function githubReview(
+	row: Record<string, JsonValue>,
+	input: ReviewRequestInput,
+	principalId: string,
+	repository: string,
+): ReviewRequest {
 	return {
 		provider: "github",
 		principalId,
 		providerId: readValue(row, "number"),
 		url: readValue(row, "url"),
+		repository,
 		status: githubStatus(readValue(row, "state"), readBoolean(row, "isDraft")),
-		sourceBranch: readValue(row, "headRefName"),
-		targetBranch: readValue(row, "baseRefName"),
-		headCommit: readValue(row, "headRefOid"),
+		sourceBranch: readTextValue(row, "headRefName"),
+		targetBranch: readTextValue(row, "baseRefName"),
+		headCommit: readTextValue(row, "headRefOid"),
 		diffSummary: `Review request ${readValue(row, "number")} for ${input.terms.title}.`,
 		validation: input.terms.validation,
 	};
@@ -293,6 +383,27 @@ function githubStatus(state: string, isDraft: boolean): ReviewRequest["status"] 
 		return isDraft ? "draft" : "open";
 	}
 	return "closed";
+}
+
+function readRepository(row: Record<string, JsonValue>): string {
+	const value = row["repository"];
+	if (isJsonObject(value) && value["nameWithOwner"] !== undefined) return readTextValue(value, "nameWithOwner");
+	const references = row["references"];
+	if (isJsonObject(references) && references["full"] !== undefined)
+		return readTextValue(references, "full").replace(/![^!]+$/, "");
+	if (references !== undefined && references === String(references)) return String(references).replace(/![^!]+$/, "");
+	const webUrl = row["web_url"];
+	if (webUrl !== undefined && webUrl === String(webUrl)) {
+		const parsed = new URL(String(webUrl));
+		return parsed.pathname.replace(/\/-\/merge_requests\/[^/]+$/, "").replace(/^\//, "");
+	}
+	throw new Error("Code-host response is missing repository identity.");
+}
+
+function readMergeCommit(row: Record<string, JsonValue>): string {
+	const value = row["mergeCommit"];
+	if (isJsonObject(value) && value["oid"] !== undefined) return readTextValue(value, "oid");
+	return readTextValue(row, "merge_commit_sha");
 }
 
 function readBoolean(row: Record<string, JsonValue>, key: string): boolean {
@@ -311,33 +422,62 @@ function gitlabReview(row: Record<string, JsonValue>, input: ReviewRequestInput,
 		principalId,
 		providerId: id,
 		url,
-		status: "draft",
-		sourceBranch: input.sandbox.branch,
-		targetBranch: readValue(row, "target_branch"),
-		headCommit: input.sandbox.baseCommit,
+		repository: readRepository(row),
+		status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
+		sourceBranch: readTextValue(row, "source_branch"),
+		targetBranch: readTextValue(row, "target_branch"),
+		headCommit: readTextValue(row, "sha"),
 		diffSummary: `Review request ${id} for ${input.terms.title}.`,
 		validation: input.terms.validation,
 	};
 }
 
-function readValue(row: Record<string, JsonValue>, key: string): string {
+function gitlabStatus(state: string, draft: boolean): ReviewRequest["status"] {
+	if (state.toLowerCase() === "merged") return "merged";
+	if (state.toLowerCase() !== "opened") return "closed";
+	return draft ? "draft" : "open";
+}
+
+function readTextValue(row: Record<string, JsonValue>, key: string): string {
 	const value = row[key];
-	const number = Number(value);
-	if (value === null || value === undefined || (value !== String(value) && number !== value)) {
+	if (value === undefined || value !== String(value) || String(value).trim().length === 0) {
 		throw new Error(`Code-host response is missing ${key}.`);
 	}
 	return String(value);
 }
 
-function observation(kind: ProviderObservation["kind"], providerId: string, summary: string): ProviderObservation {
+function readValue(row: Record<string, JsonValue>, key: string): string {
+	const value = row[key];
+	if (value === undefined || value === null) {
+		throw new Error(`Code-host response is missing ${key}.`);
+	}
+	if (value === String(value)) {
+		if (String(value).trim().length === 0) throw new Error(`Code-host response is missing ${key}.`);
+		return String(value);
+	}
+	const number = Number(value);
+	if (value !== number || !Number.isFinite(number)) {
+		throw new Error(`Code-host response is missing ${key}.`);
+	}
+	return String(value);
+}
+
+function observation(
+	kind: ProviderObservation["kind"],
+	providerId: string,
+	summary: string,
+	status = "observed",
+	evidence: Readonly<Partial<ProviderObservation>> = {},
+): ProviderObservation {
 	return {
 		observationId: `${kind}:${providerId}`,
 		kind,
 		providerId,
-		status: "observed",
+		status,
 		summary: summary.slice(0, 2000),
 		changed: true,
 		observedAt: new Date().toISOString(),
+		...evidence,
 	};
 }
 

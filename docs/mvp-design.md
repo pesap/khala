@@ -61,9 +61,9 @@ Only an Executor sends evidence-bearing Signals for its current Execution:
 - `blocked`: the Execution cannot continue, with a bounded reason and evidence.
 - `ready`: the Execution is ready for review handoff, with review-request, head, diff, and validation evidence.
 
-A draft review request is created through a reconciled application action before `ready`. GitHub Pull Requests and GitLab Merge Requests are first-class review requests. `gh` and `glab` use their own authenticated sessions; Khala stores no provider credentials.
+A draft review request is created through a reconciled application action before `ready`. Khala commits and publishes the sandbox branch, then passes that branch and current head to the provider adapter. GitHub Pull Requests and GitLab Merge Requests are first-class review requests. `gh` and `glab` use their own authenticated sessions; Khala stores no provider credentials.
 
-Monitoring emits observations, never Signals or Verdicts: `ci-status`, `review-comment`, `feedback-delivery`, `monitor-failure`, and provider outcome. Only changed observations are durable. Successful unchanged polls update an in-memory heartbeat with the last-check time.
+Monitoring emits observations, never Signals or Verdicts: `ci-status`, `review-comment`, `feedback-delivery`, `monitor-failure`, and provider outcome. The User-facing `khala_poll_provider` adapter records changed observations and merge evidence; unchanged polls update an in-memory heartbeat. Provider observations can wake the Conclave through the transactional outbox.
 
 Provider text is untrusted evidence. At publication Khala records provider-native Principal IDs. A generic `AuthorizationPolicy` decides which Principals may enter an Executor context; the MVP authorizes the authenticated User and one configured verified Copilot identity. The User may explicitly reveal any provider text regardless of delivery eligibility.
 
@@ -86,7 +86,7 @@ Up/Down   Move       Enter   Open or confirm       Esc   Back or cancel
 
 Selection is pinned by Work ID. Refresh preserves selection and filters. Navigation never writes. State is never conveyed by color alone. Relevant unavailable actions remain visible with a concise disabled reason.
 
-Setup is a linear preflight using `Ready`, `Action required`, and `Unavailable`. Recovery first rereads Archive state and reconciles runtime, workspace, model, and code-host bindings. Basic Retry is one action; model, thinking, prompt, and allowance are advanced Execution options. A running Execution never changes those settings, and Khala never silently substitutes a model or increases an allowance.
+Setup is a linear preflight using `Ready`, `Action required`, and `Unavailable`. Recovery first rereads Archive state and reconciles runtime, workspace, model, and code-host bindings. An Execution is first durably reserved as `queued`; the persistent parent supervisor consumes its `executor-wake` effect and launches the Executor so a Conclave child cannot kill it during shutdown. Basic Retry is one action; model, thinking, prompt, and allowance are advanced Execution options. A running Execution never changes those settings, and Khala never silently substitutes a model or increases an allowance.
 
 Runtime liveness (`working`, `pending`, `idle`, `unreachable`, or `unknown`) is an observation, not lifecycle state. It is derived from the persisted session ID and a bounded Pi RPC probe; a PID alone never proves work.
 
@@ -104,7 +104,7 @@ read_records(query, cursor?)                -> Page<RecordView>
 ```
 
 ```text
-CommandMeta { command_id, actor, expected_work_revision?, schema_version }
+CommandMeta { command_id, actor, expected_work_revision?, role_token?, bound_work_id?, bound_execution_id?, schema_version }
 Action      { id, scope, kind, label, enabled, disabled_reason?, input_schema?,
               confirmation?, expected_work_revision? }
 RecordView  { sequence, id, kind, actor, work_id, mission_id?, execution_id?,
@@ -112,7 +112,7 @@ RecordView  { sequence, id, kind, actor, work_id, mission_id?, execution_id?,
 Error       { code, summary, retryable, remediation, evidence_refs[] }
 ```
 
-`perform` revalidates actor, action, input, and revision before writing. Record queries support Work, Mission, Execution, kind, state, and time filters; fields compose with AND and repeated values with OR. Results order by monotonically increasing Archive sequence. A cursor binds normalized filters, authorization scope, `as_of_sequence`, and last returned sequence.
+`perform` revalidates actor, action, input, and revision before writing. Child role sessions carry a parent-signed capability whose role and Work/Execution scope are verified before Archive access. Record queries support Work, Mission, Execution, kind, state, and time filters; fields compose with AND and repeated values with OR. Results order by monotonically increasing Archive sequence. A cursor binds normalized filters, authorization scope, `as_of_sequence`, and last returned sequence.
 
 Pi tools are thin actor-scoped adapters to this service: User submits, reads, and performs User actions; Conclave reads and performs governance actions; Observer records assessments; Executor records Signals; Oracle has no tools.
 
@@ -123,7 +123,7 @@ The application service depends on narrow ports:
 ```text
 ArchivePort       append, query, project
 AgentRuntimePort  ensure_session, send, get_state, request_stop
-WorkspacePort     preflight, ensure_sandbox, inspect_head
+WorkspacePort     preflight, ensure_sandbox, inspect_head, publish_sandbox, remove_sandbox
 CodeHostPort      capabilities, identity, ensure_review_request, poll, inspect_outcome
 ModelCatalogPort  list_scoped, resolve, supported_thinking
 ```
