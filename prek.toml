@@ -10,14 +10,7 @@
 #   - Vitest
 #   - npm
 #
-# package.json should provide:
-#
-#   "scripts": {
-#     "check": "biome check .",
-#     "check:fix": "biome check --write .",
-#     "typecheck": "tsc --noEmit",
-#     "test": "vitest run"
-#   }
+# package.json owns the repository checks invoked by these hooks.
 
 minimum_prek_version = "0.3.2"
 
@@ -72,6 +65,28 @@ hooks = [
 
 [[repos]]
 repo = "local"
+
+
+# ---------------------------------------------------------------------------
+# Oxlint
+#
+# Run the repository-configured Oxlint rules for the complete codebase. The
+# command owns its file selection through oxlint.config.ts, so it must not be
+# narrowed to the files passed by prek.
+# ---------------------------------------------------------------------------
+
+[[repos.hooks]]
+id = "oxlint"
+name = "oxlint"
+entry = "npm run lint:oxlint"
+language = "system"
+
+pass_filenames = false
+always_run = true
+
+stages = [
+  "pre-commit",
+]
 
 
 # ---------------------------------------------------------------------------

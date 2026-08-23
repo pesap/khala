@@ -20,17 +20,7 @@
 		"useEditorconfig": false
 	},
 	"linter": {
-		"enabled": true,
-		"rules": {
-			"preset": "recommended",
-			"a11y": "error",
-			"complexity": "error",
-			"correctness": "error",
-			"performance": "error",
-			"security": "error",
-			"style": "error",
-			"suspicious": "error"
-		}
+		"enabled": false
 	},
 	"javascript": {
 		"formatter": {

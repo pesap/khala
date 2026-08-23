@@ -1,34 +1,35 @@
 # Khala Work
 
-## Title (optional)
-<!-- A short name. Leave empty to derive one from the objective. -->
+## Title
 
-## Objective (required)
-<!-- The outcome this Work should produce. -->
+<!-- Required: one concise title. -->
 
-## Context (optional)
-<!-- Relevant background or repository area. Leave empty if unknown; a separate Observer will gather it. -->
+## Objective
 
-## Scope (required)
-<!-- What is included and explicitly excluded. -->
+<!-- Required: the User goal and desired result. -->
 
-## Acceptance criteria (required)
-<!-- Observable conditions that must be true. Add one or more. -->
+## Context
+
+<!-- Optional repository facts. Missing facts may launch one read-only Observer. -->
+
+## Scope
+
+<!-- Optional boundary. Defaults to repository changes required by Objective. -->
+
+## Acceptance criteria
+
+<!-- Required: observable outcomes, one per line. -->
+
 -
 
-## Constraints (optional)
-<!-- Technical, compatibility, safety, or process constraints. -->
--
+## Constraints
 
-## Plan (required)
-<!-- Ordered implementation steps. Add one or more. -->
-1.
+<!-- Optional, one per line. -->
 
-## Validation (required)
-<!-- Checks that demonstrate the acceptance criteria. Add one or more. -->
--
+## Validation
 
-## Cost budget (optional)
-<!-- Typed USD/turn overrides; prose budget instructions do not affect runtime. -->
-<!-- Conclave max USD/turn: -->
-<!-- Executor max USD/turn: -->
+<!-- Optional commands or checks, one per line. -->
+
+## Maximum token budget
+
+<!-- Optional positive integer. Project policy supplies the default. -->

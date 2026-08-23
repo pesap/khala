@@ -16,7 +16,7 @@ import {
 	type UserMessage,
 } from "@earendil-works/pi-ai/compat";
 import { BorderedLoader, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { KHALA_SETUP_COMMAND, loadKhalaConfig } from "../../src/khala-config.js";
+import { loadConfig } from "../../src/config.js";
 import { hasClarifyMarker, stripClarifyMarker } from "./marker.js";
 
 const USAGE = "Usage: /clarify <idea> | /clarify | add -clarify anywhere in the message";
@@ -66,7 +66,7 @@ type RewriteModel = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["fi
 function resolveRewriteModel(ctx: ClarifyUi): { model: RewriteModel } | { reason: string } {
 	let config;
 	try {
-		config = loadKhalaConfig(ctx.cwd, ctx.isProjectTrusted());
+		config = loadConfig(ctx.cwd, ctx.isProjectTrusted());
 	} catch (error) {
 		return { reason: error instanceof Error ? error.message : String(error) };
 	}
@@ -75,14 +75,17 @@ function resolveRewriteModel(ctx: ClarifyUi): { model: RewriteModel } | { reason
 	const separator = modelReference.indexOf("/");
 	if (separator <= 0 || separator === modelReference.length - 1) {
 		return {
-			reason: `No valid Conclave model is configured. Run \`${KHALA_SETUP_COMMAND}\` to configure Khala.`,
+			reason: "No valid Conclave model is configured. Create khala.json with an explicit model.",
 		};
 	}
 
 	const provider = modelReference.slice(0, separator);
 	const modelId = modelReference.slice(separator + 1);
 	const model = ctx.modelRegistry.find(provider, modelId);
-	if (model) return { model: model as RewriteModel };
+	if (model) {
+		// SAFETY: modelRegistry.find returns the configured model shape used by completeSimple.
+		return { model: model as RewriteModel };
+	}
 
 	return { reason: `Configured Conclave model is unavailable: ${modelReference}` };
 }
@@ -198,8 +201,8 @@ async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<ClarifyOutcom
 // One boundary maps every clarify outcome to UI text.
 function applyClarifyOutcome(outcome: ClarifyOutcome, ctx: ClarifyUi): void {
 	if (outcome.result === "ready") {
-		if (ctx.hasUI && typeof ctx.ui.setEditorText === "function") {
-			ctx.ui.setEditorText(outcome.text);
+		if (ctx.hasUI) {
+			ctx.ui.setEditorText?.(outcome.text);
 			ctx.ui.notify("Rewrite ready. Edit if needed, then send.", "info");
 			return;
 		}
@@ -222,7 +225,6 @@ function applyClarifyOutcome(outcome: ClarifyOutcome, ctx: ClarifyUi): void {
 
 export type { ClarifyOutcome };
 export { applyClarifyOutcome, USAGE };
-// biome-ignore lint/performance/noBarrelFile: The default export remains the extension entry; named helpers stay beside it.
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("clarify", {
 		description: "Rewrite a rough idea into a precise technical prompt (result goes in the editor)",
@@ -238,7 +240,7 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			const fromArgs = rawArgs;
-			const fromEditor = ctx.hasUI && typeof ctx.ui.getEditorText === "function" ? ctx.ui.getEditorText().trim() : "";
+			const fromEditor = ctx.hasUI ? (ctx.ui.getEditorText?.()?.trim() ?? "") : "";
 			const source = fromArgs || fromEditor;
 
 			if (!source) {

@@ -1,505 +1,428 @@
-// biome-ignore-all lint/style/noExcessiveLinesPerFile: Extension registration keeps role and lifecycle wiring together.
-// biome-ignore-all lint/style/noProcessEnv: Observer startup readiness is passed through the child process environment.
-// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity: Extension hooks compose role, lifecycle, and durable delivery fences.
-// biome-ignore-all lint/complexity/noExcessiveLinesPerFunction: Extension hooks compose role, lifecycle, and durable delivery fences.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import process from "node:process";
 import { fileURLToPath } from "node:url";
-import {
-	CONFIG_DIR_NAME,
-	type ExtensionAPI,
-	type ExtensionContext,
-	getAgentDir,
-} from "@earendil-works/pi-coding-agent";
-import { listLatestVerdictDeliveryRecords } from "./khala-archive-projections.js";
-import { registerKhalaArchiveRead, registerRoleKhalaArchiveRead } from "./khala-archive-tool.js";
-import { selectExecutorRecoveryModel, showKhalaAttention } from "./khala-attention-ui.js";
-import {
-	CONCLAVE_BASE_TOOL_ALLOWLIST,
-	CONCLAVE_TOOL_ALLOWLIST,
-	type ConclaveCoordinator,
-	createConclaveCoordinator,
-} from "./khala-conclave.js";
-import { configureKhalaRuntimePaths, loadKhalaConfig } from "./khala-config.js";
-import { registerKhalaCounsel } from "./khala-counsel.js";
-import { registerKhalaDemo } from "./khala-demo.js";
-import { KhalaEntryType } from "./khala-entry-types.js";
-import {
-	createConfiguredExecutorStarter,
-	createConfiguredObserverStarter,
-	createObserverCloser,
-	createObserverViewer,
-	finalizeConfiguredExecutorReview,
-} from "./khala-executor.js";
-import { readExecutorRecord, updateExecutorRecord } from "./khala-executor-registry.js";
-import { KHALA_TOGGLE_SHORTCUT } from "./khala-keybindings.js";
-import { registerKhalaLearning } from "./khala-learning.js";
-import { listPendingExecutorModelRecoveries, selectedUserExecutorModelRecovery } from "./khala-model-recovery.js";
-import { registerKhalaObserver } from "./khala-observer.js";
-import { registerKhalaOracle } from "./khala-oracle.js";
-import { resolveExtensionPath, resolvePackageRoot } from "./khala-package.js";
-import { registerKhalaReview } from "./khala-review.js";
-import { KhalaRole, type KhalaRoleValue, readRolePrompt, readSessionRole } from "./khala-role.js";
-import { registerKhalaSignal } from "./khala-signal.js";
-import { setKhalaStatus } from "./khala-status.js";
-import { getSupervisionController, hideAlignedAssessmentResponse, toolCallsFromMessage } from "./khala-supervision.js";
-import { registerKhalaSupervisionTools } from "./khala-supervision-tools.js";
-import { registerKhalaTriage } from "./khala-triage.js";
-import { registerKhalaUserPriority } from "./khala-user-priority.js";
-import { readLatestVerdict, registerKhalaVerdict } from "./khala-verdict.js";
-import { registerKhalaWork } from "./khala-work.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type Static, Type } from "typebox";
+import { loadConfig } from "./config.js";
+import { type ApplicationRuntime, createApplication } from "./factory.js";
+import type { Actor, CommandMeta, JsonObject, JsonValue, MutableRecordQuery, RecordKind } from "./model.js";
+import { ApplicationError } from "./service.js";
+import { showKhala } from "./tui.js";
 
-const baseDir = dirname(fileURLToPath(import.meta.url));
-configureKhalaRuntimePaths({ getAgentDir, configDirName: CONFIG_DIR_NAME });
-const packageRoot = resolvePackageRoot(baseDir);
+const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const ROLE_FLAG = "khala-role";
+const rolePromptFiles = {
+	conclave: "conclave.md",
+	observer: "observer.md",
+	executor: "executor.md",
+	oracle: "oracle.md",
+} as const;
 
-function isTrustedProject(context: ExtensionContext): boolean {
-	return typeof context.isProjectTrusted === "function" && context.isProjectTrusted();
-}
+const submitSchema = Type.Object({
+	workId: Type.Optional(Type.String()),
+	title: Type.String(),
+	objective: Type.String(),
+	context: Type.Optional(Type.String()),
+	scope: Type.Optional(Type.String()),
+	acceptanceCriteria: Type.Array(Type.String()),
+	constraints: Type.Optional(Type.Array(Type.String())),
+	validation: Type.Optional(Type.Array(Type.String())),
+	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
+});
+type SubmitParams = Static<typeof submitSchema>;
 
-const USER_KHALA_TOOL_ALLOWLIST = new Set([
-	"khala_oracle",
-	"khala_submit_work",
-	"khala_read_archive",
-	"khala_record_pull_request_review",
-	"khala_prioritize_work",
-]);
-const EXECUTOR_ACTIVE_TOOLS = [
-	"read",
-	"bash",
-	"edit",
-	"write",
-	"grep",
-	"find",
-	"ls",
-	"khala_read_archive",
-	"khala_signal",
-] as const;
-const OBSERVER_ACTIVE_TOOLS = ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_learning"] as const;
-const PRESERVER_ACTIVE_TOOLS = ["khala_read_archive", "khala_counsel"] as const;
+const readArchiveSchema = Type.Object({
+	workId: Type.Optional(Type.String()),
+	missionId: Type.Optional(Type.String()),
+	executionId: Type.Optional(Type.String()),
+	kinds: Type.Optional(Type.Array(Type.String())),
+	from: Type.Optional(Type.String()),
+	to: Type.Optional(Type.String()),
+	cursor: Type.Optional(Type.String()),
+});
+type ReadArchiveParams = Static<typeof readArchiveSchema>;
 
-function isDedicatedConclaveSession(context: ExtensionContext): boolean {
-	return context.sessionManager
-		.getBranch()
-		.some((entry) => entry.type === "custom" && entry.customType === KhalaEntryType.conclave);
-}
+const actionInputSchema = Type.Object({
+	kind: Type.Optional(Type.String()),
+	summary: Type.Optional(Type.String()),
+	evidence: Type.Optional(Type.Array(Type.String())),
+	decision: Type.Optional(Type.String()),
+	reason: Type.Optional(Type.String()),
+	signalId: Type.Optional(Type.String()),
+	status: Type.Optional(Type.String()),
+	feedback: Type.Optional(Type.Array(Type.String())),
+	subject: Type.Optional(Type.String()),
+	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
+});
+const performSchema = Type.Object({
+	action: Type.Union([
+		Type.Literal("admit"),
+		Type.Literal("launch-observer"),
+		Type.Literal("record-assessment"),
+		Type.Literal("start-execution"),
+		Type.Literal("record-signal"),
+		Type.Literal("create-review-request"),
+		Type.Literal("run-oracle"),
+		Type.Literal("verdict"),
+		Type.Literal("record-review"),
+		Type.Literal("record-outcome"),
+		Type.Literal("cancel"),
+		Type.Literal("amend-budget"),
+		Type.Literal("fail-work"),
+	]),
+	workId: Type.String(),
+	input: Type.Optional(actionInputSchema),
+	expectedWorkRevision: Type.Integer({ minimum: 0 }),
+});
+type PerformParams = Static<typeof performSchema>;
 
-function registerKhalaAttentionControls(
-	pi: ExtensionAPI,
-	conclaveCoordinator: ConclaveCoordinator,
-): (context: ExtensionContext) => Promise<void> {
-	const showAttention = (context: ExtensionContext): Promise<void> => {
-		const recoverConclave = (recoveryContext: ExtensionContext): Promise<void> =>
-			runConclaveRecovery(recoveryContext, conclaveCoordinator);
-		if (context.mode === "tui") {
-			return showKhalaAttention(context, createObserverViewer(), conclaveCoordinator, recoverConclave);
+type RuntimeState = Readonly<{ runtime: ApplicationRuntime; projectPath: string; trusted: boolean }>;
+type ToolResult = { content: [{ type: "text"; text: string }]; details: JsonValue; isError: boolean };
+type ToolErrorResult = { content: [{ type: "text"; text: string }]; details: JsonObject; isError: true };
+
+export default function khalaExtension(pi: ExtensionAPI): void {
+	pi.registerFlag(ROLE_FLAG, { description: "Khala role for an isolated child session", type: "string" });
+	let runtime: RuntimeState | undefined;
+
+	const getRuntime = (context: ExtensionContext): ApplicationRuntime => {
+		const trusted = context.isProjectTrusted?.() === true;
+		if (runtime?.projectPath === context.cwd && runtime.trusted === trusted) {
+			return runtime.runtime;
 		}
-		return showKhalaAttention(context, undefined, conclaveCoordinator, recoverConclave);
+		runtime = { runtime: createApplication(context.cwd, trusted, packageRoot), projectPath: context.cwd, trusted };
+		return runtime.runtime;
 	};
-	pi.registerCommand("khala", {
-		description: "Show the Khala project attention summary.",
-		handler: (_args, context) => showAttention(context),
-	});
-	pi.registerShortcut(KHALA_TOGGLE_SHORTCUT, {
-		description: "Show the Khala project attention summary.",
-		handler: (context) => showAttention(context),
-	});
-	return showAttention;
-}
 
-function setRoleActiveTools(pi: ExtensionAPI, role: KhalaRoleValue | null, dedicatedConclave: boolean): void {
-	let allowedTools: ReadonlySet<string>;
-	if (dedicatedConclave) {
-		allowedTools = new Set(CONCLAVE_TOOL_ALLOWLIST);
-	} else if (role === KhalaRole.executor) {
-		allowedTools = new Set(EXECUTOR_ACTIVE_TOOLS);
-	} else if (role === KhalaRole.observer) {
-		allowedTools = new Set(OBSERVER_ACTIVE_TOOLS);
-	} else if (role === KhalaRole.preserver) {
-		allowedTools = new Set(PRESERVER_ACTIVE_TOOLS);
-	} else if (role === KhalaRole.conclave) {
-		allowedTools = new Set(CONCLAVE_BASE_TOOL_ALLOWLIST);
-	} else {
-		pi.setActiveTools(
-			pi.getActiveTools().filter((name) => !name.startsWith("khala_") || USER_KHALA_TOOL_ALLOWLIST.has(name)),
-		);
-		return;
-	}
-	pi.setActiveTools(pi.getActiveTools().filter((name) => allowedTools.has(name)));
-}
-
-async function runConclaveRecovery(context: ExtensionContext, conclaveCoordinator: ConclaveCoordinator): Promise<void> {
-	try {
-		loadKhalaConfig(context.cwd, isTrustedProject(context));
-	} catch (error) {
-		let message = String(error);
-		if (error instanceof Error) {
-			({ message } = error);
-		}
-		context.ui.notify(message, "error");
-		return;
-	}
-	const projectTrusted = isTrustedProject(context);
-	const pendingModelRecoveries = listPendingExecutorModelRecoveries(context.cwd, projectTrusted);
-	const pending = pendingModelRecoveries.find(
-		(candidate) =>
-			selectedUserExecutorModelRecovery({
-				projectPath: context.cwd,
-				workId: candidate.execution.workId,
-				missionId: candidate.mission.missionId,
-				predecessorExecutionId: candidate.execution.executionId,
-				projectTrusted,
-			}) === undefined,
-	);
-	if (pending !== undefined) {
-		if (context.mode !== "tui") {
-			context.ui.notify(
-				`Executor model selection is required for Work ${pending.execution.workId}; use /khala in interactive mode.`,
-				"warning",
-			);
-			return;
-		}
-		const choseModel = await selectExecutorRecoveryModel(
-			{
-				workId: pending.execution.workId,
-				missionId: pending.mission.missionId,
-				executionId: pending.execution.executionId,
-			},
-			context,
-			conclaveCoordinator,
-		);
-		if (!choseModel) {
-			return;
-		}
-	}
-	let userSessionPath: string | undefined;
-	if (!isDedicatedConclaveSession(context)) {
-		userSessionPath = context.sessionManager.getSessionFile();
-	}
-	const sessionPath = conclaveCoordinator.ensureConclaveSession(context.cwd, userSessionPath, projectTrusted);
-	conclaveCoordinator.resume(context.cwd, projectTrusted);
-	if (sessionPath === undefined) {
-		context.ui.notify("Khala could not create the project Conclave.", "error");
-	} else {
-		context.ui.notify("Khala configuration is valid; pending Work recovery was scheduled.", "info");
-	}
-}
-
-function registerConclaveRecovery(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
-	pi.registerCommand("khala-recover", {
-		description: "Recover the project Conclave and resume pending Work.",
-		handler: (_args, context) => runConclaveRecovery(context, conclaveCoordinator),
-	});
-}
-
-function createExtension(pi: ExtensionAPI): void {
-	const conclaveCoordinator = createConclaveCoordinator(resolveExtensionPath(baseDir));
-	registerKhalaDynamicResources(pi);
-	registerKhalaFlags(pi);
-	registerKhalaTools(pi, conclaveCoordinator);
-	const showAttention = registerKhalaAttentionControls(pi, conclaveCoordinator);
-	registerKhalaSessionEvents(pi, showAttention, conclaveCoordinator);
-}
-
-function registerKhalaDynamicResources(pi: ExtensionAPI): void {
-	pi.on("resources_discover", () => ({
-		promptPaths: [join(packageRoot, "templates", "khala-triage-prompt.md")],
-	}));
-}
-
-function registerKhalaFlags(pi: ExtensionAPI): void {
-	pi.registerFlag("khala-work-id", { description: "Internal Khala Work ID", type: "string" });
-	pi.registerFlag("khala-execution-id", { description: "Internal Khala Executor execution ID", type: "string" });
-	pi.registerFlag("khala-project-path", { description: "Internal Khala project path", type: "string" });
-	pi.registerFlag("khala-project-trusted", { description: "Internal Khala project trust marker", type: "string" });
-	pi.registerFlag("khala-agent-kind", { description: "Internal Khala agent kind", type: "string" });
-	pi.registerFlag("khala-mission-id", { description: "Internal Khala Mission ID", type: "string" });
-	pi.registerFlag("khala-mandate-id", { description: "Internal Khala Mandate ID", type: "string" });
-	pi.registerFlag("khala-participant-id", { description: "Internal Khala participant ID", type: "string" });
-	pi.registerFlag("khala-system-prompt-provided", {
-		description: "Internal Khala marker that the role prompt was passed through --system-prompt",
-		type: "boolean",
-	});
-}
-
-function registerKhalaTools(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
-	registerKhalaSignal(
-		pi,
-		async (projectPath, signal, projectTrusted) => conclaveCoordinator.wakeSignal(projectPath, signal, projectTrusted),
-		async (projectPath, signal, projectTrusted) => {
-			const execution = readExecutorRecord(projectPath, signal.executionId, projectTrusted);
-			if (execution !== undefined) {
-				await finalizeConfiguredExecutorReview({
-					execution,
-					workId: signal.workId,
-					projectTrusted: projectTrusted ?? false,
-					summary: signal.summary,
-					evidence: signal.evidence,
-				});
+	pi.registerTool({
+		name: "khala_submit_work",
+		label: "Submit Work",
+		description: "Submit complete User intent to the project Conclave without waiting for admission.",
+		parameters: submitSchema,
+		async execute(toolCallId, params: SubmitParams, _signal, _onUpdate, context) {
+			try {
+				const service = getRuntime(context).service;
+				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
+				scheduleWake(service, work.workId, context);
+				return toolResult(work, false);
+			} catch (error) {
+				if (error instanceof ApplicationError) {
+					return toolError(error.envelope);
+				}
+				return toolErrorText(error instanceof Error ? error.message : "Khala submission failed.");
 			}
 		},
-	);
-	registerKhalaLearning(
-		pi,
-		(projectPath, learning, projectTrusted) => conclaveCoordinator.wakeLearning(projectPath, learning, projectTrusted),
-		createObserverCloser(),
-	);
-	registerKhalaObserver(pi, {
-		createObserverStarter: createConfiguredObserverStarter,
-		observerSystemPrompt: readRolePrompt(packageRoot, "observer"),
-		getSubmission: conclaveCoordinator.getSubmission,
-		getPendingSubmission: conclaveCoordinator.getPendingSubmission,
-		markSubmissionReviewing: conclaveCoordinator.markSubmissionReviewing,
-		markSubmissionQueued: conclaveCoordinator.markSubmissionQueued,
-		isDedicatedConclaveSession,
 	});
-	registerKhalaArchiveRead(pi, readSessionRole);
-	registerKhalaOracle(pi);
-	registerKhalaCounsel(pi, (context) => readSessionRole(context) === KhalaRole.preserver);
-	registerKhalaVerdict(pi, isDedicatedConclaveSession, conclaveCoordinator.deliverVerdict);
-	registerKhalaReview(pi, isDedicatedConclaveSession, (projectPath, workId, projectTrusted) =>
-		conclaveCoordinator.wakeReview(projectPath, workId, projectTrusted),
-	);
-	registerKhalaSupervisionTools(pi, {
-		isDedicatedConclaveSession,
-		registerStopHandoffExpectation: (context, expectation) =>
-			getSupervisionController(context.cwd, isTrustedProject(context))?.registerStopHandoffExpectation(expectation),
-	});
-	registerKhalaUserPriority(pi, { wakeUserPriority: conclaveCoordinator.wakeUserPriority });
-	registerConclaveRecovery(pi, conclaveCoordinator);
-}
 
-function registerKhalaSessionEvents(
-	pi: ExtensionAPI,
-	showAttention: (context: ExtensionContext) => Promise<void>,
-	conclaveCoordinator: ConclaveCoordinator,
-): void {
-	pi.on("session_start", (_event, context) => {
-		registerLaunchedAgent(pi, context);
-		const role = readSessionRole(context);
-		const dedicatedConclave = isDedicatedConclaveSession(context) && role === KhalaRole.conclave;
-		registerRoleKhalaArchiveRead(pi, readSessionRole, role);
-		setRoleActiveTools(pi, role, dedicatedConclave);
-		queueMicrotask(() => setRoleActiveTools(pi, role, dedicatedConclave));
-		setKhalaStatus(context, role);
-		if (!isDedicatedConclaveSession(context)) {
-			conclaveCoordinator.resume(context.cwd, isTrustedProject(context));
-		}
-	});
-	pi.on("session_shutdown", () => conclaveCoordinator.dispose());
-	registerConfiguredKhalaWork(pi, conclaveCoordinator);
-	registerKhalaTriage(pi);
-	registerKhalaDemo(pi, {
-		ensureConclaveSession: conclaveCoordinator.ensureConclaveSession,
-		submitWork: conclaveCoordinator.submit,
-		openAttention: showAttention,
-	});
-	pi.on("message_end", (event, context) => {
-		const entries = context.sessionManager.getEntries();
-		const previousEntry = entries.at(-1);
-		const assessmentInputIndex = [...entries]
-			.map((entry, index) => ({ entry, index }))
-			.reverse()
-			.find(
-				(candidate) =>
-					candidate.entry.type === "custom_message" &&
-					candidate.entry.customType === "khala-supervision-assessment-input",
-			)?.index;
-		let assessmentInput: (typeof entries)[number] | undefined;
-		if (assessmentInputIndex !== undefined) {
-			assessmentInput = entries[assessmentInputIndex];
-		}
-		let assessmentDetails: Record<string, unknown> | undefined;
-		if (
-			assessmentInput?.type === "custom_message" &&
-			typeof assessmentInput.details === "object" &&
-			assessmentInput.details !== null
-		) {
-			assessmentDetails = assessmentInput.details as Record<string, unknown>;
-		}
-		let assessmentEntries: typeof entries = [];
-		if (assessmentInputIndex !== undefined) {
-			assessmentEntries = entries.slice(assessmentInputIndex + 1);
-		}
-		const assessmentHasDirectUserInput = assessmentEntries.some(
-			(entry) => entry.type === "message" && entry.message.role === "user",
-		);
-		let activeAssessmentInput: typeof assessmentInput;
-		if (!assessmentHasDirectUserInput) {
-			activeAssessmentInput = assessmentInput;
-		}
-		const assessmentToolCalls = assessmentEntries.flatMap((entry) => {
-			if (entry.type !== "message" || entry.message.role !== "assistant") {
-				return [];
-			}
-			return toolCallsFromMessage(entry.message);
-		});
-		const significantAction = assessmentEntries.some((entry) => {
-			if (entry.type !== "message" || entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) {
-				return false;
-			}
-			return entry.message.content.some((content) => {
-				if (typeof content !== "object" || content === null || (content as { type?: unknown }).type !== "toolCall") {
-					return false;
+	pi.registerTool({
+		name: "khala_read_archive",
+		label: "Read Khala Archive",
+		description: "Read bounded, append-ordered Archive record projections through the application service.",
+		parameters: readArchiveSchema,
+		async execute(toolCallId, params: ReadArchiveParams, _signal, _onUpdate, context) {
+			try {
+				const actor = sessionActor(pi);
+				const query = readArchiveQuery(params);
+				const page = getRuntime(context).service.readRecords(
+					query,
+					meta(actor, `tool:archive:${toolCallId}`, 0),
+					params.cursor,
+				);
+				return toolResult(page, false);
+			} catch (error) {
+				if (error instanceof ApplicationError) {
+					return toolError(error.envelope);
 				}
-				const { name } = content as { name?: unknown };
-				return typeof name === "string" && name !== "khala_read_archive";
-			});
-		});
-		const { budgetOverrun } = assessmentDetails ?? {};
-		const visibilityContext: {
-			significantAction: boolean;
-			budgetOverrun: boolean;
-			toolCalls: typeof assessmentToolCalls;
-			assessmentInput?: NonNullable<typeof assessmentInput>;
-		} = {
-			significantAction,
-			budgetOverrun: budgetOverrun === true,
-			toolCalls: assessmentToolCalls,
-		};
-		if (activeAssessmentInput !== undefined) {
-			visibilityContext.assessmentInput = activeAssessmentInput;
-		}
-		const replacement = hideAlignedAssessmentResponse(event.message, previousEntry, visibilityContext);
-		if (replacement !== undefined) {
-			return { message: replacement };
-		}
-		return { message: event.message };
+				return toolErrorText(error instanceof Error ? error.message : "Archive read failed.");
+			}
+		},
 	});
-	pi.on("before_agent_start", (event, context) => {
-		const role = readSessionRole(context);
-		if (role === null) {
+
+	pi.registerTool({
+		name: "khala_perform_action",
+		label: "Perform Khala Action",
+		description: "Perform one actor-authorized, revision-checked Khala application action.",
+		parameters: performSchema,
+		async execute(toolCallId, params: PerformParams, _signal, _onUpdate, context) {
+			try {
+				const actor = sessionActor(pi);
+				const result = await getRuntime(context).service.perform({
+					action: params.action,
+					workId: params.workId,
+					input: params.input,
+					meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision),
+				});
+				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+			} catch (error) {
+				if (error instanceof ApplicationError) {
+					return toolError(error.envelope);
+				}
+				return toolErrorText(error instanceof Error ? error.message : "Khala action failed.");
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "khala_record_signal",
+		label: "Record Executor Signal",
+		description: "Record progress, blocked, or ready evidence for the current Executor Execution.",
+		parameters: Type.Object({
+			workId: Type.String(),
+			kind: Type.Union([Type.Literal("progress"), Type.Literal("blocked"), Type.Literal("ready")]),
+			summary: Type.String(),
+			evidence: Type.Array(Type.String()),
+			expectedWorkRevision: Type.Integer({ minimum: 0 }),
+		}),
+		async execute(toolCallId, params, _signal, _onUpdate, context) {
+			const result = await getRuntime(context).service.perform({
+				action: "record-signal",
+				workId: params.workId,
+				input: { kind: params.kind, summary: params.summary, evidence: params.evidence },
+				meta: meta("executor", `tool:signal:${toolCallId}`, params.expectedWorkRevision),
+			});
+			return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+		},
+	});
+
+	pi.registerTool({
+		name: "khala_record_assessment",
+		label: "Record Observer Assessment",
+		description: "Record exactly one bounded, evidence-backed read-only assessment for a Work Submission.",
+		parameters: Type.Object({
+			workId: Type.String(),
+			summary: Type.String(),
+			evidence: Type.Array(Type.String()),
+			expectedWorkRevision: Type.Integer({ minimum: 0 }),
+		}),
+		async execute(toolCallId, params, _signal, _onUpdate, context) {
+			const result = await getRuntime(context).service.perform({
+				action: "record-assessment",
+				workId: params.workId,
+				input: { summary: params.summary, evidence: params.evidence },
+				meta: meta("observer", `tool:assessment:${toolCallId}`, params.expectedWorkRevision),
+			});
+			return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+		},
+	});
+
+	pi.registerTool({
+		name: "khala_run_oracle",
+		label: "Run Khala Oracle",
+		description: "Ask the no-tools Oracle for advisory findings on a bounded Mission handoff packet.",
+		parameters: Type.Object({
+			workId: Type.String(),
+			subject: Type.String(),
+			expectedWorkRevision: Type.Integer({ minimum: 0 }),
+		}),
+		async execute(toolCallId, params, _signal, _onUpdate, context) {
+			const result = await getRuntime(context).service.perform({
+				action: "run-oracle",
+				workId: params.workId,
+				input: { subject: params.subject },
+				meta: meta("conclave", `tool:oracle:${toolCallId}`, params.expectedWorkRevision),
+			});
+			return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+		},
+	});
+
+	pi.registerCommand("khala", {
+		description: "Open the on-demand Khala Work view.",
+		handler: async (_args, context) => {
+			try {
+				const application = getRuntime(context);
+				await showKhala(application.service, context, sessionActor(pi), application.config.keybindings);
+			} catch (error) {
+				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("khala-recover", {
+		description: "Reread Archive state and reconcile Khala runtime bindings.",
+		handler: async (_args, context) => {
+			try {
+				const service = getRuntime(context).service;
+				await service.processPendingEffects();
+				const work = service.listWork();
+				for (const item of work) {
+					const current = service.inspectWork(item.workId);
+					await service.recoverWork(
+						item.workId,
+						meta("conclave", `recover:${item.workId}:${current.revision}`, current.revision),
+					);
+				}
+				context.ui.notify(
+					`Archive reread and runtime reconciliation completed for ${work.length} Work item${work.length === 1 ? "" : "s"}.`,
+					"info",
+				);
+			} catch (error) {
+				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("khala-setup", {
+		description: "Run Khala's linear configuration preflight.",
+		handler: async (_args, context) => {
+			try {
+				const trusted = context.isProjectTrusted?.() === true;
+				const config = loadConfig(context.cwd, trusted, false);
+				const statuses = [
+					`Ready: Archive root ${config.archiveRoot}`,
+					`Ready: target branch ${config.targetBranch}`,
+					`${config.conclaveModel.length === 0 ? "Action required" : "Ready"}: Conclave model`,
+					`${config.executorModel.length === 0 ? "Action required" : "Ready"}: Executor model`,
+					`${config.oracleModel.length === 0 ? "Action required" : "Ready"}: Oracle model`,
+					`${config.observerModel.length === 0 ? "Unavailable" : "Ready"}: Observer model`,
+				];
+				context.ui.notify(statuses.join("\n"), "info");
+			} catch (error) {
+				context.ui.notify(error instanceof Error ? error.message : "Khala setup preflight failed.", "error");
+			}
+		},
+	});
+
+	pi.on("session_start", (_event, context) => {
+		setRoleTools(pi);
+		if (sessionActor(pi) !== "user") {
 			return;
 		}
-		const rolePrompt = readRolePrompt(packageRoot, role);
-		const systemPromptProvided = pi.getFlag("khala-system-prompt-provided") === true;
-		const { systemPrompt: eventSystemPrompt } = event;
-		let systemPrompt = eventSystemPrompt;
-		if (!systemPromptProvided) {
-			systemPrompt = `${systemPrompt}\n\n${rolePrompt}`;
+		context.ui.setStatus("khala", "Khala: on demand");
+	});
+	pi.on("before_agent_start", (event) => {
+		const role = sessionRole(pi);
+		if (role === "user") {
+			return;
 		}
-		if (role === KhalaRole.executor) {
-			const projectPath = pi.getFlag("khala-project-path");
-			const executionId = pi.getFlag("khala-execution-id");
-			if (typeof projectPath === "string" && typeof executionId === "string") {
-				const trustedFlag = pi.getFlag("khala-project-trusted");
-				let projectTrusted = isTrustedProject(context);
-				if (typeof trustedFlag === "string") {
-					projectTrusted = trustedFlag === "true";
-				} else if (typeof trustedFlag === "boolean") {
-					projectTrusted = trustedFlag;
-				}
-				const verdict = readLatestVerdict(projectPath, executionId, projectTrusted);
-				if (verdict !== undefined) {
-					systemPrompt += `\n\nA durable Conclave Verdict is recorded for this execution: ${verdict.decision}. Reason: ${verdict.reason}`;
-				}
-				const pendingDeliveries = listLatestVerdictDeliveryRecords(projectPath, projectTrusted).filter(
-					(delivery) => delivery.executionId === executionId && delivery.status !== "delivered",
+		const prompt = readFileSync(join(packageRoot, "system-prompts", rolePromptFiles[role]), "utf8");
+		return { systemPrompt: `${event.systemPrompt}\n\n${prompt}` };
+	});
+	pi.on("session_shutdown", async () => {
+		if (runtime !== undefined) {
+			await runtime.runtime.service.close();
+			runtime = undefined;
+		}
+	});
+}
+
+function scheduleWake(service: ApplicationRuntime["service"], workId: string, context: ExtensionContext): void {
+	queueMicrotask(() => {
+		void (async () => {
+			try {
+				const work = service.inspectWork(workId);
+				await service.wakeConclave(
+					workId,
+					`wake:${workId}:${work.revision}`,
+					meta("conclave", `wake:${workId}:${work.revision}`, work.revision),
 				);
-				for (const delivery of pendingDeliveries) {
-					systemPrompt += `\n\nPending durable Verdict delivery: ${delivery.message}`;
+			} catch (error) {
+				try {
+					const current = service.inspectWork(workId);
+					service.recordWakeFailure(
+						workId,
+						error instanceof Error ? error.message : String(error),
+						meta("conclave", `wake-failure:${workId}:${current.revision}`, current.revision),
+					);
+				} catch (failure) {
+					context.ui.notify(failure instanceof Error ? failure.message : String(failure), "warning");
 				}
 			}
-		}
-		return { systemPrompt };
+		})();
 	});
 }
 
-function registerLaunchedAgent(pi: ExtensionAPI, context: ExtensionContext): void {
-	const workId = pi.getFlag("khala-work-id");
-	const executionId = pi.getFlag("khala-execution-id");
-	const projectPath = pi.getFlag("khala-project-path");
-	if (typeof workId !== "string" || typeof executionId !== "string" || typeof projectPath !== "string") {
-		return;
+function sessionRole(pi: ExtensionAPI): "user" | "conclave" | "observer" | "executor" | "oracle" {
+	const value = pi.getFlag(ROLE_FLAG);
+	if (value === "conclave" || value === "observer" || value === "executor" || value === "oracle") {
+		return value;
 	}
-	let agentKind = "executor";
-	let defaultName = "Executor";
-	const isObserver = pi.getFlag("khala-agent-kind") === "observer";
-	if (isObserver) {
-		agentKind = "observer";
-		defaultName = "Observer";
-	}
-	const executorName = context.sessionManager.getSessionName() ?? defaultName;
-	const hasMarker = context.sessionManager.getBranch().some((entry) => {
-		if (entry.type !== "custom") {
-			return false;
-		}
-		if (isObserver) {
-			return entry.customType === KhalaEntryType.observer;
-		}
-		return entry.customType === KhalaEntryType.executor;
-	});
-	const trustedFlag = pi.getFlag("khala-project-trusted");
-	let projectTrusted = isTrustedProject(context);
-	if (typeof trustedFlag === "string") {
-		projectTrusted = trustedFlag === "true";
-	} else if (typeof trustedFlag === "boolean") {
-		projectTrusted = trustedFlag;
-	}
-	if (!hasMarker) {
-		const missionId = pi.getFlag("khala-mission-id");
-		const mandateId = pi.getFlag("khala-mandate-id");
-		const participantId = pi.getFlag("khala-participant-id");
-		let marker: {
-			workId: string;
-			executionId: string;
-			projectPath: string;
-			projectTrusted: boolean;
-			kind: string;
-			missionId?: string;
-			mandateId?: string;
-			participantId?: string;
-		} = { workId, executionId, projectPath, projectTrusted, kind: agentKind };
-		if (typeof missionId === "string") {
-			marker = { ...marker, missionId };
-		}
-		if (typeof mandateId === "string") {
-			marker = { ...marker, mandateId };
-		}
-		if (typeof participantId === "string") {
-			marker = { ...marker, participantId };
-		}
-		if (isObserver) {
-			// The Observer marker carries the role-specific observerName identity consumed by khala_record_learning.
-			pi.appendEntry(KhalaEntryType.observer, { ...marker, observerName: executorName });
-		} else {
-			pi.appendEntry(KhalaEntryType.executor, { ...marker, executorName });
-		}
-	}
-	const sessionPath = context.sessionManager.getSessionFile();
-	const sessionManagerWithId = context.sessionManager as unknown as { getSessionId?: () => string };
-	const sessionId = sessionManagerWithId.getSessionId?.();
-	if (sessionPath !== undefined && sessionId !== undefined && sessionId.length > 0) {
-		updateExecutorRecord(projectPath, executionId, { piSessionId: sessionId, sessionPath }, projectTrusted);
-	}
-	// biome-ignore lint/style/useNamingConvention: Match the Observer bootstrap environment contract.
-	const startupEnvironment = process.env as Readonly<{ KHALA_STARTUP_MARKER?: string }>;
-	const startupMarker = startupEnvironment.KHALA_STARTUP_MARKER;
-	if (typeof startupMarker === "string" && startupMarker.length > 0) {
-		try {
-			writeFileSync(startupMarker, "ready", "utf8");
-		} catch {
-			// The launcher timeout remains actionable if the sandbox disappears during startup.
-		}
-	}
+	return "user";
 }
 
-function registerConfiguredKhalaWork(pi: ExtensionAPI, conclaveCoordinator: ConclaveCoordinator): void {
-	registerKhalaWork(pi, {
-		workTemplate: readFileSync(join(packageRoot, "templates", "khala-work.md"), "utf8").trim(),
-		executorSystemPrompt: readRolePrompt(packageRoot, "executor"),
-		createExecutorStarter: createConfiguredExecutorStarter,
-		isDedicatedConclaveSession,
-		submitWork: conclaveCoordinator.submit,
-		getSubmission: conclaveCoordinator.getSubmission,
-		getPendingSubmission: conclaveCoordinator.getPendingSubmission,
-		claimSubmission: conclaveCoordinator.claimSubmission,
-		markSubmissionQueued: conclaveCoordinator.markSubmissionQueued,
-		markSubmissionLaunched: conclaveCoordinator.markSubmissionLaunched,
-		pollBeforeDependentLaunch: (projectPath, projectTrusted, workId) =>
-			conclaveCoordinator.pollBeforeDependentLaunch(projectPath, projectTrusted, workId),
+function sessionActor(pi: ExtensionAPI): Actor {
+	return sessionRole(pi);
+}
+
+function setRoleTools(pi: ExtensionAPI): void {
+	const role = sessionRole(pi);
+	const allowed =
+		role === "user"
+			? new Set(["khala_submit_work", "khala_read_archive", "khala_perform_action"])
+			: role === "conclave"
+				? new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle"])
+				: role === "executor"
+					? new Set(["khala_read_archive", "khala_record_signal", "khala_perform_action"])
+					: role === "observer"
+						? new Set(["khala_read_archive", "khala_record_assessment"])
+						: new Set(["khala_read_archive"]);
+	pi.setActiveTools(pi.getActiveTools().filter((name) => !name.startsWith("khala_") || allowed.has(name)));
+}
+
+function meta(actor: Actor, commandId: string, expectedWorkRevision: number): CommandMeta {
+	return { actor, commandId, expectedWorkRevision, schemaVersion: 1 };
+}
+
+function readArchiveQuery(params: ReadArchiveParams): MutableRecordQuery {
+	const query: MutableRecordQuery = {};
+	if (params.workId !== undefined) query.workId = params.workId;
+	if (params.missionId !== undefined) query.missionId = params.missionId;
+	if (params.executionId !== undefined) query.executionId = params.executionId;
+	if (params.kinds !== undefined) query.kinds = readRecordKinds(params.kinds);
+	if (params.from !== undefined) query.from = params.from;
+	if (params.to !== undefined) query.to = params.to;
+	return query;
+}
+
+function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
+	return values.map((value) => {
+		if (!isRecordKind(value)) throw new Error(`Archive record kind ${value} is invalid.`);
+		return value;
 	});
 }
 
-export { createExtension as default };
+function isRecordKind(value: string): value is RecordKind {
+	return [
+		"submission",
+		"assessment",
+		"learning",
+		"mission",
+		"mission-change",
+		"execution",
+		"signal",
+		"review-request",
+		"observation",
+		"delivery",
+		"verdict",
+		"oracle-review",
+		"outcome",
+		"error",
+		"work-amended",
+	].includes(value);
+}
+
+function toolResult(value: JsonValue, isError: boolean): ToolResult {
+	return { content: [{ type: "text", text: JSON.stringify(value) }], details: value, isError };
+}
+
+function toolError(error: JsonObject): ToolErrorResult {
+	return { content: [{ type: "text", text: JSON.stringify(error) }], details: error, isError: true };
+}
+
+function toolErrorText(message: string): ToolErrorResult {
+	return toolError({ summary: message });
+}
+
+export { SQLiteArchive } from "./archive.js";
+export type { ApplicationRuntime } from "./factory.js";
+export { createApplication } from "./factory.js";
+export type {
+	Action,
+	ActionCommand,
+	CommandMeta,
+	ErrorEnvelope,
+	Execution,
+	Mission,
+	RecordView,
+	SubmitWorkInput,
+	WorkView,
+} from "./model.js";
+export { ApplicationError, ApplicationService } from "./service.js";
