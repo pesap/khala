@@ -19,28 +19,13 @@ npm run check
 pi -e ./src/index.ts
 ```
 
-Create `~/.pi/agent/khala.json` with explicit model settings before submitting
-Work:
+In Pi, open `/khala` and choose **Role settings** to configure the model and
+thinking level for Conclave, Executor, Observer, and Oracle. Settings persist to
+`~/.pi/agent/khala.json` and apply to future launches; an existing Execution
+keeps its persisted model and thinking level.
 
-```json
-{
-  "conclaveModel": "provider/conclave-model",
-  "executorModel": "provider/executor-model",
-  "oracleModel": "provider/oracle-model",
-  "observerModel": "provider/observer-model",
-  "conclaveThinking": "medium",
-  "executorThinking": "high",
-  "oracleThinking": "high",
-  "observerThinking": "medium",
-  "targetBranch": "main",
-  "maxConcurrentExecutions": 2,
-  "defaultWorkTokens": 20000
-}
-```
-
-In Pi, submit complete intent with `khala_submit_work`, then use `/khala` to
-inspect Work. Submission returns after SQLite persistence; Conclave processing
-is scheduled independently.
+Then submit complete intent with `khala_submit_work`. Submission returns after
+SQLite persistence; Conclave processing is scheduled independently.
 
 ## User workflow
 
@@ -69,8 +54,9 @@ Executor exposes recovery in `Actions`.
 Token usage, including cache hits and misses, remains tracked on the Execution;
 USD cost is not tracked without provider pricing and usage data. Navigation does
 not write the Archive. Up/down and Enter select; Backspace or Escape navigates
-back or closes the selector. `/` and `?` filter or open help and can be changed
-with `filterKey` and `helpKey` in configuration.
+back or closes the selector. Press `r` in the Work picker to open Role
+settings; Backspace or Escape returns to the Work picker. `/`, `?`, and `r` can
+be changed with `filterKey`, `helpKey`, and `roleSettingsKey` in configuration.
 
 ## Application service
 

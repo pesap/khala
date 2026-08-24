@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { codeHostForOrigin, GitWorkspace } from "./adapters.js";
 import { SQLiteArchive } from "./archive.js";
 import { archivePath, type KhalaConfig, loadConfig } from "./config.js";
-import type { JsonObject, JsonValue } from "./model.js";
+import type { GovernedRole, JsonObject, JsonValue, RoleSetting } from "./model.js";
 import { PiOracle } from "./oracle.js";
 import type { CodeHostPort, ModelCatalogPort, ServicePorts } from "./ports.js";
 import { PiRpcRuntime, promptIdentity } from "./runtime.js";
@@ -14,6 +14,7 @@ import { ApplicationService, type ServiceOptions } from "./service.js";
 export type ApplicationRuntime = Readonly<{
 	service: ApplicationService;
 	config: KhalaConfig;
+	updateRoleSetting: (role: GovernedRole, setting: RoleSetting, value: string) => void;
 }>;
 
 export function createApplication(
@@ -57,11 +58,12 @@ export function createApplication(
 		version,
 	);
 	const oraclePrompt = readFileSync(join(packageRoot, "system-prompts", "oracle.md"), "utf8");
+	const models = new ConfiguredModels(config);
 	const ports: ServicePorts = {
 		workspace: new GitWorkspace(config.worktreeRoot, config.worktreeBranchPrefix, effectiveProjectPath),
 		codeHost: new LazyCodeHost(effectiveProjectPath, config.targetBranch),
 		runtime,
-		models: new ConfiguredModels(config),
+		models,
 		oracle: new PiOracle(runtime, effectiveProjectPath, version, oraclePrompt),
 	};
 	const serviceOptions: ServiceOptions = {
@@ -82,31 +84,38 @@ export function createApplication(
 		observerPromptIdentity,
 		rolePublicKey,
 	};
-	return { service: new ApplicationService(archive, ports, serviceOptions), config };
+	const service = new ApplicationService(archive, ports, serviceOptions);
+	return {
+		service,
+		config,
+		updateRoleSetting: (role, setting, value) => {
+			if (setting === "model") models.updateRoleModel(role, value);
+			service.updateRoleSetting(role, setting, value);
+		},
+	};
 }
 
 type ModelResolution = Readonly<{ model: string; supportedThinking: readonly string[] }>;
 
 class ConfiguredModels implements ModelCatalogPort {
-	private readonly config: KhalaConfig;
+	private scopedModels: Readonly<Record<GovernedRole, string>>;
 
 	constructor(config: KhalaConfig) {
-		this.config = config;
+		this.scopedModels = {
+			conclave: config.conclaveModel,
+			executor: config.executorModel,
+			observer: config.observerModel,
+			oracle: config.oracleModel,
+		};
 	}
 
-	listScoped(role: "conclave" | "observer" | "executor" | "oracle"): readonly string[] {
-		let model = this.config.observerModel;
-		if (role === "conclave") {
-			model = this.config.conclaveModel;
-		} else if (role === "executor") {
-			model = this.config.executorModel;
-		} else if (role === "oracle") {
-			model = this.config.oracleModel;
-		}
-		if (model.length === 0) {
-			return [];
-		}
-		return [model];
+	listScoped(role: GovernedRole): readonly string[] {
+		const model = this.scopedModels[role];
+		return model.length === 0 ? [] : [model];
+	}
+
+	updateRoleModel(role: GovernedRole, model: string): void {
+		this.scopedModels = { ...this.scopedModels, [role]: model };
 	}
 
 	resolve(model: string): ModelResolution {

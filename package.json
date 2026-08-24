@@ -11,9 +11,6 @@
   ],
   "type": "module",
   "main": "./src/index.ts",
-  "bin": {
-    "khala": "./bin/khala.js"
-  },
   "pi": {
     "extensions": [
       "./src/index.ts",
@@ -32,7 +29,6 @@
     ".": "./src/index.ts"
   },
   "files": [
-    "bin",
     "extensions",
     "prompts",
     "system-prompts",
@@ -68,7 +64,6 @@
     "protobufjs@7.6.5": true
   },
   "dependencies": {
-    "jiti": "2.7.0",
     "nanoid": "6.0.1"
   },
   "devDependencies": {

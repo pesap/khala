@@ -13,6 +13,7 @@ import {
 	type CommandMeta,
 	type ErrorEnvelope,
 	type Execution,
+	type GovernedRole,
 	type JsonObject,
 	type JsonValue,
 	type Mission,
@@ -22,6 +23,8 @@ import {
 	type RecordQuery,
 	type RecordView,
 	type RecoveryUpdate,
+	type RoleSetting,
+	type RoleSettingsMap,
 	type ServiceResult,
 	type Signal,
 	type SubmitWorkInput,
@@ -53,7 +56,6 @@ export type ServiceOptions = Readonly<{
 	rolePublicKey: string;
 }>;
 
-type GovernedRole = "conclave" | "observer" | "executor" | "oracle";
 type RoleCapability = Readonly<{
 	role: Actor;
 	workId?: string | undefined;
@@ -87,7 +89,7 @@ export class ApplicationService {
 	private closing = false;
 	private readonly archive: ArchivePort;
 	private readonly ports: ServicePorts;
-	private readonly options: ServiceOptions;
+	private options: ServiceOptions;
 	private readonly rolePublicKey: KeyObject;
 
 	constructor(archive: ArchivePort, ports: ServicePorts, options: ServiceOptions) {
@@ -99,6 +101,48 @@ export class ApplicationService {
 			format: "der",
 			type: "spki",
 		});
+	}
+
+	getRoleSettings(): RoleSettingsMap {
+		return {
+			conclave: { model: this.options.conclaveModel, thinking: this.options.conclaveThinking },
+			executor: { model: this.options.executorModel, thinking: this.options.executorThinking },
+			observer: { model: this.options.observerModel, thinking: this.options.observerThinking },
+			oracle: { model: this.options.oracleModel, thinking: this.options.oracleThinking },
+		};
+	}
+
+	updateRoleSetting(role: GovernedRole, setting: RoleSetting, value: string): void {
+		const normalized = assertNonBlank(value, `${role} ${setting}`);
+		if (role === "conclave") {
+			this.options = {
+				...this.options,
+				conclaveModel: setting === "model" ? normalized : this.options.conclaveModel,
+				conclaveThinking: setting === "thinking" ? normalized : this.options.conclaveThinking,
+			};
+			return;
+		}
+		if (role === "executor") {
+			this.options = {
+				...this.options,
+				executorModel: setting === "model" ? normalized : this.options.executorModel,
+				executorThinking: setting === "thinking" ? normalized : this.options.executorThinking,
+			};
+			return;
+		}
+		if (role === "observer") {
+			this.options = {
+				...this.options,
+				observerModel: setting === "model" ? normalized : this.options.observerModel,
+				observerThinking: setting === "thinking" ? normalized : this.options.observerThinking,
+			};
+			return;
+		}
+		this.options = {
+			...this.options,
+			oracleModel: setting === "model" ? normalized : this.options.oracleModel,
+			oracleThinking: setting === "thinking" ? normalized : this.options.oracleThinking,
+		};
 	}
 
 	submitWork(input: SubmitWorkInput, meta: CommandMeta): WorkView {
@@ -152,6 +196,7 @@ export class ApplicationService {
 			workId: work.workId,
 			title: work.terms.title,
 			state: work.state,
+			executionState: work.execution?.state,
 			revision: work.revision,
 			queuePosition: queuePositions.get(work.workId),
 			budget: work.budget,
@@ -583,7 +628,7 @@ export class ApplicationService {
 					if (effect.kind === "conclave-wake" && workId !== undefined) {
 						try {
 							const current = this.inspectWork(workId);
-							this.recordWakeFailure(workId, error instanceof Error ? error.message : String(error), {
+							this.recordWakeFailure(workId, error instanceof Error ? error : new Error(String(error)), {
 								actor: "conclave",
 								commandId: `outbox-failure:${effect.effectId}:${current.revision}`,
 								expectedWorkRevision: current.revision,
@@ -873,21 +918,24 @@ export class ApplicationService {
 		return result.projection;
 	}
 
-	private recordWakeFailure(workId: string, message: string, meta: CommandMeta): WorkView {
+	private recordWakeFailure(workId: string, failure: Error, meta: CommandMeta): WorkView {
 		const work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
+		const error = conclaveWakeError(failure);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
-			nextAction: "Conclave wake failed; inspect and retry.",
+			lastError: error,
+			nextAction: "Resolve the Conclave admission error, then retry admission.",
 		};
 		return this.append({
 			meta,
 			kind: "error",
 			workId,
-			payload: { kind: "conclave-wake", message: message.slice(0, 2000) },
+			payload: error,
+			evidenceRefs: error.evidenceRefs,
 			projection: next,
-			summary: "Conclave wake failed without changing Work admission state.",
+			summary: error.summary,
 		}).projection;
 	}
 
@@ -1158,6 +1206,7 @@ export class ApplicationService {
 			state: "queued",
 			mission,
 			missionState: "admitted",
+			lastError: undefined,
 			nextAction: "Waiting for budget or project concurrency.",
 		};
 		return this.append({
@@ -2344,7 +2393,7 @@ export class ApplicationService {
 				"external-failure",
 				error instanceof Error ? error.message : "The configured model could not be resolved.",
 				false,
-				"Configure a role-scoped model and supported thinking level.",
+				"Open /khala, press r, configure a role-scoped model and supported thinking level, then retry admission.",
 			);
 		}
 	}
@@ -2463,6 +2512,19 @@ export class ApplicationService {
 	): ApplicationError {
 		return new ApplicationError({ code, summary, retryable, remediation, evidenceRefs: [] });
 	}
+}
+
+function conclaveWakeError(failure: Error): ErrorEnvelope {
+	if (failure instanceof ApplicationError) return failure.envelope;
+	const message = failure instanceof Error ? failure.message : String(failure);
+	return {
+		code: "external-failure",
+		summary: `Conclave admission failed: ${message.slice(0, 2000)}`,
+		retryable: true,
+		remediation:
+			"Open /khala, press r, choose a working Conclave model and thinking level, then run khala-recover to retry admission.",
+		evidenceRefs: [],
+	};
 }
 
 function readCapabilityRole(value: JsonValue | undefined): GovernedRole | undefined {

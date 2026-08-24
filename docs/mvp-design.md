@@ -4,7 +4,7 @@
 
 This document specifies the Khala MVP. It uses [glossary](glossary.md) terms and narrows the [lifecycle](lifecycle.md).
 
-Khala governs isolated, code-writing Pi sessions without consuming or interrupting the User conversation. Conclave, Observer, Executor, and Oracle run outside the User session through versioned, role-specific prompts. Prompt identity is Archive evidence and never changes the User's global Pi settings.
+Khala governs isolated, code-writing Pi sessions without consuming or interrupting the User conversation. Conclave, Observer, Executor, and Oracle run outside the User session through versioned, role-specific prompts. Prompt identity is Archive evidence. Role settings change Khala's persisted role configuration and never change the User's active Pi model or settings.
 
 The Archive is authoritative. Runtime, Git, code-host APIs, models, and views provide evidence; they do not directly change lifecycle state. Every mutation has an actor, expected Work revision, and idempotency key. Tool visibility is not authority: the application service validates actor capability and current state.
 
@@ -73,7 +73,7 @@ After `ready` and before `handoff`, Conclave may call `khala_oracle`. Its packet
 
 ## Pi-native interaction
 
-`/khala` is quiet and on demand. It opens no view unprompted, emits no child-session traffic into the User conversation, and never changes the User model or settings.
+`/khala` is quiet and on demand. It opens no view unprompted, emits no child-session traffic into the User conversation, and provides Role settings without changing the User's active model or settings.
 
 The first view lists active and recent Work by title. Each row is a Work, not a Mission; admitted Work has a Mission and may have an Execution. Selecting Work opens a compact status view that separates Work, Mission, Execution, and Executor runtime state from the next action. It does not repeat revision, budget, or token metadata. Evidence shows Executor turn status and explicitly reports missing Signal or provider evidence. An unreachable Executor exposes runtime recovery in `Actions`. It is followed by three sections: `Actions`, `Evidence`, and `History`. Raw Executor output and provider text are hidden by default; bounded evidence is available on explicit inspection. Recovery opens an in-TUI progress view with a plain-language status, the current recovery stage, what Khala is doing, and the next step. A successful recovery says that no action is needed when Khala will continue automatically; a failed recovery tells the User to inspect Evidence and decide what to do next. The progress view remains open until recovery finishes.
 
@@ -81,12 +81,12 @@ Default bindings follow simple installer conventions and remain configurable:
 
 ```text
 Up/Down   Move       Enter   Open or confirm       Backspace/Esc   Back or cancel
-/         Filter     ?       Help
+/         Filter     ?       Help                  r               Role settings
 ```
 
 Selection is pinned by Work ID. Refresh preserves selection and filters. Navigation never writes. State is never conveyed by color alone. The Actions view lists only actions currently available to the active actor.
 
-Setup is a linear preflight using `Ready`, `Action required`, and `Unavailable`. Recovery first rereads Archive state and reconciles runtime, workspace, model, and code-host bindings. An Execution is first durably reserved as `queued`; the persistent parent supervisor consumes its `executor-wake` effect and launches the Executor so a Conclave child cannot kill it during shutdown. Basic Retry is one action; model, thinking, prompt, and allowance are advanced Execution options. A running Execution never changes those settings, and Khala never silently substitutes a model or increases an allowance.
+Role settings are available from the Work picker and persist model and thinking choices for Conclave, Executor, Observer, and Oracle. Changes apply to future launches; an existing Execution retains its persisted settings. Recovery first rereads Archive state and reconciles runtime, workspace, model, and code-host bindings. An Execution is first durably reserved as `queued`; the persistent parent supervisor consumes its `executor-wake` effect and launches the Executor so a Conclave child cannot kill it during shutdown. Khala never silently substitutes a model or increases an allowance.
 
 Runtime liveness (`working`, `pending`, `idle`, `unreachable`, or `unknown`) is an observation, not lifecycle state. It is derived from the persisted session ID and a bounded Pi RPC probe; a PID alone never proves work. A running Mission with an unreachable Executor is displayed as an active lifecycle with an unavailable runtime and can be reconciled from `Actions`.
 

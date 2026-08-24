@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import { loadConfig } from "./config.js";
+import { persistRoleSetting } from "./config.js";
 import { type ApplicationRuntime, createApplication } from "./factory.js";
 import type { Actor, CommandMeta, JsonObject, JsonValue, MutableRecordQuery, RecordKind } from "./model.js";
 import { ApplicationError } from "./service.js";
@@ -92,7 +92,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		if (runtime?.projectPath === context.cwd && runtime.trusted === trusted) {
 			return runtime.runtime;
 		}
-		runtime = { runtime: createApplication(context.cwd, trusted, packageRoot), projectPath: context.cwd, trusted };
+		runtime = {
+			runtime: createApplication(context.cwd, trusted, packageRoot, { requireModels: false }),
+			projectPath: context.cwd,
+			trusted,
+		};
 		return runtime.runtime;
 	};
 
@@ -251,11 +255,17 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("khala", {
-		description: "Open the on-demand Khala Work view.",
+		description: "Open the Khala view.",
 		handler: async (_args, context) => {
 			try {
 				const application = getRuntime(context);
-				await showKhala(application.service, context, sessionActor(pi), application.config.keybindings);
+				await showKhala(application.service, context, sessionActor(pi), application.config.keybindings, {
+					get: () => application.service.getRoleSettings(),
+					set: (role, setting, value) => {
+						persistRoleSetting(role, setting, value);
+						application.updateRoleSetting(role, setting, value);
+					},
+				});
 			} catch (error) {
 				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
@@ -286,33 +296,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("khala-setup", {
-		description: "Run Khala's linear configuration preflight.",
-		handler: async (_args, context) => {
-			try {
-				const trusted = context.isProjectTrusted?.() === true;
-				const config = loadConfig(context.cwd, trusted, false);
-				const statuses = [
-					`Ready: Archive root ${config.archiveRoot}`,
-					`Ready: target branch ${config.targetBranch}`,
-					`${config.conclaveModel.length === 0 ? "Action required" : "Ready"}: Conclave model`,
-					`${config.executorModel.length === 0 ? "Action required" : "Ready"}: Executor model`,
-					`${config.oracleModel.length === 0 ? "Action required" : "Ready"}: Oracle model`,
-					`${config.observerModel.length === 0 ? "Unavailable" : "Ready"}: Observer model`,
-				];
-				context.ui.notify(statuses.join("\n"), "info");
-			} catch (error) {
-				context.ui.notify(error instanceof Error ? error.message : "Khala setup preflight failed.", "error");
-			}
-		},
-	});
-
-	pi.on("session_start", (_event, context) => {
+	pi.on("session_start", (_event, _context) => {
 		setRoleTools(pi);
-		if (sessionActor(pi) !== "user") {
-			return;
-		}
-		context.ui.setStatus("khala", "Khala: on demand");
 	});
 	pi.on("before_agent_start", (event) => {
 		const role = sessionRole(pi);
@@ -507,8 +492,12 @@ export type {
 	CommandMeta,
 	ErrorEnvelope,
 	Execution,
+	GovernedRole,
 	Mission,
 	RecordView,
+	RoleSetting,
+	RoleSettings,
+	RoleSettingsMap,
 	SubmitWorkInput,
 	WorkView,
 } from "./model.js";

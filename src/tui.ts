@@ -1,4 +1,11 @@
-import { DynamicBorder, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+	DynamicBorder,
+	type ExtensionContext,
+	type ModelRuntime,
+	ModelSelectorComponent,
+	type SettingsManager,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Container,
@@ -10,14 +17,33 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import type { KhalaConfig } from "./config.js";
-import type { Action, Actor, JsonObject, RecordView, RecoveryUpdate, WorkSummary, WorkView } from "./model.js";
+import type {
+	Action,
+	Actor,
+	GovernedRole,
+	JsonObject,
+	JsonValue,
+	RecordView,
+	RecoveryUpdate,
+	RoleSetting,
+	RoleSettingsMap,
+	Signal,
+	WorkSummary,
+	WorkView,
+} from "./model.js";
 import type { ApplicationService } from "./service.js";
+
+export type RoleSettingsController = Readonly<{
+	get: () => RoleSettingsMap;
+	set: (role: GovernedRole, setting: RoleSetting, value: string) => void | Promise<void>;
+}>;
 
 export async function showKhala(
 	service: ApplicationService,
 	context: ExtensionContext,
 	actor: Actor = "user",
-	keybindings: KhalaConfig["keybindings"] = { filter: "/", help: "?" },
+	keybindings: KhalaConfig["keybindings"] = { filter: "/", help: "?", roleSettings: "r" },
+	roleSettings?: RoleSettingsController,
 ): Promise<void> {
 	if (!context.hasUI || context.mode !== "tui") {
 		context.ui.notify(renderDashboard(service.listWork()), "info");
@@ -37,6 +63,10 @@ export async function showKhala(
 			filter = (await context.ui.input("Filter Work by title or ID:", filter)) ?? filter;
 			continue;
 		}
+		if (workId === "settings") {
+			if (roleSettings !== undefined) await showRoleSettings(roleSettings, context);
+			continue;
+		}
 		await showWork(service, context, workId, actor);
 	}
 }
@@ -46,22 +76,21 @@ async function pickWork(
 	context: ExtensionContext,
 	filter: string,
 	keybindings: KhalaConfig["keybindings"],
-): Promise<string | "help" | "filter" | null> {
-	const filtered = work.filter((item) =>
-		`${item.workId} ${item.title} ${item.state}`.toLowerCase().includes(filter.toLowerCase()),
-	);
-	const items: SelectItem[] = filtered.map((item) => ({
+): Promise<string | "help" | "filter" | "settings" | null> {
+	const items: SelectItem[] = work.map((item) => ({
 		value: item.workId,
 		label: item.title,
-		description: `Work  ${formatStatus(item.state)}  ${item.workId}`,
+		description: `Work  ${formatStatus(item.state)}  ${item.workId}${item.executionState === "blocked" ? "  blocked" : ""}`,
 	}));
-	return context.ui.custom<string | "filter" | null>((tui, theme, _keybindings, done) => {
+	const filtered = items.filter((item) =>
+		`${item.value} ${item.label} ${item.description ?? ""}`.toLowerCase().includes(filter.toLowerCase()),
+	);
+	return context.ui.custom<string | "filter" | "help" | "settings" | null>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("khala works:")), 1, 0));
-		container.addChild(new Text(theme.fg("muted", "Work rows  admission creates a Mission"), 1, 0));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Khala")), 1, 0));
 		container.addChild(new Spacer(1));
-		const list = new SelectList(items, Math.min(5, Math.max(1, items.length)), {
+		const list = new SelectList(filtered, Math.min(5, Math.max(1, filtered.length)), {
 			selectedPrefix: (text: string) => theme.fg("accent", text),
 			selectedText: (text: string) => theme.fg("accent", text),
 			description: (text: string) => theme.fg("muted", text),
@@ -74,7 +103,14 @@ async function pickWork(
 		container.addChild(list);
 		container.addChild(new Spacer(1));
 		container.addChild(
-			new Text(theme.fg("dim", `↑↓ navigate  ${keybindings.filter} filter enter select  escape/ctrl+c cancel`), 1, 0),
+			new Text(
+				theme.fg(
+					"dim",
+					`↑↓ navigate  ${keybindings.filter} filter  ${keybindings.roleSettings} role settings  enter select  escape/ctrl+c cancel`,
+				),
+				1,
+				0,
+			),
 		);
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		return {
@@ -89,6 +125,10 @@ async function pickWork(
 					done("help");
 					return;
 				}
+				if (data === keybindings.roleSettings) {
+					done("settings");
+					return;
+				}
 				if (matchesKey(data, "backspace")) {
 					done(null);
 					return;
@@ -101,7 +141,7 @@ async function pickWork(
 }
 
 const NAVIGATION_FOOTER = "↑↓ navigate  enter select  escape/ctrl+c cancel";
-type WorkSection = "actions" | "evidence" | "history";
+type WorkSection = "actions" | "evidence" | "history" | "blocking-signal";
 
 async function showWork(
 	service: ApplicationService,
@@ -121,7 +161,11 @@ async function showWork(
 			await showEvidence(work, context);
 			continue;
 		}
-		await showHistory(service, context, work, actor);
+		if (section === "history") {
+			await showHistory(service, context, work, actor);
+			continue;
+		}
+		await showBlockingSignal(work, context);
 	}
 }
 
@@ -130,17 +174,16 @@ async function pickSection(work: WorkView, context: ExtensionContext): Promise<W
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
 		{ value: "history", label: "History" },
+		...(work.execution?.state === "blocked" ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
 		const mission = work.mission === undefined ? "not admitted" : formatStatus(work.missionState ?? "unknown");
 		const execution = work.execution;
-		const executionStatus =
-			execution === undefined
-				? "not started  now unavailable"
-				: `${formatExecutionState(execution.state)}  now ${formatStatus(execution.runtimeState ?? "unknown")}`;
 		const status = [
-			`work       ${theme.bold(formatStatus(work.state))}  mission ${mission}`,
-			`execution  ${executionStatus}`,
+			`work       ${theme.bold(formatStatus(work.state))}`,
+			`mission    ${mission}`,
+			`execution  ${formatExecutionState(execution?.state ?? "not started")}`,
+			`runtime    ${formatRuntimeState(execution)}`,
 			`next       ${work.nextAction}`,
 		];
 		const summary = new Container();
@@ -370,6 +413,137 @@ async function showRecovery(
 	});
 }
 
+const ROLE_ORDER: readonly GovernedRole[] = ["conclave", "executor", "observer", "oracle"];
+const ROLE_LABELS = {
+	conclave: "Conclave",
+	executor: "Executor",
+	observer: "Observer",
+	oracle: "Oracle",
+} satisfies Readonly<Record<GovernedRole, string>>;
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+type PiModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
+type NativeModelRuntimeAdapter = {
+	getAvailableSnapshot: () => readonly PiModel[];
+	getModel: (provider: string, modelId: string) => PiModel | undefined;
+	getError: () => string | undefined;
+	refresh: (...args: Parameters<ModelRuntime["refresh"]>) => ReturnType<ModelRuntime["refresh"]>;
+};
+type NativeSettingsManagerAdapter = {
+	setDefaultModelAndProvider: (provider: string, modelId: string) => void;
+};
+
+function asNativeModelRuntime(value: NativeModelRuntimeAdapter): ModelRuntime {
+	// SAFETY: ModelSelectorComponent only calls the model snapshot, lookup, error, and refresh methods supplied here.
+	return value as ModelRuntime;
+}
+
+function asNativeSettingsManager(value: NativeSettingsManagerAdapter): SettingsManager {
+	// SAFETY: ModelSelectorComponent only calls setDefaultModelAndProvider, which is intentionally a no-op here.
+	return value as SettingsManager;
+}
+
+async function selectRoleModel(context: ExtensionContext, currentReference: string): Promise<PiModel | undefined> {
+	const separator = currentReference.indexOf("/");
+	const currentModel =
+		separator <= 0
+			? undefined
+			: context.modelRegistry.find(currentReference.slice(0, separator), currentReference.slice(separator + 1));
+	const modelRuntimeAdapter = {
+		getAvailableSnapshot: () => context.modelRegistry.getAvailable(),
+		getModel: (provider: string, modelId: string) => context.modelRegistry.find(provider, modelId),
+		getError: () => context.modelRegistry.getError(),
+		refresh: (...args: Parameters<ModelRuntime["refresh"]>) => context.modelRegistry.refresh(...args),
+	};
+	// The native selector persists the User's default model when a model is selected.
+	// Khala role settings must not change the User's active Pi model.
+	const settingsManager = {
+		setDefaultModelAndProvider: (_provider: string, _modelId: string) => {},
+	};
+	const nativeModelRuntime = asNativeModelRuntime(modelRuntimeAdapter);
+	const nativeSettingsManager = asNativeSettingsManager(settingsManager);
+	return context.ui.custom<PiModel | undefined>((tui, _theme, _keybindings, done) => {
+		const selector = new ModelSelectorComponent(
+			tui,
+			currentModel,
+			nativeSettingsManager,
+			nativeModelRuntime,
+			context.scopedModels,
+			(model) => done(model),
+			() => done(undefined),
+		);
+		return {
+			render: (width: number) => selector.render(width),
+			invalidate: () => selector.invalidate(),
+			handleInput: (data: string) => {
+				if (matchesKey(data, "backspace") && selector.getSearchInput().getValue().length === 0) {
+					selector.dispose();
+					done(undefined);
+					return;
+				}
+				selector.handleInput(data);
+			},
+			dispose: () => selector.dispose(),
+		};
+	});
+}
+
+async function selectRoleOption(
+	context: ExtensionContext,
+	title: string,
+	options: string[],
+): Promise<string | undefined> {
+	const abortController = new AbortController();
+	const unsubscribe = context.ui.onTerminalInput((data) => {
+		if (!matchesKey(data, "backspace")) return;
+		abortController.abort();
+		return { consume: true };
+	});
+	try {
+		return await context.ui.select(title, options, { signal: abortController.signal });
+	} finally {
+		unsubscribe();
+	}
+}
+
+async function showRoleSettings(controller: RoleSettingsController, context: ExtensionContext): Promise<void> {
+	for (;;) {
+		const settings = controller.get();
+		const roleOptions = ROLE_ORDER.map((role) => {
+			const current = settings[role];
+			return `${ROLE_LABELS[role]} — ${current.model || "model not configured"} (${current.thinking})`;
+		});
+		const selectedRole = await selectRoleOption(context, "Role settings:", roleOptions);
+		if (selectedRole === undefined) return;
+		const roleIndex = roleOptions.indexOf(selectedRole);
+		const role = ROLE_ORDER[roleIndex];
+		if (role === undefined) return;
+
+		const current = controller.get()[role];
+		const selectedSetting = await selectRoleOption(context, `${ROLE_LABELS[role]} settings:`, [
+			`Model — ${current.model || "not configured"}`,
+			`Thinking — ${current.thinking}`,
+		]);
+		if (selectedSetting === undefined) continue;
+		const setting: RoleSetting = selectedSetting.startsWith("Model") ? "model" : "thinking";
+		let value: string | undefined;
+		if (setting === "model") {
+			const selectedModel = await selectRoleModel(context, current.model);
+			if (selectedModel === undefined) continue;
+			value = `${selectedModel.provider}/${selectedModel.id}`;
+		} else {
+			const thinkingOptions = Array.from(new Set([current.thinking, ...THINKING_LEVELS]));
+			value = await selectRoleOption(context, `${ROLE_LABELS[role]} thinking:`, thinkingOptions);
+		}
+		if (value === undefined) continue;
+		try {
+			await controller.set(role, setting, value);
+			context.ui.notify(`${ROLE_LABELS[role]} ${setting} updated.`, "info");
+		} catch (error) {
+			context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		}
+	}
+}
+
 function selectorTheme(theme: Theme): SelectListTheme {
 	return {
 		selectedPrefix: (text: string) => theme.fg("accent", text),
@@ -401,7 +575,7 @@ function selectableComponent(
 }
 
 function isWorkSection(value: string): value is WorkSection {
-	return value === "actions" || value === "evidence" || value === "history";
+	return value === "actions" || value === "evidence" || value === "history" || value === "blocking-signal";
 }
 
 function formatStatus(value: string): string {
@@ -412,28 +586,187 @@ function formatExecutionState(value: string): string {
 	return value === "running" ? "active" : formatStatus(value);
 }
 
+function formatRuntimeState(execution: WorkView["execution"]): string {
+	if (execution === undefined) return "unavailable";
+	const runtime = execution.runtimeState ?? "unknown";
+	if (execution.state !== "blocked") return formatStatus(runtime);
+	if (runtime === "working") return "finishing current turn";
+	if (runtime === "pending") return "awaiting Conclave";
+	if (runtime === "idle") return "idle; awaiting Conclave";
+	if (runtime === "unreachable") return "unreachable; awaiting Conclave";
+	return "unknown; awaiting Conclave";
+}
+
+function formatActivity(execution: WorkView["execution"]): string {
+	if (execution === undefined) return "none recorded";
+	if (execution.state === "blocked") {
+		return execution.runtimeState === "working" ? "executor turn finishing" : "awaiting Conclave assessment";
+	}
+	if (execution.runtimeState === "idle") return "executor turn completed";
+	if (execution.runtimeState === "working") return "executor turn active";
+	if (execution.runtimeState === "pending") return "executor turn pending";
+	return "execution recorded";
+}
+
+async function showBlockingSignal(work: WorkView, context: ExtensionContext): Promise<void> {
+	const signal = work.lastSignal;
+	if (signal === undefined || signal.kind !== "blocked") {
+		await showTextPage(context, "Blocking signal", ["No blocking Signal is available for this Work."]);
+		return;
+	}
+	await showTextPage(context, "Blocking signal", formatSignalLines(signal));
+}
+
+function formatSignalLines(signal: Signal): readonly string[] {
+	return [
+		`observed: ${formatRecordedAt(signal.observedAt)}`,
+		"",
+		"Executor response",
+		signal.summary,
+		"",
+		`Evidence (${signal.evidence.length})`,
+		...(signal.evidence.length === 0 ? ["none"] : signal.evidence.map((item, index) => `${index + 1}. ${item}`)),
+	];
+}
+
 async function showEvidence(work: WorkView, context: ExtensionContext): Promise<void> {
 	const execution = work.execution;
-	const activity =
-		execution?.runtimeState === "idle"
-			? "executor turn completed"
-			: execution?.runtimeState === "working"
-				? "executor turn active"
-				: execution?.runtimeState === "pending"
-					? "executor turn pending"
-					: execution === undefined
-						? "none recorded"
-						: "execution recorded";
+	const signal = work.lastSignal;
+	const signalEvidence = signal === undefined ? "none" : summarizeEvidence(signal.evidence);
+	const signalLabel =
+		signal === undefined
+			? "none"
+			: `${signal.kind === "blocked" ? "blocking signal" : "signal"} — ${compactText(signal.summary)}`;
 	await showTextPage(context, "Evidence", [
-		`state: ${formatStatus(work.state)}  mission: ${formatStatus(work.missionState ?? "not admitted")}`,
-		`execution: ${formatExecutionState(execution?.state ?? "not started")}  runtime: ${execution === undefined ? "unavailable" : formatStatus(execution.runtimeState ?? "unknown")}`,
-		`activity: ${activity}`,
-		`signal: ${work.lastSignal === undefined ? "none" : `${work.lastSignal.kind}: ${work.lastSignal.summary}`}`,
-		`signal evidence: ${work.lastSignal?.evidence.join(", ") ?? "none"}`,
+		`state: ${formatStatus(work.state)}`,
+		`mission: ${formatStatus(work.missionState ?? "not admitted")}`,
+		`execution: ${formatExecutionState(execution?.state ?? "not started")}`,
+		`runtime: ${formatRuntimeState(execution)}`,
+		`activity: ${formatActivity(execution)}`,
+		`signal: ${signalLabel}`,
+		`signal evidence: ${signalEvidence}`,
 		`provider observation: ${work.lastObservation?.summary ?? "none"}`,
 		`review request: ${work.reviewRequest?.url ?? "none"}`,
 		`review status: ${work.reviewRequest?.status ?? "none"}`,
+		`error: ${work.lastError?.summary ?? "none"}`,
+		`remediation: ${work.lastError?.remediation ?? "none"}`,
 	]);
+}
+
+type RecordPage = Readonly<{ title: string; lines: readonly string[] }>;
+
+function historyLabel(record: RecordView): string {
+	if (record.kind !== "signal") return `#${record.sequence} ${formatStatus(record.kind)}`;
+	const kind = readPayloadText(record.payload, "kind") ?? "signal";
+	return `#${record.sequence} Signal · ${capitalize(kind)}`;
+}
+
+function formatRecordPage(record: RecordView): RecordPage {
+	if (record.kind === "signal") {
+		const kind = readPayloadText(record.payload, "kind") ?? "signal";
+		const response = readPayloadText(record.payload, "summary") ?? record.summary;
+		const evidence = readPayloadTextList(record.payload, "evidence") ?? record.evidenceRefs;
+		return {
+			title: `Signal · ${capitalize(kind)}`,
+			lines: [
+				`from: ${capitalize(record.actor)}`,
+				`recorded: ${formatRecordedAt(record.recordedAt)}`,
+				"",
+				"Executor response",
+				response,
+				"",
+				`Evidence (${evidence.length})`,
+				...(evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`)),
+			],
+		};
+	}
+	if (record.kind === "oracle-review") {
+		return formatOracleRecordPage(record);
+	}
+	const evidence = record.evidenceRefs;
+	return {
+		title: `Record ${record.sequence}: ${formatStatus(record.kind)}`,
+		lines: [
+			`actor: ${capitalize(record.actor)}`,
+			`recorded: ${formatRecordedAt(record.recordedAt)}`,
+			`summary: ${record.summary}`,
+			`Evidence (${evidence.length})`,
+			...(evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`)),
+		],
+	};
+}
+
+function formatOracleRecordPage(record: RecordView): RecordPage {
+	const verdict = readPayloadText(record.payload, "verdict") ?? "unknown";
+	const findings = readPayloadObjects(record.payload, "findings");
+	const validationGaps = readPayloadTextList(record.payload, "validationGaps") ?? [];
+	const output = readPayloadText(record.payload, "output");
+	return {
+		title: `Oracle response · ${capitalize(verdict)}`,
+		lines: [
+			`recorded: ${formatRecordedAt(record.recordedAt)}`,
+			`verdict: ${capitalize(verdict)}`,
+			`findings (${findings.length})`,
+			...(findings.length === 0
+				? ["none"]
+				: findings.map((finding) => {
+						const severity = readObjectText(finding, "severity") ?? "finding";
+						const summary = readObjectText(finding, "summary") ?? "No summary provided.";
+						return `- ${capitalize(severity)}: ${summary}`;
+					})),
+			`validation gaps (${validationGaps.length})`,
+			...(validationGaps.length === 0 ? ["none"] : validationGaps.map((gap) => `- ${gap}`)),
+			...(output === undefined ? [] : ["", "Model response", output]),
+		],
+	};
+}
+
+function readPayloadText(payload: JsonValue, key: string): string | undefined {
+	return isJsonObject(payload) ? readObjectText(payload, key) : undefined;
+}
+
+function readObjectText(object: JsonObject, key: string): string | undefined {
+	const value = object[key];
+	return isTextValue(value) ? value : undefined;
+}
+
+function readPayloadTextList(payload: JsonValue, key: string): readonly string[] | undefined {
+	if (!isJsonObject(payload)) return undefined;
+	const value = payload[key];
+	return Array.isArray(value) && value.every(isTextValue) ? value : undefined;
+}
+
+function readPayloadObjects(payload: JsonValue, key: string): readonly JsonObject[] {
+	if (!isJsonObject(payload)) return [];
+	const value = payload[key];
+	return Array.isArray(value) ? value.filter(isJsonObject) : [];
+}
+
+function formatRecordedAt(value: string): string {
+	const parsed = new Date(value);
+	return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().replace("T", " ").replace(".000Z", " UTC");
+}
+
+function capitalize(value: string): string {
+	return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
+}
+
+function compactText(value: string, limit = 180): string {
+	const normalized = value.replace(/\s+/g, " ").trim();
+	return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
+}
+
+function summarizeEvidence(evidence: readonly string[]): string {
+	if (evidence.length === 0) return "none";
+	return `${evidence.length} evidence item${evidence.length === 1 ? "" : "s"}; open History for details`;
+}
+
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
+}
+
+function isTextValue(value: JsonValue | undefined): value is string {
+	return value !== undefined && value === String(value);
 }
 
 async function showHistory(
@@ -469,12 +802,8 @@ async function showHistory(
 		if (selected === null || selected === "back") return;
 		const record = records.find((candidate) => String(candidate.sequence) === selected);
 		if (record === undefined) return;
-		await showTextPage(context, `Record ${record.sequence}: ${record.kind}`, [
-			`actor: ${record.actor}`,
-			`recorded: ${record.recordedAt}`,
-			`summary: ${record.summary}`,
-			`evidence: ${record.evidenceRefs.join(", ") || "none"}`,
-		]);
+		const page = formatRecordPage(record);
+		await showTextPage(context, page.title, page.lines);
 	}
 }
 
@@ -485,7 +814,7 @@ async function selectHistoryRecord(records: readonly RecordView[], context: Exte
 		container.addChild(new Text(theme.fg("accent", theme.bold("History")), 1, 0));
 		container.addChild(new Text(theme.fg("muted", `${records.length} Archive records`), 1, 0));
 		const list = new SelectList(
-			records.map((record) => ({ value: String(record.sequence), label: `#${record.sequence} ${record.kind}` })),
+			records.map((record) => ({ value: String(record.sequence), label: historyLabel(record) })),
 			Math.min(6, records.length),
 			selectorTheme(theme),
 		);
@@ -505,6 +834,7 @@ async function showTextPage(context: ExtensionContext, title: string, lines: rea
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
 		container.addChild(new Text(theme.fg("muted", lines.join("\n")), 1, 0));
+		container.addChild(new Spacer(1));
 		container.addChild(new Text(theme.fg("dim", "escape/ctrl+c/backspace back"), 1, 0));
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		return {
@@ -560,7 +890,7 @@ async function showHelp(context: ExtensionContext): Promise<void> {
 		"active means the lifecycle is open",
 		"working means a prompt is running",
 		"idle means waiting for the next Signal",
-		"↑↓ navigate  / filter  ? help  enter select  escape/ctrl+c cancel",
+		"↑↓ navigate  / filter  ? help  r role settings  enter select  escape/ctrl+c cancel",
 	]);
 }
 
@@ -569,7 +899,7 @@ function renderDashboard(work: readonly WorkSummary[]): string {
 		return "Khala: no Work has been submitted.";
 	}
 	return [
-		"Khala Work",
+		"Khala",
 		...work.map((item) => `${item.state.padEnd(16)} ${item.title} (${item.workId}) — ${item.nextAction}`),
 	].join("\n");
 }

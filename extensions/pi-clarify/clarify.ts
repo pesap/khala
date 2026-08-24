@@ -66,7 +66,7 @@ type RewriteModel = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["fi
 function resolveRewriteModel(ctx: ClarifyUi): { model: RewriteModel } | { reason: string } {
 	let config;
 	try {
-		config = loadConfig(ctx.cwd, ctx.isProjectTrusted());
+		config = loadConfig(ctx.cwd, ctx.isProjectTrusted(), false);
 	} catch (error) {
 		return { reason: error instanceof Error ? error.message : String(error) };
 	}
@@ -75,7 +75,7 @@ function resolveRewriteModel(ctx: ClarifyUi): { model: RewriteModel } | { reason
 	const separator = modelReference.indexOf("/");
 	if (separator <= 0 || separator === modelReference.length - 1) {
 		return {
-			reason: "No valid Conclave model is configured. Create khala.json with an explicit model.",
+			reason: "No valid Conclave model is configured. Open /khala and choose Role settings.",
 		};
 	}
 

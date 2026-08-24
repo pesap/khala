@@ -226,6 +226,37 @@ test("generated Mission and Execution IDs use Nano ID format", async () => {
 	await service.close();
 });
 
+test("Conclave wake failures preserve provider detail and remediation", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-conclave-wake-failure-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			runtime: {
+				async send(binding) {
+					if (binding.sessionId.startsWith("conclave-")) {
+						throw new Error("OpenAI API error (429): quota exceeded");
+					}
+					return { output: "" };
+				},
+			},
+		},
+	});
+	const submitted = service.submitWork(
+		{ title: "Wake failure", objective: "Expose the cause", acceptanceCriteria: ["The error is actionable"] },
+		meta("user", "wake-failure:submit", 0),
+	);
+	await service.processPendingEffects();
+	const failed = service.inspectWork(submitted.workId);
+	assert.equal(failed.lastError?.summary, "Conclave admission failed: OpenAI API error (429): quota exceeded");
+	assert.match(failed.lastError?.remediation ?? "", /\/khala/);
+	assert.equal(failed.nextAction, "Resolve the Conclave admission error, then retry admission.");
+	const records = service.readRecords(
+		{ workId: submitted.workId, kinds: ["error"] },
+		meta("user", "wake-failure:read", failed.revision, submitted.workId),
+	);
+	assert.equal(records.items[0]?.payload.summary, failed.lastError?.summary);
+	await service.close();
+});
+
 test("Executor usage records cache hits, misses, and idle runtime state", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-usage-"));
 	const { service } = makeService(join(directory, "archive.sqlite"), {

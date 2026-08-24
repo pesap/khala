@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import {
 	type Actor,
 	assertPositiveInteger,
+	type ErrorEnvelope,
 	type JsonObject,
 	type JsonValue,
 	type Page,
@@ -659,7 +660,8 @@ function isWorkViewProjection(value: JsonValue): value is WorkView {
 		(value["reviewRequest"] === undefined || isReviewRequest(value["reviewRequest"])) &&
 		(value["lastSignal"] === undefined || isSignal(value["lastSignal"])) &&
 		(value["lastObservation"] === undefined || isObservation(value["lastObservation"])) &&
-		(value["providerOutcome"] === undefined || isObservation(value["providerOutcome"]))
+		(value["providerOutcome"] === undefined || isObservation(value["providerOutcome"])) &&
+		(value["lastError"] === undefined || isErrorEnvelope(value["lastError"]))
 	);
 }
 
@@ -794,6 +796,26 @@ function isObservation(value: JsonValue | undefined): value is ProviderObservati
 		(value["targetBranch"] === undefined || isText(value["targetBranch"])) &&
 		(value["headCommit"] === undefined || isText(value["headCommit"])) &&
 		(value["mergeCommit"] === undefined || isText(value["mergeCommit"]))
+	);
+}
+
+function isErrorEnvelope(value: JsonValue | undefined): value is ErrorEnvelope {
+	if (!isJsonObject(value)) return false;
+	return (
+		[
+			"invalid-input",
+			"not-found",
+			"forbidden",
+			"revision-conflict",
+			"invalid-state",
+			"budget-exhausted",
+			"external-failure",
+			"integrity-failure",
+		].includes(String(value["code"])) &&
+		isText(value["summary"]) &&
+		isBoolean(value["retryable"]) &&
+		isText(value["remediation"]) &&
+		isTextList(value["evidenceRefs"])
 	);
 }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { showKhala } from "../dist/src/tui.js";
 
 const theme = {
@@ -84,10 +85,10 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	await nextTurn();
 	assert.equal(screens.length, 1);
 	const initialView = screens[0].render(100).join("\n");
-	assert.match(initialView, /khala works:[^\n]*\n/);
-	assert.match(initialView, /Work rows  admission creates a Mission/);
+	assert.match(initialView, /Khala[^\n]*\n/);
+	assert.doesNotMatch(initialView, /admission creates a Mission/);
 	assert.match(initialView, /Work  active  work-1/);
-	assert.match(initialView, /\n\n +↑↓ navigate  \/ filter enter select  escape\/ctrl\+c cancel/);
+	assert.match(initialView, /\n\n +↑↓ navigate  \/ filter  r role settings  enter select  escape\/ctrl\+c cancel/);
 	assert.ok(screens[0].render(100).length <= 12);
 
 	screens[0].handleInput("?");
@@ -106,14 +107,15 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.equal(screens.length, 4);
 	const overview = screens[3].render(100).join("\n");
 	assert.match(overview, /work       active/);
-	assert.match(overview, /work       active  mission active/);
-	assert.match(overview, /execution  active  now idle/);
+	assert.match(overview, /mission    active/);
+	assert.match(overview, /execution  active/);
+	assert.match(overview, /runtime    idle/);
 	assert.doesNotMatch(overview, /mission-1|execution-1/);
 	assert.match(overview, /next       Admit the Work/);
 	assert.doesNotMatch(overview, /Work metadata/);
 	assert.doesNotMatch(overview, /Budget/);
 	assert.doesNotMatch(overview, /Cache hits/);
-	assert.ok(screens[3].render(100).length <= 12);
+	assert.ok(screens[3].render(100).length <= 15);
 	assert.match(overview, /Actions/);
 	assert.doesNotMatch(overview, /Overview/);
 
@@ -137,15 +139,17 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	await nextTurn();
 	assert.equal(screens.length, 7);
 	const evidence = screens[6].render(100).join("\n");
-	assert.match(evidence, /state: active  mission: active/);
-	assert.match(evidence, /execution: active  runtime: unreachable/);
+	assert.match(evidence, /state: active/);
+	assert.match(evidence, /mission: active/);
+	assert.match(evidence, /execution: active/);
+	assert.match(evidence, /runtime: unreachable/);
 	assert.match(evidence, /activity: execution recorded/);
 	assert.match(evidence, /signal: none/);
 	assert.match(evidence, /signal evidence: none/);
 	assert.match(evidence, /provider observation: none/);
 	assert.match(evidence, /review request: none/);
 	assert.match(evidence, /review status: none/);
-	assert.ok(screens[6].render(100).length <= 12);
+	assert.ok(screens[6].render(100).length <= 20);
 	screens[6].handleInput("\u001b");
 	await nextTurn();
 	assert.equal(screens.length, 8);
@@ -173,14 +177,255 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	delete work.mission;
 	delete work.missionState;
 	delete work.execution;
+	work.lastError = {
+		code: "external-failure",
+		summary: "Conclave admission failed: quota exceeded",
+		retryable: true,
+		remediation: "Open /khala, press r, choose a working Conclave model, then retry admission.",
+		evidenceRefs: [],
+	};
 	screens[12].handleInput("\r");
 	await nextTurn();
 	const unadmittedOverview = screens[13].render(100).join("\n");
-	assert.match(unadmittedOverview, /work       submitted  mission not admitted/);
-	assert.match(unadmittedOverview, /execution  not started  now unavailable/);
+	assert.match(unadmittedOverview, /work       submitted/);
+	assert.match(unadmittedOverview, /mission    not admitted/);
+	assert.doesNotMatch(unadmittedOverview, /Conclave admission failed/);
+	assert.doesNotMatch(unadmittedOverview, /remediation Open \/khala/);
+	assert.match(unadmittedOverview, /execution  not started/);
+	assert.match(unadmittedOverview, /runtime    unavailable/);
 	screens[13].handleInput("\u007f");
 	await nextTurn();
 	screens[14].handleInput("\u001b");
+	await result;
+});
+
+test("Blocked Executions are prominent while Signal details stay available in History", async () => {
+	const screens = [];
+	const evidence = [
+		"The bounded wait completed successfully.",
+		"Validation passed with a clean tracked diff.",
+		"Publishing would violate the immutable Mission constraints.",
+	];
+	const work = {
+		workId: "blocked-work",
+		state: "active",
+		revision: 3,
+		terms: { title: "Two-minute execution job" },
+		mission: { missionId: "mission-1" },
+		missionState: "active",
+		execution: { executionId: "execution-1", state: "blocked", runtimeState: "working" },
+		budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+		nextAction: "Conclave assessment is pending.",
+		lastSignal: { signalId: "signal-1", executionId: "execution-1", kind: "blocked", summary: "The Executor cannot publish under the Mission constraints.", evidence },
+	};
+	const service = {
+		listWork: () => [
+			{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction },
+		],
+		inspectRuntime: async () => work,
+		availableActions: () => [],
+		readRecords: () => ({
+			items: [
+				{
+					sequence: 8,
+					id: "record-8",
+					kind: "signal",
+					actor: "executor",
+					workId: work.workId,
+					payloadVersion: 1,
+					summary: "blocked Signal from Executor.",
+					evidenceRefs: evidence,
+					recordedAt: "2026-08-24T17:48:39.214Z",
+					payload: { kind: "blocked", summary: work.lastSignal.summary, evidence },
+				},
+			],
+			asOfSequence: 8,
+		}),
+	};
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			notify: () => {},
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context);
+	await nextTurn();
+	const initial = screens[0].render(100).join("\n");
+	assert.match(initial, /Two-minute execution/);
+	assert.match(initial, /Work  active  blocked-work.*blocked/);
+	assert.doesNotMatch(initial, /Inspect blocking signal/);
+	screens[0].handleInput("\r");
+	await nextTurn();
+	const overview = screens[1].render(100).join("\n");
+	assert.match(overview, /execution  blocked/);
+	assert.match(overview, /runtime    finishing current turn/);
+	assert.equal((overview.match(/BLOCKED/g) ?? []).length, 0);
+	assert.ok(overview.indexOf("History") < overview.indexOf("Inspect blocking signal"));
+	screens[1].handleInput("\u001b[B");
+	screens[1].handleInput("\u001b[B");
+	screens[1].handleInput("\u001b[B");
+	screens[1].handleInput("\r");
+	await nextTurn();
+	const blockingDetail = screens[2].render(100).join("\n");
+	assert.match(blockingDetail, /Blocking signal/);
+	assert.match(blockingDetail, /Executor response/);
+	assert.match(blockingDetail, /The Executor cannot publish under the Mission constraints/);
+	assert.match(blockingDetail, /The bounded wait completed successfully/);
+	screens[2].handleInput("\u001b");
+	await nextTurn();
+	screens[3].handleInput("\u001b[B");
+	screens[3].handleInput("\r");
+	await nextTurn();
+	const conciseEvidence = screens[4].render(100).join("\n");
+	assert.doesNotMatch(conciseEvidence, /attention: BLOCKED/);
+	assert.match(conciseEvidence, /signal: blocking signal/);
+	assert.match(conciseEvidence, /signal evidence: 3 evidence items; open History for details/);
+	assert.doesNotMatch(conciseEvidence, /bounded wait completed/);
+	screens[4].handleInput("\u001b");
+	await nextTurn();
+	screens[5].handleInput("\u001b[B");
+	screens[5].handleInput("\u001b[B");
+	screens[5].handleInput("\r");
+	await nextTurn();
+	assert.match(screens[6].render(100).join("\n"), /#8 Signal · Blocked/);
+	screens[6].handleInput("\r");
+	await nextTurn();
+	const signalDetail = screens[7].render(100).join("\n");
+	assert.match(signalDetail, /Executor response/);
+	assert.match(signalDetail, /The Executor cannot publish under the Mission constraints/);
+	assert.match(signalDetail, /The bounded wait completed successfully/);
+	screens[7].handleInput("\u001b");
+	await nextTurn();
+	screens[8].handleInput("\u007f");
+	await nextTurn();
+	screens[9].handleInput("\u001b");
+	await nextTurn();
+	screens[10].handleInput("\u001b");
+	await result;
+});
+
+test("Role settings open with r and use the native model selector", async () => {
+	initTheme();
+	const screens = [];
+	const selections = [
+		"Conclave — provider/conclave (medium)",
+		"Model — provider/conclave",
+		"Conclave — provider/fallback (medium)",
+		"Thinking — medium",
+		"low",
+		undefined,
+	];
+	const settings = {
+		conclave: { model: "provider/conclave", thinking: "medium" },
+		executor: { model: "provider/executor", thinking: "high" },
+		observer: { model: "provider/observer", thinking: "medium" },
+		oracle: { model: "provider/oracle", thinking: "high" },
+	};
+	const updates = [];
+	const controller = {
+		get: () => settings,
+		set: (role, setting, value) => {
+			settings[role][setting] = value;
+			updates.push({ role, setting, value });
+		},
+	};
+	const service = { listWork: () => [] };
+	const models = [
+		{ provider: "provider", id: "fallback", name: "Fallback model" },
+		{ provider: "provider", id: "conclave", name: "Conclave model" },
+	];
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		scopedModels: [],
+		modelRegistry: {
+			getAvailable: () => models,
+			find: (provider, id) => models.find((model) => model.provider === provider && model.id === id),
+			getError: () => undefined,
+			refresh: async () => ({ aborted: false, errors: new Map() }),
+		},
+		ui: {
+			notify: () => {},
+			onTerminalInput: () => () => {},
+			select: async () => selections.shift(),
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context, "user", undefined, controller);
+	await nextTurn();
+	assert.doesNotMatch(screens[0].render(100).join("\n"), /→ Role settings/);
+	screens[0].handleInput("r");
+	await nextTurn();
+	await nextTurn();
+	assert.match(screens[1].render(100).join("\n"), /Model Name: Conclave model/);
+	screens[1].handleInput("f");
+	assert.match(screens[1].render(100).join("\n"), /Model Name: Fallback model/);
+	screens[1].handleInput("\r");
+	await nextTurn();
+	await nextTurn();
+	screens[2].handleInput("\u001b");
+	await result;
+	assert.deepEqual(updates, [
+		{ role: "conclave", setting: "model", value: "provider/fallback" },
+		{ role: "conclave", setting: "thinking", value: "low" },
+	]);
+});
+
+test("Backspace from Role settings returns to the Work picker", async () => {
+	const screens = [];
+	let terminalInput;
+	let resolveRoleSelection;
+	const controller = {
+		get: () => ({
+			conclave: { model: "provider/conclave", thinking: "medium" },
+			executor: { model: "provider/executor", thinking: "high" },
+			observer: { model: "provider/observer", thinking: "medium" },
+			oracle: { model: "provider/oracle", thinking: "high" },
+		}),
+		set: () => {},
+	};
+	const service = { listWork: () => [] };
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			onTerminalInput: (handler) => {
+				terminalInput = handler;
+				return () => {};
+			},
+			select: async (_title, _options, options) =>
+				new Promise((resolve) => {
+					resolveRoleSelection = resolve;
+					options.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+				}),
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context, "user", undefined, controller);
+	await nextTurn();
+	screens[0].handleInput("r");
+	await nextTurn();
+	assert.ok(terminalInput);
+	terminalInput("\u007f");
+	resolveRoleSelection?.(undefined);
+	await nextTurn();
+	assert.equal(screens.length, 2);
+	assert.match(screens[1].render(100).join("\n"), /No Work has been submitted\./);
+	screens[1].handleInput("\u001b");
 	await result;
 });
 
@@ -271,7 +516,8 @@ test("TUI schedules recovery effects and refreshes recovered Work", async () => 
 	assert.deepEqual(effects, ["processed"]);
 	screens[3].handleInput("\u001b");
 	await nextTurn();
-	assert.match(screens[4].render(100).join("\n"), /work       submitted  mission not admitted/);
+	assert.match(screens[4].render(100).join("\n"), /work       submitted/);
+	assert.match(screens[4].render(100).join("\n"), /mission    not admitted/);
 	assert.match(screens[4].render(100).join("\n"), /Recovered Work is pending Conclave admission/);
 	screens[4].handleInput("\u001b");
 	await nextTurn();

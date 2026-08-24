@@ -54,6 +54,12 @@ export type RecordKind = (typeof RECORD_KINDS)[number];
 
 export type Actor = "user" | "conclave" | "observer" | "executor" | "oracle" | "monitor" | "system";
 
+export const GOVERNED_ROLES = ["conclave", "executor", "observer", "oracle"] as const;
+export type GovernedRole = (typeof GOVERNED_ROLES)[number];
+export type RoleSetting = "model" | "thinking";
+export type RoleSettings = Readonly<{ model: string; thinking: string }>;
+export type RoleSettingsMap = Readonly<Record<GovernedRole, RoleSettings>>;
+
 export type WorkBudget = Readonly<{
 	maxTokens: number;
 	reservedTokens: number;
@@ -194,6 +200,7 @@ export type WorkView = Readonly<{
 	lastSignal?: Signal | undefined;
 	lastObservation?: ProviderObservation | undefined;
 	providerOutcome?: ProviderObservation | undefined;
+	lastError?: ErrorEnvelope | undefined;
 	nextAction: string;
 	queuedSequence: number;
 }>;
@@ -202,6 +209,7 @@ export type WorkSummary = Readonly<{
 	workId: string;
 	title: string;
 	state: WorkState;
+	executionState?: ExecutionState | undefined;
 	revision: number;
 	queuePosition?: number | undefined;
 	budget: WorkBudget;

@@ -1,7 +1,8 @@
 # `/khala` view
 
-`/khala` is quiet and on demand. It does not open automatically, print child
-traffic, or change the User model or settings.
+`/khala` is quiet and on demand. It does not open automatically or print child
+traffic. Its Role settings view changes Khala's persisted role configuration,
+not the User's active Pi model or settings.
 
 The first view lists Work titles. Each row is a Work, not a Mission; after
 admission, the Work has a Mission and may have an Execution. Selecting a Work
@@ -20,5 +21,8 @@ selected Work and filter. Navigation never writes. Raw Executor output and
 provider text are hidden until the User explicitly reads bounded evidence.
 
 Default interactions follow Pi selector conventions: Up/Down move, Enter opens
-or confirms, Backspace or Escape goes back or cancels, `/` starts a filter, and `?` opens help.
-An unreachable Executor exposes runtime recovery in Actions. The filter and help keys can be changed in `khala.json`.
+or confirms, Backspace or Escape goes back or cancels, `/` starts a filter, `?`
+opens help, and `r` opens Role settings. An unreachable Executor exposes runtime
+recovery in Actions. Role settings change the model and thinking level for future
+role launches. The filter, help, and Role settings keys can be changed in
+`khala.json`.

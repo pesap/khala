@@ -15,7 +15,7 @@ make the cards not jump -clarify
 ```
 
 The extension always uses Khala's configured Conclave model for the current
-project. Configure that model through Khala setup; `/clarify` has no separate
-model-selection or model-pinning commands.
+project. Configure that model from `/khala` → **Role settings**; `/clarify` has
+no separate model-selection or model-pinning commands.
 
 The extension retains the upstream MIT license in `LICENSE`.
