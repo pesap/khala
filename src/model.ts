@@ -30,6 +30,9 @@ export const EXECUTION_STATES = [
 ] as const;
 export type ExecutionState = (typeof EXECUTION_STATES)[number];
 
+export const EXECUTION_RUNTIME_STATES = ["working", "idle", "pending", "unreachable", "unknown"] as const;
+export type ExecutionRuntimeState = (typeof EXECUTION_RUNTIME_STATES)[number];
+
 export const RECORD_KINDS = [
 	"submission",
 	"assessment",
@@ -55,6 +58,18 @@ export type WorkBudget = Readonly<{
 	maxTokens: number;
 	reservedTokens: number;
 	consumedTokens: number;
+}>;
+
+export type TokenUsage = Readonly<{
+	inputTokens: number;
+	outputTokens: number;
+	cacheHitTokens: number;
+	cacheMissTokens: number;
+}>;
+
+export type RecoveryUpdate = Readonly<{
+	stage: "checking" | "stopping" | "restoring" | "confirming" | "finishing";
+	message: string;
 }>;
 
 export type WorkTerms = Readonly<{
@@ -114,6 +129,8 @@ export type Execution = Readonly<{
 	workId: string;
 	missionId: string;
 	state: ExecutionState;
+	runtimeState?: ExecutionRuntimeState | undefined;
+	usage?: TokenUsage | undefined;
 	model: string;
 	thinking: string;
 	tokenAllowance: number;
@@ -258,6 +275,7 @@ export type Action = Readonly<{
 		| "record-review"
 		| "record-outcome"
 		| "cancel"
+		| "recover"
 		| "amend-budget"
 		| "fail-work";
 	label: string;
@@ -285,6 +303,7 @@ export type ActionCommand = Readonly<{
 	workId: string;
 	input?: ActionInput | undefined;
 	meta: CommandMeta;
+	onRecoveryUpdate?: ((update: RecoveryUpdate) => void) | undefined;
 }>;
 
 export type ErrorEnvelope = Readonly<{

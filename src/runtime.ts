@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
-import type { JsonObject, JsonValue, PromptIdentity } from "./model.js";
-import type { AgentRuntimePort, RuntimeBinding, RuntimeState } from "./ports.js";
+import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
+import type { AgentRuntimePort, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
 
 export type PiRuntimeOptions = Readonly<{
 	command: readonly string[];
@@ -29,9 +29,17 @@ type RpcBlock = Readonly<{
 	text?: string | undefined;
 }>;
 
+type RpcUsage = Readonly<{
+	input?: number | undefined;
+	output?: number | undefined;
+	cacheRead?: number | undefined;
+	cacheWrite?: number | undefined;
+}>;
+
 type RpcMessage = Readonly<{
 	role?: string | undefined;
 	content?: readonly RpcBlock[] | undefined;
+	usage?: RpcUsage | undefined;
 }>;
 
 type RpcEvent = Readonly<{
@@ -65,6 +73,7 @@ type MutableChild = {
 	binding: RuntimeBinding;
 	buffer: string;
 	lastOutput: string;
+	turnUsage: TokenUsage | undefined;
 	lastError: string;
 	closed: boolean;
 	sending: boolean;
@@ -179,6 +188,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			},
 			buffer: "",
 			lastOutput: "",
+			turnUsage: undefined,
 			lastError: "",
 			closed: false,
 			sending: false,
@@ -233,11 +243,12 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		}
 	}
 
-	async send(binding: RuntimeBinding, message: string): Promise<string> {
+	async send(binding: RuntimeBinding, message: string): Promise<RuntimeTurn> {
 		const child = this.requireChild(binding);
 		if (child.sending) {
 			throw new Error(`Pi session ${binding.sessionId} is already processing a prompt.`);
 		}
+		child.turnUsage = undefined;
 		child.lastOutput = "";
 		child.sending = true;
 		const completion = waitForAgentEnd(child, this.options.agentTimeoutMs ?? 1_800_000);
@@ -246,7 +257,9 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			if (!response.success) {
 				throw new Error(response.error ?? "Pi rejected the prompt.");
 			}
-			return await completion;
+			const output = await completion;
+			const usage = child.turnUsage;
+			return usage === undefined ? { output } : { output, usage };
 		} catch (error) {
 			const failure = error instanceof Error ? error : new Error(String(error));
 			rejectAgentEnd(child, failure);
@@ -395,6 +408,8 @@ function consumeLines(child: MutableChild): void {
 		}
 		if (event.type === "message_end" && isAssistantMessage(event.message)) {
 			child.lastOutput = assistantText(event.message);
+			const usage = readTokenUsage(event.message.usage);
+			if (usage !== undefined) child.turnUsage = addTokenUsage(child.turnUsage, usage);
 		}
 		if (event.type === "agent_end") {
 			resolveAgentEnd(child);
@@ -719,6 +734,37 @@ function assistantText(message: Readonly<{ content: readonly RpcBlock[] }>): str
 		.map((block) => block.text ?? "")
 		.join("\n")
 		.trim();
+}
+
+function readTokenUsage(value: RpcUsage | undefined): TokenUsage | undefined {
+	if (value === undefined) return;
+	const inputTokens = readTokenCount(value.input);
+	const outputTokens = readTokenCount(value.output);
+	const cacheHitTokens = readTokenCount(value.cacheRead);
+	const cacheWriteTokens = readTokenCount(value.cacheWrite);
+	if (
+		inputTokens === undefined ||
+		outputTokens === undefined ||
+		cacheHitTokens === undefined ||
+		cacheWriteTokens === undefined
+	)
+		return;
+	const cacheMissTokens = inputTokens + cacheWriteTokens;
+	if (!Number.isSafeInteger(cacheMissTokens)) return;
+	return { inputTokens, outputTokens, cacheHitTokens, cacheMissTokens };
+}
+
+function readTokenCount(value: number | undefined): number | undefined {
+	return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function addTokenUsage(previous: TokenUsage | undefined, current: TokenUsage): TokenUsage {
+	return {
+		inputTokens: (previous?.inputTokens ?? 0) + current.inputTokens,
+		outputTokens: (previous?.outputTokens ?? 0) + current.outputTokens,
+		cacheHitTokens: (previous?.cacheHitTokens ?? 0) + current.cacheHitTokens,
+		cacheMissTokens: (previous?.cacheMissTokens ?? 0) + current.cacheMissTokens,
+	};
 }
 
 function createCapability(

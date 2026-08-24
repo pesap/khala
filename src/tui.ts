@@ -1,7 +1,16 @@
-import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { DynamicBorder, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+	type Component,
+	Container,
+	matchesKey,
+	type SelectItem,
+	SelectList,
+	type SelectListTheme,
+	Spacer,
+	Text,
+} from "@earendil-works/pi-tui";
 import type { KhalaConfig } from "./config.js";
-import type { Action, Actor, JsonObject, WorkSummary, WorkView } from "./model.js";
+import type { Action, Actor, JsonObject, RecordView, RecoveryUpdate, WorkSummary, WorkView } from "./model.js";
 import type { ApplicationService } from "./service.js";
 
 export async function showKhala(
@@ -28,15 +37,7 @@ export async function showKhala(
 			filter = (await context.ui.input("Filter Work by title or ID:", filter)) ?? filter;
 			continue;
 		}
-		const result = await showWork(service, context, workId, actor);
-		if (result === "refresh") {
-			continue;
-		}
-		if (result === "filter") {
-			filter = (await context.ui.input("Filter Work by title or ID:", filter)) ?? filter;
-			continue;
-		}
-		return;
+		await showWork(service, context, workId, actor);
 	}
 }
 
@@ -51,34 +52,29 @@ async function pickWork(
 	);
 	const items: SelectItem[] = filtered.map((item) => ({
 		value: item.workId,
-		label: `${item.title} — ${item.state}`,
-		description: `${item.workId} · ${item.nextAction}${item.queuePosition === undefined ? "" : ` · queue ${item.queuePosition}`}`,
+		label: item.title,
+		description: `Work  ${formatStatus(item.state)}  ${item.workId}`,
 	}));
-	items.push({ value: "help", label: "Help", description: "Keyboard and navigation help" });
-	if (items.length === 1) {
-		context.ui.notify("No Work matches the current filter.", "info");
-	}
 	return context.ui.custom<string | "filter" | null>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Khala Work")), 1, 0));
-		container.addChild(new Text(theme.fg("muted", filter.length === 0 ? "Select Work" : `Filter: ${filter}`), 1, 0));
-		const list = new SelectList(items, Math.min(10, Math.max(1, items.length)), {
+		container.addChild(new Text(theme.fg("accent", theme.bold("khala works:")), 1, 0));
+		container.addChild(new Text(theme.fg("muted", "Work rows  admission creates a Mission"), 1, 0));
+		container.addChild(new Spacer(1));
+		const list = new SelectList(items, Math.min(5, Math.max(1, items.length)), {
 			selectedPrefix: (text: string) => theme.fg("accent", text),
 			selectedText: (text: string) => theme.fg("accent", text),
 			description: (text: string) => theme.fg("muted", text),
 			scrollInfo: (text: string) => theme.fg("dim", text),
-			noMatch: (text: string) => theme.fg("warning", text),
+			noMatch: () =>
+				theme.fg("warning", filter.length === 0 ? "  No Work has been submitted." : "  No Work matches the filter."),
 		});
 		list.onSelect = (item) => done(item.value);
 		list.onCancel = () => done(null);
 		container.addChild(list);
+		container.addChild(new Spacer(1));
 		container.addChild(
-			new Text(
-				theme.fg("dim", `${keybindings.filter} filter · ${keybindings.help} help · enter open · esc back`),
-				1,
-				0,
-			),
+			new Text(theme.fg("dim", `↑↓ navigate  ${keybindings.filter} filter enter select  escape/ctrl+c cancel`), 1, 0),
 		);
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		return {
@@ -93,6 +89,10 @@ async function pickWork(
 					done("help");
 					return;
 				}
+				if (matchesKey(data, "backspace")) {
+					done(null);
+					return;
+				}
 				list.handleInput(data);
 				tui.requestRender();
 			},
@@ -100,75 +100,66 @@ async function pickWork(
 	});
 }
 
+const NAVIGATION_FOOTER = "↑↓ navigate  enter select  escape/ctrl+c cancel";
+type WorkSection = "actions" | "evidence" | "history";
+
 async function showWork(
 	service: ApplicationService,
 	context: ExtensionContext,
 	workId: string,
 	actor: Actor,
-): Promise<"refresh" | "filter" | "back"> {
+): Promise<"back"> {
 	for (;;) {
-		const work = service.inspectWork(workId);
+		const work = await service.inspectRuntime(workId);
 		const section = await pickSection(work, context);
-		if (section === null || section === "back") {
-			return "back";
-		}
-		if (section === "Overview") {
-			context.ui.notify(renderOverview(work), "info");
+		if (section === null || section === "back") return "back";
+		if (section === "actions") {
+			await chooseAction(service, context, work, actor);
 			continue;
 		}
-		if (section === "Evidence") {
-			context.ui.notify(renderEvidence(work), "info");
+		if (section === "evidence") {
+			await showEvidence(work, context);
 			continue;
 		}
-		if (section === "History") {
-			context.ui.notify(renderHistory(work), "info");
-			continue;
-		}
-		const actionResult = await chooseAction(service, context, work, actor);
-		if (actionResult === "refresh") {
-			continue;
-		}
-		if (actionResult === "filter") {
-			return "filter";
-		}
-		if (actionResult === "back") {
-			return "back";
-		}
+		await showHistory(service, context, work, actor);
 	}
 }
 
-async function pickSection(work: WorkView, context: ExtensionContext): Promise<string | "back" | null> {
+async function pickSection(work: WorkView, context: ExtensionContext): Promise<WorkSection | "back" | null> {
 	const items: SelectItem[] = [
-		{ value: "Overview", label: "Overview", description: `${work.state} · revision ${work.revision}` },
-		{ value: "Actions", label: "Actions", description: work.nextAction },
-		{ value: "Evidence", label: "Evidence", description: "Bounded Signals and provider observations" },
-		{ value: "History", label: "History", description: "Append-ordered Archive records" },
-		{ value: "back", label: "Back", description: "Return to Work list" },
+		{ value: "actions", label: "Actions" },
+		{ value: "evidence", label: "Evidence" },
+		{ value: "history", label: "History" },
 	];
-	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
+		const mission = work.mission === undefined ? "not admitted" : formatStatus(work.missionState ?? "unknown");
+		const execution = work.execution;
+		const executionStatus =
+			execution === undefined
+				? "not started  now unavailable"
+				: `${formatExecutionState(execution.state)}  now ${formatStatus(execution.runtimeState ?? "unknown")}`;
+		const status = [
+			`work       ${theme.bold(formatStatus(work.state))}  mission ${mission}`,
+			`execution  ${executionStatus}`,
+			`next       ${work.nextAction}`,
+		];
+		const summary = new Container();
+		summary.addChild(new Text(theme.fg("accent", theme.bold(work.terms.title)), 1, 0));
+		summary.addChild(new Text(theme.fg("muted", status.join("\n")), 1, 0));
+		const list = new SelectList(items, items.length, selectorTheme(theme));
+		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
+		list.onCancel = () => done("back");
+		const menu = new Container();
+		menu.addChild(list);
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold(work.terms.title)), 1, 0));
-		const list = new SelectList(items, items.length, {
-			selectedPrefix: (text: string) => theme.fg("accent", text),
-			selectedText: (text: string) => theme.fg("accent", text),
-			description: (text: string) => theme.fg("muted", text),
-			scrollInfo: (text: string) => theme.fg("dim", text),
-			noMatch: (text: string) => theme.fg("warning", text),
-		});
-		list.onSelect = (item) => done(item.value);
-		list.onCancel = () => done("back");
-		container.addChild(list);
-		container.addChild(new Text(theme.fg("dim", "up/down move · enter open · esc back"), 1, 0));
+		container.addChild(summary);
+		container.addChild(new Spacer(1));
+		container.addChild(menu);
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		return {
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				list.handleInput(data);
-				tui.requestRender();
-			},
-		};
+		return selectableComponent(container, list, tui, () => done("back"));
 	});
 }
 
@@ -177,51 +168,40 @@ async function chooseAction(
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
-): Promise<"refresh" | "filter" | "back"> {
-	const actions = service.availableActions(work.workId, actor, work.revision);
-	const items: SelectItem[] = actions.map((action) => ({
-		value: action.id,
-		label: action.enabled ? action.label : `${action.label} [unavailable]`,
-		description: action.enabled ? "Ready" : (action.disabledReason ?? "Unavailable"),
-	}));
-	items.push({ value: "back", label: "Back", description: "Return to sections" });
+): Promise<void> {
+	const actions = service
+		.availableActions(work.workId, actor, work.revision, work.execution?.runtimeState)
+		.filter((action) => action.enabled);
+	if (actions.length === 0) {
+		await showTextPage(context, "Actions", ["No actions are currently available."]);
+		return;
+	}
 	const selected = await context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		container.addChild(new Text(theme.fg("accent", theme.bold("Actions")), 1, 0));
-		const list = new SelectList(items, items.length, {
-			selectedPrefix: (text: string) => theme.fg("accent", text),
-			selectedText: (text: string) => theme.fg("accent", text),
-			description: (text: string) => theme.fg("muted", text),
-			scrollInfo: (text: string) => theme.fg("dim", text),
-			noMatch: (text: string) => theme.fg("warning", text),
-		});
+		const list = new SelectList(
+			actions.map((action) => ({ value: action.id, label: action.label })),
+			actions.length,
+			selectorTheme(theme),
+		);
 		list.onSelect = (item) => done(item.value);
 		list.onCancel = () => done("back");
 		container.addChild(list);
-		container.addChild(new Text(theme.fg("dim", "Unavailable actions remain visible with their reason."), 1, 0));
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		return {
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				list.handleInput(data);
-				tui.requestRender();
-			},
-		};
+		return selectableComponent(container, list, tui, () => done("back"));
 	});
-	if (selected === null || selected === "back") {
-		return "back";
-	}
+	if (selected === null || selected === "back") return;
 	const action = actions.find((candidate) => candidate.id === selected);
-	if (action === undefined || !action.enabled) {
-		context.ui.notify(action?.disabledReason ?? "Action is unavailable.", "warning");
-		return "refresh";
+	if (action === undefined) return;
+	if (action.kind === "recover") {
+		await showRecovery(service, context, work, action);
+		return;
 	}
 	const input = await actionInput(action, context);
-	if (input === null) {
-		return "refresh";
-	}
+	if (input === null) return;
 	const result = await service.perform({
 		action: action.kind,
 		workId: work.workId,
@@ -229,11 +209,312 @@ async function chooseAction(
 		meta: { commandId: `tui:${action.id}`, actor, expectedWorkRevision: work.revision, schemaVersion: 1 },
 	});
 	if ("error" in result) {
-		context.ui.notify(`${result.error.summary} ${result.error.remediation}`, "error");
-	} else {
-		context.ui.notify(result.value.nextAction, "info");
+		await showTextPage(context, "Action failed", [result.error.summary, `remediation: ${result.error.remediation}`]);
+		return;
 	}
-	return "refresh";
+	schedulePendingEffects(service);
+	await showTextPage(context, "Action complete", [`action: ${action.label}`, `next: ${result.value.nextAction}`]);
+}
+
+function schedulePendingEffects(service: ApplicationService): void {
+	queueMicrotask(() => void service.processPendingEffects());
+}
+
+type RecoveryDisplay = Readonly<{
+	status: "in progress" | "succeeded" | "failed";
+	progress: string;
+	doing: string;
+	next: string;
+	reason?: string | undefined;
+}>;
+
+async function showRecovery(
+	service: ApplicationService,
+	context: ExtensionContext,
+	work: WorkView,
+	action: Action,
+): Promise<void> {
+	await context.ui.custom<void>((tui, theme, _keybindings, done) => {
+		let closed = false;
+		let display: RecoveryDisplay = {
+			status: "in progress",
+			progress: "starting",
+			doing:
+				work.state === "cancelled"
+					? "Preparing this Work for a new attempt"
+					: "Checking the Work and restoring its Executor",
+			next: "No action is needed  Keep this screen open until recovery finishes",
+		};
+		const body = new Text("", 1, 0);
+		const footer = new Text("", 1, 0);
+		const container = new Container();
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Recovery")), 1, 0));
+		container.addChild(body);
+		container.addChild(new Spacer(1));
+		container.addChild(footer);
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+
+		const renderDisplay = (): void => {
+			body.setText(
+				theme.fg(
+					"muted",
+					[
+						`status    ${display.status}`,
+						`progress  ${display.progress}`,
+						`doing     ${display.doing}`,
+						display.reason === undefined ? undefined : `reason    ${display.reason}`,
+						`next      ${display.next}`,
+					]
+						.filter((line): line is string => line !== undefined)
+						.join("\n"),
+				),
+			);
+			footer.setText(
+				theme.fg("dim", display.status === "in progress" ? "recovery is in progress" : "escape/ctrl+c/backspace close"),
+			);
+			tui.requestRender();
+		};
+		const update = (next: RecoveryDisplay): void => {
+			display = next;
+			if (!closed) renderDisplay();
+		};
+		const onRecoveryUpdate = (progress: RecoveryUpdate): void => {
+			update({
+				status: "in progress",
+				progress: `${formatStatus(progress.stage)}  ${progress.message}`,
+				doing: "Khala is restoring the Work",
+				next: "No action is needed  Keep this screen open until recovery finishes",
+			});
+		};
+		renderDisplay();
+		queueMicrotask(() => {
+			void service
+				.perform({
+					action: action.kind,
+					workId: work.workId,
+					input: {},
+					meta: {
+						commandId: `tui:${action.id}`,
+						actor: "user",
+						expectedWorkRevision: work.revision,
+						schemaVersion: 1,
+					},
+					onRecoveryUpdate,
+				})
+				.then((result) => {
+					if ("error" in result) {
+						update({
+							status: "failed",
+							progress: "stopped",
+							doing: "Khala could not restore the Work",
+							reason: "The recovery operation could not be completed",
+							next:
+								result.error.code === "revision-conflict"
+									? "Action needed  Refresh the Work and try again"
+									: "Action needed  Inspect Evidence for the failure details",
+						});
+						return;
+					}
+					schedulePendingEffects(service);
+					const failed = result.value.state === "failed" || result.value.execution?.state === "failed";
+					const awaitingReview = result.value.execution?.state === "awaiting-review";
+					update(
+						failed
+							? {
+									status: "failed",
+									progress: "stopped",
+									doing: "Khala could not restore the Work",
+									reason: "The restored connection could not be confirmed",
+									next: "Action needed  Inspect Evidence and decide what to do next",
+								}
+							: {
+									status: "succeeded",
+									progress: "complete",
+									doing:
+										work.state === "cancelled"
+											? "Work returned to admission"
+											: awaitingReview
+												? "Work restored and waiting for review"
+												: "Work restored and ready to continue",
+									next:
+										work.state === "cancelled"
+											? "No action needed  Khala will continue admission automatically"
+											: awaitingReview
+												? "Action needed  Review the Work when the provider responds"
+												: "No action needed  Khala will continue the Work automatically",
+								},
+					);
+				})
+				.catch(() =>
+					update({
+						status: "failed",
+						progress: "stopped",
+						doing: "Khala could not restore the Work",
+						reason: "The recovery operation ended unexpectedly",
+						next: "Action needed  Inspect Evidence for the failure details",
+					}),
+				);
+		});
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (display.status === "in progress") return;
+				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "backspace")) {
+					closed = true;
+					done();
+				}
+			},
+		};
+	});
+}
+
+function selectorTheme(theme: Theme): SelectListTheme {
+	return {
+		selectedPrefix: (text: string) => theme.fg("accent", text),
+		selectedText: (text: string) => theme.fg("accent", text),
+		description: (text: string) => theme.fg("muted", text),
+		scrollInfo: (text: string) => theme.fg("dim", text),
+		noMatch: (text: string) => theme.fg("warning", text),
+	};
+}
+
+function selectableComponent(
+	container: Container,
+	list: SelectList,
+	tui: { requestRender(): void },
+	onBack: () => void,
+): Component {
+	return {
+		render: (width: number) => container.render(width),
+		invalidate: () => container.invalidate(),
+		handleInput: (data: string) => {
+			if (matchesKey(data, "backspace")) {
+				onBack();
+				return;
+			}
+			list.handleInput(data);
+			tui.requestRender();
+		},
+	};
+}
+
+function isWorkSection(value: string): value is WorkSection {
+	return value === "actions" || value === "evidence" || value === "history";
+}
+
+function formatStatus(value: string): string {
+	return value.replace(/-/g, " ");
+}
+
+function formatExecutionState(value: string): string {
+	return value === "running" ? "active" : formatStatus(value);
+}
+
+async function showEvidence(work: WorkView, context: ExtensionContext): Promise<void> {
+	const execution = work.execution;
+	const activity =
+		execution?.runtimeState === "idle"
+			? "executor turn completed"
+			: execution?.runtimeState === "working"
+				? "executor turn active"
+				: execution?.runtimeState === "pending"
+					? "executor turn pending"
+					: execution === undefined
+						? "none recorded"
+						: "execution recorded";
+	await showTextPage(context, "Evidence", [
+		`state: ${formatStatus(work.state)}  mission: ${formatStatus(work.missionState ?? "not admitted")}`,
+		`execution: ${formatExecutionState(execution?.state ?? "not started")}  runtime: ${execution === undefined ? "unavailable" : formatStatus(execution.runtimeState ?? "unknown")}`,
+		`activity: ${activity}`,
+		`signal: ${work.lastSignal === undefined ? "none" : `${work.lastSignal.kind}: ${work.lastSignal.summary}`}`,
+		`signal evidence: ${work.lastSignal?.evidence.join(", ") ?? "none"}`,
+		`provider observation: ${work.lastObservation?.summary ?? "none"}`,
+		`review request: ${work.reviewRequest?.url ?? "none"}`,
+		`review status: ${work.reviewRequest?.status ?? "none"}`,
+	]);
+}
+
+async function showHistory(
+	service: ApplicationService,
+	context: ExtensionContext,
+	work: WorkView,
+	actor: Actor,
+): Promise<void> {
+	const records: RecordView[] = [];
+	let cursor: string | undefined;
+	try {
+		do {
+			const page = service.readRecords(
+				{ workId: work.workId },
+				{ actor, commandId: `tui:history:${work.workId}:${work.revision}`, schemaVersion: 1 },
+				cursor,
+			);
+			records.push(...page.items);
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+	} catch (error) {
+		await showTextPage(context, "History", [
+			`Unable to read history: ${error instanceof Error ? error.message : String(error)}`,
+		]);
+		return;
+	}
+	if (records.length === 0) {
+		await showTextPage(context, "History", ["No Archive records are available for this Work."]);
+		return;
+	}
+	for (;;) {
+		const selected = await selectHistoryRecord(records, context);
+		if (selected === null || selected === "back") return;
+		const record = records.find((candidate) => String(candidate.sequence) === selected);
+		if (record === undefined) return;
+		await showTextPage(context, `Record ${record.sequence}: ${record.kind}`, [
+			`actor: ${record.actor}`,
+			`recorded: ${record.recordedAt}`,
+			`summary: ${record.summary}`,
+			`evidence: ${record.evidenceRefs.join(", ") || "none"}`,
+		]);
+	}
+}
+
+async function selectHistoryRecord(records: readonly RecordView[], context: ExtensionContext): Promise<string | null> {
+	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("History")), 1, 0));
+		container.addChild(new Text(theme.fg("muted", `${records.length} Archive records`), 1, 0));
+		const list = new SelectList(
+			records.map((record) => ({ value: String(record.sequence), label: `#${record.sequence} ${record.kind}` })),
+			Math.min(6, records.length),
+			selectorTheme(theme),
+		);
+		list.onSelect = (item) => done(item.value);
+		list.onCancel = () => done(null);
+		container.addChild(list);
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		return selectableComponent(container, list, tui, () => done(null));
+	});
+}
+
+async function showTextPage(context: ExtensionContext, title: string, lines: readonly string[]): Promise<void> {
+	await context.ui.custom<void>((_tui, theme, _keybindings, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+		container.addChild(new Text(theme.fg("muted", lines.join("\n")), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "escape/ctrl+c/backspace back"), 1, 0));
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "backspace")) done();
+			},
+		};
+	});
 }
 
 async function actionInput(action: Action, context: ExtensionContext): Promise<JsonObject | undefined | null> {
@@ -275,10 +556,12 @@ async function actionInput(action: Action, context: ExtensionContext): Promise<J
 }
 
 async function showHelp(context: ExtensionContext): Promise<void> {
-	context.ui.notify(
-		"Up/Down move · Enter open or confirm · Esc back or cancel · configured filter/help keys. Navigation never writes Archive state.",
-		"info",
-	);
+	await showTextPage(context, "khala help", [
+		"active means the lifecycle is open",
+		"working means a prompt is running",
+		"idle means waiting for the next Signal",
+		"↑↓ navigate  / filter  ? help  enter select  escape/ctrl+c cancel",
+	]);
 }
 
 function renderDashboard(work: readonly WorkSummary[]): string {
@@ -288,40 +571,5 @@ function renderDashboard(work: readonly WorkSummary[]): string {
 	return [
 		"Khala Work",
 		...work.map((item) => `${item.state.padEnd(16)} ${item.title} (${item.workId}) — ${item.nextAction}`),
-	].join("\n");
-}
-
-function renderOverview(work: WorkView): string {
-	return [
-		`Overview · ${work.terms.title}`,
-		`State: ${work.state}`,
-		`Revision: ${work.revision}`,
-		`Budget: ${work.budget.reservedTokens}/${work.budget.maxTokens} reserved; ${work.budget.consumedTokens} consumed`,
-		`Mission: ${work.mission?.missionId ?? "not admitted"}`,
-		`Execution: ${work.execution?.executionId ?? "not started"}`,
-		`Next action: ${work.nextAction}`,
-	].join("\n");
-}
-
-function renderEvidence(work: WorkView): string {
-	return [
-		"Evidence",
-		work.lastSignal === undefined ? "Signal: none" : `Signal: ${work.lastSignal.kind} — ${work.lastSignal.summary}`,
-		work.lastSignal === undefined ? "Signal evidence: none" : `Signal evidence: ${work.lastSignal.evidence.join("; ")}`,
-		work.lastObservation === undefined
-			? "Provider observation: none"
-			: `Provider observation: ${work.lastObservation.summary}`,
-		work.reviewRequest === undefined
-			? "Review request: none"
-			: `Review request: ${work.reviewRequest.url} (${work.reviewRequest.status})`,
-	].join("\n");
-}
-
-function renderHistory(work: WorkView): string {
-	return [
-		"History",
-		`Work ID: ${work.workId}`,
-		`Current revision: ${work.revision}`,
-		"Use khala_read_archive for append-ordered bounded records.",
 	].join("\n");
 }

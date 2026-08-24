@@ -32,7 +32,9 @@ error and leaves the Mission available for an explicit replacement Execution.
 
 Only the current Executor can send `progress`, `blocked`, or `ready` Signals.
 A ready Signal requires a reconciled draft GitHub Pull Request or GitLab Merge
-Request. Signals are handoff evidence, not acceptance.
+Request. Signals are handoff evidence, not acceptance. An Execution can remain
+`running` while its Pi runtime is `idle` between turns; the Archive records that
+runtime observation separately and the TUI shows it explicitly.
 
 ## Verdict and review
 
@@ -53,7 +55,32 @@ Only a Conclave `outcome` record linked to provider-confirmed merge evidence
 sets Work to `succeeded`. A closed request, failed CI, missing provider result,
 blocked Execution, and monitor failure remain evidence that requires a decision.
 The User alone can record `cancelled`; failed Work requires an explicit
-Conclave or User decision.
+Conclave or User decision. The User can explicitly recover cancelled Work,
+which clears the old Mission and returns the Work to pending admission.
+
+## Runtime recovery evidence
+
+Recovery probes the replacement Pi binding before recording it as usable. If the
+replacement remains unreachable, Khala records a failed Execution with runtime
+state `unreachable`; it never leaves that Execution `running`.
+
+This is observable from another Pi terminal by reading the same Work's bounded
+Archive records:
+
+```text
+khala_read_archive({ workId: "<work-id>", kinds: ["execution", "error"] })
+
+# failed recovery
+error: Execution <execution-id> runtime could not be reconciled.
+
+# successful recovery
+execution: Execution <execution-id> runtime was reconciled.
+```
+
+The projection should show `execution.state: "failed"` and
+`execution.runtimeState: "unreachable"` when the replacement probe fails. A
+separate Archive reader can verify those values while the original TUI remains
+open.
 
 The MVP intentionally excludes automatic merge, semantic retry, token top-up,
 priority, dependency, and peer-conflict decisions.

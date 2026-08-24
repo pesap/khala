@@ -27,7 +27,8 @@ interprets runtime reachability or provider text as lifecycle authority.
 A Work contains User intent and a terminal state: `succeeded`, `failed`, or
 `cancelled`. The MVP view also exposes `submitted`, `needs-input`, `queued`,
 `active`, and `awaiting-review`. Its budget stores the Work cap, reserved token
-allowance, and consumed allowance.
+allowance, and consumed allowance. USD cost is not part of the budget model
+because provider pricing and actual usage are not persisted.
 
 ### Mission
 
@@ -40,7 +41,9 @@ as a successor Mission and `mission-change` evidence.
 An Execution binds one Mission to model, thinking level, token allowance,
 prompt identity, Git sandbox, and Pi session. Its states are `queued`, `running`,
 `awaiting-review`, `completed`, `blocked`, `failed`, and `stopped`. A Mission has
-at most one active `queued`, `running`, or `awaiting-review` Execution.
+at most one active `queued`, `running`, or `awaiting-review` Execution. Khala
+also records the latest runtime state and cumulative input, output, cache-hit,
+and cache-miss token usage reported by Pi.
 
 ### Record
 

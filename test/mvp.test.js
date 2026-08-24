@@ -17,7 +17,24 @@ const TEST_CAPABILITY_NONCE = "test-capability-nonce";
 
 function makePorts(overrides = {}) {
 	const { ports: portOverrides = {}, maxConcurrentExecutions: _maxConcurrentExecutions, ...controlOverrides } = overrides;
-	const controls = { head: "head", outcome: false, outcomeObservation: undefined, pollObservations: [], observerHold: false, releaseObserver: undefined, executorHold: false, releaseExecutor: undefined, published: [], sessions: [], prompts: [], stopped: [], cleaned: [], ...controlOverrides };
+	const controls = {
+		head: "head",
+		outcome: false,
+		outcomeObservation: undefined,
+		pollObservations: [],
+		turnUsage: undefined,
+		runtimeState: "idle",
+		observerHold: false,
+		releaseObserver: undefined,
+		executorHold: false,
+		releaseExecutor: undefined,
+		published: [],
+		sessions: [],
+		prompts: [],
+		stopped: [],
+		cleaned: [],
+		...controlOverrides,
+	};
 	const runtime = {
 		async ensureSession(input) {
 			const binding = { sessionId: `${input.role}-${controls.sessions.length + 1}`, sessionPath: `/tmp/${input.role}-${controls.sessions.length + 1}.jsonl`, capabilityNonce: input.tools.length === 0 ? undefined : TEST_CAPABILITY_NONCE };
@@ -32,12 +49,15 @@ function makePorts(overrides = {}) {
 				});
 			if (controls.executorHold && binding.sessionId.startsWith("executor-"))
 				return new Promise((resolve) => {
-					controls.releaseExecutor = resolve;
+					controls.releaseExecutor = () => resolve({ output: "" });
 				});
-			return "";
+			return {
+				output: "",
+				usage: binding.sessionId.startsWith("executor-") ? controls.turnUsage : undefined,
+			};
 		},
 		async getState() {
-			return "idle";
+			return controls.runtimeState;
 		},
 		async requestStop(binding) {
 			controls.stopped.push(binding);
@@ -182,8 +202,205 @@ async function admitAndStart(service, idPrefix) {
 	assert.equal("value" in started, true);
 	assert.equal(started.value.execution.state, "queued");
 	await service.processPendingEffects();
+	await new Promise((resolve) => setImmediate(resolve));
 	return service.inspectWork(submitted.workId);
 }
+
+test("generated Work IDs use Nano ID format", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-work-id-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const submitted = service.submitWork(
+		{ title: "Generated ID", objective: "Verify generated IDs", acceptanceCriteria: ["The ID uses Nano ID format"] },
+		meta("user", "work-id:submit", 0),
+	);
+	assert.match(submitted.workId, /^[A-Za-z0-9_-]{21}$/);
+	await service.close();
+});
+
+test("generated Mission and Execution IDs use Nano ID format", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-derived-id-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "derived-ids");
+	assert.match(running.mission.missionId, /^[A-Za-z0-9_-]{21}$/);
+	assert.match(running.execution.executionId, /^[A-Za-z0-9_-]{21}$/);
+	await service.close();
+});
+
+test("Executor usage records cache hits, misses, and idle runtime state", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-usage-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		turnUsage: { inputTokens: 11, outputTokens: 7, cacheHitTokens: 13, cacheMissTokens: 5 },
+	});
+	const running = await admitAndStart(service, "usage");
+	assert.deepEqual(running.execution.usage, {
+		inputTokens: 11,
+		outputTokens: 7,
+		cacheHitTokens: 13,
+		cacheMissTokens: 5,
+	});
+	assert.equal(running.execution.runtimeState, "idle");
+	assert.equal(running.nextAction, "Executor is idle; waiting for a Signal.");
+	await service.close();
+});
+
+test("a runtime failure during the first Executor turn is recorded as unreachable", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-turn-failure-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			runtime: {
+				async send(binding) {
+					if (binding.sessionId.startsWith("executor-")) throw new Error("runtime disconnected");
+					return { output: "" };
+				},
+			},
+		},
+	});
+	const failed = await admitAndStart(service, "runtime-turn-failure");
+	assert.equal(failed.execution.state, "failed");
+	assert.equal(failed.execution.runtimeState, "unreachable");
+	assert.equal(failed.nextAction, "Executor runtime failed; Conclave may replace it.");
+	await service.close();
+});
+
+test("recovery starts a new Executor turn while the old turn is still in flight", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-rebind-"));
+	const runtimeProbe = { oldSession: undefined };
+	const recoveryUpdates = [];
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		executorHold: true,
+		ports: {
+			runtime: {
+				async getState(binding) {
+					return runtimeProbe.oldSession !== undefined && binding.sessionId === runtimeProbe.oldSession
+						? "unreachable"
+						: "idle";
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "runtime-rebind");
+	runtimeProbe.oldSession = running.execution.pi.sessionId;
+	const releaseOldTurn = controls.releaseExecutor;
+	assert.ok(releaseOldTurn);
+	const promptsBeforeRecovery = controls.prompts.length;
+	controls.executorHold = false;
+	const observed = await service.inspectRuntime(running.workId);
+	const result = await service.perform({
+		action: "recover",
+		workId: running.workId,
+		input: {},
+		meta: meta("user", "runtime-rebind:recover", observed.revision, running.workId),
+		onRecoveryUpdate: (update) => recoveryUpdates.push(update),
+	});
+	assert.equal("error" in result, false);
+	assert.deepEqual(
+		new Set(recoveryUpdates.map((update) => update.stage)),
+		new Set(["checking", "stopping", "restoring", "confirming", "finishing"]),
+	);
+	assert.equal(recoveryUpdates.at(-1).stage, "finishing");
+	releaseOldTurn();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(controls.prompts.length, promptsBeforeRecovery + 1);
+	const recovered = service.inspectWork(running.workId);
+	assert.equal(recovered.execution.executionId, running.execution.executionId);
+	assert.equal(recovered.execution.runtimeState, "idle");
+	await service.close();
+});
+
+test("runtime inspection refreshes active Work without writing the Archive", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-view-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: { runtime: { async getState() { return "working"; } } },
+	});
+	const running = await admitAndStart(service, "runtime-view");
+	const before = service.inspectWork(running.workId);
+	const observed = await service.inspectRuntime(running.workId);
+	assert.equal(observed.execution.runtimeState, "working");
+	assert.equal(observed.nextAction, "Executor is working.");
+	assert.equal(observed.revision, before.revision);
+	await service.close();
+});
+
+test("unreachable runtime recovery fails closed and is visible to another Archive reader", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-recovery-"));
+	const path = join(directory, "archive.sqlite");
+	const { service, controls } = makeService(path);
+	const running = await admitAndStart(service, "runtime-recovery");
+	controls.runtimeState = "unreachable";
+	const observed = await service.inspectRuntime(running.workId);
+	assert.equal(observed.execution.runtimeState, "unreachable");
+	assert.equal(observed.nextAction, "Executor runtime is unreachable; recover it from Actions.");
+	const actions = service.availableActions(
+		observed.workId,
+		"user",
+		observed.revision,
+		observed.execution.runtimeState,
+	);
+	assert.equal(actions[0].kind, "recover");
+	assert.equal(actions[1].kind, "cancel");
+	assert.equal(actions.find((action) => action.kind === "recover")?.enabled, true);
+	const result = await service.perform({
+		action: "recover",
+		workId: observed.workId,
+		input: {},
+		meta: meta("user", "runtime-recovery:recover", observed.revision, observed.workId),
+	});
+	assert.equal("error" in result, false);
+	assert.equal(result.value.execution.state, "failed");
+	assert.equal(result.value.execution.runtimeState, "unreachable");
+	assert.equal(result.value.nextAction, "Execution runtime unavailable; replace it explicitly.");
+
+	const observer = makeService(path);
+	const visible = observer.service.inspectWork(observed.workId);
+	assert.equal(visible.execution.state, "failed");
+	assert.equal(visible.execution.runtimeState, "unreachable");
+	const records = observer.service.readRecords(
+		{ workId: observed.workId, kinds: ["error"] },
+		meta("user", "runtime-recovery:observe", visible.revision),
+	);
+	assert.equal(records.items.some((record) => record.summary.includes("could not be reconciled")), true);
+	await observer.service.close();
+	await service.close();
+});
+
+test("cancelled Work can be explicitly recovered for fresh admission", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-cancel-recovery-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const submitted = service.submitWork(
+		{ title: "Recoverable Work", objective: "Verify recovery", acceptanceCriteria: ["The Work can be recovered"] },
+		meta("user", "cancel-recovery:submit", 0),
+	);
+	const cancelled = await service.perform({
+		action: "cancel",
+		workId: submitted.workId,
+		input: {},
+		meta: meta("user", "cancel-recovery:cancel", submitted.revision, submitted.workId),
+	});
+	assert.equal(cancelled.value.state, "cancelled");
+	const recovery = service.availableActions(cancelled.value.workId, "user", cancelled.value.revision).find(
+		(action) => action.kind === "recover",
+	);
+	assert.equal(recovery?.enabled, true);
+	const recovered = await service.perform({
+		action: "recover",
+		workId: submitted.workId,
+		input: {},
+		meta: meta("user", "cancel-recovery:recover", cancelled.value.revision, submitted.workId),
+	});
+	assert.equal("error" in recovered, false);
+	assert.equal(recovered.value.state, "submitted");
+	assert.equal(recovered.value.mission, undefined);
+	assert.equal(recovered.value.execution, undefined);
+	assert.equal(recovered.value.nextAction, "Recovered Work is pending Conclave admission.");
+	const admitted = await service.perform({
+		action: "admit",
+		workId: submitted.workId,
+		input: {},
+		meta: meta("conclave", "cancel-recovery:admit", recovered.value.revision, submitted.workId),
+	});
+	assert.equal(admitted.value.state, "queued");
+	await service.close();
+});
 
 test("a Work reaches success through branch publication, handoff, polling, and outcome evidence", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-lifecycle-"));
@@ -281,7 +498,7 @@ test("Feedback waits for an active Executor turn instead of being dropped", asyn
 	controls.releaseExecutor();
 	await processing;
 	assert.equal(controls.prompts.some((entry) => entry.message.includes("Fix the edge case.")), true);
-	assert.equal(service.inspectWork(running.workId).revision, changed.value.revision);
+	assert.equal(service.inspectWork(running.workId).revision > changed.value.revision, true);
 	await service.close();
 });
 
@@ -307,11 +524,12 @@ test("Verdicts resume blocked Executors and prevent rejected Missions from resta
 	await service.processPendingEffects();
 	assert.equal(continued.value.execution.state, "running");
 	assert.equal(executorPrompts() > beforeContinue, true);
+	const continuedCurrent = service.inspectWork(running.workId);
 	const progress = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "progress", summary: "Progress before rejection", evidence: ["progress"] },
-		meta: meta("executor", "verdicts:progress", continued.value.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "verdicts:progress", continuedCurrent.revision, running.workId, running.execution.executionId),
 	});
 	const rejected = await service.perform({
 		action: "verdict",
@@ -514,14 +732,17 @@ test("a real RPC child is bounded and removed after an agent turn timeout", asyn
 test("a real RPC child waits for each prompt completion", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-turns-"));
 	const script = join(directory, "rpc-stub.mjs");
-	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\nlet turns = 0;\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: "${join(directory, "session.jsonl")}", isStreaming: false } }) + "\\n"); else if (request.type === "prompt") { turns += 1; process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); if (turns === 1) process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first output" }] } }) + "\\n"); setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n"), turns === 2 ? 50 : 0); } });\n`);
+	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\nlet turns = 0;\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: "${join(directory, "session.jsonl")}", isStreaming: false } }) + "\\n"); else if (request.type === "prompt") { turns += 1; process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); if (turns === 1) process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first output" }], usage: { input: 11, output: 7, cacheRead: 13, cacheWrite: 5 } } }) + "\\n"); setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n"), turns === 2 ? 50 : 0); } });\n`);
 	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 500 });
 	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
-	assert.equal(await runtime.send(binding, "first"), "first output");
+	assert.deepEqual(await runtime.send(binding, "first"), {
+		output: "first output",
+		usage: { inputTokens: 11, outputTokens: 7, cacheHitTokens: 13, cacheMissTokens: 16 },
+	});
 	const second = runtime.send(binding, "second");
 	const earlyResult = await Promise.race([second.then(() => "completed"), new Promise((resolve) => setTimeout(() => resolve("pending"), 10))]);
 	assert.equal(earlyResult, "pending");
-	assert.equal(await second, "");
+	assert.deepEqual(await second, { output: "" });
 	await runtime.close();
 });
 
@@ -563,7 +784,7 @@ test("Oracle keeps advisory output bounded and origin matching rejects lookalike
 			return { sessionId: "oracle-session", sessionPath: "/tmp/oracle-session.jsonl" };
 		},
 		async send() {
-			return "Verdict: Needs revision\n\nFindings:\n- [major] Missing test | Evidence: no test result\n\nValidation gaps:\n- integration test not run";
+			return { output: "Verdict: Needs revision\n\nFindings:\n- [major] Missing test | Evidence: no test result\n\nValidation gaps:\n- integration test not run" };
 		},
 		async getState() {
 			return "idle";

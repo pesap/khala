@@ -38,14 +38,14 @@ class PiOracle implements OraclePort {
 			),
 		});
 		try {
-			const output = await this.runtime.send(binding, buildPrompt(packet));
-			const parsed = parseVerdict(output);
+			const turn = await this.runtime.send(binding, buildPrompt(packet));
+			const parsed = parseVerdict(turn.output);
 			return {
 				verdict: parsed?.verdict ?? "incomplete",
 				findings: parsed?.findings ?? [],
 				validationGaps: parsed?.validationGaps ?? [],
 				durationMs: Date.now() - started,
-				output: output.slice(0, MAX_PACKET_TEXT),
+				output: turn.output.slice(0, MAX_PACKET_TEXT),
 			};
 		} finally {
 			await this.runtime.requestStop(binding).catch(() => undefined);

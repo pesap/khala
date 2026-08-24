@@ -713,6 +713,8 @@ function isExecution(value: JsonValue | undefined): boolean {
 		isText(value["model"]) &&
 		isText(value["thinking"]) &&
 		isInteger(value["tokenAllowance"]) &&
+		(value["runtimeState"] === undefined || isExecutionRuntimeState(value["runtimeState"])) &&
+		(value["usage"] === undefined || isTokenUsage(value["usage"])) &&
 		isJsonObject(prompt) &&
 		isText(prompt["packageVersion"]) &&
 		isText(prompt["promptSha256"]) &&
@@ -722,6 +724,18 @@ function isExecution(value: JsonValue | undefined): boolean {
 		isText(sandbox["branch"]) &&
 		(value["pi"] === undefined || isPiBinding(value["pi"]))
 	);
+}
+
+function isTokenUsage(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return ["inputTokens", "outputTokens", "cacheHitTokens", "cacheMissTokens"].every((key) => {
+		const count = value[key];
+		return isInteger(count) && Number(count) >= 0;
+	});
+}
+
+function isExecutionRuntimeState(value: JsonValue | undefined): boolean {
+	return ["working", "idle", "pending", "unreachable", "unknown"].includes(String(value));
 }
 
 function isPiBinding(value: JsonValue | undefined): boolean {

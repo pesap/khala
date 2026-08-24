@@ -1,4 +1,4 @@
-import type { Execution, Mission, ProviderObservation, ReviewRequest, WorkTerms } from "./model.js";
+import type { Execution, Mission, ProviderObservation, ReviewRequest, TokenUsage, WorkTerms } from "./model.js";
 
 export type WorkspacePreflight = Readonly<{
 	projectPath: string;
@@ -43,6 +43,7 @@ export interface CodeHostPort {
 }
 
 export type RuntimeState = "working" | "pending" | "idle" | "unreachable" | "unknown";
+export type RuntimeTurn = Readonly<{ output: string; usage?: TokenUsage | undefined }>;
 
 export type RuntimeBinding = Readonly<{
 	sessionId: string;
@@ -70,7 +71,7 @@ export interface AgentRuntimePort {
 			sessionPath?: string | undefined;
 		}>,
 	) => Promise<RuntimeBinding>;
-	send: (binding: RuntimeBinding, message: string) => Promise<string>;
+	send: (binding: RuntimeBinding, message: string) => Promise<RuntimeTurn>;
 	getState: (binding: RuntimeBinding) => Promise<RuntimeState>;
 	requestStop: (binding: RuntimeBinding) => Promise<void>;
 	close: () => Promise<void>;

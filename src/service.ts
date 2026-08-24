@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, type KeyObject, randomUUID, verify } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { nanoid } from "nanoid";
 import { type ArchiveAppend, type ArchivePort, ExecutionAdmissionConflict, RevisionConflict } from "./archive.js";
 import {
 	type Action,
@@ -20,16 +21,18 @@ import {
 	type ProviderObservation,
 	type RecordQuery,
 	type RecordView,
+	type RecoveryUpdate,
 	type ServiceResult,
 	type Signal,
 	type SubmitWorkInput,
+	type TokenUsage,
 	type WorkBudget,
 	type WorkState,
 	type WorkSummary,
 	type WorkTerms,
 	type WorkView,
 } from "./model.js";
-import type { OracleResult, RuntimeBinding, ServicePorts } from "./ports.js";
+import type { OracleResult, RuntimeBinding, RuntimeState, RuntimeTurn, ServicePorts } from "./ports.js";
 
 export type ServiceOptions = Readonly<{
 	projectPath: string;
@@ -104,7 +107,7 @@ export class ApplicationService {
 		if (prior !== undefined) {
 			return prior.projection;
 		}
-		const workId = input.workId?.trim() || randomUUID();
+		const workId = input.workId?.trim() || nanoid();
 		const existing = this.archive.project(workId);
 		if (existing !== undefined) {
 			throw this.error("invalid-input", `Work ID ${workId} is already in use.`, false, "Choose a new Work ID.");
@@ -169,6 +172,22 @@ export class ApplicationService {
 		return work;
 	}
 
+	async inspectRuntime(workId: string): Promise<WorkView> {
+		const work = this.inspectWork(workId);
+		const execution = work.execution;
+		if (execution?.pi === undefined || (execution.state !== "running" && execution.state !== "awaiting-review")) {
+			return work;
+		}
+		const runtimeState: RuntimeState = await this.ports.runtime.getState(execution.pi);
+		const nextAction = runtimeAction(work, runtimeState);
+		if (execution.runtimeState === runtimeState && nextAction === work.nextAction) return work;
+		return {
+			...work,
+			execution: { ...execution, runtimeState },
+			nextAction,
+		};
+	}
+
 	readRecords(query: RecordQuery | undefined, meta: CommandMeta, cursor?: string): Page<RecordView> {
 		this.requireReadableActor(meta.actor);
 		const capability = meta.actor === "user" || meta.actor === "monitor" ? undefined : this.requireCapability(meta);
@@ -207,11 +226,27 @@ export class ApplicationService {
 		return { ...page, items, nextCursor };
 	}
 
-	availableActions(workId: string, actor: Actor, revision?: number): readonly Action[] {
+	availableActions(workId: string, actor: Actor, revision?: number, runtimeState?: RuntimeState): readonly Action[] {
 		const work = this.inspectWork(workId);
 		const expected = revision ?? work.revision;
 		const actions: Action[] = [];
+		const runtimeUnavailable =
+			work.execution !== undefined &&
+			(work.execution.state === "running" || work.execution.state === "awaiting-review") &&
+			(runtimeState ?? work.execution.runtimeState) === "unreachable";
 		if (actor === "user") {
+			actions.push(
+				this.action(
+					"recover",
+					work,
+					expected,
+					work.state === "cancelled" || runtimeUnavailable,
+					"Recover Work",
+					work.state === "cancelled" || runtimeUnavailable
+						? undefined
+						: "Only cancelled Work or an unreachable runtime can be recovered.",
+				),
+			);
 			actions.push(
 				this.action(
 					"cancel",
@@ -591,12 +626,18 @@ export class ApplicationService {
 		return work;
 	}
 
-	async recoverWork(workId: string, meta: CommandMeta): Promise<WorkView> {
+	async recoverWork(
+		workId: string,
+		meta: CommandMeta,
+		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+	): Promise<WorkView> {
 		this.requireActor(meta, "user");
+		onRecoveryUpdate?.({ stage: "checking", message: "Checking the current Work state." });
 		const work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
 		if (["succeeded", "failed", "cancelled"].includes(work.state)) return work;
 		if (work.observerInFlight === true && work.observer === undefined) {
+			onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work's pending assessment." });
 			await this.processPendingEffects();
 			const reconciled = this.inspectWork(workId);
 			if (reconciled.observerInFlight !== true || reconciled.observer !== undefined) return reconciled;
@@ -620,13 +661,16 @@ export class ApplicationService {
 			}).projection;
 		}
 		if (work.observerInFlight === true && work.observer !== undefined) {
+			onRecoveryUpdate?.({ stage: "checking", message: "Checking the Work's current assessment." });
 			const observerState = await this.ports.runtime.getState(work.observer);
 			if (observerState === "working") return work;
 			this.validateModel("observer", this.options.observerModel, this.options.observerThinking);
 			let current = work;
 			let shouldResume = observerState === "idle";
 			if (observerState === "unreachable") {
+				onRecoveryUpdate?.({ stage: "stopping", message: "Closing the unavailable assessment safely." });
 				await this.ports.runtime.requestStop(work.observer).catch(() => undefined);
+				onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work's assessment." });
 				const rebound = await this.ports.runtime.ensureSession({
 					cwd: this.options.projectPath,
 					model: this.options.observerModel,
@@ -666,14 +710,17 @@ export class ApplicationService {
 			return this.inspectWork(workId);
 		}
 		if (execution.pi === undefined || !["running", "awaiting-review"].includes(execution.state)) return work;
+		onRecoveryUpdate?.({ stage: "checking", message: "Checking the Work's Executor connection." });
 		const executorState = await this.ports.runtime.getState(execution.pi);
-		if (executorState === "working") return work;
+		if (executorState === "working") return this.recordExecutorRuntimeState(work, "working");
 		if (executorState === "idle") {
 			if (execution.state === "running") this.runInBackground(this.driveExecutor(work));
 			return work;
 		}
 		if (executorState !== "unreachable") return work;
+		onRecoveryUpdate?.({ stage: "stopping", message: "Closing the unavailable Work attempt safely." });
 		await this.ports.runtime.requestStop(execution.pi).catch(() => undefined);
+		onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work's Executor." });
 		this.validateModel("executor", execution.model, execution.thinking);
 		let rebound: RuntimeBinding | undefined;
 		try {
@@ -687,13 +734,24 @@ export class ApplicationService {
 				tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "khala_read_archive", "khala_record_signal"],
 				sessionPath: execution.pi.sessionPath,
 			});
-			const recovered: Execution = { ...execution, pi: rebound };
+			onRecoveryUpdate?.({ stage: "confirming", message: "Confirming the restored Work can continue." });
+			if ((await this.ports.runtime.getState(rebound)) === "unreachable")
+				throw new Error("The recovered Executor runtime is still unreachable.");
+			const recovered: Execution = {
+				...execution,
+				pi: rebound,
+				runtimeState: execution.state === "running" ? "pending" : "idle",
+			};
 			const next: WorkView = {
 				...work,
 				revision: work.revision + 1,
 				execution: recovered,
-				nextAction: "Executor runtime reconciled.",
+				nextAction:
+					execution.state === "running"
+						? "Khala is continuing the Work automatically."
+						: "Work is restored and awaiting review.",
 			};
+			onRecoveryUpdate?.({ stage: "finishing", message: "Saving the recovery result." });
 			const result = this.append({
 				meta,
 				kind: "execution",
@@ -708,7 +766,12 @@ export class ApplicationService {
 			return result;
 		} catch (error) {
 			if (rebound !== undefined) await this.ports.runtime.requestStop(rebound).catch(() => undefined);
-			const failed: Execution = { ...execution, state: "failed", endedAt: new Date().toISOString() };
+			const failed: Execution = {
+				...execution,
+				state: "failed",
+				runtimeState: "unreachable",
+				endedAt: new Date().toISOString(),
+			};
 			const next: WorkView = {
 				...work,
 				revision: work.revision + 1,
@@ -874,6 +937,10 @@ export class ApplicationService {
 				return this.recordOutcome(work, command.meta);
 			case "cancel":
 				return this.cancel(work, command.meta);
+			case "recover":
+				return work.state === "cancelled"
+					? this.recoverCancelled(work, command.meta, command.onRecoveryUpdate)
+					: this.recoverRuntime(work, command.meta, command.onRecoveryUpdate);
 			case "amend-budget":
 				return this.amendBudget(work, command.meta, command.input);
 			case "fail-work":
@@ -1079,7 +1146,7 @@ export class ApplicationService {
 			);
 		}
 		const mission: Mission = {
-			missionId: randomUUID(),
+			missionId: nanoid(),
 			workId: work.workId,
 			assignment: work.terms,
 			mandateRevision: 1,
@@ -1137,7 +1204,7 @@ export class ApplicationService {
 		)
 			return work;
 		this.validateModel("executor", this.options.executorModel, this.options.executorThinking);
-		const executionId = randomUUID();
+		const executionId = nanoid();
 		const preflight = await this.ports.workspace.preflight(this.options.projectPath, this.options.targetBranch);
 		const sandbox = await this.ports.workspace.ensureSandbox({
 			workId: work.workId,
@@ -1249,7 +1316,13 @@ export class ApplicationService {
 				tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "khala_read_archive", "khala_record_signal"],
 				sessionPath: execution.pi?.sessionPath,
 			});
-			const running: Execution = { ...execution, state: "running", pi: binding, startedAt: new Date().toISOString() };
+			const running: Execution = {
+				...execution,
+				state: "running",
+				runtimeState: "working",
+				pi: binding,
+				startedAt: new Date().toISOString(),
+			};
 			const next: WorkView = {
 				...work,
 				revision: work.revision + 1,
@@ -1301,7 +1374,7 @@ export class ApplicationService {
 	private async driveExecutor(work: WorkView): Promise<void> {
 		const execution = work.execution;
 		if (execution?.pi === undefined) return;
-		const key = `${work.workId}:${execution.executionId}`;
+		const key = executionDriveKey(work.workId, execution);
 		if (this.drivingExecutions.has(key)) return;
 		let finish: () => void = () => undefined;
 		const turn = new Promise<void>((resolve) => {
@@ -1309,19 +1382,40 @@ export class ApplicationService {
 		});
 		this.drivingExecutions.set(key, turn);
 		try {
-			await this.ports.runtime.send(
-				execution.pi,
-				`Work ${work.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${work.revision}.`,
+			let current = this.archive.project(work.workId);
+			if (
+				current?.execution?.executionId !== execution.executionId ||
+				current.execution.state !== "running" ||
+				current.execution.pi?.sessionId !== execution.pi.sessionId
+			)
+				return;
+			current = this.recordExecutorRuntimeState(current, "working");
+			const binding = current.execution?.pi;
+			if (binding === undefined) return;
+			const result = await this.ports.runtime.send(
+				binding,
+				`Work ${current.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${current.revision}.`,
 			);
+			this.recordExecutorTurn(current, result);
 			queueMicrotask(() => void this.processPendingEffects());
 		} catch (error) {
 			await this.ports.runtime.requestStop(execution.pi).catch(() => undefined);
 			const current = this.archive.project(work.workId);
-			if (current?.execution?.executionId !== execution.executionId || current.execution.state !== "running") return;
+			if (
+				current?.execution?.executionId !== execution.executionId ||
+				current.execution.state !== "running" ||
+				current.execution.pi?.sessionId !== execution.pi.sessionId
+			)
+				return;
 			const failed: WorkView = {
 				...current,
 				revision: current.revision + 1,
-				execution: { ...current.execution, state: "failed", endedAt: new Date().toISOString() },
+				execution: {
+					...current.execution,
+					state: "failed",
+					runtimeState: "unreachable",
+					endedAt: new Date().toISOString(),
+				},
 				budget: terminalBudget(current.budget, "failed"),
 				nextAction: "Executor runtime failed; Conclave may replace it.",
 			};
@@ -1350,6 +1444,70 @@ export class ApplicationService {
 			finish();
 			if (this.drivingExecutions.get(key) === turn) this.drivingExecutions.delete(key);
 		}
+	}
+
+	private recordExecutorRuntimeState(work: WorkView, runtimeState: "working" | "idle"): WorkView {
+		const execution = work.execution;
+		if (execution === undefined || execution.runtimeState === runtimeState) return work;
+		const nextExecution: Execution = { ...execution, runtimeState };
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			execution: nextExecution,
+		};
+		return this.append({
+			meta: {
+				actor: "system",
+				commandId: `executor-runtime:${execution.executionId}:${work.revision}:${runtimeState}`,
+				expectedWorkRevision: work.revision,
+				schemaVersion: 1,
+			},
+			kind: "execution",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: execution.executionId,
+			payload: nextExecution,
+			projection: next,
+			summary: `Executor runtime is ${runtimeState}.`,
+		}).projection;
+	}
+
+	private recordExecutorTurn(work: WorkView, turn: RuntimeTurn): WorkView {
+		const current = this.archive.project(work.workId);
+		const execution = current?.execution;
+		if (
+			current === undefined ||
+			execution === undefined ||
+			execution.executionId !== work.execution?.executionId ||
+			execution.pi?.sessionId !== work.execution?.pi?.sessionId
+		)
+			return work;
+		const usage = turn.usage === undefined ? execution.usage : addTokenUsage(execution.usage, turn.usage);
+		const newSignal = current.lastSignal?.signalId !== work.lastSignal?.signalId;
+		const nextExecution: Execution =
+			usage === undefined ? { ...execution, runtimeState: "idle" } : { ...execution, runtimeState: "idle", usage };
+		const next: WorkView = {
+			...current,
+			revision: current.revision + 1,
+			execution: nextExecution,
+			nextAction:
+				execution.state === "running" && !newSignal ? "Executor is idle; waiting for a Signal." : current.nextAction,
+		};
+		return this.append({
+			meta: {
+				actor: "system",
+				commandId: `executor-turn:${execution.executionId}:${current.revision}`,
+				expectedWorkRevision: current.revision,
+				schemaVersion: 1,
+			},
+			kind: "execution",
+			workId: current.workId,
+			missionId: current.mission?.missionId,
+			executionId: execution.executionId,
+			payload: nextExecution,
+			projection: next,
+			summary: `Execution ${execution.executionId} turn completed; runtime is idle.`,
+		}).projection;
 	}
 
 	private async recordSignal(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
@@ -1696,7 +1854,7 @@ export class ApplicationService {
 	private async resumeExecutor(work: WorkView, feedback: readonly string[], deliveryId: string): Promise<void> {
 		const execution = work.execution;
 		if (execution?.pi === undefined) return;
-		const active = this.drivingExecutions.get(`${work.workId}:${execution.executionId}`);
+		const active = this.drivingExecutions.get(executionDriveKey(work.workId, execution));
 		if (active !== undefined) {
 			await active;
 			const latest = this.archive.project(work.workId);
@@ -1752,13 +1910,20 @@ export class ApplicationService {
 				}
 				binding = current.execution?.pi ?? rebound;
 			}
-			await this.ports.runtime.send(
+			current = this.recordExecutorRuntimeState(current, "working");
+			const result = await this.ports.runtime.send(
 				binding,
 				`Review feedback delivery ${deliveryId} for Work ${current.workId} is authorized. Read the Archive and address only feedback that fits the Mission. If this delivery ID is already recorded in the Archive, do not repeat the change. Feedback:\n${feedback.map((item) => `- ${item}`).join("\n")}`,
 			);
+			this.recordExecutorTurn(current, result);
 		} catch (error) {
 			const current = this.archive.project(work.workId);
-			if (current?.execution?.executionId !== execution.executionId || current.execution.state !== "running") return;
+			if (
+				current?.execution?.executionId !== execution.executionId ||
+				current.execution.state !== "running" ||
+				current.execution.pi?.sessionId !== execution.pi.sessionId
+			)
+				return;
 			const next: WorkView = {
 				...current,
 				revision: current.revision + 1,
@@ -1938,6 +2103,81 @@ export class ApplicationService {
 			payload: { previousMaxTokens: work.budget.maxTokens, maxTokens },
 			projection: next,
 			summary: `Work token cap amended to ${maxTokens}.`,
+		}).projection;
+	}
+
+	private async recoverRuntime(
+		work: WorkView,
+		meta: CommandMeta,
+		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+	): Promise<WorkView> {
+		this.requireActor(meta, "user");
+		onRecoveryUpdate?.({ stage: "checking", message: "Checking whether this Work can be recovered." });
+		const execution = work.execution;
+		if (
+			execution === undefined ||
+			execution.pi === undefined ||
+			(execution.state !== "running" && execution.state !== "awaiting-review")
+		) {
+			throw this.error(
+				"invalid-state",
+				"No recoverable Executor runtime is bound to this Work.",
+				false,
+				"Inspect the current Execution before recovering it.",
+			);
+		}
+		if ((await this.ports.runtime.getState(execution.pi)) !== "unreachable") {
+			throw this.error(
+				"invalid-state",
+				"The Executor runtime is reachable and does not need recovery.",
+				false,
+				"Refresh the Work and use the available action for its current state.",
+			);
+		}
+		return this.recoverWork(work.workId, meta, onRecoveryUpdate);
+	}
+
+	private recoverCancelled(
+		work: WorkView,
+		meta: CommandMeta,
+		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+	): WorkView {
+		this.requireActor(meta, "user");
+		onRecoveryUpdate?.({ stage: "checking", message: "Preparing the cancelled Work for recovery." });
+		if (work.state !== "cancelled") {
+			throw this.error(
+				"invalid-state",
+				"Only cancelled Work can be recovered.",
+				false,
+				"Inspect the Work state before recovering it.",
+			);
+		}
+		onRecoveryUpdate?.({ stage: "finishing", message: "Returning the recovered Work to admission." });
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			state: "submitted",
+			mission: undefined,
+			missionState: undefined,
+			execution: undefined,
+			observer: undefined,
+			observerInFlight: false,
+			reviewRequest: undefined,
+			lastSignal: undefined,
+			lastObservation: undefined,
+			providerOutcome: undefined,
+			budget: { ...work.budget, reservedTokens: 0 },
+			nextAction: "Recovered Work is pending Conclave admission.",
+		};
+		return this.append({
+			meta,
+			kind: "mission-change",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			payload: { action: "recover", previousState: work.state },
+			projection: next,
+			summary: "Cancelled Work was recovered and returned to admission.",
+			effects: [schedulerEffect(work.workId, next.revision)],
 		}).projection;
 	}
 
@@ -2257,6 +2497,34 @@ function normalizeTerms(input: SubmitWorkInput, defaultWorkTokens: number): Work
 			assertNonBlank(entry, "validation item"),
 		),
 		maxTokens,
+	};
+}
+
+function executionDriveKey(workId: string, execution: Execution): string {
+	return `${workId}:${execution.executionId}:${execution.pi?.sessionId ?? "unbound"}`;
+}
+
+function runtimeAction(work: WorkView, runtimeState: RuntimeState): string {
+	if (work.execution === undefined || !["running", "awaiting-review"].includes(work.execution.state))
+		return work.nextAction;
+	if (runtimeState === "unreachable") return "Executor runtime is unreachable; recover it from Actions.";
+	if (work.execution.state !== "running") return work.nextAction;
+	if (
+		runtimeState === "idle" &&
+		["Executor is working.", "Executor is resuming authorized review feedback."].includes(work.nextAction)
+	)
+		return "Executor is idle; waiting for a Signal.";
+	if (runtimeState === "working" && work.nextAction === "Executor is idle; waiting for a Signal.")
+		return "Executor is working.";
+	return work.nextAction;
+}
+
+function addTokenUsage(previous: TokenUsage | undefined, current: TokenUsage): TokenUsage {
+	return {
+		inputTokens: (previous?.inputTokens ?? 0) + current.inputTokens,
+		outputTokens: (previous?.outputTokens ?? 0) + current.outputTokens,
+		cacheHitTokens: (previous?.cacheHitTokens ?? 0) + current.cacheHitTokens,
+		cacheMissTokens: (previous?.cacheMissTokens ?? 0) + current.cacheMissTokens,
 	};
 }
 

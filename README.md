@@ -60,10 +60,17 @@ is scheduled independently.
    Poll the provider with `khala_poll_provider` after recording review status.
    Only the Conclave can record the succeeded Work Outcome.
 
-`/khala` is quiet and on demand. It opens a Work list, then stable `Overview`,
-`Actions`, `Evidence`, and `History` sections. Navigation does not write the
-Archive. Up/down, Enter, Escape, `/`, and `?` follow the default selector
-interaction and can be changed with `filterKey` and `helpKey` in configuration.
+`/khala` is quiet and on demand. It opens a Work list; each admitted Work has
+a Mission, and each Mission may have an Execution. The compact Work view
+separates lifecycle state from Executor runtime state and the next action. It
+does not repeat Work metadata. Evidence shows Executor turn status and
+explicitly reports missing Signal or provider evidence. An unreachable
+Executor exposes recovery in `Actions`.
+Token usage, including cache hits and misses, remains tracked on the Execution;
+USD cost is not tracked without provider pricing and usage data. Navigation does
+not write the Archive. Up/down and Enter select; Backspace or Escape navigates
+back or closes the selector. `/` and `?` filter or open help and can be changed
+with `filterKey` and `helpKey` in configuration.
 
 ## Application service
 

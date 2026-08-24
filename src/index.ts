@@ -69,6 +69,7 @@ const performSchema = Type.Object({
 		Type.Literal("record-review"),
 		Type.Literal("record-outcome"),
 		Type.Literal("cancel"),
+		Type.Literal("recover"),
 		Type.Literal("amend-budget"),
 		Type.Literal("fail-work"),
 	]),
@@ -435,15 +436,66 @@ function isRecordKind(value: string): value is RecordKind {
 }
 
 function toolResult(value: JsonValue, isError: boolean): ToolResult {
-	return { content: [{ type: "text", text: JSON.stringify(value) }], details: value, isError };
+	return { content: [{ type: "text", text: summarizeToolValue(value) }], details: value, isError };
 }
 
 function toolError(error: JsonObject): ToolErrorResult {
-	return { content: [{ type: "text", text: JSON.stringify(error) }], details: error, isError: true };
+	return { content: [{ type: "text", text: summarizeToolError(error) }], details: error, isError: true };
 }
 
 function toolErrorText(message: string): ToolErrorResult {
 	return toolError({ summary: message });
+}
+
+function summarizeToolValue(value: JsonValue): string {
+	if (
+		isJsonObject(value) &&
+		isTextValue(value["workId"]) &&
+		isTextValue(value["state"]) &&
+		isTextValue(value["nextAction"])
+	) {
+		return [
+			`Work: ${value["workId"]}`,
+			`State: ${value["state"]}`,
+			`Next action: ${value["nextAction"]}`,
+			`Revision: ${value["revision"] ?? "unknown"}`,
+		].join("\n");
+	}
+	if (isJsonObject(value) && Array.isArray(value["items"]) && isIntegerValue(value["asOfSequence"])) {
+		const records = value["items"].filter(isJsonObject).map((record) => {
+			const sequence = isIntegerValue(record["sequence"]) ? `#${record["sequence"]} ` : "";
+			const kind = isTextValue(record["kind"]) ? record["kind"] : "record";
+			const summary = isTextValue(record["summary"]) ? record["summary"] : "";
+			return `${sequence}${kind}${summary.length === 0 ? "" : `: ${summary}`}`;
+		});
+		return [`Archive records: ${records.length}`, `As of sequence: ${value["asOfSequence"]}`, ...records].join("\n");
+	}
+	return prettyJson(value);
+}
+
+function summarizeToolError(error: JsonObject): string {
+	const lines = [isTextValue(error["summary"]) ? `Error: ${error["summary"]}` : "Khala action failed."];
+	if (isTextValue(error["remediation"])) lines.push(`Remediation: ${error["remediation"]}`);
+	if (Array.isArray(error["evidenceRefs"]) && error["evidenceRefs"].length > 0) {
+		lines.push(`Evidence: ${error["evidenceRefs"].filter(isTextValue).join(", ")}`);
+	}
+	return lines.join("\n");
+}
+
+function prettyJson(value: JsonValue): string {
+	return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+	return Object.prototype.toString.call(value) === "[object Object]";
+}
+
+function isTextValue(value: JsonValue | undefined): value is string {
+	return value !== undefined && value === String(value);
+}
+
+function isIntegerValue(value: JsonValue | undefined): value is number {
+	return value !== undefined && value === Number(value) && Number.isSafeInteger(Number(value));
 }
 
 export { SQLiteArchive } from "./archive.js";

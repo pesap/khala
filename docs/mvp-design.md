@@ -75,20 +75,20 @@ After `ready` and before `handoff`, Conclave may call `khala_oracle`. Its packet
 
 `/khala` is quiet and on demand. It opens no view unprompted, emits no child-session traffic into the User conversation, and never changes the User model or settings.
 
-The first view lists active and recent Work with state, queue or budget status, and next action. Selecting Work opens four stable sections: `Overview`, `Actions`, `Evidence`, and `History`. Raw Executor output and provider text are hidden by default; bounded evidence is available on explicit inspection.
+The first view lists active and recent Work by title. Each row is a Work, not a Mission; admitted Work has a Mission and may have an Execution. Selecting Work opens a compact status view that separates Work, Mission, Execution, and Executor runtime state from the next action. It does not repeat revision, budget, or token metadata. Evidence shows Executor turn status and explicitly reports missing Signal or provider evidence. An unreachable Executor exposes runtime recovery in `Actions`. It is followed by three sections: `Actions`, `Evidence`, and `History`. Raw Executor output and provider text are hidden by default; bounded evidence is available on explicit inspection. Recovery opens an in-TUI progress view with a plain-language status, the current recovery stage, what Khala is doing, and the next step. A successful recovery says that no action is needed when Khala will continue automatically; a failed recovery tells the User to inspect Evidence and decide what to do next. The progress view remains open until recovery finishes.
 
 Default bindings follow simple installer conventions and remain configurable:
 
 ```text
-Up/Down   Move       Enter   Open or confirm       Esc   Back or cancel
-/         Filter     ?       Help                  Backspace   Delete text
+Up/Down   Move       Enter   Open or confirm       Backspace/Esc   Back or cancel
+/         Filter     ?       Help
 ```
 
-Selection is pinned by Work ID. Refresh preserves selection and filters. Navigation never writes. State is never conveyed by color alone. Relevant unavailable actions remain visible with a concise disabled reason.
+Selection is pinned by Work ID. Refresh preserves selection and filters. Navigation never writes. State is never conveyed by color alone. The Actions view lists only actions currently available to the active actor.
 
 Setup is a linear preflight using `Ready`, `Action required`, and `Unavailable`. Recovery first rereads Archive state and reconciles runtime, workspace, model, and code-host bindings. An Execution is first durably reserved as `queued`; the persistent parent supervisor consumes its `executor-wake` effect and launches the Executor so a Conclave child cannot kill it during shutdown. Basic Retry is one action; model, thinking, prompt, and allowance are advanced Execution options. A running Execution never changes those settings, and Khala never silently substitutes a model or increases an allowance.
 
-Runtime liveness (`working`, `pending`, `idle`, `unreachable`, or `unknown`) is an observation, not lifecycle state. It is derived from the persisted session ID and a bounded Pi RPC probe; a PID alone never proves work.
+Runtime liveness (`working`, `pending`, `idle`, `unreachable`, or `unknown`) is an observation, not lifecycle state. It is derived from the persisted session ID and a bounded Pi RPC probe; a PID alone never proves work. A running Mission with an unreachable Executor is displayed as an active lifecycle with an unavailable runtime and can be reconciled from `Actions`.
 
 ## Application interface
 
