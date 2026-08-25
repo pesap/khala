@@ -44,6 +44,9 @@ const readArchiveSchema = Type.Object({
 });
 type ReadArchiveParams = Static<typeof readArchiveSchema>;
 
+const inspectRuntimeSchema = Type.Object({ workId: Type.String(), expectedWorkRevision: Type.Integer({ minimum: 0 }) });
+type InspectRuntimeParams = Static<typeof inspectRuntimeSchema>;
+
 const actionInputSchema = Type.Object({
 	kind: Type.Optional(Type.String()),
 	summary: Type.Optional(Type.String()),
@@ -53,6 +56,8 @@ const actionInputSchema = Type.Object({
 	signalId: Type.Optional(Type.String()),
 	status: Type.Optional(Type.String()),
 	feedback: Type.Optional(Type.Array(Type.String())),
+	title: Type.Optional(Type.String()),
+	observationId: Type.Optional(Type.String()),
 	subject: Type.Optional(Type.String()),
 	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
 });
@@ -66,10 +71,12 @@ const performSchema = Type.Object({
 		Type.Literal("create-review-request"),
 		Type.Literal("run-oracle"),
 		Type.Literal("verdict"),
+		Type.Literal("deliver-feedback"),
 		Type.Literal("record-review"),
 		Type.Literal("record-outcome"),
 		Type.Literal("cancel"),
 		Type.Literal("recover"),
+		Type.Literal("rename-work"),
 		Type.Literal("amend-budget"),
 		Type.Literal("fail-work"),
 	]),
@@ -86,6 +93,8 @@ type ToolErrorResult = { content: [{ type: "text"; text: string }]; details: Jso
 export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerFlag(ROLE_FLAG, { description: "Khala role for an isolated child session", type: "string" });
 	let runtime: RuntimeState | undefined;
+	let executorStatusTimer: ReturnType<typeof setInterval> | undefined;
+	let userContext: ExtensionContext | undefined;
 
 	const getRuntime = (context: ExtensionContext): ApplicationRuntime => {
 		const trusted = context.isProjectTrusted?.() === true;
@@ -109,7 +118,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			try {
 				const service = getRuntime(context).service;
 				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
-				scheduleWake(service, work.workId, context);
+				schedulePendingEffects(service, context);
 				return toolResult(work, false);
 			} catch (error) {
 				if (error instanceof ApplicationError) {
@@ -156,11 +165,31 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 					params.workId,
 					meta("user", `tool:poll:${toolCallId}`, params.expectedWorkRevision),
 				);
-				schedulePendingEffects(service);
+				schedulePendingEffects(service, context);
 				return toolResult(work, false);
 			} catch (error) {
 				if (error instanceof ApplicationError) return toolError(error.envelope);
 				return toolErrorText(error instanceof Error ? error.message : "Provider polling failed.");
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "khala_inspect_runtime",
+		label: "Inspect Khala Runtime",
+		description: "Inspect bounded Pi runtime liveness without writing the Archive.",
+		parameters: inspectRuntimeSchema,
+		async execute(toolCallId, params: InspectRuntimeParams, _signal, _onUpdate, context) {
+			try {
+				const actor = sessionActor(pi);
+				const work = await getRuntime(context).service.inspectRuntime(
+					params.workId,
+					meta(actor, `tool:inspect-runtime:${toolCallId}`, params.expectedWorkRevision),
+				);
+				return toolResult(work, false);
+			} catch (error) {
+				if (error instanceof ApplicationError) return toolError(error.envelope);
+				return toolErrorText(error instanceof Error ? error.message : "Runtime inspection failed.");
 			}
 		},
 	});
@@ -266,6 +295,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 						application.updateRoleSetting(role, setting, value);
 					},
 				});
+				updateExecutorStatus(application.service, context);
 			} catch (error) {
 				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
@@ -286,6 +316,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 						meta("user", `recover:${item.workId}:${current.revision}`, current.revision),
 					);
 				}
+				updateExecutorStatus(service, context);
 				context.ui.notify(
 					`Archive reread and runtime reconciliation completed for ${work.length} Work item${work.length === 1 ? "" : "s"}.`,
 					"info",
@@ -296,7 +327,17 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("session_start", (_event, _context) => {
+	pi.on("session_start", (_event, context) => {
+		if (sessionRole(pi) === "user") {
+			try {
+				const application = getRuntime(context);
+				userContext = context;
+				updateExecutorStatus(application.service, context);
+				executorStatusTimer = setInterval(() => updateExecutorStatus(application.service, context), 5_000);
+			} catch (error) {
+				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			}
+		}
 		setRoleTools(pi);
 	});
 	pi.on("before_agent_start", (event) => {
@@ -308,6 +349,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		return { systemPrompt: `${event.systemPrompt}\n\n${prompt}` };
 	});
 	pi.on("session_shutdown", async () => {
+		if (executorStatusTimer !== undefined) clearInterval(executorStatusTimer);
+		executorStatusTimer = undefined;
+		userContext?.ui.setStatus("khala-executors", undefined);
+		userContext = undefined;
 		if (runtime !== undefined) {
 			await runtime.runtime.service.close();
 			runtime = undefined;
@@ -315,16 +360,25 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 }
 
-function scheduleWake(service: ApplicationRuntime["service"], _workId: string, context: ExtensionContext): void {
+function schedulePendingEffects(service: ApplicationRuntime["service"], context?: ExtensionContext): void {
 	queueMicrotask(() => {
-		void service.processPendingEffects().catch((error: Error) => {
-			context.ui.notify(error.message, "warning");
-		});
+		void service
+			.processPendingEffects()
+			.then(() => {
+				if (context !== undefined) updateExecutorStatus(service, context);
+			})
+			.catch((error: Error) => {
+				context?.ui.notify(error.message, "warning");
+			});
 	});
 }
 
-function schedulePendingEffects(service: ApplicationRuntime["service"]): void {
-	queueMicrotask(() => void service.processPendingEffects());
+function updateExecutorStatus(service: ApplicationRuntime["service"], context: ExtensionContext): void {
+	const running = service
+		.listWork()
+		.filter((item) => item.state === "active" && item.executionState === "running").length;
+	const status = running === 0 ? "khala: idle" : `khala: ◈ ${running}`;
+	context.ui.setStatus("khala-executors", context.ui.theme.fg("dim", status));
 }
 
 function sessionRole(pi: ExtensionAPI): "user" | "conclave" | "observer" | "executor" | "oracle" {
@@ -343,9 +397,15 @@ function setRoleTools(pi: ExtensionAPI): void {
 	const role = sessionRole(pi);
 	const allowed =
 		role === "user"
-			? new Set(["khala_submit_work", "khala_read_archive", "khala_perform_action", "khala_poll_provider"])
+			? new Set([
+					"khala_submit_work",
+					"khala_read_archive",
+					"khala_perform_action",
+					"khala_poll_provider",
+					"khala_inspect_runtime",
+				])
 			: role === "conclave"
-				? new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle"])
+				? new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle", "khala_inspect_runtime"])
 				: role === "executor"
 					? new Set(["khala_read_archive", "khala_record_signal", "khala_perform_action"])
 					: role === "observer"
@@ -442,7 +502,7 @@ function summarizeToolValue(value: JsonValue): string {
 		return [
 			`Work: ${value["workId"]}`,
 			`State: ${value["state"]}`,
-			`Next action: ${value["nextAction"]}`,
+			`Next action: ${presentToolText(String(value["nextAction"]))}`,
 			`Revision: ${value["revision"] ?? "unknown"}`,
 		].join("\n");
 	}
@@ -458,13 +518,26 @@ function summarizeToolValue(value: JsonValue): string {
 	return prettyJson(value);
 }
 
-function summarizeToolError(error: JsonObject): string {
-	const lines = [isTextValue(error["summary"]) ? `Error: ${error["summary"]}` : "Khala action failed."];
-	if (isTextValue(error["remediation"])) lines.push(`Remediation: ${error["remediation"]}`);
+export function summarizeToolError(error: JsonObject): string {
+	const lines = [
+		isTextValue(error["summary"]) ? `Error: ${presentToolText(error["summary"])}` : "Khala action failed.",
+	];
+	if (isTextValue(error["remediation"])) lines.push(`Next step: ${presentToolText(error["remediation"])}`);
 	if (Array.isArray(error["evidenceRefs"]) && error["evidenceRefs"].length > 0) {
 		lines.push(`Evidence: ${error["evidenceRefs"].filter(isTextValue).join(", ")}`);
 	}
 	return lines.join("\n");
+}
+
+function presentToolText(value: string): string {
+	return value
+		.split(";")
+		.map((part, index) => {
+			const text = part.trim();
+			return index === 0 ? text : `${text[0]?.toUpperCase() ?? ""}${text.slice(1)}`;
+		})
+		.filter((part) => part.length > 0)
+		.join(". ");
 }
 
 function prettyJson(value: JsonValue): string {

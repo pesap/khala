@@ -61,10 +61,12 @@ export interface ArchivePort {
 	renewEffect: (effectId: string, owner?: string) => boolean;
 	query: (query?: RecordQuery, cursor?: string) => Page<RecordView>;
 	project: (workId: string) => WorkView | undefined;
+	findObservation: (workId: string, observationId: string) => ProviderObservation | undefined;
 	findLatestObservation: (
 		workId: string,
 		kind: ProviderObservation["kind"],
 		providerId: string,
+		observationId?: string | undefined,
 	) => ProviderObservation | undefined;
 	listProjects: () => readonly WorkView[];
 	close: () => void;
@@ -122,6 +124,38 @@ export class SQLiteArchive implements ArchivePort {
 		this.database = openSqlite(path);
 		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
 		this.database.exec(SCHEMA);
+		this.migrateLegacyWorkStates();
+	}
+
+	private migrateLegacyWorkStates(): void {
+		const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
+		const migrations: Array<Readonly<{ workId: string; view: JsonObject }>> = [];
+		for (const row of rows) {
+			const view = parseJson(readString(row, "view_json"));
+			if (!isJsonObject(view)) throw new Error("Archive Work projection is invalid.");
+			const stopReason = legacyWorkStopReason(view["state"]);
+			if (stopReason === undefined) continue;
+			const migrated = { ...view, state: "stopped", stopReason };
+			if (!isWorkViewProjection(migrated)) throw new Error("Archive Work projection migration is invalid.");
+			migrations.push({ workId: readString(row, "work_id"), view: migrated });
+		}
+		if (migrations.length === 0) return;
+
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const updateProjection = this.database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?");
+			const updateRecords = this.database.prepare(
+				"UPDATE archive_records SET state = 'stopped' WHERE work_id = ? AND state IN ('failed', 'cancelled')",
+			);
+			for (const migration of migrations) {
+				updateProjection.run(JSON.stringify(migration.view), migration.workId);
+				updateRecords.run(migration.workId);
+			}
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	append(input: ArchiveAppend): ArchiveAppendResult {
@@ -393,10 +427,24 @@ export class SQLiteArchive implements ArchivePort {
 		return parseWorkView(readString(row, "view_json"));
 	}
 
+	findObservation(workId: string, observationId: string): ProviderObservation | undefined {
+		const rows = this.database
+			.prepare(
+				"SELECT payload_json FROM archive_records WHERE work_id = ? AND kind = 'observation' ORDER BY sequence DESC",
+			)
+			.all(workId);
+		for (const row of rows) {
+			const payload = parseJson(readString(row, "payload_json"));
+			if (isObservation(payload) && payload.observationId === observationId) return payload;
+		}
+		return;
+	}
+
 	findLatestObservation(
 		workId: string,
 		kind: ProviderObservation["kind"],
 		providerId: string,
+		observationId?: string | undefined,
 	): ProviderObservation | undefined {
 		const rows = this.database
 			.prepare(
@@ -405,7 +453,13 @@ export class SQLiteArchive implements ArchivePort {
 			.all(workId);
 		for (const row of rows) {
 			const payload = parseJson(readString(row, "payload_json"));
-			if (isObservation(payload) && payload.kind === kind && payload.providerId === providerId) return payload;
+			if (
+				isObservation(payload) &&
+				payload.kind === kind &&
+				payload.providerId === providerId &&
+				(observationId === undefined || payload.observationId === observationId)
+			)
+				return payload;
 		}
 		return;
 	}
@@ -634,6 +688,8 @@ function validateProjection(projection: WorkView, workId: string, revision: numb
 		projection.budget.reservedTokens + projection.budget.consumedTokens > projection.budget.maxTokens ||
 		projection.budget.maxTokens !== projection.terms.maxTokens ||
 		projection.queuedSequence < 0 ||
+		(projection.state === "stopped" && projection.stopReason === undefined) ||
+		(projection.state !== "stopped" && projection.stopReason !== undefined) ||
 		(projection.mission !== undefined && projection.mission.workId !== workId) ||
 		(projection.execution !== undefined &&
 			(projection.execution.workId !== workId || projection.mission?.missionId !== projection.execution.missionId))
@@ -648,11 +704,13 @@ function isWorkViewProjection(value: JsonValue): value is WorkView {
 		isText(value["workId"]) &&
 		isInteger(value["revision"]) &&
 		isWorkState(value["state"]) &&
+		(value["stopReason"] === undefined || isWorkStopReason(value["stopReason"])) &&
 		(value["missionState"] === undefined || isMissionState(value["missionState"])) &&
 		isTerms(value["terms"]) &&
 		isBudget(value["budget"]) &&
 		isText(value["nextAction"]) &&
 		isInteger(value["queuedSequence"]) &&
+		(value["missionSpecificity"] === undefined || isMissionSpecificity(value["missionSpecificity"])) &&
 		(value["mission"] === undefined || isMission(value["mission"])) &&
 		(value["execution"] === undefined || isExecution(value["execution"])) &&
 		(value["observer"] === undefined || isPiBinding(value["observer"])) &&
@@ -698,9 +756,15 @@ function isMission(value: JsonValue | undefined): boolean {
 		isText(value["missionId"]) &&
 		isText(value["workId"]) &&
 		isTerms(value["assignment"]) &&
+		(value["specificity"] === undefined || isMissionSpecificity(value["specificity"])) &&
 		isInteger(value["mandateRevision"]) &&
 		isText(value["createdAt"])
 	);
+}
+
+function isMissionSpecificity(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return ["explicit", "defaults-used"].includes(String(value["status"])) && isTextList(value["missing"]);
 }
 
 function isExecution(value: JsonValue | undefined): boolean {
@@ -791,6 +855,11 @@ function isObservation(value: JsonValue | undefined): value is ProviderObservati
 		isText(value["summary"]) &&
 		isBoolean(value["changed"]) &&
 		isText(value["observedAt"]) &&
+		(value["feedback"] === undefined || isTextList(value["feedback"])) &&
+		(value["author"] === undefined || isText(value["author"])) &&
+		(value["authorAssociation"] === undefined || isText(value["authorAssociation"])) &&
+		(value["reviewState"] === undefined || isText(value["reviewState"])) &&
+		(value["actionable"] === undefined || isBoolean(value["actionable"])) &&
 		(value["repository"] === undefined || isText(value["repository"])) &&
 		(value["sourceBranch"] === undefined || isText(value["sourceBranch"])) &&
 		(value["targetBranch"] === undefined || isText(value["targetBranch"])) &&
@@ -815,7 +884,17 @@ function isErrorEnvelope(value: JsonValue | undefined): value is ErrorEnvelope {
 		isText(value["summary"]) &&
 		isBoolean(value["retryable"]) &&
 		isText(value["remediation"]) &&
-		isTextList(value["evidenceRefs"])
+		isTextList(value["evidenceRefs"]) &&
+		(value["learning"] === undefined || isLearning(value["learning"]))
+	);
+}
+
+function isLearning(value: JsonValue | undefined): boolean {
+	return (
+		isJsonObject(value) &&
+		isText(value["failure"]) &&
+		isText(value["missionSpecificity"]) &&
+		isText(value["nextMissionGuidance"])
 	);
 }
 
@@ -839,17 +918,19 @@ function isMissionState(value: JsonValue | undefined): boolean {
 	return ["admitted", "active", "awaiting-review", "succeeded", "rejected", "superseded"].includes(String(value));
 }
 
+function legacyWorkStopReason(value: JsonValue | undefined): "failed" | "cancelled" | undefined {
+	if (value === "failed" || value === "cancelled") return value;
+	return undefined;
+}
+
 function isWorkState(value: JsonValue | undefined): boolean {
-	return [
-		"submitted",
-		"needs-input",
-		"queued",
-		"active",
-		"awaiting-review",
-		"succeeded",
-		"failed",
-		"cancelled",
-	].includes(String(value));
+	return ["submitted", "needs-input", "queued", "active", "awaiting-review", "succeeded", "stopped"].includes(
+		String(value),
+	);
+}
+
+function isWorkStopReason(value: JsonValue | undefined): boolean {
+	return ["failed", "cancelled"].includes(String(value));
 }
 
 function isExecutionState(value: JsonValue | undefined): boolean {

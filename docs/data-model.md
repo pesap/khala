@@ -17,16 +17,21 @@ The database uses WAL mode and contains:
 
 Every append supplies an expected Work revision and command ID. A repeated
 command ID returns its earlier record and projection. A revision mismatch rolls
-back the transaction and returns a revision conflict. The Archive never
-interprets runtime reachability or provider text as lifecycle authority.
+back the transaction and returns a revision conflict. Opening an Archive
+normalizes legacy `failed` and `cancelled` Work projections to `stopped` with a
+`stopReason`. The Archive never interprets runtime reachability or provider text
+as lifecycle authority.
 
 ## Durable primitives
 
 ### Work
 
-A Work contains User intent and a terminal state: `succeeded`, `failed`, or
-`cancelled`. The MVP view also exposes `submitted`, `needs-input`, `queued`,
-`active`, and `awaiting-review`. Its budget stores the Work cap, reserved token
+A Work contains User intent and a terminal state: `succeeded` or `stopped`.
+A stopped Work carries a `stopReason` of `failed` or `cancelled`. The MVP view
+also exposes `submitted`, `needs-input`, `queued`,
+`active`, and `awaiting-review`. A User can rename the Work label through a
+`work-amended` record. The admitted Mission keeps its immutable copied terms.
+Its budget stores the Work cap, reserved token
 allowance, and consumed allowance. USD cost is not part of the budget model
 because provider pricing and actual usage are not persisted.
 
@@ -40,7 +45,9 @@ as a successor Mission and `mission-change` evidence.
 
 An Execution binds one Mission to model, thinking level, token allowance,
 prompt identity, Git sandbox, and Pi session. Its states are `queued`, `running`,
-`awaiting-review`, `completed`, `blocked`, `failed`, and `stopped`. A Mission has
+`awaiting-review`, `completed`, `blocked`, `failed`, and `stopped`. Runtime
+failures retain bounded learning evidence describing what failed and whether
+Mission specificity should be revisited. A Mission has
 at most one active `queued`, `running`, or `awaiting-review` Execution. Khala
 also records the latest runtime state and cumulative input, output, cache-hit,
 and cache-miss token usage reported by Pi.
@@ -58,7 +65,9 @@ ordered by Archive sequence. A cursor binds filters and an as-of sequence.
 
 GitHub and GitLab review requests are reconciled by deterministic Work markers.
 Khala stores provider-native IDs, URLs, branch/head information, validation,
-review status, and bounded observations. Provider text is untrusted evidence.
+review status, and bounded observations. Review comments retain stable
+observation IDs and bounded feedback lists so replay cannot redeliver them.
+Provider text is untrusted evidence.
 A merged provider observation is required before the Conclave can record the
 Work Outcome.
 

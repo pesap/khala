@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { showKhala } from "../dist/src/tui.js";
 
 const theme = {
@@ -25,11 +26,16 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 		execution: {
 			executionId: "execution-1",
 			state: "running",
-			runtimeState: "idle",
+			runtimeState: "unreachable",
 			usage: { inputTokens: 2, outputTokens: 3, cacheHitTokens: 5, cacheMissTokens: 7 },
 		},
 		budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
-		nextAction: "Admit the Work",
+		lastError: {
+			summary: "Executor runtime failed.",
+			remediation: "Inspect Evidence; do not restart the primary Pi session.",
+			learning: { failure: "runtime disconnected", missionSpecificity: "Mission terms were explicit.", nextMissionGuidance: "Inspect the runtime before changing scope." },
+		},
+		nextAction: "Executor runtime is unreachable. Recover it from Actions.",
 	};
 	const service = {
 		listWork: () => [
@@ -37,6 +43,7 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 				workId: work.workId,
 				title: work.terms.title,
 				state: work.state,
+				executionState: "running",
 				nextAction: work.nextAction,
 			},
 		],
@@ -85,10 +92,11 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	await nextTurn();
 	assert.equal(screens.length, 1);
 	const initialView = screens[0].render(100).join("\n");
-	assert.match(initialView, /Khala[^\n]*\n/);
+	assert.match(initialView, /Work[^\n]*\n/);
 	assert.doesNotMatch(initialView, /admission creates a Mission/);
-	assert.match(initialView, /Work  active  work-1/);
-	assert.match(initialView, /\n\n +↑↓ navigate  \/ filter  r role settings  enter select  escape\/ctrl\+c cancel/);
+	assert.match(initialView, /TITLE\s+ID\s+STATE\s+EXECUTION/);
+	assert.match(initialView, /Work\s+work-1\s+active\s+running/);
+	assert.doesNotMatch(initialView, /scope|Filter Work/);
 	assert.ok(screens[0].render(100).length <= 12);
 
 	screens[0].handleInput("?");
@@ -106,28 +114,30 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	await nextTurn();
 	assert.equal(screens.length, 4);
 	const overview = screens[3].render(100).join("\n");
-	assert.match(overview, /work       active/);
-	assert.match(overview, /mission    active/);
-	assert.match(overview, /execution  active/);
-	assert.match(overview, /runtime    idle/);
+	assert.match(overview, /Work active/);
+	assert.match(overview, /Mission in progress/);
+	assert.match(overview, /Execution running/);
+	assert.match(overview, /Runtime unreachable/);
 	assert.doesNotMatch(overview, /mission-1|execution-1/);
-	assert.match(overview, /next       Admit the Work/);
+	assert.match(overview, /Next: Executor runtime is unreachable\. Recover it from Actions\./);
 	assert.doesNotMatch(overview, /Work metadata/);
 	assert.doesNotMatch(overview, /Budget/);
 	assert.doesNotMatch(overview, /Cache hits/);
 	assert.ok(screens[3].render(100).length <= 15);
 	assert.match(overview, /Actions/);
+	assert.match(overview, /Evidence/);
+	assert.match(overview, /Archive/);
 	assert.doesNotMatch(overview, /Overview/);
 
-	work.execution.runtimeState = "unreachable";
-	work.nextAction = "Executor runtime is unreachable; recover it from Actions.";
 	screens[3].handleInput("\r");
 	await nextTurn();
 	assert.equal(screens.length, 5);
 	const actions = screens[4].render(100).join("\n");
 	assert.match(actions, /Visible action/);
-	assert.match(actions, /Recover Work/);
-	assert.ok(actions.indexOf("Recover Work") < actions.indexOf("Visible action"));
+	assert.match(actions, /Work action/);
+	assert.match(actions, /Recover/);
+	assert.doesNotMatch(actions, /Recover Work/);
+	assert.ok(actions.indexOf("Recover") < actions.indexOf("Visible action"));
 	assert.doesNotMatch(actions, /Hidden action/);
 	assert.doesNotMatch(actions, /khala-recover/);
 	screens[4].handleInput("\u007f");
@@ -140,8 +150,8 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.equal(screens.length, 7);
 	const evidence = screens[6].render(100).join("\n");
 	assert.match(evidence, /state: active/);
-	assert.match(evidence, /mission: active/);
-	assert.match(evidence, /execution: active/);
+	assert.match(evidence, /mission: in progress/);
+	assert.match(evidence, /execution: running/);
 	assert.match(evidence, /runtime: unreachable/);
 	assert.match(evidence, /activity: execution recorded/);
 	assert.match(evidence, /signal: none/);
@@ -149,7 +159,11 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.match(evidence, /provider observation: none/);
 	assert.match(evidence, /review request: none/);
 	assert.match(evidence, /review status: none/);
-	assert.ok(screens[6].render(100).length <= 20);
+	assert.match(evidence, /Error\s+Executor runtime failed\./);
+	assert.match(evidence, /Next step\s+Inspect Evidence\. Do not restart the primary Pi session\./);
+	assert.match(evidence, /learning: Mission terms were explicit\./);
+	assert.doesNotMatch(evidence, /;/);
+	assert.ok(screens[6].render(100).length <= 24);
 	screens[6].handleInput("\u001b");
 	await nextTurn();
 	assert.equal(screens.length, 8);
@@ -187,19 +201,147 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	screens[12].handleInput("\r");
 	await nextTurn();
 	const unadmittedOverview = screens[13].render(100).join("\n");
-	assert.match(unadmittedOverview, /work       submitted/);
-	assert.match(unadmittedOverview, /mission    not admitted/);
+	assert.match(unadmittedOverview, /Work submitted/);
+	assert.match(unadmittedOverview, /Mission not admitted/);
 	assert.doesNotMatch(unadmittedOverview, /Conclave admission failed/);
 	assert.doesNotMatch(unadmittedOverview, /remediation Open \/khala/);
-	assert.match(unadmittedOverview, /execution  not started/);
-	assert.match(unadmittedOverview, /runtime    unavailable/);
+	assert.match(unadmittedOverview, /Execution not started/);
+	assert.match(unadmittedOverview, /Runtime unavailable/);
 	screens[13].handleInput("\u007f");
 	await nextTurn();
 	screens[14].handleInput("\u001b");
 	await result;
 });
 
-test("Blocked Executions are prominent while Signal details stay available in History", async () => {
+test("Work picker stays minimal, filters active Work, and marks failures", async () => {
+	const screens = [];
+	const works = [
+		{
+			workId: "active-work",
+			title: "Add a compact Khala lifecycle walkthrough with a deliberately long name",
+			state: "active",
+			missionState: "active",
+			executionState: "running",
+			hasFailure: false,
+			revision: 1,
+			budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+			nextAction: "Continue the Work",
+		},
+		{
+			workId: "execution-failed-work",
+			title: "Active Work with failed Execution",
+			state: "active",
+			missionState: "active",
+			executionState: "failed",
+			hasFailure: true,
+			revision: 2,
+			budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+			nextAction: "Replace the failed Execution.",
+		},
+		{
+			workId: "completed-work",
+			title: "Completed mission to hide by default",
+			state: "succeeded",
+			missionState: "succeeded",
+			executionState: "completed",
+			hasFailure: false,
+			revision: 2,
+			budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+			nextAction: "No action is needed.",
+		},
+		{
+			workId: "cancelled-work",
+			title: "Cancelled Work to hide by default",
+			state: "stopped",
+			stopReason: "cancelled",
+			missionState: "active",
+			executionState: "stopped",
+			hasFailure: true,
+			revision: 3,
+			budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+			nextAction: "Work was stopped by cancellation.",
+		},
+		{
+			workId: "failed-work",
+			title: "失敗した実行 remains visible",
+			state: "stopped",
+			stopReason: "failed",
+			missionState: "active",
+			executionState: "failed",
+			hasFailure: true,
+			revision: 4,
+			budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+			nextAction: "Inspect the failure evidence.",
+		},
+	];
+	const service = {
+		listWork: () => works,
+		inspectRuntime: async (workId) => ({
+			workId,
+			revision: 1,
+			state: "active",
+			terms: {
+				title: "Add a compact Khala lifecycle walkthrough with a deliberately long name",
+				objective: "Test picker state",
+				context: "",
+				scope: "",
+				acceptanceCriteria: ["The picker preserves its state"],
+				constraints: [],
+				validation: [],
+				maxTokens: 100,
+			},
+			budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+			nextAction: "Continue the Work",
+			queuedSequence: 1,
+		}),
+	};
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context);
+	await nextTurn();
+	const current = screens[0].render(100).join("\n");
+	assert.match(current, /Work/);
+	assert.match(current, /Add a compact Khala lifecycle/);
+	assert.match(current, /stopped\s+failed/);
+	assert.match(current, /active\s+failed/);
+	assert.match(current, /failed-work/);
+	assert.match(current, /…/);
+	assert.doesNotMatch(current, /completed-work|cancelled-work|scope|Filter Work/);
+	const rows = current.split("\n");
+	const activeRow = rows.find((line) => line.includes("active-work"));
+	const failedRow = rows.find((line) => line.includes("失敗した実行"));
+	assert.equal(
+		visibleWidth(activeRow?.slice(0, activeRow.indexOf("active-work")) ?? ""),
+		visibleWidth(failedRow?.slice(0, failedRow.indexOf("failed-work")) ?? ""),
+	);
+	const narrow = screens[0].render(80).join("\n");
+	assert.match(narrow, /EXECUTION/);
+	assert.match(narrow, /running/);
+
+	for (const character of "walkthrough") screens[0].handleInput(character);
+	const filtered = screens[0].render(100).join("\n");
+	assert.match(filtered, /active-work/);
+	assert.doesNotMatch(filtered, /Completed mission to hide|失敗した実行 remains visible|Active Work with failed Execution/);
+	screens[0].handleInput("\r");
+	await nextTurn();
+	screens[1].handleInput("\u001b");
+	await nextTurn();
+	assert.match(screens[2].render(100).join("\n"), /alkthrough/);
+	assert.doesNotMatch(screens[2].render(100).join("\n"), /Completed mission to hide|失敗した実行 remains visible|Active Work with failed Execution/);
+	screens[2].handleInput("\u001b");
+	await result;
+});
+
+test("Blocked Executions are prominent while Signal details stay available in Archive", async () => {
 	const screens = [];
 	const evidence = [
 		"The bounded wait completed successfully.",
@@ -258,15 +400,15 @@ test("Blocked Executions are prominent while Signal details stay available in Hi
 	await nextTurn();
 	const initial = screens[0].render(100).join("\n");
 	assert.match(initial, /Two-minute execution/);
-	assert.match(initial, /Work  active  blocked-work.*blocked/);
+	assert.match(initial, /active\s+blocked/);
 	assert.doesNotMatch(initial, /Inspect blocking signal/);
 	screens[0].handleInput("\r");
 	await nextTurn();
 	const overview = screens[1].render(100).join("\n");
-	assert.match(overview, /execution  blocked/);
-	assert.match(overview, /runtime    finishing current turn/);
+	assert.match(overview, /Execution blocked/);
+	assert.match(overview, /Runtime finishing current turn/);
 	assert.equal((overview.match(/BLOCKED/g) ?? []).length, 0);
-	assert.ok(overview.indexOf("History") < overview.indexOf("Inspect blocking signal"));
+	assert.ok(overview.indexOf("Archive") < overview.indexOf("Inspect blocking signal"));
 	screens[1].handleInput("\u001b[B");
 	screens[1].handleInput("\u001b[B");
 	screens[1].handleInput("\u001b[B");
@@ -285,7 +427,8 @@ test("Blocked Executions are prominent while Signal details stay available in Hi
 	const conciseEvidence = screens[4].render(100).join("\n");
 	assert.doesNotMatch(conciseEvidence, /attention: BLOCKED/);
 	assert.match(conciseEvidence, /signal: blocking signal/);
-	assert.match(conciseEvidence, /signal evidence: 3 evidence items; open History for details/);
+	assert.doesNotMatch(conciseEvidence, /The Executor cannot publish under the Mission constraints/);
+	assert.match(conciseEvidence, /signal evidence: 3 evidence items\. Open Archive for details/);
 	assert.doesNotMatch(conciseEvidence, /bounded wait completed/);
 	screens[4].handleInput("\u001b");
 	await nextTurn();
@@ -293,7 +436,7 @@ test("Blocked Executions are prominent while Signal details stay available in Hi
 	screens[5].handleInput("\u001b[B");
 	screens[5].handleInput("\r");
 	await nextTurn();
-	assert.match(screens[6].render(100).join("\n"), /#8 Signal · Blocked/);
+	assert.match(screens[6].render(100).join("\n"), /#8 Signal: Blocked/);
 	screens[6].handleInput("\r");
 	await nextTurn();
 	const signalDetail = screens[7].render(100).join("\n");
@@ -424,7 +567,7 @@ test("Backspace from Role settings returns to the Work picker", async () => {
 	resolveRoleSelection?.(undefined);
 	await nextTurn();
 	assert.equal(screens.length, 2);
-	assert.match(screens[1].render(100).join("\n"), /No Work has been submitted\./);
+	assert.match(screens[1].render(100).join("\n"), /No active Work/);
 	screens[1].handleInput("\u001b");
 	await result;
 });
@@ -445,37 +588,40 @@ test("empty Work lists explain their state inside the TUI", async () => {
 	};
 	const result = showKhala(service, context);
 	await nextTurn();
-	assert.match(screens[0].render(100).join("\n"), /No Work has been submitted\./);
+	assert.match(screens[0].render(100).join("\n"), /No active Work/);
 	screens[0].handleInput("\u001b");
 	await result;
 });
 
-test("TUI schedules recovery effects and refreshes recovered Work", async () => {
+test("TUI schedules runtime recovery effects and refreshes the view", async () => {
 	const screens = [];
 	const effects = [];
 	let resolveRecovery;
 	const work = {
-		workId: "cancelled-work",
-		state: "cancelled",
+		workId: "unreachable-work",
+		state: "active",
 		revision: 2,
-		terms: { title: "Recoverable Work" },
+		terms: { title: "Recoverable Executor" },
 		budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
-		nextAction: "Work cancelled by the User.",
+		execution: { executionId: "execution-1", state: "running", runtimeState: "unreachable" },
+		nextAction: "Executor runtime is unreachable. Recover it from Actions.",
 		queuedSequence: 1,
 	};
 	const service = {
-		listWork: () => [{ workId: work.workId, title: work.terms.title, state: work.state, nextAction: work.nextAction }],
+		listWork: () => [
+			{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction },
+		],
 		inspectRuntime: async () => work,
 		availableActions: () => [
-			{ id: "recover:cancelled-work:2", label: "Recover Work", enabled: true, kind: "recover" },
+			{ id: "recover:unreachable-work:2", label: "Recover Work", enabled: true, kind: "recover" },
 		],
 		perform: async (command) =>
 			new Promise((resolve) => {
-				command.onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work" });
+				command.onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Executor" });
 				resolveRecovery = () => {
-					work.state = "submitted";
 					work.revision = 3;
-					work.nextAction = "Recovered Work is pending Conclave admission.";
+					work.execution.runtimeState = "idle";
+					work.nextAction = "Khala is continuing automatically.";
 					resolve({ value: work });
 				};
 			}),
@@ -504,7 +650,7 @@ test("TUI schedules recovery effects and refreshes recovered Work", async () => 
 	screens[2].handleInput("\r");
 	await nextTurn();
 	assert.match(screens[3].render(100).join("\n"), /status    in progress/);
-	assert.match(screens[3].render(100).join("\n"), /progress  restoring  Restoring the Work/);
+	assert.match(screens[3].render(100).join("\n"), /progress  restoring  Restoring the Executor/);
 	assert.match(screens[3].render(100).join("\n"), /recovery is in progress/);
 	screens[3].handleInput("\u001b");
 	assert.equal(screens.length, 4);
@@ -516,9 +662,9 @@ test("TUI schedules recovery effects and refreshes recovered Work", async () => 
 	assert.deepEqual(effects, ["processed"]);
 	screens[3].handleInput("\u001b");
 	await nextTurn();
-	assert.match(screens[4].render(100).join("\n"), /work       submitted/);
-	assert.match(screens[4].render(100).join("\n"), /mission    not admitted/);
-	assert.match(screens[4].render(100).join("\n"), /Recovered Work is pending Conclave admission/);
+	assert.match(screens[4].render(100).join("\n"), /Work active/);
+	assert.match(screens[4].render(100).join("\n"), /Execution running/);
+	assert.match(screens[4].render(100).join("\n"), /Khala is continuing automatically/);
 	screens[4].handleInput("\u001b");
 	await nextTurn();
 	screens[5].handleInput("\u001b");
@@ -543,7 +689,8 @@ test("TUI distinguishes a failed recovery from a completed recovery", async () =
 		perform: async () => ({
 			value: {
 				...work,
-				state: "failed",
+				state: "stopped",
+				stopReason: "failed",
 				revision: 5,
 				execution: { ...work.execution, state: "running", runtimeState: "unreachable" },
 				nextAction: "Execution could not be recovered",

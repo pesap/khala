@@ -83,6 +83,7 @@ export function createApplication(
 		executorPromptIdentity,
 		observerPromptIdentity,
 		rolePublicKey,
+		autonomousMonitor: !childContext,
 	};
 	const service = new ApplicationService(archive, ports, serviceOptions);
 	return {

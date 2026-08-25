@@ -12,7 +12,7 @@ The Archive is authoritative. Runtime, Git, code-host APIs, models, and views pr
 
 Khala has four durable primitives:
 
-- **Work**: the stable User goal. Its terminal Outcome is `succeeded`, `failed`, or `cancelled`.
+- **Work**: the stable User goal. Its terminal states are `succeeded` or `stopped`; `stopReason` records whether it was failed or cancelled.
 - **Mission**: one immutable contract containing objective, scope, acceptance criteria, constraints, validation requirements, and authoritative context references.
 - **Execution**: one bounded attempt at a Mission, containing model, thinking mode, prompt identity, token allowance, sandbox, and Pi RPC binding.
 - **Record**: one immutable Archive fact. Assessments, Signals, observations, Verdicts, Outcomes, and errors are Record kinds.
@@ -42,12 +42,12 @@ Submission -> needs-input | admission -> immutable Mission -> Execution
 
 ```text
 Work:      submitted <-> needs-input; submitted -> queued -> active <-> awaiting-review
-           -> succeeded | failed | cancelled
+           -> succeeded | stopped
 Mission:   admitted -> active <-> awaiting-review -> succeeded | rejected | superseded
 Execution: queued -> running <-> awaiting-review -> completed | blocked | failed | stopped
 ```
 
-A `ready` Signal and `handoff` Verdict are review handoff evidence, not acceptance. Only provider-confirmed merge evidence creates `succeeded`. `failed` requires an explicit Conclave or User decision; `cancelled` requires an explicit User decision. Closure, rejection, or failed CI is evidence that requires a decision, not an automatic Work Outcome.
+A `ready` Signal and `handoff` Verdict are review handoff evidence, not acceptance. Only provider-confirmed merge evidence creates `succeeded`. An explicit failure or cancellation stops Work; `stopReason` preserves that decision without creating separate Work states. Closure, rejection, or failed CI is evidence that requires a decision, not an automatic Work Outcome.
 
 A blocked, failed, or stopped Execution does not end its Mission. The Conclave may start a replacement Execution under unchanged Mission terms. Authorized review feedback may return an awaiting-review Execution to `running`.
 
@@ -65,7 +65,7 @@ A draft review request is created through a reconciled application action before
 
 Monitoring emits observations, never Signals or Verdicts: `ci-status`, `review-comment`, `feedback-delivery`, `monitor-failure`, and provider outcome. The User-facing `khala_poll_provider` adapter records changed observations and merge evidence; unchanged polls update an in-memory heartbeat. Provider observations can wake the Conclave through the transactional outbox.
 
-Provider text is untrusted evidence. At publication Khala records provider-native Principal IDs. A generic `AuthorizationPolicy` decides which Principals may enter an Executor context; the MVP authorizes the authenticated User and one configured verified Copilot identity. The User may explicitly reveal any provider text regardless of delivery eligibility.
+Provider text is untrusted evidence. At publication Khala records provider-native Principal IDs. The GitHub adapter currently makes feedback eligible only when the author matches the authenticated review principal, has a trusted author association, and the review is in a submitted actionable state. The User may explicitly reveal any provider text regardless of delivery eligibility.
 
 Eligible feedback is not a direct instruction. Conclave checks Mission fit and creates one bounded, deterministic Delivery with a stable ID. Replay cannot redeliver it. Failed delivery or monitor exhaustion creates attention evidence and does not automatically end an Execution or Mission.
 
@@ -75,16 +75,17 @@ After `ready` and before `handoff`, Conclave may call `khala_oracle`. Its packet
 
 `/khala` is quiet and on demand. It opens no view unprompted, emits no child-session traffic into the User conversation, and provides Role settings without changing the User's active model or settings.
 
-The first view lists active and recent Work by title. Each row is a Work, not a Mission; admitted Work has a Mission and may have an Execution. Selecting Work opens a compact status view that separates Work, Mission, Execution, and Executor runtime state from the next action. It does not repeat revision, budget, or token metadata. Evidence shows Executor turn status and explicitly reports missing Signal or provider evidence. An unreachable Executor exposes runtime recovery in `Actions`. It is followed by three sections: `Actions`, `Evidence`, and `History`. Raw Executor output and provider text are hidden by default; bounded evidence is available on explicit inspection. Recovery opens an in-TUI progress view with a plain-language status, the current recovery stage, what Khala is doing, and the next step. A successful recovery says that no action is needed when Khala will continue automatically; a failed recovery tells the User to inspect Evidence and decide what to do next. The progress view remains open until recovery finishes.
+The first view lists active Work by title. Each row is a Work, not a Mission; admitted Work has a Mission and may have an Execution. Work is the User's stable goal, Mission is the admitted bounded plan, and `Next` is the immediate action Khala reports. Succeeded and cancelled Work is hidden; stopped Work with a failure reason remains visible and is marked in red. Typing uses the same minimalist fuzzy filtering pattern as Pi's model selector. Work names are bounded before rendering and presented in aligned Work, ID, state, and Execution columns. Text labels and semantic colors together communicate status. The user-session footer shows a branded status such as `khala: idle` or `khala: ◈ 2`. Selecting Work opens a compact status view with `Work active`, `Mission in progress`, and `Execution running` instead of repeating the same `active` label. It separates those lifecycle concepts from Executor runtime state and the next action. It does not repeat revision, budget, or token metadata. Evidence shows Executor turn status and explicitly reports missing Signal or provider evidence. An unreachable Executor exposes runtime recovery in `Actions`. It is followed by three sections: `Actions`, `Evidence`, and `Archive`. Raw Executor output and provider text are hidden by default; bounded evidence is available on explicit inspection. Recovery opens an in-TUI progress view with a plain-language status, the current recovery stage, what Khala is doing, and the next step. A successful recovery says that no action is needed when Khala will continue automatically; a failed recovery tells the User to inspect Evidence and decide what to do next. The progress view remains open until recovery finishes.
 
-Default bindings follow simple installer conventions and remain configurable:
+The Work picker follows the model selector's minimal interaction:
 
 ```text
-Up/Down   Move       Enter   Open or confirm       Backspace/Esc   Back or cancel
-/         Filter     ?       Help                  r               Role settings
+Type      Filter     Up/Down   Move       Enter   Open or confirm
+Backspace/Esc   Back or cancel       ?       Help       r       Role settings
 ```
 
 Selection is pinned by Work ID. Refresh preserves selection and filters. Navigation never writes. State is never conveyed by color alone. The Actions view lists only actions currently available to the active actor.
+Users can rename a Work label without changing the admitted Mission terms.
 
 Role settings are available from the Work picker and persist model and thinking choices for Conclave, Executor, Observer, and Oracle. Changes apply to future launches; an existing Execution retains its persisted settings. Recovery first rereads Archive state and reconciles runtime, workspace, model, and code-host bindings. An Execution is first durably reserved as `queued`; the persistent parent supervisor consumes its `executor-wake` effect and launches the Executor so a Conclave child cannot kill it during shutdown. Khala never silently substitutes a model or increases an allowance.
 
@@ -98,6 +99,7 @@ Every layout and Pi tool calls one versioned application service. No client read
 submit_work(input, meta)                    -> WorkView
 list_work(filter?, cursor?)                 -> Page<WorkSummary>
 inspect_work(work_id)                       -> WorkView
+inspect_runtime(work_id, meta?)             -> WorkView
 available_actions(scope, revision?)         -> Action[]
 perform(action_command)                     -> ActionResult
 read_records(query, cursor?)                -> Page<RecordView>

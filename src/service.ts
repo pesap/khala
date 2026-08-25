@@ -17,6 +17,7 @@ import {
 	type JsonObject,
 	type JsonValue,
 	type Mission,
+	type MissionSpecificity,
 	type MissionState,
 	type Page,
 	type ProviderObservation,
@@ -54,6 +55,7 @@ export type ServiceOptions = Readonly<{
 	executorPromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	observerPromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	rolePublicKey: string;
+	autonomousMonitor?: boolean | undefined;
 }>;
 
 type RoleCapability = Readonly<{
@@ -63,6 +65,9 @@ type RoleCapability = Readonly<{
 	nonce?: string | undefined;
 }>;
 const providerPollAuthority = Symbol("provider-poll-authority");
+const AUTONOMOUS_MONITOR_INTERVAL_MS = 60_000;
+const DEFAULT_SCOPE = "Repository changes required by the objective.";
+const DEFAULT_VALIDATION = "Run the project's configured validation commands.";
 
 export class ActionInputError extends Error {
 	constructor(message: string) {
@@ -86,6 +91,8 @@ export class ApplicationService {
 	private readonly drivingExecutions = new Map<string, Promise<void>>();
 	private readonly drivingObservers = new Set<string>();
 	private readonly backgroundOperations = new Set<Promise<void>>();
+	private readonly monitorTimer: ReturnType<typeof setInterval> | undefined;
+	private monitorInFlight = false;
 	private closing = false;
 	private readonly archive: ArchivePort;
 	private readonly ports: ServicePorts;
@@ -101,6 +108,17 @@ export class ApplicationService {
 			format: "der",
 			type: "spki",
 		});
+		if (options.autonomousMonitor !== false) {
+			const timer = setInterval(
+				() =>
+					void this.runAutonomousCycle().catch((error) =>
+						this.recordServiceMonitorFailure(error instanceof Error ? error : new Error(String(error))),
+					),
+				AUTONOMOUS_MONITOR_INTERVAL_MS,
+			);
+			timer.unref();
+			this.monitorTimer = timer;
+		}
 	}
 
 	getRoleSettings(): RoleSettingsMap {
@@ -171,6 +189,7 @@ export class ApplicationService {
 			state: "submitted",
 			terms,
 			budget: { maxTokens: terms.maxTokens, reservedTokens: 0, consumedTokens: 0 },
+			missionSpecificity: rawMissionSpecificity(input),
 			nextAction: "Conclave admission is pending.",
 			queuedSequence: 0,
 		};
@@ -196,7 +215,13 @@ export class ApplicationService {
 			workId: work.workId,
 			title: work.terms.title,
 			state: work.state,
+			stopReason: work.stopReason,
+			missionState: work.missionState,
 			executionState: work.execution?.state,
+			hasFailure:
+				work.lastError !== undefined ||
+				(work.state === "stopped" && work.stopReason === "failed") ||
+				work.execution?.state === "failed",
 			revision: work.revision,
 			queuePosition: queuePositions.get(work.workId),
 			budget: work.budget,
@@ -217,8 +242,13 @@ export class ApplicationService {
 		return work;
 	}
 
-	async inspectRuntime(workId: string): Promise<WorkView> {
+	async inspectRuntime(workId: string, meta?: CommandMeta): Promise<WorkView> {
 		const work = this.inspectWork(workId);
+		if (meta !== undefined) {
+			this.requireReadableActor(meta.actor);
+			this.checkRevision(work, meta);
+			if (meta.actor !== "user") this.requireRoleBinding(meta, work);
+		}
 		const execution = work.execution;
 		if (execution?.pi === undefined || (execution.state !== "running" && execution.state !== "awaiting-review")) {
 			return work;
@@ -231,6 +261,45 @@ export class ApplicationService {
 			execution: { ...execution, runtimeState },
 			nextAction,
 		};
+	}
+
+	async runAutonomousCycle(): Promise<void> {
+		if (this.closing || this.monitorInFlight) return;
+		this.monitorInFlight = true;
+		const bucket = Math.floor(Date.now() / AUTONOMOUS_MONITOR_INTERVAL_MS);
+		try {
+			for (const item of this.archive.listProjects()) {
+				let work = this.inspectWork(item.workId);
+				if (shouldMonitorProvider(work)) {
+					try {
+						work = await this.pollProvider(work.workId, monitorMeta(work, "provider", bucket));
+					} catch (error) {
+						if (!(error instanceof RevisionConflict))
+							this.recordMonitorFailure(work, "Provider", error instanceof Error ? error : new Error(String(error)));
+					}
+				}
+				work = this.inspectWork(item.workId);
+				const execution = work.execution;
+				if (execution?.pi !== undefined && (execution.state === "running" || execution.state === "awaiting-review")) {
+					try {
+						const observed = await this.inspectRuntime(work.workId);
+						const runtimeState = observed.execution?.runtimeState;
+						if (runtimeState !== undefined && runtimeState !== execution.runtimeState)
+							this.recordExecutorRuntimeState(work, runtimeState, runtimeState === "unreachable");
+					} catch (error) {
+						if (!(error instanceof RevisionConflict))
+							this.recordMonitorFailure(
+								work,
+								"Executor runtime",
+								error instanceof Error ? error : new Error(String(error)),
+							);
+					}
+				}
+			}
+			await this.processPendingEffects();
+		} finally {
+			this.monitorInFlight = false;
+		}
 	}
 
 	readRecords(query: RecordQuery | undefined, meta: CommandMeta, cursor?: string): Page<RecordView> {
@@ -275,168 +344,130 @@ export class ApplicationService {
 		const work = this.inspectWork(workId);
 		const expected = revision ?? work.revision;
 		const actions: Action[] = [];
+		const add = (kind: Action["kind"], enabled: boolean, label: string, disabledReason?: string): void => {
+			actions.push(this.action(kind, work, expected, enabled, label, disabledReason));
+		};
 		const runtimeUnavailable =
 			work.execution !== undefined &&
 			(work.execution.state === "running" || work.execution.state === "awaiting-review") &&
 			(runtimeState ?? work.execution.runtimeState) === "unreachable";
 		if (actor === "user") {
-			actions.push(
-				this.action(
-					"recover",
-					work,
-					expected,
-					work.state === "cancelled" || runtimeUnavailable,
-					"Recover Work",
-					work.state === "cancelled" || runtimeUnavailable
-						? undefined
-						: "Only cancelled Work or an unreachable runtime can be recovered.",
-				),
+			const cancellable = work.state === "stopped" && work.stopReason === "cancelled";
+			const recoverable = cancellable || runtimeUnavailable;
+			add(
+				"recover",
+				recoverable,
+				"Recover Work",
+				recoverable ? undefined : "Only stopped Work from cancellation or an unreachable runtime can be recovered.",
 			);
-			actions.push(
-				this.action(
-					"cancel",
-					work,
-					expected,
-					work.state !== "succeeded" && work.state !== "failed" && work.state !== "cancelled",
-					"Cancel Work",
-				),
+			add(
+				"rename-work",
+				work.state !== "succeeded",
+				"Rename Work",
+				work.state === "succeeded" ? "Succeeded Work cannot be renamed." : undefined,
 			);
-			actions.push(
-				this.action(
-					"fail-work",
-					work,
-					expected,
-					!["succeeded", "failed", "cancelled"].includes(work.state),
-					"Fail Work",
-					"Terminal Work cannot be failed again.",
-				),
+			const terminal = ["succeeded", "stopped"].includes(work.state);
+			add("fail-work", !terminal, "Fail Work", "Terminal Work cannot be failed again.");
+			add("amend-budget", !terminal, "Amend Work budget", "Terminal Work cannot be amended.");
+			add(
+				"record-review",
+				work.state === "awaiting-review",
+				"Record provider review",
+				work.state === "awaiting-review" ? undefined : "Work is not awaiting review.",
 			);
-			actions.push(
-				this.action(
-					"amend-budget",
-					work,
-					expected,
-					!["succeeded", "failed", "cancelled"].includes(work.state),
-					"Amend Work budget",
-					"Terminal Work cannot be amended.",
-				),
-			);
-			actions.push(
-				this.action(
-					"record-review",
-					work,
-					expected,
-					work.state === "awaiting-review",
-					"Record provider review",
-					work.state === "awaiting-review" ? undefined : "Work is not awaiting review.",
-				),
-			);
+			add("cancel", !terminal, "Cancel Work");
 		}
 		if (actor === "conclave") {
-			actions.push(
-				this.action("admit", work, expected, work.state === "submitted" || work.state === "needs-input", "Admit Work"),
+			add(
+				"recover",
+				runtimeUnavailable,
+				"Recover Executor runtime",
+				runtimeUnavailable ? undefined : "Inspect the runtime before recovering it.",
 			);
-			actions.push(
-				this.action(
-					"fail-work",
-					work,
-					expected,
-					!["succeeded", "failed", "cancelled"].includes(work.state),
-					"Fail Work",
-					"Terminal Work cannot be failed again.",
-				),
+			add("admit", work.state === "submitted" || work.state === "needs-input", "Admit Work");
+			add(
+				"fail-work",
+				!["succeeded", "stopped"].includes(work.state),
+				"Fail Work",
+				"Terminal Work cannot be failed again.",
 			);
-			actions.push(
-				this.action(
-					"launch-observer",
-					work,
-					expected,
-					(work.state === "submitted" || work.state === "needs-input") &&
-						work.terms.context.length === 0 &&
-						work.observerInFlight !== true,
-					"Gather missing repository context",
-					work.terms.context.length === 0 && work.observerInFlight !== true
+			const observerReady =
+				(work.state === "submitted" || work.state === "needs-input") &&
+				work.terms.context.length === 0 &&
+				work.observerInFlight !== true;
+			add(
+				"launch-observer",
+				observerReady,
+				"Gather missing repository context",
+				observerReady ? undefined : "Work already contains context or an Observer is running.",
+			);
+			const missionActive = work.missionState === "admitted" || work.missionState === "active";
+			const executionReady =
+				(work.state === "queued" && work.mission !== undefined && work.execution === undefined) ||
+				(work.state === "active" &&
+					work.mission !== undefined &&
+					work.execution !== undefined &&
+					["failed", "blocked", "stopped"].includes(work.execution.state));
+			add(
+				"start-execution",
+				missionActive && executionReady,
+				"Start Execution",
+				!missionActive
+					? "The Mission is no longer active."
+					: executionReady
 						? undefined
-						: "Work already contains context or an Observer is running.",
-				),
+						: "Work is not ready for an Execution.",
 			);
-			actions.push(
-				this.action(
-					"start-execution",
-					work,
-					expected,
-					(work.missionState === "admitted" || work.missionState === "active") &&
-						((work.state === "queued" && work.mission !== undefined && work.execution === undefined) ||
-							(work.state === "active" &&
-								work.mission !== undefined &&
-								work.execution !== undefined &&
-								["failed", "blocked", "stopped"].includes(work.execution.state))),
-					"Start Execution",
-					work.missionState !== "admitted" && work.missionState !== "active"
-						? "The Mission is no longer active."
-						: work.state === "queued" ||
-								work.execution?.state === "failed" ||
-								work.execution?.state === "blocked" ||
-								work.execution?.state === "stopped"
-							? undefined
-							: "Work is not ready for an Execution.",
-				),
+			const currentSignal = isCurrentSignal(work);
+			add(
+				"verdict",
+				currentSignal && (work.execution?.state === "running" || work.execution?.state === "blocked"),
+				"Issue Verdict",
+				currentSignal ? "The current Execution is not awaiting a Verdict." : "No current Signal is available.",
 			);
-			actions.push(
-				this.action(
-					"verdict",
-					work,
-					expected,
-					isCurrentSignal(work) && (work.execution?.state === "running" || work.execution?.state === "blocked"),
-					"Issue Verdict",
-					isCurrentSignal(work)
-						? "The current Execution is not awaiting a Verdict."
-						: "No current Signal is available.",
-				),
-			);
-			actions.push(
-				this.action(
-					"run-oracle",
-					work,
-					expected,
-					isCurrentReadySignal(work) && work.execution?.state === "running" && isOpenReview(work.reviewRequest),
-					"Run Oracle review",
-					isCurrentReadySignal(work) && isOpenReview(work.reviewRequest)
+			const oracleInputsReady = isCurrentReadySignal(work) && isOpenReview(work.reviewRequest);
+			const oracleReady = oracleInputsReady && work.execution?.state === "running";
+			add(
+				"run-oracle",
+				oracleReady,
+				"Run Oracle review",
+				oracleReady
+					? undefined
+					: oracleInputsReady
 						? "The current Execution is not running."
 						: "Oracle review is available after a current ready Signal and open review request.",
-				),
 			);
-			actions.push(
-				this.action(
-					"record-outcome",
-					work,
-					expected,
-					isMergedReview(work) && isCurrentProviderOutcome(work),
-					"Record Work Outcome",
-					"Provider-confirmed merge evidence is required.",
-				),
+			add(
+				"record-outcome",
+				isMergedReview(work) && isCurrentProviderOutcome(work),
+				"Record Work Outcome",
+				"Provider-confirmed merge evidence is required.",
+			);
+			const observation = work.lastObservation;
+			const feedbackReady =
+				observation?.kind === "review-comment" &&
+				(observation.feedback?.length ?? 0) > 0 &&
+				work.execution?.pi !== undefined &&
+				!this.hasFeedbackDelivery(work.workId, observation.observationId);
+			add(
+				"deliver-feedback",
+				feedbackReady,
+				"Deliver provider feedback",
+				feedbackReady ? undefined : "No undelivered, actionable provider feedback is available.",
 			);
 		}
 		if (actor === "executor") {
-			actions.push(
-				this.action(
-					"record-signal",
-					work,
-					expected,
-					work.execution?.state === "running",
-					"Record Signal",
-					"The current Execution is not running.",
-				),
+			add(
+				"record-signal",
+				work.execution?.state === "running",
+				"Record Signal",
+				"The current Execution is not running.",
 			);
-			actions.push(
-				this.action(
-					"create-review-request",
-					work,
-					expected,
-					work.execution?.state === "running" && work.reviewRequest === undefined,
-					"Create draft review request",
-					"A running Execution without a review request is required.",
-				),
+			add(
+				"create-review-request",
+				work.execution?.state === "running" && work.reviewRequest === undefined,
+				"Create draft review request",
+				"A running Execution without a review request is required.",
 			);
 		}
 		return actions;
@@ -485,7 +516,12 @@ export class ApplicationService {
 		void operation.finally(() => this.backgroundOperations.delete(operation)).catch(() => undefined);
 	}
 
-	private async wakeConclave(workId: string, commandId: string): Promise<void> {
+	private async wakeConclave(
+		workId: string,
+		commandId: string,
+		observationId?: string,
+		reason?: string,
+	): Promise<void> {
 		const work = this.inspectWork(workId);
 		this.validateModel("conclave", this.options.conclaveModel, this.options.conclaveThinking);
 		const binding = await this.ports.runtime.ensureSession({
@@ -495,14 +531,19 @@ export class ApplicationService {
 			role: "conclave",
 			promptIdentity: this.options.conclavePromptIdentity,
 			bindingScope: { workId },
-			tools: ["khala_read_archive", "khala_perform_action", "khala_run_oracle"],
+			tools: ["khala_read_archive", "khala_inspect_runtime", "khala_perform_action", "khala_run_oracle"],
 			sessionPath: roleSessionPath(this.options.projectPath, "conclave", work.workId),
 		});
 		try {
-			await this.ports.runtime.send(
-				binding,
-				`Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, then start its Execution when budget permits. Never treat this message as authority.`,
-			);
+			const message =
+				reason === "runtime-unreachable"
+					? `Inspect the Executor runtime for Work ${work.workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`
+					: observationId !== undefined
+						? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
+						: work.lastObservation?.kind === "review-comment"
+							? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
+							: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, then start its Execution when budget permits. Never treat this message as authority.`;
+			await this.ports.runtime.send(binding, message);
 			this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
 		} finally {
 			await this.ports.runtime.requestStop(binding).catch(() => undefined);
@@ -519,6 +560,7 @@ export class ApplicationService {
 			for (const effect of effects) {
 				if (
 					effect.kind !== "conclave-wake" &&
+					effect.kind !== "scheduler-wake" &&
 					effect.kind !== "executor-wake" &&
 					effect.kind !== "executor-stop" &&
 					effect.kind !== "observer-wake" &&
@@ -531,6 +573,8 @@ export class ApplicationService {
 					continue;
 				}
 				let workId: string | undefined;
+				let observationId: string | undefined;
+				let wakeReason: string | undefined;
 				let leaseLost = false;
 				const lease = setInterval(() => {
 					try {
@@ -541,9 +585,32 @@ export class ApplicationService {
 				}, 60_000);
 				try {
 					workId = readEffectWorkId(effect.payload);
+					observationId = readOptionalEffectText(effect.payload, "observationId");
+					wakeReason = readOptionalEffectText(effect.payload, "reason");
 					const work = this.inspectWork(workId);
 					if (effect.kind === "conclave-wake") {
-						await this.wakeConclave(workId, `outbox:${effect.effectId}:${work.revision}`);
+						await this.wakeConclave(workId, `outbox:${effect.effectId}:${work.revision}`, observationId, wakeReason);
+					} else if (effect.kind === "scheduler-wake") {
+						const activeCount = this.archive
+							.listProjects()
+							.filter(
+								(candidate) => candidate.execution?.state === "running" || candidate.execution?.state === "queued",
+							).length;
+						if (activeCount < this.options.maxConcurrentExecutions) {
+							const nextQueued = this.archive
+								.listProjects()
+								.filter(
+									(candidate) =>
+										candidate.state === "queued" &&
+										candidate.mission !== undefined &&
+										(candidate.missionState === "admitted" || candidate.missionState === "active"),
+								)
+								.sort((left, right) => left.queuedSequence - right.queuedSequence)[0];
+							if (nextQueued !== undefined) {
+								workId = nextQueued.workId;
+								await this.wakeConclave(nextQueued.workId, `outbox:${effect.effectId}:${nextQueued.revision}`);
+							}
+						}
 					} else if (effect.kind === "workspace-cleanup") {
 						const binding = readOptionalEffectBinding(effect.payload);
 						if (binding !== undefined) await this.ports.runtime.requestStop(binding);
@@ -553,9 +620,12 @@ export class ApplicationService {
 					} else if (effect.kind === "feedback-wake") {
 						const feedback = readEffectFeedback(effect.payload);
 						if (work.execution?.state === "running") {
-							await this.resumeExecutor(work, feedback, effect.effectId);
-						} else if (!["succeeded", "failed", "cancelled"].includes(work.state)) {
-							this.recordFeedbackUnavailable(work, feedback, effect.effectId);
+							await this.resumeExecutor(work, feedback, effect.effectId, observationId);
+						} else if (!["succeeded", "stopped"].includes(work.state)) {
+							this.recordFeedbackUnavailable(work, feedback, effect.effectId, observationId);
+							throw new Error("The Executor is not running; feedback delivery remains pending.");
+						} else {
+							this.recordFeedbackSuperseded(work, feedback, effect.effectId, observationId);
 						}
 					} else if (effect.kind === "executor-wake") {
 						if (work.execution?.state === "queued") {
@@ -596,6 +666,7 @@ export class ApplicationService {
 					)
 						queueMicrotask(() => void this.processPendingEffects());
 					if (effect.kind === "workspace-cleanup") return;
+					if (effect.kind === "feedback-wake") return;
 					if (effect.kind === "observer-wake" && workId !== undefined) {
 						try {
 							const current = this.inspectWork(workId);
@@ -628,12 +699,17 @@ export class ApplicationService {
 					if (effect.kind === "conclave-wake" && workId !== undefined) {
 						try {
 							const current = this.inspectWork(workId);
-							this.recordWakeFailure(workId, error instanceof Error ? error : new Error(String(error)), {
-								actor: "conclave",
-								commandId: `outbox-failure:${effect.effectId}:${current.revision}`,
-								expectedWorkRevision: current.revision,
-								schemaVersion: 1,
-							});
+							this.recordWakeFailure(
+								workId,
+								error instanceof Error ? error : new Error(String(error)),
+								{
+									actor: "conclave",
+									commandId: `outbox-failure:${effect.effectId}:${current.revision}`,
+									expectedWorkRevision: current.revision,
+									schemaVersion: 1,
+								},
+								wakeReason,
+							);
 						} catch {
 							// Preserve the pending effect when its Work cannot be reconciled.
 						}
@@ -646,7 +722,7 @@ export class ApplicationService {
 	}
 
 	async pollProvider(workId: string, meta: CommandMeta): Promise<WorkView> {
-		this.requireActor(meta, "user");
+		this.requireAnyActor(meta, ["user", "monitor"]);
 		let work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
 		if (work.reviewRequest === undefined)
@@ -676,11 +752,11 @@ export class ApplicationService {
 		meta: CommandMeta,
 		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
 	): Promise<WorkView> {
-		this.requireActor(meta, "user");
+		this.requireAnyActor(meta, ["user", "conclave"]);
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking the current Work state." });
 		const work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
-		if (["succeeded", "failed", "cancelled"].includes(work.state)) return work;
+		if (["succeeded", "stopped"].includes(work.state)) return work;
 		if (work.observerInFlight === true && work.observer === undefined) {
 			onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work's pending assessment." });
 			await this.processPendingEffects();
@@ -776,7 +852,18 @@ export class ApplicationService {
 				role: "executor",
 				promptIdentity: execution.promptIdentity,
 				bindingScope: { workId, executionId: execution.executionId },
-				tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "khala_read_archive", "khala_record_signal"],
+				tools: [
+					"read",
+					"bash",
+					"edit",
+					"write",
+					"grep",
+					"find",
+					"ls",
+					"khala_read_archive",
+					"khala_record_signal",
+					"khala_perform_action",
+				],
 				sessionPath: execution.pi.sessionPath,
 			});
 			onRecoveryUpdate?.({ stage: "confirming", message: "Confirming the restored Work can continue." });
@@ -790,6 +877,7 @@ export class ApplicationService {
 			const next: WorkView = {
 				...work,
 				revision: work.revision + 1,
+				lastError: undefined,
 				execution: recovered,
 				nextAction:
 					execution.state === "running"
@@ -817,11 +905,13 @@ export class ApplicationService {
 				runtimeState: "unreachable",
 				endedAt: new Date().toISOString(),
 			};
+			const failure = executionFailure(work, execution.executionId, error instanceof Error ? error : String(error));
 			const next: WorkView = {
 				...work,
 				revision: work.revision + 1,
 				execution: failed,
 				budget: terminalBudget(work.budget, "failed"),
+				lastError: failure,
 				nextAction: "Execution runtime unavailable; replace it explicitly.",
 			};
 			return this.append({
@@ -830,7 +920,7 @@ export class ApplicationService {
 				workId,
 				missionId: work.mission.missionId,
 				executionId: execution.executionId,
-				payload: { message: error instanceof Error ? error.message : "Pi runtime reconciliation failed." },
+				payload: failure,
 				projection: next,
 				summary: `Execution ${execution.executionId} runtime could not be reconciled.`,
 				effects: lifecycleEffects(workId, next.revision, failed),
@@ -891,17 +981,31 @@ export class ApplicationService {
 			this.heartbeat.set(key, fingerprint);
 			return work;
 		}
-		const nextObservation: ProviderObservation = {
+		let nextObservation: ProviderObservation = {
 			...observation,
 			changed: true,
 			observedAt: new Date().toISOString(),
 		};
+		if (observation.feedback !== undefined) {
+			nextObservation = { ...nextObservation, feedback: boundedFeedback(observation.feedback) };
+		}
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
 			lastObservation: nextObservation,
 			providerOutcome: observation.kind === "provider-outcome" ? nextObservation : work.providerOutcome,
-			nextAction: work.nextAction,
+			reviewRequest:
+				observation.kind === "ci-status" && (observation.status === "closed" || observation.status === "merged")
+					? { ...work.reviewRequest, status: observation.status }
+					: work.reviewRequest,
+			nextAction:
+				observation.kind === "review-comment" && observation.actionable !== false
+					? "Conclave is assessing provider feedback."
+					: observation.status === "closed"
+						? "Provider review is closed; Conclave is reconciling the Work."
+						: observation.status === "merged"
+							? "Provider merge observed; Conclave is recording the Outcome."
+							: work.nextAction,
 		};
 		const result = this.append({
 			meta,
@@ -912,21 +1016,43 @@ export class ApplicationService {
 			payload: nextObservation,
 			projection: next,
 			summary: `Provider observation changed: ${observation.kind}.`,
-			effects: observation.kind === "provider-outcome" ? [schedulerEffect(workId, next.revision)] : undefined,
+			effects:
+				observation.kind === "provider-outcome" ||
+				(observation.kind === "review-comment" && observation.actionable !== false) ||
+				(observation.kind === "ci-status" && (observation.status === "closed" || observation.status === "merged"))
+					? [
+							schedulerEffect(
+								workId,
+								next.revision,
+								observation.kind === "review-comment" ? observation.observationId : undefined,
+								observation.kind === "review-comment"
+									? "provider-feedback"
+									: observation.kind === "ci-status" && observation.status === "closed"
+										? "provider-closed"
+										: undefined,
+							),
+						]
+					: undefined,
 		});
 		this.heartbeat.set(key, fingerprint);
 		return result.projection;
 	}
 
-	private recordWakeFailure(workId: string, failure: Error, meta: CommandMeta): WorkView {
+	private recordWakeFailure(workId: string, failure: Error, meta: CommandMeta, reason?: string): WorkView {
 		const work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
-		const error = conclaveWakeError(failure);
+		const feedbackWake = reason === "provider-feedback" || work.lastObservation?.kind === "review-comment";
+		const runtimeWake = reason === "runtime-unreachable";
+		const error = conclaveWakeError(failure, feedbackWake, runtimeWake);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
 			lastError: error,
-			nextAction: "Resolve the Conclave admission error, then retry admission.",
+			nextAction: runtimeWake
+				? "Conclave could not inspect Executor recovery; retrying the autonomous inspection."
+				: feedbackWake
+					? "Conclave could not assess provider feedback; inspect Evidence before retrying delivery."
+					: "Resolve the Conclave admission error, then retry admission.",
 		};
 		return this.append({
 			meta,
@@ -942,6 +1068,7 @@ export class ApplicationService {
 	async close(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
+		if (this.monitorTimer !== undefined) clearInterval(this.monitorTimer);
 		await this.ports.runtime.close();
 		await Promise.allSettled(this.backgroundOperations);
 		this.archive.close();
@@ -952,8 +1079,91 @@ export class ApplicationService {
 		if (last?.kind === observation.kind && last.providerId === observation.providerId) {
 			return sameObservation(last, observation) ? observationFingerprint(last) : undefined;
 		}
-		const previous = this.archive.findLatestObservation(work.workId, observation.kind, observation.providerId);
+		const previous = this.archive.findLatestObservation(
+			work.workId,
+			observation.kind,
+			observation.providerId,
+			observation.observationId,
+		);
 		return previous === undefined ? undefined : observationFingerprint(previous);
+	}
+
+	private recordMonitorFailure(work: WorkView, subject: string, failure: Error): void {
+		const message = failure.message.trim().slice(0, 2_000) || "The monitor returned no error detail.";
+		const marker = `monitor-failure:${subject}:${work.workId}`;
+		if (this.heartbeat.get(marker) === message) return;
+		let current = work;
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const error: ErrorEnvelope = {
+				code: "external-failure",
+				summary: `${subject} monitor failed: ${message}`,
+				retryable: true,
+				remediation: "Khala will retry automatically; inspect Evidence if the failure persists.",
+				evidenceRefs: current.reviewRequest === undefined ? [] : [current.reviewRequest.providerId],
+			};
+			const next: WorkView = {
+				...current,
+				revision: current.revision + 1,
+				lastError: error,
+				nextAction: `${subject} monitor failed; retrying automatically.`,
+			};
+			try {
+				this.append({
+					meta: {
+						actor: "monitor",
+						commandId: `${marker}:${current.revision}`,
+						expectedWorkRevision: current.revision,
+						schemaVersion: 1,
+					},
+					kind: "error",
+					workId: current.workId,
+					missionId: current.mission?.missionId,
+					executionId: current.execution?.executionId,
+					payload: error,
+					evidenceRefs: error.evidenceRefs,
+					projection: next,
+					summary: error.summary,
+				});
+				this.heartbeat.set(marker, message);
+				return;
+			} catch (appendError) {
+				const revisionConflict =
+					appendError instanceof RevisionConflict ||
+					(appendError instanceof ApplicationError && appendError.envelope.code === "revision-conflict");
+				if (!revisionConflict) throw appendError;
+				const latest = this.archive.project(work.workId);
+				if (latest === undefined) return;
+				current = latest;
+			}
+		}
+	}
+
+	private recordServiceMonitorFailure(failure: Error): void {
+		const work = this.archive.listProjects()[0];
+		if (work === undefined) return;
+		try {
+			this.recordMonitorFailure(work, "Autonomous monitor", failure);
+		} catch {
+			// No durable Work target remains for this monitor failure.
+		}
+	}
+
+	private hasFeedbackDelivery(workId: string, observationId: string, delivered?: boolean): boolean {
+		let cursor: string | undefined;
+		do {
+			const page = this.archive.query({ workId, kinds: ["delivery"] }, cursor);
+			if (
+				page.items.some(
+					(record) =>
+						isJsonObject(record.payload) &&
+						record.payload["observationId"] === observationId &&
+						(delivered === undefined || record.payload["delivered"] === delivered),
+				)
+			)
+				return true;
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+		return false;
 	}
 
 	private async performOrThrow(command: ActionCommand): Promise<WorkView> {
@@ -979,6 +1189,8 @@ export class ApplicationService {
 				return this.runOracle(work, command.meta, command.input);
 			case "verdict":
 				return this.verdict(work, command.meta, command.input);
+			case "deliver-feedback":
+				return this.deliverFeedback(work, command.meta, command.input);
 			case "record-review":
 				return this.recordReview(work, command.meta, command.input);
 			case "record-outcome":
@@ -986,9 +1198,11 @@ export class ApplicationService {
 			case "cancel":
 				return this.cancel(work, command.meta);
 			case "recover":
-				return work.state === "cancelled"
-					? this.recoverCancelled(work, command.meta, command.onRecoveryUpdate)
+				return work.state === "stopped" && work.stopReason === "cancelled"
+					? this.recoverStopped(work, command.meta, command.onRecoveryUpdate)
 					: this.recoverRuntime(work, command.meta, command.onRecoveryUpdate);
+			case "rename-work":
+				return this.renameWork(work, command.meta, command.input);
 			case "amend-budget":
 				return this.amendBudget(work, command.meta, command.input);
 			case "fail-work":
@@ -1197,6 +1411,7 @@ export class ApplicationService {
 			missionId: nanoid(),
 			workId: work.workId,
 			assignment: work.terms,
+			specificity: work.missionSpecificity ?? missionSpecificity(work.terms),
 			mandateRevision: 1,
 			createdAt: new Date().toISOString(),
 		};
@@ -1204,7 +1419,9 @@ export class ApplicationService {
 			...work,
 			revision: work.revision + 1,
 			state: "queued",
+			stopReason: undefined,
 			mission,
+			missionSpecificity: undefined,
 			missionState: "admitted",
 			lastError: undefined,
 			nextAction: "Waiting for budget or project concurrency.",
@@ -1362,7 +1579,18 @@ export class ApplicationService {
 				role: "executor",
 				promptIdentity: execution.promptIdentity,
 				bindingScope: { workId: work.workId, executionId: execution.executionId },
-				tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "khala_read_archive", "khala_record_signal"],
+				tools: [
+					"read",
+					"bash",
+					"edit",
+					"write",
+					"grep",
+					"find",
+					"ls",
+					"khala_read_archive",
+					"khala_record_signal",
+					"khala_perform_action",
+				],
 				sessionPath: execution.pi?.sessionPath,
 			});
 			const running: Execution = {
@@ -1393,11 +1621,13 @@ export class ApplicationService {
 		} catch (error) {
 			if (binding !== undefined) await this.ports.runtime.requestStop(binding).catch(() => undefined);
 			const failed: Execution = { ...execution, state: "failed", endedAt: new Date().toISOString() };
+			const failure = executionFailure(work, execution.executionId, error instanceof Error ? error : String(error));
 			const next: WorkView = {
 				...work,
 				revision: work.revision + 1,
 				budget: terminalBudget(work.budget, "failed"),
 				execution: failed,
+				lastError: failure,
 				nextAction: "Execution failed; Conclave may replace it.",
 			};
 			this.append({
@@ -1406,7 +1636,7 @@ export class ApplicationService {
 				workId: work.workId,
 				missionId: work.mission?.missionId,
 				executionId: execution.executionId,
-				payload: { message: error instanceof Error ? error.message : String(error) },
+				payload: failure,
 				projection: next,
 				summary: `Execution ${execution.executionId} failed to start.`,
 				effects: lifecycleEffects(work.workId, next.revision, next.execution),
@@ -1466,6 +1696,7 @@ export class ApplicationService {
 					endedAt: new Date().toISOString(),
 				},
 				budget: terminalBudget(current.budget, "failed"),
+				lastError: executionFailure(current, execution.executionId, error instanceof Error ? error : String(error)),
 				nextAction: "Executor runtime failed; Conclave may replace it.",
 			};
 			try {
@@ -1480,7 +1711,7 @@ export class ApplicationService {
 					workId: current.workId,
 					missionId: current.mission?.missionId,
 					executionId: execution.executionId,
-					payload: { message: error instanceof Error ? error.message : String(error) },
+					payload: failed.lastError ?? { message: "Executor runtime failed." },
 					projection: failed,
 					summary: "Executor runtime failed after launch.",
 					effects: lifecycleEffects(current.workId, failed.revision, failed.execution),
@@ -1495,7 +1726,7 @@ export class ApplicationService {
 		}
 	}
 
-	private recordExecutorRuntimeState(work: WorkView, runtimeState: "working" | "idle"): WorkView {
+	private recordExecutorRuntimeState(work: WorkView, runtimeState: RuntimeState, wakeConclave = false): WorkView {
 		const execution = work.execution;
 		if (execution === undefined || execution.runtimeState === runtimeState) return work;
 		const nextExecution: Execution = { ...execution, runtimeState };
@@ -1503,6 +1734,10 @@ export class ApplicationService {
 			...work,
 			revision: work.revision + 1,
 			execution: nextExecution,
+			nextAction:
+				runtimeState === "unreachable" && wakeConclave
+					? "Executor runtime is unreachable. Conclave is inspecting recovery."
+					: runtimeAction(work, runtimeState),
 		};
 		return this.append({
 			meta: {
@@ -1518,6 +1753,9 @@ export class ApplicationService {
 			payload: nextExecution,
 			projection: next,
 			summary: `Executor runtime is ${runtimeState}.`,
+			effects: wakeConclave
+				? [schedulerEffect(work.workId, next.revision, undefined, "runtime-unreachable")]
+				: undefined,
 		}).projection;
 	}
 
@@ -1615,7 +1853,12 @@ export class ApplicationService {
 			projection: next,
 			summary: `${kind} Signal from Executor.`,
 			evidenceRefs: evidence,
-			effects: kind === "blocked" || kind === "ready" ? [schedulerEffect(work.workId, next.revision)] : undefined,
+			effects:
+				kind === "blocked"
+					? [schedulerEffect(work.workId, next.revision), queueSchedulerEffect(work.workId, next.revision)]
+					: kind === "ready"
+						? [schedulerEffect(work.workId, next.revision)]
+						: undefined,
 		}).projection;
 	}
 
@@ -1889,7 +2132,7 @@ export class ApplicationService {
 			evidenceRefs: feedback,
 			effects:
 				status === "changes-requested"
-					? [feedbackEffect(work.workId, next.revision, feedback)]
+					? [feedbackEffect(work.workId, next.revision, undefined, feedback)]
 					: [
 							schedulerEffect(work.workId, next.revision),
 							...(work.execution?.pi === undefined
@@ -1900,17 +2143,73 @@ export class ApplicationService {
 		return result.projection;
 	}
 
-	private async resumeExecutor(work: WorkView, feedback: readonly string[], deliveryId: string): Promise<void> {
+	private async deliverFeedback(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
+		this.requireActor(meta, "conclave");
+		const observationId = input?.observationId ?? work.lastObservation?.observationId;
+		const observation =
+			observationId === undefined ? work.lastObservation : this.archive.findObservation(work.workId, observationId);
 		const execution = work.execution;
-		if (execution?.pi === undefined) return;
+		const feedback = observation?.feedback ?? [];
+		if (
+			observation?.kind !== "review-comment" ||
+			observation.actionable === false ||
+			feedback.length === 0 ||
+			execution === undefined ||
+			execution.pi === undefined ||
+			work.reviewRequest === undefined ||
+			["succeeded", "stopped"].includes(work.state)
+		)
+			throw this.error(
+				"invalid-state",
+				"No actionable provider feedback is ready for delivery.",
+				false,
+				"Read the latest provider observation and wait for a review comment.",
+			);
+		if (this.hasFeedbackDelivery(work.workId, observation.observationId)) return work;
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			execution: { ...execution, state: "running" },
+			state: "active",
+			missionState: "active",
+			lastSignal: undefined,
+			nextAction: "Executor is resuming authorized provider feedback.",
+		};
+		return this.append({
+			meta,
+			kind: "delivery",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: execution.executionId,
+			payload: { observationId: observation.observationId, feedback, delivered: false },
+			projection: next,
+			evidenceRefs: feedback,
+			summary: "Conclave authorized provider review feedback.",
+			effects: [feedbackEffect(work.workId, next.revision, observation.observationId, feedback)],
+		}).projection;
+	}
+
+	private async resumeExecutor(
+		work: WorkView,
+		feedback: readonly string[],
+		deliveryId: string,
+		observationId?: string,
+	): Promise<void> {
+		const execution = work.execution;
+		if (execution?.pi === undefined) {
+			this.recordFeedbackUnavailable(work, feedback, deliveryId, observationId);
+			throw new Error("The Executor runtime is not bound; feedback delivery remains pending.");
+		}
 		const active = this.drivingExecutions.get(executionDriveKey(work.workId, execution));
 		if (active !== undefined) {
 			await active;
 			const latest = this.archive.project(work.workId);
-			if (latest?.execution?.state === "running") return this.resumeExecutor(latest, feedback, deliveryId);
-			if (latest !== undefined && !["succeeded", "failed", "cancelled"].includes(latest.state))
-				this.recordFeedbackUnavailable(latest, feedback, deliveryId);
-			return;
+			if (latest?.execution?.state === "running")
+				return this.resumeExecutor(latest, feedback, deliveryId, observationId);
+			if (latest !== undefined && ["succeeded", "stopped"].includes(latest.state))
+				this.recordFeedbackSuperseded(latest, feedback, deliveryId, observationId);
+			else if (latest !== undefined) this.recordFeedbackUnavailable(latest, feedback, deliveryId, observationId);
+			throw new Error("The Executor turn ended before feedback delivery; retrying the same Execution.");
 		}
 		try {
 			let current = work;
@@ -1924,7 +2223,18 @@ export class ApplicationService {
 					role: "executor",
 					promptIdentity: execution.promptIdentity,
 					bindingScope: { workId: work.workId, executionId: execution.executionId },
-					tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "khala_read_archive", "khala_record_signal"],
+					tools: [
+						"read",
+						"bash",
+						"edit",
+						"write",
+						"grep",
+						"find",
+						"ls",
+						"khala_read_archive",
+						"khala_record_signal",
+						"khala_perform_action",
+					],
 					sessionPath: execution.pi.sessionPath,
 				});
 				try {
@@ -1965,19 +2275,24 @@ export class ApplicationService {
 				`Review feedback delivery ${deliveryId} for Work ${current.workId} is authorized. Read the Archive and address only feedback that fits the Mission. If this delivery ID is already recorded in the Archive, do not repeat the change. Feedback:\n${feedback.map((item) => `- ${item}`).join("\n")}`,
 			);
 			this.recordExecutorTurn(current, result);
+			if (observationId !== undefined) this.recordFeedbackDelivered(work.workId, observationId, feedback, deliveryId);
 		} catch (error) {
 			const current = this.archive.project(work.workId);
 			if (
 				current?.execution?.executionId !== execution.executionId ||
 				current.execution.state !== "running" ||
 				current.execution.pi?.sessionId !== execution.pi.sessionId
-			)
-				return;
+			) {
+				if (current !== undefined && ["succeeded", "stopped"].includes(current.state))
+					this.recordFeedbackSuperseded(current, feedback, deliveryId, observationId);
+				else if (current !== undefined) this.recordFeedbackUnavailable(current, feedback, deliveryId, observationId);
+				throw error;
+			}
 			const next: WorkView = {
 				...current,
 				revision: current.revision + 1,
-				execution: { ...current.execution, state: "blocked" },
-				nextAction: "Review feedback delivery failed; reconcile the Executor runtime.",
+				execution: { ...current.execution, runtimeState: "unreachable" },
+				nextAction: "Review feedback delivery failed; Conclave is inspecting the Executor runtime.",
 			};
 			try {
 				this.append({
@@ -1991,21 +2306,65 @@ export class ApplicationService {
 					workId: current.workId,
 					missionId: current.mission?.missionId,
 					executionId: execution.executionId,
-					payload: { message: error instanceof Error ? error.message : String(error) },
+					payload: {
+						observationId,
+						deliveryId,
+						feedback,
+						delivered: false,
+						message: error instanceof Error ? error.message : String(error),
+					},
 					projection: next,
 					summary: "Authorized review feedback could not be delivered.",
+					effects: [schedulerEffect(current.workId, next.revision, observationId, "runtime-unreachable")],
 				});
 			} catch {
 				// Recovery will reattach the persisted Executor binding.
 			}
+			throw error;
 		}
 	}
 
-	private recordFeedbackUnavailable(work: WorkView, feedback: readonly string[], deliveryId: string): void {
+	private recordFeedbackDelivered(
+		workId: string,
+		observationId: string,
+		feedback: readonly string[],
+		deliveryId: string,
+	): void {
+		if (this.hasFeedbackDelivery(workId, observationId, true)) return;
+		const work = this.archive.project(workId);
+		if (work === undefined) return;
+		const next: WorkView = { ...work, revision: work.revision + 1 };
+		this.append({
+			meta: {
+				actor: "system",
+				commandId: `feedback-delivered:${deliveryId}:${work.revision}`,
+				expectedWorkRevision: work.revision,
+				schemaVersion: 1,
+			},
+			kind: "delivery",
+			workId,
+			missionId: work.mission?.missionId,
+			executionId: work.execution?.executionId,
+			payload: { observationId, deliveryId, feedback, delivered: true },
+			projection: next,
+			evidenceRefs: feedback,
+			summary: "Authorized provider review feedback was delivered to the Executor.",
+		});
+	}
+
+	private recordFeedbackUnavailable(
+		work: WorkView,
+		feedback: readonly string[],
+		deliveryId: string,
+		observationId?: string,
+	): void {
+		const marker = `feedback-unavailable:${deliveryId}`;
+		if (this.heartbeat.has(marker)) return;
+		this.heartbeat.set(marker, "recorded");
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
-			nextAction: "Authorized review feedback remains recorded; reconcile the next Executor.",
+			nextAction: "Authorized review feedback remains recorded. Reconcile the next Executor.",
 		};
 		this.append({
 			meta: {
@@ -2018,11 +2377,43 @@ export class ApplicationService {
 			workId: work.workId,
 			missionId: work.mission?.missionId,
 			executionId: work.execution?.executionId,
-			payload: { deliveryId, feedback, delivered: false },
+			payload: { observationId, deliveryId, feedback, delivered: false, disposition: "retry" },
 			projection: next,
 			evidenceRefs: feedback,
 			summary: "Authorized review feedback was retained for reconciliation.",
 		});
+	}
+
+	private recordFeedbackSuperseded(
+		work: WorkView,
+		feedback: readonly string[],
+		deliveryId: string,
+		observationId?: string,
+	): void {
+		const marker = `feedback-superseded:${deliveryId}`;
+		if (this.heartbeat.has(marker)) return;
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			nextAction: "Provider feedback was superseded by terminal Work; inspect the Archive.",
+		};
+		this.append({
+			meta: {
+				actor: "system",
+				commandId: `feedback-superseded:${deliveryId}:${work.revision}`,
+				expectedWorkRevision: work.revision,
+				schemaVersion: 1,
+			},
+			kind: "delivery",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: work.execution?.executionId,
+			payload: { observationId, deliveryId, feedback, delivered: false, disposition: "superseded" },
+			projection: next,
+			evidenceRefs: feedback,
+			summary: "Authorized provider feedback was superseded by terminal Work.",
+		});
+		this.heartbeat.set(marker, "recorded");
 	}
 
 	private async recordOutcome(work: WorkView, meta: CommandMeta): Promise<WorkView> {
@@ -2084,7 +2475,7 @@ export class ApplicationService {
 				"Use an authorized actor.",
 			);
 		}
-		if (["succeeded", "failed", "cancelled"].includes(work.state)) {
+		if (["succeeded", "stopped"].includes(work.state)) {
 			throw this.error(
 				"invalid-state",
 				"Terminal Work cannot be failed again.",
@@ -2096,7 +2487,8 @@ export class ApplicationService {
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
-			state: "failed",
+			state: "stopped",
+			stopReason: "failed",
 			execution:
 				work.execution === undefined
 					? undefined
@@ -2116,6 +2508,42 @@ export class ApplicationService {
 			projection: next,
 			summary: "Work failed by explicit User or Conclave decision.",
 			effects: lifecycleEffects(work.workId, next.revision, next.execution, work.observer, false),
+		}).projection;
+	}
+
+	private renameWork(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): WorkView {
+		this.requireActor(meta, "user");
+		if (work.state === "succeeded") {
+			throw this.error(
+				"invalid-state",
+				"Succeeded Work cannot be renamed.",
+				false,
+				"Rename an active or failed Work instead.",
+			);
+		}
+		const title = requiredNonBlank(requiredText(input?.title, "title"), "title");
+		if (title === work.terms.title) {
+			throw this.error(
+				"invalid-input",
+				"The new Work title matches the current title.",
+				false,
+				"Choose a different title.",
+			);
+		}
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			terms: { ...work.terms, title },
+		};
+		return this.append({
+			meta,
+			kind: "work-amended",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: work.execution?.executionId,
+			payload: { change: "title", previousTitle: work.terms.title, title },
+			projection: next,
+			summary: `Work title renamed to ${title}.`,
 		}).projection;
 	}
 
@@ -2160,7 +2588,7 @@ export class ApplicationService {
 		meta: CommandMeta,
 		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
 	): Promise<WorkView> {
-		this.requireActor(meta, "user");
+		this.requireAnyActor(meta, ["user", "conclave"]);
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking whether this Work can be recovered." });
 		const execution = work.execution;
 		if (
@@ -2186,17 +2614,17 @@ export class ApplicationService {
 		return this.recoverWork(work.workId, meta, onRecoveryUpdate);
 	}
 
-	private recoverCancelled(
+	private recoverStopped(
 		work: WorkView,
 		meta: CommandMeta,
 		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
 	): WorkView {
 		this.requireActor(meta, "user");
 		onRecoveryUpdate?.({ stage: "checking", message: "Preparing the cancelled Work for recovery." });
-		if (work.state !== "cancelled") {
+		if (work.state !== "stopped" || work.stopReason !== "cancelled") {
 			throw this.error(
 				"invalid-state",
-				"Only cancelled Work can be recovered.",
+				"Only Work stopped by cancellation can be recovered.",
 				false,
 				"Inspect the Work state before recovering it.",
 			);
@@ -2206,6 +2634,8 @@ export class ApplicationService {
 			...work,
 			revision: work.revision + 1,
 			state: "submitted",
+			stopReason: undefined,
+			lastError: undefined,
 			mission: undefined,
 			missionState: undefined,
 			execution: undefined,
@@ -2223,16 +2653,16 @@ export class ApplicationService {
 			kind: "mission-change",
 			workId: work.workId,
 			missionId: work.mission?.missionId,
-			payload: { action: "recover", previousState: work.state },
+			payload: { action: "recover", previousState: work.state, stopReason: work.stopReason },
 			projection: next,
-			summary: "Cancelled Work was recovered and returned to admission.",
+			summary: "Stopped Work was recovered and returned to admission.",
 			effects: [schedulerEffect(work.workId, next.revision)],
 		}).projection;
 	}
 
 	private async cancel(work: WorkView, meta: CommandMeta): Promise<WorkView> {
 		this.requireActor(meta, "user");
-		if (["succeeded", "failed", "cancelled"].includes(work.state)) {
+		if (["succeeded", "stopped"].includes(work.state)) {
 			throw this.error(
 				"invalid-state",
 				"Terminal Work cannot be cancelled.",
@@ -2243,7 +2673,8 @@ export class ApplicationService {
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
-			state: "cancelled",
+			state: "stopped",
+			stopReason: "cancelled",
 			execution:
 				work.execution === undefined
 					? undefined
@@ -2354,6 +2785,16 @@ export class ApplicationService {
 				"Use the role-bound application adapter.",
 			);
 		}
+	}
+
+	private requireAnyActor(meta: CommandMeta, actors: readonly Actor[]): void {
+		if (actors.includes(meta.actor)) return;
+		throw this.error(
+			"forbidden",
+			`Only ${actors.join(" or ")} roles may perform this action.`,
+			false,
+			"Use the role-bound application adapter.",
+		);
 	}
 
 	private checkRevision(work: WorkView, meta: CommandMeta): void {
@@ -2514,9 +2955,28 @@ export class ApplicationService {
 	}
 }
 
-function conclaveWakeError(failure: Error): ErrorEnvelope {
+function conclaveWakeError(failure: Error, feedbackWake = false, runtimeWake = false): ErrorEnvelope {
 	if (failure instanceof ApplicationError) return failure.envelope;
 	const message = failure instanceof Error ? failure.message : String(failure);
+	if (runtimeWake) {
+		return {
+			code: "external-failure",
+			summary: `Conclave runtime recovery failed: ${message.slice(0, 2_000)}`,
+			retryable: true,
+			remediation:
+				"Inspect Evidence and retry the autonomous runtime inspection. Do not restart the primary Pi session.",
+			evidenceRefs: [],
+		};
+	}
+	if (feedbackWake) {
+		return {
+			code: "external-failure",
+			summary: `Conclave feedback assessment failed: ${message.slice(0, 2_000)}`,
+			retryable: true,
+			remediation: "Inspect Evidence, restore the Conclave runtime if needed, and retry delivery explicitly.",
+			evidenceRefs: [],
+		};
+	}
 	return {
 		code: "external-failure",
 		summary: `Conclave admission failed: ${message.slice(0, 2000)}`,
@@ -2552,24 +3012,58 @@ function normalizeTerms(input: SubmitWorkInput, defaultWorkTokens: number): Work
 		title,
 		objective,
 		context: input.context?.trim() ?? "",
-		scope: input.scope?.trim() || "Repository changes required by the objective.",
+		scope: input.scope?.trim() || DEFAULT_SCOPE,
 		acceptanceCriteria: input.acceptanceCriteria.map((entry) => assertNonBlank(entry, "acceptanceCriteria item")),
 		constraints: (input.constraints ?? []).map((entry) => assertNonBlank(entry, "constraints item")),
-		validation: (input.validation ?? ["Run the project's configured validation commands."]).map((entry) =>
-			assertNonBlank(entry, "validation item"),
-		),
+		validation: (input.validation ?? [DEFAULT_VALIDATION]).map((entry) => assertNonBlank(entry, "validation item")),
 		maxTokens,
 	};
+}
+
+function missionSpecificity(terms: WorkTerms) {
+	const missing = [
+		terms.scope === DEFAULT_SCOPE ? "scope" : undefined,
+		terms.validation.length === 1 && terms.validation[0] === DEFAULT_VALIDATION ? "validation" : undefined,
+	].filter((entry): entry is string => entry !== undefined);
+	return { status: missing.length === 0 ? "explicit" : "defaults-used", missing } as const;
+}
+
+function rawMissionSpecificity(input: SubmitWorkInput): MissionSpecificity {
+	const missing = [
+		input.scope?.trim() ? undefined : "scope",
+		input.validation !== undefined && input.validation.length > 0 ? undefined : "validation",
+	].filter((entry): entry is string => entry !== undefined);
+	return { status: missing.length === 0 ? "explicit" : "defaults-used", missing };
 }
 
 function executionDriveKey(workId: string, execution: Execution): string {
 	return `${workId}:${execution.executionId}:${execution.pi?.sessionId ?? "unbound"}`;
 }
 
+function shouldMonitorProvider(work: WorkView): boolean {
+	return (
+		work.reviewRequest !== undefined &&
+		(work.reviewRequest.status === "draft" || work.reviewRequest.status === "open") &&
+		!["succeeded", "stopped"].includes(work.state) &&
+		(work.state === "awaiting-review" ||
+			work.execution?.state === "running" ||
+			work.execution?.state === "awaiting-review")
+	);
+}
+
+function monitorMeta(work: WorkView, subject: string, bucket: number): CommandMeta {
+	return {
+		actor: "monitor",
+		commandId: `monitor:${subject}:${work.workId}:${bucket}`,
+		expectedWorkRevision: work.revision,
+		schemaVersion: 1,
+	};
+}
+
 function runtimeAction(work: WorkView, runtimeState: RuntimeState): string {
 	if (work.execution === undefined || !["running", "awaiting-review"].includes(work.execution.state))
 		return work.nextAction;
-	if (runtimeState === "unreachable") return "Executor runtime is unreachable; recover it from Actions.";
+	if (runtimeState === "unreachable") return "Executor runtime is unreachable. Recover it from Actions.";
 	if (work.execution.state !== "running") return work.nextAction;
 	if (
 		runtimeState === "idle" &&
@@ -2597,6 +3091,27 @@ function terminalBudget(budget: WorkBudget, state: Execution["state"]): WorkBudg
 	return { ...budget, reservedTokens: 0, consumedTokens: budget.consumedTokens + budget.reservedTokens };
 }
 
+function executionFailure(work: WorkView, executionId: string, error: Error | string): ErrorEnvelope {
+	const failure = (error instanceof Error ? error.message : error).trim().slice(0, 2_000);
+	const missingTerms = work.mission?.specificity?.missing ?? [];
+	return {
+		code: "external-failure",
+		summary: `Execution ${executionId} failed${failure.length === 0 ? "." : `: ${failure}`}`,
+		retryable: true,
+		remediation: "Inspect Evidence, then replace the Execution or amend the Mission before retrying.",
+		evidenceRefs: [executionId],
+		learning: {
+			failure: failure.length === 0 ? "The Executor failed without a provider error message." : failure,
+			missionSpecificity:
+				missingTerms.length === 0
+					? "Mission terms were explicit; inspect the runtime failure before changing scope."
+					: `Mission relied on default ${missingTerms.join(" and ")}; make those terms explicit before retrying.`,
+			nextMissionGuidance:
+				"If the failure exposed missing intent, make that constraint explicit before starting a replacement Execution.",
+		},
+	};
+}
+
 function roleSessionPath(projectPath: string, role: "conclave" | "observer", workId?: string): string {
 	const projectKey = createHash("sha256").update(projectPath).digest("hex").slice(0, 24);
 	const suffix =
@@ -2604,8 +3119,17 @@ function roleSessionPath(projectPath: string, role: "conclave" | "observer", wor
 	return join(tmpdir(), "khala-sessions", projectKey, `khala-${suffix}-session.jsonl`);
 }
 
-function schedulerEffect(workId: string, revision: number) {
-	return { effectId: `conclave-wake:${workId}:${revision}`, kind: "conclave-wake", payload: { workId } };
+function schedulerEffect(workId: string, revision: number, observationId?: string, reason?: string) {
+	const payload: JsonObject = { workId, observationId, reason };
+	return {
+		effectId: `conclave-wake:${workId}:${revision}`,
+		kind: "conclave-wake",
+		payload,
+	};
+}
+
+function queueSchedulerEffect(workId: string, revision: number) {
+	return { effectId: `scheduler-wake:${workId}:${revision}`, kind: "scheduler-wake", payload: { workId } };
 }
 
 function executorEffect(workId: string, revision: number) {
@@ -2616,8 +3140,17 @@ function observerEffect(workId: string, revision: number) {
 	return { effectId: `observer-wake:${workId}:${revision}`, kind: "observer-wake", payload: { workId } };
 }
 
-function feedbackEffect(workId: string, revision: number, feedback: readonly string[]) {
-	return { effectId: `feedback-wake:${workId}:${revision}`, kind: "feedback-wake", payload: { workId, feedback } };
+function feedbackEffect(
+	workId: string,
+	revision: number,
+	observationId: string | undefined,
+	feedback: readonly string[],
+) {
+	return {
+		effectId: `feedback-wake:${workId}:${revision}`,
+		kind: "feedback-wake",
+		payload: { workId, observationId, feedback },
+	};
 }
 
 function sandboxCleanupEffect(workId: string, executionId: string, sandbox: Execution["sandbox"]) {
@@ -2692,11 +3225,17 @@ function lifecycleEffects(
 ) {
 	const effects: Array<
 		| ReturnType<typeof schedulerEffect>
+		| ReturnType<typeof queueSchedulerEffect>
 		| ReturnType<typeof cleanupEffect>
 		| ReturnType<typeof executorStopEffect>
 		| ReturnType<typeof observerCleanupEffect>
 	> = [];
 	if (wakeConclave) effects.push(schedulerEffect(workId, revision));
+	if (
+		execution !== undefined &&
+		["awaiting-review", "blocked", "completed", "failed", "stopped"].includes(execution.state)
+	)
+		effects.push(queueSchedulerEffect(workId, revision));
 	if (execution?.state === "awaiting-review" && execution.pi !== undefined)
 		effects.push(executorStopEffect(workId, revision, execution));
 	if (execution !== undefined && ["completed", "failed", "stopped"].includes(execution.state))
@@ -2755,6 +3294,11 @@ function readEffectText(payload: JsonObject, key: string): string {
 	return value;
 }
 
+function readOptionalEffectText(payload: JsonObject, key: string): string | undefined {
+	const value = payload[key];
+	return value === undefined ? undefined : readEffectTextValue(value, key);
+}
+
 function readEffectInteger(value: JsonValue, key: string): number {
 	if (value !== Number(value) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0)
 		throw new Error(`Cleanup effect ${key} is invalid.`);
@@ -2783,6 +3327,13 @@ function readTextList(input: ActionInput | undefined, key: "evidence" | "feedbac
 	const value = key === "evidence" ? input?.evidence : input?.feedback;
 	if (value === undefined) throw new ActionInputError(`Action input ${key} must be a list of text.`);
 	return value.map((entry) => requiredNonBlank(entry, `${key} item`));
+}
+
+function boundedFeedback(feedback: readonly string[]): readonly string[] {
+	return feedback
+		.map((item) => item.trim().slice(0, 2_000))
+		.filter((item) => item.length > 0)
+		.slice(0, 20);
 }
 
 function readSignalKind(input: ActionInput | undefined): Signal["kind"] {
@@ -2824,11 +3375,12 @@ function oraclePayload(result: OracleResult): JsonObject {
 }
 
 function observationKey(workId: string, observation: ProviderObservation): string {
-	return `${workId}:${observation.kind}:${observation.providerId}`;
+	return `${workId}:${observation.kind}:${observation.providerId}:${observation.observationId}`;
 }
 
 function observationFingerprint(observation: ProviderObservation): string {
 	return JSON.stringify({
+		observationId: observation.observationId,
 		kind: observation.kind,
 		providerId: observation.providerId,
 		status: observation.status,
@@ -2838,6 +3390,11 @@ function observationFingerprint(observation: ProviderObservation): string {
 		targetBranch: observation.targetBranch,
 		headCommit: observation.headCommit,
 		mergeCommit: observation.mergeCommit,
+		feedback: observation.feedback,
+		author: observation.author,
+		authorAssociation: observation.authorAssociation,
+		reviewState: observation.reviewState,
+		actionable: observation.actionable,
 	});
 }
 

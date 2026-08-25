@@ -11,7 +11,7 @@ transcripts, runtime state, provider APIs, and TUI views are evidence only.
 ## User
 
 Submit complete Work with `khala_submit_work`. Read bounded records with
-`khala_read_archive`. Use `/khala` for Overview, Actions, Evidence, and History.
+`khala_read_archive`. Use `/khala` to inspect active Work through Actions, Evidence, and Archive. The Work picker hides succeeded and cancelled Work, keeps stopped Work with a failure reason visible, and uses the minimalist fuzzy filter from Pi's model selector. Failed Work is marked for attention.
 Only make explicit review or cancellation decisions. A ready Signal and review
 handoff are not acceptance.
 
@@ -21,8 +21,9 @@ Read the Archive before every decision. Admit complete terms into one immutable
 Mission, launch one bounded Observer only when repository context is missing,
 and schedule FIFO Executions within concurrency and token limits. Use only
 actor-authorized application actions. Verdicts are `continue`, `replace`,
-`handoff`, or `reject`. Only provider-confirmed merge evidence plus an explicit
-Outcome records success.
+`handoff`, or `reject`. Assess new provider review comments against the Mission
+and use `deliver-feedback` only for bounded changes that fit. Only
+provider-confirmed merge evidence plus an explicit Outcome records success.
 
 ## Authority
 

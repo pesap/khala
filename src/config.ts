@@ -21,7 +21,7 @@ export type KhalaConfig = Readonly<{
 	oracleThinking: string;
 	observerModel: string;
 	observerThinking: string;
-	keybindings: Readonly<{ filter: string; help: string; roleSettings: string }>;
+	keybindings: Readonly<{ help: string; roleSettings: string }>;
 }>;
 
 export class ConfigError extends Error {
@@ -47,7 +47,7 @@ const DEFAULTS: KhalaConfig = {
 	oracleThinking: "high",
 	observerModel: "",
 	observerThinking: "medium",
-	keybindings: { filter: "/", help: "?", roleSettings: "r" },
+	keybindings: { help: "?", roleSettings: "r" },
 };
 
 export function loadConfig(projectPath: string, trusted: boolean, requireModels = true): KhalaConfig {
@@ -134,7 +134,6 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		observerModel: readText(values, "observerModel", base.observerModel),
 		observerThinking: readText(values, "observerThinking", base.observerThinking),
 		keybindings: {
-			filter: readText(values, "filterKey", base.keybindings.filter),
 			help: readText(values, "helpKey", base.keybindings.help),
 			roleSettings: readText(values, "roleSettingsKey", base.keybindings.roleSettings),
 		},

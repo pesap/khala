@@ -11,10 +11,12 @@ export const WORK_STATES = [
 	"active",
 	"awaiting-review",
 	"succeeded",
-	"failed",
-	"cancelled",
+	"stopped",
 ] as const;
 export type WorkState = (typeof WORK_STATES)[number];
+
+export const WORK_STOP_REASONS = ["failed", "cancelled"] as const;
+export type WorkStopReason = (typeof WORK_STOP_REASONS)[number];
 
 export const MISSION_STATES = ["admitted", "active", "awaiting-review", "succeeded", "rejected", "superseded"] as const;
 export type MissionState = (typeof MISSION_STATES)[number];
@@ -89,6 +91,11 @@ export type WorkTerms = Readonly<{
 	maxTokens: number;
 }>;
 
+export type MissionSpecificity = Readonly<{
+	status: "explicit" | "defaults-used";
+	missing: readonly string[];
+}>;
+
 export type SubmitWorkInput = Readonly<{
 	workId?: string | undefined;
 	title: string;
@@ -105,6 +112,7 @@ export type Mission = Readonly<{
 	missionId: string;
 	workId: string;
 	assignment: WorkTerms;
+	specificity?: MissionSpecificity | undefined;
 	mandateRevision: number;
 	createdAt: string;
 	predecessorMissionId?: string | undefined;
@@ -178,6 +186,11 @@ export type ProviderObservation = Readonly<{
 	summary: string;
 	changed: boolean;
 	observedAt: string;
+	feedback?: readonly string[] | undefined;
+	author?: string | undefined;
+	authorAssociation?: string | undefined;
+	reviewState?: string | undefined;
+	actionable?: boolean | undefined;
 	repository?: string | undefined;
 	sourceBranch?: string | undefined;
 	targetBranch?: string | undefined;
@@ -189,8 +202,10 @@ export type WorkView = Readonly<{
 	workId: string;
 	revision: number;
 	state: WorkState;
+	stopReason?: WorkStopReason | undefined;
 	terms: WorkTerms;
 	budget: WorkBudget;
+	missionSpecificity?: MissionSpecificity | undefined;
 	mission?: Mission | undefined;
 	missionState?: MissionState | undefined;
 	execution?: Execution | undefined;
@@ -209,7 +224,10 @@ export type WorkSummary = Readonly<{
 	workId: string;
 	title: string;
 	state: WorkState;
+	stopReason?: WorkStopReason | undefined;
+	missionState?: MissionState | undefined;
 	executionState?: ExecutionState | undefined;
+	hasFailure: boolean;
 	revision: number;
 	queuePosition?: number | undefined;
 	budget: WorkBudget;
@@ -280,10 +298,12 @@ export type Action = Readonly<{
 		| "create-review-request"
 		| "run-oracle"
 		| "verdict"
+		| "deliver-feedback"
 		| "record-review"
 		| "record-outcome"
 		| "cancel"
 		| "recover"
+		| "rename-work"
 		| "amend-budget"
 		| "fail-work";
 	label: string;
@@ -302,6 +322,8 @@ export type ActionInput = Readonly<{
 	signalId?: string | undefined;
 	status?: string | undefined;
 	feedback?: readonly string[] | undefined;
+	title?: string | undefined;
+	observationId?: string | undefined;
 	subject?: string | undefined;
 	maxTokens?: number | undefined;
 }>;
@@ -328,6 +350,13 @@ export type ErrorEnvelope = Readonly<{
 	retryable: boolean;
 	remediation: string;
 	evidenceRefs: readonly string[];
+	learning?:
+		| Readonly<{
+				failure: string;
+				missionSpecificity: string;
+				nextMissionGuidance: string;
+		  }>
+		| undefined;
 }>;
 
 export type ServiceResult<T> = Readonly<{ value: T }> | Readonly<{ error: ErrorEnvelope }>;

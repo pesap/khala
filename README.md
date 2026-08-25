@@ -42,21 +42,34 @@ SQLite persistence; Conclave processing is scheduled independently.
 5. The Conclave may continue, replace, hand off, or reject the current
    Execution. Handoff enters User review; it is not acceptance.
 6. User review evidence and provider merge evidence are recorded separately.
-   Poll the provider with `khala_poll_provider` after recording review status.
-   Only the Conclave can record the succeeded Work Outcome.
+   Poll the provider with `khala_poll_provider` after a review request is open.
+   New GitHub review comments wake the Conclave, which may deliver bounded
+   feedback to the same Execution without another User action. Only the
+   Conclave can record the succeeded Work Outcome.
 
-`/khala` is quiet and on demand. It opens a Work list; each admitted Work has
-a Mission, and each Mission may have an Execution. The compact Work view
-separates lifecycle state from Executor runtime state and the next action. It
-does not repeat Work metadata. Evidence shows Executor turn status and
-explicitly reports missing Signal or provider evidence. An unreachable
-Executor exposes recovery in `Actions`.
+`/khala` is quiet and on demand. It opens a Work list; Work is the User's
+goal, each admitted Work has one Mission, and each Mission may have an
+Execution. The picker shows active Work by default, hides succeeded and cancelled Work,
+and keeps failed Work visible with a clear failure marker. Type to fuzzy-filter
+titles, IDs, states, and next actions using the same pattern as Pi's model
+selector. Work names are bounded for stable layout. The picker presents aligned
+Work, ID, state, and Execution columns; text labels and semantic colors together
+communicate status. The user-session footer shows a branded status such as
+`khala: idle` or `khala: ◈ 2`. The compact Work view separates lifecycle state
+from Executor runtime state and the next action. It does not repeat Work
+metadata. Evidence shows Executor turn status and explicitly reports missing
+Signal or provider evidence. An unreachable Executor exposes recovery in
+`Actions`; failures are marked in red and point to `Evidence`. Execution
+failures also record what failed, whether Mission specificity should be
+revisited, and guidance for a replacement Mission.
 Token usage, including cache hits and misses, remains tracked on the Execution;
 USD cost is not tracked without provider pricing and usage data. Navigation does
 not write the Archive. Up/down and Enter select; Backspace or Escape navigates
 back or closes the selector. Press `r` in the Work picker to open Role
-settings; Backspace or Escape returns to the Work picker. `/`, `?`, and `r` can
-be changed with `filterKey`, `helpKey`, and `roleSettingsKey` in configuration.
+settings; Backspace or Escape returns to the Work picker. Use `Rename` in
+Work actions to change the Work label without changing the admitted Mission
+terms. `?` and `r` can be
+changed with `helpKey` and `roleSettingsKey` in configuration.
 
 ## Application service
 
@@ -66,6 +79,7 @@ All Pi tools call the versioned application service. Its public operations are:
 submit_work(input, meta)
 list_work(filter?, cursor?)
 inspect_work(work_id)
+inspect_runtime(work_id, meta?)
 available_actions(scope, revision?)
 perform(action_command)
 read_records(query?, cursor?)
@@ -120,3 +134,5 @@ node --test test/mvp.test.js
 `npm run check` runs Oxlint with the generic anti-slop plugin, Biome formatting,
 and TypeScript validation. Tests use local port adapters and do not require
 provider credentials.
+
+Khala's root service also runs an unref'ed autonomous monitor. It polls active provider reviews and inspects active Executor runtimes without using the user's primary Pi session. GitHub review bodies, conversation comments, and inline review comments wake the shadow Conclave; feedback remains pending until delivery succeeds, and runtime failures wake Conclave recovery with Archive evidence.

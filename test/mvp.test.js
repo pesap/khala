@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { codeHostForOrigin, CommandCodeHost } from "../dist/src/adapters.js";
 import { SQLiteArchive } from "../dist/src/archive.js";
+import { openSqlite } from "../dist/src/sqlite.js";
 import { PiOracle } from "../dist/src/oracle.js";
 import { createApplication } from "../dist/src/factory.js";
 import { PiRpcRuntime } from "../dist/src/runtime.js";
@@ -24,13 +25,16 @@ function makePorts(overrides = {}) {
 		pollObservations: [],
 		turnUsage: undefined,
 		runtimeState: "idle",
+		recoverExecutor: false,
 		observerHold: false,
 		releaseObserver: undefined,
 		executorHold: false,
+		failFeedbackOnce: false,
 		releaseExecutor: undefined,
 		published: [],
 		sessions: [],
 		prompts: [],
+		onConclaveWake: undefined,
 		stopped: [],
 		cleaned: [],
 		...controlOverrides,
@@ -39,10 +43,14 @@ function makePorts(overrides = {}) {
 		async ensureSession(input) {
 			const binding = { sessionId: `${input.role}-${controls.sessions.length + 1}`, sessionPath: `/tmp/${input.role}-${controls.sessions.length + 1}.jsonl`, capabilityNonce: input.tools.length === 0 ? undefined : TEST_CAPABILITY_NONCE };
 			controls.sessions.push({ input, binding });
+			if (input.role === "executor" && controls.recoverExecutor && controls.runtimeState === "unreachable") controls.runtimeState = "idle";
 			return binding;
 		},
 		async send(binding, message) {
 			controls.prompts.push({ binding, message });
+			if (binding.sessionId.startsWith("conclave-") && controls.onConclaveWake !== undefined) {
+				await controls.onConclaveWake(message);
+			}
 			if (controls.observerHold && binding.sessionId.startsWith("observer-"))
 				return new Promise((resolve) => {
 					controls.releaseObserver = resolve;
@@ -51,6 +59,10 @@ function makePorts(overrides = {}) {
 				return new Promise((resolve) => {
 					controls.releaseExecutor = () => resolve({ output: "" });
 				});
+			if (controls.failFeedbackOnce && message.includes("Review feedback delivery")) {
+				controls.failFeedbackOnce = false;
+				throw new Error("simulated feedback delivery failure");
+			}
 			return {
 				output: "",
 				usage: binding.sessionId.startsWith("executor-") ? controls.turnUsage : undefined,
@@ -217,6 +229,104 @@ test("generated Work IDs use Nano ID format", async () => {
 	await service.close();
 });
 
+test("Users can rename Work through an append-only action", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rename-work-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const submitted = service.submitWork(
+		{ title: "Original title", objective: "Verify renaming", acceptanceCriteria: ["The title changes"] },
+		meta("user", "rename-work:submit", 0),
+	);
+	const admitted = await service.perform({
+		action: "admit",
+		workId: submitted.workId,
+		input: {},
+		meta: meta("conclave", "rename-work:admit", submitted.revision, submitted.workId),
+	});
+	assert.equal("error" in admitted, false);
+	const action = service.availableActions(admitted.value.workId, "user", admitted.value.revision).find(
+		(item) => item.kind === "rename-work",
+	);
+	assert.equal(action?.enabled, true);
+	const renamed = await service.perform({
+		action: "rename-work",
+		workId: submitted.workId,
+		input: { title: "khala-work" },
+		meta: meta("user", "rename-work:apply", admitted.value.revision, submitted.workId),
+	});
+	assert.equal("error" in renamed, false);
+	assert.equal(renamed.value.terms.title, "khala-work");
+	assert.equal(renamed.value.mission.assignment.title, "Original title");
+	assert.equal(renamed.value.mission.missionId, admitted.value.mission.missionId);
+	assert.equal(renamed.value.revision, admitted.value.revision + 1);
+	const duplicate = await service.perform({
+		action: "rename-work",
+		workId: submitted.workId,
+		input: { title: "khala-work" },
+		meta: meta("user", "rename-work:apply", admitted.value.revision, submitted.workId),
+	});
+	assert.equal("error" in duplicate, false);
+	assert.equal(duplicate.value.revision, renamed.value.revision);
+	const stale = await service.perform({
+		action: "rename-work",
+		workId: submitted.workId,
+		input: { title: "another-title" },
+		meta: meta("user", "rename-work:stale", admitted.value.revision, submitted.workId),
+	});
+	assert.equal("error" in stale, true);
+	assert.equal(stale.error.code, "revision-conflict");
+	const forbidden = await service.perform({
+		action: "rename-work",
+		workId: submitted.workId,
+		input: { title: "conclave-title" },
+		meta: meta("conclave", "rename-work:forbidden", renamed.value.revision, submitted.workId),
+	});
+	assert.equal("error" in forbidden, true);
+	assert.equal(forbidden.error.code, "forbidden");
+	const records = service.readRecords(
+		{ workId: submitted.workId, kinds: ["work-amended"] },
+		meta("user", "rename-work:read", renamed.value.revision, submitted.workId),
+	);
+	assert.equal(records.items.length, 1);
+	assert.deepEqual(records.items.at(-1)?.payload, { change: "title", previousTitle: "Original title", title: "khala-work" });
+	await service.close();
+});
+
+test("Archive migrates legacy failed and cancelled Work states", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-legacy-work-state-"));
+	const path = join(directory, "archive.sqlite");
+	const { service, archive } = makeService(path);
+	const cancelled = service.submitWork(
+		{ title: "Legacy Cancelled Work", objective: "Verify cancellation migration", acceptanceCriteria: ["The projection remains readable"] },
+		meta("user", "legacy-state:cancelled", 0),
+	);
+	const failed = service.submitWork(
+		{ title: "Legacy Failed Work", objective: "Verify failure migration", acceptanceCriteria: ["The projection remains readable"] },
+		meta("user", "legacy-state:failed", 0),
+	);
+	archive.close();
+
+	const database = openSqlite(path);
+	for (const [workId, state] of [[cancelled.workId, "cancelled"], [failed.workId, "failed"]]) {
+		const row = database.prepare("SELECT view_json FROM work_projection WHERE work_id = ?").get(workId);
+		const view = JSON.parse(String(row.view_json));
+		view.state = state;
+		delete view.stopReason;
+		database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?").run(JSON.stringify(view), workId);
+		database.prepare("UPDATE archive_records SET state = ? WHERE work_id = ?").run(state, workId);
+	}
+	database.close();
+
+	const migrated = new SQLiteArchive(path);
+	const cancelledProjection = migrated.project(cancelled.workId);
+	assert.equal(cancelledProjection.state, "stopped");
+	assert.equal(cancelledProjection.stopReason, "cancelled");
+	const failedProjection = migrated.project(failed.workId);
+	assert.equal(failedProjection.state, "stopped");
+	assert.equal(failedProjection.stopReason, "failed");
+	assert.equal(migrated.query({ states: ["stopped"] }).items.length, 2);
+	migrated.close();
+});
+
 test("generated Mission and Execution IDs use Nano ID format", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-derived-id-"));
 	const { service } = makeService(join(directory, "archive.sqlite"));
@@ -287,9 +397,16 @@ test("a runtime failure during the first Executor turn is recorded as unreachabl
 		},
 	});
 	const failed = await admitAndStart(service, "runtime-turn-failure");
+	assert.equal(failed.state, "active");
 	assert.equal(failed.execution.state, "failed");
 	assert.equal(failed.execution.runtimeState, "unreachable");
 	assert.equal(failed.nextAction, "Executor runtime failed; Conclave may replace it.");
+	assert.equal(failed.lastError?.learning?.failure, "runtime disconnected");
+	assert.match(failed.lastError?.learning?.nextMissionGuidance ?? "", /missing intent/);
+	assert.equal(
+		service.availableActions(failed.workId, "conclave", failed.revision).find((action) => action.kind === "start-execution")?.enabled,
+		true,
+	);
 	await service.close();
 });
 
@@ -360,15 +477,17 @@ test("unreachable runtime recovery fails closed and is visible to another Archiv
 	controls.runtimeState = "unreachable";
 	const observed = await service.inspectRuntime(running.workId);
 	assert.equal(observed.execution.runtimeState, "unreachable");
-	assert.equal(observed.nextAction, "Executor runtime is unreachable; recover it from Actions.");
+	assert.equal(observed.nextAction, "Executor runtime is unreachable. Recover it from Actions.");
 	const actions = service.availableActions(
 		observed.workId,
 		"user",
 		observed.revision,
 		observed.execution.runtimeState,
 	);
-	assert.equal(actions[0].kind, "recover");
-	assert.equal(actions[1].kind, "cancel");
+	assert.deepEqual(
+		actions.map((action) => action.kind),
+		["recover", "rename-work", "fail-work", "amend-budget", "record-review", "cancel"],
+	);
 	assert.equal(actions.find((action) => action.kind === "recover")?.enabled, true);
 	const result = await service.perform({
 		action: "recover",
@@ -394,21 +513,76 @@ test("unreachable runtime recovery fails closed and is visible to another Archiv
 	await service.close();
 });
 
-test("cancelled Work can be explicitly recovered for fresh admission", async () => {
+test("Conclave can inspect and recover an unreachable Executor without User interaction", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-conclave-runtime-recovery-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { recoverExecutor: true });
+	const running = await admitAndStart(service, "conclave-runtime-recovery");
+	controls.runtimeState = "unreachable";
+	let recoveryResult;
+	controls.onConclaveWake = async (message) => {
+		if (!message.includes("Inspect the Executor runtime")) return;
+		const inspected = await service.inspectRuntime(running.workId);
+		const action = service.availableActions(
+			inspected.workId,
+			"conclave",
+			inspected.revision,
+			inspected.execution.runtimeState,
+		).find((candidate) => candidate.kind === "recover");
+		assert.equal(action?.enabled, true);
+		recoveryResult = await service.perform({
+			action: "recover",
+			workId: running.workId,
+			input: {},
+			meta: meta("conclave", "conclave-runtime:recover", inspected.revision, running.workId),
+		});
+	};
+	await service.runAutonomousCycle();
+	assert.equal(recoveryResult !== undefined && "error" in recoveryResult, false);
+	const recovered = service.inspectWork(running.workId);
+	assert.equal(recovered.execution.executionId, running.execution.executionId);
+	assert.equal(recovered.execution.runtimeState, "idle");
+	await service.close();
+});
+
+test("stopped Work can be explicitly recovered after cancellation", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-cancel-recovery-"));
-	const { service } = makeService(join(directory, "archive.sqlite"));
+	const { service, archive } = makeService(join(directory, "archive.sqlite"));
 	const submitted = service.submitWork(
 		{ title: "Recoverable Work", objective: "Verify recovery", acceptanceCriteria: ["The Work can be recovered"] },
 		meta("user", "cancel-recovery:submit", 0),
 	);
-	const cancelled = await service.perform({
+	const withError = {
+		...submitted,
+		revision: submitted.revision + 1,
+		lastError: {
+			code: "external-failure",
+			summary: "A previous attempt failed.",
+			retryable: true,
+			remediation: "Recover and retry.",
+			evidenceRefs: [],
+		},
+	};
+	archive.append({
+		commandId: "cancel-recovery:error",
+		expectedWorkRevision: submitted.revision,
+		kind: "error",
+		actor: "system",
+		workId: submitted.workId,
+		payloadVersion: 1,
+		summary: "A previous attempt failed.",
+		payload: { message: "A previous attempt failed." },
+		projection: withError,
+	});
+	const stopped = await service.perform({
 		action: "cancel",
 		workId: submitted.workId,
 		input: {},
-		meta: meta("user", "cancel-recovery:cancel", submitted.revision, submitted.workId),
+		meta: meta("user", "cancel-recovery:cancel", withError.revision, submitted.workId),
 	});
-	assert.equal(cancelled.value.state, "cancelled");
-	const recovery = service.availableActions(cancelled.value.workId, "user", cancelled.value.revision).find(
+	assert.equal(stopped.value.state, "stopped");
+	assert.equal(stopped.value.stopReason, "cancelled");
+	assert.equal(service.listWork().find((item) => item.workId === stopped.value.workId)?.stopReason, "cancelled");
+	const recovery = service.availableActions(stopped.value.workId, "user", stopped.value.revision).find(
 		(action) => action.kind === "recover",
 	);
 	assert.equal(recovery?.enabled, true);
@@ -416,12 +590,13 @@ test("cancelled Work can be explicitly recovered for fresh admission", async () 
 		action: "recover",
 		workId: submitted.workId,
 		input: {},
-		meta: meta("user", "cancel-recovery:recover", cancelled.value.revision, submitted.workId),
+		meta: meta("user", "cancel-recovery:recover", stopped.value.revision, submitted.workId),
 	});
 	assert.equal("error" in recovered, false);
 	assert.equal(recovered.value.state, "submitted");
 	assert.equal(recovered.value.mission, undefined);
 	assert.equal(recovered.value.execution, undefined);
+	assert.equal(recovered.value.lastError, undefined);
 	assert.equal(recovered.value.nextAction, "Recovered Work is pending Conclave admission.");
 	const admitted = await service.perform({
 		action: "admit",
@@ -530,6 +705,83 @@ test("Feedback waits for an active Executor turn instead of being dropped", asyn
 	await processing;
 	assert.equal(controls.prompts.some((entry) => entry.message.includes("Fix the edge case.")), true);
 	assert.equal(service.inspectWork(running.workId).revision > changed.value.revision, true);
+	await service.close();
+});
+
+test("GitHub review feedback wakes the Conclave and resumes the same Execution without User action", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-github-feedback-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "github-feedback");
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "github-feedback:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const ready = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
+		meta: meta("executor", "github-feedback:ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	await service.perform({
+		action: "verdict",
+		workId: running.workId,
+		input: { decision: "handoff", reason: "Review it", signalId: ready.value.lastSignal.signalId },
+		meta: meta("conclave", "github-feedback:handoff", ready.value.revision, running.workId),
+	});
+	controls.pollObservations = [7, 8].map((id) => ({
+		observationId: `review-comment:42:${id}`,
+		kind: "review-comment",
+		providerId: "42",
+		status: "changes-requested",
+		summary: `Please address review comment ${id}.`,
+		feedback: [`Please address review comment ${id}.`],
+		changed: true,
+		observedAt: new Date().toISOString(),
+	}));
+	controls.onConclaveWake = async (message) => {
+		if (!message.includes("provider observation") && !message.includes("provider feedback")) return;
+		const observationId = message.match(/observation (review-comment:42:\d+)/)?.[1];
+		if (observationId === undefined) return;
+		const current = service.inspectWork(running.workId);
+		const delivered = await service.perform({
+			action: "deliver-feedback",
+			workId: running.workId,
+			input: { observationId },
+			meta: meta("conclave", `github-feedback:deliver:${observationId}`, current.revision, running.workId),
+		});
+		assert.equal("error" in delivered, false);
+	};
+	controls.failFeedbackOnce = true;
+	await service.runAutonomousCycle();
+	await service.runAutonomousCycle();
+	await service.runAutonomousCycle();
+	const resumed = service.inspectWork(running.workId);
+	assert.equal(resumed.state, "active");
+	assert.equal(resumed.execution.state, "running");
+	assert.equal(controls.prompts.some((entry) => entry.message.includes("Please address review comment 7.")), true);
+	assert.equal(controls.prompts.some((entry) => entry.message.includes("Please address review comment 8.")), true);
+	const revisionAfterDelivery = resumed.revision;
+	const replayed = await service.pollProvider(
+		running.workId,
+		meta("user", "github-feedback:poll-replay", revisionAfterDelivery),
+	);
+	assert.equal(replayed.revision, revisionAfterDelivery);
+	const deliveries = service.readRecords(
+		{ workId: running.workId, kinds: ["delivery"] },
+		meta("user", "github-feedback:deliveries", replayed.revision),
+	);
+	const firstDelivery = deliveries.items.filter((record) => record.payload.observationId === "review-comment:42:7");
+	const secondDelivery = deliveries.items.filter((record) => record.payload.observationId === "review-comment:42:8");
+	if (!firstDelivery.some((record) => record.payload.delivered === true)) {
+		throw new Error(`First feedback delivery did not complete: ${JSON.stringify(firstDelivery.map((record) => record.payload))}`);
+	}
+	if (!secondDelivery.some((record) => record.payload.delivered === true)) {
+		throw new Error(`Second feedback delivery did not complete: ${JSON.stringify(secondDelivery.map((record) => record.payload))}`);
+	}
+	assert.equal(firstDelivery.some((record) => record.payload.delivered === false), true);
+	assert.equal(secondDelivery.some((record) => record.payload.delivered === false), true);
 	await service.close();
 });
 
@@ -670,6 +922,64 @@ test("Observer evidence is read-only, bound to one Work, and becomes admission c
 	await service.close();
 });
 
+test("a released project slot wakes the FIFO queued Mission", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-queue-wake-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { maxConcurrentExecutions: 1 });
+	const firstSubmitted = service.submitWork(
+		{ title: "First", objective: "Use the first slot", acceptanceCriteria: ["It starts"] },
+		meta("user", "queue-wake:first-submit", 0),
+	);
+	const firstAdmitted = await service.perform({
+		action: "admit",
+		workId: firstSubmitted.workId,
+		input: {},
+		meta: meta("conclave", "queue-wake:first-admit", firstSubmitted.revision, firstSubmitted.workId),
+	});
+	const firstQueued = await service.perform({
+		action: "start-execution",
+		workId: firstSubmitted.workId,
+		input: {},
+		meta: meta("conclave", "queue-wake:first-start", firstAdmitted.value.revision, firstSubmitted.workId),
+	});
+	assert.equal(firstQueued.value.execution.state, "queued");
+	await service.processPendingEffects();
+	await new Promise((resolve) => setImmediate(resolve));
+
+	const secondSubmitted = service.submitWork(
+		{ title: "Second", objective: "Wait for the first slot", acceptanceCriteria: ["It starts after the first Work ends"] },
+		meta("user", "queue-wake:second-submit", 0),
+	);
+	const secondAdmitted = await service.perform({
+		action: "admit",
+		workId: secondSubmitted.workId,
+		input: {},
+		meta: meta("conclave", "queue-wake:second-admit", secondSubmitted.revision, secondSubmitted.workId),
+	});
+	await service.processPendingEffects();
+	const promptsBeforeRelease = controls.prompts.filter((prompt) => prompt.message.includes(secondSubmitted.workId)).length;
+	const secondStart = await service.perform({
+		action: "start-execution",
+		workId: secondSubmitted.workId,
+		input: {},
+		meta: meta("conclave", "queue-wake:second-start", secondAdmitted.value.revision, secondSubmitted.workId),
+	});
+	assert.equal(secondStart.value.execution, undefined);
+
+	const firstCurrent = service.inspectWork(firstSubmitted.workId);
+	const failed = await service.perform({
+		action: "fail-work",
+		workId: firstSubmitted.workId,
+		input: { reason: "Release the slot for the FIFO queue." },
+		meta: meta("user", "queue-wake:first-fail", firstCurrent.revision, firstSubmitted.workId),
+	});
+	assert.equal(failed.value.state, "stopped");
+	assert.equal(failed.value.stopReason, "failed");
+	await service.processPendingEffects();
+	const promptsAfterRelease = controls.prompts.filter((prompt) => prompt.message.includes(secondSubmitted.workId)).length;
+	assert.ok(promptsAfterRelease > promptsBeforeRelease);
+	await service.close();
+});
+
 test("project concurrency reserves a slot before runtime launch and reports external failures distinctly", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-concurrency-"));
 	const path = join(directory, "archive.sqlite");
@@ -782,7 +1092,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api") process.stdout.write("principal\\n");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: "OPEN", isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head" }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: "OPEN", merged: false, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER" }], reviews: [{ id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
@@ -799,6 +1109,18 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 			draftMarker: "Khala-Work: work-1",
 		});
 		assert.equal(request.sourceBranch, "khala/branch");
+		const observations = await host.poll(request);
+		assert.equal(
+			observations.some(
+				(item) =>
+					item.kind === "review-comment" &&
+					item.feedback?.[0] === "Please add a regression test." &&
+					item.actionable === true,
+			),
+			true,
+		);
+		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("review-level note")), true);
+		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("Inline review note (src/index.ts:3)")), true);
 		const commands = (await readFile(log, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 		const create = commands.find((args) => args[1] === "create");
 		assert.equal(create.includes("--head"), true);

@@ -110,7 +110,7 @@ export class CommandCodeHost implements CodeHostPort {
 
 	async identity(): Promise<Readonly<{ principalId: string; verified: boolean }>> {
 		const command = this.provider === "github" ? "gh" : "glab";
-		const args = this.provider === "github" ? ["api", "user", "--jq", ".node_id"] : ["api", "user", "--jq", ".id"];
+		const args = this.provider === "github" ? ["api", "user", "--jq", ".login"] : ["api", "user", "--jq", ".id"];
 		const principalId = (await run(command, args, this.cwd)).trim();
 		return { principalId, verified: principalId.length > 0 };
 	}
@@ -254,13 +254,40 @@ export class CommandCodeHost implements CodeHostPort {
 		if (this.provider === "github") {
 			const data = await run(
 				"gh",
-				["pr", "view", reviewRequest.providerId, "--json", "state,reviewDecision,statusCheckRollup"],
+				[
+					"pr",
+					"view",
+					reviewRequest.providerId,
+					"--json",
+					"state,merged,reviewDecision,statusCheckRollup,comments,reviews",
+				],
 				this.cwd,
 			);
-			return [{ ...observation("ci-status", reviewRequest.providerId, data), status: reviewRequest.status }];
+			const row = parseJsonArray(`[${data}]`)[0];
+			if (row === undefined) throw new Error("GitHub did not return review request polling data.");
+			const repository = await this.repository();
+			const inlineData = await run(
+				"gh",
+				["api", `repos/${repository}/pulls/${reviewRequest.providerId}/comments`, "--paginate", "--slurp"],
+				this.cwd,
+			);
+			return [
+				{
+					...observation("ci-status", reviewRequest.providerId, data),
+					status: githubPollStatus(row, reviewRequest.status),
+				},
+				...githubFeedback(row, reviewRequest.providerId, reviewRequest.principalId, parseJsonPages(inlineData)),
+			];
 		}
 		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
-		return [observation("ci-status", reviewRequest.providerId, data)];
+		const row = parseJsonArray(`[${data}]`)[0];
+		if (row === undefined) throw new Error("GitLab did not return review request polling data.");
+		return [
+			{
+				...observation("ci-status", reviewRequest.providerId, data),
+				status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
+			},
+		];
 	}
 
 	async inspectOutcome(reviewRequest: ReviewRequest): Promise<ProviderObservation | undefined> {
@@ -479,6 +506,109 @@ function observation(
 		observedAt: new Date().toISOString(),
 		...evidence,
 	};
+}
+
+function githubFeedback(
+	row: Record<string, JsonValue>,
+	providerId: string,
+	principalId: string,
+	inlineComments: readonly Record<string, JsonValue>[] = [],
+): readonly ProviderObservation[] {
+	const sources = [
+		{ prefix: "comment", entries: row["comments"] },
+		{ prefix: "review", entries: row["reviews"] },
+		{ prefix: "inline", entries: inlineComments },
+	];
+	return sources.flatMap(({ prefix, entries }) => {
+		if (!Array.isArray(entries)) return [];
+		return entries.filter(isJsonObject).flatMap((entry) => {
+			const body = entry["body"];
+			const id = entry["id"];
+			const state = isTextValue(entry["state"]) ? entry["state"].toUpperCase() : "";
+			const author = githubAuthor(entry);
+			const authorAssociation = githubAssociation(entry);
+			const actionable = githubFeedbackIsActionable(prefix, state, authorAssociation, author, principalId);
+			if (
+				!isTextValue(body) ||
+				body.trim().length === 0 ||
+				(id !== String(id) && id !== Number(id)) ||
+				(prefix === "review" && ["APPROVED", "DISMISSED"].includes(state))
+			)
+				return [];
+			const commentId = String(id);
+			const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
+			const line = entry["line"] === undefined ? undefined : String(entry["line"]);
+			const location = path === undefined ? "" : ` (${path}${line === undefined ? "" : `:${line}`})`;
+			const feedback = `${body.trim()}${location}`.slice(0, 2_000);
+			const observationId =
+				prefix === "comment"
+					? `review-comment:${providerId}:${commentId}`
+					: `review-comment:${providerId}:${prefix}:${commentId}`;
+			return [
+				observation(
+					"review-comment",
+					providerId,
+					feedback,
+					state === "CHANGES_REQUESTED" ? "changes-requested" : "commented",
+					{
+						observationId,
+						feedback: [feedback],
+						author,
+						authorAssociation,
+						reviewState: state || undefined,
+						actionable,
+					},
+				),
+			];
+		});
+	});
+}
+
+function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest["status"]): ReviewRequest["status"] {
+	if (row["merged"] === true) return "merged";
+	const state = isTextValue(row["state"]) ? row["state"].toUpperCase() : "";
+	if (state === "CLOSED") return "closed";
+	return current === "draft" ? "draft" : "open";
+}
+
+function githubAuthor(entry: Record<string, JsonValue>): string | undefined {
+	for (const key of ["author", "user"]) {
+		const value = entry[key];
+		if (isJsonObject(value) && isTextValue(value["login"])) return value["login"];
+	}
+	return undefined;
+}
+
+function githubAssociation(entry: Record<string, JsonValue>): string | undefined {
+	const value = entry["authorAssociation"] ?? entry["author_association"];
+	return isTextValue(value) ? value.toUpperCase() : undefined;
+}
+
+function githubFeedbackIsActionable(
+	prefix: string,
+	state: string,
+	association: string | undefined,
+	author: string | undefined,
+	principalId: string,
+): boolean {
+	if (author !== principalId) return false;
+	if (!["COLLABORATOR", "CONTRIBUTOR", "MEMBER", "OWNER"].includes(association ?? "")) return false;
+	return prefix !== "review" || ["CHANGES_REQUESTED", "COMMENTED"].includes(state);
+}
+
+function parseJsonPages(value: string): readonly Record<string, JsonValue>[] {
+	const parsed: JsonValue = JSON.parse(value);
+	if (!Array.isArray(parsed)) throw new Error("Code-host response was not a JSON page list.");
+	const entries: JsonValue[] = [];
+	for (const page of parsed) {
+		if (Array.isArray(page)) entries.push(...page);
+		else entries.push(page);
+	}
+	return entries.filter(isJsonObject);
+}
+
+function isTextValue(value: JsonValue | undefined): value is string {
+	return value !== undefined && value === String(value);
 }
 
 export async function readPullRequestTemplate(projectPath: string): Promise<string | undefined> {

@@ -16,12 +16,15 @@ only documented defaults, and appends a `submission` record. It returns without
 waiting for the Conclave child. A missing repository fact may launch one
 read-only Observer, which records exactly one bounded `assessment` and stops.
 The Conclave rereads the Archive and admits complete terms into an immutable
-Mission.
+Mission. The User can rename the Work label later without changing the Mission
+terms.
 
 Admission is not launch. The scheduler orders admitted Work by Archive sequence.
 It starts a Work only when the project concurrency limit and its reserved token
 allowance permit it. Work that cannot start remains queued with `waiting for
-budget` or the relevant concurrency message.
+budget` or the relevant concurrency message. When an Execution releases a
+project slot, the parent supervisor durably wakes the oldest admitted queued
+Mission; it does not start Work without a Conclave decision.
 
 ## Execution
 
@@ -54,9 +57,10 @@ review request still needs a changed provider-outcome observation.
 Only a Conclave `outcome` record linked to provider-confirmed merge evidence
 sets Work to `succeeded`. A closed request, failed CI, missing provider result,
 blocked Execution, and monitor failure remain evidence that requires a decision.
-The User alone can record `cancelled`; failed Work requires an explicit
-Conclave or User decision. The User can explicitly recover cancelled Work,
-which clears the old Mission and returns the Work to pending admission.
+An explicit failure or cancellation stops Work. The Work stores that decision
+as `stopReason` rather than exposing separate failed and cancelled states. The
+User can explicitly recover Work stopped by cancellation, which clears the old
+Mission and returns the Work to pending admission.
 
 ## Runtime recovery evidence
 

@@ -29,7 +29,7 @@ export default function reviewExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			active = true;
-			context.ui.setWidget("pi-review", ["Review active · /end-review returns to coding"]);
+			context.ui.setWidget("pi-review", ["Review active  /end-review returns to coding"]);
 			pi.appendEntry(REVIEW_STATE, { active: true, target });
 			pi.sendUserMessage(`${REVIEW_RUBRIC}\n\nReview target:\n${target}`);
 		},
@@ -52,7 +52,7 @@ export default function reviewExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, context) => {
 		active = readActiveState(context);
 		if (active) {
-			context.ui.setWidget("pi-review", ["Review active · /end-review returns to coding"]);
+			context.ui.setWidget("pi-review", ["Review active  /end-review returns to coding"]);
 		}
 	});
 }

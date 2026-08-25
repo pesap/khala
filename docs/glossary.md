@@ -19,6 +19,7 @@
   readiness. It is not acceptance.
 - **Verdict** — a Conclave decision to continue, replace, hand off, or reject a
   current Execution.
-- **Work** — the stable User goal with a budget and terminal Outcome.
+- **Work** — the stable User goal with a budget and terminal `succeeded` or
+  `stopped` state; `stopReason` records a failure or cancellation.
 - **Work Outcome** — explicit acceptance evidence created only after provider
   merge confirmation.

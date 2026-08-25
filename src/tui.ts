@@ -9,17 +9,23 @@ import {
 import {
 	type Component,
 	Container,
+	fuzzyFilter,
+	Input,
 	matchesKey,
+	parseKey,
 	type SelectItem,
 	SelectList,
 	type SelectListTheme,
 	Spacer,
 	Text,
+	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { KhalaConfig } from "./config.js";
 import type {
 	Action,
 	Actor,
+	ErrorEnvelope,
 	GovernedRole,
 	JsonObject,
 	JsonValue,
@@ -38,29 +44,115 @@ export type RoleSettingsController = Readonly<{
 	set: (role: GovernedRole, setting: RoleSetting, value: string) => void | Promise<void>;
 }>;
 
+const MAX_WORK_NAME_LENGTH = 36;
+const WIDE_WORK_TABLE_COLUMNS = { title: 36, id: 21, state: 15, execution: 15 } as const;
+type WorkTableLayout = Readonly<{ title: number; id?: number; state: number; execution: number }>;
+type WorkStatusTone = "active" | "waiting" | "attention" | "failure" | "inactive" | "success";
+type WorkStatus = Readonly<{ label: string; tone: WorkStatusTone }>;
+type WorkStatusPalette = Readonly<Record<WorkStatusTone, (theme: Theme, text: string) => string>>;
+
+// Labels communicate status without color; this palette only adds a semantic visual cue.
+const WORK_STATUS_PALETTE = {
+	active: (theme, text) => theme.fg("accent", text),
+	waiting: (theme, text) => theme.fg("warning", text),
+	attention: (theme, text) => theme.fg("warning", text),
+	failure: (theme, text) => theme.fg("error", text),
+	inactive: (theme, text) => theme.fg("muted", text),
+	success: (theme, text) => theme.fg("success", text),
+} satisfies WorkStatusPalette;
+
+function isHiddenWork(item: WorkSummary): boolean {
+	return item.state === "succeeded" || (item.state === "stopped" && item.stopReason !== "failed");
+}
+
+function workSearchText(item: WorkSummary): string {
+	return [
+		item.title,
+		item.workId,
+		item.state,
+		item.stopReason ?? "",
+		item.missionState ?? "not admitted",
+		item.executionState ?? "not started",
+		item.nextAction,
+	].join(" ");
+}
+
+function truncateWorkName(value: string): string {
+	const normalized = value.replace(/[\r\n]+/g, " ").trim();
+	return normalized.length <= MAX_WORK_NAME_LENGTH
+		? normalized
+		: `${normalized.slice(0, MAX_WORK_NAME_LENGTH - 1).trimEnd()}…`;
+}
+
+function tableCell(value: string, width: number): string {
+	const truncated = truncateToWidth(value, width, "");
+	return `${truncated}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
+}
+
+function workTableLayout(width: number): WorkTableLayout {
+	if (width >= 95) return WIDE_WORK_TABLE_COLUMNS;
+	const available = Math.max(3, width - 6);
+	const statusWidth = Math.min(15, Math.max(1, Math.floor((available - 1) / 3)));
+	return { title: Math.max(1, available - statusWidth * 2), state: statusWidth, execution: statusWidth };
+}
+
+function hasWorkFailure(item: WorkSummary): boolean {
+	return item.hasFailure === true || (item.state === "stopped" && item.stopReason === "failed");
+}
+
+function workState(item: WorkSummary): WorkStatus {
+	if (item.state === "stopped" && item.stopReason === "failed") return { label: "stopped", tone: "failure" };
+	if (item.state === "stopped") return { label: "stopped", tone: "inactive" };
+	if (hasWorkFailure(item) && item.executionState !== "failed")
+		return { label: `${formatStatus(item.state)} error`, tone: "failure" };
+	if (item.state === "succeeded") return { label: "succeeded", tone: "success" };
+	if (item.state === "queued" || item.state === "awaiting-review")
+		return { label: formatStatus(item.state), tone: "waiting" };
+	return { label: formatStatus(item.state), tone: "active" };
+}
+
+function executionState(item: WorkSummary): WorkStatus {
+	const state = item.executionState;
+	if (state === undefined) return { label: "not started", tone: "inactive" };
+	if (state === "failed") return { label: "failed", tone: "failure" };
+	if (state === "blocked") return { label: "blocked", tone: "attention" };
+	if (state === "queued" || state === "awaiting-review") return { label: formatStatus(state), tone: "waiting" };
+	if (state === "completed") return { label: "completed", tone: "success" };
+	if (state === "stopped") return { label: "stopped", tone: "inactive" };
+	return { label: "running", tone: "active" };
+}
+
+function workTableHeader(theme: Theme, layout: WorkTableLayout): string {
+	const id = layout.id === undefined ? "" : `  ${tableCell("ID", layout.id)}`;
+	return theme.fg("dim", `  ${tableCell("TITLE", layout.title)}${id}  ${tableCell("STATE", layout.state)}  EXECUTION`);
+}
+
+function workTableRow(theme: Theme, item: WorkSummary, selected: boolean, layout: WorkTableLayout): string {
+	const prefix = selected ? theme.fg("accent", "→ ") : "  ";
+	const title = tableCell(truncateWorkName(item.title), layout.title);
+	const id = layout.id === undefined ? "" : `  ${theme.fg("dim", tableCell(item.workId, layout.id))}`;
+	const state = workState(item);
+	const execution = executionState(item);
+	return `${prefix}${selected ? theme.fg("accent", title) : title}${id}  ${WORK_STATUS_PALETTE[state.tone](theme, tableCell(state.label, layout.state))}  ${WORK_STATUS_PALETTE[execution.tone](theme, execution.label)}`;
+}
+
 export async function showKhala(
 	service: ApplicationService,
 	context: ExtensionContext,
 	actor: Actor = "user",
-	keybindings: KhalaConfig["keybindings"] = { filter: "/", help: "?", roleSettings: "r" },
+	keybindings: KhalaConfig["keybindings"] = { help: "?", roleSettings: "r" },
 	roleSettings?: RoleSettingsController,
 ): Promise<void> {
 	if (!context.hasUI || context.mode !== "tui") {
 		context.ui.notify(renderDashboard(service.listWork()), "info");
 		return;
 	}
-	let filter = "";
+	const pickerState: WorkPickerState = { query: "" };
 	for (;;) {
-		const workId = await pickWork(service.listWork(), context, filter, keybindings);
-		if (workId === null) {
-			return;
-		}
+		const workId = await pickWork(service.listWork(), context, keybindings, pickerState);
+		if (workId === null) return;
 		if (workId === "help") {
 			await showHelp(context);
-			continue;
-		}
-		if (workId === "filter") {
-			filter = (await context.ui.input("Filter Work by title or ID:", filter)) ?? filter;
 			continue;
 		}
 		if (workId === "settings") {
@@ -71,77 +163,156 @@ export async function showKhala(
 	}
 }
 
+type WorkPickerState = {
+	query: string;
+	selectedWorkId?: string | undefined;
+};
+
 async function pickWork(
 	work: readonly WorkSummary[],
 	context: ExtensionContext,
-	filter: string,
 	keybindings: KhalaConfig["keybindings"],
-): Promise<string | "help" | "filter" | "settings" | null> {
-	const items: SelectItem[] = work.map((item) => ({
-		value: item.workId,
-		label: item.title,
-		description: `Work  ${formatStatus(item.state)}  ${item.workId}${item.executionState === "blocked" ? "  blocked" : ""}`,
-	}));
-	const filtered = items.filter((item) =>
-		`${item.value} ${item.label} ${item.description ?? ""}`.toLowerCase().includes(filter.toLowerCase()),
-	);
-	return context.ui.custom<string | "filter" | "help" | "settings" | null>((tui, theme, _keybindings, done) => {
+	pickerState: WorkPickerState,
+): Promise<string | "help" | "settings" | null> {
+	return context.ui.custom<string | "help" | "settings" | null>((tui, theme, _keybindings, done) => {
+		const input = new Input();
+		input.setValue(pickerState.query);
+		let tableRows: readonly Readonly<{ item: WorkSummary; selected: boolean }>[] = [];
+		let listMessages: readonly string[] = [];
+		const listContainer: Component = {
+			render: (width: number) => {
+				const layout = workTableLayout(width);
+				return [
+					workTableHeader(theme, layout),
+					...tableRows.map(({ item, selected }) => workTableRow(theme, item, selected, layout)),
+					...listMessages,
+				].map((line) => truncateToWidth(line, width, "…"));
+			},
+			invalidate: () => {},
+		};
+		let filtered = work.filter((item) => !isHiddenWork(item));
+		let selectedIndex = 0;
+		const updateList = (): void => {
+			const rows: Array<Readonly<{ item: WorkSummary; selected: boolean }>> = [];
+			const messages: string[] = [];
+			const maxVisible = 10;
+			const startIndex = Math.max(
+				0,
+				Math.min(selectedIndex - Math.floor(maxVisible / 2), filtered.length - maxVisible),
+			);
+			const endIndex = Math.min(startIndex + maxVisible, filtered.length);
+			for (let index = startIndex; index < endIndex; index += 1) {
+				const item = filtered[index];
+				if (item === undefined) continue;
+				rows.push({ item, selected: index === selectedIndex });
+			}
+			if (startIndex > 0 || endIndex < filtered.length) {
+				messages.push(theme.fg("muted", `  (${selectedIndex + 1}/${filtered.length})`));
+			}
+			if (filtered.length === 0) {
+				messages.push(theme.fg("muted", input.getValue() ? "  No matching Work" : "  No active Work"));
+			}
+			tableRows = rows;
+			listMessages = messages;
+			tui.requestRender();
+		};
+		const refresh = (restoreSelection = false): void => {
+			const query = input.getValue();
+			filtered =
+				query.length === 0
+					? work.filter((item) => !isHiddenWork(item))
+					: fuzzyFilter(
+							work.filter((item) => !isHiddenWork(item)),
+							query,
+							workSearchText,
+						);
+			const restoredIndex =
+				restoreSelection && pickerState.selectedWorkId !== undefined
+					? filtered.findIndex((item) => item.workId === pickerState.selectedWorkId)
+					: -1;
+			selectedIndex =
+				restoredIndex >= 0
+					? restoredIndex
+					: query.length > 0
+						? 0
+						: Math.min(selectedIndex, Math.max(0, filtered.length - 1));
+			updateList();
+		};
+		const finish = (value: string | "help" | "settings" | null): void => {
+			pickerState.query = input.getValue();
+			if (value !== null && value !== "help" && value !== "settings") {
+				pickerState.selectedWorkId = value;
+			}
+			done(value);
+		};
+		input.onSubmit = () => {
+			const item = filtered[selectedIndex];
+			if (item !== undefined) finish(item.workId);
+		};
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Khala")), 1, 0));
 		container.addChild(new Spacer(1));
-		const list = new SelectList(filtered, Math.min(5, Math.max(1, filtered.length)), {
-			selectedPrefix: (text: string) => theme.fg("accent", text),
-			selectedText: (text: string) => theme.fg("accent", text),
-			description: (text: string) => theme.fg("muted", text),
-			scrollInfo: (text: string) => theme.fg("dim", text),
-			noMatch: () =>
-				theme.fg("warning", filter.length === 0 ? "  No Work has been submitted." : "  No Work matches the filter."),
-		});
-		list.onSelect = (item) => done(item.value);
-		list.onCancel = () => done(null);
-		container.addChild(list);
+		container.addChild(new Text(theme.fg("accent", theme.bold("Work")), 0, 0));
+		container.addChild(input);
 		container.addChild(new Spacer(1));
-		container.addChild(
-			new Text(
-				theme.fg(
-					"dim",
-					`↑↓ navigate  ${keybindings.filter} filter  ${keybindings.roleSettings} role settings  enter select  escape/ctrl+c cancel`,
-				),
-				1,
-				0,
-			),
-		);
+		container.addChild(listContainer);
+		container.addChild(new Spacer(1));
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		refresh(true);
+		let focused = false;
 		return {
+			get focused(): boolean {
+				return focused;
+			},
+			set focused(value: boolean) {
+				focused = value;
+				input.focused = value;
+			},
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data: string) => {
-				if (data === keybindings.filter) {
-					done("filter");
+				if (input.getValue().length === 0 && parseKey(data) === keybindings.help) {
+					finish("help");
 					return;
 				}
-				if (data === keybindings.help) {
-					done("help");
+				if (input.getValue().length === 0 && parseKey(data) === keybindings.roleSettings) {
+					finish("settings");
 					return;
 				}
-				if (data === keybindings.roleSettings) {
-					done("settings");
+				if (matchesKey(data, "up") || matchesKey(data, "down")) {
+					if (filtered.length === 0) return;
+					selectedIndex = matchesKey(data, "up")
+						? selectedIndex === 0
+							? filtered.length - 1
+							: selectedIndex - 1
+						: selectedIndex === filtered.length - 1
+							? 0
+							: selectedIndex + 1;
+					updateList();
 					return;
 				}
-				if (matchesKey(data, "backspace")) {
-					done(null);
+				if (matchesKey(data, "enter")) {
+					const item = filtered[selectedIndex];
+					if (item !== undefined) finish(item.workId);
 					return;
 				}
-				list.handleInput(data);
-				tui.requestRender();
+				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+					finish(null);
+					return;
+				}
+				if (matchesKey(data, "backspace") && input.getValue().length === 0) {
+					finish(null);
+					return;
+				}
+				input.handleInput(data);
+				refresh();
 			},
 		};
 	});
 }
 
 const NAVIGATION_FOOTER = "↑↓ navigate  enter select  escape/ctrl+c cancel";
-type WorkSection = "actions" | "evidence" | "history" | "blocking-signal";
+type WorkSection = "actions" | "evidence" | "archive" | "blocking-signal";
 
 async function showWork(
 	service: ApplicationService,
@@ -161,8 +332,8 @@ async function showWork(
 			await showEvidence(work, context);
 			continue;
 		}
-		if (section === "history") {
-			await showHistory(service, context, work, actor);
+		if (section === "archive") {
+			await showArchive(service, context, work, actor);
 			continue;
 		}
 		await showBlockingSignal(work, context);
@@ -173,21 +344,26 @@ async function pickSection(work: WorkView, context: ExtensionContext): Promise<W
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
-		{ value: "history", label: "History" },
+		{ value: "archive", label: "Archive" },
 		...(work.execution?.state === "blocked" ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
-		const mission = work.mission === undefined ? "not admitted" : formatStatus(work.missionState ?? "unknown");
+		const mission = work.mission === undefined ? "not admitted" : formatMissionState(work.missionState ?? "unknown");
 		const execution = work.execution;
+		const failure =
+			work.lastError !== undefined ||
+			(work.state === "stopped" && work.stopReason === "failed") ||
+			execution?.state === "failed";
 		const status = [
-			`work       ${theme.bold(formatStatus(work.state))}`,
-			`mission    ${mission}`,
-			`execution  ${formatExecutionState(execution?.state ?? "not started")}`,
-			`runtime    ${formatRuntimeState(execution)}`,
-			`next       ${work.nextAction}`,
+			`Work ${failure ? theme.fg("error", formatWorkState(work)) : theme.bold(formatWorkState(work))}`,
+			...(failure ? [`Failure ${theme.fg("error", "recorded. Inspect Evidence")}`] : []),
+			`Mission ${mission}`,
+			`Execution ${formatExecutionState(execution?.state ?? "not started")}`,
+			`Runtime ${formatRuntimeState(execution)}`,
+			`Next: ${presentEvidenceText(work.nextAction)}`,
 		];
 		const summary = new Container();
-		summary.addChild(new Text(theme.fg("accent", theme.bold(work.terms.title)), 1, 0));
+		summary.addChild(new Text(theme.fg("accent", theme.bold(truncateWorkName(work.terms.title))), 1, 0));
 		summary.addChild(new Text(theme.fg("muted", status.join("\n")), 1, 0));
 		const list = new SelectList(items, items.length, selectorTheme(theme));
 		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
@@ -216,15 +392,15 @@ async function chooseAction(
 		.availableActions(work.workId, actor, work.revision, work.execution?.runtimeState)
 		.filter((action) => action.enabled);
 	if (actions.length === 0) {
-		await showTextPage(context, "Actions", ["No actions are currently available."]);
+		await showTextPage(context, "Work action", ["No actions are currently available."]);
 		return;
 	}
 	const selected = await context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Actions")), 1, 0));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Work action")), 1, 0));
 		const list = new SelectList(
-			actions.map((action) => ({ value: action.id, label: action.label })),
+			actions.map((action) => ({ value: action.id, label: displayActionLabel(action) })),
 			actions.length,
 			selectorTheme(theme),
 		);
@@ -252,11 +428,25 @@ async function chooseAction(
 		meta: { commandId: `tui:${action.id}`, actor, expectedWorkRevision: work.revision, schemaVersion: 1 },
 	});
 	if ("error" in result) {
-		await showTextPage(context, "Action failed", [result.error.summary, `remediation: ${result.error.remediation}`]);
+		await showTextPage(context, "Action failed", formatErrorLines(result.error));
 		return;
 	}
 	schedulePendingEffects(service);
-	await showTextPage(context, "Action complete", [`action: ${action.label}`, `next: ${result.value.nextAction}`]);
+	await showTextPage(context, "Action complete", [
+		`action: ${displayActionLabel(action)}`,
+		`next: ${withoutWork(result.value.nextAction)}`,
+	]);
+}
+
+function withoutWork(value: string): string {
+	return value
+		.replace(/\bWork\b/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function displayActionLabel(action: Action): string {
+	return withoutWork(action.label);
 }
 
 function schedulePendingEffects(service: ApplicationService): void {
@@ -283,9 +473,9 @@ async function showRecovery(
 			status: "in progress",
 			progress: "starting",
 			doing:
-				work.state === "cancelled"
-					? "Preparing this Work for a new attempt"
-					: "Checking the Work and restoring its Executor",
+				work.state === "stopped" && work.stopReason === "cancelled"
+					? "Preparing a new attempt"
+					: "Checking and restoring the Executor",
 			next: "No action is needed  Keep this screen open until recovery finishes",
 		};
 		const body = new Text("", 1, 0);
@@ -325,8 +515,8 @@ async function showRecovery(
 		const onRecoveryUpdate = (progress: RecoveryUpdate): void => {
 			update({
 				status: "in progress",
-				progress: `${formatStatus(progress.stage)}  ${progress.message}`,
-				doing: "Khala is restoring the Work",
+				progress: `${formatStatus(progress.stage)}  ${withoutWork(progress.message)}`,
+				doing: "Khala is restoring the Executor",
 				next: "No action is needed  Keep this screen open until recovery finishes",
 			});
 		};
@@ -350,24 +540,26 @@ async function showRecovery(
 						update({
 							status: "failed",
 							progress: "stopped",
-							doing: "Khala could not restore the Work",
+							doing: "Khala could not restore the Executor",
 							reason: "The recovery operation could not be completed",
 							next:
 								result.error.code === "revision-conflict"
-									? "Action needed  Refresh the Work and try again"
+									? "Action needed  Refresh and try again"
 									: "Action needed  Inspect Evidence for the failure details",
 						});
 						return;
 					}
 					schedulePendingEffects(service);
-					const failed = result.value.state === "failed" || result.value.execution?.state === "failed";
+					const failed =
+						(result.value.state === "stopped" && result.value.stopReason === "failed") ||
+						result.value.execution?.state === "failed";
 					const awaitingReview = result.value.execution?.state === "awaiting-review";
 					update(
 						failed
 							? {
 									status: "failed",
 									progress: "stopped",
-									doing: "Khala could not restore the Work",
+									doing: "Khala could not restore the Executor",
 									reason: "The restored connection could not be confirmed",
 									next: "Action needed  Inspect Evidence and decide what to do next",
 								}
@@ -375,17 +567,17 @@ async function showRecovery(
 									status: "succeeded",
 									progress: "complete",
 									doing:
-										work.state === "cancelled"
-											? "Work returned to admission"
+										work.state === "stopped" && work.stopReason === "cancelled"
+											? "Returned to admission"
 											: awaitingReview
-												? "Work restored and waiting for review"
-												: "Work restored and ready to continue",
+												? "Executor restored and waiting for review"
+												: "Executor restored and ready to continue",
 									next:
-										work.state === "cancelled"
-											? "No action needed  Khala will continue admission automatically"
+										work.state === "stopped" && work.stopReason === "cancelled"
+											? "No action needed  Khala will continue automatically"
 											: awaitingReview
 												? "Action needed  Review the Work when the provider responds"
-												: "No action needed  Khala will continue the Work automatically",
+												: "No action needed  Khala will continue automatically",
 								},
 					);
 				})
@@ -393,7 +585,7 @@ async function showRecovery(
 					update({
 						status: "failed",
 						progress: "stopped",
-						doing: "Khala could not restore the Work",
+						doing: "Khala could not restore the Executor",
 						reason: "The recovery operation ended unexpectedly",
 						next: "Action needed  Inspect Evidence for the failure details",
 					}),
@@ -575,15 +767,23 @@ function selectableComponent(
 }
 
 function isWorkSection(value: string): value is WorkSection {
-	return value === "actions" || value === "evidence" || value === "history" || value === "blocking-signal";
+	return value === "actions" || value === "evidence" || value === "archive" || value === "blocking-signal";
 }
 
 function formatStatus(value: string): string {
 	return value.replace(/-/g, " ");
 }
 
+function formatWorkState(work: WorkView): string {
+	return work.state === "stopped" ? "stopped" : formatStatus(work.state);
+}
+
+function formatMissionState(value: string): string {
+	return value === "active" ? "in progress" : formatStatus(value);
+}
+
 function formatExecutionState(value: string): string {
-	return value === "running" ? "active" : formatStatus(value);
+	return value === "running" ? "running" : formatStatus(value);
 }
 
 function formatRuntimeState(execution: WorkView["execution"]): string {
@@ -592,9 +792,9 @@ function formatRuntimeState(execution: WorkView["execution"]): string {
 	if (execution.state !== "blocked") return formatStatus(runtime);
 	if (runtime === "working") return "finishing current turn";
 	if (runtime === "pending") return "awaiting Conclave";
-	if (runtime === "idle") return "idle; awaiting Conclave";
-	if (runtime === "unreachable") return "unreachable; awaiting Conclave";
-	return "unknown; awaiting Conclave";
+	if (runtime === "idle") return "idle (awaiting Conclave)";
+	if (runtime === "unreachable") return "unreachable (awaiting Conclave)";
+	return "unknown (awaiting Conclave)";
 }
 
 function formatActivity(execution: WorkView["execution"]): string {
@@ -633,32 +833,29 @@ async function showEvidence(work: WorkView, context: ExtensionContext): Promise<
 	const execution = work.execution;
 	const signal = work.lastSignal;
 	const signalEvidence = signal === undefined ? "none" : summarizeEvidence(signal.evidence);
-	const signalLabel =
-		signal === undefined
-			? "none"
-			: `${signal.kind === "blocked" ? "blocking signal" : "signal"} — ${compactText(signal.summary)}`;
+	const signalLabel = signal === undefined ? "none" : signal.kind === "blocked" ? "blocking signal" : "signal";
+	const errorLines = formatErrorLines(work.lastError);
 	await showTextPage(context, "Evidence", [
-		`state: ${formatStatus(work.state)}`,
-		`mission: ${formatStatus(work.missionState ?? "not admitted")}`,
+		`state: ${formatWorkState(work)}${work.stopReason === undefined ? "" : ` (${work.stopReason})`}`,
+		`mission: ${formatMissionState(work.missionState ?? "not admitted")}`,
 		`execution: ${formatExecutionState(execution?.state ?? "not started")}`,
 		`runtime: ${formatRuntimeState(execution)}`,
 		`activity: ${formatActivity(execution)}`,
 		`signal: ${signalLabel}`,
 		`signal evidence: ${signalEvidence}`,
-		`provider observation: ${work.lastObservation?.summary ?? "none"}`,
+		`provider observation: ${presentEvidenceText(work.lastObservation?.summary ?? "none")}`,
 		`review request: ${work.reviewRequest?.url ?? "none"}`,
 		`review status: ${work.reviewRequest?.status ?? "none"}`,
-		`error: ${work.lastError?.summary ?? "none"}`,
-		`remediation: ${work.lastError?.remediation ?? "none"}`,
+		...errorLines,
 	]);
 }
 
 type RecordPage = Readonly<{ title: string; lines: readonly string[] }>;
 
-function historyLabel(record: RecordView): string {
+function archiveLabel(record: RecordView): string {
 	if (record.kind !== "signal") return `#${record.sequence} ${formatStatus(record.kind)}`;
 	const kind = readPayloadText(record.payload, "kind") ?? "signal";
-	return `#${record.sequence} Signal · ${capitalize(kind)}`;
+	return `#${record.sequence} Signal: ${capitalize(kind)}`;
 }
 
 function formatRecordPage(record: RecordView): RecordPage {
@@ -667,7 +864,7 @@ function formatRecordPage(record: RecordView): RecordPage {
 		const response = readPayloadText(record.payload, "summary") ?? record.summary;
 		const evidence = readPayloadTextList(record.payload, "evidence") ?? record.evidenceRefs;
 		return {
-			title: `Signal · ${capitalize(kind)}`,
+			title: `Signal: ${capitalize(kind)}`,
 			lines: [
 				`from: ${capitalize(record.actor)}`,
 				`recorded: ${formatRecordedAt(record.recordedAt)}`,
@@ -682,6 +879,20 @@ function formatRecordPage(record: RecordView): RecordPage {
 	}
 	if (record.kind === "oracle-review") {
 		return formatOracleRecordPage(record);
+	}
+	const learning =
+		isJsonObject(record.payload) && isJsonObject(record.payload["learning"]) ? record.payload["learning"] : undefined;
+	if (record.kind === "error" && learning !== undefined) {
+		return {
+			title: `Execution learning: ${record.sequence}`,
+			lines: [
+				`recorded: ${formatRecordedAt(record.recordedAt)}`,
+				`summary: ${record.summary}`,
+				`what failed: ${readObjectText(learning, "failure") ?? "not recorded"}`,
+				`Mission specificity: ${readObjectText(learning, "missionSpecificity") ?? "not assessed"}`,
+				`next Mission guidance: ${readObjectText(learning, "nextMissionGuidance") ?? "not recorded"}`,
+			],
+		};
 	}
 	const evidence = record.evidenceRefs;
 	return {
@@ -702,7 +913,7 @@ function formatOracleRecordPage(record: RecordView): RecordPage {
 	const validationGaps = readPayloadTextList(record.payload, "validationGaps") ?? [];
 	const output = readPayloadText(record.payload, "output");
 	return {
-		title: `Oracle response · ${capitalize(verdict)}`,
+		title: `Oracle response: ${capitalize(verdict)}`,
 		lines: [
 			`recorded: ${formatRecordedAt(record.recordedAt)}`,
 			`verdict: ${capitalize(verdict)}`,
@@ -751,14 +962,33 @@ function capitalize(value: string): string {
 	return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
 }
 
-function compactText(value: string, limit = 180): string {
-	const normalized = value.replace(/\s+/g, " ").trim();
-	return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1)}…`;
-}
-
 function summarizeEvidence(evidence: readonly string[]): string {
 	if (evidence.length === 0) return "none";
-	return `${evidence.length} evidence item${evidence.length === 1 ? "" : "s"}; open History for details`;
+	return `${evidence.length} evidence item${evidence.length === 1 ? "" : "s"}. Open Archive for details`;
+}
+
+function formatErrorLines(error: ErrorEnvelope | undefined): readonly string[] {
+	if (error === undefined) return ["error: none", "remediation: none", "learning: none"];
+	return [
+		"",
+		"Error",
+		presentEvidenceText(error.summary),
+		"",
+		"Next step",
+		presentEvidenceText(error.remediation),
+		`learning: ${presentEvidenceText(error.learning?.missionSpecificity ?? "none")}`,
+	];
+}
+
+function presentEvidenceText(value: string): string {
+	return value
+		.split(";")
+		.map((part, index) => {
+			const text = part.trim();
+			return index === 0 ? text : capitalize(text);
+		})
+		.filter((part) => part.length > 0)
+		.join(". ");
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
@@ -769,7 +999,7 @@ function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
 }
 
-async function showHistory(
+async function showArchive(
 	service: ApplicationService,
 	context: ExtensionContext,
 	work: WorkView,
@@ -781,24 +1011,24 @@ async function showHistory(
 		do {
 			const page = service.readRecords(
 				{ workId: work.workId },
-				{ actor, commandId: `tui:history:${work.workId}:${work.revision}`, schemaVersion: 1 },
+				{ actor, commandId: `tui:archive:${work.workId}:${work.revision}`, schemaVersion: 1 },
 				cursor,
 			);
 			records.push(...page.items);
 			cursor = page.nextCursor;
 		} while (cursor !== undefined);
 	} catch (error) {
-		await showTextPage(context, "History", [
-			`Unable to read history: ${error instanceof Error ? error.message : String(error)}`,
+		await showTextPage(context, "Archive", [
+			`Unable to read Archive: ${error instanceof Error ? error.message : String(error)}`,
 		]);
 		return;
 	}
 	if (records.length === 0) {
-		await showTextPage(context, "History", ["No Archive records are available for this Work."]);
+		await showTextPage(context, "Archive", ["No Archive records are available for this Work."]);
 		return;
 	}
 	for (;;) {
-		const selected = await selectHistoryRecord(records, context);
+		const selected = await selectArchiveRecord(records, context);
 		if (selected === null || selected === "back") return;
 		const record = records.find((candidate) => String(candidate.sequence) === selected);
 		if (record === undefined) return;
@@ -807,14 +1037,14 @@ async function showHistory(
 	}
 }
 
-async function selectHistoryRecord(records: readonly RecordView[], context: ExtensionContext): Promise<string | null> {
+async function selectArchiveRecord(records: readonly RecordView[], context: ExtensionContext): Promise<string | null> {
 	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("History")), 1, 0));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Archive")), 1, 0));
 		container.addChild(new Text(theme.fg("muted", `${records.length} Archive records`), 1, 0));
 		const list = new SelectList(
-			records.map((record) => ({ value: String(record.sequence), label: historyLabel(record) })),
+			records.map((record) => ({ value: String(record.sequence), label: archiveLabel(record) })),
 			Math.min(6, records.length),
 			selectorTheme(theme),
 		);
@@ -863,7 +1093,7 @@ async function actionInput(action: Action, context: ExtensionContext): Promise<J
 		};
 	}
 	if (action.kind === "cancel") {
-		const confirmed = await context.ui.confirm("Cancel Work?", "This records an explicit cancelled Outcome.");
+		const confirmed = await context.ui.confirm("Cancel?", "This records an explicit cancellation.");
 		return confirmed ? {} : null;
 	}
 	if (action.kind === "fail-work") {
@@ -873,6 +1103,10 @@ async function actionInput(action: Action, context: ExtensionContext): Promise<J
 	if (action.kind === "run-oracle") {
 		const subject = await context.ui.input("Oracle review subject:", "Review this Work");
 		return subject === undefined ? null : { subject };
+	}
+	if (action.kind === "rename-work") {
+		const title = await context.ui.input("New Work title:", "");
+		return title === undefined ? null : { title };
 	}
 	if (action.kind === "amend-budget") {
 		const value = await context.ui.input("New maximum token budget:", "");
@@ -890,7 +1124,7 @@ async function showHelp(context: ExtensionContext): Promise<void> {
 		"active means the lifecycle is open",
 		"working means a prompt is running",
 		"idle means waiting for the next Signal",
-		"↑↓ navigate  / filter  ? help  r role settings  enter select  escape/ctrl+c cancel",
+		"Type to filter  ? help  r role settings  enter select  escape/ctrl+c cancel",
 	]);
 }
 

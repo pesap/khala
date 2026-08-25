@@ -24,6 +24,7 @@ test("Role settings persist without discarding other Khala configuration", async
 			roleSettingsKey: "s",
 		});
 		assert.equal(loadConfig(directory, false, false).keybindings.roleSettings, "s");
+		assert.equal(loadConfig(directory, false, false).keybindings.help, "?");
 	} finally {
 		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDirectory;
