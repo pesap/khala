@@ -259,7 +259,7 @@ export class CommandCodeHost implements CodeHostPort {
 					"view",
 					reviewRequest.providerId,
 					"--json",
-					"state,merged,reviewDecision,statusCheckRollup,comments,reviews",
+					"state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews",
 				],
 				this.cwd,
 			);
@@ -565,7 +565,7 @@ function githubFeedback(
 }
 
 function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest["status"]): ReviewRequest["status"] {
-	if (row["merged"] === true) return "merged";
+	if (row["mergedAt"] !== null && row["mergedAt"] !== undefined) return "merged";
 	const state = isTextValue(row["state"]) ? row["state"].toUpperCase() : "";
 	if (state === "CLOSED") return "closed";
 	return current === "draft" ? "draft" : "open";

@@ -36,9 +36,11 @@ SQLite persistence; Conclave processing is scheduled independently.
 3. FIFO scheduling reserves an Execution before launch, starts at most the
    configured number of Executions, and never exceeds the Work token cap.
 4. The persistent parent supervisor launches the Executor from the durable
-   outbox; a Conclave child never owns the Executor runtime. The Executor works
-   in a Git worktree, creates a draft GitHub Pull Request or
-   GitLab Merge Request, validates the change, and sends a `ready` Signal.
+   outbox; a Conclave child never owns the Executor runtime. A transient child
+   startup exit receives one bounded retry before the outbox records durable
+   failure evidence. The Executor works in a Git worktree, creates a draft
+   GitHub Pull Request or GitLab Merge Request, validates the change, and sends
+   a `ready` Signal.
 5. The Conclave may continue, replace, hand off, or reject the current
    Execution. Handoff enters User review; it is not acceptance.
 6. User review evidence and provider merge evidence are recorded separately.
@@ -99,7 +101,8 @@ navigation by default.
 - `src/ports.ts` defines runtime, workspace, code-host, model, and Oracle ports.
 - `src/adapters.ts` provides Git and GitHub/GitLab adapters.
 - `src/runtime.ts` supervises isolated Pi JSON-RPC children with bounded RPC and
-  agent-turn timeouts.
+  agent-turn timeouts, retrying one transient startup exit before surfacing the
+  failure.
 - Child role sessions inherit the parent project identity and carry a
   parent-signed role, Work, and Execution capability; Archive reads and
   mutations remain service-authorized.

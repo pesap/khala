@@ -30,8 +30,9 @@ Mission; it does not start Work without a Conclave decision.
 
 The Executor receives one Mission in an isolated Git worktree and a separate Pi
 JSON-RPC session. Model, thinking level, token allowance, sandbox, and prompt
-identity are persisted before the child starts. Runtime failure records an
-error and leaves the Mission available for an explicit replacement Execution.
+identity are persisted before the child starts. A transient child startup exit
+is retried once before runtime failure records an error and leaves the Mission
+available for an explicit replacement Execution.
 
 Only the current Executor can send `progress`, `blocked`, or `ready` Signals.
 A ready Signal requires a reconciled draft GitHub Pull Request or GitLab Merge

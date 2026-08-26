@@ -367,6 +367,36 @@ test("Conclave wake failures preserve provider detail and remediation", async ()
 	await service.close();
 });
 
+test("transient Conclave child failures retry once before recording durable failure", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-conclave-wake-retry-"));
+	let attempts = 0;
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			runtime: {
+				async send(binding) {
+					if (binding.sessionId.startsWith("conclave-") && attempts++ === 0)
+						throw new Error("Pi child exited before responding.");
+					return { output: "" };
+				},
+			},
+		},
+	});
+	const submitted = service.submitWork(
+		{ title: "Conclave wake retry", objective: "Retry transient startup loss", acceptanceCriteria: ["The wake is retried"] },
+		meta("user", "conclave-wake-retry:submit", 0),
+	);
+	await service.processPendingEffects();
+	const current = service.inspectWork(submitted.workId);
+	assert.equal(attempts, 2);
+	assert.equal(controls.sessions.filter((entry) => entry.input.role === "conclave").length, 2);
+	assert.equal(current.lastError, undefined);
+	assert.equal(
+		service.readRecords({ workId: submitted.workId, kinds: ["error"] }, meta("user", "conclave-wake-retry:errors", current.revision)).items.length,
+		0,
+	);
+	await service.close();
+});
+
 test("Executor usage records cache hits, misses, and idle runtime state", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-usage-"));
 	const { service } = makeService(join(directory, "archive.sqlite"), {
@@ -1006,8 +1036,11 @@ test("Executor authority is bound to the current Work and ready evidence rejects
 	const directory = await mkdtemp(join(tmpdir(), "khala-authority-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
 	const running = await admitAndStart(service, "authority");
-	const denied = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "progress", summary: "Progress", evidence: ["file"] }, meta: meta("executor", "authority:wrong-work", running.revision, "other-work", running.execution.executionId) });
+	const denied = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "progress", summary: "Progress", evidence: ["file"] }, meta: meta("user", "authority:user-signal", running.revision, running.workId) });
 	assert.equal(denied.error.code, "forbidden");
+	assert.match(denied.error.remediation, /Executor Signals and review requests/);
+	const wrongScope = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "progress", summary: "Progress", evidence: ["file"] }, meta: meta("executor", "authority:wrong-work", running.revision, "other-work", running.execution.executionId) });
+	assert.equal(wrongScope.error.code, "forbidden");
 	const scopedRecords = service.readRecords(
 		{ workId: running.workId },
 		meta("executor", "authority:scoped-read", 0, running.workId, running.execution.executionId),
@@ -1058,6 +1091,30 @@ test("Archive appends validate projections and claim each external effect once",
 	archive.close();
 });
 
+test("a real RPC startup retries one transient child exit", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-startup-retry-"));
+	const marker = join(directory, "launch-count");
+	const script = join(directory, "rpc-startup-retry.mjs");
+	await writeFile(
+		script,
+		`import { readFileSync, writeFileSync } from "node:fs";\nimport readline from "node:readline";\nconst marker = ${JSON.stringify(marker)};\nconst launches = Number(readFileSync(marker, "utf8")) + 1;\nwriteFileSync(marker, String(launches));\nif (launches === 1) process.exit(1);\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: ${JSON.stringify(join(directory, "session.jsonl"))}, isStreaming: false } }) + "\\n"); });\n`,
+	);
+	await writeFile(marker, "0");
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 100 });
+	const binding = await runtime.ensureSession({
+		cwd: directory,
+		model: "model",
+		thinking: "medium",
+		role: "executor",
+		promptIdentity: { packageVersion: "1", promptSha256: "hash" },
+		tools: [],
+	});
+	assert.equal(binding.sessionId, "stub-session");
+	assert.equal((await readFile(marker, "utf8")).trim(), "2");
+	await runtime.close();
+});
+
 test("a real RPC child is bounded and removed after an agent turn timeout", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-"));
 	const script = join(directory, "rpc-stub.mjs");
@@ -1092,7 +1149,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: "OPEN", merged: false, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER" }], reviews: [{ id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: args.includes("state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews") ? "MERGED" : "OPEN", mergedAt: args.includes("state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews") ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER" }], reviews: [{ id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
@@ -1110,6 +1167,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		});
 		assert.equal(request.sourceBranch, "khala/branch");
 		const observations = await host.poll(request);
+		assert.equal(observations.find((item) => item.kind === "ci-status")?.status, "merged");
 		assert.equal(
 			observations.some(
 				(item) =>
@@ -1125,6 +1183,8 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		const create = commands.find((args) => args[1] === "create");
 		assert.equal(create.includes("--head"), true);
 		assert.equal(create[create.indexOf("--head") + 1], "khala/branch");
+		const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews"));
+		assert.ok(pollingView);
 	} finally {
 		if (previousPath === undefined) delete process.env.PATH;
 		else process.env.PATH = previousPath;

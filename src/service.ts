@@ -553,6 +553,7 @@ export class ApplicationService {
 	async processPendingEffects(): Promise<void> {
 		if (this.closing) return;
 		const owner = `khala-worker:${randomUUID()}`;
+		const retriedConclaveWakes = new Set<string>();
 		for (;;) {
 			const effects = this.archive.pendingEffects(owner);
 			if (effects.length === 0) return;
@@ -659,6 +660,18 @@ export class ApplicationService {
 				} catch (error) {
 					clearInterval(lease);
 					this.archive.releaseEffect(effect.effectId, owner);
+					// A child can exit during startup before the first RPC response. Retry this
+					// idempotent transport wake once in the same worker pass, then retain the
+					// pending effect and durable error for the autonomous monitor to revisit.
+					if (
+						effect.kind === "conclave-wake" &&
+						!(error instanceof ApplicationError) &&
+						isTransientConclaveWakeFailure(error instanceof Error ? error.message : String(error)) &&
+						!retriedConclaveWakes.has(effect.effectId)
+					) {
+						retriedConclaveWakes.add(effect.effectId);
+						continue;
+					}
 					if (
 						effect.kind === "executor-wake" &&
 						workId !== undefined &&
@@ -2782,7 +2795,7 @@ export class ApplicationService {
 				"forbidden",
 				`Only the ${actor} role may perform this action.`,
 				false,
-				"Use the role-bound application adapter.",
+				roleActionRemediation(meta.actor, actor),
 			);
 		}
 	}
@@ -2953,6 +2966,20 @@ export class ApplicationService {
 	): ApplicationError {
 		return new ApplicationError({ code, summary, retryable, remediation, evidenceRefs: [] });
 	}
+}
+
+function isTransientConclaveWakeFailure(message: string): boolean {
+	return message.includes("Pi child exited") || message.includes("Pi RPC get_state timed out");
+}
+
+function roleActionRemediation(actor: Actor, expected: Actor): string {
+	if (actor === "user" && expected === "executor") {
+		return "Executor Signals and review requests come from the bound Executor session. Read the Archive or poll the provider instead of recording Executor evidence as the User.";
+	}
+	if (actor === "user" && expected === "conclave") {
+		return "Conclave actions run in the bound Conclave session. Read the Archive and wait for the autonomous Conclave wake.";
+	}
+	return "Use the role-bound application adapter.";
 }
 
 function conclaveWakeError(failure: Error, feedbackWake = false, runtimeWake = false): ErrorEnvelope {

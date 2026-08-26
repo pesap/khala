@@ -95,15 +95,27 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	}
 
 	async ensureSession(input: Parameters<AgentRuntimePort["ensureSession"]>[0]): Promise<RuntimeBinding> {
-		if (input.sessionPath === undefined) return this.startSession(input);
+		if (input.sessionPath === undefined) return this.startSessionWithRetry(input);
 		const active = this.sessionLaunches.get(input.sessionPath);
 		if (active !== undefined) return active;
-		const launch = this.startSession(input);
+		const launch = this.startSessionWithRetry(input);
 		this.sessionLaunches.set(input.sessionPath, launch);
 		try {
 			return await launch;
 		} finally {
 			if (this.sessionLaunches.get(input.sessionPath) === launch) this.sessionLaunches.delete(input.sessionPath);
+		}
+	}
+
+	private async startSessionWithRetry(
+		input: Parameters<AgentRuntimePort["ensureSession"]>[0],
+	): Promise<RuntimeBinding> {
+		try {
+			return await this.startSession(input);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (!isTransientStartupFailure(message)) throw error;
+			return this.startSession(input);
 		}
 	}
 
@@ -351,6 +363,13 @@ function attachOutput(child: MutableChild, onExit: () => void): void {
 	});
 	child.process.stderr.on("data", (chunk: Buffer) => {
 		child.lastError = `${child.lastError}${chunk.toString("utf8")}`.slice(-4000);
+	});
+	child.process.stdin.on("error", (error) => {
+		child.closed = true;
+		child.lastError = `${child.lastError}${error.message}`.slice(-4000);
+		rejectPending(child, error);
+		rejectAgentEnd(child, error);
+		onExit();
 	});
 	child.process.on("error", (error) => {
 		child.closed = true;
@@ -606,6 +625,10 @@ function killProcessGroup(processGroupId: number | undefined, processStartTime: 
 	} catch {
 		// The process group may have exited before reconciliation.
 	}
+}
+
+function isTransientStartupFailure(message: string): boolean {
+	return message.includes("Pi child exited") || message.includes("Pi RPC get_state timed out");
 }
 
 function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boolean {

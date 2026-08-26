@@ -118,7 +118,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			try {
 				const service = getRuntime(context).service;
 				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
-				schedulePendingEffects(service, context);
+				schedulePendingEffects(service);
 				return toolResult(work, false);
 			} catch (error) {
 				if (error instanceof ApplicationError) {
@@ -165,7 +165,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 					params.workId,
 					meta("user", `tool:poll:${toolCallId}`, params.expectedWorkRevision),
 				);
-				schedulePendingEffects(service, context);
+				schedulePendingEffects(service);
 				return toolResult(work, false);
 			} catch (error) {
 				if (error instanceof ApplicationError) return toolError(error.envelope);
@@ -197,7 +197,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "khala_perform_action",
 		label: "Perform Khala Action",
-		description: "Perform one actor-authorized, revision-checked Khala application action.",
+		description:
+			"Perform one actor-authorized, revision-checked Khala application action. User actions include review, recovery, cancellation, renaming, budget, and failure decisions; Executor and Conclave actions run only in their bound child sessions. Provider comments enter through khala_poll_provider.",
 		parameters: performSchema,
 		async execute(toolCallId, params: PerformParams, _signal, _onUpdate, context) {
 			try {
@@ -360,16 +361,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 }
 
-function schedulePendingEffects(service: ApplicationRuntime["service"], context?: ExtensionContext): void {
+function schedulePendingEffects(service: ApplicationRuntime["service"]): void {
 	queueMicrotask(() => {
-		void service
-			.processPendingEffects()
-			.then(() => {
-				if (context !== undefined) updateExecutorStatus(service, context);
-			})
-			.catch((error: Error) => {
-				context?.ui.notify(error.message, "warning");
-			});
+		// Effects write durable Archive evidence. Do not retain a tool/session UI
+		// context across the asynchronous worker pass; Pi may replace that session.
+		void service.processPendingEffects().catch(() => undefined);
 	});
 }
 
