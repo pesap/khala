@@ -138,6 +138,7 @@ async function runKhalaDemo(
 }
 
 function createDemoWork(workflow: DemoWorkflow): KhalaWork {
+	const intentionalCiFailure = workflow.id;
 	return {
 		...DEMO_WORK_TEMPLATE,
 		title: `${DEMO_WORK_TEMPLATE.title}: ${workflow.name}`,
