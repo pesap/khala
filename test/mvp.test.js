@@ -565,11 +565,73 @@ test("Conclave can inspect and recover an unreachable Executor without User inte
 			input: {},
 			meta: meta("conclave", "conclave-runtime:recover", inspected.revision, running.workId),
 		});
+		assert.equal("error" in recoveryResult, false);
+		assert.equal(recoveryResult.value.execution.runtimeState, "pending");
 	};
 	await service.runAutonomousCycle();
 	assert.equal(recoveryResult !== undefined && "error" in recoveryResult, false);
 	const recovered = service.inspectWork(running.workId);
 	assert.equal(recovered.execution.executionId, running.execution.executionId);
+	assert.equal(recovered.execution.runtimeState, "idle");
+	assert.equal(controls.sessions.filter((entry) => entry.input.role === "executor").length, 2);
+	await service.close();
+});
+
+test("Conclave recovery verifies an unreachable runtime without a persisted probe", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-direct-recovery-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { recoverExecutor: true });
+	const running = await admitAndStart(service, "direct-recovery");
+	controls.runtimeState = "unreachable";
+	const inspected = await service.inspectRuntime(running.workId);
+	assert.equal(inspected.execution.runtimeState, "unreachable");
+	const recovered = await service.perform({
+		action: "recover",
+		workId: running.workId,
+		input: {},
+		meta: meta("conclave", "direct-recovery:authorize", inspected.revision, running.workId),
+	});
+	assert.equal("error" in recovered, false);
+	assert.equal(recovered.value.execution.runtimeState, "pending");
+	await service.processPendingEffects();
+	assert.equal(service.inspectWork(running.workId).execution.runtimeState, "idle");
+	await service.close();
+});
+
+test("Awaiting-review recovery reconciles an idle replacement runtime", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-awaiting-recovery-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"), { recoverExecutor: true });
+	const running = await admitAndStart(service, "awaiting-recovery");
+	const awaiting = {
+		...running,
+		revision: running.revision + 1,
+		execution: { ...running.execution, state: "awaiting-review", runtimeState: "unreachable" },
+		nextAction: "Work is awaiting User review.",
+	};
+	archive.append({
+		commandId: "awaiting-recovery:state",
+		expectedWorkRevision: running.revision,
+		kind: "execution",
+		actor: "system",
+		workId: running.workId,
+		missionId: running.mission.missionId,
+		executionId: running.execution.executionId,
+		payloadVersion: 1,
+		summary: "Execution is awaiting User review.",
+		payload: awaiting.execution,
+		projection: awaiting,
+	});
+	controls.runtimeState = "unreachable";
+	const authorized = await service.perform({
+		action: "recover",
+		workId: running.workId,
+		input: {},
+		meta: meta("conclave", "awaiting-recovery:authorize", awaiting.revision, running.workId),
+	});
+	assert.equal("error" in authorized, false);
+	assert.equal(authorized.value.execution.runtimeState, "pending");
+	await service.processPendingEffects();
+	const recovered = service.inspectWork(running.workId);
+	assert.equal(recovered.execution.state, "awaiting-review");
 	assert.equal(recovered.execution.runtimeState, "idle");
 	await service.close();
 });
@@ -695,6 +757,157 @@ test("Provider polling remains idempotent across restart for multi-observation p
 	await second.service.close();
 });
 
+test("Provider observations resolve stale monitor failures and retain provider evidence", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-provider-evidence-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "provider-evidence");
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "provider-evidence:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const failure = {
+		code: "external-failure",
+		summary: "Provider monitor failed: temporary provider error",
+		retryable: true,
+		remediation: "Retry provider polling.",
+		evidenceRefs: [review.value.reviewRequest.providerId],
+	};
+	const withFailure = {
+		...review.value,
+		revision: review.value.revision + 1,
+		lastError: failure,
+		nextAction: "Provider monitor failed; retrying automatically.",
+	};
+	archive.append({
+		commandId: "provider-evidence:failure",
+		expectedWorkRevision: review.value.revision,
+		kind: "error",
+		actor: "monitor",
+		workId: running.workId,
+		missionId: running.mission.missionId,
+		executionId: running.execution.executionId,
+		payloadVersion: 1,
+		summary: failure.summary,
+		evidenceRefs: failure.evidenceRefs,
+		payload: failure,
+		projection: withFailure,
+	});
+	const feedback = "Add the cleanup-waits sentence.";
+	controls.pollObservations = [
+		{
+			observationId: "review-comment:42:comment-1",
+			kind: "review-comment",
+			providerId: review.value.reviewRequest.providerId,
+			status: "commented",
+			summary: feedback,
+			feedback: [feedback],
+			author: "user-1",
+			authorAssociation: "OWNER",
+			actionable: true,
+			changed: true,
+			observedAt: new Date().toISOString(),
+		},
+	];
+	const observed = await service.pollProvider(
+		running.workId,
+		meta("user", "provider-evidence:poll", withFailure.revision),
+	);
+	assert.equal(observed.lastError, undefined);
+	const records = service.readRecords(
+		{ workId: running.workId, kinds: ["observation"] },
+		meta("user", "provider-evidence:records", observed.revision),
+	);
+	assert.deepEqual(records.items[0]?.evidenceRefs, [review.value.reviewRequest.url, "review-comment:42:comment-1"]);
+	assert.deepEqual(records.items[0]?.payload.feedback, [feedback]);
+	await service.close();
+});
+
+test("Provider polling clears stale monitor failures when no observations change", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-provider-recovery-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "provider-recovery");
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "provider-recovery:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const failure = {
+		code: "external-failure",
+		summary: "Provider monitor failed: temporary provider error",
+		retryable: true,
+		remediation: "Retry provider polling.",
+		evidenceRefs: [review.value.reviewRequest.providerId],
+	};
+	const withFailure = {
+		...review.value,
+		revision: review.value.revision + 1,
+		lastError: failure,
+		nextAction: "Provider monitor failed; retrying automatically.",
+	};
+	archive.append({
+		commandId: "provider-recovery:failure",
+		expectedWorkRevision: review.value.revision,
+		kind: "error",
+		actor: "monitor",
+		workId: running.workId,
+		missionId: running.mission.missionId,
+		executionId: running.execution.executionId,
+		payloadVersion: 1,
+		summary: failure.summary,
+		evidenceRefs: failure.evidenceRefs,
+		payload: failure,
+		projection: withFailure,
+	});
+	controls.pollObservations = [];
+	const recovered = await service.pollProvider(
+		running.workId,
+		meta("user", "provider-recovery:poll", withFailure.revision),
+	);
+	assert.equal(recovered.lastError, undefined);
+	assert.match(recovered.nextAction, /continuing the Work automatically/);
+	const records = service.readRecords(
+		{ workId: running.workId, kinds: ["observation"] },
+		meta("user", "provider-recovery:records", recovered.revision),
+	);
+	assert.match(records.items.at(-1)?.summary ?? "", /Provider polling succeeded/);
+	const unrelated = {
+		code: "external-failure",
+		summary: "Conclave feedback assessment failed: temporary child error",
+		retryable: true,
+		remediation: "Restore Conclave and retry delivery.",
+		evidenceRefs: [],
+	};
+	const withUnrelatedFailure = {
+		...recovered,
+		revision: recovered.revision + 1,
+		lastError: unrelated,
+		nextAction: "Conclave could not assess provider feedback; retrying automatically.",
+	};
+	archive.append({
+		commandId: "provider-recovery:unrelated-failure",
+		expectedWorkRevision: recovered.revision,
+		kind: "error",
+		actor: "conclave",
+		workId: running.workId,
+		missionId: running.mission.missionId,
+		executionId: running.execution.executionId,
+		payloadVersion: 1,
+		summary: unrelated.summary,
+		evidenceRefs: unrelated.evidenceRefs,
+		payload: unrelated,
+		projection: withUnrelatedFailure,
+	});
+	const preserved = await service.pollProvider(
+		running.workId,
+		meta("user", "provider-recovery:poll-unrelated", withUnrelatedFailure.revision),
+	);
+	assert.deepEqual(preserved.lastError, unrelated);
+	await service.close();
+});
+
 test("authorized review feedback resumes the same Execution instead of leaving it idle", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-feedback-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
@@ -714,6 +927,121 @@ test("authorized review feedback resumes the same Execution instead of leaving i
 	assert.equal(republished.value.reviewRequest.headCommit, "feedback-head");
 	const readyAgain = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Updated and validated", evidence: ["feedback-head", "validation"] }, meta: meta("executor", "feedback:ready-again", republished.value.revision, running.workId, running.execution.executionId) });
 	assert.equal(readyAgain.value.lastSignal.kind, "ready");
+	await service.close();
+});
+
+test("Late Executor turn completion does not append after cancellation", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-late-turn-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { executorHold: true });
+	const running = await admitAndStart(service, "late-turn");
+	const cancelled = await service.perform({
+		action: "cancel",
+		workId: running.workId,
+		input: {},
+		meta: meta("user", "late-turn:cancel", running.revision),
+	});
+	assert.equal(cancelled.value.state, "stopped");
+	const cleanup = service.processPendingEffects();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(controls.stopped.filter((binding) => binding.sessionId.startsWith("executor-")).length, 0);
+	controls.executorHold = false;
+	controls.releaseExecutor();
+	await cleanup;
+	assert.equal(controls.stopped.filter((binding) => binding.sessionId.startsWith("executor-")).length, 1);
+	const records = service.readRecords(
+		{ workId: running.workId, kinds: ["execution"] },
+		meta("user", "late-turn:records", service.inspectWork(running.workId).revision),
+	);
+	assert.equal(records.items.some((record) => record.summary.includes("turn completed")), false);
+	await service.close();
+});
+
+test("A stale Executor stop effect does not stop a resumed Execution", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-stale-stop-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "stale-stop");
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "stale-stop:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const ready = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
+		meta: meta("executor", "stale-stop:ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	const handoff = await service.perform({
+		action: "verdict",
+		workId: running.workId,
+		input: { decision: "handoff", reason: "Review it", signalId: ready.value.lastSignal.signalId },
+		meta: meta("conclave", "stale-stop:handoff", ready.value.revision, running.workId),
+	});
+	const resumed = await service.perform({
+		action: "record-review",
+		workId: running.workId,
+		input: { status: "changes-requested", feedback: ["Fix the edge case."] },
+		meta: meta("user", "stale-stop:changes", handoff.value.revision),
+	});
+	assert.equal(resumed.value.execution.state, "running");
+	await service.processPendingEffects();
+	assert.equal(controls.stopped.filter((binding) => binding.sessionId.startsWith("executor-")).length, 0);
+	await service.close();
+});
+
+test("Terminal cleanup waits for an active feedback turn", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-feedback-cleanup-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "feedback-cleanup");
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "feedback-cleanup:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const ready = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
+		meta: meta("executor", "feedback-cleanup:ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	const handoff = await service.perform({
+		action: "verdict",
+		workId: running.workId,
+		input: { decision: "handoff", reason: "Review it", signalId: ready.value.lastSignal.signalId },
+		meta: meta("conclave", "feedback-cleanup:handoff", ready.value.revision, running.workId),
+	});
+	const changed = await service.perform({
+		action: "record-review",
+		workId: running.workId,
+		input: { status: "changes-requested", feedback: ["Fix the edge case."] },
+		meta: meta("user", "feedback-cleanup:changes", handoff.value.revision),
+	});
+	controls.executorHold = true;
+	const processing = service.processPendingEffects();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(controls.releaseExecutor);
+	const cancelled = await service.perform({
+		action: "cancel",
+		workId: running.workId,
+		input: {},
+		meta: meta("user", "feedback-cleanup:cancel", service.inspectWork(running.workId).revision),
+	});
+	assert.equal(cancelled.value.state, "stopped");
+	const cleanup = service.processPendingEffects();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(controls.stopped.filter((binding) => binding.sessionId.startsWith("executor-")).length, 0);
+	controls.executorHold = false;
+	controls.releaseExecutor();
+	await Promise.all([processing, cleanup]);
+	assert.equal(controls.stopped.filter((binding) => binding.sessionId.startsWith("executor-")).length, 1);
+	const deliveries = service.readRecords(
+		{ workId: running.workId, kinds: ["delivery"] },
+		meta("user", "feedback-cleanup:deliveries", service.inspectWork(running.workId).revision),
+	);
+	assert.equal(deliveries.items.some((record) => record.payload.delivered === true), false);
+	assert.equal(service.inspectWork(running.workId).revision >= changed.value.revision, true);
 	await service.close();
 });
 
@@ -952,6 +1280,48 @@ test("Observer evidence is read-only, bound to one Work, and becomes admission c
 	await service.close();
 });
 
+test("Observer recovery resumes a rebound turn while the stale turn finishes", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-observer-recovery-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		observerHold: true,
+		ports: {
+			runtime: {
+				async getState(binding) {
+					return binding.sessionId.startsWith("observer-") ? "unreachable" : controls.runtimeState;
+				},
+			},
+		},
+	});
+	const submitted = service.submitWork(
+		{ title: "Observer recovery", objective: "Recover the assessment", acceptanceCriteria: ["The assessment resumes"] },
+		meta("user", "observer-recovery:submit", 0),
+	);
+	await service.perform({
+		action: "launch-observer",
+		workId: submitted.workId,
+		input: {},
+		meta: meta("conclave", "observer-recovery:launch", submitted.revision, submitted.workId),
+	});
+	await service.processPendingEffects();
+	const bound = service.inspectWork(submitted.workId);
+	await new Promise((resolve) => setImmediate(resolve));
+	const releaseOld = controls.releaseObserver;
+	assert.ok(releaseOld);
+	await service.recoverWork(
+		submitted.workId,
+		meta("user", "observer-recovery:recover", bound.revision, submitted.workId),
+	);
+	assert.equal(controls.sessions.filter((entry) => entry.input.role === "observer").length, 2);
+	await new Promise((resolve) => setImmediate(resolve));
+	const releaseNew = controls.releaseObserver;
+	assert.ok(releaseNew);
+	releaseOld();
+	releaseNew();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(controls.prompts.filter((entry) => entry.binding.sessionId.startsWith("observer-")).length, 2);
+	await service.close();
+});
+
 test("a released project slot wakes the FIFO queued Mission", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-queue-wake-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"), { maxConcurrentExecutions: 1 });
@@ -1084,7 +1454,12 @@ test("Archive appends validate projections and claim each external effect once",
 	assert.equal(archive.query({ states: ["submitted"] }).items.length, 1);
 	assert.throws(() => archive.append({ ...input, workId: "w2" }), /already used for Work w1/);
 	archive.append({ ...input, commandId: "command-3", expectedWorkRevision: 1, projection: { ...projection, revision: 2, state: "queued" }, effects: [{ effectId: "effect-1", kind: "conclave-wake", payload: { workId: "w1" } }] });
+	archive.append({ ...input, commandId: "command-4", expectedWorkRevision: 2, projection: { ...projection, revision: 3, state: "active" }, effects: [{ effectId: "effect-1", kind: "conclave-wake", payload: { workId: "w1" } }] });
 	assert.equal(archive.pendingEffects("owner-a").length, 1);
+	assert.throws(
+		() => archive.append({ ...input, commandId: "command-5", expectedWorkRevision: 3, projection: { ...projection, revision: 4, state: "active" }, effects: [{ effectId: "effect-1", kind: "scheduler-wake", payload: { workId: "w1" } }] }),
+		/conflicts with an existing effect/,
+	);
 	assert.equal(archive.pendingEffects("owner-b").length, 0);
 	archive.completeEffect("effect-1", "owner-a");
 	assert.equal(archive.pendingEffects("owner-b").length, 0);
@@ -1138,9 +1513,15 @@ test("a real RPC child waits for each prompt completion", async () => {
 		usage: { inputTokens: 11, outputTokens: 7, cacheHitTokens: 13, cacheMissTokens: 16 },
 	});
 	const second = runtime.send(binding, "second");
+	assert.equal(await runtime.getState(binding), "working");
 	const earlyResult = await Promise.race([second.then(() => "completed"), new Promise((resolve) => setTimeout(() => resolve("pending"), 10))]);
 	assert.equal(earlyResult, "pending");
 	assert.deepEqual(await second, { output: "" });
+	const staleBinding = { ...binding, processMarker: "stale-process" };
+	assert.equal(await runtime.getState(staleBinding), "unreachable");
+	await assert.rejects(runtime.send(staleBinding, "stale prompt"), /not attached/);
+	await runtime.requestStop(staleBinding);
+	assert.equal(await runtime.getState(binding), "idle");
 	await runtime.close();
 });
 
@@ -1149,7 +1530,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: args.includes("state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews") ? "MERGED" : "OPEN", mergedAt: args.includes("state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews") ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER" }], reviews: [{ id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
@@ -1179,11 +1560,19 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		);
 		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("review-level note")), true);
 		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("Inline review note (src/index.ts:3)")), true);
+		const ciObservation = observations.find((item) => item.kind === "ci-status");
+		assert.equal(ciObservation?.details?.pullRequest.status, "draft");
+		assert.equal(ciObservation?.details?.comments.length, 3);
+		assert.equal(ciObservation?.details?.comments[1]?.createdAt, "2026-08-25T21:12:06Z");
+		assert.equal(ciObservation?.details?.comments[2]?.location, "src/index.ts:3");
+		assert.deepEqual(ciObservation?.details?.checks.map((check) => check.kind), ["check-run", "status-context"]);
+		assert.equal(ciObservation?.details?.checks[1]?.name, "coverage");
+		assert.equal(ciObservation?.details?.checks[1]?.detailsUrl, "https://github.com/example/project/checks/coverage");
 		const commands = (await readFile(log, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 		const create = commands.find((args) => args[1] === "create");
 		assert.equal(create.includes("--head"), true);
 		assert.equal(create[create.indexOf("--head") + 1], "khala/branch");
-		const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews"));
+		const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews"));
 		assert.ok(pollingView);
 	} finally {
 		if (previousPath === undefined) delete process.env.PATH;

@@ -178,6 +178,42 @@ export type Signal = Readonly<{
 	observedAt: string;
 }>;
 
+export type ProviderReviewComment = Readonly<{
+	id: string;
+	author?: string | undefined;
+	authorAssociation?: string | undefined;
+	body: string;
+	createdAt?: string | undefined;
+	url?: string | undefined;
+	state?: string | undefined;
+	source?: "issue-comment" | "review" | "inline" | undefined;
+	location?: string | undefined;
+	minimized?: boolean | undefined;
+}>;
+
+export type ProviderCheck = Readonly<{
+	kind: "check-run" | "status-context";
+	name: string;
+	status: string;
+	conclusion?: string | undefined;
+	workflowName?: string | undefined;
+	detailsUrl?: string | undefined;
+	startedAt?: string | undefined;
+	completedAt?: string | undefined;
+}>;
+
+export type ProviderObservationDetails = Readonly<{
+	pullRequest: Readonly<{
+		url: string;
+		status: ReviewRequest["status"];
+		state: string;
+		reviewDecision: string;
+		mergedAt: string | null;
+	}>;
+	comments: readonly ProviderReviewComment[];
+	checks: readonly ProviderCheck[];
+}>;
+
 export type ProviderObservation = Readonly<{
 	observationId: string;
 	kind: "ci-status" | "review-comment" | "feedback-delivery" | "monitor-failure" | "provider-outcome";
@@ -196,6 +232,7 @@ export type ProviderObservation = Readonly<{
 	targetBranch?: string | undefined;
 	headCommit?: string | undefined;
 	mergeCommit?: string | undefined;
+	details?: ProviderObservationDetails | undefined;
 }>;
 
 export type WorkView = Readonly<{
@@ -218,6 +255,39 @@ export type WorkView = Readonly<{
 	lastError?: ErrorEnvelope | undefined;
 	nextAction: string;
 	queuedSequence: number;
+}>;
+
+export type ConclaveHandoffPresentation = Readonly<{
+	observationId: string;
+	executionId?: string | undefined;
+	feedback: readonly string[];
+	status: "authorized" | "delivered" | "pending" | "superseded";
+}>;
+
+export type EvidencePresentation = Readonly<{
+	workState: WorkState;
+	missionState?: MissionState | undefined;
+	executionState?: ExecutionState | undefined;
+	runtimeState?: ExecutionRuntimeState | undefined;
+	executionActive: boolean;
+	activity:
+		| "execution-recorded"
+		| "executor-turn-active"
+		| "executor-turn-finishing"
+		| "awaiting-conclave"
+		| "none-recorded";
+	signal: Readonly<{
+		kind: "none" | "signal" | "blocking-signal";
+		evidenceCount: number;
+	}>;
+	archive: Readonly<{
+		recordCount: number;
+		accessLabel: "Open Archive for details";
+	}>;
+	providerObservation?: ProviderObservation | undefined;
+	reviewRequest?: ReviewRequest | undefined;
+	conclaveHandoff?: ConclaveHandoffPresentation | undefined;
+	error?: ErrorEnvelope | undefined;
 }>;
 
 export type WorkSummary = Readonly<{
@@ -350,6 +420,7 @@ export type ErrorEnvelope = Readonly<{
 	retryable: boolean;
 	remediation: string;
 	evidenceRefs: readonly string[];
+	source?: "provider-monitor" | undefined;
 	learning?:
 		| Readonly<{
 				failure: string;

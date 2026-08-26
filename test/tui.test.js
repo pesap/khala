@@ -213,6 +213,267 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	await result;
 });
 
+test("Provider observation archive entries show feedback and evidence", async () => {
+	const screens = [];
+	const work = {
+		workId: "provider-work",
+		state: "active",
+		revision: 2,
+		terms: { title: "Provider feedback" },
+		mission: { missionId: "mission-1" },
+		missionState: "active",
+		execution: { executionId: "execution-1", state: "running", runtimeState: "idle" },
+		budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+		nextAction: "Conclave is assessing provider feedback.",
+	};
+	const observation = {
+		sequence: 1,
+		id: "record-1",
+		kind: "observation",
+		actor: "monitor",
+		workId: work.workId,
+		executionId: work.execution.executionId,
+		payloadVersion: 1,
+		summary: "Provider observation changed: review-comment.",
+		evidenceRefs: ["https://github.com/example/project/pull/43", "review-comment:43:comment-1"],
+		recordedAt: "2026-01-01T00:00:00.000Z",
+		payload: {
+			observationId: "review-comment:43:comment-1",
+			kind: "review-comment",
+			providerId: "43",
+			status: "commented",
+			feedback: ["Add the cleanup-waits sentence."],
+			author: "reviewer",
+			reviewState: "COMMENTED",
+		},
+	};
+	const service = {
+		listWork: () => [
+			{
+				workId: work.workId,
+				title: work.terms.title,
+				state: work.state,
+				executionState: work.execution.state,
+				nextAction: work.nextAction,
+			},
+		],
+		inspectRuntime: async () => work,
+		availableActions: () => [],
+		readRecords: () => ({ items: [observation], asOfSequence: 1 }),
+	};
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context);
+	await nextTurn();
+	screens[0].handleInput("\r");
+	await nextTurn();
+	assert.doesNotMatch(screens[1].render(100).join("\n"), /Failure recorded/);
+	screens[1].handleInput("\u001b[B");
+	screens[1].handleInput("\u001b[B");
+	screens[1].handleInput("\r");
+	await nextTurn();
+	assert.match(screens[2].render(100).join("\n"), /#1 observation/);
+	screens[2].handleInput("\r");
+	await nextTurn();
+	const details = screens[3].render(100).join("\n");
+	assert.match(details, /Provider observation: review comment/);
+	assert.match(details, /provider: 43/);
+	assert.match(details, /status: commented/);
+	assert.match(details, /feedback \(1\)/);
+	assert.match(details, /Add the cleanup-waits sentence/);
+	assert.match(details, /Evidence \(2\)/);
+	assert.match(details, /review-comment:43:comment-1/);
+	screens[3].handleInput("\u001b");
+	await nextTurn();
+	screens[4].handleInput("\u001b");
+	await nextTurn();
+	screens[5].handleInput("\u001b");
+	await nextTurn();
+	screens[6].handleInput("\u001b");
+	await result;
+});
+
+test("Evidence presents provider context and Conclave delivery without raw payloads", async () => {
+	const screens = [];
+	const work = {
+		workId: "evidence-work",
+		state: "active",
+		revision: 4,
+		terms: { title: "Lifecycle hardening demo" },
+		mission: { missionId: "mission-1" },
+		missionState: "active",
+		execution: { executionId: "execution-new", state: "running", runtimeState: "unreachable" },
+		budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+		lastSignal: {
+			signalId: "signal-1",
+			executionId: "execution-new",
+			kind: "ready",
+			summary: "Ready after provider feedback.",
+			evidence: ["diff", "validation", "head", "tests"],
+			observedAt: "2026-08-25T22:40:00Z",
+		},
+		reviewRequest: {
+			provider: "github",
+			principalId: "pesap",
+			providerId: "43",
+			url: "https://github.com/pesap/khala/pull/43",
+			repository: "pesap/khala",
+			status: "draft",
+			sourceBranch: "khala/demo",
+			targetBranch: "main",
+			headCommit: "head",
+			diffSummary: "documentation-only change",
+			validation: ["npm run check"],
+		},
+		lastObservation: {
+			observationId: "review-comment:43:IC_kwDOTlm-4c8AAAABQt6GhQ",
+			kind: "review-comment",
+			providerId: "43",
+			status: "commented",
+			summary: "Follow-up review requests the cleanup sentence.",
+			changed: true,
+			observedAt: "2026-08-25T22:35:00Z",
+			feedback: ["Add the cleanup-waits sentence now."],
+			details: {
+				pullRequest: {
+					url: "https://github.com/pesap/khala/pull/43",
+					status: "draft",
+					state: "open",
+					reviewDecision: "",
+					mergedAt: null,
+				},
+				comments: [
+					{
+						id: "IC_kwDOTlm-4c8AAAABQt6GhQ",
+						author: "pesap",
+						authorAssociation: "OWNER",
+						body: "Changes requested: add one sentence to docs/demo-work.md stating that cleanup waits for an active Executor turn before stopping its runtime. Keep the change documentation-only and resend the ready evidence after validation.",
+						createdAt: "2026-08-25T21:11:06Z",
+						url: "https://github.com/pesap/khala/pull/43#issuecomment-5416846981",
+					},
+					{
+						id: "IC_kwDOTlm-4c8AAAABQuBR7A",
+						author: "pesap",
+						authorAssociation: "OWNER",
+						body: "Follow-up review: please add the cleanup-waits-for-the-active-Executor-turn sentence now, then validate the documentation-only diff and send a fresh ready Signal.",
+						createdAt: "2026-08-25T21:21:03Z",
+						url: "https://github.com/pesap/khala/pull/43#issuecomment-5416964588",
+					},
+				],
+				checks: [
+					{ kind: "check-run", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" },
+					{ kind: "check-run", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" },
+				],
+			},
+		},
+		nextAction: "Executor runtime is unreachable. Recover it from Actions.",
+	};
+	const observation = {
+		sequence: 1,
+		id: "record-observation",
+		kind: "observation",
+		actor: "monitor",
+		workId: work.workId,
+		executionId: "execution-old",
+		payloadVersion: 1,
+		summary: "Provider observation changed: review-comment.",
+		evidenceRefs: [work.reviewRequest.url, work.lastObservation.observationId],
+		recordedAt: "2026-08-25T22:35:00Z",
+		payload: work.lastObservation,
+	};
+	const delivery = {
+		sequence: 2,
+		id: "record-delivery",
+		kind: "delivery",
+		actor: "conclave",
+		workId: work.workId,
+		executionId: "execution-new",
+		payloadVersion: 1,
+		summary: "Authorized provider review feedback was delivered to the Executor.",
+		evidenceRefs: work.lastObservation.feedback,
+		recordedAt: "2026-08-25T22:36:00Z",
+		payload: { observationId: work.lastObservation.observationId, feedback: work.lastObservation.feedback, delivered: true },
+	};
+	const service = {
+		listWork: () => [{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction }],
+		inspectRuntime: async () => work,
+		availableActions: () => [],
+		readRecords: () => ({ items: [observation, delivery], asOfSequence: 2 }),
+	};
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context);
+	await nextTurn();
+	screens[0].handleInput("\r");
+	await nextTurn();
+	const overview = screens[1].render(120).join("\n");
+	assert.match(overview, /Execution running \(no active runtime\)/);
+	assert.match(overview, /Runtime unreachable/);
+	screens[1].handleInput("\u001b[B");
+	screens[1].handleInput("\r");
+	await nextTurn();
+	const evidence = screens[2].render(120).join("\n");
+	assert.match(evidence, /state: active/);
+	assert.match(evidence, /mission: in progress/);
+	assert.match(evidence, /execution: running \(no active runtime\)/);
+	assert.match(evidence, /runtime: unreachable/);
+	assert.match(evidence, /activity: execution recorded \(runtime unreachable, no active turn\)/);
+	assert.match(evidence, /signal: signal/);
+	assert.match(evidence, /signal evidence: 4 evidence items\. Open Archive for details/);
+	assert.match(evidence, /archive access: Open Archive for details/);
+	assert.match(evidence, /PR status: open/);
+	assert.match(evidence, /CI checks \(2\)/);
+	assert.match(evidence, /review comments: 2 available — select Review comments to explore/);
+	assert.doesNotMatch(evidence, /Add one sentence to docs\/demo-work\.md/);
+	assert.match(evidence, /review request: https:\/\/github\.com\/pesap\/khala\/pull\/43/);
+	assert.match(evidence, /review status: draft/);
+	assert.match(evidence, /conclave handoff: delivered Execution execution-new/);
+	assert.match(evidence, /handoff observation: review-comment:43/);
+	assert.doesNotMatch(evidence, /"comments"|"statusCheckRollup"/);
+	screens[2].handleInput("\u001b");
+	await nextTurn();
+	assert.match(screens[3].render(120).join("\n"), /Review comments \(2\)/);
+	screens[3].handleInput("\u001b[B");
+	screens[3].handleInput("\u001b[B");
+	screens[3].handleInput("\u001b[B");
+	screens[3].handleInput("\r");
+	await nextTurn();
+	assert.match(screens[4].render(120).join("\n"), /Review comments/);
+	assert.match(screens[4].render(120).join("\n"), /pesap/);
+	screens[4].handleInput("\r");
+	await nextTurn();
+	const comment = screens[5].render(120).join("\n");
+	assert.match(comment, /author: pesap \(OWNER\)/);
+	assert.match(comment, /Changes requested: add one sentence to docs\/demo-work\.md/);
+	assert.match(comment, /https:\/\/github\.com\/pesap\/khala\/pull\/43#issuecomment-5416846981/);
+	screens[5].handleInput("\u001b");
+	await nextTurn();
+	screens[6].handleInput("\u001b");
+	await nextTurn();
+	screens[7].handleInput("\u001b");
+	await nextTurn();
+	screens[8].handleInput("\u001b");
+	await result;
+});
+
 test("Work picker stays minimal, filters active Work, and marks failures", async () => {
 	const screens = [];
 	const works = [

@@ -290,8 +290,11 @@ export class PiRpcRuntime implements AgentRuntimePort {
 
 	async getState(binding: RuntimeBinding): Promise<RuntimeState> {
 		const child = this.children.get(binding.sessionId);
-		if (child === undefined) {
+		if (child === undefined || !sameBindingIdentity(binding, child.binding)) {
 			return "unreachable";
+		}
+		if (child.sending) {
+			return "working";
 		}
 		try {
 			const response = await request(child, "get_state", {}, this.options.rpcTimeoutMs ?? 10_000);
@@ -309,17 +312,10 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	async requestStop(binding: RuntimeBinding): Promise<void> {
 		const child = this.children.get(binding.sessionId);
 		if (child === undefined) {
-			await terminateSessionProcesses(binding.sessionPath, binding.processMarker);
-			killProcessGroup(binding.processGroupId, binding.processStartTime);
-			removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
+			await stopUnattachedBinding(binding);
 			return;
 		}
-		if (!sameBindingIdentity(binding, child.binding)) {
-			await terminateSessionProcesses(binding.sessionPath, binding.processMarker);
-			killProcessGroup(binding.processGroupId, binding.processStartTime);
-			removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
-			return;
-		}
+		if (!sameBindingIdentity(binding, child.binding)) return;
 		try {
 			await request(child, "abort", {}, this.options.rpcTimeoutMs ?? 10_000);
 		} finally {
@@ -348,8 +344,8 @@ export class PiRpcRuntime implements AgentRuntimePort {
 
 	private requireChild(binding: RuntimeBinding): MutableChild {
 		const child = this.children.get(binding.sessionId);
-		if (child === undefined) {
-			throw new Error(`Pi session ${binding.sessionId} is not attached to this process.`);
+		if (child === undefined || !sameBindingIdentity(binding, child.binding)) {
+			throw new Error(`Pi session ${binding.sessionId} is not attached with the supplied binding.`);
 		}
 		return child;
 	}
@@ -631,18 +627,24 @@ function isTransientStartupFailure(message: string): boolean {
 	return message.includes("Pi child exited") || message.includes("Pi RPC get_state timed out");
 }
 
+async function stopUnattachedBinding(binding: RuntimeBinding): Promise<void> {
+	if (binding.processMarker !== undefined) {
+		await terminateSessionProcesses(binding.sessionPath, binding.processMarker);
+		killProcessGroup(binding.processGroupId, binding.processStartTime);
+		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
+		return;
+	}
+	killProcessGroup(binding.processGroupId, binding.processStartTime);
+}
+
 function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boolean {
 	return (
+		left.sessionId === right.sessionId &&
 		left.sessionPath === right.sessionPath &&
-		(left.processGroupId === undefined ||
-			right.processGroupId === undefined ||
-			left.processGroupId === right.processGroupId) &&
-		(left.processStartTime === undefined ||
-			right.processStartTime === undefined ||
-			left.processStartTime === right.processStartTime) &&
-		(left.processMarker === undefined ||
-			right.processMarker === undefined ||
-			left.processMarker === right.processMarker)
+		left.processGroupId === right.processGroupId &&
+		left.processStartTime === right.processStartTime &&
+		left.capabilityNonce === right.capabilityNonce &&
+		left.processMarker === right.processMarker
 	);
 }
 

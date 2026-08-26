@@ -22,13 +22,16 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { KhalaConfig } from "./config.js";
+import { buildEvidencePresentation } from "./evidence.js";
 import type {
 	Action,
 	Actor,
 	ErrorEnvelope,
+	EvidencePresentation,
 	GovernedRole,
 	JsonObject,
 	JsonValue,
+	ProviderReviewComment,
 	RecordView,
 	RecoveryUpdate,
 	RoleSetting,
@@ -312,7 +315,7 @@ async function pickWork(
 }
 
 const NAVIGATION_FOOTER = "↑↓ navigate  enter select  escape/ctrl+c cancel";
-type WorkSection = "actions" | "evidence" | "archive" | "blocking-signal";
+type WorkSection = "actions" | "evidence" | "archive" | "review-comments" | "blocking-signal";
 
 async function showWork(
 	service: ApplicationService,
@@ -322,29 +325,43 @@ async function showWork(
 ): Promise<"back"> {
 	for (;;) {
 		const work = await service.inspectRuntime(workId);
-		const section = await pickSection(work, context);
+		const records = readArchiveRecordsForNavigation(service, work, actor);
+		const evidence = buildEvidencePresentation(work, records);
+		const section = await pickSection(work, evidence, context);
 		if (section === null || section === "back") return "back";
 		if (section === "actions") {
 			await chooseAction(service, context, work, actor);
 			continue;
 		}
 		if (section === "evidence") {
-			await showEvidence(work, context);
+			await showEvidence(service, work, context, actor);
 			continue;
 		}
 		if (section === "archive") {
 			await showArchive(service, context, work, actor);
 			continue;
 		}
+		if (section === "review-comments") {
+			await showReviewComments(evidence, context);
+			continue;
+		}
 		await showBlockingSignal(work, context);
 	}
 }
 
-async function pickSection(work: WorkView, context: ExtensionContext): Promise<WorkSection | "back" | null> {
+async function pickSection(
+	work: WorkView,
+	evidence: EvidencePresentation,
+	context: ExtensionContext,
+): Promise<WorkSection | "back" | null> {
+	const reviewComments = evidence.providerObservation?.details?.comments ?? [];
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
 		{ value: "archive", label: "Archive" },
+		...(reviewComments.length === 0
+			? []
+			: [{ value: "review-comments", label: `Review comments (${reviewComments.length})` }]),
 		...(work.execution?.state === "blocked" ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
@@ -358,7 +375,7 @@ async function pickSection(work: WorkView, context: ExtensionContext): Promise<W
 			`Work ${failure ? theme.fg("error", formatWorkState(work)) : theme.bold(formatWorkState(work))}`,
 			...(failure ? [`Failure ${theme.fg("error", "recorded. Inspect Evidence")}`] : []),
 			`Mission ${mission}`,
-			`Execution ${formatExecutionState(execution?.state ?? "not started")}`,
+			`Execution ${formatExecutionState(execution)}`,
 			`Runtime ${formatRuntimeState(execution)}`,
 			`Next: ${presentEvidenceText(work.nextAction)}`,
 		];
@@ -767,7 +784,13 @@ function selectableComponent(
 }
 
 function isWorkSection(value: string): value is WorkSection {
-	return value === "actions" || value === "evidence" || value === "archive" || value === "blocking-signal";
+	return (
+		value === "actions" ||
+		value === "evidence" ||
+		value === "archive" ||
+		value === "review-comments" ||
+		value === "blocking-signal"
+	);
 }
 
 function formatStatus(value: string): string {
@@ -782,8 +805,12 @@ function formatMissionState(value: string): string {
 	return value === "active" ? "in progress" : formatStatus(value);
 }
 
-function formatExecutionState(value: string): string {
-	return value === "running" ? "running" : formatStatus(value);
+function formatExecutionState(execution: WorkView["execution"]): string {
+	if (execution === undefined) return "not started";
+	if (execution.state === "running" && execution.runtimeState === "unreachable") {
+		return "running (no active runtime)";
+	}
+	return execution.state === "running" ? "running" : formatStatus(execution.state);
 }
 
 function formatRuntimeState(execution: WorkView["execution"]): string {
@@ -797,15 +824,61 @@ function formatRuntimeState(execution: WorkView["execution"]): string {
 	return "unknown (awaiting Conclave)";
 }
 
-function formatActivity(execution: WorkView["execution"]): string {
-	if (execution === undefined) return "none recorded";
-	if (execution.state === "blocked") {
-		return execution.runtimeState === "working" ? "executor turn finishing" : "awaiting Conclave assessment";
+async function showReviewComments(evidence: EvidencePresentation, context: ExtensionContext): Promise<void> {
+	const comments = evidence.providerObservation?.details?.comments ?? [];
+	if (comments.length === 0) {
+		await showTextPage(context, "Review comments", ["No provider review comments are available."]);
+		return;
 	}
-	if (execution.runtimeState === "idle") return "executor turn completed";
-	if (execution.runtimeState === "working") return "executor turn active";
-	if (execution.runtimeState === "pending") return "executor turn pending";
-	return "execution recorded";
+	for (;;) {
+		const selected = await selectReviewComment(comments, context);
+		if (selected === null) return;
+		const comment = comments[Number(selected)];
+		if (comment === undefined) return;
+		await showTextPage(context, "Review comment", formatReviewCommentLines(comment));
+	}
+}
+
+async function selectReviewComment(
+	comments: readonly ProviderReviewComment[],
+	context: ExtensionContext,
+): Promise<string | null> {
+	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+		const list = new SelectList(
+			comments.map((comment, index) => ({
+				value: String(index),
+				label: `${comment.author ?? "unknown author"} — ${truncateToWidth(comment.body, 72, "…")}`,
+			})),
+			Math.min(6, comments.length),
+			selectorTheme(theme),
+		);
+		const container = new Container();
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Review comments")), 1, 0));
+		container.addChild(new Text(theme.fg("muted", `${comments.length} provider comments`), 1, 0));
+		container.addChild(list);
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		list.onSelect = (item) => done(item.value);
+		list.onCancel = () => done(null);
+		return selectableComponent(container, list, tui, () => done(null));
+	});
+}
+
+function formatReviewCommentLines(comment: ProviderReviewComment): readonly string[] {
+	const author = comment.author === undefined ? "unknown" : comment.author;
+	const association = comment.authorAssociation === undefined ? "" : ` (${comment.authorAssociation})`;
+	return [
+		`author: ${author}${association}`,
+		`created: ${comment.createdAt === undefined ? "unknown" : formatRecordedAt(comment.createdAt)}`,
+		...(comment.state === undefined ? [] : [`state: ${comment.state}`]),
+		...(comment.minimized === undefined ? [] : [`minimized: ${comment.minimized ? "yes" : "no"}`]),
+		"",
+		"Comment",
+		comment.body,
+		...(comment.url === undefined ? [] : ["", `url: ${comment.url}`]),
+	];
 }
 
 async function showBlockingSignal(work: WorkView, context: ExtensionContext): Promise<void> {
@@ -829,25 +902,107 @@ function formatSignalLines(signal: Signal): readonly string[] {
 	];
 }
 
-async function showEvidence(work: WorkView, context: ExtensionContext): Promise<void> {
-	const execution = work.execution;
-	const signal = work.lastSignal;
-	const signalEvidence = signal === undefined ? "none" : summarizeEvidence(signal.evidence);
-	const signalLabel = signal === undefined ? "none" : signal.kind === "blocked" ? "blocking signal" : "signal";
-	const errorLines = formatErrorLines(work.lastError);
-	await showTextPage(context, "Evidence", [
-		`state: ${formatWorkState(work)}${work.stopReason === undefined ? "" : ` (${work.stopReason})`}`,
-		`mission: ${formatMissionState(work.missionState ?? "not admitted")}`,
-		`execution: ${formatExecutionState(execution?.state ?? "not started")}`,
-		`runtime: ${formatRuntimeState(execution)}`,
-		`activity: ${formatActivity(execution)}`,
-		`signal: ${signalLabel}`,
-		`signal evidence: ${signalEvidence}`,
-		`provider observation: ${presentEvidenceText(work.lastObservation?.summary ?? "none")}`,
-		`review request: ${work.reviewRequest?.url ?? "none"}`,
-		`review status: ${work.reviewRequest?.status ?? "none"}`,
-		...errorLines,
-	]);
+async function showEvidence(
+	service: ApplicationService,
+	work: WorkView,
+	context: ExtensionContext,
+	actor: Actor,
+): Promise<void> {
+	let records: readonly RecordView[];
+	try {
+		records = readAllArchiveRecords(service, work, actor);
+	} catch (error) {
+		await showTextPage(context, "Evidence", [
+			`Unable to read Archive: ${error instanceof Error ? error.message : String(error)}`,
+		]);
+		return;
+	}
+	const presentation = buildEvidencePresentation(work, records);
+	await showTextPage(context, "Evidence", formatEvidenceLines(presentation));
+}
+
+function formatEvidenceLines(presentation: EvidencePresentation): readonly string[] {
+	const lines: string[] = [
+		`evidence state: ${formatStatus(presentation.workState)}`,
+		`active mission: ${formatMissionState(presentation.missionState ?? "not admitted")}`,
+		`execution: ${formatPresentationExecutionState(presentation)}`,
+		`runtime: ${formatStatus(presentation.runtimeState ?? "unavailable")}`,
+		`activity: ${formatPresentationActivity(presentation)}`,
+		`signal: ${presentation.signal.kind === "blocking-signal" ? "blocking signal" : presentation.signal.kind}`,
+		`signal evidence: ${summarizeEvidenceCount(presentation.signal.evidenceCount)}`,
+		`archive access: ${presentation.archive.accessLabel}`,
+	];
+	if (presentation.providerObservation === undefined) {
+		lines.push("provider observation: none");
+	} else {
+		lines.push(...formatProviderEvidenceLines(presentation));
+	}
+	if (presentation.conclaveHandoff === undefined) {
+		lines.push("conclave handoff: none recorded");
+	} else {
+		const handoff = presentation.conclaveHandoff;
+		const target = handoff.executionId === undefined ? "new Execution" : `Execution ${handoff.executionId}`;
+		const status = handoff.status === "delivered" ? "delivered" : `${handoff.status} for`;
+		lines.push(`conclave handoff: ${status} ${target}`);
+		lines.push(`handoff observation: ${handoff.observationId}`);
+		lines.push(`handoff feedback (${handoff.feedback.length})`);
+		lines.push(...handoff.feedback.map((item) => `- ${item}`));
+	}
+	lines.push(
+		`review request: ${presentation.reviewRequest?.url ?? "none"}`,
+		`review status: ${presentation.reviewRequest?.status ?? "none"}`,
+		...formatErrorLines(presentation.error),
+	);
+	return lines;
+}
+
+function formatPresentationExecutionState(presentation: EvidencePresentation): string {
+	if (presentation.executionState === undefined) return "not started";
+	if (presentation.executionState === "running" && !presentation.executionActive) {
+		return "running (no active runtime)";
+	}
+	return presentation.executionState === "running" ? "running" : formatStatus(presentation.executionState);
+}
+
+function formatPresentationActivity(presentation: EvidencePresentation): string {
+	if (presentation.activity === "execution-recorded" && presentation.runtimeState === "unreachable") {
+		return "execution recorded (runtime unreachable, no active turn)";
+	}
+	return formatStatus(presentation.activity);
+}
+
+function summarizeEvidenceCount(count: number): string {
+	if (count === 0) return "none";
+	return `${count} evidence item${count === 1 ? "" : "s"}. Open Archive for details`;
+}
+
+function formatProviderEvidenceLines(presentation: EvidencePresentation): readonly string[] {
+	const observation = presentation.providerObservation;
+	if (observation === undefined) return ["provider observation: none"];
+	const details = observation.details;
+	if (details === undefined) {
+		return [
+			`provider observation: ${formatStatus(observation.kind)}`,
+			`provider status: ${observation.status}`,
+			`provider summary: ${presentEvidenceText(observation.summary)}`,
+		];
+	}
+	const comments = details.comments;
+	const checks = details.checks;
+	return [
+		`provider observation: ${formatStatus(observation.kind)}`,
+		`provider status: ${observation.status}`,
+		`provider summary: ${presentEvidenceText(observation.summary)}`,
+		`PR status: ${providerPullRequestStatus(details.pullRequest.status, details.pullRequest.state)}`,
+		`CI checks (${checks.length})`,
+		...(checks.length === 0
+			? ["none"]
+			: checks.map((check) => {
+					const result = check.conclusion === undefined ? check.status : `${check.status}/${check.conclusion}`;
+					return `- ${check.name}: ${result}`;
+				})),
+		`review comments: ${comments.length === 0 ? "none" : `${comments.length} available — select Review comments to explore`}`,
+	];
 }
 
 type RecordPage = Readonly<{ title: string; lines: readonly string[] }>;
@@ -876,6 +1031,9 @@ function formatRecordPage(record: RecordView): RecordPage {
 				...(evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`)),
 			],
 		};
+	}
+	if (record.kind === "observation" && isProviderObservationPayload(record.payload)) {
+		return formatProviderObservationPage(record);
 	}
 	if (record.kind === "oracle-review") {
 		return formatOracleRecordPage(record);
@@ -907,6 +1065,75 @@ function formatRecordPage(record: RecordView): RecordPage {
 	};
 }
 
+function formatProviderObservationPage(record: RecordView): RecordPage {
+	const kind = readPayloadText(record.payload, "kind") ?? "provider observation";
+	const providerId = readPayloadText(record.payload, "providerId") ?? "unknown";
+	const status = readPayloadText(record.payload, "status") ?? "unknown";
+	const feedback = readPayloadTextList(record.payload, "feedback") ?? [];
+	const author = readPayloadText(record.payload, "author");
+	const reviewState = readPayloadText(record.payload, "reviewState");
+	return {
+		title: `Provider observation: ${formatStatus(kind)}`,
+		lines: [
+			`from: ${capitalize(record.actor)}`,
+			`recorded: ${formatRecordedAt(record.recordedAt)}`,
+			`provider: ${providerId}`,
+			`status: ${status}`,
+			`summary: ${record.summary}`,
+			...(author === undefined ? [] : [`author: ${author}`]),
+			...(reviewState === undefined ? [] : [`review state: ${reviewState}`]),
+			...formatRawProviderDetails(readPayloadObject(record.payload, "details")),
+			`feedback (${feedback.length})`,
+			...(feedback.length === 0 ? ["none"] : feedback.map((item) => `- ${item}`)),
+			"",
+			`Evidence (${record.evidenceRefs.length})`,
+			...(record.evidenceRefs.length === 0 ? ["none"] : record.evidenceRefs.map((item) => `- ${item}`)),
+		],
+	};
+}
+
+function providerPullRequestStatus(status: string, state: string): string {
+	return status === "merged" ? "merged" : state;
+}
+
+function formatRawProviderDetails(details: JsonObject | undefined): readonly string[] {
+	if (details === undefined) return [];
+	const pullRequest = isJsonObject(details["pullRequest"]) ? details["pullRequest"] : undefined;
+	const checks = readPayloadObjects(details, "checks");
+	const comments = readPayloadObjects(details, "comments");
+	return [
+		...(pullRequest === undefined
+			? []
+			: [
+					`PR status: ${providerPullRequestStatus(
+						readObjectText(pullRequest, "status") ?? "unknown",
+						readObjectText(pullRequest, "state") ?? "unknown",
+					)}`,
+				]),
+		`CI checks (${checks.length})`,
+		...(checks.length === 0
+			? ["none"]
+			: checks.map((check) => {
+					const name = readObjectText(check, "name") ?? "unnamed";
+					const checkStatus = readObjectText(check, "status") ?? "unknown";
+					const conclusion = readObjectText(check, "conclusion");
+					return `- ${name}: ${conclusion === undefined ? checkStatus : `${checkStatus}/${conclusion}`}`;
+				})),
+		`PR comments (${comments.length})`,
+		...(comments.length === 0
+			? ["none"]
+			: comments.flatMap((comment, index) => {
+					const author = readObjectText(comment, "author") ?? "unknown author";
+					const association = readObjectText(comment, "authorAssociation");
+					const body = readObjectText(comment, "body") ?? "No comment body.";
+					return [
+						`${index + 1}. ${author}${association === undefined ? "" : ` (${association})`}: ${body}`,
+						...(readObjectText(comment, "url") === undefined ? [] : [`   ${readObjectText(comment, "url")}`]),
+					];
+				})),
+	];
+}
+
 function formatOracleRecordPage(record: RecordView): RecordPage {
 	const verdict = readPayloadText(record.payload, "verdict") ?? "unknown";
 	const findings = readPayloadObjects(record.payload, "findings");
@@ -932,8 +1159,25 @@ function formatOracleRecordPage(record: RecordView): RecordPage {
 	};
 }
 
+function isProviderObservationPayload(payload: JsonValue): boolean {
+	if (!isJsonObject(payload)) return false;
+	const kind = payload["kind"];
+	return (
+		isTextValue(payload["observationId"]) &&
+		isTextValue(payload["providerId"]) &&
+		isTextValue(payload["status"]) &&
+		isTextValue(kind) &&
+		["ci-status", "review-comment", "feedback-delivery", "monitor-failure", "provider-outcome"].includes(kind)
+	);
+}
+
 function readPayloadText(payload: JsonValue, key: string): string | undefined {
 	return isJsonObject(payload) ? readObjectText(payload, key) : undefined;
+}
+
+function readPayloadObject(payload: JsonValue, key: string): JsonObject | undefined {
+	if (!isJsonObject(payload)) return undefined;
+	return isJsonObject(payload[key]) ? payload[key] : undefined;
 }
 
 function readObjectText(object: JsonObject, key: string): string | undefined {
@@ -960,11 +1204,6 @@ function formatRecordedAt(value: string): string {
 
 function capitalize(value: string): string {
 	return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
-}
-
-function summarizeEvidence(evidence: readonly string[]): string {
-	if (evidence.length === 0) return "none";
-	return `${evidence.length} evidence item${evidence.length === 1 ? "" : "s"}. Open Archive for details`;
 }
 
 function formatErrorLines(error: ErrorEnvelope | undefined): readonly string[] {
@@ -999,24 +1238,42 @@ function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
 }
 
+function readArchiveRecordsForNavigation(
+	service: ApplicationService,
+	work: WorkView,
+	actor: Actor,
+): readonly RecordView[] {
+	try {
+		return readAllArchiveRecords(service, work, actor);
+	} catch {
+		return [];
+	}
+}
+
+function readAllArchiveRecords(service: ApplicationService, work: WorkView, actor: Actor): readonly RecordView[] {
+	const records: RecordView[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = service.readRecords(
+			{ workId: work.workId },
+			{ actor, commandId: `tui:archive:${work.workId}:${work.revision}`, schemaVersion: 1 },
+			cursor,
+		);
+		records.push(...page.items);
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return records;
+}
+
 async function showArchive(
 	service: ApplicationService,
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
 ): Promise<void> {
-	const records: RecordView[] = [];
-	let cursor: string | undefined;
+	let records: readonly RecordView[];
 	try {
-		do {
-			const page = service.readRecords(
-				{ workId: work.workId },
-				{ actor, commandId: `tui:archive:${work.workId}:${work.revision}`, schemaVersion: 1 },
-				cursor,
-			);
-			records.push(...page.items);
-			cursor = page.nextCursor;
-		} while (cursor !== undefined);
+		records = readAllArchiveRecords(service, work, actor);
 	} catch (error) {
 		await showTextPage(context, "Archive", [
 			`Unable to read Archive: ${error instanceof Error ? error.message : String(error)}`,

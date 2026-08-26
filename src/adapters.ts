@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { Execution, JsonValue, Mission, ProviderObservation, ReviewRequest } from "./model.js";
+import type { Execution, JsonValue, Mission, ProviderCheck, ProviderObservation, ReviewRequest } from "./model.js";
 import type { CodeHostPort, ReviewRequestInput, WorkspacePort, WorkspacePreflight } from "./ports.js";
 
 const execFileAsync = promisify(execFile);
@@ -259,7 +259,11 @@ export class CommandCodeHost implements CodeHostPort {
 					"view",
 					reviewRequest.providerId,
 					"--json",
-					"state,mergedAt,reviewDecision,statusCheckRollup,comments,reviews",
+<<<<<<< HEAD
+					"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews",
+=======
+					"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews",
+>>>>>>> 6bb954b (refactor: ui.)
 				],
 				this.cwd,
 			);
@@ -271,12 +275,15 @@ export class CommandCodeHost implements CodeHostPort {
 				["api", `repos/${repository}/pulls/${reviewRequest.providerId}/comments`, "--paginate", "--slurp"],
 				this.cwd,
 			);
+			const inlineComments = parseJsonPages(inlineData);
+			const details = githubProviderDetails(row, reviewRequest, inlineComments);
 			return [
 				{
 					...observation("ci-status", reviewRequest.providerId, data),
 					status: githubPollStatus(row, reviewRequest.status),
+					details,
 				},
-				...githubFeedback(row, reviewRequest.providerId, reviewRequest.principalId, parseJsonPages(inlineData)),
+				...githubFeedback(row, reviewRequest.providerId, reviewRequest.principalId, inlineComments, details),
 			];
 		}
 		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
@@ -508,11 +515,103 @@ function observation(
 	};
 }
 
+function githubProviderDetails(
+	row: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+	inlineComments: readonly Record<string, JsonValue>[],
+): NonNullable<ProviderObservation["details"]> {
+	const sources = [
+		{ source: "issue-comment" as const, entries: row["comments"] },
+		{ source: "review" as const, entries: row["reviews"] },
+		{ source: "inline" as const, entries: inlineComments },
+	];
+	const comments = sources.flatMap(({ source, entries }) => {
+		if (!Array.isArray(entries)) return [];
+		return entries.filter(isJsonObject).flatMap((entry) => {
+			const id = entry["id"];
+			if (id !== String(id) && id !== Number(id)) return [];
+			const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
+			const line = entry["line"] === undefined ? undefined : String(entry["line"]);
+			return [
+				{
+					id: String(id),
+					author: githubAuthor(entry),
+					authorAssociation: githubAssociation(entry),
+					body: isTextValue(entry["body"]) ? entry["body"].trim() : "",
+					createdAt: githubTimestamp(entry),
+					url: githubCommentUrl(entry),
+					state: isTextValue(entry["state"]) ? entry["state"].toUpperCase() : undefined,
+					source,
+					location: path === undefined ? undefined : `${path}${line === undefined ? "" : `:${line}`}`,
+					minimized: entry["isMinimized"] === true,
+				},
+			];
+		});
+	});
+	const checks: ProviderCheck[] = (Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"] : [])
+		.filter(isJsonObject)
+		.flatMap((entry): readonly ProviderCheck[] => {
+			const checkRunName = entry["name"];
+			const checkRunStatus = entry["status"];
+			if (isTextValue(checkRunName) && isTextValue(checkRunStatus)) {
+				return [
+					{
+						kind: "check-run" as const,
+						name: checkRunName,
+						status: checkRunStatus,
+						conclusion: isTextValue(entry["conclusion"]) ? entry["conclusion"] : undefined,
+						workflowName: isTextValue(entry["workflowName"]) ? entry["workflowName"] : undefined,
+						detailsUrl: isTextValue(entry["detailsUrl"]) ? entry["detailsUrl"] : undefined,
+						startedAt: isTextValue(entry["startedAt"]) ? entry["startedAt"] : undefined,
+						completedAt: isTextValue(entry["completedAt"]) ? entry["completedAt"] : undefined,
+					},
+				];
+			}
+			const context = entry["context"];
+			const state = entry["state"];
+			if (!isTextValue(context) || !isTextValue(state)) return [];
+			return [
+				{
+					kind: "status-context" as const,
+					name: context,
+					status: state,
+					detailsUrl: isTextValue(entry["targetUrl"]) ? entry["targetUrl"] : undefined,
+				},
+			];
+		});
+	return {
+		pullRequest: {
+			url: reviewRequest.url,
+			status: githubPollStatus(row, reviewRequest.status),
+			state: isTextValue(row["state"]) ? row["state"].toLowerCase() : "unknown",
+			reviewDecision: isTextValue(row["reviewDecision"]) ? row["reviewDecision"] : "",
+			mergedAt: row["mergedAt"] === null ? null : isTextValue(row["mergedAt"]) ? row["mergedAt"] : null,
+		},
+		comments,
+		checks,
+	};
+}
+
+function githubTimestamp(entry: Record<string, JsonValue>): string | undefined {
+	for (const key of ["createdAt", "created_at", "submittedAt", "submitted_at"]) {
+		if (isTextValue(entry[key])) return entry[key];
+	}
+	return undefined;
+}
+
+function githubCommentUrl(entry: Record<string, JsonValue>): string | undefined {
+	for (const key of ["url", "html_url"]) {
+		if (isTextValue(entry[key])) return entry[key];
+	}
+	return undefined;
+}
+
 function githubFeedback(
 	row: Record<string, JsonValue>,
 	providerId: string,
 	principalId: string,
 	inlineComments: readonly Record<string, JsonValue>[] = [],
+	details?: NonNullable<ProviderObservation["details"]>,
 ): readonly ProviderObservation[] {
 	const sources = [
 		{ prefix: "comment", entries: row["comments"] },
@@ -557,6 +656,7 @@ function githubFeedback(
 						authorAssociation,
 						reviewState: state || undefined,
 						actionable,
+						details,
 					},
 				),
 			];
@@ -565,9 +665,11 @@ function githubFeedback(
 }
 
 function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest["status"]): ReviewRequest["status"] {
-	if (row["mergedAt"] !== null && row["mergedAt"] !== undefined) return "merged";
+	if (isTextValue(row["mergedAt"])) return "merged";
 	const state = isTextValue(row["state"]) ? row["state"].toUpperCase() : "";
 	if (state === "CLOSED") return "closed";
+	if (row["isDraft"] === true) return "draft";
+	if (row["isDraft"] === false) return "open";
 	return current === "draft" ? "draft" : "open";
 }
 

@@ -38,7 +38,9 @@ Only the current Executor can send `progress`, `blocked`, or `ready` Signals.
 A ready Signal requires a reconciled draft GitHub Pull Request or GitLab Merge
 Request. Signals are handoff evidence, not acceptance. An Execution can remain
 `running` while its Pi runtime is `idle` between turns; the Archive records that
-runtime observation separately and the TUI shows it explicitly.
+runtime observation separately and the TUI shows it explicitly. If the runtime
+is `unreachable`, the TUI keeps the lifecycle state visible but labels the
+Execution as having no active runtime or turn.
 
 ## Verdict and review
 
@@ -51,23 +53,36 @@ Only the Conclave can issue a Verdict:
 
 The User can record `changes-requested`, `merged`, or `closed` provider review
 evidence. Changes requested returns the current Execution to running. A merged
-review request still needs a changed provider-outcome observation.
+review request still needs a changed provider-outcome observation. Provider
+observation records retain the review URL and observation ID as evidence
+references. The Evidence view presents normalized pull request status, CI
+checks, review comments, and review-request metadata without exposing the raw
+provider response. Review comments are available in a selectable subpanel;
+selecting one shows its author, timestamp, body, location, and URL. The view
+also shows the Conclave handoff, including the feedback delivered to the target
+Execution.
 
 ## Acceptance and failure
 
 Only a Conclave `outcome` record linked to provider-confirmed merge evidence
 sets Work to `succeeded`. A closed request, failed CI, missing provider result,
 blocked Execution, and monitor failure remain evidence that requires a decision.
-An explicit failure or cancellation stops Work. The Work stores that decision
+A successful provider observation clears a stale monitor error from the current
+Work projection; the original failure remains in the append-only Archive. An
+explicit failure or cancellation stops Work. The Work stores that decision
 as `stopReason` rather than exposing separate failed and cancelled states. The
 User can explicitly recover Work stopped by cancellation, which clears the old
 Mission and returns the Work to pending admission.
 
 ## Runtime recovery evidence
 
-Recovery probes the replacement Pi binding before recording it as usable. If the
-replacement remains unreachable, Khala records a failed Execution with runtime
-state `unreachable`; it never leaves that Execution `running`.
+Recovery is a Conclave authorization recorded as a durable effect; the parent
+supervisor owns Executor rebinding and private runtime authority. Liveness
+probes do not interrupt an active Executor turn, and terminal cleanup waits for
+that turn to finish. Recovery probes the replacement Pi binding before recording
+it as usable. If the replacement remains unreachable, Khala records a failed
+Execution with runtime state `unreachable`; it never leaves that Execution
+`running`.
 
 This is observable from another Pi terminal by reading the same Work's bounded
 Archive records:

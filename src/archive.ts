@@ -255,9 +255,21 @@ export class SQLiteArchive implements ArchivePort {
 				const effectPayload = JSON.stringify(effect.payload);
 				if (effectPayload.length > 16_000)
 					throw new Error(`Archive effect ${effect.effectId} exceeds the 16 KB limit.`);
+				const effectKind = boundText(effect.kind, 200);
+				const existingEffect = this.database
+					.prepare("SELECT kind, payload_json FROM outbox WHERE effect_id = ?")
+					.get(effect.effectId);
+				if (existingEffect !== undefined) {
+					if (
+						readString(existingEffect, "kind") !== effectKind ||
+						readString(existingEffect, "payload_json") !== effectPayload
+					)
+						throw new Error(`Archive effect ${effect.effectId} conflicts with an existing effect.`);
+					continue;
+				}
 				this.database
 					.prepare("INSERT INTO outbox(effect_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)")
-					.run(effect.effectId, boundText(effect.kind, 200), effectPayload, now);
+					.run(effect.effectId, effectKind, effectPayload, now);
 			}
 			this.database.exec("COMMIT");
 			return { record: this.readRecord(sequence), projection, duplicate: false };
@@ -864,7 +876,64 @@ function isObservation(value: JsonValue | undefined): value is ProviderObservati
 		(value["sourceBranch"] === undefined || isText(value["sourceBranch"])) &&
 		(value["targetBranch"] === undefined || isText(value["targetBranch"])) &&
 		(value["headCommit"] === undefined || isText(value["headCommit"])) &&
-		(value["mergeCommit"] === undefined || isText(value["mergeCommit"]))
+		(value["mergeCommit"] === undefined || isText(value["mergeCommit"])) &&
+		(value["details"] === undefined || isProviderObservationDetails(value["details"]))
+	);
+}
+
+function isProviderObservationDetails(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	const pullRequest = value["pullRequest"];
+	return (
+		isJsonObject(pullRequest) &&
+		isText(pullRequest["url"]) &&
+		["draft", "open", "merged", "closed"].includes(String(pullRequest["status"])) &&
+		isText(pullRequest["state"]) &&
+		isText(pullRequest["reviewDecision"]) &&
+		(pullRequest["mergedAt"] === null || isText(pullRequest["mergedAt"])) &&
+		isProviderReviewComments(value["comments"]) &&
+		isProviderChecks(value["checks"])
+	);
+}
+
+function isProviderReviewComments(value: JsonValue | undefined): boolean {
+	return (
+		Array.isArray(value) &&
+		value.every((entry) => {
+			if (!isJsonObject(entry) || !isText(entry["id"]) || !isText(entry["body"])) return false;
+			return (
+				(entry["author"] === undefined || isText(entry["author"])) &&
+				(entry["authorAssociation"] === undefined || isText(entry["authorAssociation"])) &&
+				(entry["createdAt"] === undefined || isText(entry["createdAt"])) &&
+				(entry["url"] === undefined || isText(entry["url"])) &&
+				(entry["state"] === undefined || isText(entry["state"])) &&
+				(entry["source"] === undefined || ["issue-comment", "review", "inline"].includes(String(entry["source"]))) &&
+				(entry["location"] === undefined || isText(entry["location"])) &&
+				(entry["minimized"] === undefined || isBoolean(entry["minimized"]))
+			);
+		})
+	);
+}
+
+function isProviderChecks(value: JsonValue | undefined): boolean {
+	return (
+		Array.isArray(value) &&
+		value.every((entry) => {
+			if (
+				!isJsonObject(entry) ||
+				!["check-run", "status-context"].includes(String(entry["kind"])) ||
+				!isText(entry["name"]) ||
+				!isText(entry["status"])
+			)
+				return false;
+			return (
+				(entry["conclusion"] === undefined || isText(entry["conclusion"])) &&
+				(entry["workflowName"] === undefined || isText(entry["workflowName"])) &&
+				(entry["detailsUrl"] === undefined || isText(entry["detailsUrl"])) &&
+				(entry["startedAt"] === undefined || isText(entry["startedAt"])) &&
+				(entry["completedAt"] === undefined || isText(entry["completedAt"]))
+			);
+		})
 	);
 }
 

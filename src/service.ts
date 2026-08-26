@@ -89,6 +89,7 @@ export class ApplicationError extends Error {
 export class ApplicationService {
 	private readonly heartbeat = new Map<string, string>();
 	private readonly drivingExecutions = new Map<string, Promise<void>>();
+	private readonly activeExecutorTurns = new Map<string, Set<Promise<void>>>();
 	private readonly drivingObservers = new Set<string>();
 	private readonly backgroundOperations = new Set<Promise<void>>();
 	private readonly monitorTimer: ReturnType<typeof setInterval> | undefined;
@@ -516,6 +517,44 @@ export class ApplicationService {
 		void operation.finally(() => this.backgroundOperations.delete(operation)).catch(() => undefined);
 	}
 
+	private async stopExecutorAfterTurn(
+		work: WorkView,
+		binding: RuntimeBinding,
+		allowedStates: readonly Execution["state"][],
+	): Promise<void> {
+		const execution = work.execution;
+		if (execution === undefined) return;
+		const key = executorTurnKey(work.workId, execution.executionId);
+		for (;;) {
+			const activeTurns = this.activeExecutorTurns.get(key);
+			if (activeTurns === undefined || activeTurns.size === 0) break;
+			await Promise.all(activeTurns);
+		}
+		const current = this.archive.project(work.workId);
+		const currentExecution = current?.execution;
+		if (
+			currentExecution === undefined ||
+			currentExecution.executionId !== execution.executionId ||
+			!allowedStates.includes(currentExecution.state) ||
+			!sameRuntimeBinding(currentExecution.pi, binding)
+		)
+			return;
+		await this.ports.runtime.requestStop(binding);
+	}
+
+	private addActiveExecutorTurn(key: string, turn: Promise<void>): void {
+		const turns = this.activeExecutorTurns.get(key) ?? new Set<Promise<void>>();
+		turns.add(turn);
+		this.activeExecutorTurns.set(key, turns);
+	}
+
+	private removeActiveExecutorTurn(key: string, turn: Promise<void>): void {
+		const turns = this.activeExecutorTurns.get(key);
+		if (turns === undefined) return;
+		turns.delete(turn);
+		if (turns.size === 0) this.activeExecutorTurns.delete(key);
+	}
+
 	private async wakeConclave(
 		workId: string,
 		commandId: string,
@@ -564,6 +603,7 @@ export class ApplicationService {
 					effect.kind !== "scheduler-wake" &&
 					effect.kind !== "executor-wake" &&
 					effect.kind !== "executor-stop" &&
+					effect.kind !== "executor-recovery" &&
 					effect.kind !== "observer-wake" &&
 					effect.kind !== "feedback-wake" &&
 					effect.kind !== "workspace-cleanup" &&
@@ -614,10 +654,36 @@ export class ApplicationService {
 						}
 					} else if (effect.kind === "workspace-cleanup") {
 						const binding = readOptionalEffectBinding(effect.payload);
-						if (binding !== undefined) await this.ports.runtime.requestStop(binding);
+						if (binding !== undefined)
+							await this.stopExecutorAfterTurn(work, binding, ["completed", "failed", "stopped"]);
 						await this.ports.workspace.removeSandbox(readCleanupSandbox(effect.payload));
-					} else if (effect.kind === "observer-cleanup" || effect.kind === "executor-stop") {
-						await this.ports.runtime.requestStop(readEffectBinding(effect.payload));
+					} else if (effect.kind === "observer-cleanup") {
+						const binding = readEffectBinding(effect.payload);
+						if (work.observer === undefined || sameRuntimeBinding(work.observer, binding))
+							await this.ports.runtime.requestStop(binding);
+					} else if (effect.kind === "executor-stop") {
+						const binding = readEffectBinding(effect.payload);
+						const executionId = readEffectExecutionId(effect.payload);
+						if (
+							work.execution?.executionId === executionId &&
+							work.execution.state === "awaiting-review" &&
+							sameRuntimeBinding(work.execution.pi, binding)
+						)
+							await this.stopExecutorAfterTurn(work, binding, ["awaiting-review"]);
+					} else if (effect.kind === "executor-recovery") {
+						const executionId = readEffectExecutionId(effect.payload);
+						if (
+							work.execution?.executionId === executionId &&
+							work.execution.runtimeState === "pending" &&
+							(work.execution.state === "running" || work.execution.state === "awaiting-review")
+						) {
+							await this.recoverExecutorRuntime(work, {
+								actor: "system",
+								commandId: `outbox:${effect.effectId}`,
+								expectedWorkRevision: work.revision,
+								schemaVersion: 1,
+							});
+						}
 					} else if (effect.kind === "feedback-wake") {
 						const feedback = readEffectFeedback(effect.payload);
 						if (work.execution?.state === "running") {
@@ -757,7 +823,55 @@ export class ApplicationService {
 				providerPollAuthority,
 			);
 		}
+		if (work.lastError !== undefined && isProviderMonitorError(work.lastError)) {
+			work = this.recordProviderPollRecovery(work, observations[0], `${meta.commandId}:recovered`);
+		}
 		return work;
+	}
+
+	private async authorizeExecutorRecovery(work: WorkView, meta: CommandMeta): Promise<WorkView> {
+		// Conclave sessions hold verification authority only; the parent must own governed child launches.
+		this.requireActor(meta, "conclave");
+		const execution = work.execution;
+		if (
+			execution === undefined ||
+			execution.pi === undefined ||
+			(execution.state !== "running" && execution.state !== "awaiting-review")
+		) {
+			throw this.error(
+				"invalid-state",
+				"No recoverable Executor runtime is bound to this Work.",
+				false,
+				"Inspect the current Execution before recovering it.",
+			);
+		}
+		if ((await this.ports.runtime.getState(execution.pi)) !== "unreachable") {
+			throw this.error(
+				"invalid-state",
+				"The Executor runtime is currently reachable and does not need recovery.",
+				false,
+				"Inspect the current runtime state before recovering it.",
+			);
+		}
+		const nextExecution: Execution = { ...execution, runtimeState: "pending" };
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			execution: nextExecution,
+			lastError: undefined,
+			nextAction: "Conclave authorized parent Executor recovery.",
+		};
+		return this.append({
+			meta,
+			kind: "execution",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: execution.executionId,
+			payload: nextExecution,
+			projection: next,
+			summary: "Conclave authorized parent Executor recovery.",
+			effects: [executorRecoveryEffect(work.workId, next.revision, execution.executionId)],
+		}).projection;
 	}
 
 	async recoverWork(
@@ -837,23 +951,37 @@ export class ApplicationService {
 			}
 			return current;
 		}
+		if (meta.actor === "conclave") return this.authorizeExecutorRecovery(work, meta);
+		return this.recoverExecutorRuntime(work, meta, onRecoveryUpdate);
+	}
+
+	private async recoverExecutorRuntime(
+		work: WorkView,
+		meta: CommandMeta,
+		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+	): Promise<WorkView> {
 		if (work.mission === undefined || work.execution === undefined) return work;
 		const execution = work.execution;
 		if (execution.state === "queued") {
 			await this.processPendingEffects();
-			return this.inspectWork(workId);
+			return this.inspectWork(work.workId);
 		}
 		if (execution.pi === undefined || !["running", "awaiting-review"].includes(execution.state)) return work;
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking the Work's Executor connection." });
 		const executorState = await this.ports.runtime.getState(execution.pi);
 		if (executorState === "working") return this.recordExecutorRuntimeState(work, "working");
 		if (executorState === "idle") {
-			if (execution.state === "running") this.runInBackground(this.driveExecutor(work));
-			return work;
+			if (execution.state === "running") {
+				this.runInBackground(this.driveExecutor(work));
+				return work;
+			}
+			return execution.runtimeState === "idle" ? work : this.recordExecutorRuntimeState(work, "idle");
 		}
 		if (executorState !== "unreachable") return work;
 		onRecoveryUpdate?.({ stage: "stopping", message: "Closing the unavailable Work attempt safely." });
-		await this.ports.runtime.requestStop(execution.pi).catch(() => undefined);
+		const activeTurns = this.activeExecutorTurns.get(executorTurnKey(work.workId, execution.executionId));
+		if (activeTurns === undefined || activeTurns.size === 0)
+			await this.ports.runtime.requestStop(execution.pi).catch(() => undefined);
 		onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work's Executor." });
 		this.validateModel("executor", execution.model, execution.thinking);
 		let rebound: RuntimeBinding | undefined;
@@ -864,7 +992,7 @@ export class ApplicationService {
 				thinking: execution.thinking,
 				role: "executor",
 				promptIdentity: execution.promptIdentity,
-				bindingScope: { workId, executionId: execution.executionId },
+				bindingScope: { workId: work.workId, executionId: execution.executionId },
 				tools: [
 					"read",
 					"bash",
@@ -901,7 +1029,7 @@ export class ApplicationService {
 			const result = this.append({
 				meta,
 				kind: "execution",
-				workId,
+				workId: work.workId,
 				missionId: work.mission.missionId,
 				executionId: execution.executionId,
 				payload: recovered,
@@ -930,13 +1058,13 @@ export class ApplicationService {
 			return this.append({
 				meta,
 				kind: "error",
-				workId,
+				workId: work.workId,
 				missionId: work.mission.missionId,
 				executionId: execution.executionId,
 				payload: failure,
 				projection: next,
 				summary: `Execution ${execution.executionId} runtime could not be reconciled.`,
-				effects: lifecycleEffects(workId, next.revision, failed),
+				effects: lifecycleEffects(work.workId, next.revision, failed),
 			}).projection;
 		}
 	}
@@ -992,7 +1120,9 @@ export class ApplicationService {
 		const previous = this.heartbeat.get(key) ?? this.persistedObservationFingerprint(work, observation);
 		if (previous === fingerprint) {
 			this.heartbeat.set(key, fingerprint);
-			return work;
+			return work.lastError === undefined || !isProviderMonitorError(work.lastError)
+				? work
+				: this.recordProviderPollRecovery(work, observation, `${commandId}:recovered`);
 		}
 		let nextObservation: ProviderObservation = {
 			...observation,
@@ -1006,6 +1136,7 @@ export class ApplicationService {
 			...work,
 			revision: work.revision + 1,
 			lastObservation: nextObservation,
+			lastError: work.lastError !== undefined && !isProviderMonitorError(work.lastError) ? work.lastError : undefined,
 			providerOutcome: observation.kind === "provider-outcome" ? nextObservation : work.providerOutcome,
 			reviewRequest:
 				observation.kind === "ci-status" && (observation.status === "closed" || observation.status === "merged")
@@ -1029,6 +1160,7 @@ export class ApplicationService {
 			payload: nextObservation,
 			projection: next,
 			summary: `Provider observation changed: ${observation.kind}.`,
+			evidenceRefs: providerObservationEvidence(work, observation),
 			effects:
 				observation.kind === "provider-outcome" ||
 				(observation.kind === "review-comment" && observation.actionable !== false) ||
@@ -1047,7 +1179,65 @@ export class ApplicationService {
 						]
 					: undefined,
 		});
+		if (work.lastError !== undefined && isProviderMonitorError(work.lastError))
+			this.heartbeat.delete(monitorFailureMarker("Provider", work.workId));
 		this.heartbeat.set(key, fingerprint);
+		return result.projection;
+	}
+
+	private recordProviderPollRecovery(
+		work: WorkView,
+		observation: ProviderObservation | undefined,
+		commandId: string,
+	): WorkView {
+		const reviewRequest = work.reviewRequest;
+		if (reviewRequest === undefined) return work;
+		const providerId = reviewRequest.providerId;
+		const recoveredObservation: ProviderObservation =
+			observation === undefined
+				? {
+						observationId: `provider-monitor-recovered:${commandId}`,
+						kind: "monitor-failure",
+						providerId,
+						status: "recovered",
+						summary: "Provider polling succeeded; no new provider observations were reported.",
+						changed: false,
+						observedAt: new Date().toISOString(),
+					}
+				: {
+						...observation,
+						changed: false,
+						observedAt: new Date().toISOString(),
+						feedback: observation.feedback === undefined ? undefined : boundedFeedback(observation.feedback),
+					};
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastObservation: recoveredObservation,
+			lastError: undefined,
+			providerOutcome: recoveredObservation.kind === "provider-outcome" ? recoveredObservation : work.providerOutcome,
+			reviewRequest:
+				recoveredObservation.kind === "ci-status" &&
+				(recoveredObservation.status === "closed" || recoveredObservation.status === "merged")
+					? { ...reviewRequest, status: recoveredObservation.status }
+					: reviewRequest,
+			nextAction: providerPollRecoveryAction(work, recoveredObservation),
+		};
+		const result = this.append({
+			meta: { actor: "monitor", commandId, expectedWorkRevision: work.revision, schemaVersion: 1 },
+			kind: "observation",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: work.execution?.executionId,
+			payload: recoveredObservation,
+			projection: next,
+			summary:
+				observation === undefined
+					? recoveredObservation.summary
+					: `Provider observation confirmed: ${recoveredObservation.kind}.`,
+			evidenceRefs: providerObservationEvidence(work, recoveredObservation),
+		});
+		this.heartbeat.delete(monitorFailureMarker("Provider", work.workId));
 		return result.projection;
 	}
 
@@ -1103,12 +1293,13 @@ export class ApplicationService {
 
 	private recordMonitorFailure(work: WorkView, subject: string, failure: Error): void {
 		const message = failure.message.trim().slice(0, 2_000) || "The monitor returned no error detail.";
-		const marker = `monitor-failure:${subject}:${work.workId}`;
+		const marker = monitorFailureMarker(subject, work.workId);
 		if (this.heartbeat.get(marker) === message) return;
 		let current = work;
 		for (let attempt = 0; attempt < 2; attempt += 1) {
 			const error: ErrorEnvelope = {
 				code: "external-failure",
+				source: subject === "Provider" ? "provider-monitor" : undefined,
 				summary: `${subject} monitor failed: ${message}`,
 				retryable: true,
 				remediation: "Khala will retry automatically; inspect Evidence if the failure persists.",
@@ -1300,15 +1491,16 @@ export class ApplicationService {
 	}
 
 	private async driveObserver(work: WorkView, binding: RuntimeBinding): Promise<void> {
-		if (this.drivingObservers.has(work.workId)) return;
-		this.drivingObservers.add(work.workId);
+		const driveKey = observerDriveKey(work.workId, binding);
+		if (this.drivingObservers.has(driveKey)) return;
+		this.drivingObservers.add(driveKey);
 		try {
 			await this.ports.runtime.send(
 				binding,
 				`Inspect Work ${work.workId} read-only. Record exactly one bounded assessment with concrete repository evidence using Archive revision ${work.revision}, then stop.`,
 			);
 			const current = this.archive.project(work.workId);
-			if (current?.observerInFlight === true && current.observer?.sessionId === binding.sessionId) {
+			if (current?.observerInFlight === true && sameRuntimeBinding(current.observer, binding)) {
 				const next: WorkView = {
 					...current,
 					revision: current.revision + 1,
@@ -1334,8 +1526,7 @@ export class ApplicationService {
 			queueMicrotask(() => void this.processPendingEffects());
 		} catch (error) {
 			const current = this.archive.project(work.workId);
-			if (current?.observerInFlight !== true) return;
-			const binding = current.observer;
+			if (current?.observerInFlight !== true || !sameRuntimeBinding(current.observer, binding)) return;
 			const next: WorkView = {
 				...current,
 				revision: current.revision + 1,
@@ -1362,7 +1553,7 @@ export class ApplicationService {
 				if (binding !== undefined) await this.ports.runtime.requestStop(binding).catch(() => undefined);
 			}
 		} finally {
-			this.drivingObservers.delete(work.workId);
+			this.drivingObservers.delete(driveKey);
 		}
 	}
 
@@ -1667,23 +1858,27 @@ export class ApplicationService {
 		const execution = work.execution;
 		if (execution?.pi === undefined) return;
 		const key = executionDriveKey(work.workId, execution);
+		const turnKey = executorTurnKey(work.workId, execution.executionId);
 		if (this.drivingExecutions.has(key)) return;
 		let finish: () => void = () => undefined;
 		const turn = new Promise<void>((resolve) => {
 			finish = resolve;
 		});
 		this.drivingExecutions.set(key, turn);
+		this.addActiveExecutorTurn(turnKey, turn);
+		let activeBinding: RuntimeBinding | undefined;
 		try {
 			let current = this.archive.project(work.workId);
 			if (
 				current?.execution?.executionId !== execution.executionId ||
 				current.execution.state !== "running" ||
-				current.execution.pi?.sessionId !== execution.pi.sessionId
+				!sameRuntimeBinding(current.execution.pi, execution.pi)
 			)
 				return;
 			current = this.recordExecutorRuntimeState(current, "working");
 			const binding = current.execution?.pi;
 			if (binding === undefined) return;
+			activeBinding = binding;
 			const result = await this.ports.runtime.send(
 				binding,
 				`Work ${current.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${current.revision}.`,
@@ -1691,12 +1886,12 @@ export class ApplicationService {
 			this.recordExecutorTurn(current, result);
 			queueMicrotask(() => void this.processPendingEffects());
 		} catch (error) {
-			await this.ports.runtime.requestStop(execution.pi).catch(() => undefined);
+			await this.ports.runtime.requestStop(activeBinding ?? execution.pi).catch(() => undefined);
 			const current = this.archive.project(work.workId);
 			if (
 				current?.execution?.executionId !== execution.executionId ||
 				current.execution.state !== "running" ||
-				current.execution.pi?.sessionId !== execution.pi.sessionId
+				!sameRuntimeBinding(current.execution.pi, activeBinding)
 			)
 				return;
 			const failed: WorkView = {
@@ -1736,6 +1931,7 @@ export class ApplicationService {
 		} finally {
 			finish();
 			if (this.drivingExecutions.get(key) === turn) this.drivingExecutions.delete(key);
+			this.removeActiveExecutorTurn(turnKey, turn);
 		}
 	}
 
@@ -1778,8 +1974,9 @@ export class ApplicationService {
 		if (
 			current === undefined ||
 			execution === undefined ||
+			execution.state !== "running" ||
 			execution.executionId !== work.execution?.executionId ||
-			execution.pi?.sessionId !== work.execution?.pi?.sessionId
+			!sameRuntimeBinding(execution.pi, work.execution?.pi)
 		)
 			return work;
 		const usage = turn.usage === undefined ? execution.usage : addTokenUsage(execution.usage, turn.usage);
@@ -2213,9 +2410,10 @@ export class ApplicationService {
 			this.recordFeedbackUnavailable(work, feedback, deliveryId, observationId);
 			throw new Error("The Executor runtime is not bound; feedback delivery remains pending.");
 		}
-		const active = this.drivingExecutions.get(executionDriveKey(work.workId, execution));
+		const turnKey = executorTurnKey(work.workId, execution.executionId);
+		const active = this.activeExecutorTurns.get(turnKey);
 		if (active !== undefined) {
-			await active;
+			await Promise.all(active);
 			const latest = this.archive.project(work.workId);
 			if (latest?.execution?.state === "running")
 				return this.resumeExecutor(latest, feedback, deliveryId, observationId);
@@ -2224,9 +2422,15 @@ export class ApplicationService {
 			else if (latest !== undefined) this.recordFeedbackUnavailable(latest, feedback, deliveryId, observationId);
 			throw new Error("The Executor turn ended before feedback delivery; retrying the same Execution.");
 		}
+		let finish: () => void = () => undefined;
+		const turn = new Promise<void>((resolve) => {
+			finish = resolve;
+		});
+		this.addActiveExecutorTurn(turnKey, turn);
+		let activeBinding: RuntimeBinding = execution.pi;
 		try {
 			let current = work;
-			let binding = execution.pi;
+			let binding = activeBinding;
 			if ((await this.ports.runtime.getState(binding)) === "unreachable") {
 				await this.ports.runtime.requestStop(binding).catch(() => undefined);
 				const rebound = await this.ports.runtime.ensureSession({
@@ -2252,9 +2456,16 @@ export class ApplicationService {
 				});
 				try {
 					const latest = this.inspectWork(work.workId);
-					if (latest.execution?.executionId !== execution.executionId || latest.execution.state !== "running") {
+					if (
+						latest.execution?.executionId !== execution.executionId ||
+						latest.execution.state !== "running" ||
+						!sameRuntimeBinding(latest.execution.pi, execution.pi)
+					) {
 						await this.ports.runtime.requestStop(rebound).catch(() => undefined);
-						return;
+						if (latest !== undefined && ["succeeded", "stopped"].includes(latest.state))
+							this.recordFeedbackSuperseded(latest, feedback, deliveryId, observationId);
+						else if (latest !== undefined) this.recordFeedbackUnavailable(latest, feedback, deliveryId, observationId);
+						throw new Error("Executor binding changed before feedback delivery; retrying the same Execution.");
 					}
 					current = this.append({
 						meta: {
@@ -2282,19 +2493,36 @@ export class ApplicationService {
 				}
 				binding = current.execution?.pi ?? rebound;
 			}
+			activeBinding = binding;
 			current = this.recordExecutorRuntimeState(current, "working");
 			const result = await this.ports.runtime.send(
-				binding,
+				activeBinding,
 				`Review feedback delivery ${deliveryId} for Work ${current.workId} is authorized. Read the Archive and address only feedback that fits the Mission. If this delivery ID is already recorded in the Archive, do not repeat the change. Feedback:\n${feedback.map((item) => `- ${item}`).join("\n")}`,
 			);
 			this.recordExecutorTurn(current, result);
-			if (observationId !== undefined) this.recordFeedbackDelivered(work.workId, observationId, feedback, deliveryId);
+			if (
+				observationId !== undefined &&
+				!this.recordFeedbackDelivered(
+					work.workId,
+					observationId,
+					feedback,
+					deliveryId,
+					execution.executionId,
+					activeBinding,
+				)
+			) {
+				const latest = this.archive.project(work.workId);
+				if (latest !== undefined && ["succeeded", "stopped"].includes(latest.state))
+					this.recordFeedbackSuperseded(latest, feedback, deliveryId, observationId);
+				else if (latest !== undefined) this.recordFeedbackUnavailable(latest, feedback, deliveryId, observationId);
+				throw new Error("Executor binding changed before feedback delivery was recorded; retrying the same Execution.");
+			}
 		} catch (error) {
 			const current = this.archive.project(work.workId);
 			if (
 				current?.execution?.executionId !== execution.executionId ||
 				current.execution.state !== "running" ||
-				current.execution.pi?.sessionId !== execution.pi.sessionId
+				!sameRuntimeBinding(current.execution.pi, activeBinding)
 			) {
 				if (current !== undefined && ["succeeded", "stopped"].includes(current.state))
 					this.recordFeedbackSuperseded(current, feedback, deliveryId, observationId);
@@ -2334,6 +2562,9 @@ export class ApplicationService {
 				// Recovery will reattach the persisted Executor binding.
 			}
 			throw error;
+		} finally {
+			finish();
+			this.removeActiveExecutorTurn(turnKey, turn);
 		}
 	}
 
@@ -2342,10 +2573,18 @@ export class ApplicationService {
 		observationId: string,
 		feedback: readonly string[],
 		deliveryId: string,
-	): void {
-		if (this.hasFeedbackDelivery(workId, observationId, true)) return;
+		executionId: string,
+		binding: RuntimeBinding,
+	): boolean {
+		if (this.hasFeedbackDelivery(workId, observationId, true)) return true;
 		const work = this.archive.project(workId);
-		if (work === undefined) return;
+		if (
+			work === undefined ||
+			work.execution?.executionId !== executionId ||
+			work.execution.state !== "running" ||
+			!sameRuntimeBinding(work.execution.pi, binding)
+		)
+			return false;
 		const next: WorkView = { ...work, revision: work.revision + 1 };
 		this.append({
 			meta: {
@@ -2363,6 +2602,7 @@ export class ApplicationService {
 			evidenceRefs: feedback,
 			summary: "Authorized provider review feedback was delivered to the Executor.",
 		});
+		return true;
 	}
 
 	private recordFeedbackUnavailable(
@@ -3063,8 +3303,33 @@ function rawMissionSpecificity(input: SubmitWorkInput): MissionSpecificity {
 	return { status: missing.length === 0 ? "explicit" : "defaults-used", missing };
 }
 
+function executorTurnKey(workId: string, executionId: string): string {
+	return `${workId}:${executionId}`;
+}
+
+function sameRuntimeBinding(left: RuntimeBinding | undefined, right: RuntimeBinding | undefined): boolean {
+	return (
+		left !== undefined &&
+		right !== undefined &&
+		left.sessionId === right.sessionId &&
+		left.sessionPath === right.sessionPath &&
+		left.processGroupId === right.processGroupId &&
+		left.processStartTime === right.processStartTime &&
+		left.capabilityNonce === right.capabilityNonce &&
+		left.processMarker === right.processMarker
+	);
+}
+
 function executionDriveKey(workId: string, execution: Execution): string {
-	return `${workId}:${execution.executionId}:${execution.pi?.sessionId ?? "unbound"}`;
+	return `${workId}:${execution.executionId}:${runtimeBindingKey(execution.pi)}`;
+}
+
+function observerDriveKey(workId: string, binding: RuntimeBinding): string {
+	return `${workId}:${runtimeBindingKey(binding)}`;
+}
+
+function runtimeBindingKey(binding: RuntimeBinding | undefined): string {
+	return JSON.stringify(binding ?? null);
 }
 
 function shouldMonitorProvider(work: WorkView): boolean {
@@ -3163,6 +3428,14 @@ function executorEffect(workId: string, revision: number) {
 	return { effectId: `executor-wake:${workId}:${revision}`, kind: "executor-wake", payload: { workId } };
 }
 
+function executorRecoveryEffect(workId: string, revision: number, executionId: string) {
+	return {
+		effectId: `executor-recovery:${workId}:${executionId}:${revision}`,
+		kind: "executor-recovery",
+		payload: { workId, executionId },
+	};
+}
+
 function observerEffect(workId: string, revision: number) {
 	return { effectId: `observer-wake:${workId}:${revision}`, kind: "observer-wake", payload: { workId } };
 }
@@ -3189,8 +3462,9 @@ function sandboxCleanupEffect(workId: string, executionId: string, sandbox: Exec
 }
 
 function cleanupEffect(workId: string, execution: Execution) {
+	const bindingIdentity = execution.pi?.processMarker ?? execution.pi?.sessionId ?? "unbound";
 	return {
-		effectId: `workspace-cleanup:${workId}:${execution.executionId}`,
+		effectId: `workspace-cleanup:${workId}:${execution.executionId}:${bindingIdentity}`,
 		kind: "workspace-cleanup",
 		payload: {
 			workId,
@@ -3201,6 +3475,7 @@ function cleanupEffect(workId: string, execution: Execution) {
 			sessionPath: execution.pi?.sessionPath,
 			processGroupId: execution.pi?.processGroupId,
 			processStartTime: execution.pi?.processStartTime,
+			capabilityNonce: execution.pi?.capabilityNonce,
 			processMarker: execution.pi?.processMarker,
 		},
 	};
@@ -3213,10 +3488,12 @@ function executorStopEffect(workId: string, revision: number, execution: Executi
 		kind: "executor-stop",
 		payload: {
 			workId,
+			executionId: execution.executionId,
 			sessionId: execution.pi.sessionId,
 			sessionPath: execution.pi.sessionPath,
 			processGroupId: execution.pi.processGroupId,
 			processStartTime: execution.pi.processStartTime,
+			capabilityNonce: execution.pi.capabilityNonce,
 			processMarker: execution.pi.processMarker,
 		},
 	};
@@ -3224,7 +3501,7 @@ function executorStopEffect(workId: string, revision: number, execution: Executi
 
 function observerCleanupEffect(workId: string, binding: RuntimeBinding) {
 	return {
-		effectId: `observer-cleanup:${workId}:${binding.sessionId}`,
+		effectId: `observer-cleanup:${workId}:${runtimeBindingKey(binding)}`,
 		kind: "observer-cleanup",
 		payload: {
 			workId,
@@ -3232,6 +3509,7 @@ function observerCleanupEffect(workId: string, binding: RuntimeBinding) {
 			sessionPath: binding.sessionPath,
 			processGroupId: binding.processGroupId,
 			processStartTime: binding.processStartTime,
+			capabilityNonce: binding.capabilityNonce,
 			processMarker: binding.processMarker,
 		},
 	};
@@ -3279,6 +3557,14 @@ function readEffectWorkId(payload: JsonObject): string {
 	return String(value);
 }
 
+function readEffectExecutionId(payload: JsonObject): string {
+	const value = payload["executionId"];
+	if (value === undefined || value !== String(value) || value.trim().length === 0) {
+		throw new Error("Executor recovery effect is missing an Execution ID.");
+	}
+	return String(value);
+}
+
 function readEffectFeedback(payload: JsonObject): readonly string[] {
 	const value = payload["feedback"];
 	if (!Array.isArray(value)) throw new Error("Feedback effect is missing its feedback list.");
@@ -3306,6 +3592,10 @@ function readEffectBinding(payload: JsonObject): RuntimeBinding {
 		processGroupId: processGroupId === undefined ? undefined : readEffectInteger(processGroupId, "processGroupId"),
 		processStartTime:
 			processStartTime === undefined ? undefined : readEffectTextValue(processStartTime, "processStartTime"),
+		capabilityNonce:
+			payload["capabilityNonce"] === undefined
+				? undefined
+				: readEffectTextValue(payload["capabilityNonce"], "capabilityNonce"),
 		processMarker: processMarker === undefined ? undefined : readEffectTextValue(processMarker, "processMarker"),
 	};
 }
@@ -3399,6 +3689,26 @@ function oraclePayload(result: OracleResult): JsonObject {
 		durationMs: result.durationMs,
 		output: result.output.slice(0, 16_000),
 	};
+}
+
+function providerObservationEvidence(work: WorkView, observation: ProviderObservation): readonly string[] {
+	const reviewUrl = work.reviewRequest?.url;
+	return [reviewUrl, observation.observationId].filter((value): value is string => value !== undefined);
+}
+
+function isProviderMonitorError(error: ErrorEnvelope): boolean {
+	return error.source === "provider-monitor" || error.summary.startsWith("Provider monitor failed:");
+}
+
+function monitorFailureMarker(subject: string, workId: string): string {
+	return `monitor-failure:${subject}:${workId}`;
+}
+
+function providerPollRecoveryAction(work: WorkView, observation: ProviderObservation): string {
+	if (observation.kind === "review-comment" && observation.actionable !== false)
+		return "Conclave is assessing provider feedback.";
+	if (work.execution?.state === "running") return "Khala is continuing the Work automatically.";
+	return work.nextAction;
 }
 
 function observationKey(workId: string, observation: ProviderObservation): string {
