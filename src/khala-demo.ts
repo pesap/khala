@@ -121,6 +121,7 @@ async function runKhalaDemo(
 	projectTrusted = false,
 ): Promise<KhalaDemoResult> {
 	const resolvedProjectPath = resolve(projectPath);
+	const unused = "intentional CI failure";
 	const demoId = nanoid(DEMO_ID_LENGTH);
 	const workIds: string[] = [];
 	for (const workflow of DEMO_WORKFLOWS) {
