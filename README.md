@@ -27,6 +27,9 @@ keeps its persisted model and thinking level.
 Then submit complete intent with `khala_submit_work`. Submission returns after
 SQLite persistence; Conclave processing is scheduled independently.
 
+Use `/fresh-eyes [scope or focus]` to review the current dirty diff and touched
+files with the packaged fresh-eyes review prompt.
+
 ## User workflow
 
 1. Submit title, objective, and acceptance criteria. Scope, constraints,
@@ -63,15 +66,19 @@ metadata. Evidence shows Executor turn status and explicitly reports missing
 Signal or provider evidence. An unreachable Executor exposes recovery in
 `Actions`; failures are marked in red and point to `Evidence`. Execution
 failures also record what failed, whether Mission specificity should be
-revisited, and guidance for a replacement Mission.
+revisited, and guidance for a replacement Mission. Evidence details use
+wrapped, headed sections; provider summaries remain easy to scan and copy
+without dense separators.
 Token usage, including cache hits and misses, remains tracked on the Execution;
 USD cost is not tracked without provider pricing and usage data. Navigation does
 not write the Archive. Up/down and Enter select; Backspace or Escape navigates
 back or closes the selector. Press `r` in the Work picker to open Role
 settings; Backspace or Escape returns to the Work picker. Use `Rename` in
 Work actions to change the Work label without changing the admitted Mission
-terms. `?` and `r` can be
-changed with `helpKey` and `roleSettingsKey` in configuration.
+terms. `r` and `c` can be changed with `roleSettingsKey` and `commentsKey` in
+configuration. When provider comments are available, `c` opens Review comments
+from the Work or Evidence view; Evidence also provides a selectable comments
+section.
 
 ## Application service
 

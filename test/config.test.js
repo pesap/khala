@@ -12,7 +12,7 @@ test("Role settings persist without discarding other Khala configuration", async
 	try {
 		await writeFile(
 			join(directory, "khala.json"),
-			JSON.stringify({ targetBranch: "develop", conclaveModel: "old/model", roleSettingsKey: "s" }),
+			JSON.stringify({ targetBranch: "develop", conclaveModel: "old/model", roleSettingsKey: "s", commentsKey: "c" }),
 		);
 		persistRoleSetting("conclave", "model", "new/model");
 		persistRoleSetting("conclave", "thinking", "low");
@@ -22,9 +22,12 @@ test("Role settings persist without discarding other Khala configuration", async
 			conclaveModel: "new/model",
 			conclaveThinking: "low",
 			roleSettingsKey: "s",
+			commentsKey: "c",
 		});
 		assert.equal(loadConfig(directory, false, false).keybindings.roleSettings, "s");
-		assert.equal(loadConfig(directory, false, false).keybindings.help, "?");
+		assert.equal(loadConfig(directory, false, false).keybindings.comments, "c");
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ commentsKey: "   " }));
+		assert.throws(() => loadConfig(directory, false, false), /commentsKey must not be blank/);
 	} finally {
 		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDirectory;

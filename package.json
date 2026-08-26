@@ -20,6 +20,9 @@
     "themes": [
       "./themes"
     ],
+    "prompts": [
+      "./prompts"
+    ],
     "skills": [
       "./skills/khala",
       "./skills/khala-executor"

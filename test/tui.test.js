@@ -96,24 +96,21 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.doesNotMatch(initialView, /admission creates a Mission/);
 	assert.match(initialView, /TITLE\s+ID\s+STATE\s+EXECUTION/);
 	assert.match(initialView, /Work\s+work-1\s+active\s+running/);
-	assert.doesNotMatch(initialView, /scope|Filter Work/);
-	assert.ok(screens[0].render(100).length <= 12);
+	assert.doesNotMatch(initialView, /scope|Filter Work|type to filter/);
+	assert.match(initialView, /r\s+Role Settings/);
+	assert.doesNotMatch(initialView, /\?|Help|type to filter/);
+	assert.match(initialView, /↑↓\s+Navigation/);
+	assert.match(initialView, /home\s+First/);
+	assert.match(initialView, /enter\s+Enter/);
+	assert.match(initialView, /escape\s+Escape/);
+	assert.match(initialView, /backspace\s+Backspace/);
+	assert.ok(screens[0].render(100).length <= 18);
 
-	screens[0].handleInput("?");
+	screens[0].handleInput("\r");
 	await nextTurn();
 	assert.equal(screens.length, 2);
-	assert.match(screens[1].render(100).join("\n"), /active means the lifecycle is open/);
-	assert.match(screens[1].render(100).join("\n"), /idle means waiting for the next Signal/);
-	assert.match(screens[1].render(100).join("\n"), /\? help/);
 	assert.equal(notices.length, 0);
-	screens[1].handleInput("\u001b");
-	await nextTurn();
-	assert.equal(screens.length, 3);
-
-	screens[2].handleInput("\r");
-	await nextTurn();
-	assert.equal(screens.length, 4);
-	const overview = screens[3].render(100).join("\n");
+	const overview = screens[1].render(100).join("\n");
 	assert.match(overview, /Work active/);
 	assert.match(overview, /Mission in progress/);
 	assert.match(overview, /Execution running/);
@@ -123,16 +120,16 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.doesNotMatch(overview, /Work metadata/);
 	assert.doesNotMatch(overview, /Budget/);
 	assert.doesNotMatch(overview, /Cache hits/);
-	assert.ok(screens[3].render(100).length <= 15);
+	assert.ok(screens[1].render(100).length <= 18);
 	assert.match(overview, /Actions/);
 	assert.match(overview, /Evidence/);
 	assert.match(overview, /Archive/);
 	assert.doesNotMatch(overview, /Overview/);
 
-	screens[3].handleInput("\r");
+	screens[1].handleInput("\r");
 	await nextTurn();
-	assert.equal(screens.length, 5);
-	const actions = screens[4].render(100).join("\n");
+	assert.equal(screens.length, 3);
+	const actions = screens[2].render(100).join("\n");
 	assert.match(actions, /Visible action/);
 	assert.match(actions, /Work action/);
 	assert.match(actions, /Recover/);
@@ -140,15 +137,15 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.ok(actions.indexOf("Recover") < actions.indexOf("Visible action"));
 	assert.doesNotMatch(actions, /Hidden action/);
 	assert.doesNotMatch(actions, /khala-recover/);
-	screens[4].handleInput("\u007f");
+	screens[2].handleInput("\u007f");
 	await nextTurn();
-	assert.equal(screens.length, 6);
+	assert.equal(screens.length, 4);
 
-	screens[5].handleInput("\u001b[B");
-	screens[5].handleInput("\r");
+	screens[3].handleInput("\u001b[B");
+	screens[3].handleInput("\r");
 	await nextTurn();
-	assert.equal(screens.length, 7);
-	const evidence = screens[6].render(100).join("\n");
+	assert.equal(screens.length, 5);
+	const evidence = screens[4].render(100).join("\n");
 	assert.match(evidence, /state: active/);
 	assert.match(evidence, /mission: in progress/);
 	assert.match(evidence, /execution: running/);
@@ -163,30 +160,32 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.match(evidence, /Next step\s+Inspect Evidence\. Do not restart the primary Pi session\./);
 	assert.match(evidence, /learning: Mission terms were explicit\./);
 	assert.doesNotMatch(evidence, /;/);
-	assert.ok(screens[6].render(100).length <= 24);
-	screens[6].handleInput("\u001b");
+	assert.match(evidence, /escape\/ctrl\+c\/backspace back/);
+	assert.doesNotMatch(evidence, /Keybindings/);
+	assert.ok(screens[4].render(100).length <= 30);
+	screens[4].handleInput("\u001b");
+	await nextTurn();
+	assert.equal(screens.length, 6);
+
+	screens[5].handleInput("\u001b[B");
+	screens[5].handleInput("\u001b[B");
+	screens[5].handleInput("\r");
+	await nextTurn();
+	assert.equal(screens.length, 7);
+	assert.match(screens[6].render(100).join("\n"), /#1 submission/);
+	screens[6].handleInput("\r");
 	await nextTurn();
 	assert.equal(screens.length, 8);
-
-	screens[7].handleInput("\u001b[B");
-	screens[7].handleInput("\u001b[B");
-	screens[7].handleInput("\r");
+	assert.match(screens[7].render(100).join("\n"), /summary: Work submitted/);
+	screens[7].handleInput("\u007f");
 	await nextTurn();
 	assert.equal(screens.length, 9);
-	assert.match(screens[8].render(100).join("\n"), /#1 submission/);
-	screens[8].handleInput("\r");
+	screens[8].handleInput("\u007f");
 	await nextTurn();
 	assert.equal(screens.length, 10);
-	assert.match(screens[9].render(100).join("\n"), /summary: Work submitted/);
 	screens[9].handleInput("\u007f");
 	await nextTurn();
 	assert.equal(screens.length, 11);
-	screens[10].handleInput("\u007f");
-	await nextTurn();
-	assert.equal(screens.length, 12);
-	screens[11].handleInput("\u007f");
-	await nextTurn();
-	assert.equal(screens.length, 13);
 	work.state = "submitted";
 	delete work.mission;
 	delete work.missionState;
@@ -198,18 +197,18 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 		remediation: "Open /khala, press r, choose a working Conclave model, then retry admission.",
 		evidenceRefs: [],
 	};
-	screens[12].handleInput("\r");
+	screens[10].handleInput("\r");
 	await nextTurn();
-	const unadmittedOverview = screens[13].render(100).join("\n");
+	const unadmittedOverview = screens[11].render(100).join("\n");
 	assert.match(unadmittedOverview, /Work submitted/);
 	assert.match(unadmittedOverview, /Mission not admitted/);
 	assert.doesNotMatch(unadmittedOverview, /Conclave admission failed/);
 	assert.doesNotMatch(unadmittedOverview, /remediation Open \/khala/);
 	assert.match(unadmittedOverview, /Execution not started/);
 	assert.match(unadmittedOverview, /Runtime unavailable/);
-	screens[13].handleInput("\u007f");
+	screens[11].handleInput("\u007f");
 	await nextTurn();
-	screens[14].handleInput("\u001b");
+	screens[12].handleInput("\u001b");
 	await result;
 });
 
@@ -356,6 +355,8 @@ test("Evidence presents provider context and Conclave delivery without raw paylo
 						id: "IC_kwDOTlm-4c8AAAABQt6GhQ",
 						author: "pesap",
 						authorAssociation: "OWNER",
+						source: "issue-comment",
+						location: "docs/demo-work.md:12",
 						body: "Changes requested: add one sentence to docs/demo-work.md stating that cleanup waits for an active Executor turn before stopping its runtime. Keep the change documentation-only and resend the ready evidence after validation.",
 						createdAt: "2026-08-25T21:11:06Z",
 						url: "https://github.com/pesap/khala/pull/43#issuecomment-5416846981",
@@ -420,7 +421,7 @@ test("Evidence presents provider context and Conclave delivery without raw paylo
 				}),
 		},
 	};
-	const result = showKhala(service, context);
+	const result = showKhala(service, context, "user", { roleSettings: "r", comments: "v" });
 	await nextTurn();
 	screens[0].handleInput("\r");
 	await nextTurn();
@@ -437,33 +438,36 @@ test("Evidence presents provider context and Conclave delivery without raw paylo
 	assert.match(evidence, /runtime: unreachable/);
 	assert.match(evidence, /activity: execution recorded \(runtime unreachable, no active turn\)/);
 	assert.match(evidence, /signal: signal/);
-	assert.match(evidence, /signal evidence: 4 evidence items\. Open Archive for details/);
-	assert.match(evidence, /archive access: Open Archive for details/);
+	assert.match(evidence, /signal evidence: 4 evidence items/);
+	assert.match(evidence, /archive access: Open Archive for details\s*\n\s*\n\s*Provider observation/);
+	assert.equal((evidence.match(/Open Archive for details/g) ?? []).length, 1);
+	assert.match(evidence, /Provider summary[\s\S]*\n\s*PR status: open/);
 	assert.match(evidence, /PR status: open/);
 	assert.match(evidence, /CI checks \(2\)/);
-	assert.match(evidence, /review comments: 2 available — select Review comments to explore/);
+	assert.doesNotMatch(evidence, /review comments: 2 available/);
+	assert.match(evidence, /Review comments\s*\n\s*.*2 available \[v\]/);
 	assert.doesNotMatch(evidence, /Add one sentence to docs\/demo-work\.md/);
 	assert.match(evidence, /review request: https:\/\/github\.com\/pesap\/khala\/pull\/43/);
 	assert.match(evidence, /review status: draft/);
 	assert.match(evidence, /conclave handoff: delivered Execution execution-new/);
+	assert.match(evidence, /review status: draft\s*\n\s*\n\s*Error/);
 	assert.match(evidence, /handoff observation: review-comment:43/);
 	assert.doesNotMatch(evidence, /"comments"|"statusCheckRollup"/);
-	screens[2].handleInput("\u001b");
+	assert.match(evidence, /escape\/ctrl\+c\/backspace back/);
+	screens[2].handleInput("v");
 	await nextTurn();
-	assert.match(screens[3].render(120).join("\n"), /Review comments \(2\)/);
-	screens[3].handleInput("\u001b[B");
-	screens[3].handleInput("\u001b[B");
-	screens[3].handleInput("\u001b[B");
+	assert.match(screens[3].render(120).join("\n"), /Review comments/);
+	assert.match(screens[3].render(120).join("\n"), /pesap/);
 	screens[3].handleInput("\r");
 	await nextTurn();
-	assert.match(screens[4].render(120).join("\n"), /Review comments/);
-	assert.match(screens[4].render(120).join("\n"), /pesap/);
-	screens[4].handleInput("\r");
-	await nextTurn();
-	const comment = screens[5].render(120).join("\n");
+	const comment = screens[4].render(120).join("\n");
 	assert.match(comment, /author: pesap \(OWNER\)/);
+	assert.match(comment, /source: issue-comment/);
+	assert.match(comment, /location: docs\/demo-work\.md:12/);
 	assert.match(comment, /Changes requested: add one sentence to docs\/demo-work\.md/);
 	assert.match(comment, /https:\/\/github\.com\/pesap\/khala\/pull\/43#issuecomment-5416846981/);
+	screens[4].handleInput("\u001b");
+	await nextTurn();
 	screens[5].handleInput("\u001b");
 	await nextTurn();
 	screens[6].handleInput("\u001b");
@@ -476,6 +480,7 @@ test("Evidence presents provider context and Conclave delivery without raw paylo
 
 test("Work picker stays minimal, filters active Work, and marks failures", async () => {
 	const screens = [];
+	const inspectedWorkIds = [];
 	const works = [
 		{
 			workId: "active-work",
@@ -537,24 +542,27 @@ test("Work picker stays minimal, filters active Work, and marks failures", async
 	];
 	const service = {
 		listWork: () => works,
-		inspectRuntime: async (workId) => ({
-			workId,
-			revision: 1,
-			state: "active",
-			terms: {
-				title: "Add a compact Khala lifecycle walkthrough with a deliberately long name",
-				objective: "Test picker state",
-				context: "",
-				scope: "",
-				acceptanceCriteria: ["The picker preserves its state"],
-				constraints: [],
-				validation: [],
-				maxTokens: 100,
-			},
-			budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
-			nextAction: "Continue the Work",
-			queuedSequence: 1,
-		}),
+		inspectRuntime: async (workId) => {
+			inspectedWorkIds.push(workId);
+			return {
+				workId,
+				revision: 1,
+				state: "active",
+				terms: {
+					title: "Add a compact Khala lifecycle walkthrough with a deliberately long name",
+					objective: "Test picker state",
+					context: "",
+					scope: "",
+					acceptanceCriteria: ["The picker preserves its state"],
+					constraints: [],
+					validation: [],
+					maxTokens: 100,
+				},
+				budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+				nextAction: "Continue the Work",
+				queuedSequence: 1,
+			};
+		},
 	};
 	const context = {
 		hasUI: true,
@@ -588,17 +596,26 @@ test("Work picker stays minimal, filters active Work, and marks failures", async
 	assert.match(narrow, /EXECUTION/);
 	assert.match(narrow, /running/);
 
-	for (const character of "walkthrough") screens[0].handleInput(character);
-	const filtered = screens[0].render(100).join("\n");
-	assert.match(filtered, /active-work/);
-	assert.doesNotMatch(filtered, /Completed mission to hide|失敗した実行 remains visible|Active Work with failed Execution/);
+	for (const character of "active") screens[0].handleInput(character);
+	screens[0].handleInput("\u001b[B");
+	screens[0].handleInput("\u001b[H");
 	screens[0].handleInput("\r");
 	await nextTurn();
+	assert.equal(inspectedWorkIds.at(-1), "execution-failed-work");
 	screens[1].handleInput("\u001b");
 	await nextTurn();
-	assert.match(screens[2].render(100).join("\n"), /alkthrough/);
-	assert.doesNotMatch(screens[2].render(100).join("\n"), /Completed mission to hide|失敗した実行 remains visible|Active Work with failed Execution/);
-	screens[2].handleInput("\u001b");
+
+	for (const character of "walkthrough") screens[2].handleInput(character);
+	const filtered = screens[2].render(100).join("\n");
+	assert.match(filtered, /active-work/);
+	assert.doesNotMatch(filtered, /Completed mission to hide|失敗した実行 remains visible|Active Work with failed Execution/);
+	screens[2].handleInput("\r");
+	await nextTurn();
+	screens[3].handleInput("\u001b");
+	await nextTurn();
+	assert.match(screens[4].render(100).join("\n"), /alkthrough/);
+	assert.doesNotMatch(screens[4].render(100).join("\n"), /Completed mission to hide|失敗した実行 remains visible|Active Work with failed Execution/);
+	screens[4].handleInput("\u001b");
 	await result;
 });
 
@@ -689,7 +706,8 @@ test("Blocked Executions are prominent while Signal details stay available in Ar
 	assert.doesNotMatch(conciseEvidence, /attention: BLOCKED/);
 	assert.match(conciseEvidence, /signal: blocking signal/);
 	assert.doesNotMatch(conciseEvidence, /The Executor cannot publish under the Mission constraints/);
-	assert.match(conciseEvidence, /signal evidence: 3 evidence items\. Open Archive for details/);
+	assert.match(conciseEvidence, /signal evidence: 3 evidence items/);
+	assert.match(conciseEvidence, /archive access: Open Archive for details/);
 	assert.doesNotMatch(conciseEvidence, /bounded wait completed/);
 	screens[4].handleInput("\u001b");
 	await nextTurn();

@@ -31,6 +31,7 @@ import type {
 	GovernedRole,
 	JsonObject,
 	JsonValue,
+	ProviderObservation,
 	ProviderReviewComment,
 	RecordView,
 	RecoveryUpdate,
@@ -143,7 +144,7 @@ export async function showKhala(
 	service: ApplicationService,
 	context: ExtensionContext,
 	actor: Actor = "user",
-	keybindings: KhalaConfig["keybindings"] = { help: "?", roleSettings: "r" },
+	keybindings: KhalaConfig["keybindings"] = { roleSettings: "r", comments: "c" },
 	roleSettings?: RoleSettingsController,
 ): Promise<void> {
 	if (!context.hasUI || context.mode !== "tui") {
@@ -154,15 +155,11 @@ export async function showKhala(
 	for (;;) {
 		const workId = await pickWork(service.listWork(), context, keybindings, pickerState);
 		if (workId === null) return;
-		if (workId === "help") {
-			await showHelp(context);
-			continue;
-		}
 		if (workId === "settings") {
 			if (roleSettings !== undefined) await showRoleSettings(roleSettings, context);
 			continue;
 		}
-		await showWork(service, context, workId, actor);
+		await showWork(service, context, workId, actor, keybindings);
 	}
 }
 
@@ -176,8 +173,8 @@ async function pickWork(
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
 	pickerState: WorkPickerState,
-): Promise<string | "help" | "settings" | null> {
-	return context.ui.custom<string | "help" | "settings" | null>((tui, theme, _keybindings, done) => {
+): Promise<string | "settings" | null> {
+	return context.ui.custom<string | "settings" | null>((tui, theme, _keybindings, done) => {
 		const input = new Input();
 		input.setValue(pickerState.query);
 		let tableRows: readonly Readonly<{ item: WorkSummary; selected: boolean }>[] = [];
@@ -241,9 +238,9 @@ async function pickWork(
 						: Math.min(selectedIndex, Math.max(0, filtered.length - 1));
 			updateList();
 		};
-		const finish = (value: string | "help" | "settings" | null): void => {
+		const finish = (value: string | "settings" | null): void => {
 			pickerState.query = input.getValue();
-			if (value !== null && value !== "help" && value !== "settings") {
+			if (value !== null && value !== "settings") {
 				pickerState.selectedWorkId = value;
 			}
 			done(value);
@@ -260,6 +257,7 @@ async function pickWork(
 		container.addChild(new Spacer(1));
 		container.addChild(listContainer);
 		container.addChild(new Spacer(1));
+		addPanelKeybindings(container, theme, workPickerKeybindings(keybindings));
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		refresh(true);
 		let focused = false;
@@ -274,12 +272,13 @@ async function pickWork(
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data: string) => {
-				if (input.getValue().length === 0 && parseKey(data) === keybindings.help) {
-					finish("help");
-					return;
-				}
 				if (input.getValue().length === 0 && parseKey(data) === keybindings.roleSettings) {
 					finish("settings");
+					return;
+				}
+				if (matchesKey(data, "home")) {
+					selectedIndex = 0;
+					updateList();
 					return;
 				}
 				if (matchesKey(data, "up") || matchesKey(data, "down")) {
@@ -314,7 +313,20 @@ async function pickWork(
 	});
 }
 
-const NAVIGATION_FOOTER = "↑↓ navigate  enter select  escape/ctrl+c cancel";
+const NAVIGATION_FOOTER = "↑↓ navigate  enter select  escape/ctrl+c/backspace back";
+const PANEL_BACK_FOOTER = "escape/ctrl+c/backspace back";
+
+function workPickerKeybindings(keybindings: KhalaConfig["keybindings"]): string {
+	return `${keybindings.roleSettings} Role Settings  ↑↓ Navigation  home First  enter Enter  escape Escape  backspace Backspace`;
+}
+
+function addPanelKeybindings(container: Container, theme: Theme, footer: string): Text {
+	const keybindings = new Text(theme.fg("dim", footer), 1, 0);
+	container.addChild(keybindings);
+	container.addChild(new Spacer(1));
+	return keybindings;
+}
+
 type WorkSection = "actions" | "evidence" | "archive" | "review-comments" | "blocking-signal";
 
 async function showWork(
@@ -322,19 +334,20 @@ async function showWork(
 	context: ExtensionContext,
 	workId: string,
 	actor: Actor,
+	keybindings: KhalaConfig["keybindings"],
 ): Promise<"back"> {
 	for (;;) {
 		const work = await service.inspectRuntime(workId);
 		const records = readArchiveRecordsForNavigation(service, work, actor);
 		const evidence = buildEvidencePresentation(work, records);
-		const section = await pickSection(work, evidence, context);
+		const section = await pickSection(work, evidence, context, keybindings);
 		if (section === null || section === "back") return "back";
 		if (section === "actions") {
 			await chooseAction(service, context, work, actor);
 			continue;
 		}
 		if (section === "evidence") {
-			await showEvidence(service, work, context, actor);
+			await showEvidence(service, work, context, actor, keybindings);
 			continue;
 		}
 		if (section === "archive") {
@@ -353,15 +366,16 @@ async function pickSection(
 	work: WorkView,
 	evidence: EvidencePresentation,
 	context: ExtensionContext,
+	keybindings: KhalaConfig["keybindings"],
 ): Promise<WorkSection | "back" | null> {
-	const reviewComments = evidence.providerObservation?.details?.comments ?? [];
+	const reviewComments = providerReviewComments(evidence);
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
 		{ value: "archive", label: "Archive" },
 		...(reviewComments.length === 0
 			? []
-			: [{ value: "review-comments", label: `Review comments (${reviewComments.length})` }]),
+			: [{ value: "review-comments", label: `Review comments (${reviewComments.length}) [${keybindings.comments}]` }]),
 		...(work.execution?.state === "blocked" ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
@@ -393,9 +407,19 @@ async function pickSection(
 		container.addChild(new Spacer(1));
 		container.addChild(menu);
 		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
+		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		return selectableComponent(container, list, tui, () => done("back"));
+		return selectableComponent(
+			container,
+			list,
+			tui,
+			() => done("back"),
+			(data) => {
+				if (reviewComments.length === 0 || parseKey(data) !== keybindings.comments) return false;
+				done("review-comments");
+				return true;
+			},
+		);
 	});
 }
 
@@ -425,7 +449,7 @@ async function chooseAction(
 		list.onCancel = () => done("back");
 		container.addChild(list);
 		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
+		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		return selectableComponent(container, list, tui, () => done("back"));
 	});
@@ -445,7 +469,7 @@ async function chooseAction(
 		meta: { commandId: `tui:${action.id}`, actor, expectedWorkRevision: work.revision, schemaVersion: 1 },
 	});
 	if ("error" in result) {
-		await showTextPage(context, "Action failed", formatErrorLines(result.error));
+		await showPage(context, "Action failed", formatErrorSections(result.error));
 		return;
 	}
 	schedulePendingEffects(service);
@@ -496,13 +520,12 @@ async function showRecovery(
 			next: "No action is needed  Keep this screen open until recovery finishes",
 		};
 		const body = new Text("", 1, 0);
-		const footer = new Text("", 1, 0);
 		const container = new Container();
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		container.addChild(new Text(theme.fg("accent", theme.bold("Recovery")), 1, 0));
 		container.addChild(body);
 		container.addChild(new Spacer(1));
-		container.addChild(footer);
+		const footer = addPanelKeybindings(container, theme, "recovery is in progress");
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 
 		const renderDisplay = (): void => {
@@ -768,11 +791,13 @@ function selectableComponent(
 	list: SelectList,
 	tui: { requestRender(): void },
 	onBack: () => void,
+	interceptInput?: (data: string) => boolean,
 ): Component {
 	return {
 		render: (width: number) => container.render(width),
 		invalidate: () => container.invalidate(),
 		handleInput: (data: string) => {
+			if (interceptInput?.(data) === true) return;
 			if (matchesKey(data, "backspace")) {
 				onBack();
 				return;
@@ -824,8 +849,15 @@ function formatRuntimeState(execution: WorkView["execution"]): string {
 	return "unknown (awaiting Conclave)";
 }
 
+type PageSection = Readonly<{ heading?: string; lines: readonly string[] }>;
+type RecordPage = Readonly<{ title: string; sections: readonly PageSection[] }>;
+
+function pageSection(lines: readonly string[], heading?: string): PageSection {
+	return heading === undefined ? { lines } : { heading, lines };
+}
+
 async function showReviewComments(evidence: EvidencePresentation, context: ExtensionContext): Promise<void> {
-	const comments = evidence.providerObservation?.details?.comments ?? [];
+	const comments = providerReviewComments(evidence);
 	if (comments.length === 0) {
 		await showTextPage(context, "Review comments", ["No provider review comments are available."]);
 		return;
@@ -835,7 +867,7 @@ async function showReviewComments(evidence: EvidencePresentation, context: Exten
 		if (selected === null) return;
 		const comment = comments[Number(selected)];
 		if (comment === undefined) return;
-		await showTextPage(context, "Review comment", formatReviewCommentLines(comment));
+		await showPage(context, "Review comment", formatReviewCommentSections(comment));
 	}
 }
 
@@ -858,7 +890,7 @@ async function selectReviewComment(
 		container.addChild(new Text(theme.fg("muted", `${comments.length} provider comments`), 1, 0));
 		container.addChild(list);
 		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
+		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		list.onSelect = (item) => done(item.value);
 		list.onCancel = () => done(null);
@@ -866,18 +898,20 @@ async function selectReviewComment(
 	});
 }
 
-function formatReviewCommentLines(comment: ProviderReviewComment): readonly string[] {
+function formatReviewCommentSections(comment: ProviderReviewComment): readonly PageSection[] {
 	const author = comment.author === undefined ? "unknown" : comment.author;
 	const association = comment.authorAssociation === undefined ? "" : ` (${comment.authorAssociation})`;
 	return [
-		`author: ${author}${association}`,
-		`created: ${comment.createdAt === undefined ? "unknown" : formatRecordedAt(comment.createdAt)}`,
-		...(comment.state === undefined ? [] : [`state: ${comment.state}`]),
-		...(comment.minimized === undefined ? [] : [`minimized: ${comment.minimized ? "yes" : "no"}`]),
-		"",
-		"Comment",
-		comment.body,
-		...(comment.url === undefined ? [] : ["", `url: ${comment.url}`]),
+		pageSection([
+			`author: ${author}${association}`,
+			`created: ${comment.createdAt === undefined ? "unknown" : formatRecordedAt(comment.createdAt)}`,
+			...(comment.source === undefined ? [] : [`source: ${comment.source}`]),
+			...(comment.location === undefined ? [] : [`location: ${comment.location}`]),
+			...(comment.state === undefined ? [] : [`state: ${comment.state}`]),
+			...(comment.minimized === undefined ? [] : [`minimized: ${comment.minimized ? "yes" : "no"}`]),
+		]),
+		pageSection([comment.body], "Comment"),
+		...(comment.url === undefined ? [] : [pageSection([`url: ${comment.url}`], "Source")]),
 	];
 }
 
@@ -887,18 +921,23 @@ async function showBlockingSignal(work: WorkView, context: ExtensionContext): Pr
 		await showTextPage(context, "Blocking signal", ["No blocking Signal is available for this Work."]);
 		return;
 	}
-	await showTextPage(context, "Blocking signal", formatSignalLines(signal));
+	await showPage(context, "Blocking signal", formatSignalSections(signal));
 }
 
-function formatSignalLines(signal: Signal): readonly string[] {
+function formatSignalSections(signal: Signal): readonly PageSection[] {
 	return [
-		`observed: ${formatRecordedAt(signal.observedAt)}`,
-		"",
-		"Executor response",
-		signal.summary,
-		"",
-		`Evidence (${signal.evidence.length})`,
-		...(signal.evidence.length === 0 ? ["none"] : signal.evidence.map((item, index) => `${index + 1}. ${item}`)),
+		pageSection([`observed: ${formatRecordedAt(signal.observedAt)}`]),
+		...formatExecutorEvidenceSections(signal.summary, signal.evidence),
+	];
+}
+
+function formatExecutorEvidenceSections(response: string, evidence: readonly string[]): readonly PageSection[] {
+	return [
+		pageSection([response], "Executor response"),
+		pageSection(
+			evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`),
+			`Evidence (${evidence.length})`,
+		),
 	];
 }
 
@@ -907,6 +946,7 @@ async function showEvidence(
 	work: WorkView,
 	context: ExtensionContext,
 	actor: Actor,
+	keybindings: KhalaConfig["keybindings"],
 ): Promise<void> {
 	let records: readonly RecordView[];
 	try {
@@ -918,42 +958,120 @@ async function showEvidence(
 		return;
 	}
 	const presentation = buildEvidencePresentation(work, records);
-	await showTextPage(context, "Evidence", formatEvidenceLines(presentation));
+	const comments = providerReviewComments(presentation);
+	if (comments.length === 0) {
+		await showPage(context, "Evidence", formatEvidenceSections(presentation));
+		return;
+	}
+	for (;;) {
+		const selected = await selectEvidenceSection(presentation, context, keybindings);
+		if (selected !== "review-comments") return;
+		await showReviewComments(presentation, context);
+	}
 }
 
-function formatEvidenceLines(presentation: EvidencePresentation): readonly string[] {
-	const lines: string[] = [
-		`evidence state: ${formatStatus(presentation.workState)}`,
-		`active mission: ${formatMissionState(presentation.missionState ?? "not admitted")}`,
-		`execution: ${formatPresentationExecutionState(presentation)}`,
-		`runtime: ${formatStatus(presentation.runtimeState ?? "unavailable")}`,
-		`activity: ${formatPresentationActivity(presentation)}`,
-		`signal: ${presentation.signal.kind === "blocking-signal" ? "blocking signal" : presentation.signal.kind}`,
-		`signal evidence: ${summarizeEvidenceCount(presentation.signal.evidenceCount)}`,
-		`archive access: ${presentation.archive.accessLabel}`,
+type EvidenceSection = "review-comments";
+
+async function selectEvidenceSection(
+	presentation: EvidencePresentation,
+	context: ExtensionContext,
+	keybindings: KhalaConfig["keybindings"],
+): Promise<EvidenceSection | null> {
+	const comments = providerReviewComments(presentation);
+	return context.ui.custom<EvidenceSection | null>((tui, theme, _keybindings, done) => {
+		const container = new Container();
+		addPageContent(container, theme, "Evidence", formatEvidenceSections(presentation));
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Review comments")), 1, 0));
+		const list = new SelectList(
+			[{ value: "review-comments", label: `${comments.length} available [${keybindings.comments}]` }],
+			1,
+			selectorTheme(theme),
+		);
+		list.onSelect = (item) => done(item.value === "review-comments" ? item.value : null);
+		list.onCancel = () => done(null);
+		container.addChild(list);
+		container.addChild(new Spacer(1));
+		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
+		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		return selectableComponent(
+			container,
+			list,
+			tui,
+			() => done(null),
+			(data) => {
+				if (parseKey(data) !== keybindings.comments) return false;
+				done("review-comments");
+				return true;
+			},
+		);
+	});
+}
+
+function providerReviewComments(presentation: EvidencePresentation): readonly ProviderReviewComment[] {
+	return presentation.providerObservation?.details?.comments ?? [];
+}
+
+function formatEvidenceSections(presentation: EvidencePresentation): readonly PageSection[] {
+	const sections: PageSection[] = [
+		pageSection([
+			`evidence state: ${formatStatus(presentation.workState)}`,
+			`active mission: ${formatMissionState(presentation.missionState ?? "not admitted")}`,
+			`execution: ${formatPresentationExecutionState(presentation)}`,
+			`runtime: ${formatStatus(presentation.runtimeState ?? "unavailable")}`,
+			`activity: ${formatPresentationActivity(presentation)}`,
+			`signal: ${presentation.signal.kind === "blocking-signal" ? "blocking signal" : presentation.signal.kind}`,
+			`signal evidence: ${summarizeEvidenceCount(presentation.signal.evidenceCount)}`,
+			`archive access: ${presentation.archive.accessLabel}`,
+		]),
+		...formatProviderEvidenceSections(presentation),
 	];
-	if (presentation.providerObservation === undefined) {
-		lines.push("provider observation: none");
-	} else {
-		lines.push(...formatProviderEvidenceLines(presentation));
-	}
 	if (presentation.conclaveHandoff === undefined) {
-		lines.push("conclave handoff: none recorded");
+		sections.push(pageSection(["conclave handoff: none recorded"], "Conclave handoff"));
 	} else {
 		const handoff = presentation.conclaveHandoff;
 		const target = handoff.executionId === undefined ? "new Execution" : `Execution ${handoff.executionId}`;
 		const status = handoff.status === "delivered" ? "delivered" : `${handoff.status} for`;
-		lines.push(`conclave handoff: ${status} ${target}`);
-		lines.push(`handoff observation: ${handoff.observationId}`);
-		lines.push(`handoff feedback (${handoff.feedback.length})`);
-		lines.push(...handoff.feedback.map((item) => `- ${item}`));
+		sections.push(
+			pageSection(
+				[
+					`conclave handoff: ${status} ${target}`,
+					`handoff observation: ${handoff.observationId}`,
+					`handoff feedback (${handoff.feedback.length})`,
+					...handoff.feedback.map((item) => `- ${item}`),
+				],
+				"Conclave handoff",
+			),
+		);
 	}
-	lines.push(
-		`review request: ${presentation.reviewRequest?.url ?? "none"}`,
-		`review status: ${presentation.reviewRequest?.status ?? "none"}`,
-		...formatErrorLines(presentation.error),
+	sections.push(
+		pageSection(
+			[
+				`review request: ${presentation.reviewRequest?.url ?? "none"}`,
+				`review status: ${presentation.reviewRequest?.status ?? "none"}`,
+			],
+			"Review request",
+		),
+		...formatErrorSections(presentation.error),
 	);
-	return lines;
+	return sections;
+}
+
+function formatProviderEvidenceSections(presentation: EvidencePresentation): readonly PageSection[] {
+	const observation = presentation.providerObservation;
+	if (observation === undefined) {
+		return [pageSection(["provider observation: none"], "Provider evidence")];
+	}
+	return [
+		pageSection(
+			[`provider observation: ${formatStatus(observation.kind)}`, `provider status: ${observation.status}`],
+			"Provider observation",
+		),
+		pageSection(
+			formatProviderSummaryLines(observation.summary, formatProviderFactsFromDetails(observation.details)),
+			"Provider summary",
+		),
+	];
 }
 
 function formatPresentationExecutionState(presentation: EvidencePresentation): string {
@@ -973,39 +1091,8 @@ function formatPresentationActivity(presentation: EvidencePresentation): string 
 
 function summarizeEvidenceCount(count: number): string {
 	if (count === 0) return "none";
-	return `${count} evidence item${count === 1 ? "" : "s"}. Open Archive for details`;
+	return `${count} evidence item${count === 1 ? "" : "s"}`;
 }
-
-function formatProviderEvidenceLines(presentation: EvidencePresentation): readonly string[] {
-	const observation = presentation.providerObservation;
-	if (observation === undefined) return ["provider observation: none"];
-	const details = observation.details;
-	if (details === undefined) {
-		return [
-			`provider observation: ${formatStatus(observation.kind)}`,
-			`provider status: ${observation.status}`,
-			`provider summary: ${presentEvidenceText(observation.summary)}`,
-		];
-	}
-	const comments = details.comments;
-	const checks = details.checks;
-	return [
-		`provider observation: ${formatStatus(observation.kind)}`,
-		`provider status: ${observation.status}`,
-		`provider summary: ${presentEvidenceText(observation.summary)}`,
-		`PR status: ${providerPullRequestStatus(details.pullRequest.status, details.pullRequest.state)}`,
-		`CI checks (${checks.length})`,
-		...(checks.length === 0
-			? ["none"]
-			: checks.map((check) => {
-					const result = check.conclusion === undefined ? check.status : `${check.status}/${check.conclusion}`;
-					return `- ${check.name}: ${result}`;
-				})),
-		`review comments: ${comments.length === 0 ? "none" : `${comments.length} available — select Review comments to explore`}`,
-	];
-}
-
-type RecordPage = Readonly<{ title: string; lines: readonly string[] }>;
 
 function archiveLabel(record: RecordView): string {
 	if (record.kind !== "signal") return `#${record.sequence} ${formatStatus(record.kind)}`;
@@ -1020,15 +1107,9 @@ function formatRecordPage(record: RecordView): RecordPage {
 		const evidence = readPayloadTextList(record.payload, "evidence") ?? record.evidenceRefs;
 		return {
 			title: `Signal: ${capitalize(kind)}`,
-			lines: [
-				`from: ${capitalize(record.actor)}`,
-				`recorded: ${formatRecordedAt(record.recordedAt)}`,
-				"",
-				"Executor response",
-				response,
-				"",
-				`Evidence (${evidence.length})`,
-				...(evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`)),
+			sections: [
+				pageSection([`from: ${capitalize(record.actor)}`, `recorded: ${formatRecordedAt(record.recordedAt)}`]),
+				...formatExecutorEvidenceSections(response, evidence),
 			],
 		};
 	}
@@ -1043,24 +1124,35 @@ function formatRecordPage(record: RecordView): RecordPage {
 	if (record.kind === "error" && learning !== undefined) {
 		return {
 			title: `Execution learning: ${record.sequence}`,
-			lines: [
-				`recorded: ${formatRecordedAt(record.recordedAt)}`,
-				`summary: ${record.summary}`,
-				`what failed: ${readObjectText(learning, "failure") ?? "not recorded"}`,
-				`Mission specificity: ${readObjectText(learning, "missionSpecificity") ?? "not assessed"}`,
-				`next Mission guidance: ${readObjectText(learning, "nextMissionGuidance") ?? "not recorded"}`,
+			sections: [
+				pageSection([`recorded: ${formatRecordedAt(record.recordedAt)}`, `summary: ${record.summary}`]),
+				pageSection(
+					[
+						`what failed: ${readObjectText(learning, "failure") ?? "not recorded"}`,
+						`Mission specificity: ${readObjectText(learning, "missionSpecificity") ?? "not assessed"}`,
+					],
+					"Failure analysis",
+				),
+				pageSection(
+					[`next Mission guidance: ${readObjectText(learning, "nextMissionGuidance") ?? "not recorded"}`],
+					"Next Mission guidance",
+				),
 			],
 		};
 	}
 	const evidence = record.evidenceRefs;
 	return {
 		title: `Record ${record.sequence}: ${formatStatus(record.kind)}`,
-		lines: [
-			`actor: ${capitalize(record.actor)}`,
-			`recorded: ${formatRecordedAt(record.recordedAt)}`,
-			`summary: ${record.summary}`,
-			`Evidence (${evidence.length})`,
-			...(evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`)),
+		sections: [
+			pageSection([
+				`actor: ${capitalize(record.actor)}`,
+				`recorded: ${formatRecordedAt(record.recordedAt)}`,
+				`summary: ${record.summary}`,
+			]),
+			pageSection(
+				evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`),
+				`Evidence (${evidence.length})`,
+			),
 		],
 	};
 }
@@ -1074,20 +1166,40 @@ function formatProviderObservationPage(record: RecordView): RecordPage {
 	const reviewState = readPayloadText(record.payload, "reviewState");
 	return {
 		title: `Provider observation: ${formatStatus(kind)}`,
-		lines: [
-			`from: ${capitalize(record.actor)}`,
-			`recorded: ${formatRecordedAt(record.recordedAt)}`,
-			`provider: ${providerId}`,
-			`status: ${status}`,
-			`summary: ${record.summary}`,
-			...(author === undefined ? [] : [`author: ${author}`]),
-			...(reviewState === undefined ? [] : [`review state: ${reviewState}`]),
-			...formatRawProviderDetails(readPayloadObject(record.payload, "details")),
-			`feedback (${feedback.length})`,
-			...(feedback.length === 0 ? ["none"] : feedback.map((item) => `- ${item}`)),
-			"",
-			`Evidence (${record.evidenceRefs.length})`,
-			...(record.evidenceRefs.length === 0 ? ["none"] : record.evidenceRefs.map((item) => `- ${item}`)),
+		sections: [
+			pageSection([
+				`from: ${capitalize(record.actor)}`,
+				`recorded: ${formatRecordedAt(record.recordedAt)}`,
+				`provider: ${providerId}`,
+				`status: ${status}`,
+			]),
+			pageSection(
+				formatProviderSummaryLines(
+					readPayloadText(record.payload, "summary") ?? record.summary,
+					formatProviderFactsFromPayload(readPayloadObject(record.payload, "details"), "unknown"),
+				),
+				"Provider summary",
+			),
+			...(author === undefined && reviewState === undefined
+				? []
+				: [
+						pageSection(
+							[
+								...(author === undefined ? [] : [`author: ${author}`]),
+								...(reviewState === undefined ? [] : [`review state: ${reviewState}`]),
+							],
+							"Review context",
+						),
+					]),
+			...formatProviderDetailSections(readPayloadObject(record.payload, "details")),
+			pageSection(
+				feedback.length === 0 ? ["none"] : feedback.map((item) => `- ${item}`),
+				`feedback (${feedback.length})`,
+			),
+			pageSection(
+				record.evidenceRefs.length === 0 ? ["none"] : record.evidenceRefs.map((item) => `- ${item}`),
+				`Evidence (${record.evidenceRefs.length})`,
+			),
 		],
 	};
 }
@@ -1096,41 +1208,148 @@ function providerPullRequestStatus(status: string, state: string): string {
 	return status === "merged" ? "merged" : state;
 }
 
-function formatRawProviderDetails(details: JsonObject | undefined): readonly string[] {
+type ProviderCheckSummary = Readonly<{ status: string; conclusion?: string | undefined }>;
+type ProviderFacts = Readonly<{
+	pullRequestStatus: string;
+	checks: readonly ProviderCheckSummary[];
+}>;
+
+function formatProviderSummaryLines(summary: string, facts: ProviderFacts | undefined): readonly string[] {
+	const payload = parseJsonObject(summary);
+	if (payload === undefined) {
+		if (looksLikeStructuredProviderSummary(summary)) {
+			return facts === undefined
+				? ["Provider returned structured evidence."]
+				: formatProviderFacts(facts.pullRequestStatus, facts.checks);
+		}
+		return facts === undefined
+			? [presentEvidenceText(summary)]
+			: [presentEvidenceText(summary), ...formatProviderFacts(facts.pullRequestStatus, facts.checks)];
+	}
+	const payloadFacts = facts ?? formatProviderFactsFromPayload(payload, "unknown");
+	return formatProviderFacts(payloadFacts?.pullRequestStatus ?? "unknown", payloadFacts?.checks ?? []);
+}
+
+function formatProviderFactsFromDetails(details: ProviderObservation["details"]): ProviderFacts | undefined {
+	if (details === undefined) return undefined;
+	return {
+		pullRequestStatus: providerPullRequestStatus(details.pullRequest.status, details.pullRequest.state),
+		checks: details.checks,
+	};
+}
+
+function formatProviderFactsFromPayload(
+	payload: JsonObject | undefined,
+	fallbackStatus: string,
+): ProviderFacts | undefined {
+	if (payload === undefined) return undefined;
+	const normalizedChecks = readPayloadObjects(payload, "checks");
+	return {
+		pullRequestStatus: providerPullRequestStatusFromPayload(payload, fallbackStatus),
+		checks: providerCheckSummariesFromPayload(payload, normalizedChecks.length > 0 ? "checks" : "statusCheckRollup"),
+	};
+}
+
+function providerCheckSummariesFromPayload(
+	payload: JsonObject,
+	key: "checks" | "statusCheckRollup" = "statusCheckRollup",
+): readonly ProviderCheckSummary[] {
+	return readPayloadObjects(payload, key).map((check) => {
+		const status = readObjectText(check, "status") ?? readObjectText(check, "state") ?? "unknown";
+		const conclusion = readObjectText(check, "conclusion");
+		return conclusion === undefined ? { status } : { status, conclusion };
+	});
+}
+
+function providerCommentCountFromPayload(payload: JsonObject): number {
+	return providerEntryCount(payload["comments"]) + providerEntryCount(payload["reviews"]);
+}
+
+function providerEntryCount(value: JsonValue | undefined): number {
+	if (Array.isArray(value)) return value.length;
+	return isJsonNumber(value) && value >= 0 ? value : 0;
+}
+
+function formatProviderFacts(status: string, checks: readonly ProviderCheckSummary[]): readonly string[] {
+	return [`PR status: ${status}`, formatProviderCheckSummary(checks)];
+}
+
+function formatProviderCheckSummary(checks: readonly ProviderCheckSummary[]): string {
+	if (checks.length === 0) return "CI checks (0): none";
+	const result = (check: ProviderCheckSummary): string => (check.conclusion ?? check.status).toLowerCase();
+	const failed = checks.filter((check) => /fail|error|cancel|timed.?out/.test(result(check))).length;
+	if (failed > 0) return `CI checks (${checks.length}): ${failed} failed`;
+	const pending = checks.filter((check) => /pending|queued|progress|waiting|requested/.test(result(check))).length;
+	if (pending > 0) return `CI checks (${checks.length}): ${pending} pending`;
+	const unknown = checks.filter((check) => !/success|pass|complete|neutral|skip/.test(result(check))).length;
+	if (unknown > 0) return `CI checks (${checks.length}): ${unknown} unknown`;
+	const passing = checks.filter((check) => /success|pass/.test(result(check))).length;
+	return passing === checks.length ? `CI checks (${checks.length}): passing` : `CI checks (${checks.length}): complete`;
+}
+
+function providerPullRequestStatusFromPayload(payload: JsonObject, fallbackStatus: string): string {
+	const pullRequest = isJsonObject(payload["pullRequest"]) ? payload["pullRequest"] : undefined;
+	if (pullRequest !== undefined) {
+		return providerPullRequestStatus(
+			readObjectText(pullRequest, "status") ?? fallbackStatus,
+			readObjectText(pullRequest, "state") ?? "unknown",
+		);
+	}
+	if (isTextValue(payload["mergedAt"])) return "merged";
+	if (payload["isDraft"] === true) return "draft";
+	const state = readObjectText(payload, "state");
+	return state === undefined ? fallbackStatus : state.toLowerCase();
+}
+
+function formatProviderDetailSections(details: JsonObject | undefined): readonly PageSection[] {
 	if (details === undefined) return [];
 	const pullRequest = isJsonObject(details["pullRequest"]) ? details["pullRequest"] : undefined;
-	const checks = readPayloadObjects(details, "checks");
-	const comments = readPayloadObjects(details, "comments");
-	return [
-		...(pullRequest === undefined
-			? []
-			: [
+	const normalizedChecks = readPayloadObjects(details, "checks");
+	const checks = normalizedChecks.length > 0 ? normalizedChecks : readPayloadObjects(details, "statusCheckRollup");
+	const comments = [...readPayloadObjects(details, "comments"), ...readPayloadObjects(details, "reviews")];
+	const commentCount = providerCommentCountFromPayload(details);
+	const sections: PageSection[] = [];
+	if (pullRequest !== undefined) {
+		sections.push(
+			pageSection(
+				[
 					`PR status: ${providerPullRequestStatus(
 						readObjectText(pullRequest, "status") ?? "unknown",
 						readObjectText(pullRequest, "state") ?? "unknown",
 					)}`,
-				]),
-		`CI checks (${checks.length})`,
-		...(checks.length === 0
-			? ["none"]
-			: checks.map((check) => {
-					const name = readObjectText(check, "name") ?? "unnamed";
-					const checkStatus = readObjectText(check, "status") ?? "unknown";
-					const conclusion = readObjectText(check, "conclusion");
-					return `- ${name}: ${conclusion === undefined ? checkStatus : `${checkStatus}/${conclusion}`}`;
-				})),
-		`PR comments (${comments.length})`,
-		...(comments.length === 0
-			? ["none"]
-			: comments.flatMap((comment, index) => {
-					const author = readObjectText(comment, "author") ?? "unknown author";
-					const association = readObjectText(comment, "authorAssociation");
-					const body = readObjectText(comment, "body") ?? "No comment body.";
-					return [
-						`${index + 1}. ${author}${association === undefined ? "" : ` (${association})`}: ${body}`,
-						...(readObjectText(comment, "url") === undefined ? [] : [`   ${readObjectText(comment, "url")}`]),
-					];
-				})),
+				],
+				"Pull request",
+			),
+		);
+	}
+	sections.push(
+		pageSection(checks.length === 0 ? ["none"] : checks.map(formatProviderCheck), `CI checks (${checks.length})`),
+		pageSection(
+			comments.length === 0
+				? commentCount === 0
+					? ["none"]
+					: ["details unavailable"]
+				: comments.flatMap(formatProviderComment),
+			`PR comments (${commentCount})`,
+		),
+	);
+	return sections;
+}
+
+function formatProviderCheck(check: JsonObject): string {
+	const name = readObjectText(check, "name") ?? "unnamed";
+	const status = readObjectText(check, "status") ?? readObjectText(check, "state") ?? "unknown";
+	const conclusion = readObjectText(check, "conclusion");
+	return `- ${name}: ${conclusion === undefined ? status : `${status}/${conclusion}`}`;
+}
+
+function formatProviderComment(comment: JsonObject, index: number): readonly string[] {
+	const author = readObjectText(comment, "author") ?? "unknown author";
+	const association = readObjectText(comment, "authorAssociation");
+	const body = readObjectText(comment, "body") ?? "No comment body.";
+	return [
+		`${index + 1}. ${author}${association === undefined ? "" : ` (${association})`}: ${body}`,
+		...(readObjectText(comment, "url") === undefined ? [] : [`   ${readObjectText(comment, "url")}`]),
 	];
 }
 
@@ -1141,20 +1360,23 @@ function formatOracleRecordPage(record: RecordView): RecordPage {
 	const output = readPayloadText(record.payload, "output");
 	return {
 		title: `Oracle response: ${capitalize(verdict)}`,
-		lines: [
-			`recorded: ${formatRecordedAt(record.recordedAt)}`,
-			`verdict: ${capitalize(verdict)}`,
-			`findings (${findings.length})`,
-			...(findings.length === 0
-				? ["none"]
-				: findings.map((finding) => {
-						const severity = readObjectText(finding, "severity") ?? "finding";
-						const summary = readObjectText(finding, "summary") ?? "No summary provided.";
-						return `- ${capitalize(severity)}: ${summary}`;
-					})),
-			`validation gaps (${validationGaps.length})`,
-			...(validationGaps.length === 0 ? ["none"] : validationGaps.map((gap) => `- ${gap}`)),
-			...(output === undefined ? [] : ["", "Model response", output]),
+		sections: [
+			pageSection([`recorded: ${formatRecordedAt(record.recordedAt)}`, `verdict: ${capitalize(verdict)}`]),
+			pageSection(
+				findings.length === 0
+					? ["none"]
+					: findings.map((finding) => {
+							const severity = readObjectText(finding, "severity") ?? "finding";
+							const summary = readObjectText(finding, "summary") ?? "No summary provided.";
+							return `- ${capitalize(severity)}: ${summary}`;
+						}),
+				`findings (${findings.length})`,
+			),
+			pageSection(
+				validationGaps.length === 0 ? ["none"] : validationGaps.map((gap) => `- ${gap}`),
+				`validation gaps (${validationGaps.length})`,
+			),
+			...(output === undefined ? [] : [pageSection([output], "Model response")]),
 		],
 	};
 }
@@ -1206,16 +1428,17 @@ function capitalize(value: string): string {
 	return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
 }
 
-function formatErrorLines(error: ErrorEnvelope | undefined): readonly string[] {
-	if (error === undefined) return ["error: none", "remediation: none", "learning: none"];
+function formatErrorSections(error: ErrorEnvelope | undefined): readonly PageSection[] {
+	if (error === undefined) return [pageSection(["error: none", "remediation: none", "learning: none"], "Error")];
 	return [
-		"",
-		"Error",
-		presentEvidenceText(error.summary),
-		"",
-		"Next step",
-		presentEvidenceText(error.remediation),
-		`learning: ${presentEvidenceText(error.learning?.missionSpecificity ?? "none")}`,
+		pageSection([presentEvidenceText(error.summary)], "Error"),
+		pageSection(
+			[
+				presentEvidenceText(error.remediation),
+				`learning: ${presentEvidenceText(error.learning?.missionSpecificity ?? "none")}`,
+			],
+			"Next step",
+		),
 	];
 }
 
@@ -1228,6 +1451,76 @@ function presentEvidenceText(value: string): string {
 		})
 		.filter((part) => part.length > 0)
 		.join(". ");
+}
+
+function parseJsonObject(value: string): JsonObject | undefined {
+	const parsed = parseJsonValue(value);
+	return parsed !== undefined && isJsonObject(parsed) ? parsed : undefined;
+}
+
+function parseJsonValue(value: string): JsonValue | undefined {
+	const candidate = structuredProviderSummaryText(value);
+	if (candidate === undefined) return undefined;
+	try {
+		// SAFETY: JSON.parse only produces JSON primitives, arrays, and objects, which is JsonValue.
+		return JSON.parse(candidate) as JsonValue;
+	} catch {
+		// A provider can truncate or wrap a JSON snapshot; the caller still suppresses its raw text.
+		return undefined;
+	}
+}
+
+function structuredProviderSummaryText(value: string): string | undefined {
+	const normalized = normalizeProviderSummary(value);
+	if (startsWithStructuredValue(normalized)) return normalized;
+	const prefixed = normalized.match(
+		/^(?:provider|github|gitlab|raw|json|payload|response|snapshot)[^\n:]{0,40}:\s*(.+)$/isu,
+	);
+	const candidate = prefixed?.[1]?.trim();
+	return candidate !== undefined && startsWithStructuredValue(candidate) ? candidate : undefined;
+}
+
+function normalizeProviderSummary(value: string): string {
+	return value
+		.trim()
+		.replace(/^```[^\n]*\n/iu, "")
+		.replace(/\s*```$/u, "")
+		.trim();
+}
+
+function startsWithStructuredValue(value: string): boolean {
+	return (
+		value.startsWith("{") ||
+		value.startsWith("[") ||
+		value.startsWith('"') ||
+		/^(?:true|false|null|-?\d+(?:\.\d+)?)$/u.test(value)
+	);
+}
+
+function looksLikeStructuredProviderSummary(value: string): boolean {
+	const candidate = structuredProviderSummaryText(value);
+	if (candidate === undefined) return false;
+	if (parseJsonValue(value) !== undefined) return true;
+	if (candidate.startsWith("{")) return true;
+	return /^\[\s*(?:[{"]|$)/u.test(candidate) && hasStructuredProviderPrefix(value);
+}
+
+function hasStructuredProviderPrefix(value: string): boolean {
+	const trimmed = value.trim();
+	return (
+		trimmed.startsWith("```") ||
+		/^(?:provider|github|gitlab|raw|json|payload|response|snapshot)[^\n:]{0,40}:\s*/iu.test(trimmed)
+	);
+}
+
+function isJsonNumber(value: JsonValue | undefined): value is number {
+	return (
+		value !== undefined &&
+		value !== null &&
+		!Array.isArray(value) &&
+		value === Number(value) &&
+		Number.isSafeInteger(value)
+	);
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
@@ -1290,7 +1583,7 @@ async function showArchive(
 		const record = records.find((candidate) => String(candidate.sequence) === selected);
 		if (record === undefined) return;
 		const page = formatRecordPage(record);
-		await showTextPage(context, page.title, page.lines);
+		await showPage(context, page.title, page.sections);
 	}
 }
 
@@ -1309,21 +1602,45 @@ async function selectArchiveRecord(records: readonly RecordView[], context: Exte
 		list.onCancel = () => done(null);
 		container.addChild(list);
 		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("dim", NAVIGATION_FOOTER), 1, 0));
+		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
 		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		return selectableComponent(container, list, tui, () => done(null));
 	});
 }
 
-async function showTextPage(context: ExtensionContext, title: string, lines: readonly string[]): Promise<void> {
+async function showTextPage(
+	context: ExtensionContext,
+	title: string,
+	lines: readonly string[],
+	footer = PANEL_BACK_FOOTER,
+): Promise<void> {
+	await showPage(context, title, [pageSection(lines)], footer);
+}
+
+function addPageContent(container: Container, theme: Theme, title: string, sections: readonly PageSection[]): void {
+	container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+	for (const [index, section] of sections.entries()) {
+		if (index > 0) container.addChild(new Spacer(1));
+		if (section.heading !== undefined) {
+			container.addChild(new Text(theme.fg("accent", theme.bold(section.heading)), 1, 0));
+		}
+		if (section.lines.length > 0) {
+			container.addChild(new Text(theme.fg("muted", section.lines.join("\n")), 1, 0));
+		}
+	}
+}
+
+async function showPage(
+	context: ExtensionContext,
+	title: string,
+	sections: readonly PageSection[],
+	footer = PANEL_BACK_FOOTER,
+): Promise<void> {
 	await context.ui.custom<void>((_tui, theme, _keybindings, done) => {
 		const container = new Container();
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
-		container.addChild(new Text(theme.fg("muted", lines.join("\n")), 1, 0));
+		addPageContent(container, theme, title, sections);
 		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("dim", "escape/ctrl+c/backspace back"), 1, 0));
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		addPanelKeybindings(container, theme, footer);
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
@@ -1374,15 +1691,6 @@ async function actionInput(action: Action, context: ExtensionContext): Promise<J
 		return Number.isSafeInteger(maxTokens) && maxTokens > 0 ? { maxTokens } : null;
 	}
 	return {};
-}
-
-async function showHelp(context: ExtensionContext): Promise<void> {
-	await showTextPage(context, "khala help", [
-		"active means the lifecycle is open",
-		"working means a prompt is running",
-		"idle means waiting for the next Signal",
-		"Type to filter  ? help  r role settings  enter select  escape/ctrl+c cancel",
-	]);
 }
 
 function renderDashboard(work: readonly WorkSummary[]): string {

@@ -259,11 +259,7 @@ export class CommandCodeHost implements CodeHostPort {
 					"view",
 					reviewRequest.providerId,
 					"--json",
-<<<<<<< HEAD
 					"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews",
-=======
-					"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews",
->>>>>>> 6bb954b (refactor: ui.)
 				],
 				this.cwd,
 			);

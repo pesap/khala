@@ -21,7 +21,7 @@ export type KhalaConfig = Readonly<{
 	oracleThinking: string;
 	observerModel: string;
 	observerThinking: string;
-	keybindings: Readonly<{ help: string; roleSettings: string }>;
+	keybindings: Readonly<{ roleSettings: string; comments: string }>;
 }>;
 
 export class ConfigError extends Error {
@@ -47,7 +47,7 @@ const DEFAULTS: KhalaConfig = {
 	oracleThinking: "high",
 	observerModel: "",
 	observerThinking: "medium",
-	keybindings: { help: "?", roleSettings: "r" },
+	keybindings: { roleSettings: "r", comments: "c" },
 };
 
 export function loadConfig(projectPath: string, trusted: boolean, requireModels = true): KhalaConfig {
@@ -134,8 +134,8 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		observerModel: readText(values, "observerModel", base.observerModel),
 		observerThinking: readText(values, "observerThinking", base.observerThinking),
 		keybindings: {
-			help: readText(values, "helpKey", base.keybindings.help),
-			roleSettings: readText(values, "roleSettingsKey", base.keybindings.roleSettings),
+			roleSettings: readKeybinding(values, "roleSettingsKey", base.keybindings.roleSettings),
+			comments: readKeybinding(values, "commentsKey", base.keybindings.comments),
 		},
 	};
 }
@@ -153,6 +153,14 @@ function readText(values: JsonObject, key: string, fallback: string): string {
 
 function readPath(values: JsonObject, key: string, fallback: string): string {
 	return readText(values, key, fallback).replace(/^~(?=\/|$)/, homedir());
+}
+
+function readKeybinding(values: JsonObject, key: string, fallback: string): string {
+	const value = readText(values, key, fallback).trim();
+	if (value.length === 0) {
+		throw new ConfigError(`${key} must not be blank.`);
+	}
+	return value;
 }
 
 function readPositive(values: JsonObject, key: string, fallback: number): number {
