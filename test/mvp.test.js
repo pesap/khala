@@ -314,6 +314,7 @@ test("Archive migrates legacy failed and cancelled Work states", async () => {
 		database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?").run(JSON.stringify(view), workId);
 		database.prepare("UPDATE archive_records SET state = ? WHERE work_id = ?").run(state, workId);
 	}
+	database.exec("DROP TABLE archive_record_numbers");
 	database.close();
 
 	const migrated = new SQLiteArchive(path);
@@ -324,6 +325,13 @@ test("Archive migrates legacy failed and cancelled Work states", async () => {
 	assert.equal(failedProjection.state, "stopped");
 	assert.equal(failedProjection.stopReason, "failed");
 	assert.equal(migrated.query({ states: ["stopped"] }).items.length, 2);
+	assert.deepEqual(
+		migrated.query().items.map(({ recordNumber, missionRecordNumber }) => ({ recordNumber, missionRecordNumber })),
+		[
+			{ recordNumber: 1, missionRecordNumber: undefined },
+			{ recordNumber: 2, missionRecordNumber: undefined },
+		],
+	);
 	migrated.close();
 });
 
@@ -1450,14 +1458,61 @@ test("Archive appends validate projections and claim each external effect once",
 	const duplicate = archive.append(input);
 	assert.equal(duplicate.duplicate, true);
 	assert.equal(duplicate.record.sequence, first.record.sequence);
+	assert.equal(first.record.recordNumber, 1);
+	assert.equal(first.record.missionRecordNumber, undefined);
 	assert.equal(archive.project("w1").queuedSequence, first.record.sequence);
 	assert.equal(archive.query({ states: ["submitted"] }).items.length, 1);
 	assert.throws(() => archive.append({ ...input, workId: "w2" }), /already used for Work w1/);
-	archive.append({ ...input, commandId: "command-3", expectedWorkRevision: 1, projection: { ...projection, revision: 2, state: "queued" }, effects: [{ effectId: "effect-1", kind: "conclave-wake", payload: { workId: "w1" } }] });
-	archive.append({ ...input, commandId: "command-4", expectedWorkRevision: 2, projection: { ...projection, revision: 3, state: "active" }, effects: [{ effectId: "effect-1", kind: "conclave-wake", payload: { workId: "w1" } }] });
+	const second = archive.append({
+		...input,
+		commandId: "command-2",
+		expectedWorkRevision: 1,
+		missionId: "mission-1",
+		projection: { ...projection, revision: 2, state: "queued" },
+	});
+	const third = archive.append({
+		...input,
+		commandId: "command-3",
+		expectedWorkRevision: 2,
+		missionId: "mission-1",
+		projection: { ...projection, revision: 3, state: "active" },
+		effects: [{ effectId: "effect-1", kind: "conclave-wake", payload: { workId: "w1" } }],
+	});
+	const fourth = archive.append({
+		...input,
+		commandId: "command-4",
+		expectedWorkRevision: 3,
+		missionId: "mission-2",
+		projection: { ...projection, revision: 4, state: "active" },
+		effects: [{ effectId: "effect-1", kind: "conclave-wake", payload: { workId: "w1" } }],
+	});
+	assert.deepEqual(
+		[second.record, third.record, fourth.record].map(({ sequence, recordNumber, missionRecordNumber }) => ({ sequence, recordNumber, missionRecordNumber })),
+		[
+			{ sequence: 2, recordNumber: 2, missionRecordNumber: 1 },
+			{ sequence: 3, recordNumber: 3, missionRecordNumber: 2 },
+			{ sequence: 4, recordNumber: 4, missionRecordNumber: 1 },
+		],
+	);
+	assert.equal(archive.query({ missionId: "mission-1" }).items[0]?.missionRecordNumber, 1);
+	assert.equal(archive.query({ missionId: "mission-1" }).items[1]?.missionRecordNumber, 2);
+	const database = openSqlite(join(directory, "archive.sqlite"));
+	assert.deepEqual(
+		database
+			.prepare("SELECT record_number, mission_id, mission_record_number FROM archive_record_numbers ORDER BY record_number")
+			.all()
+			.map((row) => [row.record_number, row.mission_id, row.mission_record_number]),
+		[
+			[1, null, null],
+			[2, "mission-1", 1],
+			[3, "mission-1", 2],
+			[4, "mission-2", 1],
+		],
+	);
+	database.close();
 	assert.equal(archive.pendingEffects("owner-a").length, 1);
 	assert.throws(
-		() => archive.append({ ...input, commandId: "command-5", expectedWorkRevision: 3, projection: { ...projection, revision: 4, state: "active" }, effects: [{ effectId: "effect-1", kind: "scheduler-wake", payload: { workId: "w1" } }] }),
+		() => archive.append({ ...input, commandId: "command-5", expectedWorkRevision: 4, projection: { ...projection, revision: 5, state: "active" }, effects: [{ effectId: "effect-1", kind: "scheduler-wake", payload: { workId: "w1" } }] }),
 		/conflicts with an existing effect/,
 	);
 	assert.equal(archive.pendingEffects("owner-b").length, 0);
@@ -1561,7 +1616,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("review-level note")), true);
 		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("Inline review note (src/index.ts:3)")), true);
 		const ciObservation = observations.find((item) => item.kind === "ci-status");
-		assert.equal(ciObservation?.details?.pullRequest.status, "draft");
+		assert.equal(ciObservation?.details?.pullRequest.status, "merged");
 		assert.equal(ciObservation?.details?.comments.length, 3);
 		assert.equal(ciObservation?.details?.comments[1]?.createdAt, "2026-08-25T21:12:06Z");
 		assert.equal(ciObservation?.details?.comments[2]?.location, "src/index.ts:3");

@@ -8,9 +8,11 @@ implementation.
 
 The database uses WAL mode and contains:
 
-- `archive_records`: immutable records with sequence, opaque record ID, actor,
-  Work/Mission/Execution bindings, payload version, bounded summary, evidence
-  references, payload, and timestamp.
+- `archive_records`: immutable records with an internal sequence, opaque record
+  ID, actor, Work/Mission/Execution bindings, payload version, bounded summary,
+  evidence references, payload, and timestamp.
+- `archive_record_numbers`: immutable numbering for each record, including its
+  overall `record_number` and optional per-Mission `mission_record_number`.
 - `work_projection`: the current Work view and revision.
 - `outbox`: pending external effects written in the same transaction as their
   causative record.
@@ -57,9 +59,12 @@ and cache-miss token usage reported by Pi.
 Record kinds include `submission`, `assessment`, `learning`, `mission`,
 `mission-change`, `execution`, `signal`, `review-request`, `observation`,
 `delivery`, `verdict`, `oracle-review`, `outcome`, `error`, and `work-amended`.
-Record views are bounded. Queries compose Work, Mission, Execution, kind, state,
-and time filters with AND; repeated values within a field use OR. Results are
-ordered by Archive sequence. A cursor binds filters and an as-of sequence.
+Record views are bounded. Each view exposes the internal sequence for cursor
+ordering, the overall record number, and a per-Mission record number when the
+record belongs to a Mission. Queries compose Work, Mission, Execution, kind,
+state, and time filters with AND; repeated values within a field use OR. Results
+are ordered by internal Archive sequence. A cursor binds filters and an as-of
+sequence.
 
 ## Provider evidence
 

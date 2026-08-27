@@ -1,5 +1,4 @@
 import {
-	DynamicBorder,
 	type ExtensionContext,
 	type ModelRuntime,
 	ModelSelectorComponent,
@@ -20,19 +19,18 @@ import {
 	Text,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { KhalaConfig } from "./config.js";
-import { buildEvidencePresentation } from "./evidence.js";
 import type {
 	Action,
 	Actor,
 	ErrorEnvelope,
-	EvidencePresentation,
 	GovernedRole,
 	JsonObject,
 	JsonValue,
-	ProviderObservation,
 	ProviderReviewComment,
+	RecordKind,
 	RecordView,
 	RecoveryUpdate,
 	RoleSetting,
@@ -49,8 +47,10 @@ export type RoleSettingsController = Readonly<{
 }>;
 
 const MAX_WORK_NAME_LENGTH = 36;
-const WIDE_WORK_TABLE_COLUMNS = { title: 36, id: 21, state: 15, execution: 15 } as const;
-type WorkTableLayout = Readonly<{ title: number; id?: number; state: number; execution: number }>;
+const MAX_RECORD_LIST_SUMMARY_LENGTH = 72;
+const RECORD_LIST_COLUMNS = { sequence: 5, kind: 18, actor: 12, time: 26 } as const;
+const WIDE_WORK_TABLE_COLUMNS = { title: 36, id: 10, state: 15, execution: 15, showId: true } as const;
+type WorkTableLayout = Readonly<{ title: number; id: number; state: number; execution: number; showId: boolean }>;
 type WorkStatusTone = "active" | "waiting" | "attention" | "failure" | "inactive" | "success";
 type WorkStatus = Readonly<{ label: string; tone: WorkStatusTone }>;
 type WorkStatusPalette = Readonly<Record<WorkStatusTone, (theme: Theme, text: string) => string>>;
@@ -69,23 +69,9 @@ function isHiddenWork(item: WorkSummary): boolean {
 	return item.state === "succeeded" || (item.state === "stopped" && item.stopReason !== "failed");
 }
 
-function workSearchText(item: WorkSummary): string {
-	return [
-		item.title,
-		item.workId,
-		item.state,
-		item.stopReason ?? "",
-		item.missionState ?? "not admitted",
-		item.executionState ?? "not started",
-		item.nextAction,
-	].join(" ");
-}
-
 function truncateWorkName(value: string): string {
 	const normalized = value.replace(/[\r\n]+/g, " ").trim();
-	return normalized.length <= MAX_WORK_NAME_LENGTH
-		? normalized
-		: `${normalized.slice(0, MAX_WORK_NAME_LENGTH - 1).trimEnd()}…`;
+	return normalized.length <= MAX_WORK_NAME_LENGTH ? normalized : normalized.slice(0, MAX_WORK_NAME_LENGTH).trimEnd();
 }
 
 function tableCell(value: string, width: number): string {
@@ -93,11 +79,37 @@ function tableCell(value: string, width: number): string {
 	return `${truncated}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
 }
 
+function selectionMarker(selected: boolean): string {
+	return selected ? "→ " : "  ";
+}
+
 function workTableLayout(width: number): WorkTableLayout {
 	if (width >= 95) return WIDE_WORK_TABLE_COLUMNS;
-	const available = Math.max(3, width - 6);
-	const statusWidth = Math.min(15, Math.max(1, Math.floor((available - 1) / 3)));
-	return { title: Math.max(1, available - statusWidth * 2), state: statusWidth, execution: statusWidth };
+	const available = Math.max(1, width - 2);
+	if (available >= 33) {
+		const id = available >= 43 ? 8 : 6;
+		const state = available >= 43 ? 10 : 7;
+		const execution = 9;
+		return {
+			title: Math.max(1, available - id - state - execution - 6),
+			id,
+			state,
+			execution,
+			showId: true,
+		};
+	}
+	const state = available >= 24 ? 6 : Math.max(1, Math.min(8, Math.floor((available - 4) / 4)));
+	const execution =
+		available >= 24
+			? Math.min(9, Math.max(1, available - state - 8))
+			: Math.max(1, Math.min(9, Math.floor((available - state - 4) / 2)));
+	return {
+		title: Math.max(1, available - state - execution - 4),
+		id: 0,
+		state,
+		execution,
+		showId: false,
+	};
 }
 
 function hasWorkFailure(item: WorkSummary): boolean {
@@ -107,8 +119,7 @@ function hasWorkFailure(item: WorkSummary): boolean {
 function workState(item: WorkSummary): WorkStatus {
 	if (item.state === "stopped" && item.stopReason === "failed") return { label: "stopped", tone: "failure" };
 	if (item.state === "stopped") return { label: "stopped", tone: "inactive" };
-	if (hasWorkFailure(item) && item.executionState !== "failed")
-		return { label: `${formatStatus(item.state)} error`, tone: "failure" };
+	if (hasWorkFailure(item)) return { label: formatStatus(item.state), tone: "failure" };
 	if (item.state === "succeeded") return { label: "succeeded", tone: "success" };
 	if (item.state === "queued" || item.state === "awaiting-review")
 		return { label: formatStatus(item.state), tone: "waiting" };
@@ -127,17 +138,25 @@ function executionState(item: WorkSummary): WorkStatus {
 }
 
 function workTableHeader(theme: Theme, layout: WorkTableLayout): string {
-	const id = layout.id === undefined ? "" : `  ${tableCell("ID", layout.id)}`;
-	return theme.fg("dim", `  ${tableCell("TITLE", layout.title)}${id}  ${tableCell("STATE", layout.state)}  EXECUTION`);
+	const id = layout.showId ? `  ${tableCell("ID", layout.id)}` : "";
+	return theme.fg(
+		"dim",
+		`  ${tableCell("TITLE", layout.title)}${id}  ${tableCell("STATE", layout.state)}  ${tableCell("EXECUTION", layout.execution)}`,
+	);
+}
+
+function shortId(value: string): string {
+	return value.length <= 10 ? value : value.slice(0, 10);
 }
 
 function workTableRow(theme: Theme, item: WorkSummary, selected: boolean, layout: WorkTableLayout): string {
-	const prefix = selected ? theme.fg("accent", "→ ") : "  ";
 	const title = tableCell(truncateWorkName(item.title), layout.title);
-	const id = layout.id === undefined ? "" : `  ${theme.fg("dim", tableCell(item.workId, layout.id))}`;
+	const id = layout.showId ? `  ${tableCell(shortId(item.workId), layout.id)}` : "";
 	const state = workState(item);
 	const execution = executionState(item);
-	return `${prefix}${selected ? theme.fg("accent", title) : title}${id}  ${WORK_STATUS_PALETTE[state.tone](theme, tableCell(state.label, layout.state))}  ${WORK_STATUS_PALETTE[execution.tone](theme, execution.label)}`;
+	const row = `${title}${id}  ${WORK_STATUS_PALETTE[state.tone](theme, tableCell(state.label, layout.state))}  ${WORK_STATUS_PALETTE[execution.tone](theme, tableCell(execution.label, layout.execution))}`;
+	const indented = `${selectionMarker(selected)}${row}`;
+	return selected ? theme.fg("accent", theme.bold(indented)) : indented;
 }
 
 export async function showKhala(
@@ -151,7 +170,7 @@ export async function showKhala(
 		context.ui.notify(renderDashboard(service.listWork()), "info");
 		return;
 	}
-	const pickerState: WorkPickerState = { query: "" };
+	const pickerState: WorkPickerState = {};
 	for (;;) {
 		const workId = await pickWork(service.listWork(), context, keybindings, pickerState);
 		if (workId === null) return;
@@ -164,8 +183,8 @@ export async function showKhala(
 }
 
 type WorkPickerState = {
-	query: string;
 	selectedWorkId?: string | undefined;
+	filter?: string | undefined;
 };
 
 async function pickWork(
@@ -175,8 +194,12 @@ async function pickWork(
 	pickerState: WorkPickerState,
 ): Promise<string | "settings" | null> {
 	return context.ui.custom<string | "settings" | null>((tui, theme, _keybindings, done) => {
-		const input = new Input();
-		input.setValue(pickerState.query);
+		const filterInput = new Input();
+		filterInput.focused = true;
+		filterInput.setValue(pickerState.filter ?? "");
+		const availableWork = work.filter((item) => !isHiddenWork(item));
+		let filtered = filterWork(availableWork, filterInput.getValue());
+		let selectedIndex = 0;
 		let tableRows: readonly Readonly<{ item: WorkSummary; selected: boolean }>[] = [];
 		let listMessages: readonly string[] = [];
 		const listContainer: Component = {
@@ -186,12 +209,10 @@ async function pickWork(
 					workTableHeader(theme, layout),
 					...tableRows.map(({ item, selected }) => workTableRow(theme, item, selected, layout)),
 					...listMessages,
-				].map((line) => truncateToWidth(line, width, "…"));
+				].map((line) => truncateToWidth(line, width, ""));
 			},
 			invalidate: () => {},
 		};
-		let filtered = work.filter((item) => !isHiddenWork(item));
-		let selectedIndex = 0;
 		const updateList = (): void => {
 			const rows: Array<Readonly<{ item: WorkSummary; selected: boolean }>> = [];
 			const messages: string[] = [];
@@ -203,77 +224,53 @@ async function pickWork(
 			const endIndex = Math.min(startIndex + maxVisible, filtered.length);
 			for (let index = startIndex; index < endIndex; index += 1) {
 				const item = filtered[index];
-				if (item === undefined) continue;
-				rows.push({ item, selected: index === selectedIndex });
+				if (item !== undefined) rows.push({ item, selected: index === selectedIndex });
 			}
 			if (startIndex > 0 || endIndex < filtered.length) {
-				messages.push(theme.fg("muted", `  (${selectedIndex + 1}/${filtered.length})`));
+				messages.push(theme.fg("muted", `  ${selectedIndex + 1} of ${filtered.length}`));
 			}
 			if (filtered.length === 0) {
-				messages.push(theme.fg("muted", input.getValue() ? "  No matching Work" : "  No active Work"));
+				messages.push(theme.fg("muted", availableWork.length === 0 ? "  No active Work" : "  No matching Work"));
 			}
 			tableRows = rows;
 			listMessages = messages;
 			tui.requestRender();
 		};
-		const refresh = (restoreSelection = false): void => {
-			const query = input.getValue();
-			filtered =
-				query.length === 0
-					? work.filter((item) => !isHiddenWork(item))
-					: fuzzyFilter(
-							work.filter((item) => !isHiddenWork(item)),
-							query,
-							workSearchText,
-						);
-			const restoredIndex =
-				restoreSelection && pickerState.selectedWorkId !== undefined
-					? filtered.findIndex((item) => item.workId === pickerState.selectedWorkId)
-					: -1;
-			selectedIndex =
-				restoredIndex >= 0
-					? restoredIndex
-					: query.length > 0
-						? 0
-						: Math.min(selectedIndex, Math.max(0, filtered.length - 1));
+		const updateFilter = (): void => {
+			const query = filterInput.getValue().trim();
+			pickerState.filter = query;
+			filtered = filterWork(availableWork, query);
+			selectedIndex = query.length === 0 ? Math.min(selectedIndex, Math.max(0, filtered.length - 1)) : 0;
 			updateList();
 		};
 		const finish = (value: string | "settings" | null): void => {
-			pickerState.query = input.getValue();
-			if (value !== null && value !== "settings") {
-				pickerState.selectedWorkId = value;
-			}
+			if (value !== null && value !== "settings") pickerState.selectedWorkId = value;
 			done(value);
 		};
-		input.onSubmit = () => {
-			const item = filtered[selectedIndex];
-			if (item !== undefined) finish(item.workId);
-		};
+		const restoredIndex =
+			filterInput.getValue().trim().length === 0 && pickerState.selectedWorkId !== undefined
+				? filtered.findIndex((item) => item.workId === pickerState.selectedWorkId)
+				: -1;
+		if (restoredIndex >= 0) selectedIndex = restoredIndex;
 		const container = new Container();
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Work")), 1, 0));
 		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Work")), 0, 0));
-		container.addChild(input);
+		container.addChild(filterInput);
 		container.addChild(new Spacer(1));
 		container.addChild(listContainer);
 		container.addChild(new Spacer(1));
 		addPanelKeybindings(container, theme, workPickerKeybindings(keybindings));
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		refresh(true);
-		let focused = false;
+		updateList();
 		return {
-			get focused(): boolean {
-				return focused;
-			},
-			set focused(value: boolean) {
-				focused = value;
-				input.focused = value;
-			},
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data: string) => {
-				if (input.getValue().length === 0 && parseKey(data) === keybindings.roleSettings) {
+				if (filterInput.getValue().length === 0 && parseKey(data) === keybindings.roleSettings) {
 					finish("settings");
+					return;
+				}
+				if (data === "?") {
+					context.ui.notify?.("Type to filter Work by title, ID, or state.", "info");
 					return;
 				}
 				if (matchesKey(data, "home")) {
@@ -302,22 +299,33 @@ async function pickWork(
 					finish(null);
 					return;
 				}
-				if (matchesKey(data, "backspace") && input.getValue().length === 0) {
+				if (matchesKey(data, "backspace") && filterInput.getValue().length === 0) {
 					finish(null);
 					return;
 				}
-				input.handleInput(data);
-				refresh();
+				const previousFilter = filterInput.getValue();
+				filterInput.handleInput(data);
+				if (filterInput.getValue() !== previousFilter) updateFilter();
 			},
 		};
 	});
 }
 
-const NAVIGATION_FOOTER = "↑↓ navigate  enter select  escape/ctrl+c/backspace back";
+function filterWork(work: readonly WorkSummary[], query: string): readonly WorkSummary[] {
+	if (query.length === 0) return work;
+	return fuzzyFilter(
+		[...work],
+		query,
+		(item) => `${item.title} ${item.workId} ${item.state} ${item.executionState ?? ""}`,
+	);
+}
+
+const NAVIGATION_FOOTER = "up/down move  enter select  escape/ctrl+c/backspace back";
+const RECORD_NAVIGATION_FOOTER = "up/down move  enter inspect  escape/ctrl+c/backspace back";
 const PANEL_BACK_FOOTER = "escape/ctrl+c/backspace back";
 
 function workPickerKeybindings(keybindings: KhalaConfig["keybindings"]): string {
-	return `${keybindings.roleSettings} Role Settings  ↑↓ Navigation  home First  enter Enter  escape Escape  backspace Backspace`;
+	return `type to filter  home first  up/down move  enter open  ? help  ${keybindings.roleSettings} settings  escape/ctrl+c/backspace back`;
 }
 
 function addPanelKeybindings(container: Container, theme: Theme, footer: string): Text {
@@ -325,6 +333,22 @@ function addPanelKeybindings(container: Container, theme: Theme, footer: string)
 	container.addChild(keybindings);
 	container.addChild(new Spacer(1));
 	return keybindings;
+}
+
+function addHeading(container: Container, theme: Theme, title: string): void {
+	container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+}
+
+function formatFieldRows(rows: readonly (readonly [string, string])[]): readonly string[] {
+	if (rows.length === 0) return [];
+	const labelWidth = Math.max(...rows.map(([label]) => label.length));
+	return rows.map(([label, value]) => `${label.padEnd(labelWidth)}  ${value}`);
+}
+
+function addKeyValueRows(container: Container, theme: Theme, rows: readonly (readonly [string, string])[]): void {
+	const lines = formatFieldRows(rows);
+	if (lines.length === 0) return;
+	container.addChild(new Text(theme.fg("muted", lines.join("\n")), 1, 0));
 }
 
 type WorkSection = "actions" | "evidence" | "archive" | "review-comments" | "blocking-signal";
@@ -339,8 +363,7 @@ async function showWork(
 	for (;;) {
 		const work = await service.inspectRuntime(workId);
 		const records = readArchiveRecordsForNavigation(service, work, actor);
-		const evidence = buildEvidencePresentation(work, records);
-		const section = await pickSection(work, evidence, context, keybindings);
+		const section = await pickSection(work, records, context, keybindings);
 		if (section === null || section === "back") return "back";
 		if (section === "actions") {
 			await chooseAction(service, context, work, actor);
@@ -351,11 +374,11 @@ async function showWork(
 			continue;
 		}
 		if (section === "archive") {
-			await showArchive(service, context, work, actor);
+			await showArchive(service, context, work, actor, keybindings);
 			continue;
 		}
 		if (section === "review-comments") {
-			await showReviewComments(evidence, context);
+			await showReviewComments(providerReviewComments(records), context);
 			continue;
 		}
 		await showBlockingSignal(work, context);
@@ -364,51 +387,41 @@ async function showWork(
 
 async function pickSection(
 	work: WorkView,
-	evidence: EvidencePresentation,
+	records: readonly RecordView[],
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
 ): Promise<WorkSection | "back" | null> {
-	const reviewComments = providerReviewComments(evidence);
+	const reviewComments = providerReviewComments(records);
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
 		{ value: "archive", label: "Archive" },
-		...(reviewComments.length === 0
-			? []
-			: [{ value: "review-comments", label: `Review comments (${reviewComments.length}) [${keybindings.comments}]` }]),
-		...(work.execution?.state === "blocked" ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
+		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
-		const mission = work.mission === undefined ? "not admitted" : formatMissionState(work.missionState ?? "unknown");
 		const execution = work.execution;
-		const failure =
-			work.lastError !== undefined ||
-			(work.state === "stopped" && work.stopReason === "failed") ||
-			execution?.state === "failed";
-		const status = [
-			`Work ${failure ? theme.fg("error", formatWorkState(work)) : theme.bold(formatWorkState(work))}`,
-			...(failure ? [`Failure ${theme.fg("error", "recorded. Inspect Evidence")}`] : []),
-			`Mission ${mission}`,
-			`Execution ${formatExecutionState(execution)}`,
-			`Runtime ${formatRuntimeState(execution)}`,
-			`Next: ${presentEvidenceText(work.nextAction)}`,
-		];
-		const summary = new Container();
-		summary.addChild(new Text(theme.fg("accent", theme.bold(truncateWorkName(work.terms.title))), 1, 0));
-		summary.addChild(new Text(theme.fg("muted", status.join("\n")), 1, 0));
+		const rows: Array<readonly [string, string]> = [["Work", formatWorkState(work)]];
+		if (work.mission !== undefined && work.missionState !== undefined) {
+			rows.push(["Mission", formatMissionState(work.missionState)]);
+		}
+		if (execution !== undefined) {
+			rows.push(["Execution", formatExecutionState(execution)]);
+			if (shouldShowRuntime(execution)) rows.push(["Runtime", formatRuntimeState(execution)]);
+		}
+		if (work.nextAction.trim().length > 0) rows.push(["Next", presentEvidenceText(work.nextAction)]);
 		const list = new SelectList(items, items.length, selectorTheme(theme));
 		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
 		list.onCancel = () => done("back");
-		const menu = new Container();
-		menu.addChild(list);
 		const container = new Container();
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(summary);
+		addHeading(container, theme, truncateWorkName(work.terms.title));
 		container.addChild(new Spacer(1));
-		container.addChild(menu);
+		addKeyValueRows(container, theme, rows);
 		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
+		container.addChild(list);
+		container.addChild(new Spacer(1));
+		const footer =
+			reviewComments.length === 0 ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} comments`;
+		addPanelKeybindings(container, theme, footer);
 		return selectableComponent(
 			container,
 			list,
@@ -423,6 +436,10 @@ async function pickSection(
 	});
 }
 
+function shouldShowRuntime(execution: NonNullable<WorkView["execution"]>): boolean {
+	return execution.runtimeState !== undefined && !["completed", "failed", "stopped"].includes(execution.state);
+}
+
 async function chooseAction(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -433,13 +450,13 @@ async function chooseAction(
 		.availableActions(work.workId, actor, work.revision, work.execution?.runtimeState)
 		.filter((action) => action.enabled);
 	if (actions.length === 0) {
-		await showTextPage(context, "Work action", ["No actions are currently available."]);
+		await showTextPage(context, "Actions", ["No actions are currently available."]);
 		return;
 	}
 	const selected = await context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 		const container = new Container();
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Work action")), 1, 0));
+		addHeading(container, theme, "Actions");
+		container.addChild(new Spacer(1));
 		const list = new SelectList(
 			actions.map((action) => ({ value: action.id, label: displayActionLabel(action) })),
 			actions.length,
@@ -450,14 +467,13 @@ async function chooseAction(
 		container.addChild(list);
 		container.addChild(new Spacer(1));
 		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 		return selectableComponent(container, list, tui, () => done("back"));
 	});
 	if (selected === null || selected === "back") return;
 	const action = actions.find((candidate) => candidate.id === selected);
 	if (action === undefined) return;
 	if (action.kind === "recover") {
-		await showRecovery(service, context, work, action);
+		await showRecovery(service, context, work, actor, action);
 		return;
 	}
 	const input = await actionInput(action, context);
@@ -475,19 +491,30 @@ async function chooseAction(
 	schedulePendingEffects(service);
 	await showTextPage(context, "Action complete", [
 		`action: ${displayActionLabel(action)}`,
-		`next: ${withoutWork(result.value.nextAction)}`,
+		`next: ${presentEvidenceText(result.value.nextAction)}`,
 	]);
 }
 
-function withoutWork(value: string): string {
-	return value
-		.replace(/\bWork\b/g, "")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
 function displayActionLabel(action: Action): string {
-	return withoutWork(action.label);
+	const labels = {
+		admit: "Admit",
+		"launch-observer": "Launch observer",
+		"record-assessment": "Record assessment",
+		"start-execution": "Start execution",
+		"record-signal": "Record signal",
+		"create-review-request": "Create review request",
+		"run-oracle": "Run oracle",
+		verdict: "Record verdict",
+		"deliver-feedback": "Deliver feedback",
+		"record-review": "Record review",
+		"record-outcome": "Record outcome",
+		cancel: "Cancel",
+		recover: "Recover",
+		"rename-work": "Rename",
+		"amend-budget": "Amend budget",
+		"fail-work": "Fail",
+	} satisfies Partial<Record<Action["kind"], string>>;
+	return labels[action.kind] ?? action.label;
 }
 
 function schedulePendingEffects(service: ApplicationService): void {
@@ -506,46 +533,38 @@ async function showRecovery(
 	service: ApplicationService,
 	context: ExtensionContext,
 	work: WorkView,
+	actor: Actor,
 	action: Action,
 ): Promise<void> {
 	await context.ui.custom<void>((tui, theme, _keybindings, done) => {
 		let closed = false;
 		let display: RecoveryDisplay = {
 			status: "in progress",
-			progress: "starting",
+			progress: "checking runtime",
 			doing:
 				work.state === "stopped" && work.stopReason === "cancelled"
-					? "Preparing a new attempt"
-					: "Checking and restoring the Executor",
-			next: "No action is needed  Keep this screen open until recovery finishes",
+					? "Preparing a new attempt."
+					: "Khala is checking and restoring the Executor.",
+			next: "Keep this screen open until recovery finishes.",
 		};
 		const body = new Text("", 1, 0);
 		const container = new Container();
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Recovery")), 1, 0));
+		addHeading(container, theme, "Recovery");
+		container.addChild(new Spacer(1));
 		container.addChild(body);
 		container.addChild(new Spacer(1));
 		const footer = addPanelKeybindings(container, theme, "recovery is in progress");
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
 
 		const renderDisplay = (): void => {
-			body.setText(
-				theme.fg(
-					"muted",
-					[
-						`status    ${display.status}`,
-						`progress  ${display.progress}`,
-						`doing     ${display.doing}`,
-						display.reason === undefined ? undefined : `reason    ${display.reason}`,
-						`next      ${display.next}`,
-					]
-						.filter((line): line is string => line !== undefined)
-						.join("\n"),
-				),
-			);
-			footer.setText(
-				theme.fg("dim", display.status === "in progress" ? "recovery is in progress" : "escape/ctrl+c/backspace close"),
-			);
+			const rows: Array<readonly [string, string]> = [
+				["Status", display.status],
+				["Progress", display.progress],
+				["Doing", display.doing],
+				["Next", display.next],
+			];
+			if (display.reason !== undefined) rows.splice(3, 0, ["Reason", display.reason]);
+			body.setText(theme.fg("muted", formatFieldRows(rows).join("\n")));
+			footer.setText(theme.fg("dim", display.status === "in progress" ? "recovery is in progress" : PANEL_BACK_FOOTER));
 			tui.requestRender();
 		};
 		const update = (next: RecoveryDisplay): void => {
@@ -555,9 +574,9 @@ async function showRecovery(
 		const onRecoveryUpdate = (progress: RecoveryUpdate): void => {
 			update({
 				status: "in progress",
-				progress: `${formatStatus(progress.stage)}  ${withoutWork(progress.message)}`,
+				progress: `${formatStatus(progress.stage)}  ${presentEvidenceText(progress.message)}`,
 				doing: "Khala is restoring the Executor",
-				next: "No action is needed  Keep this screen open until recovery finishes",
+				next: "Keep this screen open until recovery finishes.",
 			});
 		};
 		renderDisplay();
@@ -569,7 +588,7 @@ async function showRecovery(
 					input: {},
 					meta: {
 						commandId: `tui:${action.id}`,
-						actor: "user",
+						actor,
 						expectedWorkRevision: work.revision,
 						schemaVersion: 1,
 					},
@@ -584,8 +603,8 @@ async function showRecovery(
 							reason: "The recovery operation could not be completed",
 							next:
 								result.error.code === "revision-conflict"
-									? "Action needed  Refresh and try again"
-									: "Action needed  Inspect Evidence for the failure details",
+									? "Refresh and try again."
+									: "Inspect Evidence for the failure details.",
 						});
 						return;
 					}
@@ -601,7 +620,7 @@ async function showRecovery(
 									progress: "stopped",
 									doing: "Khala could not restore the Executor",
 									reason: "The restored connection could not be confirmed",
-									next: "Action needed  Inspect Evidence and decide what to do next",
+									next: "Inspect Evidence and decide what to do next.",
 								}
 							: {
 									status: "succeeded",
@@ -614,10 +633,10 @@ async function showRecovery(
 												: "Executor restored and ready to continue",
 									next:
 										work.state === "stopped" && work.stopReason === "cancelled"
-											? "No action needed  Khala will continue automatically"
+											? "No action is needed. Khala will continue automatically."
 											: awaitingReview
-												? "Action needed  Review the Work when the provider responds"
-												: "No action needed  Khala will continue automatically",
+												? "Review the Work when the provider responds."
+												: "No action is needed. Khala will continue automatically.",
 								},
 					);
 				})
@@ -627,7 +646,7 @@ async function showRecovery(
 						progress: "stopped",
 						doing: "Khala could not restore the Executor",
 						reason: "The recovery operation ended unexpectedly",
-						next: "Action needed  Inspect Evidence for the failure details",
+						next: "Inspect Evidence for the failure details.",
 					}),
 				);
 		});
@@ -742,7 +761,7 @@ async function showRoleSettings(controller: RoleSettingsController, context: Ext
 		const settings = controller.get();
 		const roleOptions = ROLE_ORDER.map((role) => {
 			const current = settings[role];
-			return `${ROLE_LABELS[role]} — ${current.model || "model not configured"} (${current.thinking})`;
+			return `${ROLE_LABELS[role]}: ${current.model || "model not configured"} (${current.thinking})`;
 		});
 		const selectedRole = await selectRoleOption(context, "Role settings:", roleOptions);
 		if (selectedRole === undefined) return;
@@ -752,8 +771,8 @@ async function showRoleSettings(controller: RoleSettingsController, context: Ext
 
 		const current = controller.get()[role];
 		const selectedSetting = await selectRoleOption(context, `${ROLE_LABELS[role]} settings:`, [
-			`Model — ${current.model || "not configured"}`,
-			`Thinking — ${current.thinking}`,
+			`Model: ${current.model || "not configured"}`,
+			`Thinking: ${current.thinking}`,
 		]);
 		if (selectedSetting === undefined) continue;
 		const setting: RoleSetting = selectedSetting.startsWith("Model") ? "model" : "thinking";
@@ -778,8 +797,8 @@ async function showRoleSettings(controller: RoleSettingsController, context: Ext
 
 function selectorTheme(theme: Theme): SelectListTheme {
 	return {
-		selectedPrefix: (text: string) => theme.fg("accent", text),
-		selectedText: (text: string) => theme.fg("accent", text),
+		selectedPrefix: (text: string) => text,
+		selectedText: (text: string) => theme.fg("accent", theme.bold(text)),
 		description: (text: string) => theme.fg("muted", text),
 		scrollInfo: (text: string) => theme.fg("dim", text),
 		noMatch: (text: string) => theme.fg("warning", text),
@@ -832,9 +851,6 @@ function formatMissionState(value: string): string {
 
 function formatExecutionState(execution: WorkView["execution"]): string {
 	if (execution === undefined) return "not started";
-	if (execution.state === "running" && execution.runtimeState === "unreachable") {
-		return "running (no active runtime)";
-	}
 	return execution.state === "running" ? "running" : formatStatus(execution.state);
 }
 
@@ -856,90 +872,94 @@ function pageSection(lines: readonly string[], heading?: string): PageSection {
 	return heading === undefined ? { lines } : { heading, lines };
 }
 
-async function showReviewComments(evidence: EvidencePresentation, context: ExtensionContext): Promise<void> {
-	const comments = providerReviewComments(evidence);
-	if (comments.length === 0) {
-		await showTextPage(context, "Review comments", ["No provider review comments are available."]);
-		return;
+type RecordListMode = "evidence" | "archive";
+type RecordListEntry = Readonly<{ kind: "record"; record: RecordView }> | Readonly<{ kind: "comments"; count: number }>;
+type MutableJsonObject = { [key: string]: JsonValue | undefined };
+type MutableProviderReviewComment = {
+	id: string;
+	body: string;
+	author?: string;
+	authorAssociation?: string;
+	createdAt?: string;
+	url?: string;
+	state?: string;
+	source?: ProviderReviewComment["source"];
+	location?: string;
+	minimized?: boolean;
+};
+
+function providerReviewComments(records: readonly RecordView[]): readonly ProviderReviewComment[] {
+	for (const record of [...records].reverse()) {
+		if (record.kind !== "observation") continue;
+		const payload =
+			readPayloadObject(readPayloadObjectValue(record.payload), "details") ??
+			readPayloadObject(readPayloadObjectValue(record.payload), "providerObservation");
+		const comments = readPayloadObjects(payload, "comments");
+		const parsed = comments
+			.map(readProviderReviewComment)
+			.filter((comment): comment is ProviderReviewComment => comment !== undefined);
+		if (parsed.length > 0) return parsed;
 	}
-	for (;;) {
-		const selected = await selectReviewComment(comments, context);
-		if (selected === null) return;
-		const comment = comments[Number(selected)];
-		if (comment === undefined) return;
-		await showPage(context, "Review comment", formatReviewCommentSections(comment));
-	}
+	return [];
 }
 
-async function selectReviewComment(
-	comments: readonly ProviderReviewComment[],
-	context: ExtensionContext,
-): Promise<string | null> {
-	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
-		const list = new SelectList(
-			comments.map((comment, index) => ({
-				value: String(index),
-				label: `${comment.author ?? "unknown author"} — ${truncateToWidth(comment.body, 72, "…")}`,
-			})),
-			Math.min(6, comments.length),
-			selectorTheme(theme),
-		);
-		const container = new Container();
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Review comments")), 1, 0));
-		container.addChild(new Text(theme.fg("muted", `${comments.length} provider comments`), 1, 0));
-		container.addChild(list);
-		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		list.onSelect = (item) => done(item.value);
-		list.onCancel = () => done(null);
-		return selectableComponent(container, list, tui, () => done(null));
-	});
+function readProviderReviewComment(value: JsonObject): ProviderReviewComment | undefined {
+	const id = readObjectText(value, "id");
+	const body = readObjectText(value, "body");
+	if (id === undefined || body === undefined) return undefined;
+	const comment: MutableProviderReviewComment = { id, body };
+	const author = readObjectText(value, "author");
+	const authorAssociation = readObjectText(value, "authorAssociation");
+	const createdAt = readObjectText(value, "createdAt");
+	const url = readObjectText(value, "url");
+	const state = readObjectText(value, "state");
+	const source = readCommentSource(value);
+	const location = readObjectText(value, "location");
+	const minimized = readObjectBoolean(value, "minimized");
+	if (author !== undefined) comment.author = author;
+	if (authorAssociation !== undefined) comment.authorAssociation = authorAssociation;
+	if (createdAt !== undefined) comment.createdAt = createdAt;
+	if (url !== undefined) comment.url = url;
+	if (state !== undefined) comment.state = state;
+	if (source !== undefined) comment.source = source;
+	if (location !== undefined) comment.location = location;
+	if (minimized !== undefined) comment.minimized = minimized;
+	return comment;
 }
 
-function formatReviewCommentSections(comment: ProviderReviewComment): readonly PageSection[] {
-	const author = comment.author === undefined ? "unknown" : comment.author;
-	const association = comment.authorAssociation === undefined ? "" : ` (${comment.authorAssociation})`;
-	return [
-		pageSection([
-			`author: ${author}${association}`,
-			`created: ${comment.createdAt === undefined ? "unknown" : formatRecordedAt(comment.createdAt)}`,
-			...(comment.source === undefined ? [] : [`source: ${comment.source}`]),
-			...(comment.location === undefined ? [] : [`location: ${comment.location}`]),
-			...(comment.state === undefined ? [] : [`state: ${comment.state}`]),
-			...(comment.minimized === undefined ? [] : [`minimized: ${comment.minimized ? "yes" : "no"}`]),
-		]),
-		pageSection([comment.body], "Comment"),
-		...(comment.url === undefined ? [] : [pageSection([`url: ${comment.url}`], "Source")]),
-	];
+function readCommentSource(value: JsonObject): ProviderReviewComment["source"] {
+	const source = readObjectText(value, "source");
+	return source === "issue-comment" || source === "review" || source === "inline" ? source : undefined;
 }
 
-async function showBlockingSignal(work: WorkView, context: ExtensionContext): Promise<void> {
+function readObjectBoolean(object: JsonObject | undefined, key: string): boolean | undefined {
+	const value = object?.[key];
+	return value === true || value === false ? value : undefined;
+}
+
+function hasCurrentBlockedSignal(work: WorkView): boolean {
 	const signal = work.lastSignal;
-	if (signal === undefined || signal.kind !== "blocked") {
-		await showTextPage(context, "Blocking signal", ["No blocking Signal is available for this Work."]);
-		return;
-	}
-	await showPage(context, "Blocking signal", formatSignalSections(signal));
+	return (
+		signal !== undefined &&
+		work.execution !== undefined &&
+		work.execution.state === "blocked" &&
+		signal.kind === "blocked" &&
+		signal.executionId === work.execution.executionId
+	);
 }
 
-function formatSignalSections(signal: Signal): readonly PageSection[] {
-	return [
-		pageSection([`observed: ${formatRecordedAt(signal.observedAt)}`]),
-		...formatExecutorEvidenceSections(signal.summary, signal.evidence),
-	];
-}
-
-function formatExecutorEvidenceSections(response: string, evidence: readonly string[]): readonly PageSection[] {
-	return [
-		pageSection([response], "Executor response"),
-		pageSection(
-			evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`),
-			`Evidence (${evidence.length})`,
-		),
-	];
-}
+const EVIDENCE_RECORD_KINDS: readonly RecordKind[] = [
+	"assessment",
+	"learning",
+	"signal",
+	"review-request",
+	"observation",
+	"delivery",
+	"verdict",
+	"oracle-review",
+	"outcome",
+	"error",
+];
 
 async function showEvidence(
 	service: ApplicationService,
@@ -957,570 +977,578 @@ async function showEvidence(
 		]);
 		return;
 	}
-	const presentation = buildEvidencePresentation(work, records);
-	const comments = providerReviewComments(presentation);
-	if (comments.length === 0) {
-		await showPage(context, "Evidence", formatEvidenceSections(presentation));
-		return;
-	}
+	const evidenceRecords = selectRelevantEvidence(work, records);
+	const comments = providerReviewComments(records);
 	for (;;) {
-		const selected = await selectEvidenceSection(presentation, context, keybindings);
-		if (selected !== "review-comments") return;
-		await showReviewComments(presentation, context);
+		const selected = await selectRecordPanel(
+			evidenceRecords,
+			comments.length,
+			context,
+			"evidence",
+			keybindings,
+			formatEvidenceSupplement(work, evidenceRecords),
+		);
+		if (selected === null) return;
+		if (selected === "comments") {
+			await showReviewComments(comments, context);
+			continue;
+		}
+		const record = evidenceRecords.find((candidate) => String(candidate.sequence) === selected);
+		if (record === undefined) return;
+		const page = formatRecordPage(record);
+		await showPage(context, page.title, page.sections);
 	}
 }
 
-type EvidenceSection = "review-comments";
+function selectRelevantEvidence(work: WorkView, records: readonly RecordView[]): readonly RecordView[] {
+	const selected = new Map<number, RecordView>();
+	const missionId = work.mission?.missionId;
+	const executionId = work.execution?.executionId;
+	const currentReviewProviderId = work.reviewRequest?.providerId;
+	const currentReviewUrl = work.reviewRequest?.url;
+	const add = (record: RecordView | undefined): void => {
+		if (record !== undefined) selected.set(record.sequence, record);
+	};
+	const latest = (predicate: (record: RecordView) => boolean): RecordView | undefined =>
+		[...records].reverse().find(predicate);
+	const isCurrentBinding = (record: RecordView): boolean =>
+		(record.executionId !== undefined && record.executionId === executionId) ||
+		(record.missionId !== undefined && record.missionId === missionId);
+	const isProviderObservation = (record: RecordView): boolean =>
+		record.kind === "observation" && readPayloadBoolean(record.payload, "changed") === true;
 
-async function selectEvidenceSection(
-	presentation: EvidencePresentation,
+	for (const record of records) {
+		if (!EVIDENCE_RECORD_KINDS.includes(record.kind)) continue;
+		if (isCurrentBinding(record) || isProviderObservation(record) || record.evidenceRefs.length > 0) add(record);
+	}
+	add(latest((record) => record.kind === "error" && (isCurrentBinding(record) || work.lastError !== undefined)));
+	add(
+		latest(
+			(record) =>
+				record.kind === "signal" &&
+				(executionId === undefined || isCurrentBinding(record) || record.executionId === executionId),
+		),
+	);
+	add(
+		latest(
+			(record) =>
+				record.kind === "review-request" &&
+				((currentReviewProviderId !== undefined &&
+					readPayloadText(record.payload, "providerId") === currentReviewProviderId) ||
+					(currentReviewUrl !== undefined && record.evidenceRefs.includes(currentReviewUrl))),
+		),
+	);
+	for (const record of records) {
+		if (record.kind === "observation" && readPayloadBoolean(record.payload, "changed") === true) add(record);
+		if (["delivery", "verdict", "oracle-review", "outcome"].includes(record.kind) && isCurrentBinding(record))
+			add(record);
+	}
+	if (selected.size === 0) add([...records].reverse().find((record) => record.evidenceRefs.length > 0));
+	return [...selected.values()].sort((left, right) => left.sequence - right.sequence);
+}
+
+function formatEvidenceSupplement(work: WorkView, records: readonly RecordView[]): readonly PageSection[] {
+	const sections: PageSection[] = [];
+	const next = presentEvidenceText(work.nextAction);
+	if (next.length > 0) sections.push(pageSection([next], "Next"));
+	const learning = latestLearningLines(records);
+	if (learning.length > 0) sections.push(pageSection(learning, "Learning"));
+	return sections;
+}
+
+function latestLearningLines(records: readonly RecordView[]): readonly string[] {
+	for (const record of [...records].reverse()) {
+		const payload = readPayloadObjectValue(record.payload);
+		const learning =
+			record.kind === "error"
+				? readPayloadObject(payload, "learning")
+				: record.kind === "learning"
+					? payload
+					: undefined;
+		if (learning === undefined) continue;
+		const lines = [readObjectText(learning, "missionSpecificity"), readObjectText(learning, "nextMissionGuidance")]
+			.filter((line): line is string => line !== undefined)
+			.map(presentEvidenceText)
+			.filter((line) => line.length > 0);
+		if (lines.length > 0) return lines;
+	}
+	return [];
+}
+
+async function showReviewComments(
+	comments: readonly ProviderReviewComment[],
 	context: ExtensionContext,
-	keybindings: KhalaConfig["keybindings"],
-): Promise<EvidenceSection | null> {
-	const comments = providerReviewComments(presentation);
-	return context.ui.custom<EvidenceSection | null>((tui, theme, _keybindings, done) => {
-		const container = new Container();
-		addPageContent(container, theme, "Evidence", formatEvidenceSections(presentation));
-		container.addChild(new Spacer(1));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Review comments")), 1, 0));
+): Promise<void> {
+	if (comments.length === 0) return;
+	for (;;) {
+		const selected = await selectReviewComment(comments, context);
+		if (selected === null) return;
+		const comment = comments[Number(selected)];
+		if (comment === undefined) return;
+		await showPage(context, "Review comment", formatReviewCommentSections(comment));
+	}
+}
+
+async function selectReviewComment(
+	comments: readonly ProviderReviewComment[],
+	context: ExtensionContext,
+): Promise<string | null> {
+	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 		const list = new SelectList(
-			[{ value: "review-comments", label: `${comments.length} available [${keybindings.comments}]` }],
-			1,
+			comments.map((comment, index) => ({
+				value: String(index),
+				label: `${comment.author ?? "unknown author"} ${compactRecordSummary(comment.body)}`.trim(),
+			})),
+			Math.min(6, comments.length),
 			selectorTheme(theme),
 		);
-		list.onSelect = (item) => done(item.value === "review-comments" ? item.value : null);
-		list.onCancel = () => done(null);
+		const container = new Container();
+		addHeading(container, theme, "Review comments");
+		container.addChild(new Text(theme.fg("muted", `${comments.length} comments`), 1, 0));
+		container.addChild(new Spacer(1));
 		container.addChild(list);
 		container.addChild(new Spacer(1));
 		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		return selectableComponent(
-			container,
-			list,
-			tui,
-			() => done(null),
-			(data) => {
-				if (parseKey(data) !== keybindings.comments) return false;
-				done("review-comments");
-				return true;
-			},
-		);
+		list.onSelect = (item) => done(item.value);
+		list.onCancel = () => done(null);
+		return selectableComponent(container, list, tui, () => done(null));
 	});
 }
 
-function providerReviewComments(presentation: EvidencePresentation): readonly ProviderReviewComment[] {
-	return presentation.providerObservation?.details?.comments ?? [];
-}
-
-function formatEvidenceSections(presentation: EvidencePresentation): readonly PageSection[] {
-	const sections: PageSection[] = [
-		pageSection([
-			`evidence state: ${formatStatus(presentation.workState)}`,
-			`active mission: ${formatMissionState(presentation.missionState ?? "not admitted")}`,
-			`execution: ${formatPresentationExecutionState(presentation)}`,
-			`runtime: ${formatStatus(presentation.runtimeState ?? "unavailable")}`,
-			`activity: ${formatPresentationActivity(presentation)}`,
-			`signal: ${presentation.signal.kind === "blocking-signal" ? "blocking signal" : presentation.signal.kind}`,
-			`signal evidence: ${summarizeEvidenceCount(presentation.signal.evidenceCount)}`,
-			`archive access: ${presentation.archive.accessLabel}`,
-		]),
-		...formatProviderEvidenceSections(presentation),
-	];
-	if (presentation.conclaveHandoff === undefined) {
-		sections.push(pageSection(["conclave handoff: none recorded"], "Conclave handoff"));
-	} else {
-		const handoff = presentation.conclaveHandoff;
-		const target = handoff.executionId === undefined ? "new Execution" : `Execution ${handoff.executionId}`;
-		const status = handoff.status === "delivered" ? "delivered" : `${handoff.status} for`;
-		sections.push(
-			pageSection(
-				[
-					`conclave handoff: ${status} ${target}`,
-					`handoff observation: ${handoff.observationId}`,
-					`handoff feedback (${handoff.feedback.length})`,
-					...handoff.feedback.map((item) => `- ${item}`),
-				],
-				"Conclave handoff",
-			),
+function formatReviewCommentSections(comment: ProviderReviewComment): readonly PageSection[] {
+	const details: string[] = [];
+	if (comment.author !== undefined) {
+		details.push(
+			`author: ${comment.author}${comment.authorAssociation === undefined ? "" : ` (${comment.authorAssociation})`}`,
 		);
 	}
-	sections.push(
-		pageSection(
-			[
-				`review request: ${presentation.reviewRequest?.url ?? "none"}`,
-				`review status: ${presentation.reviewRequest?.status ?? "none"}`,
-			],
-			"Review request",
-		),
-		...formatErrorSections(presentation.error),
-	);
-	return sections;
-}
-
-function formatProviderEvidenceSections(presentation: EvidencePresentation): readonly PageSection[] {
-	const observation = presentation.providerObservation;
-	if (observation === undefined) {
-		return [pageSection(["provider observation: none"], "Provider evidence")];
-	}
+	if (comment.createdAt !== undefined) details.push(`created: ${formatRecordedAt(comment.createdAt)}`);
+	if (comment.source !== undefined) details.push(`source: ${comment.source}`);
+	if (comment.location !== undefined) details.push(`location: ${comment.location}`);
+	if (comment.state !== undefined) details.push(`state: ${comment.state}`);
+	if (comment.minimized !== undefined) details.push(`minimized: ${comment.minimized ? "yes" : "no"}`);
 	return [
-		pageSection(
-			[`provider observation: ${formatStatus(observation.kind)}`, `provider status: ${observation.status}`],
-			"Provider observation",
-		),
-		pageSection(
-			formatProviderSummaryLines(observation.summary, formatProviderFactsFromDetails(observation.details)),
-			"Provider summary",
-		),
+		...(details.length === 0 ? [] : [pageSection(details)]),
+		pageSection([comment.body], "Comment"),
+		...(comment.url === undefined ? [] : [pageSection([`url: ${comment.url}`], "Source")]),
 	];
 }
 
-function formatPresentationExecutionState(presentation: EvidencePresentation): string {
-	if (presentation.executionState === undefined) return "not started";
-	if (presentation.executionState === "running" && !presentation.executionActive) {
-		return "running (no active runtime)";
+async function showBlockingSignal(work: WorkView, context: ExtensionContext): Promise<void> {
+	if (!hasCurrentBlockedSignal(work)) return;
+	const signal = work.lastSignal;
+	if (signal === undefined) return;
+	await showPage(context, "Blocked", formatSignalSections(signal));
+}
+
+function formatSignalSections(signal: Signal): readonly PageSection[] {
+	return [
+		pageSection(formatFieldRows([["Observed", formatRecordedAt(signal.observedAt)]])),
+		...formatExecutorEvidenceSections(signal.summary, signal.evidence),
+	];
+}
+
+function formatExecutorEvidenceSections(response: string, evidence: readonly string[]): readonly PageSection[] {
+	return [
+		...(response.trim().length === 0 ? [] : [pageSection([response], "Executor response")]),
+		...(evidence.length === 0 ? [] : [pageSection(evidence, "Evidence")]),
+	];
+}
+
+async function selectRecordPanel(
+	records: readonly RecordView[],
+	commentCount: number,
+	context: ExtensionContext,
+	mode: RecordListMode,
+	keybindings: KhalaConfig["keybindings"],
+	supplement: readonly PageSection[] = [],
+): Promise<string | "comments" | null> {
+	const entries: readonly RecordListEntry[] = [
+		...records.map((record) => ({ kind: "record" as const, record })),
+		...(commentCount === 0 ? [] : [{ kind: "comments" as const, count: commentCount }]),
+	];
+	const title = recordPanelTitle(mode, records.length);
+	if (entries.length === 0) {
+		await showPage(context, title, [
+			pageSection([
+				mode === "evidence" ? "No relevant evidence records are available." : "No Archive records are available.",
+			]),
+			...supplement,
+		]);
+		return null;
 	}
-	return presentation.executionState === "running" ? "running" : formatStatus(presentation.executionState);
+	return context.ui.custom<string | "comments" | null>((tui, theme, _keybindings, done) => {
+		let selectedIndex = 0;
+		const list = createRecordList(entries, mode, theme, () => selectedIndex);
+		const container = new Container();
+		addHeading(container, theme, title);
+		container.addChild(new Spacer(1));
+		container.addChild(list);
+		if (supplement.length > 0) container.addChild(new Spacer(1));
+		addPageSections(container, theme, supplement);
+		container.addChild(new Spacer(1));
+		const footer =
+			commentCount === 0 ? RECORD_NAVIGATION_FOOTER : `${RECORD_NAVIGATION_FOOTER}  ${keybindings.comments} comments`;
+		addPanelKeybindings(container, theme, footer);
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (commentCount > 0 && parseKey(data) === keybindings.comments) {
+					done("comments");
+					return;
+				}
+				if (matchesKey(data, "up") || matchesKey(data, "down")) {
+					selectedIndex = nextRecordIndex(selectedIndex, entries.length, matchesKey(data, "up"));
+					tui.requestRender();
+					return;
+				}
+				if (matchesKey(data, "enter")) {
+					const entry = entries[selectedIndex];
+					if (entry?.kind === "comments") done("comments");
+					else if (entry?.kind === "record") done(String(entry.record.sequence));
+					return;
+				}
+				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "backspace")) done(null);
+			},
+		};
+	});
 }
 
-function formatPresentationActivity(presentation: EvidencePresentation): string {
-	if (presentation.activity === "execution-recorded" && presentation.runtimeState === "unreachable") {
-		return "execution recorded (runtime unreachable, no active turn)";
+function recordPanelTitle(mode: RecordListMode, count: number): string {
+	return mode === "evidence" ? "Evidence" : `Archive ${count} ${count === 1 ? "record" : "records"}`;
+}
+
+function nextRecordIndex(index: number, length: number, movingUp: boolean): number {
+	return movingUp ? (index === 0 ? length - 1 : index - 1) : index === length - 1 ? 0 : index + 1;
+}
+
+function createRecordList(
+	entries: readonly RecordListEntry[],
+	mode: RecordListMode,
+	theme: Theme,
+	getSelectedIndex: () => number,
+): Component {
+	return {
+		render: (width: number) => {
+			const selectedIndex = getSelectedIndex();
+			const maxVisible = 6;
+			const start = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), entries.length - maxVisible));
+			const visibleEntries = entries.slice(start, start + maxVisible);
+			const lines = [recordListHeader(mode, width)];
+			for (const [offset, entry] of visibleEntries.entries()) {
+				lines.push(...recordListEntryLines(entry, mode, width, start + offset === selectedIndex, theme));
+			}
+			if (start > 0 || start + visibleEntries.length < entries.length) {
+				lines.push(theme.fg("dim", `  ${selectedIndex + 1} of ${entries.length}`));
+			}
+			return lines.map((line) => truncateToWidth(line, width, ""));
+		},
+		invalidate: () => {},
+	};
+}
+
+type RecordListLayout = Readonly<{ kind: number; actor: number; time: number; showContext: boolean }>;
+
+function recordListLayout(mode: RecordListMode, width: number): RecordListLayout {
+	const available = Math.max(1, width - 2);
+	if (mode === "evidence" && width >= 96) {
+		return {
+			kind: RECORD_LIST_COLUMNS.kind,
+			actor: RECORD_LIST_COLUMNS.actor,
+			time: RECORD_LIST_COLUMNS.time,
+			showContext: true,
+		};
 	}
-	return formatStatus(presentation.activity);
+	return {
+		kind: Math.max(10, Math.min(RECORD_LIST_COLUMNS.kind, Math.floor(available * 0.3))),
+		actor: 0,
+		time: 0,
+		showContext: false,
+	};
 }
 
-function summarizeEvidenceCount(count: number): string {
-	if (count === 0) return "none";
-	return `${count} evidence item${count === 1 ? "" : "s"}`;
+function recordListHeader(mode: RecordListMode, width: number): string {
+	const layout = recordListLayout(mode, width);
+	const sequence = tableCell("SEQ", RECORD_LIST_COLUMNS.sequence);
+	const kind = tableCell("KIND", layout.kind);
+	if (!layout.showContext) return `  ${sequence}${kind}SUMMARY`;
+	return `  ${sequence}${kind}${tableCell("ACTOR", layout.actor)}${tableCell("TIME", layout.time)}SUMMARY`;
 }
 
-function archiveLabel(record: RecordView): string {
-	if (record.kind !== "signal") return `#${record.sequence} ${formatStatus(record.kind)}`;
-	const kind = readPayloadText(record.payload, "kind") ?? "signal";
-	return `#${record.sequence} Signal: ${capitalize(kind)}`;
+function recordListEntryLines(
+	entry: RecordListEntry,
+	mode: RecordListMode,
+	width: number,
+	selected: boolean,
+	theme: Theme,
+): readonly string[] {
+	if (entry.kind === "comments") {
+		return markRecordListEntry(["  Review comments", `    ${entry.count} available`], selected, theme);
+	}
+	const record = entry.record;
+	const summary = compactRecordSummary(record.summary);
+	const lines =
+		mode === "evidence"
+			? formatEvidenceRecordLines(record, summary, width)
+			: formatArchiveRecordLines(record, summary, width);
+	return markRecordListEntry(lines, selected, theme);
+}
+
+function markRecordListEntry(lines: readonly string[], selected: boolean, theme: Theme): readonly string[] {
+	const marked = lines.map((line, index) => (index === 0 ? `${selectionMarker(selected)}${line.slice(2)}` : line));
+	return selected ? marked.map((line) => theme.fg("accent", theme.bold(line))) : marked;
+}
+
+function compactRecordSummary(summary: string): string {
+	const firstLine = summary.split(/\r?\n/u).find((line) => line.trim().length > 0) ?? "";
+	return truncateToWidth(firstLine.replace(/\s+/g, " ").trim(), MAX_RECORD_LIST_SUMMARY_LENGTH, "");
+}
+
+function formatEvidenceRecordLines(record: RecordView, summary: string, width: number): readonly string[] {
+	const layout = recordListLayout("evidence", width);
+	let prefix = `  ${tableCell(String(record.sequence), RECORD_LIST_COLUMNS.sequence)}${tableCell(recordKindLabel(record), layout.kind)}`;
+	if (layout.showContext) {
+		prefix += `${tableCell(record.actor, layout.actor)}${tableCell(formatRecordedAt(record.recordedAt), layout.time)}`;
+	}
+	return summary.trim().length === 0 ? [prefix.trimEnd()] : wrapPrefixed(summary, prefix, visibleWidth(prefix), width);
+}
+
+function formatArchiveRecordLines(record: RecordView, summary: string, width: number): readonly string[] {
+	const layout = recordListLayout("archive", width);
+	const prefix = `  ${tableCell(String(record.sequence), RECORD_LIST_COLUMNS.sequence)}${tableCell(recordKindLabel(record), layout.kind)}`;
+	return summary.trim().length === 0 ? [prefix.trimEnd()] : wrapPrefixed(summary, prefix, visibleWidth(prefix), width);
+}
+
+function wrapPrefixed(value: string, prefix: string, prefixWidth: number, width: number): readonly string[] {
+	const available = Math.max(1, width - prefixWidth);
+	const wrapped = wrapTextWithAnsi(value.length === 0 ? " " : value, available);
+	return wrapped.map((line, index) => `${index === 0 ? prefix : " ".repeat(prefixWidth)}${line}`);
 }
 
 function formatRecordPage(record: RecordView): RecordPage {
-	if (record.kind === "signal") {
-		const kind = readPayloadText(record.payload, "kind") ?? "signal";
-		const response = readPayloadText(record.payload, "summary") ?? record.summary;
-		const evidence = readPayloadTextList(record.payload, "evidence") ?? record.evidenceRefs;
-		return {
-			title: `Signal: ${capitalize(kind)}`,
-			sections: [
-				pageSection([`from: ${capitalize(record.actor)}`, `recorded: ${formatRecordedAt(record.recordedAt)}`]),
-				...formatExecutorEvidenceSections(response, evidence),
-			],
-		};
-	}
-	if (record.kind === "observation" && isProviderObservationPayload(record.payload)) {
-		return formatProviderObservationPage(record);
-	}
-	if (record.kind === "oracle-review") {
-		return formatOracleRecordPage(record);
-	}
-	const learning =
-		isJsonObject(record.payload) && isJsonObject(record.payload["learning"]) ? record.payload["learning"] : undefined;
-	if (record.kind === "error" && learning !== undefined) {
-		return {
-			title: `Execution learning: ${record.sequence}`,
-			sections: [
-				pageSection([`recorded: ${formatRecordedAt(record.recordedAt)}`, `summary: ${record.summary}`]),
-				pageSection(
-					[
-						`what failed: ${readObjectText(learning, "failure") ?? "not recorded"}`,
-						`Mission specificity: ${readObjectText(learning, "missionSpecificity") ?? "not assessed"}`,
-					],
-					"Failure analysis",
-				),
-				pageSection(
-					[`next Mission guidance: ${readObjectText(learning, "nextMissionGuidance") ?? "not recorded"}`],
-					"Next Mission guidance",
-				),
-			],
-		};
-	}
-	const evidence = record.evidenceRefs;
+	const metadata: Array<readonly [string, string]> = [
+		["Recorded", formatRecordedAt(record.recordedAt)],
+		["Actor", record.actor],
+		["Record number", String(record.recordNumber)],
+	];
+	if (record.missionRecordNumber !== undefined)
+		metadata.push(["Mission record number", String(record.missionRecordNumber)]);
+	metadata.push(["Record ID", record.id], ["Work ID", record.workId]);
+	if (record.missionId !== undefined) metadata.push(["Mission ID", record.missionId]);
+	if (record.executionId !== undefined) metadata.push(["Execution ID", record.executionId]);
+	metadata.push(["Payload version", String(record.payloadVersion)]);
+	const payloadFields = recordDetailPayloadFields(record);
+	const structuredFields = formatStructuredFields(record.payload, payloadFields.displayed);
+	const evidenceReferences =
+		payloadFields.displayedEvidence !== undefined &&
+		sameStringList(payloadFields.displayedEvidence, record.evidenceRefs)
+			? []
+			: record.evidenceRefs;
 	return {
-		title: `Record ${record.sequence}: ${formatStatus(record.kind)}`,
+		title: recordTitle(record),
 		sections: [
-			pageSection([
-				`actor: ${capitalize(record.actor)}`,
-				`recorded: ${formatRecordedAt(record.recordedAt)}`,
-				`summary: ${record.summary}`,
-			]),
-			pageSection(
-				evidence.length === 0 ? ["none"] : evidence.map((item, index) => `${index + 1}. ${item}`),
-				`Evidence (${evidence.length})`,
-			),
+			pageSection(formatFieldRows(metadata)),
+			...payloadFields.sections,
+			...(structuredFields.length === 0 ? [] : [pageSection(structuredFields, "Structured fields")]),
+			...(evidenceReferences.length === 0 ? [] : [pageSection(evidenceReferences, "Evidence references")]),
 		],
 	};
 }
 
-function formatProviderObservationPage(record: RecordView): RecordPage {
-	const kind = readPayloadText(record.payload, "kind") ?? "provider observation";
-	const providerId = readPayloadText(record.payload, "providerId") ?? "unknown";
-	const status = readPayloadText(record.payload, "status") ?? "unknown";
-	const feedback = readPayloadTextList(record.payload, "feedback") ?? [];
-	const author = readPayloadText(record.payload, "author");
-	const reviewState = readPayloadText(record.payload, "reviewState");
-	return {
-		title: `Provider observation: ${formatStatus(kind)}`,
-		sections: [
-			pageSection([
-				`from: ${capitalize(record.actor)}`,
-				`recorded: ${formatRecordedAt(record.recordedAt)}`,
-				`provider: ${providerId}`,
-				`status: ${status}`,
-			]),
-			pageSection(
-				formatProviderSummaryLines(
-					readPayloadText(record.payload, "summary") ?? record.summary,
-					formatProviderFactsFromPayload(readPayloadObject(record.payload, "details"), "unknown"),
-				),
-				"Provider summary",
-			),
-			...(author === undefined && reviewState === undefined
-				? []
-				: [
-						pageSection(
-							[
-								...(author === undefined ? [] : [`author: ${author}`]),
-								...(reviewState === undefined ? [] : [`review state: ${reviewState}`]),
-							],
-							"Review context",
-						),
-					]),
-			...formatProviderDetailSections(readPayloadObject(record.payload, "details")),
-			pageSection(
-				feedback.length === 0 ? ["none"] : feedback.map((item) => `- ${item}`),
-				`feedback (${feedback.length})`,
-			),
-			pageSection(
-				record.evidenceRefs.length === 0 ? ["none"] : record.evidenceRefs.map((item) => `- ${item}`),
-				`Evidence (${record.evidenceRefs.length})`,
-			),
-		],
-	};
-}
-
-function providerPullRequestStatus(status: string, state: string): string {
-	return status === "merged" ? "merged" : state;
-}
-
-type ProviderCheckSummary = Readonly<{ status: string; conclusion?: string | undefined }>;
-type ProviderFacts = Readonly<{
-	pullRequestStatus: string;
-	checks: readonly ProviderCheckSummary[];
+type RecordDetailFields = Readonly<{
+	sections: readonly PageSection[];
+	displayed: readonly string[];
+	displayedEvidence?: readonly string[] | undefined;
 }>;
 
-function formatProviderSummaryLines(summary: string, facts: ProviderFacts | undefined): readonly string[] {
-	const payload = parseJsonObject(summary);
-	if (payload === undefined) {
-		if (looksLikeStructuredProviderSummary(summary)) {
-			return facts === undefined
-				? ["Provider returned structured evidence."]
-				: formatProviderFacts(facts.pullRequestStatus, facts.checks);
-		}
-		return facts === undefined
-			? [presentEvidenceText(summary)]
-			: [presentEvidenceText(summary), ...formatProviderFacts(facts.pullRequestStatus, facts.checks)];
-	}
-	const payloadFacts = facts ?? formatProviderFactsFromPayload(payload, "unknown");
-	return formatProviderFacts(payloadFacts?.pullRequestStatus ?? "unknown", payloadFacts?.checks ?? []);
+function recordTitle(record: RecordView): string {
+	const kind = recordKindLabel(record);
+	return record.kind === "signal"
+		? kind === "signal"
+			? `Signal ${record.sequence}`
+			: `${capitalize(kind)} signal ${record.sequence}`
+		: `${capitalize(kind)} ${record.sequence}`;
 }
 
-function formatProviderFactsFromDetails(details: ProviderObservation["details"]): ProviderFacts | undefined {
-	if (details === undefined) return undefined;
+function recordDetailPayloadFields(record: RecordView): RecordDetailFields {
+	const payload = readPayloadObjectValue(record.payload);
+	if (record.kind === "signal") {
+		const response = readObjectText(payload, "summary");
+		const evidence = readObjectTextList(payload, "evidence") ?? record.evidenceRefs;
+		const sections = [
+			...(record.summary.trim().length === 0 || response === record.summary
+				? []
+				: [pageSection([record.summary], "Summary")]),
+			...(response === undefined
+				? record.summary.trim().length === 0
+					? []
+					: [pageSection([record.summary], "Executor response")]
+				: [pageSection([response], "Executor response")]),
+			...(evidence.length === 0 ? [] : [pageSection(evidence, "Evidence")]),
+		];
+		return { sections, displayed: ["kind", "summary", "evidence"], displayedEvidence: evidence };
+	}
+	if (record.kind === "error") {
+		const learning = readPayloadObject(payload, "learning");
+		const failure = readObjectText(learning, "failure");
+		const remediation = readObjectText(payload, "remediation");
+		const learningLines = [
+			readObjectText(learning, "missionSpecificity"),
+			readObjectText(learning, "nextMissionGuidance"),
+		].filter((line): line is string => line !== undefined && line.trim().length > 0);
+		const sections = [
+			...formatRecordSummarySections(record, payload, "Error"),
+			...(remediation === undefined ? [] : [pageSection([remediation], "Recovery")]),
+			...(failure === undefined || failure.trim() === record.summary.trim() ? [] : [pageSection([failure], "Failure")]),
+			...(learningLines.length === 0 ? [] : [pageSection(learningLines, "Learning")]),
+		];
+		return { sections, displayed: ["summary", "remediation", "learning", "evidenceRefs"] };
+	}
+	if (record.kind === "oracle-review") return formatOracleDetailFields(record, payload);
 	return {
-		pullRequestStatus: providerPullRequestStatus(details.pullRequest.status, details.pullRequest.state),
-		checks: details.checks,
+		sections: formatRecordSummarySections(record, payload),
+		displayed: ["summary"],
 	};
 }
 
-function formatProviderFactsFromPayload(
+function formatRecordSummarySections(
+	record: RecordView,
 	payload: JsonObject | undefined,
-	fallbackStatus: string,
-): ProviderFacts | undefined {
-	if (payload === undefined) return undefined;
-	const normalizedChecks = readPayloadObjects(payload, "checks");
-	return {
-		pullRequestStatus: providerPullRequestStatusFromPayload(payload, fallbackStatus),
-		checks: providerCheckSummariesFromPayload(payload, normalizedChecks.length > 0 ? "checks" : "statusCheckRollup"),
-	};
-}
-
-function providerCheckSummariesFromPayload(
-	payload: JsonObject,
-	key: "checks" | "statusCheckRollup" = "statusCheckRollup",
-): readonly ProviderCheckSummary[] {
-	return readPayloadObjects(payload, key).map((check) => {
-		const status = readObjectText(check, "status") ?? readObjectText(check, "state") ?? "unknown";
-		const conclusion = readObjectText(check, "conclusion");
-		return conclusion === undefined ? { status } : { status, conclusion };
-	});
-}
-
-function providerCommentCountFromPayload(payload: JsonObject): number {
-	return providerEntryCount(payload["comments"]) + providerEntryCount(payload["reviews"]);
-}
-
-function providerEntryCount(value: JsonValue | undefined): number {
-	if (Array.isArray(value)) return value.length;
-	return isJsonNumber(value) && value >= 0 ? value : 0;
-}
-
-function formatProviderFacts(status: string, checks: readonly ProviderCheckSummary[]): readonly string[] {
-	return [`PR status: ${status}`, formatProviderCheckSummary(checks)];
-}
-
-function formatProviderCheckSummary(checks: readonly ProviderCheckSummary[]): string {
-	if (checks.length === 0) return "CI checks (0): none";
-	const result = (check: ProviderCheckSummary): string => (check.conclusion ?? check.status).toLowerCase();
-	const failed = checks.filter((check) => /fail|error|cancel|timed.?out/.test(result(check))).length;
-	if (failed > 0) return `CI checks (${checks.length}): ${failed} failed`;
-	const pending = checks.filter((check) => /pending|queued|progress|waiting|requested/.test(result(check))).length;
-	if (pending > 0) return `CI checks (${checks.length}): ${pending} pending`;
-	const unknown = checks.filter((check) => !/success|pass|complete|neutral|skip/.test(result(check))).length;
-	if (unknown > 0) return `CI checks (${checks.length}): ${unknown} unknown`;
-	const passing = checks.filter((check) => /success|pass/.test(result(check))).length;
-	return passing === checks.length ? `CI checks (${checks.length}): passing` : `CI checks (${checks.length}): complete`;
-}
-
-function providerPullRequestStatusFromPayload(payload: JsonObject, fallbackStatus: string): string {
-	const pullRequest = isJsonObject(payload["pullRequest"]) ? payload["pullRequest"] : undefined;
-	if (pullRequest !== undefined) {
-		return providerPullRequestStatus(
-			readObjectText(pullRequest, "status") ?? fallbackStatus,
-			readObjectText(pullRequest, "state") ?? "unknown",
-		);
-	}
-	if (isTextValue(payload["mergedAt"])) return "merged";
-	if (payload["isDraft"] === true) return "draft";
-	const state = readObjectText(payload, "state");
-	return state === undefined ? fallbackStatus : state.toLowerCase();
-}
-
-function formatProviderDetailSections(details: JsonObject | undefined): readonly PageSection[] {
-	if (details === undefined) return [];
-	const pullRequest = isJsonObject(details["pullRequest"]) ? details["pullRequest"] : undefined;
-	const normalizedChecks = readPayloadObjects(details, "checks");
-	const checks = normalizedChecks.length > 0 ? normalizedChecks : readPayloadObjects(details, "statusCheckRollup");
-	const comments = [...readPayloadObjects(details, "comments"), ...readPayloadObjects(details, "reviews")];
-	const commentCount = providerCommentCountFromPayload(details);
+	payloadHeading = "Payload summary",
+): readonly PageSection[] {
 	const sections: PageSection[] = [];
-	if (pullRequest !== undefined) {
-		sections.push(
-			pageSection(
-				[
-					`PR status: ${providerPullRequestStatus(
-						readObjectText(pullRequest, "status") ?? "unknown",
-						readObjectText(pullRequest, "state") ?? "unknown",
-					)}`,
-				],
-				"Pull request",
-			),
-		);
+	if (record.summary.trim().length > 0) sections.push(pageSection([record.summary], "Summary"));
+	const payloadSummary = readObjectText(payload, "summary");
+	if (payloadSummary !== undefined && payloadSummary.trim() !== record.summary.trim()) {
+		sections.push(pageSection([payloadSummary], payloadHeading));
 	}
-	sections.push(
-		pageSection(checks.length === 0 ? ["none"] : checks.map(formatProviderCheck), `CI checks (${checks.length})`),
-		pageSection(
-			comments.length === 0
-				? commentCount === 0
-					? ["none"]
-					: ["details unavailable"]
-				: comments.flatMap(formatProviderComment),
-			`PR comments (${commentCount})`,
-		),
-	);
 	return sections;
 }
 
-function formatProviderCheck(check: JsonObject): string {
-	const name = readObjectText(check, "name") ?? "unnamed";
-	const status = readObjectText(check, "status") ?? readObjectText(check, "state") ?? "unknown";
-	const conclusion = readObjectText(check, "conclusion");
-	return `- ${name}: ${conclusion === undefined ? status : `${status}/${conclusion}`}`;
-}
-
-function formatProviderComment(comment: JsonObject, index: number): readonly string[] {
-	const author = readObjectText(comment, "author") ?? "unknown author";
-	const association = readObjectText(comment, "authorAssociation");
-	const body = readObjectText(comment, "body") ?? "No comment body.";
-	return [
-		`${index + 1}. ${author}${association === undefined ? "" : ` (${association})`}: ${body}`,
-		...(readObjectText(comment, "url") === undefined ? [] : [`   ${readObjectText(comment, "url")}`]),
-	];
-}
-
-function formatOracleRecordPage(record: RecordView): RecordPage {
-	const verdict = readPayloadText(record.payload, "verdict") ?? "unknown";
-	const findings = readPayloadObjects(record.payload, "findings");
-	const validationGaps = readPayloadTextList(record.payload, "validationGaps") ?? [];
-	const output = readPayloadText(record.payload, "output");
+function formatOracleDetailFields(record: RecordView, payload: JsonObject | undefined): RecordDetailFields {
+	const findings = readPayloadObjects(payload, "findings");
+	const gaps = readObjectTextList(payload, "validationGaps") ?? [];
+	const output = readObjectText(payload, "output");
+	const duration = readObjectNumber(payload, "durationMs");
+	const verdict = readObjectText(payload, "verdict");
 	return {
-		title: `Oracle response: ${capitalize(verdict)}`,
 		sections: [
-			pageSection([`recorded: ${formatRecordedAt(record.recordedAt)}`, `verdict: ${capitalize(verdict)}`]),
-			pageSection(
-				findings.length === 0
-					? ["none"]
-					: findings.map((finding) => {
-							const severity = readObjectText(finding, "severity") ?? "finding";
-							const summary = readObjectText(finding, "summary") ?? "No summary provided.";
-							return `- ${capitalize(severity)}: ${summary}`;
-						}),
-				`findings (${findings.length})`,
-			),
-			pageSection(
-				validationGaps.length === 0 ? ["none"] : validationGaps.map((gap) => `- ${gap}`),
-				`validation gaps (${validationGaps.length})`,
-			),
+			...formatRecordSummarySections(record, payload),
+			...(verdict === undefined ? [] : [pageSection(formatFieldRows([["Verdict", verdict]]))]),
+			...(findings.length === 0 ? [] : [pageSection(formatFindings(findings), "Findings")]),
+			...(gaps.length === 0
+				? []
+				: [
+						pageSection(
+							gaps.map((gap, index) => `${index + 1}  ${gap}`),
+							"Validation gaps",
+						),
+					]),
 			...(output === undefined ? [] : [pageSection([output], "Model response")]),
+			...(duration === undefined ? [] : [pageSection(formatFieldRows([["Duration", `${duration} ms`]]))]),
 		],
+		displayed: ["summary", "verdict", "findings", "validationGaps", "output", "durationMs"],
 	};
 }
 
-function isProviderObservationPayload(payload: JsonValue): boolean {
-	if (!isJsonObject(payload)) return false;
-	const kind = payload["kind"];
-	return (
-		isTextValue(payload["observationId"]) &&
-		isTextValue(payload["providerId"]) &&
-		isTextValue(payload["status"]) &&
-		isTextValue(kind) &&
-		["ci-status", "review-comment", "feedback-delivery", "monitor-failure", "provider-outcome"].includes(kind)
-	);
+function formatFindings(findings: readonly JsonObject[]): readonly string[] {
+	return findings.flatMap((finding, index) => {
+		const severity = readObjectText(finding, "severity");
+		const summary = readObjectText(finding, "summary");
+		const evidence = readObjectTextList(finding, "evidence") ?? [];
+		return [
+			`${index + 1}${severity === undefined ? "" : `  ${severity}`}${summary === undefined ? "" : `  ${summary}`}`,
+			...evidence.map((item) => `    ${item}`),
+		];
+	});
 }
 
-function readPayloadText(payload: JsonValue, key: string): string | undefined {
-	return isJsonObject(payload) ? readObjectText(payload, key) : undefined;
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-function readPayloadObject(payload: JsonValue, key: string): JsonObject | undefined {
-	if (!isJsonObject(payload)) return undefined;
-	return isJsonObject(payload[key]) ? payload[key] : undefined;
+function formatStructuredFields(payload: JsonValue, displayed: readonly string[]): readonly string[] {
+	const remaining = omitPayloadFields(payload, displayed);
+	if (remaining === undefined) return [];
+	const serialized = JSON.stringify(remaining, null, 2);
+	return serialized === "{}" || serialized === "[]" ? [] : serialized.split("\n");
 }
 
-function readObjectText(object: JsonObject, key: string): string | undefined {
-	const value = object[key];
-	return isTextValue(value) ? value : undefined;
+function omitPayloadFields(payload: JsonValue, displayed: readonly string[]): JsonValue | undefined {
+	if (!isJsonObject(payload)) return payload;
+	const excluded = new Set(displayed);
+	const remaining: MutableJsonObject = {};
+	for (const [key, value] of Object.entries(payload)) {
+		if (value !== undefined && !excluded.has(key)) remaining[key] = value;
+	}
+	return Object.keys(remaining).length === 0 ? undefined : remaining;
 }
 
-function readPayloadTextList(payload: JsonValue, key: string): readonly string[] | undefined {
-	if (!isJsonObject(payload)) return undefined;
-	const value = payload[key];
-	return Array.isArray(value) && value.every(isTextValue) ? value : undefined;
-}
-
-function readPayloadObjects(payload: JsonValue, key: string): readonly JsonObject[] {
-	if (!isJsonObject(payload)) return [];
-	const value = payload[key];
-	return Array.isArray(value) ? value.filter(isJsonObject) : [];
-}
-
-function formatRecordedAt(value: string): string {
-	const parsed = new Date(value);
-	return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().replace("T", " ").replace(".000Z", " UTC");
+function recordKindLabel(record: RecordView): string {
+	if (record.kind === "signal") {
+		const signalKind = readPayloadText(record.payload, "kind");
+		if (signalKind === "ready" || signalKind === "progress" || signalKind === "blocked") return signalKind;
+	}
+	const labels = {
+		submission: "submission",
+		assessment: "assessment",
+		learning: "learning",
+		mission: "mission",
+		"mission-change": "mission change",
+		execution: "execution",
+		signal: "signal",
+		"review-request": "review request",
+		observation: "observation",
+		delivery: "delivery",
+		verdict: "verdict",
+		"oracle-review": "oracle review",
+		outcome: "outcome",
+		error: "error",
+		"work-amended": "work amended",
+	} satisfies Record<RecordKind, string>;
+	return labels[record.kind];
 }
 
 function capitalize(value: string): string {
 	return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
 }
 
-function formatErrorSections(error: ErrorEnvelope | undefined): readonly PageSection[] {
-	if (error === undefined) return [pageSection(["error: none", "remediation: none", "learning: none"], "Error")];
-	return [
-		pageSection([presentEvidenceText(error.summary)], "Error"),
-		pageSection(
-			[
-				presentEvidenceText(error.remediation),
-				`learning: ${presentEvidenceText(error.learning?.missionSpecificity ?? "none")}`,
-			],
-			"Next step",
-		),
-	];
+function readPayloadObjectValue(payload: JsonValue): JsonObject | undefined {
+	return isJsonObject(payload) ? payload : undefined;
 }
 
-function presentEvidenceText(value: string): string {
-	return value
-		.split(";")
-		.map((part, index) => {
-			const text = part.trim();
-			return index === 0 ? text : capitalize(text);
-		})
-		.filter((part) => part.length > 0)
-		.join(". ");
+function readPayloadObject(payload: JsonObject | undefined, key: string): JsonObject | undefined {
+	const value = payload?.[key];
+	return isJsonObject(value) ? value : undefined;
 }
 
-function parseJsonObject(value: string): JsonObject | undefined {
-	const parsed = parseJsonValue(value);
-	return parsed !== undefined && isJsonObject(parsed) ? parsed : undefined;
+function readObjectText(object: JsonObject | undefined, key: string): string | undefined {
+	const value = object?.[key];
+	return isTextValue(value) ? value : undefined;
 }
 
-function parseJsonValue(value: string): JsonValue | undefined {
-	const candidate = structuredProviderSummaryText(value);
-	if (candidate === undefined) return undefined;
-	try {
-		// SAFETY: JSON.parse only produces JSON primitives, arrays, and objects, which is JsonValue.
-		return JSON.parse(candidate) as JsonValue;
-	} catch {
-		// A provider can truncate or wrap a JSON snapshot; the caller still suppresses its raw text.
-		return undefined;
-	}
+function readObjectTextList(object: JsonObject | undefined, key: string): readonly string[] | undefined {
+	const value = object?.[key];
+	return Array.isArray(value) && value.every(isTextValue) ? value : undefined;
 }
 
-function structuredProviderSummaryText(value: string): string | undefined {
-	const normalized = normalizeProviderSummary(value);
-	if (startsWithStructuredValue(normalized)) return normalized;
-	const prefixed = normalized.match(
-		/^(?:provider|github|gitlab|raw|json|payload|response|snapshot)[^\n:]{0,40}:\s*(.+)$/isu,
-	);
-	const candidate = prefixed?.[1]?.trim();
-	return candidate !== undefined && startsWithStructuredValue(candidate) ? candidate : undefined;
+function readPayloadObjects(object: JsonObject | undefined, key: string): readonly JsonObject[] {
+	const value = object?.[key];
+	return Array.isArray(value) ? value.filter(isJsonObject) : [];
 }
 
-function normalizeProviderSummary(value: string): string {
-	return value
-		.trim()
-		.replace(/^```[^\n]*\n/iu, "")
-		.replace(/\s*```$/u, "")
-		.trim();
+function readObjectNumber(object: JsonObject | undefined, key: string): number | undefined {
+	const value = object?.[key];
+	return value !== undefined && value === Number(value) && Number.isFinite(Number(value)) ? Number(value) : undefined;
 }
 
-function startsWithStructuredValue(value: string): boolean {
-	return (
-		value.startsWith("{") ||
-		value.startsWith("[") ||
-		value.startsWith('"') ||
-		/^(?:true|false|null|-?\d+(?:\.\d+)?)$/u.test(value)
-	);
+function readPayloadText(payload: JsonValue, key: string): string | undefined {
+	return readObjectText(readPayloadObjectValue(payload), key);
 }
 
-function looksLikeStructuredProviderSummary(value: string): boolean {
-	const candidate = structuredProviderSummaryText(value);
-	if (candidate === undefined) return false;
-	if (parseJsonValue(value) !== undefined) return true;
-	if (candidate.startsWith("{")) return true;
-	return /^\[\s*(?:[{"]|$)/u.test(candidate) && hasStructuredProviderPrefix(value);
-}
-
-function hasStructuredProviderPrefix(value: string): boolean {
-	const trimmed = value.trim();
-	return (
-		trimmed.startsWith("```") ||
-		/^(?:provider|github|gitlab|raw|json|payload|response|snapshot)[^\n:]{0,40}:\s*/iu.test(trimmed)
-	);
-}
-
-function isJsonNumber(value: JsonValue | undefined): value is number {
-	return (
-		value !== undefined &&
-		value !== null &&
-		!Array.isArray(value) &&
-		value === Number(value) &&
-		Number.isSafeInteger(value)
-	);
+function readPayloadBoolean(payload: JsonValue, key: string): boolean | undefined {
+	return readObjectBoolean(readPayloadObjectValue(payload), key);
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
@@ -1529,6 +1557,29 @@ function isJsonObject(value: JsonValue | undefined): value is JsonObject {
 
 function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
+}
+
+function formatRecordedAt(value: string): string {
+	const parsed = new Date(value);
+	return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().replace("T", " ");
+}
+
+function formatErrorSections(error: ErrorEnvelope | undefined): readonly PageSection[] {
+	if (error === undefined) return [];
+	const nextStep = [
+		...(error.remediation.trim().length === 0 ? [] : [presentEvidenceText(error.remediation)]),
+		...(error.learning?.missionSpecificity === undefined
+			? []
+			: [`learning: ${presentEvidenceText(error.learning.missionSpecificity)}`]),
+	];
+	return [
+		...(error.summary.trim().length === 0 ? [] : [pageSection([presentEvidenceText(error.summary)], "Error")]),
+		...(nextStep.length === 0 ? [] : [pageSection(nextStep, "Next step")]),
+	];
+}
+
+function presentEvidenceText(value: string): string {
+	return value.trim();
 }
 
 function readArchiveRecordsForNavigation(
@@ -1563,6 +1614,7 @@ async function showArchive(
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
+	keybindings: KhalaConfig["keybindings"],
 ): Promise<void> {
 	let records: readonly RecordView[];
 	try {
@@ -1573,39 +1625,15 @@ async function showArchive(
 		]);
 		return;
 	}
-	if (records.length === 0) {
-		await showTextPage(context, "Archive", ["No Archive records are available for this Work."]);
-		return;
-	}
+	const newestFirst = [...records].reverse();
 	for (;;) {
-		const selected = await selectArchiveRecord(records, context);
-		if (selected === null || selected === "back") return;
-		const record = records.find((candidate) => String(candidate.sequence) === selected);
+		const selected = await selectRecordPanel(newestFirst, 0, context, "archive", keybindings);
+		if (selected === null || selected === "comments") return;
+		const record = newestFirst.find((candidate) => String(candidate.sequence) === selected);
 		if (record === undefined) return;
 		const page = formatRecordPage(record);
 		await showPage(context, page.title, page.sections);
 	}
-}
-
-async function selectArchiveRecord(records: readonly RecordView[], context: ExtensionContext): Promise<string | null> {
-	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Archive")), 1, 0));
-		container.addChild(new Text(theme.fg("muted", `${records.length} Archive records`), 1, 0));
-		const list = new SelectList(
-			records.map((record) => ({ value: String(record.sequence), label: archiveLabel(record) })),
-			Math.min(6, records.length),
-			selectorTheme(theme),
-		);
-		list.onSelect = (item) => done(item.value);
-		list.onCancel = () => done(null);
-		container.addChild(list);
-		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
-		container.addChild(new DynamicBorder((line: string) => theme.fg("accent", line)));
-		return selectableComponent(container, list, tui, () => done(null));
-	});
 }
 
 async function showTextPage(
@@ -1619,14 +1647,17 @@ async function showTextPage(
 
 function addPageContent(container: Container, theme: Theme, title: string, sections: readonly PageSection[]): void {
 	container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
-	for (const [index, section] of sections.entries()) {
+	addPageSections(container, theme, sections);
+}
+
+function addPageSections(container: Container, theme: Theme, sections: readonly PageSection[]): void {
+	const visibleSections = sections.filter((section) => section.lines.some((line) => line.trim().length > 0));
+	for (const [index, section] of visibleSections.entries()) {
 		if (index > 0) container.addChild(new Spacer(1));
 		if (section.heading !== undefined) {
 			container.addChild(new Text(theme.fg("accent", theme.bold(section.heading)), 1, 0));
 		}
-		if (section.lines.length > 0) {
-			container.addChild(new Text(theme.fg("muted", section.lines.join("\n")), 1, 0));
-		}
+		container.addChild(new Text(theme.fg("muted", section.lines.join("\n")), 1, 0));
 	}
 }
 
@@ -1699,6 +1730,6 @@ function renderDashboard(work: readonly WorkSummary[]): string {
 	}
 	return [
 		"Khala",
-		...work.map((item) => `${item.state.padEnd(16)} ${item.title} (${item.workId}) — ${item.nextAction}`),
+		...work.map((item) => `${item.state.padEnd(16)} ${item.title} (${item.workId}): ${item.nextAction}`),
 	].join("\n");
 }

@@ -75,20 +75,14 @@ After `ready` and before `handoff`, Conclave may call `khala_oracle`. Its packet
 
 `/khala` is quiet and on demand. It opens no view unprompted, emits no child-session traffic into the User conversation, and provides Role settings without changing the User's active model or settings.
 
-The first view lists active Work by title. Each row is a Work, not a Mission; admitted Work has a Mission and may have an Execution. Work is the User's stable goal, Mission is the admitted bounded plan, and `Next` is the immediate action Khala reports. Succeeded and cancelled Work is hidden; stopped Work with a failure reason remains visible and is marked in red. Typing uses the same minimalist fuzzy filtering pattern as Pi's model selector. Work names are bounded before rendering and presented in aligned Work, ID, state, and Execution columns. Text labels and semantic colors together communicate status. The user-session footer shows a branded status such as `khala: idle` or `khala: ◈ 2`. Selecting Work opens a compact status view with `Work active`, `Mission in progress`, and `Execution running` instead of repeating the same `active` label. It separates those lifecycle concepts from Executor runtime state and the next action. It does not repeat revision, budget, or token metadata. Evidence shows Executor turn status and explicitly reports missing Signal or provider evidence. An unreachable Executor exposes runtime recovery in `Actions`. It is followed by the core sections `Actions`, `Evidence`, and `Archive`; available provider comments add `Review comments`, and blocked Executions add `Inspect blocking signal`. Raw Executor output and provider text are hidden by default; bounded evidence is available on explicit inspection. Recovery opens an in-TUI progress view with a plain-language status, the current recovery stage, what Khala is doing, and the next step. A successful recovery says that no action is needed when Khala will continue automatically; a failed recovery tells the User to inspect Evidence and decide what to do next. The progress view remains open until recovery finishes.
+The first view lists available Work by title. Each row is a Work, not a Mission; admitted Work has a Mission and may have an Execution. Work is the User's stable goal and Mission is the admitted bounded plan. Succeeded and cancelled Work is hidden; stopped Work with a failure reason remains visible. Work names are bounded before rendering and presented in aligned title, short ID, Work state, and Execution state columns. Selecting Work opens an overview with Work, Mission, Execution, actionable runtime state, next action, and links to `Actions`, `Evidence`, and `Archive`. The overview does not repeat revision, budget, or token metadata. Actions lists only enabled actions and uses short labels. Evidence is derived from relevant Archive records and shows sequence, actual record kind, summary, actor, and time. It does not create separate lifecycle, provider, review, CI, error, or handoff sections. Available provider comments appear as a selectable Evidence entry. Archive lists all records newest first, and record detail shows complete metadata, full IDs, structured fields, and evidence references. Empty values and sections are omitted.
 
-The Work picker shows one compact keybinding line:
-
-```text
-r Role Settings  ↑↓ Navigation  home First  enter Enter  escape Escape  backspace Backspace
-```
-
-Selection is pinned by Work ID. Refresh preserves selection and filters. Navigation never writes. State is never conveyed by color alone. The Actions view lists only actions currently available to the active actor.
+The panels use headings, whitespace, indentation, aligned columns, plain text status labels, and a dimmed navigation footer. They do not use decorative borders or symbols, and their record rows adapt to narrow terminals. The Work picker footer is a single line with filtering, movement, opening, settings, and back navigation controls. Navigation never writes. State is never conveyed by color alone. Recovery updates one in-TUI panel, ignores close keys until recovery finishes, and replaces progress with its final result.
 Users can rename a Work label without changing the admitted Mission terms.
 
 Role settings are available from the Work picker and persist model and thinking choices for Conclave, Executor, Observer, and Oracle. Changes apply to future launches; an existing Execution retains its persisted settings. Recovery first rereads Archive state and reconciles runtime, workspace, model, and code-host bindings. An Execution is first durably reserved as `queued`; the persistent parent supervisor consumes its `executor-wake` effect and launches the Executor so a Conclave child cannot kill it during shutdown. Khala never silently substitutes a model or increases an allowance.
 
-Runtime liveness (`working`, `pending`, `idle`, `unreachable`, or `unknown`) is an observation, not lifecycle state. It is derived from the persisted session ID and a bounded Pi RPC probe; a PID alone never proves work. A running Mission with an unreachable Executor is displayed as an active lifecycle with an unavailable runtime and can be reconciled from `Actions`.
+Runtime liveness (`working`, `pending`, `idle`, `unreachable`, or `unknown`) is an observation, not lifecycle state. It is derived from the persisted session ID and a bounded Pi RPC probe; a PID alone never proves work. A running Mission with an unreachable Executor is displayed as an active lifecycle with an unreachable runtime and can be reconciled from `Actions`.
 
 ## Application interface
 
@@ -108,8 +102,9 @@ read_records(query, cursor?)                -> Page<RecordView>
 CommandMeta { command_id, actor, expected_work_revision?, role_token?, bound_work_id?, bound_execution_id?, schema_version }
 Action      { id, scope, kind, label, enabled, disabled_reason?, input_schema?,
               confirmation?, expected_work_revision? }
-RecordView  { sequence, id, kind, actor, work_id, mission_id?, execution_id?,
-              payload_version, summary, evidence_refs[] }
+RecordView  { sequence, record_number, mission_record_number?, id, kind, actor,
+              work_id, mission_id?, execution_id?, payload_version, summary,
+              evidence_refs[] }
 Error       { code, summary, retryable, remediation, evidence_refs[] }
 ```
 

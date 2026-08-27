@@ -101,6 +101,19 @@ CREATE TABLE IF NOT EXISTS archive_records (
 	evidence_refs_json TEXT NOT NULL,
 	payload_json TEXT NOT NULL,	recorded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS archive_record_numbers (
+	record_id TEXT PRIMARY KEY REFERENCES archive_records(record_id),
+	record_number INTEGER NOT NULL UNIQUE CHECK (record_number > 0),
+	mission_id TEXT,
+	mission_record_number INTEGER,
+	CHECK (
+		(mission_id IS NULL AND mission_record_number IS NULL) OR
+		(mission_id IS NOT NULL AND mission_record_number IS NOT NULL AND mission_record_number > 0)
+	),
+	UNIQUE(mission_id, mission_record_number)
+);
+CREATE INDEX IF NOT EXISTS archive_record_numbers_mission
+	ON archive_record_numbers(mission_id, mission_record_number);
 CREATE TABLE IF NOT EXISTS outbox (
 	effect_id TEXT PRIMARY KEY,
 	kind TEXT NOT NULL,	payload_json TEXT NOT NULL,	created_at TEXT NOT NULL,	completed_at TEXT
@@ -125,6 +138,7 @@ export class SQLiteArchive implements ArchivePort {
 		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
 		this.database.exec(SCHEMA);
 		this.migrateLegacyWorkStates();
+		this.migrateRecordNumbers();
 	}
 
 	private migrateLegacyWorkStates(): void {
@@ -150,6 +164,40 @@ export class SQLiteArchive implements ArchivePort {
 			for (const migration of migrations) {
 				updateProjection.run(JSON.stringify(migration.view), migration.workId);
 				updateRecords.run(migration.workId);
+			}
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	private migrateRecordNumbers(): void {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const records = this.database
+				.prepare("SELECT record_id, mission_id FROM archive_records ORDER BY sequence")
+				.all();
+			const existing = this.database.prepare("SELECT COUNT(*) AS count FROM archive_record_numbers").get();
+			const existingCount = existing === undefined ? 0 : readInteger(existing, "count");
+			if (existingCount !== 0 && existingCount !== records.length) {
+				throw new Error("Archive record numbering is incomplete.");
+			}
+			if (existingCount === 0 && records.length > 0) {
+				const insert = this.database.prepare(
+					"INSERT INTO archive_record_numbers(record_id, record_number, mission_id, mission_record_number) VALUES (?, ?, ?, ?)",
+				);
+				const missionNumbers = new Map<string, number>();
+				for (const [index, record] of records.entries()) {
+					const missionId = readOptionalString(record, "mission_id");
+					if (missionId === undefined) {
+						insert.run(readString(record, "record_id"), index + 1, null, null);
+						continue;
+					}
+					const missionRecordNumber = (missionNumbers.get(missionId) ?? 0) + 1;
+					missionNumbers.set(missionId, missionRecordNumber);
+					insert.run(readString(record, "record_id"), index + 1, missionId, missionRecordNumber);
+				}
 			}
 			this.database.exec("COMMIT");
 		} catch (error) {
@@ -242,6 +290,26 @@ export class SQLiteArchive implements ArchivePort {
 					now,
 				);
 			const sequence = Number(inserted.lastInsertRowid);
+			const recordNumberRow = this.database
+				.prepare("SELECT COALESCE(MAX(record_number), 0) + 1 AS record_number FROM archive_record_numbers")
+				.get();
+			if (recordNumberRow === undefined) throw new Error("Archive record number could not be allocated.");
+			const recordNumber = readInteger(recordNumberRow, "record_number");
+			let missionRecordNumber: number | null = null;
+			if (input.missionId !== undefined) {
+				const missionRecordNumberRow = this.database
+					.prepare(
+						"SELECT COALESCE(MAX(mission_record_number), 0) + 1 AS mission_record_number FROM archive_record_numbers WHERE mission_id = ?",
+					)
+					.get(input.missionId);
+				if (missionRecordNumberRow === undefined) throw new Error("Mission record number could not be allocated.");
+				missionRecordNumber = readInteger(missionRecordNumberRow, "mission_record_number");
+			}
+			this.database
+				.prepare(
+					"INSERT INTO archive_record_numbers(record_id, record_number, mission_id, mission_record_number) VALUES (?, ?, ?, ?)",
+				)
+				.run(recordId, recordNumber, input.missionId ?? null, missionRecordNumber);
 			const projection =
 				input.projection.queuedSequence === 0 ? { ...input.projection, queuedSequence: sequence } : input.projection;
 			this.database
@@ -385,18 +453,18 @@ export class SQLiteArchive implements ArchivePort {
 		if (parsedCursor !== undefined && JSON.stringify(normalizeQuery(query)) !== JSON.stringify(effectiveQuery)) {
 			throw new Error("Archive cursor does not match the requested filters.");
 		}
-		const clauses = ["sequence <= ?", "sequence > ?"];
+		const clauses = ["archive_records.sequence <= ?", "archive_records.sequence > ?"];
 		const parameters: Array<string | number> = [asOfSequence, lastSequence];
 		if (effectiveQuery.workId !== undefined) {
-			clauses.push("work_id = ?");
+			clauses.push("archive_records.work_id = ?");
 			parameters.push(effectiveQuery.workId);
 		}
 		if (effectiveQuery.missionId !== undefined) {
-			clauses.push("mission_id = ?");
+			clauses.push("archive_records.mission_id = ?");
 			parameters.push(effectiveQuery.missionId);
 		}
 		if (effectiveQuery.executionId !== undefined) {
-			clauses.push("execution_id = ?");
+			clauses.push("archive_records.execution_id = ?");
 			parameters.push(effectiveQuery.executionId);
 		}
 		if (effectiveQuery.kinds !== undefined && effectiveQuery.kinds.length > 0) {
@@ -408,18 +476,23 @@ export class SQLiteArchive implements ArchivePort {
 			parameters.push(...effectiveQuery.states);
 		}
 		if (effectiveQuery.from !== undefined) {
-			clauses.push("recorded_at >= ?");
+			clauses.push("archive_records.recorded_at >= ?");
 			parameters.push(effectiveQuery.from);
 		}
 		if (effectiveQuery.to !== undefined) {
-			clauses.push("recorded_at <= ?");
+			clauses.push("archive_records.recorded_at <= ?");
 			parameters.push(effectiveQuery.to);
 		}
 		const rows = this.database
 			.prepare(
-				`SELECT sequence, record_id, kind, actor, work_id, mission_id, execution_id,
-				 payload_version, summary, evidence_refs_json, payload_json, recorded_at
-				 FROM archive_records WHERE ${clauses.join(" AND ")} ORDER BY sequence LIMIT 100`,
+				`SELECT archive_records.sequence, archive_records.record_id, archive_records.kind, archive_records.actor,
+				 archive_records.work_id, archive_records.mission_id, archive_records.execution_id,
+				 archive_records.payload_version, archive_records.summary, archive_records.evidence_refs_json,
+				 archive_records.payload_json, archive_records.recorded_at,
+				 archive_record_numbers.record_number, archive_record_numbers.mission_record_number
+				 FROM archive_records
+				 JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
+				 WHERE ${clauses.join(" AND ")} ORDER BY archive_records.sequence LIMIT 100`,
 			)
 			.all(...parameters);
 		const items = rows.map((row) => this.recordFromRow(row));
@@ -518,9 +591,14 @@ export class SQLiteArchive implements ArchivePort {
 	private readRecord(sequence: number): RecordView {
 		const row = this.database
 			.prepare(
-				`SELECT sequence, record_id, kind, actor, work_id, mission_id, execution_id,
-				 payload_version, summary, evidence_refs_json, payload_json, recorded_at
-				 FROM archive_records WHERE sequence = ?`,
+				`SELECT archive_records.sequence, archive_records.record_id, archive_records.kind, archive_records.actor,
+				 archive_records.work_id, archive_records.mission_id, archive_records.execution_id,
+				 archive_records.payload_version, archive_records.summary, archive_records.evidence_refs_json,
+				 archive_records.payload_json, archive_records.recorded_at,
+				 archive_record_numbers.record_number, archive_record_numbers.mission_record_number
+				 FROM archive_records
+				 JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
+				 WHERE archive_records.sequence = ?`,
 			)
 			.get(sequence);
 		if (row === undefined) {
@@ -538,8 +616,11 @@ export class SQLiteArchive implements ArchivePort {
 			throw new Error("Archive evidence references are invalid.");
 		}
 		const evidence = evidenceRefs.map((entry) => readStringValue(entry, "Archive evidence reference"));
+		const missionRecordNumber = readOptionalInteger(row, "mission_record_number");
 		return {
 			sequence: readInteger(row, "sequence"),
+			recordNumber: readInteger(row, "record_number"),
+			missionRecordNumber,
 			id: readString(row, "record_id"),
 			kind: readRecordKind(row, "kind"),
 			actor: readActor(row, "actor"),
@@ -1016,6 +1097,14 @@ function readOptionalString(row: SqlRow, key: string): string | undefined {
 		return;
 	}
 	return readString(row, key);
+}
+
+function readOptionalInteger(row: SqlRow, key: string): number | undefined {
+	const value = row[key];
+	if (value === null || value === undefined) {
+		return;
+	}
+	return readInteger(row, key);
 }
 
 function readJsonInteger(value: JsonValue | undefined, key: string): number {

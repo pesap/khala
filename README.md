@@ -52,33 +52,36 @@ files with the packaged fresh-eyes review prompt.
    feedback to the same Execution without another User action. Only the
    Conclave can record the succeeded Work Outcome.
 
-`/khala` is quiet and on demand. It opens a Work list; Work is the User's
-goal, each admitted Work has one Mission, and each Mission may have an
-Execution. The picker shows active Work by default, hides succeeded and cancelled Work,
-and keeps failed Work visible with a clear failure marker. Type to fuzzy-filter
-titles, IDs, states, and next actions using the same pattern as Pi's model
-selector. Work names are bounded for stable layout. The picker presents aligned
-Work, ID, state, and Execution columns; text labels and semantic colors together
-communicate status. The user-session footer shows a branded status such as
-`khala: idle` or `khala: ◈ 2`. The compact Work view separates lifecycle state
-from Executor runtime state and the next action. It does not repeat Work
-metadata. Evidence shows Executor turn status and explicitly reports missing
-Signal or provider evidence. An unreachable Executor exposes recovery in
-`Actions`; failures are marked in red and point to `Evidence`. Execution
-failures also record what failed, whether Mission specificity should be
-revisited, and guidance for a replacement Mission. Evidence details use
-wrapped, headed sections; provider summaries remain easy to scan and copy
-without dense separators.
+`/khala` is quiet and on demand. It opens a Work list; Work is the User's goal,
+each admitted Work has one Mission, and each Mission may have an Execution.
+The picker shows active Work by default, hides succeeded and cancelled Work,
+and keeps failed Work visible. It presents title, short ID, Work state, and
+Execution state in aligned columns. The Work overview shows only the Work,
+Mission, Execution, actionable runtime state, next action, and links to Actions,
+Evidence, and Archive. Actions lists enabled actions with short labels such as
+`Recover`, `Rename`, and `Cancel`.
+
+Evidence is a selectable Archive-derived record list with sequence, actual kind,
+summary, actor, and time. It does not duplicate lifecycle, provider, review, CI,
+error, or handoff sections. Provider comments appear as a selectable Evidence
+entry when available. Archive lists every Work record newest first. Selecting a
+record opens its complete metadata, full IDs, structured fields, and evidence
+references. Empty values and sections are omitted. The panels use headings,
+whitespace, aligned columns, plain text status labels, and a dimmed navigation
+footer without decorative separators. The layout adapts to narrow terminals.
+
+An unreachable Executor exposes recovery in `Actions`. Recovery stays in one
+panel while it runs, ignores close keys until the operation finishes, and then
+shows the final result. Navigation does not write the Archive. Up/down and Enter
+select; Backspace or Escape navigates back or closes the selector. Press the
+configured Role settings key in the Work picker to open Role settings. Press the configured comments key in the
+Work overview or Evidence view to open Review comments. `r` and `c` can be
+changed with `roleSettingsKey` and `commentsKey` in configuration. Use `Rename`
+in Work actions to change the Work label without changing the admitted Mission
+terms.
+
 Token usage, including cache hits and misses, remains tracked on the Execution;
-USD cost is not tracked without provider pricing and usage data. Navigation does
-not write the Archive. Up/down and Enter select; Backspace or Escape navigates
-back or closes the selector. Press `r` in the Work picker to open Role
-settings; Backspace or Escape returns to the Work picker. Use `Rename` in
-Work actions to change the Work label without changing the admitted Mission
-terms. `r` and `c` can be changed with `roleSettingsKey` and `commentsKey` in
-configuration. When provider comments are available, `c` opens Review comments
-from the Work or Evidence view; Evidence also provides a selectable comments
-section.
+USD cost is not tracked without provider pricing and usage data.
 
 ## Application service
 

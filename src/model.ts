@@ -257,39 +257,6 @@ export type WorkView = Readonly<{
 	queuedSequence: number;
 }>;
 
-export type ConclaveHandoffPresentation = Readonly<{
-	observationId: string;
-	executionId?: string | undefined;
-	feedback: readonly string[];
-	status: "authorized" | "delivered" | "pending" | "superseded";
-}>;
-
-export type EvidencePresentation = Readonly<{
-	workState: WorkState;
-	missionState?: MissionState | undefined;
-	executionState?: ExecutionState | undefined;
-	runtimeState?: ExecutionRuntimeState | undefined;
-	executionActive: boolean;
-	activity:
-		| "execution-recorded"
-		| "executor-turn-active"
-		| "executor-turn-finishing"
-		| "awaiting-conclave"
-		| "none-recorded";
-	signal: Readonly<{
-		kind: "none" | "signal" | "blocking-signal";
-		evidenceCount: number;
-	}>;
-	archive: Readonly<{
-		recordCount: number;
-		accessLabel: "Open Archive for details";
-	}>;
-	providerObservation?: ProviderObservation | undefined;
-	reviewRequest?: ReviewRequest | undefined;
-	conclaveHandoff?: ConclaveHandoffPresentation | undefined;
-	error?: ErrorEnvelope | undefined;
-}>;
-
 export type WorkSummary = Readonly<{
 	workId: string;
 	title: string;
@@ -317,6 +284,8 @@ export type CommandMeta = Readonly<{
 
 export type RecordView = Readonly<{
 	sequence: number;
+	recordNumber: number;
+	missionRecordNumber?: number | undefined;
 	id: string;
 	kind: RecordKind;
 	actor: Actor;
