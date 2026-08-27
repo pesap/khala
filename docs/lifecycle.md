@@ -128,7 +128,10 @@ manufacturing evidence.
 
 ## Verdicts and settlement
 
-The Conclave may issue exactly one current Verdict for a Signal:
+The Conclave may issue exactly one current Verdict for a Signal. For a
+Mission-bound Verdict, its reason must cite a term from the current Mission
+assignment or governing Mandate. A reason cannot introduce an absent
+constraint, non-goal, or authority boundary.
 
 - **Continue** leaves the Mission and Execution active.
 - **Retry** fails the predecessor, preserves its history, creates a complete

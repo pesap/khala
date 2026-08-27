@@ -40,6 +40,7 @@ function processNewVerdict(input: {
 		execution,
 		signal,
 		params,
+		reason,
 		projectPath: context.cwd,
 		projectTrusted,
 		normalizedAssignment: normalizedParams.successorAssignment,
@@ -74,6 +75,7 @@ function validateMissionVerdict(input: {
 	execution: NonNullable<ReturnType<typeof readExecutorRecord>>;
 	signal: NonNullable<ReturnType<typeof readSignal>>;
 	params: VerdictInput;
+	reason: string;
 	projectPath: string;
 	projectTrusted: boolean;
 	normalizedAssignment: KhalaWork | undefined;
@@ -94,21 +96,11 @@ function validateMissionVerdict(input: {
 	) {
 		throw new Error("The Verdict references a stale or terminal Mission.");
 	}
-	if (input.signal.missionId !== missionId || input.signal.participantId !== input.execution.participantId) {
-		throw new Error("The Verdict Signal fails the Mission and participant fence.");
-	}
-	const mandate = readMandate(input.projectPath, missionProjection.mission.mandateId, input.projectTrusted);
-	if (mandate === undefined) {
-		throw new Error("The governing Mandate is unavailable for this Verdict.");
-	}
-	if (input.params.decision === "retry") {
-		if (!isCompleteAssignment(input.normalizedAssignment)) {
-			throw new Error("Retry requires a complete successor Mission assignment.");
-		}
-		if (!isCompleteRetryHandoff(input.normalizedRetryHandoff)) {
-			throw new Error("Retry requires a complete retry handoff.");
-		}
-	}
+	validateMissionExecutionFence(input.execution, missionProjection.mission, missionId);
+	validateMissionSignalFence(input.execution, input.signal, missionId);
+	const mandate = readGoverningMandate({ ...input, missionProjection });
+	validateMissionReason(input.reason, missionProjection.mission.assignment, mandate.terms);
+	validateRetryInput(input);
 	return { missionId, missionProjection };
 }
 
@@ -236,6 +228,103 @@ function materializeRetryVerdict(
 	return verdictResult(verdict, true);
 }
 
+function readGoverningMandate(input: {
+	params: VerdictInput;
+	projectPath: string;
+	projectTrusted: boolean;
+	missionProjection: MissionProjection;
+}): NonNullable<ReturnType<typeof readMandate>> {
+	const mandate = readMandate(input.projectPath, input.missionProjection.mission.mandateId, input.projectTrusted);
+	if (mandate === undefined || mandate.workId !== input.params.workId) {
+		throw new Error("The governing Mandate is unavailable for this Verdict.");
+	}
+	return mandate;
+}
+
+function validateMissionReason(reason: string, mission: KhalaWork, mandate: KhalaWork): void {
+	if (!isReasonGroundedInMissionTerms(reason, mission, mandate)) {
+		throw new Error("The Verdict reason must cite at least one durable Mission or Mandate term.");
+	}
+}
+
+function validateRetryInput(input: {
+	params: VerdictInput;
+	normalizedAssignment: KhalaWork | undefined;
+	normalizedRetryHandoff: RetryHandoff | undefined;
+}): void {
+	if (input.params.decision !== "retry") {
+		return;
+	}
+	if (!isCompleteAssignment(input.normalizedAssignment)) {
+		throw new Error("Retry requires a complete successor Mission assignment.");
+	}
+	if (!isCompleteRetryHandoff(input.normalizedRetryHandoff)) {
+		throw new Error("Retry requires a complete retry handoff.");
+	}
+}
+
+function validateMissionExecutionFence(
+	execution: NonNullable<ReturnType<typeof readExecutorRecord>>,
+	mission: MissionRecord,
+	missionId: string,
+): void {
+	if (execution.missionId !== missionId || execution.participantId !== mission.assignedParticipantId) {
+		throw new Error("The Verdict Execution fails the Mission and participant fence.");
+	}
+}
+
+function validateMissionSignalFence(
+	execution: NonNullable<ReturnType<typeof readExecutorRecord>>,
+	signal: NonNullable<ReturnType<typeof readSignal>>,
+	missionId: string,
+): void {
+	if (
+		signal.missionId !== missionId ||
+		execution.participantId === undefined ||
+		signal.participantId !== execution.participantId ||
+		signal.executorName !== execution.executorName
+	) {
+		throw new Error("The Verdict Signal fails the Mission, participant, and Executor fence.");
+	}
+}
+
+function isReasonGroundedInMissionTerms(reason: string, ...termSets: readonly KhalaWork[]): boolean {
+	const normalizedReason = normalizeGroundingText(reason);
+	if (normalizedReason.length === 0) {
+		return false;
+	}
+	const boundedReason = ` ${normalizedReason} `;
+	for (const terms of termSets) {
+		const values = [
+			terms.title,
+			terms.objective,
+			terms.context,
+			terms.scope,
+			...terms.acceptanceCriteria,
+			...terms.constraints,
+			...terms.plan,
+			...terms.validation,
+		];
+		if (
+			values.some((term) => {
+				const normalizedTerm = normalizeGroundingText(term);
+				return normalizedTerm.length > 0 && boundedReason.includes(` ${normalizedTerm} `);
+			})
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function normalizeGroundingText(value: string): string {
+	return value
+		.toLocaleLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
+		.trim()
+		.replace(/\s+/g, " ");
+}
+
 function normalizeVerdictParams(
 	params: VerdictInput,
 	reason: string,
@@ -360,4 +449,11 @@ function conclaveParticipantId(projectPath: string): string {
 	return `conclave:${createHash("sha256").update(projectPath).digest("hex").slice(0, PARTICIPANT_HASH_LENGTH)}`;
 }
 
-export { createVerdictRecord, isSameVerdict, normalizeVerdictParams, processNewVerdict, verdictResult };
+export {
+	createVerdictRecord,
+	isReasonGroundedInMissionTerms,
+	isSameVerdict,
+	normalizeVerdictParams,
+	processNewVerdict,
+	verdictResult,
+};

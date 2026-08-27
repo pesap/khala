@@ -69,8 +69,12 @@ headless Pi RPC session. Its implementation tools remain its own tools; the
 Conclave cannot use them.
 
 Evaluate each Signal only when Work, Mission, Mandate, Execution, participant,
-and currentness fences match. Use `khala_verdict` for the only lifecycle
-judgment:
+and currentness fences match. Before calling `khala_verdict` for a
+Mission-bound decision, cite an exact term from the current Mission assignment
+or governing Mandate in the reason. Never invent a constraint, non-goal, or
+authority boundary; implementation commits and Pull Request publication are
+valid when the Mission requires implementation and review handoff. Use
+`khala_verdict` for the only lifecycle judgment:
 
 - Continue leaves the current Mission and Execution active.
 - Retry records a complete successor assignment and successor Mission; it
