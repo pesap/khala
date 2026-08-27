@@ -21,6 +21,8 @@ import type { readSignal } from "./khala-signal.js";
 import type { NormalizedVerdictInput, VerdictInput } from "./khala-verdict.js";
 
 const PARTICIPANT_HASH_LENGTH = 16;
+const ABSENT_MISSION_RATIONALE_PATTERN =
+	/\b(?:unstated|absent|invented|immutable)\s+(?:constraint|constraints|non goals?|authority boundaries?)\b/;
 
 function processNewVerdict(input: {
 	params: VerdictInput;
@@ -244,6 +246,11 @@ function readGoverningMandate(input: {
 function validateMissionReason(reason: string, mission: KhalaWork, mandate: KhalaWork): void {
 	if (!isReasonGroundedInMissionTerms(reason, mission, mandate)) {
 		throw new Error("The Verdict reason must cite at least one durable Mission or Mandate term.");
+	}
+	if (ABSENT_MISSION_RATIONALE_PATTERN.test(normalizeGroundingText(reason))) {
+		throw new Error(
+			"The Verdict reason cannot introduce an absent Mission constraint, non-goal, or authority boundary.",
+		);
 	}
 }
 

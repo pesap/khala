@@ -474,7 +474,7 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 					executionId: firstExecution.executionId,
 					signalId: signal.details.signalId,
 					decision: "retry",
-					reason: "The Executor violated the immutable constraint: Do not commit changes.",
+					reason: "The successor finishes acceptance criterion passed, but the Executor violated the immutable constraint: Do not commit changes.",
 					retryHandoff: {
 						failedCriteria: ["The first execution must be retried."],
 						completedWork: ["The first execution lifecycle was recorded."],
@@ -484,7 +484,7 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 					},
 					successorAssignment,
 				}, null, null, conclaveContext),
-			/durable Mission or Mandate term/,
+			/absent Mission constraint/,
 		);
 		const retry = await runtimeTools.get("khala_verdict").execute("retry", { workId: "mission-work", executionId: firstExecution.executionId, signalId: signal.details.signalId, decision: "retry", reason: "The successor finishes criterion requires a retry.", retryHandoff: { failedCriteria: ["The first execution must be retried."], completedWork: ["The first execution lifecycle was recorded."], requiredChanges: ["Run the corrected lifecycle."], nonGoals: ["Do not change the lifecycle contract."], validation: ["Read durable records."] }, successorAssignment }, null, null, conclaveContext);
 		assert.equal(retry.details.missionId, firstMission.missionId);
