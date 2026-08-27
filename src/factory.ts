@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codeHostForOrigin, GitWorkspace } from "./adapters.js";
@@ -23,51 +23,110 @@ export function createApplication(
 	packageRoot: string,
 	options?: Readonly<{ requireModels?: boolean }>,
 ): ApplicationRuntime {
-	const childContext = process.env["KHALA_BOUND_WORK_ID"] !== undefined;
-	const effectiveProjectPath = childContext ? (process.env["KHALA_PROJECT_PATH"] ?? projectPath) : projectPath;
-	const trustedValue = childContext ? process.env["KHALA_PROJECT_TRUSTED"] : undefined;
+	const context = applicationContext(projectPath, trusted);
+	const config = loadConfig(context.projectPath, context.trusted, options?.requireModels ?? true);
+	const archive = new SQLiteArchive(archivePath(config, context.projectPath));
+	const runtime = createRuntime(config, packageRoot, context, context.authorityPrivateKey);
+	const version = packageVersion(packageRoot);
+	const prompts = readPromptIdentities(packageRoot, version);
+	const models = new ConfiguredModels(config);
+	const ports = createPorts(config, context.projectPath, runtime, models, version, prompts.oracle);
+	const service = new ApplicationService(archive, ports, createServiceOptions(config, context, prompts));
+	return createApplicationRuntime(service, config, models);
+}
+
+type ApplicationContext = Readonly<{
+	projectPath: string;
+	trusted: boolean;
+	child: boolean;
+	rolePublicKey: string;
+	authorityPrivateKey: KeyObject | undefined;
+}>;
+
+// oxlint-disable-next-line complexity
+function applicationContext(projectPath: string, trusted: boolean): ApplicationContext {
+	const child = process.env["KHALA_BOUND_WORK_ID"] !== undefined;
+	const effectiveProjectPath = child ? (process.env["KHALA_PROJECT_PATH"] ?? projectPath) : projectPath;
+	const trustedValue = child ? process.env["KHALA_PROJECT_TRUSTED"] : undefined;
 	const effectiveTrusted = trustedValue === undefined ? trusted : trustedValue === "1";
 	const configuredPublicKey = process.env["KHALA_ROLE_PUBLIC_KEY"];
 	const authority = configuredPublicKey === undefined ? generateKeyPairSync("ed25519") : undefined;
-	const rolePublicKey =
-		configuredPublicKey ?? authority?.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
-	if (rolePublicKey === undefined) throw new Error("Khala could not establish its role authority.");
-	const config = loadConfig(effectiveProjectPath, effectiveTrusted, options?.requireModels ?? true);
-	const archive = new SQLiteArchive(archivePath(config, effectiveProjectPath));
-	const runtime = new PiRpcRuntime({
+	const rolePublicKey = configuredPublicKey ?? exportPublicKey(authority);
+	return {
+		projectPath: effectiveProjectPath,
+		trusted: effectiveTrusted,
+		child,
+		rolePublicKey,
+		authorityPrivateKey: authority?.privateKey,
+	};
+}
+
+function exportPublicKey(authority: Readonly<{ publicKey: KeyObject }> | undefined): string {
+	const publicKey = authority?.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
+	if (publicKey === undefined) throw new Error("Khala could not establish its role authority.");
+	return publicKey;
+}
+
+function createRuntime(
+	config: KhalaConfig,
+	packageRoot: string,
+	context: ApplicationContext,
+	authorityPrivateKey: KeyObject | undefined,
+): PiRpcRuntime {
+	return new PiRpcRuntime({
 		command: config.piCommand,
 		extensionPath: join(packageRoot, "src", "index.ts"),
-		authorityPrivateKey: authority?.privateKey,
+		authorityPrivateKey,
 		baseEnvironment: {
-			KHALA_PROJECT_PATH: effectiveProjectPath,
-			KHALA_PROJECT_TRUSTED: effectiveTrusted ? "1" : "0",
-			KHALA_ROLE_PUBLIC_KEY: rolePublicKey,
+			KHALA_PROJECT_PATH: context.projectPath,
+			KHALA_PROJECT_TRUSTED: context.trusted ? "1" : "0",
+			KHALA_ROLE_PUBLIC_KEY: context.rolePublicKey,
 		},
 	});
-	const version = packageVersion(packageRoot);
-	const conclavePromptIdentity = promptIdentity(
-		readFileSync(join(packageRoot, "system-prompts", "conclave.md"), "utf8"),
-		version,
-	);
-	const executorPromptIdentity = promptIdentity(
-		readFileSync(join(packageRoot, "system-prompts", "executor.md"), "utf8"),
-		version,
-	);
-	const observerPromptIdentity = promptIdentity(
-		readFileSync(join(packageRoot, "system-prompts", "observer.md"), "utf8"),
-		version,
-	);
-	const oraclePrompt = readFileSync(join(packageRoot, "system-prompts", "oracle.md"), "utf8");
-	const models = new ConfiguredModels(config);
-	const ports: ServicePorts = {
-		workspace: new GitWorkspace(config.worktreeRoot, config.worktreeBranchPrefix, effectiveProjectPath),
-		codeHost: new LazyCodeHost(effectiveProjectPath, config.targetBranch),
+}
+
+type PromptIdentities = Readonly<{
+	conclave: ReturnType<typeof promptIdentity>;
+	executor: ReturnType<typeof promptIdentity>;
+	observer: ReturnType<typeof promptIdentity>;
+	oracle: string;
+}>;
+
+function readPromptIdentities(packageRoot: string, version: string): PromptIdentities {
+	const readPrompt = (role: "conclave" | "executor" | "observer") =>
+		promptIdentity(readFileSync(join(packageRoot, "system-prompts", `${role}.md`), "utf8"), version);
+	return {
+		conclave: readPrompt("conclave"),
+		executor: readPrompt("executor"),
+		observer: readPrompt("observer"),
+		oracle: readFileSync(join(packageRoot, "system-prompts", "oracle.md"), "utf8"),
+	};
+}
+
+function createPorts(
+	config: KhalaConfig,
+	projectPath: string,
+	runtime: PiRpcRuntime,
+	models: ConfiguredModels,
+	version: string,
+	oraclePrompt: string,
+): ServicePorts {
+	return {
+		workspace: new GitWorkspace(config.worktreeRoot, config.worktreeBranchPrefix, projectPath),
+		codeHost: new LazyCodeHost(projectPath, config.targetBranch),
 		runtime,
 		models,
-		oracle: new PiOracle(runtime, effectiveProjectPath, version, oraclePrompt),
+		oracle: new PiOracle(runtime, projectPath, version, oraclePrompt),
 	};
-	const serviceOptions: ServiceOptions = {
-		projectPath: effectiveProjectPath,
+}
+
+function createServiceOptions(
+	config: KhalaConfig,
+	context: ApplicationContext,
+	prompts: PromptIdentities,
+): ServiceOptions {
+	return {
+		projectPath: context.projectPath,
 		targetBranch: config.targetBranch,
 		maxConcurrentExecutions: config.maxConcurrentExecutions,
 		defaultWorkTokens: config.defaultWorkTokens,
@@ -79,13 +138,19 @@ export function createApplication(
 		oracleThinking: config.oracleThinking,
 		observerModel: config.observerModel,
 		observerThinking: config.observerThinking,
-		conclavePromptIdentity,
-		executorPromptIdentity,
-		observerPromptIdentity,
-		rolePublicKey,
-		autonomousMonitor: !childContext,
+		conclavePromptIdentity: prompts.conclave,
+		executorPromptIdentity: prompts.executor,
+		observerPromptIdentity: prompts.observer,
+		rolePublicKey: context.rolePublicKey,
+		autonomousMonitor: !context.child,
 	};
-	const service = new ApplicationService(archive, ports, serviceOptions);
+}
+
+function createApplicationRuntime(
+	service: ApplicationService,
+	config: KhalaConfig,
+	models: ConfiguredModels,
+): ApplicationRuntime {
 	return {
 		service,
 		config,

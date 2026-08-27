@@ -40,12 +40,14 @@ function makePorts(overrides = {}) {
 		...controlOverrides,
 	};
 	const runtime = {
+		// oxlint-disable-next-line complexity
 		async ensureSession(input) {
 			const binding = { sessionId: `${input.role}-${controls.sessions.length + 1}`, sessionPath: `/tmp/${input.role}-${controls.sessions.length + 1}.jsonl`, capabilityNonce: input.tools.length === 0 ? undefined : TEST_CAPABILITY_NONCE };
 			controls.sessions.push({ input, binding });
 			if (input.role === "executor" && controls.recoverExecutor && controls.runtimeState === "unreachable") controls.runtimeState = "idle";
 			return binding;
 		},
+		// oxlint-disable-next-line complexity
 		async send(binding, message) {
 			controls.prompts.push({ binding, message });
 			if (binding.sessionId.startsWith("conclave-") && controls.onConclaveWake !== undefined) {
@@ -344,6 +346,7 @@ test("generated Mission and Execution IDs use Nano ID format", async () => {
 	await service.close();
 });
 
+// oxlint-disable-next-line complexity
 test("Conclave wake failures preserve provider detail and remediation", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-conclave-wake-failure-"));
 	const { service } = makeService(join(directory, "archive.sqlite"), {
@@ -422,6 +425,7 @@ test("Executor usage records cache hits, misses, and idle runtime state", async 
 	await service.close();
 });
 
+// oxlint-disable-next-line complexity
 test("a runtime failure during the first Executor turn is recorded as unreachable", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-turn-failure-"));
 	const { service } = makeService(join(directory, "archive.sqlite"), {
@@ -1106,6 +1110,7 @@ test("GitHub review feedback wakes the Conclave and resumes the same Execution w
 		changed: true,
 		observedAt: new Date().toISOString(),
 	}));
+	// oxlint-disable-next-line complexity
 	controls.onConclaveWake = async (message) => {
 		if (!message.includes("provider observation") && !message.includes("provider feedback")) return;
 		const observationId = message.match(/observation (review-comment:42:\d+)/)?.[1];
@@ -1198,6 +1203,7 @@ test("Verdicts resume blocked Executors and prevent rejected Missions from resta
 	await service.close();
 });
 
+// oxlint-disable-next-line complexity
 test("child role sessions resolve the parent project Archive instead of their sandbox Archive", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-shared-archive-"));
 	const project = await mkdtemp(join(directory, "project-"));
@@ -1580,6 +1586,7 @@ test("a real RPC child waits for each prompt completion", async () => {
 	await runtime.close();
 });
 
+// oxlint-disable-next-line complexity
 test("GitHub publication uses the sandbox branch and current head", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-code-host-"));
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));

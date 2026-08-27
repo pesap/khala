@@ -18,6 +18,12 @@ const rolePromptFiles = {
 	oracle: "oracle.md",
 } as const;
 const roleToken = readRoleToken();
+const SESSION_ROLES = new Map<string, "conclave" | "observer" | "executor" | "oracle">([
+	["conclave", "conclave"],
+	["observer", "observer"],
+	["executor", "executor"],
+	["oracle", "oracle"],
+]);
 
 const submitSchema = Type.Object({
 	workId: Type.Optional(Type.String()),
@@ -98,14 +104,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
 	const getRuntime = (context: ExtensionContext): ApplicationRuntime => {
 		const trusted = context.isProjectTrusted?.() === true;
-		if (runtime?.projectPath === context.cwd && runtime.trusted === trusted) {
-			return runtime.runtime;
-		}
-		runtime = {
-			runtime: createApplication(context.cwd, trusted, packageRoot, { requireModels: false }),
-			projectPath: context.cwd,
-			trusted,
-		};
+		if (runtimeMatches(runtime, context.cwd, trusted)) return runtime.runtime;
+		runtime = createRuntimeState(context.cwd, trusted);
 		return runtime.runtime;
 	};
 
@@ -201,23 +201,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			"Perform one actor-authorized, revision-checked Khala application action. User actions include review, recovery, cancellation, renaming, budget, and failure decisions; Executor and Conclave actions run only in their bound child sessions. Provider comments enter through khala_poll_provider.",
 		parameters: performSchema,
 		async execute(toolCallId, params: PerformParams, _signal, _onUpdate, context) {
-			try {
-				const actor = sessionActor(pi);
-				const service = getRuntime(context).service;
-				const result = await service.perform({
-					action: params.action,
-					workId: params.workId,
-					input: params.input,
-					meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision),
-				});
-				if (!("error" in result) && actor === "user") schedulePendingEffects(service);
-				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
-			} catch (error) {
-				if (error instanceof ApplicationError) {
-					return toolError(error.envelope);
-				}
-				return toolErrorText(error instanceof Error ? error.message : "Khala action failed.");
-			}
+			return executeActionTool(pi, getRuntime, toolCallId, params, context);
 		},
 	});
 
@@ -305,6 +289,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("khala-recover", {
 		description: "Reread Archive state and reconcile Khala runtime bindings.",
+		// oxlint-disable-next-line complexity
 		handler: async (_args, context) => {
 			try {
 				const service = getRuntime(context).service;
@@ -361,6 +346,48 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 }
 
+function runtimeMatches(
+	runtime: RuntimeState | undefined,
+	projectPath: string,
+	trusted: boolean,
+): runtime is RuntimeState {
+	return runtime !== undefined && runtime.projectPath === projectPath && runtime.trusted === trusted;
+}
+
+function createRuntimeState(projectPath: string, trusted: boolean): RuntimeState {
+	return {
+		runtime: createApplication(projectPath, trusted, packageRoot, { requireModels: false }),
+		projectPath,
+		trusted,
+	};
+}
+
+// oxlint-disable-next-line complexity
+async function executeActionTool(
+	pi: ExtensionAPI,
+	getRuntime: (context: ExtensionContext) => ApplicationRuntime,
+	toolCallId: string,
+	params: PerformParams,
+	context: ExtensionContext,
+): Promise<ToolResult | ToolErrorResult> {
+	try {
+		const actor = sessionActor(pi);
+		const service = getRuntime(context).service;
+		const result = await service.perform({
+			action: params.action,
+			workId: params.workId,
+			input: params.input,
+			meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision),
+		});
+		if (!("error" in result) && actor === "user") schedulePendingEffects(service);
+		return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+	} catch (error) {
+		return error instanceof ApplicationError
+			? toolError(error.envelope)
+			: toolErrorText(error instanceof Error ? error.message : "Khala action failed.");
+	}
+}
+
 function schedulePendingEffects(service: ApplicationRuntime["service"]): void {
 	queueMicrotask(() => {
 		// Effects write durable Archive evidence. Do not retain a tool/session UI
@@ -379,10 +406,11 @@ function updateExecutorStatus(service: ApplicationRuntime["service"], context: E
 
 function sessionRole(pi: ExtensionAPI): "user" | "conclave" | "observer" | "executor" | "oracle" {
 	const value = pi.getFlag(ROLE_FLAG);
-	if (value === "conclave" || value === "observer" || value === "executor" || value === "oracle") {
-		return value;
-	}
-	return "user";
+	return isSessionRole(value) ? value : "user";
+}
+
+function isSessionRole(value: string | boolean | undefined): value is "conclave" | "observer" | "executor" | "oracle" {
+	return SESSION_ROLES.get(String(value)) === value;
 }
 
 function sessionActor(pi: ExtensionAPI): Actor {
@@ -390,24 +418,25 @@ function sessionActor(pi: ExtensionAPI): Actor {
 }
 
 function setRoleTools(pi: ExtensionAPI): void {
-	const role = sessionRole(pi);
-	const allowed =
-		role === "user"
-			? new Set([
-					"khala_submit_work",
-					"khala_read_archive",
-					"khala_perform_action",
-					"khala_poll_provider",
-					"khala_inspect_runtime",
-				])
-			: role === "conclave"
-				? new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle", "khala_inspect_runtime"])
-				: role === "executor"
-					? new Set(["khala_read_archive", "khala_record_signal", "khala_perform_action"])
-					: role === "observer"
-						? new Set(["khala_read_archive", "khala_record_assessment"])
-						: new Set(["khala_read_archive"]);
+	const allowed = roleTools(sessionRole(pi));
 	pi.setActiveTools(pi.getActiveTools().filter((name) => !name.startsWith("khala_") || allowed.has(name)));
+}
+
+function roleTools(role: ReturnType<typeof sessionRole>): ReadonlySet<string> {
+	const tools = {
+		user: [
+			"khala_submit_work",
+			"khala_read_archive",
+			"khala_perform_action",
+			"khala_poll_provider",
+			"khala_inspect_runtime",
+		],
+		conclave: ["khala_read_archive", "khala_perform_action", "khala_run_oracle", "khala_inspect_runtime"],
+		executor: ["khala_read_archive", "khala_record_signal", "khala_perform_action"],
+		observer: ["khala_read_archive", "khala_record_assessment"],
+		oracle: ["khala_read_archive"],
+	} satisfies Record<ReturnType<typeof sessionRole>, readonly string[]>;
+	return new Set(tools[role]);
 }
 
 function readRoleToken(): string | undefined {
@@ -436,17 +465,19 @@ function meta(actor: Actor, commandId: string, expectedWorkRevision: number): Co
 }
 
 function readArchiveQuery(params: ReadArchiveParams, actor: Actor): MutableRecordQuery {
-	const query: MutableRecordQuery = {};
-	if (params.workId !== undefined) query.workId = params.workId;
-	if ((actor === "observer" || actor === "executor") && query.workId === undefined)
-		query.workId = process.env["KHALA_BOUND_WORK_ID"];
-	if (params.missionId !== undefined) query.missionId = params.missionId;
-	if (params.executionId !== undefined) query.executionId = params.executionId;
-	if (params.kinds !== undefined) query.kinds = readRecordKinds(params.kinds);
-	if (params.states !== undefined) query.states = params.states;
-	if (params.from !== undefined) query.from = params.from;
-	if (params.to !== undefined) query.to = params.to;
-	return query;
+	return {
+		workId: params.workId ?? boundWorkId(actor),
+		missionId: params.missionId,
+		executionId: params.executionId,
+		kinds: params.kinds === undefined ? undefined : readRecordKinds(params.kinds),
+		states: params.states,
+		from: params.from,
+		to: params.to,
+	};
+}
+
+function boundWorkId(actor: Actor): string | undefined {
+	return actor === "observer" || actor === "executor" ? process.env["KHALA_BOUND_WORK_ID"] : undefined;
 }
 
 function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
@@ -488,6 +519,7 @@ function toolErrorText(message: string): ToolErrorResult {
 	return toolError({ summary: message });
 }
 
+// oxlint-disable-next-line complexity
 function summarizeToolValue(value: JsonValue): string {
 	if (
 		isJsonObject(value) &&
@@ -503,6 +535,7 @@ function summarizeToolValue(value: JsonValue): string {
 		].join("\n");
 	}
 	if (isJsonObject(value) && Array.isArray(value["items"]) && isIntegerValue(value["asOfSequence"])) {
+		// oxlint-disable-next-line complexity
 		const records = value["items"].filter(isJsonObject).map((record) => {
 			const sequence = isIntegerValue(record["sequence"]) ? `#${record["sequence"]} ` : "";
 			const kind = isTextValue(record["kind"]) ? record["kind"] : "record";
@@ -514,6 +547,7 @@ function summarizeToolValue(value: JsonValue): string {
 	return prettyJson(value);
 }
 
+// oxlint-disable-next-line complexity
 export function summarizeToolError(error: JsonObject): string {
 	const lines = [
 		isTextValue(error["summary"]) ? `Error: ${presentToolText(error["summary"])}` : "Khala action failed.",

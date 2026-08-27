@@ -141,6 +141,7 @@ export class SQLiteArchive implements ArchivePort {
 		this.migrateRecordNumbers();
 	}
 
+	// oxlint-disable-next-line complexity
 	private migrateLegacyWorkStates(): void {
 		const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
 		const migrations: Array<Readonly<{ workId: string; view: JsonObject }>> = [];
@@ -172,6 +173,7 @@ export class SQLiteArchive implements ArchivePort {
 		}
 	}
 
+	// oxlint-disable-next-line complexity
 	private migrateRecordNumbers(): void {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
@@ -206,6 +208,7 @@ export class SQLiteArchive implements ArchivePort {
 		}
 	}
 
+	// oxlint-disable-next-line complexity
 	append(input: ArchiveAppend): ArchiveAppendResult {
 		assertPositiveInteger(input.expectedWorkRevision + 1, "expectedWorkRevision");
 		const duplicate = this.database
@@ -445,6 +448,7 @@ export class SQLiteArchive implements ArchivePort {
 		return { record: this.readRecord(sequence), projection, duplicate: true };
 	}
 
+	// oxlint-disable-next-line complexity
 	query(query: RecordQuery = {}, cursor?: string): Page<RecordView> {
 		const parsedCursor = cursor === undefined ? undefined : decodeCursor(cursor);
 		const effectiveQuery = parsedCursor?.query ?? normalizeQuery(query);
@@ -525,6 +529,7 @@ export class SQLiteArchive implements ArchivePort {
 		return;
 	}
 
+	// oxlint-disable-next-line complexity
 	findLatestObservation(
 		workId: string,
 		kind: ProviderObservation["kind"],
@@ -558,6 +563,7 @@ export class SQLiteArchive implements ArchivePort {
 		this.database.close();
 	}
 
+	// oxlint-disable-next-line complexity
 	private assertExecutionAdmission(
 		workId: string,
 		guard: Readonly<{ maxConcurrentExecutions: number; enforceFifo?: boolean }>,
@@ -673,6 +679,7 @@ function encodeCursor(cursor: Cursor): string {
 	return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
+// oxlint-disable-next-line complexity
 function decodeCursor(value: string): Cursor {
 	let parsed: JsonValue;
 	try {
@@ -744,6 +751,7 @@ function parseJson(value: string): JsonValue {
 	return parsed;
 }
 
+// oxlint-disable-next-line complexity
 function isJsonValue(value: JsonValue): boolean {
 	if (value === null || value === true || value === false) {
 		return true;
@@ -769,6 +777,7 @@ function parseWorkView(value: string): WorkView {
 	return parsed;
 }
 
+// oxlint-disable-next-line complexity
 function validateProjection(projection: WorkView, workId: string, revision: number): void {
 	if (projection.workId !== workId || projection.revision !== revision || !isWorkViewProjection(projection)) {
 		throw new Error("Archive projection does not match the expected Work revision.");
@@ -793,65 +802,59 @@ function validateProjection(projection: WorkView, workId: string, revision: numb
 
 function isWorkViewProjection(value: JsonValue): value is WorkView {
 	if (!isJsonObject(value)) return false;
-	return (
-		isText(value["workId"]) &&
-		isInteger(value["revision"]) &&
-		isWorkState(value["state"]) &&
-		(value["stopReason"] === undefined || isWorkStopReason(value["stopReason"])) &&
-		(value["missionState"] === undefined || isMissionState(value["missionState"])) &&
-		isTerms(value["terms"]) &&
-		isBudget(value["budget"]) &&
-		isText(value["nextAction"]) &&
-		isInteger(value["queuedSequence"]) &&
-		(value["missionSpecificity"] === undefined || isMissionSpecificity(value["missionSpecificity"])) &&
-		(value["mission"] === undefined || isMission(value["mission"])) &&
-		(value["execution"] === undefined || isExecution(value["execution"])) &&
-		(value["observer"] === undefined || isPiBinding(value["observer"])) &&
-		(value["observerInFlight"] === undefined || isBoolean(value["observerInFlight"])) &&
-		(value["reviewRequest"] === undefined || isReviewRequest(value["reviewRequest"])) &&
-		(value["lastSignal"] === undefined || isSignal(value["lastSignal"])) &&
-		(value["lastObservation"] === undefined || isObservation(value["lastObservation"])) &&
-		(value["providerOutcome"] === undefined || isObservation(value["providerOutcome"])) &&
-		(value["lastError"] === undefined || isErrorEnvelope(value["lastError"]))
-	);
+	return [
+		isText(value["workId"]),
+		isInteger(value["revision"]),
+		isWorkState(value["state"]),
+		optional(value["stopReason"], isWorkStopReason),
+		optional(value["missionState"], isMissionState),
+		isTerms(value["terms"]),
+		isBudget(value["budget"]),
+		isText(value["nextAction"]),
+		isInteger(value["queuedSequence"]),
+		optional(value["missionSpecificity"], isMissionSpecificity),
+		optional(value["mission"], isMission),
+		optional(value["execution"], isExecution),
+		optional(value["observer"], isPiBinding),
+		optional(value["observerInFlight"], isBoolean),
+		optional(value["reviewRequest"], isReviewRequest),
+		optional(value["lastSignal"], isSignal),
+		optional(value["lastObservation"], isObservation),
+		optional(value["providerOutcome"], isObservation),
+		optional(value["lastError"], isErrorEnvelope),
+	].every(Boolean);
+}
+
+function optional(value: JsonValue | undefined, check: (value: JsonValue | undefined) => boolean): boolean {
+	return value === undefined || check(value);
 }
 
 function isTerms(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
-		isText(value["title"]) &&
-		isText(value["objective"]) &&
-		isText(value["context"]) &&
-		isText(value["scope"]) &&
-		isTextList(value["acceptanceCriteria"]) &&
-		isTextList(value["constraints"]) &&
-		isTextList(value["validation"]) &&
-		isInteger(value["maxTokens"]) &&
-		Number(value["maxTokens"]) > 0
+		["title", "objective", "context", "scope"].every((key) => isText(value[key])) &&
+		["acceptanceCriteria", "constraints", "validation"].every((key) => isTextList(value[key])) &&
+		isPositiveInteger(value["maxTokens"])
 	);
 }
 
 function isBudget(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
-		isInteger(value["maxTokens"]) &&
-		isInteger(value["reservedTokens"]) &&
-		isInteger(value["consumedTokens"]) &&
-		Number(value["maxTokens"]) > 0 &&
-		Number(value["reservedTokens"]) >= 0 &&
-		Number(value["consumedTokens"]) >= 0
+		isPositiveInteger(value["maxTokens"]) &&
+		isNonNegativeInteger(value["reservedTokens"]) &&
+		isNonNegativeInteger(value["consumedTokens"])
 	);
 }
 
+// oxlint-disable-next-line complexity
 function isMission(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
-		isText(value["missionId"]) &&
-		isText(value["workId"]) &&
+		["missionId", "workId", "createdAt"].every((key) => isText(value[key])) &&
 		isTerms(value["assignment"]) &&
-		(value["specificity"] === undefined || isMissionSpecificity(value["specificity"])) &&
-		isInteger(value["mandateRevision"]) &&
-		isText(value["createdAt"])
+		optional(value["specificity"], isMissionSpecificity) &&
+		isInteger(value["mandateRevision"])
 	);
 }
 
@@ -860,29 +863,39 @@ function isMissionSpecificity(value: JsonValue | undefined): boolean {
 	return ["explicit", "defaults-used"].includes(String(value["status"])) && isTextList(value["missing"]);
 }
 
+// oxlint-disable-next-line complexity
 function isExecution(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	const sandbox = value["sandbox"];
 	const prompt = value["promptIdentity"];
 	return (
-		isText(value["executionId"]) &&
-		isText(value["workId"]) &&
-		isText(value["missionId"]) &&
+		["executionId", "workId", "missionId", "model", "thinking"].every((key) => isText(value[key])) &&
 		isExecutionState(value["state"]) &&
-		isText(value["model"]) &&
-		isText(value["thinking"]) &&
 		isInteger(value["tokenAllowance"]) &&
-		(value["runtimeState"] === undefined || isExecutionRuntimeState(value["runtimeState"])) &&
-		(value["usage"] === undefined || isTokenUsage(value["usage"])) &&
-		isJsonObject(prompt) &&
-		isText(prompt["packageVersion"]) &&
-		isText(prompt["promptSha256"]) &&
-		isJsonObject(sandbox) &&
-		isText(sandbox["path"]) &&
-		isText(sandbox["baseCommit"]) &&
-		isText(sandbox["branch"]) &&
-		(value["pi"] === undefined || isPiBinding(value["pi"]))
+		optional(value["runtimeState"], isExecutionRuntimeState) &&
+		optional(value["usage"], isTokenUsage) &&
+		isPromptIdentity(prompt) &&
+		isSandbox(sandbox) &&
+		optional(value["pi"], isPiBinding)
 	);
+}
+
+function isPromptIdentity(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return isText(value["packageVersion"]) && isText(value["promptSha256"]);
+}
+
+function isSandbox(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return ["path", "baseCommit", "branch"].every((key) => isText(value[key]));
+}
+
+function isPositiveInteger(value: JsonValue | undefined): boolean {
+	return isInteger(value) && Number(value) > 0;
+}
+
+function isNonNegativeInteger(value: JsonValue | undefined): boolean {
+	return isInteger(value) && Number(value) >= 0;
 }
 
 function isTokenUsage(value: JsonValue | undefined): boolean {
@@ -897,35 +910,38 @@ function isExecutionRuntimeState(value: JsonValue | undefined): boolean {
 	return ["working", "idle", "pending", "unreachable", "unknown"].includes(String(value));
 }
 
+// oxlint-disable-next-line complexity
 function isPiBinding(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value) || !isText(value["sessionId"]) || !isText(value["sessionPath"])) return false;
 	return (
-		isJsonObject(value) &&
-		isText(value["sessionId"]) &&
-		isText(value["sessionPath"]) &&
-		(value["processGroupId"] === undefined || (isInteger(value["processGroupId"]) && value["processGroupId"] > 0)) &&
-		(value["processStartTime"] === undefined || isText(value["processStartTime"])) &&
-		(value["capabilityNonce"] === undefined || isText(value["capabilityNonce"])) &&
-		(value["processMarker"] === undefined || isText(value["processMarker"]))
+		optional(value["processGroupId"], (entry) => isPositiveInteger(entry)) &&
+		optional(value["processStartTime"], isText) &&
+		optional(value["capabilityNonce"], isText) &&
+		optional(value["processMarker"], isText)
 	);
 }
 
+// oxlint-disable-next-line complexity
 function isReviewRequest(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
-		["github", "gitlab"].includes(String(value["provider"])) &&
-		isText(value["principalId"]) &&
-		isText(value["providerId"]) &&
-		isText(value["url"]) &&
-		isText(value["repository"]) &&
-		["draft", "open", "merged", "closed"].includes(String(value["status"])) &&
-		isText(value["sourceBranch"]) &&
-		isText(value["targetBranch"]) &&
-		isText(value["headCommit"]) &&
-		isText(value["diffSummary"]) &&
+		isOneOf(value["provider"], ["github", "gitlab"]) &&
+		[
+			"principalId",
+			"providerId",
+			"url",
+			"repository",
+			"sourceBranch",
+			"targetBranch",
+			"headCommit",
+			"diffSummary",
+		].every((key) => isText(value[key])) &&
+		isOneOf(value["status"], ["draft", "open", "merged", "closed"]) &&
 		isTextList(value["validation"])
 	);
 }
 
+// oxlint-disable-next-line complexity
 function isSignal(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
@@ -938,37 +954,40 @@ function isSignal(value: JsonValue | undefined): boolean {
 	);
 }
 
+// oxlint-disable-next-line complexity
 function isObservation(value: JsonValue | undefined): value is ProviderObservation {
 	if (!isJsonObject(value)) return false;
+	const required = ["observationId", "kind", "providerId", "status", "summary", "observedAt"].every((key) =>
+		isText(value[key]),
+	);
+	const textFields = [
+		"author",
+		"authorAssociation",
+		"reviewState",
+		"repository",
+		"sourceBranch",
+		"targetBranch",
+		"headCommit",
+		"mergeCommit",
+	];
 	return (
-		isText(value["observationId"]) &&
-		isText(value["kind"]) &&
-		isText(value["providerId"]) &&
-		isText(value["status"]) &&
-		isText(value["summary"]) &&
+		required &&
 		isBoolean(value["changed"]) &&
-		isText(value["observedAt"]) &&
-		(value["feedback"] === undefined || isTextList(value["feedback"])) &&
-		(value["author"] === undefined || isText(value["author"])) &&
-		(value["authorAssociation"] === undefined || isText(value["authorAssociation"])) &&
-		(value["reviewState"] === undefined || isText(value["reviewState"])) &&
-		(value["actionable"] === undefined || isBoolean(value["actionable"])) &&
-		(value["repository"] === undefined || isText(value["repository"])) &&
-		(value["sourceBranch"] === undefined || isText(value["sourceBranch"])) &&
-		(value["targetBranch"] === undefined || isText(value["targetBranch"])) &&
-		(value["headCommit"] === undefined || isText(value["headCommit"])) &&
-		(value["mergeCommit"] === undefined || isText(value["mergeCommit"])) &&
-		(value["details"] === undefined || isProviderObservationDetails(value["details"]))
+		optional(value["feedback"], isTextList) &&
+		textFields.every((key) => optional(value[key], isText)) &&
+		optional(value["actionable"], isBoolean) &&
+		optional(value["details"], isProviderObservationDetails)
 	);
 }
 
+// oxlint-disable-next-line complexity
 function isProviderObservationDetails(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	const pullRequest = value["pullRequest"];
+	if (!isJsonObject(pullRequest)) return false;
 	return (
-		isJsonObject(pullRequest) &&
 		isText(pullRequest["url"]) &&
-		["draft", "open", "merged", "closed"].includes(String(pullRequest["status"])) &&
+		isOneOf(pullRequest["status"], ["draft", "open", "merged", "closed"]) &&
 		isText(pullRequest["state"]) &&
 		isText(pullRequest["reviewDecision"]) &&
 		(pullRequest["mergedAt"] === null || isText(pullRequest["mergedAt"])) &&
@@ -977,47 +996,44 @@ function isProviderObservationDetails(value: JsonValue | undefined): boolean {
 	);
 }
 
+function isOneOf(value: JsonValue | undefined, choices: readonly string[]): boolean {
+	return choices.includes(String(value));
+}
+
 function isProviderReviewComments(value: JsonValue | undefined): boolean {
+	return Array.isArray(value) && value.every(isProviderReviewComment);
+}
+
+// oxlint-disable-next-line complexity
+function isProviderReviewComment(entry: JsonValue): boolean {
+	if (!isJsonObject(entry) || !isText(entry["id"]) || !isText(entry["body"])) return false;
+	const textFields = ["author", "authorAssociation", "createdAt", "url", "state", "location"];
 	return (
-		Array.isArray(value) &&
-		value.every((entry) => {
-			if (!isJsonObject(entry) || !isText(entry["id"]) || !isText(entry["body"])) return false;
-			return (
-				(entry["author"] === undefined || isText(entry["author"])) &&
-				(entry["authorAssociation"] === undefined || isText(entry["authorAssociation"])) &&
-				(entry["createdAt"] === undefined || isText(entry["createdAt"])) &&
-				(entry["url"] === undefined || isText(entry["url"])) &&
-				(entry["state"] === undefined || isText(entry["state"])) &&
-				(entry["source"] === undefined || ["issue-comment", "review", "inline"].includes(String(entry["source"]))) &&
-				(entry["location"] === undefined || isText(entry["location"])) &&
-				(entry["minimized"] === undefined || isBoolean(entry["minimized"]))
-			);
-		})
+		textFields.every((key) => optional(entry[key], isText)) &&
+		optional(entry["source"], (source) => isOneOf(source, ["issue-comment", "review", "inline"])) &&
+		optional(entry["minimized"], isBoolean)
 	);
 }
 
 function isProviderChecks(value: JsonValue | undefined): boolean {
-	return (
-		Array.isArray(value) &&
-		value.every((entry) => {
-			if (
-				!isJsonObject(entry) ||
-				!["check-run", "status-context"].includes(String(entry["kind"])) ||
-				!isText(entry["name"]) ||
-				!isText(entry["status"])
-			)
-				return false;
-			return (
-				(entry["conclusion"] === undefined || isText(entry["conclusion"])) &&
-				(entry["workflowName"] === undefined || isText(entry["workflowName"])) &&
-				(entry["detailsUrl"] === undefined || isText(entry["detailsUrl"])) &&
-				(entry["startedAt"] === undefined || isText(entry["startedAt"])) &&
-				(entry["completedAt"] === undefined || isText(entry["completedAt"]))
-			);
-		})
+	return Array.isArray(value) && value.every(isProviderCheck);
+}
+
+// oxlint-disable-next-line complexity
+function isProviderCheck(entry: JsonValue): boolean {
+	if (
+		!isJsonObject(entry) ||
+		!isOneOf(entry["kind"], ["check-run", "status-context"]) ||
+		!isText(entry["name"]) ||
+		!isText(entry["status"])
+	)
+		return false;
+	return ["conclusion", "workflowName", "detailsUrl", "startedAt", "completedAt"].every((key) =>
+		optional(entry[key], isText),
 	);
 }
 
+// oxlint-disable-next-line complexity
 function isErrorEnvelope(value: JsonValue | undefined): value is ErrorEnvelope {
 	if (!isJsonObject(value)) return false;
 	return (
@@ -1107,6 +1123,7 @@ function readOptionalInteger(row: SqlRow, key: string): number | undefined {
 	return readInteger(row, key);
 }
 
+// oxlint-disable-next-line complexity
 function readJsonInteger(value: JsonValue | undefined, key: string): number {
 	const number = Number(value);
 	if (value === null || value === undefined || number !== value || !Number.isSafeInteger(number)) {
@@ -1115,6 +1132,7 @@ function readJsonInteger(value: JsonValue | undefined, key: string): number {
 	return number;
 }
 
+// oxlint-disable-next-line complexity
 function readInteger(row: SqlRow, key: string): number {
 	const value = row[key];
 	const number = Number(value);

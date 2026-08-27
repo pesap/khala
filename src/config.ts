@@ -52,24 +52,28 @@ const DEFAULTS: KhalaConfig = {
 
 export function loadConfig(projectPath: string, trusted: boolean, requireModels = true): KhalaConfig {
 	const globalPath = join(agentDirectory(), "khala.json");
-	let config = apply(DEFAULTS, readConfig(globalPath));
-	if (trusted) {
-		config = apply(config, readConfig(join(projectPath, ".pi", "khala.json")));
-	}
-	if (requireModels) {
-		for (const [field, value] of [
-			["conclaveModel", config.conclaveModel],
-			["executorModel", config.executorModel],
-			["oracleModel", config.oracleModel],
-		] as const) {
-			if (value.trim().length === 0) {
-				throw new ConfigError(
-					`${field} is required. Open \`/khala\` and configure the role settings before starting governed Work.`,
-				);
-			}
+	const projectConfig = trusted ? readConfig(join(projectPath, ".pi", "khala.json")) : undefined;
+	const config = apply(apply(DEFAULTS, readConfig(globalPath)), projectConfig);
+	if (requireModels) validateRequiredModels(config);
+	return config;
+}
+
+function validateRequiredModels(config: KhalaConfig): void {
+	for (const [field, value] of requiredModels(config)) {
+		if (value.trim().length === 0) {
+			throw new ConfigError(
+				`${field} is required. Open \`/khala\` and configure the role settings before starting governed Work.`,
+			);
 		}
 	}
-	return config;
+}
+
+function requiredModels(config: KhalaConfig): readonly (readonly [string, string])[] {
+	return [
+		["conclaveModel", config.conclaveModel],
+		["executorModel", config.executorModel],
+		["oracleModel", config.oracleModel],
+	];
 }
 
 export function archivePath(config: KhalaConfig, projectPath: string): string {
@@ -95,10 +99,7 @@ export function persistRoleSetting(role: GovernedRole, setting: RoleSetting, val
 }
 
 function roleConfigKey(role: GovernedRole, setting: RoleSetting): string {
-	if (role === "conclave") return setting === "model" ? "conclaveModel" : "conclaveThinking";
-	if (role === "executor") return setting === "model" ? "executorModel" : "executorThinking";
-	if (role === "observer") return setting === "model" ? "observerModel" : "observerThinking";
-	return setting === "model" ? "oracleModel" : "oracleThinking";
+	return `${role}${setting === "model" ? "Model" : "Thinking"}`;
 }
 
 function readConfig(path: string): JsonObject | undefined {
@@ -165,14 +166,16 @@ function readKeybinding(values: JsonObject, key: string, fallback: string): stri
 
 function readPositive(values: JsonObject, key: string, fallback: number): number {
 	const value = values[key];
-	if (value === undefined) {
-		return fallback;
-	}
+	if (value === undefined) return fallback;
+	if (!isPositiveInteger(value)) throw new ConfigError(`${key} must be a positive integer.`);
+	return value;
+}
+
+function isPositiveInteger(value: JsonValue | undefined): value is number {
 	const number = Number(value);
-	if (value === null || value === undefined || number !== value || !Number.isSafeInteger(number) || number <= 0) {
-		throw new ConfigError(`${key} must be a positive integer.`);
-	}
-	return number;
+	if (number !== value) return false;
+	if (!Number.isSafeInteger(number)) return false;
+	return number > 0;
 }
 
 function readTextList(values: JsonObject, key: string, fallback: readonly string[]): readonly string[] {

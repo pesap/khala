@@ -64,32 +64,33 @@ type ClarifyOutcome =
 type RewriteModel = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>;
 
 function resolveRewriteModel(ctx: ClarifyUi): { model: RewriteModel } | { reason: string } {
-	let config;
+	const config = readClarifyConfig(ctx);
+	if ("reason" in config) return config;
+	const reference = splitModelReference(config.conclaveModel);
+	if (reference === undefined)
+		return { reason: "No valid Conclave model is configured. Open /khala and choose Role settings." };
+	const model = ctx.modelRegistry.find(reference.provider, reference.modelId);
+	if (model === undefined) return { reason: `Configured Conclave model is unavailable: ${config.conclaveModel}` };
+	// SAFETY: modelRegistry.find returns the configured model shape used by completeSimple.
+	return { model: model as RewriteModel };
+}
+
+function readClarifyConfig(ctx: ClarifyUi): ReturnType<typeof loadConfig> | { reason: string } {
 	try {
-		config = loadConfig(ctx.cwd, ctx.isProjectTrusted(), false);
+		return loadConfig(ctx.cwd, ctx.isProjectTrusted(), false);
 	} catch (error) {
 		return { reason: error instanceof Error ? error.message : String(error) };
 	}
-
-	const modelReference = config.conclaveModel.trim();
-	const separator = modelReference.indexOf("/");
-	if (separator <= 0 || separator === modelReference.length - 1) {
-		return {
-			reason: "No valid Conclave model is configured. Open /khala and choose Role settings.",
-		};
-	}
-
-	const provider = modelReference.slice(0, separator);
-	const modelId = modelReference.slice(separator + 1);
-	const model = ctx.modelRegistry.find(provider, modelId);
-	if (model) {
-		// SAFETY: modelRegistry.find returns the configured model shape used by completeSimple.
-		return { model: model as RewriteModel };
-	}
-
-	return { reason: `Configured Conclave model is unavailable: ${modelReference}` };
 }
 
+function splitModelReference(value: string): { provider: string; modelId: string } | undefined {
+	const reference = value.trim();
+	const separator = reference.indexOf("/");
+	if (separator <= 0 || separator === reference.length - 1) return undefined;
+	return { provider: reference.slice(0, separator), modelId: reference.slice(separator + 1) };
+}
+
+// oxlint-disable-next-line complexity
 async function callModel(
 	text: string,
 	model: RewriteModel,
@@ -97,24 +98,9 @@ async function callModel(
 	signal?: AbortSignal,
 ): Promise<string | null> {
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok || !auth.apiKey) {
-		throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
-	}
-
-	const userMessage: UserMessage = {
-		role: "user",
-		content: [{ type: "text", text }],
-		timestamp: Date.now(),
-	};
-
-	const options: SimpleStreamOptions = {
-		apiKey: auth.apiKey,
-		cacheRetention: "none",
-	};
-	if (auth.headers !== undefined) options.headers = auth.headers;
-	if (auth.env !== undefined) options.env = auth.env;
-	if (signal !== undefined) options.signal = signal;
-
+	if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
+	const userMessage: UserMessage = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+	const options = clarifyStreamOptions({ ...auth, apiKey: auth.apiKey }, signal);
 	const response = await completeSimple(model, { systemPrompt: SYSTEM_PROMPT, messages: [userMessage] }, options);
 
 	if (response.stopReason === "aborted") {
@@ -124,103 +110,92 @@ async function callModel(
 	return extractClarifyText(response);
 }
 
+type ClarifyAuth = Awaited<ReturnType<ClarifyUi["modelRegistry"]["getApiKeyAndHeaders"]>>;
+type ClarifyAuthWithKey = Extract<ClarifyAuth, { ok: true }> & { apiKey: string };
+
+// oxlint-disable-next-line complexity
+function clarifyStreamOptions(auth: ClarifyAuthWithKey, signal: AbortSignal | undefined): SimpleStreamOptions {
+	const options: SimpleStreamOptions = { apiKey: auth.apiKey, cacheRetention: "none" };
+	if (auth.ok && auth.headers !== undefined) options.headers = auth.headers;
+	if (auth.ok && auth.env !== undefined) options.env = auth.env;
+	if (signal !== undefined) options.signal = signal;
+	return options;
+}
+
 export function extractClarifyText(
 	response: Pick<AssistantMessage, "content" | "stopReason" | "errorMessage">,
 ): string {
-	if (response.stopReason === "error") {
+	if (response.stopReason === "error")
 		throw new Error(`Clarify model failed: ${response.errorMessage ?? "the provider returned an error"}`);
-	}
-
 	const rewritten = response.content
 		.filter((content): content is { type: "text"; text: string } => content.type === "text")
 		.map((content) => content.text)
 		.join("\n")
 		.trim();
-
-	if (!rewritten) {
-		const contentTypes = response.content.map((content) => content.type).join(", ") || "none";
-		throw new Error(`Clarify returned no text (stop reason: ${response.stopReason}; content blocks: ${contentTypes}).`);
-	}
-
-	return rewritten;
+	if (rewritten.length > 0) return rewritten;
+	throw new Error(
+		`Clarify returned no text (stop reason: ${response.stopReason}; content blocks: ${contentTypes(response)}).`,
+	);
 }
 
+function contentTypes(response: Pick<AssistantMessage, "content">): string {
+	return response.content.map((content) => content.type).join(", ") || "none";
+}
+
+// oxlint-disable-next-line complexity
 async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<ClarifyOutcome> {
 	const text = raw.trim();
-	if (!text) {
-		return { result: "invalid", reason: USAGE };
-	}
-
+	if (text.length === 0) return { result: "invalid", reason: USAGE };
 	const resolved = resolveRewriteModel(ctx);
-	if ("reason" in resolved) {
-		return { result: "unavailable", reason: resolved.reason };
-	}
-	const model = resolved.model;
+	if ("reason" in resolved) return { result: "unavailable", reason: resolved.reason };
+	return ctx.mode === "tui" && ctx.hasUI
+		? rewriteWithLoader(text, resolved.model, ctx)
+		: rewriteDirect(text, resolved.model, ctx);
+}
 
-	// Interactive TUI can show a loader. Other hosts fall through to a plain call.
-	if (ctx.mode === "tui" && ctx.hasUI) {
-		const loaded = await ctx.ui.custom<ClarifyOutcome | null>((tui, theme, _kb, done) => {
-			const loader = new BorderedLoader(tui, theme, `Clarifying with ${model.provider}/${model.id}...`);
-			loader.onAbort = () => done({ result: "cancelled" });
+async function rewriteWithLoader(text: string, model: RewriteModel, ctx: ClarifyUi): Promise<ClarifyOutcome> {
+	const loaded = await ctx.ui.custom<ClarifyOutcome | null>((tui, theme, _kb, done) => {
+		const loader = new BorderedLoader(tui, theme, `Clarifying with ${model.provider}/${model.id}...`);
+		loader.onAbort = () => done({ result: "cancelled" });
+		void callModel(text, model, ctx, loader.signal)
+			.then((result) => done(result === null ? { result: "cancelled" } : { result: "ready", text: result }))
+			.catch((error) => done({ result: "failure", reason: error instanceof Error ? error.message : String(error) }));
+		return loader;
+	});
+	return loaded ?? { result: "cancelled" };
+}
 
-			const run = async () => {
-				try {
-					const result = await callModel(text, model, ctx, loader.signal);
-					if (result === null) {
-						done({ result: "cancelled" });
-						return;
-					}
-					done({ result: "ready", text: result });
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					done({ result: "failure", reason: message });
-				}
-			};
-
-			void run();
-			return loader;
-		});
-		if (loaded !== undefined && loaded !== null) {
-			return loaded;
-		}
-		return { result: "cancelled" };
-	}
-
+async function rewriteDirect(text: string, model: RewriteModel, ctx: ClarifyUi): Promise<ClarifyOutcome> {
 	try {
 		const rewritten = await callModel(text, model, ctx);
-		if (rewritten === null) {
-			return { result: "cancelled" };
-		}
-		return { result: "ready", text: rewritten };
+		return rewritten === null ? { result: "cancelled" } : { result: "ready", text: rewritten };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return { result: "failure", reason: message };
+		return { result: "failure", reason: error instanceof Error ? error.message : String(error) };
 	}
 }
 
 // One boundary maps every clarify outcome to UI text.
 function applyClarifyOutcome(outcome: ClarifyOutcome, ctx: ClarifyUi): void {
 	if (outcome.result === "ready") {
-		if (ctx.hasUI) {
-			ctx.ui.setEditorText?.(outcome.text);
-			ctx.ui.notify("Rewrite ready. Edit if needed, then send.", "info");
-			return;
-		}
-		ctx.ui.notify(outcome.text, "info");
+		applyReadyOutcome(outcome.text, ctx);
 		return;
 	}
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI) return;
+	ctx.ui.notify(outcome.result === "cancelled" ? "Cancelled" : outcome.reason, clarifyOutcomeLevel(outcome));
+}
+
+function clarifyOutcomeLevel(outcome: Exclude<ClarifyOutcome, { result: "ready" }>): "info" | "warning" | "error" {
+	if (outcome.result === "invalid") return "warning";
+	return outcome.result === "failure" ? "error" : "info";
+}
+
+function applyReadyOutcome(text: string, ctx: ClarifyUi): void {
+	if (ctx.hasUI) {
+		ctx.ui.setEditorText?.(text);
+		ctx.ui.notify("Rewrite ready. Edit if needed, then send.", "info");
 		return;
 	}
-	if (outcome.result === "cancelled") {
-		ctx.ui.notify("Cancelled", "info");
-		return;
-	}
-	if (outcome.result === "invalid") {
-		ctx.ui.notify(outcome.reason, "warning");
-		return;
-	}
-	ctx.ui.notify(outcome.reason, "error");
+	ctx.ui.notify(text, "info");
 }
 
 export type { ClarifyOutcome };
@@ -228,6 +203,7 @@ export { applyClarifyOutcome, USAGE };
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("clarify", {
 		description: "Rewrite a rough idea into a precise technical prompt (result goes in the editor)",
+		// oxlint-disable-next-line complexity
 		handler: async (args, ctx) => {
 			const rawArgs = (args ?? "").trim();
 			const ui: ClarifyUi = {
@@ -252,6 +228,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// oxlint-disable-next-line complexity
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") {
 			return { action: "continue" };

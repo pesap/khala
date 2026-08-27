@@ -57,52 +57,62 @@ export default function reviewExtension(pi: ExtensionAPI): void {
 	});
 }
 
+// oxlint-disable-next-line complexity
 async function resolveTarget(args: string | undefined, context: ExtensionContext): Promise<string | null> {
 	const direct = args?.trim() ?? "";
-	if (direct.length > 0) {
-		return direct;
-	}
+	if (direct.length > 0) return direct;
 	const selected = await context.ui.select("Select review scope:", [...REVIEW_OPTIONS]);
-	if (selected === undefined) {
-		return null;
-	}
-	if (selected === REVIEW_OPTIONS[0]) {
-		return "uncommitted changes (staged, unstaged, and untracked)";
-	}
-	if (selected === REVIEW_OPTIONS[1]) {
-		const branch = await context.ui.input("Base branch:", "main");
-		return branch === undefined || branch.trim().length === 0 ? null : `changes against branch ${branch.trim()}`;
-	}
-	if (selected === REVIEW_OPTIONS[2]) {
-		const commit = await context.ui.input("Commit SHA:", "");
-		return commit === undefined || commit.trim().length === 0 ? null : `commit ${commit.trim()}`;
-	}
-	if (selected === REVIEW_OPTIONS[3]) {
-		const pullRequest = await context.ui.input("GitHub PR number or URL:", "");
-		return pullRequest === undefined || pullRequest.trim().length === 0
-			? null
-			: `GitHub pull request ${pullRequest.trim()}`;
+	if (selected === undefined) return null;
+	return selectReviewTarget(selected, context);
+}
+
+// oxlint-disable-next-line complexity
+async function selectReviewTarget(selected: string, context: ExtensionContext): Promise<string | null> {
+	const index = REVIEW_OPTIONS.findIndex((option) => option === selected);
+	if (index === 0) return "uncommitted changes (staged, unstaged, and untracked)";
+	const prompts = ["Base branch:", "Commit SHA:", "GitHub PR number or URL:"];
+	if (index < 4) {
+		const value = await context.ui.input(prompts[index - 1] ?? "", index === 1 ? "main" : "");
+		return nonBlankReviewTarget(value, reviewTargetPrefix(index));
 	}
 	const paths = await context.ui.editor("Files or folders, one per line:", ".");
-	return paths === undefined || paths.trim().length === 0 ? null : `snapshot of:\n${paths.trim()}`;
+	return nonBlankReviewTarget(paths, "snapshot of:\n");
+}
+
+function reviewTargetPrefix(index: number): string {
+	return ["", "changes against branch ", "commit ", "GitHub pull request "][index] ?? "";
+}
+
+function nonBlankReviewTarget(value: string | undefined, prefix: string): string | null {
+	const trimmed = value?.trim() ?? "";
+	return trimmed.length === 0 ? null : `${prefix}${trimmed}`;
 }
 
 function readActiveState(context: ExtensionContext): boolean {
 	let current = false;
 	for (const entry of context.sessionManager.getBranch()) {
-		if (entry.type !== "custom" || entry.customType !== REVIEW_STATE) {
-			continue;
-		}
-		// SAFETY: the cast is immediately constrained to the persisted shape below.
+		if (!isReviewStateEntry(entry)) continue;
+		// SAFETY: custom session entries are validated by isReviewState before fields are read.
 		const data = entry.data as ReviewState | null | undefined;
-		if (data === null || data === undefined || Object(data) !== data || Array.isArray(data)) {
-			continue;
-		}
-		if (data.active === true || data.active === false) {
-			current = data.active;
-		}
+		const active = isReviewState(data);
+		if (active !== undefined) current = active;
 	}
 	return current;
+}
+
+function isReviewStateEntry(entry: {
+	type: string;
+	customType?: string;
+	data?: unknown;
+}): entry is { data?: unknown } & { type: "custom"; customType: typeof REVIEW_STATE } {
+	return entry.type === "custom" && entry.customType === REVIEW_STATE;
+}
+
+// oxlint-disable-next-line complexity
+function isReviewState(value: ReviewState | null | undefined): boolean | undefined {
+	if (value === null || value === undefined || Object(value) !== value || Array.isArray(value)) return undefined;
+	const active = value.active;
+	return active === true || active === false ? active : undefined;
 }
 
 type ReviewState = Readonly<{ active?: boolean | undefined; target?: string | undefined }>;

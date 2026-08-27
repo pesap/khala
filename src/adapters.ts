@@ -76,6 +76,7 @@ export class GitWorkspace implements WorkspacePort {
 		return this.inspectHead(sandbox.path);
 	}
 
+	// oxlint-disable-next-line complexity
 	async removeSandbox(sandbox: Execution["sandbox"]): Promise<void> {
 		if (this.projectPath === undefined) {
 			throw new Error("Workspace project path is not initialized.");
@@ -115,6 +116,7 @@ export class CommandCodeHost implements CodeHostPort {
 		return { principalId, verified: principalId.length > 0 };
 	}
 
+	// oxlint-disable-next-line complexity
 	async ensureReviewRequest(input: ReviewRequestInput): Promise<ReviewRequest> {
 		const title = `Khala: ${input.terms.title}`;
 		const generatedBody = [
@@ -293,6 +295,7 @@ export class CommandCodeHost implements CodeHostPort {
 		];
 	}
 
+	// oxlint-disable-next-line complexity
 	async inspectOutcome(reviewRequest: ReviewRequest): Promise<ProviderObservation | undefined> {
 		if (this.provider === "github") {
 			const data = await run(
@@ -415,6 +418,7 @@ function githubStatus(state: string, isDraft: boolean): ReviewRequest["status"] 
 	return "closed";
 }
 
+// oxlint-disable-next-line complexity
 function readRepository(row: Record<string, JsonValue>): string {
 	const value = row["repository"];
 	if (isJsonObject(value) && value["nameWithOwner"] !== undefined) return readTextValue(value, "nameWithOwner");
@@ -476,6 +480,7 @@ function readTextValue(row: Record<string, JsonValue>, key: string): string {
 	return String(value);
 }
 
+// oxlint-disable-next-line complexity
 function readValue(row: Record<string, JsonValue>, key: string): string {
 	const value = row[key];
 	if (value === undefined || value === null) {
@@ -511,6 +516,7 @@ function observation(
 	};
 }
 
+// oxlint-disable-next-line complexity
 function githubProviderDetails(
 	row: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
@@ -523,6 +529,7 @@ function githubProviderDetails(
 	];
 	const comments = sources.flatMap(({ source, entries }) => {
 		if (!Array.isArray(entries)) return [];
+		// oxlint-disable-next-line complexity
 		return entries.filter(isJsonObject).flatMap((entry) => {
 			const id = entry["id"];
 			if (id !== String(id) && id !== Number(id)) return [];
@@ -546,6 +553,7 @@ function githubProviderDetails(
 	});
 	const checks: ProviderCheck[] = (Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"] : [])
 		.filter(isJsonObject)
+		// oxlint-disable-next-line complexity
 		.flatMap((entry): readonly ProviderCheck[] => {
 			const checkRunName = entry["name"];
 			const checkRunStatus = entry["status"];
@@ -616,6 +624,7 @@ function githubFeedback(
 	];
 	return sources.flatMap(({ prefix, entries }) => {
 		if (!Array.isArray(entries)) return [];
+		// oxlint-disable-next-line complexity
 		return entries.filter(isJsonObject).flatMap((entry) => {
 			const body = entry["body"];
 			const id = entry["id"];
@@ -660,6 +669,7 @@ function githubFeedback(
 	});
 }
 
+// oxlint-disable-next-line complexity
 function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest["status"]): ReviewRequest["status"] {
 	if (isTextValue(row["mergedAt"])) return "merged";
 	const state = isTextValue(row["state"]) ? row["state"].toUpperCase() : "";
@@ -682,6 +692,7 @@ function githubAssociation(entry: Record<string, JsonValue>): string | undefined
 	return isTextValue(value) ? value.toUpperCase() : undefined;
 }
 
+// oxlint-disable-next-line complexity
 function githubFeedbackIsActionable(
 	prefix: string,
 	state: string,
@@ -709,6 +720,7 @@ function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
 }
 
+// oxlint-disable-next-line complexity
 export async function readPullRequestTemplate(projectPath: string): Promise<string | undefined> {
 	const paths = [
 		"pull_request_template.md",

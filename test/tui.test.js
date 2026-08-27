@@ -653,6 +653,7 @@ test("Archive lists every record newest first with one heading count", async () 
 	await result;
 });
 
+// oxlint-disable-next-line complexity
 test("Work picker stays minimal, shows active Work, and marks failures", async () => {
 	const screens = [];
 	const inspectedWorkIds = [];
