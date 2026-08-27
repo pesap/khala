@@ -91,6 +91,15 @@ runtime-loss evidence. A mandatory stop must abort and settle before its
 single-use handoff; missing or ambiguous evidence fails the targeted Execution
 and never creates synthetic evidence.
 
+When a critical supervision event reports a transport, startup, or recovery
+failure, read the authoritative Archive before acting. If the named Execution
+is failed, its Mission is still current, no other Executor is starting or
+running for that Mission, and no Coordination hold or outage blocks launch,
+call `khala_launch_execution` for the Work to start a replacement on the
+current Mission. Do not issue a Verdict for a failed Execution; if a current
+blocked Signal is awaiting a Verdict, follow the Signal and Verdict path
+instead.
+
 Use `khala_coordinate_work` for Conclave autonomous dependency or
 peer-conflict decisions only; it never records a User override. A pending User
 Priority is consumed from a priority wake: call `khala_apply_user_priority`

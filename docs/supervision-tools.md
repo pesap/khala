@@ -55,6 +55,18 @@ with nonempty evidence. Otherwise the Execution is failed and outstanding
 Interventions are closed with the exact failed Execution record; Khala never
 synthesizes a Signal or silently prompts again.
 
+## Runtime failure recovery
+
+A transport or startup failure can leave an Executor unable to submit
+`khala_signal`. Khala records the failed Execution and a bounded critical
+recovery event containing the Work, Mission, predecessor, replacement, and
+failure identity, then wakes the Conclave. The Conclave reads the authoritative
+Archive. When the Mission is still current and has no active Executor or
+Coordination hold, it calls `khala_launch_execution` for the Work to start a
+replacement on that Mission. It does not issue a Verdict for a failed
+Execution. If the Conclave cannot be reached, `/khala-recover` resumes the
+pending recovery path.
+
 ## Coordination and User Priority override
 
 Coordination identity is relation-specific. Dependency decisions require

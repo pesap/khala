@@ -24,6 +24,14 @@ does not prove a launch started. Confirm the Executor record and Archive before
 retrying. If cleanup or state is uncertain, let the Conclave recovery path
 settle it rather than manually creating a second Observer or Execution.
 
+A transport or startup failure can prevent an Executor from submitting
+`khala_signal`. Khala records the failed Execution and wakes the Conclave with a
+bounded critical recovery notification. The Conclave re-reads the Archive and
+calls `khala_launch_execution` for the current Work when the Mission is still
+current and no active Executor, Coordination hold, or outage blocks recovery.
+It does not issue a Verdict for a failed Execution. If the Conclave is
+unavailable, use `/khala-recover`.
+
 ## Currentness or delivery is uncertain
 
 Stop a lifecycle action when Work, Mandate revision, Mission, participant,

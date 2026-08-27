@@ -800,6 +800,8 @@ function formatCriticalPrompt(
 		`Mission ID: ${identity.missionId}`,
 		`Execution ID: ${identity.executionId}`,
 		`Critical event: ${reason}`,
+		"Read the authoritative Archive before acting. If the named Execution is failed and its current Mission has no active starting or running Executor or Coordination hold, call khala_launch_execution with that Work ID to start a replacement on the current Mission.",
+		"Do not issue a Verdict for a failed Execution. If a current blocked Signal is awaiting a Verdict, follow the Signal and Verdict path instead.",
 	].join("\n");
 }
 
