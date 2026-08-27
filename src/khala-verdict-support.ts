@@ -21,8 +21,11 @@ import type { readSignal } from "./khala-signal.js";
 import type { NormalizedVerdictInput, VerdictInput } from "./khala-verdict.js";
 
 const PARTICIPANT_HASH_LENGTH = 16;
-const ABSENT_MISSION_RATIONALE_PATTERN =
-	/\b(?:unstated|absent|invented|immutable)\s+(?:constraint|constraints|non goals?|authority boundaries?)\b/;
+const MISSION_CATEGORY_PATTERNS = [
+	{ pattern: /\bconstraints?\b/, key: "constraints" },
+	{ pattern: /\bnon goals?\b/, key: "nonGoals" },
+	{ pattern: /\bauthority(?: boundaries?)?\b/, key: "authority" },
+] as const;
 
 function processNewVerdict(input: {
 	params: VerdictInput;
@@ -247,7 +250,19 @@ function validateMissionReason(reason: string, mission: KhalaWork, mandate: Khal
 	if (!isReasonGroundedInMissionTerms(reason, mission, mandate)) {
 		throw new Error("The Verdict reason must cite at least one durable Mission or Mandate term.");
 	}
-	if (ABSENT_MISSION_RATIONALE_PATTERN.test(normalizeGroundingText(reason))) {
+	const normalizedReason = normalizeGroundingText(reason);
+	const categoryTerms = new Map([
+		["constraints", [...mission.constraints, ...mandate.constraints]],
+		["nonGoals", []],
+		["authority", []],
+	]);
+	if (
+		MISSION_CATEGORY_PATTERNS.some(
+			({ pattern, key }) =>
+				pattern.test(normalizedReason) &&
+				!containsNormalizedMissionTerm(normalizedReason, categoryTerms.get(key) ?? []),
+		)
+	) {
 		throw new Error(
 			"The Verdict reason cannot introduce an absent Mission constraint, non-goal, or authority boundary.",
 		);
@@ -296,13 +311,8 @@ function validateMissionSignalFence(
 }
 
 function isReasonGroundedInMissionTerms(reason: string, ...termSets: readonly KhalaWork[]): boolean {
-	const normalizedReason = normalizeGroundingText(reason);
-	if (normalizedReason.length === 0) {
-		return false;
-	}
-	const boundedReason = ` ${normalizedReason} `;
-	for (const terms of termSets) {
-		const values = [
+	return termSets.some((terms) =>
+		containsNormalizedMissionTerm(normalizeGroundingText(reason), [
 			terms.title,
 			terms.objective,
 			terms.context,
@@ -311,17 +321,19 @@ function isReasonGroundedInMissionTerms(reason: string, ...termSets: readonly Kh
 			...terms.constraints,
 			...terms.plan,
 			...terms.validation,
-		];
-		if (
-			values.some((term) => {
-				const normalizedTerm = normalizeGroundingText(term);
-				return normalizedTerm.length > 0 && boundedReason.includes(` ${normalizedTerm} `);
-			})
-		) {
-			return true;
-		}
+		]),
+	);
+}
+
+function containsNormalizedMissionTerm(normalizedReason: string, terms: readonly string[]): boolean {
+	if (normalizedReason.length === 0) {
+		return false;
 	}
-	return false;
+	const boundedReason = ` ${normalizedReason} `;
+	return terms.some((term) => {
+		const normalizedTerm = normalizeGroundingText(term);
+		return normalizedTerm.length > 0 && boundedReason.includes(` ${normalizedTerm} `);
+	});
 }
 
 function normalizeGroundingText(value: string): string {
