@@ -328,10 +328,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("before_agent_start", (event) => {
 		const role = sessionRole(pi);
-		if (role === "user") {
-			return;
-		}
-		const prompt = readFileSync(join(packageRoot, "system-prompts", rolePromptFiles[role]), "utf8");
+		if (role === "user") return;
+		const promptFile = rolePromptFiles[role];
+		if (promptFile === undefined) return;
+		const prompt = readFileSync(join(packageRoot, "system-prompts", promptFile), "utf8");
 		return { systemPrompt: `${event.systemPrompt}\n\n${prompt}` };
 	});
 	pi.on("session_shutdown", async () => {
@@ -410,7 +410,7 @@ function sessionRole(pi: ExtensionAPI): "user" | "conclave" | "observer" | "exec
 }
 
 function isSessionRole(value: string | boolean | undefined): value is "conclave" | "observer" | "executor" | "oracle" {
-	return SESSION_ROLES.get(String(value)) === value;
+	return value !== undefined && SESSION_ROLES.get(String(value)) === value;
 }
 
 function sessionActor(pi: ExtensionAPI): Actor {

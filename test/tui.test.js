@@ -523,7 +523,7 @@ test("Evidence lists Archive records and exposes provider comments", async () =>
 	assert.ok(evidence.indexOf("2    delivery") < evidence.indexOf("3    ready"));
 	assert.ok(evidence.indexOf("3    ready") < evidence.indexOf("4    review request"));
 	assert.match(evidence, /Next\s+Executor runtime is unreachable\. Recover it from Actions\./);
-	assert.match(evidence, /Learning\s+Archive learning is authoritative\.\s+Make the runtime constraint explicit\./);
+	assert.doesNotMatch(evidence, /Learning/);
 	assert.match(evidence, /Provider observation changed: review-comment/);
 	assert.match(evidence, /Authorized provider review feedback was delivered/);
 	assert.match(evidence, /Review comments\s+2 available/);

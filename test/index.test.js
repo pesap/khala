@@ -48,6 +48,7 @@ test("user sessions show a branded Executor status in the footer", async () => {
 			setActiveTools() {},
 		};
 		khalaExtension(pi);
+		assert.equal(await handlers.get("before_agent_start")({ systemPrompt: "base" }), undefined);
 		const context = {
 			cwd: directory,
 			isProjectTrusted: () => false,

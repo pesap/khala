@@ -1005,7 +1005,7 @@ async function showEvidence(
 			context,
 			"evidence",
 			keybindings,
-			formatEvidenceSupplement(work, evidenceRecords),
+			formatEvidenceSupplement(work),
 		);
 		if (selected === null) return;
 		if (selected === "comments") {
@@ -1068,33 +1068,9 @@ function selectRelevantEvidence(work: WorkView, records: readonly RecordView[]):
 	return [...selected.values()].sort((left, right) => left.sequence - right.sequence);
 }
 
-function formatEvidenceSupplement(work: WorkView, records: readonly RecordView[]): readonly PageSection[] {
-	const sections: PageSection[] = [];
+function formatEvidenceSupplement(work: WorkView): readonly PageSection[] {
 	const next = presentEvidenceText(work.nextAction);
-	if (next.length > 0) sections.push(pageSection([next], "Next"));
-	const learning = latestLearningLines(records);
-	if (learning.length > 0) sections.push(pageSection(learning, "Learning"));
-	return sections;
-}
-
-// oxlint-disable-next-line complexity
-function latestLearningLines(records: readonly RecordView[]): readonly string[] {
-	for (const record of [...records].reverse()) {
-		const payload = readPayloadObjectValue(record.payload);
-		const learning =
-			record.kind === "error"
-				? readPayloadObject(payload, "learning")
-				: record.kind === "learning"
-					? payload
-					: undefined;
-		if (learning === undefined) continue;
-		const lines = [readObjectText(learning, "missionSpecificity"), readObjectText(learning, "nextMissionGuidance")]
-			.filter((line): line is string => line !== undefined)
-			.map(presentEvidenceText)
-			.filter((line) => line.length > 0);
-		if (lines.length > 0) return lines;
-	}
-	return [];
+	return next.length === 0 ? [] : [pageSection([next], "Next")];
 }
 
 // oxlint-disable-next-line complexity
@@ -1421,15 +1397,10 @@ function recordDetailPayloadFields(record: RecordView): RecordDetailFields {
 		const learning = readPayloadObject(payload, "learning");
 		const failure = readObjectText(learning, "failure");
 		const remediation = readObjectText(payload, "remediation");
-		const learningLines = [
-			readObjectText(learning, "missionSpecificity"),
-			readObjectText(learning, "nextMissionGuidance"),
-		].filter((line): line is string => line !== undefined && line.trim().length > 0);
 		const sections = [
 			...formatRecordSummarySections(record, payload, "Error"),
 			...(remediation === undefined ? [] : [pageSection([remediation], "Recovery")]),
 			...(failure === undefined || failure.trim() === record.summary.trim() ? [] : [pageSection([failure], "Failure")]),
-			...(learningLines.length === 0 ? [] : [pageSection(learningLines, "Learning")]),
 		];
 		return { sections, displayed: ["summary", "remediation", "learning", "evidenceRefs"] };
 	}
