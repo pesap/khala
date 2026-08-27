@@ -524,7 +524,7 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 				}, null, null, conclaveContext),
 			/durable Mission or Mandate term/,
 		);
-		await runtimeTools.get("khala_verdict").execute("finish", { workId: "mission-work", executionId: secondExecution.executionId, signalId: finishedSignal.details.signalId, decision: "finish", reason: "The successor finishes acceptance criterion passed." }, null, null, conclaveContext);
+		await runtimeTools.get("khala_verdict").execute("finish", { workId: "mission-work", executionId: secondExecution.executionId, signalId: finishedSignal.details.signalId, decision: "finish", reason: "THE SUCCESSOR FINISHES! ACCEPTANCE CRITERION PASSED." }, null, null, conclaveContext);
 		assert.equal(readCurrentMission(projectPath, "mission-work").state, "finished");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;

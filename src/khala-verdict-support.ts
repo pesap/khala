@@ -319,7 +319,7 @@ function isReasonGroundedInMissionTerms(reason: string, ...termSets: readonly Kh
 
 function normalizeGroundingText(value: string): string {
 	return value
-		.toLocaleLowerCase()
+		.toLowerCase()
 		.replace(/[^\p{L}\p{N}]+/gu, " ")
 		.trim()
 		.replace(/\s+/g, " ");
