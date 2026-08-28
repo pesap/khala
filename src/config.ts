@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -95,7 +95,21 @@ export function persistRoleSetting(role: GovernedRole, setting: RoleSetting, val
 	const current = readConfig(path) ?? {};
 	const next = { ...current, [roleConfigKey(role, setting)]: normalized };
 	mkdirSync(agentDirectory(), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+	const temporaryPath = `${path}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+			flag: "wx",
+		});
+		renameSync(temporaryPath, path);
+	} finally {
+		try {
+			unlinkSync(temporaryPath);
+		} catch {
+			// The temporary file was renamed or was never created.
+		}
+	}
 }
 
 function roleConfigKey(role: GovernedRole, setting: RoleSetting): string {
@@ -119,10 +133,10 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		return base;
 	}
 	return {
-		archiveRoot: readPath(values, "archiveRoot", base.archiveRoot),
-		worktreeRoot: readPath(values, "worktreeRoot", base.worktreeRoot),
-		worktreeBranchPrefix: readText(values, "worktreeBranchPrefix", base.worktreeBranchPrefix),
-		targetBranch: readText(values, "targetBranch", base.targetBranch),
+		archiveRoot: readRequiredPath(values, "archiveRoot", base.archiveRoot),
+		worktreeRoot: readRequiredPath(values, "worktreeRoot", base.worktreeRoot),
+		worktreeBranchPrefix: readNonBlank(values, "worktreeBranchPrefix", base.worktreeBranchPrefix),
+		targetBranch: readNonBlank(values, "targetBranch", base.targetBranch),
 		maxConcurrentExecutions: readPositive(values, "maxConcurrentExecutions", base.maxConcurrentExecutions),
 		defaultWorkTokens: readPositive(values, "defaultWorkTokens", base.defaultWorkTokens),
 		piCommand: readTextList(values, "piCommand", base.piCommand),
@@ -152,8 +166,14 @@ function readText(values: JsonObject, key: string, fallback: string): string {
 	return String(value);
 }
 
-function readPath(values: JsonObject, key: string, fallback: string): string {
-	return readText(values, key, fallback).replace(/^~(?=\/|$)/, homedir());
+function readRequiredPath(values: JsonObject, key: string, fallback: string): string {
+	return readNonBlank(values, key, fallback).replace(/^~(?=\/|$)/, homedir());
+}
+
+function readNonBlank(values: JsonObject, key: string, fallback: string): string {
+	const value = readText(values, key, fallback).trim();
+	if (value.length === 0) throw new ConfigError(`${key} must not be blank.`);
+	return value;
 }
 
 function readKeybinding(values: JsonObject, key: string, fallback: string): string {
@@ -183,10 +203,14 @@ function readTextList(values: JsonObject, key: string, fallback: readonly string
 	if (value === undefined) {
 		return fallback;
 	}
-	if (!Array.isArray(value)) {
+	if (!Array.isArray(value) || value.length === 0) {
 		throw new ConfigError(`${key} must be a nonempty string list.`);
 	}
-	return value.map((entry) => readStringValue(entry, key));
+	return value.map((entry) => {
+		const text = readStringValue(entry, key).trim();
+		if (text.length === 0) throw new ConfigError(`${key} must contain no blank entries.`);
+		return text;
+	});
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {

@@ -5,7 +5,15 @@ import { type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@e
 import { type Static, Type } from "typebox";
 import { persistRoleSetting } from "./config.js";
 import { type ApplicationRuntime, createApplication } from "./factory.js";
-import type { Actor, CommandMeta, JsonObject, JsonValue, MutableRecordQuery, RecordKind } from "./model.js";
+import {
+	type Actor,
+	type CommandMeta,
+	isRecordKind as isModelRecordKind,
+	type JsonObject,
+	type JsonValue,
+	type MutableRecordQuery,
+	type RecordKind,
+} from "./model.js";
 import { ApplicationError } from "./service.js";
 import { showKhala } from "./tui.js";
 
@@ -135,6 +143,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		parameters: submitSchema,
 		async execute(toolCallId, params: SubmitParams, _signal, _onUpdate, context) {
 			try {
+				requireSessionRole(pi, "user");
 				const service = getRuntime(context).service;
 				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
 				schedulePendingEffects(service);
@@ -179,6 +188,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({ workId: Type.String(), expectedWorkRevision: Type.Integer({ minimum: 0 }) }),
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
 			try {
+				requireSessionRole(pi, "user");
 				const service = getRuntime(context).service;
 				const work = await service.pollProvider(
 					params.workId,
@@ -236,13 +246,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
-			const result = await getRuntime(context).service.perform({
-				action: "record-signal",
-				workId: params.workId,
-				input: { kind: params.kind, summary: params.summary, evidence: params.evidence },
-				meta: meta("executor", `tool:signal:${toolCallId}`, params.expectedWorkRevision),
-			});
-			return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+			try {
+				requireSessionRole(pi, "executor");
+				const result = await getRuntime(context).service.perform({
+					action: "record-signal",
+					workId: params.workId,
+					input: { kind: params.kind, summary: params.summary, evidence: params.evidence },
+					meta: meta("executor", `tool:signal:${toolCallId}`, params.expectedWorkRevision),
+				});
+				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+			} catch (error) {
+				return error instanceof Error
+					? toolErrorFromError(error, "Executor signal recording failed.")
+					: toolErrorText("Executor signal recording failed.");
+			}
 		},
 	});
 
@@ -257,13 +274,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
-			const result = await getRuntime(context).service.perform({
-				action: "record-assessment",
-				workId: params.workId,
-				input: { summary: params.summary, evidence: params.evidence },
-				meta: meta("observer", `tool:assessment:${toolCallId}`, params.expectedWorkRevision),
-			});
-			return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+			try {
+				requireSessionRole(pi, "observer");
+				const result = await getRuntime(context).service.perform({
+					action: "record-assessment",
+					workId: params.workId,
+					input: { summary: params.summary, evidence: params.evidence },
+					meta: meta("observer", `tool:assessment:${toolCallId}`, params.expectedWorkRevision),
+				});
+				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+			} catch (error) {
+				return error instanceof Error
+					? toolErrorFromError(error, "Observer assessment recording failed.")
+					: toolErrorText("Observer assessment recording failed.");
+			}
 		},
 	});
 
@@ -277,13 +301,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
-			const result = await getRuntime(context).service.perform({
-				action: "run-oracle",
-				workId: params.workId,
-				input: { subject: params.subject },
-				meta: meta("conclave", `tool:oracle:${toolCallId}`, params.expectedWorkRevision),
-			});
-			return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+			try {
+				requireSessionRole(pi, "conclave");
+				const result = await getRuntime(context).service.perform({
+					action: "run-oracle",
+					workId: params.workId,
+					input: { subject: params.subject },
+					meta: meta("conclave", `tool:oracle:${toolCallId}`, params.expectedWorkRevision),
+				});
+				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+			} catch (error) {
+				return error instanceof Error
+					? toolErrorFromError(error, "Oracle review failed.")
+					: toolErrorText("Oracle review failed.");
+			}
 		},
 	});
 
@@ -437,6 +468,18 @@ function sessionActor(pi: ExtensionAPI): Actor {
 	return sessionRole(pi);
 }
 
+function requireSessionRole(pi: ExtensionAPI, expected: Exclude<Actor, "monitor" | "system">): void {
+	const actual = sessionRole(pi);
+	if (actual !== expected)
+		throw new ApplicationError({
+			code: "forbidden",
+			summary: `The ${expected} tool requires a ${expected} session.`,
+			retryable: false,
+			remediation: "Use the tool from its bound Khala role session.",
+			evidenceRefs: [],
+		});
+}
+
 function setRoleTools(pi: ExtensionAPI): void {
 	const allowed = roleTools(sessionRole(pi));
 	pi.setActiveTools(pi.getActiveTools().filter((name) => !name.startsWith("khala_") || allowed.has(name)));
@@ -564,23 +607,7 @@ function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
 }
 
 function isRecordKind(value: string): value is RecordKind {
-	return [
-		"submission",
-		"assessment",
-		"learning",
-		"mission",
-		"mission-change",
-		"execution",
-		"signal",
-		"review-request",
-		"observation",
-		"delivery",
-		"verdict",
-		"oracle-review",
-		"outcome",
-		"error",
-		"work-amended",
-	].includes(value);
+	return isModelRecordKind(value);
 }
 
 function toolResult(value: JsonValue, isError: boolean): ToolResult {
@@ -592,7 +619,17 @@ function toolError(error: JsonObject): ToolErrorResult {
 }
 
 function toolErrorText(message: string): ToolErrorResult {
-	return toolError({ summary: message });
+	return toolError({
+		code: "external-failure",
+		summary: message,
+		retryable: true,
+		remediation: "Inspect the error and retry the operation when the underlying failure is resolved.",
+		evidenceRefs: [],
+	});
+}
+
+function toolErrorFromError(error: Error, fallback: string): ToolErrorResult {
+	return error instanceof ApplicationError ? toolError(error.envelope) : toolErrorText(error.message || fallback);
 }
 
 // oxlint-disable-next-line complexity

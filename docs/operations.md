@@ -48,7 +48,7 @@ Outbox claims expire after two minutes and are renewed while an effect is runnin
 A transient Conclave startup failure receives one retry in the runtime and one retry in the outbox worker.
 Semantic decisions are never retried automatically.
 
-Work reserves half of its remaining token budget for each new Execution, with a minimum allowance of one token.
+Work reserves half of its configured token cap for each new Execution, with a minimum allowance of one token.
 Khala charges observed input and output tokens as each Executor turn completes.
 A budget-exhausted Execution is blocked and requires replacement or a Work budget amendment.
 Pi does not provide a per-session output-limit option through the RPC interface, so a single turn can exceed the allowance before Khala records the usage.
@@ -61,8 +61,9 @@ Closing the User session waits for active monitor, effect, and runtime operation
 
 Run `khala-recover` after reopening a project when a child may have been interrupted.
 The command drains pending effects and reconciles persisted runtime bindings.
+The User recovery action can rebind an unreachable Executor through the parent supervisor.
 The autonomous monitor performs the same work on its next cycle.
-An unreachable Executor is rebound only by a Conclave-authorized recovery effect.
+Child role sessions cannot invoke User recovery tools or impersonate the parent.
 A reachable Executor is never replaced by a recovery probe.
 
 If recovery fails, inspect the Work's error and execution records before choosing replacement, Mission amendment, or explicit Work failure.
@@ -80,7 +81,8 @@ Only `github.com` and `gitlab.com` origins are supported.
 The authenticated `gh` or `glab` session supplies provider identity.
 Khala stores provider IDs and URLs but does not store provider credentials.
 
-The target branch must still point to the recorded Execution base commit when a review request is published.
+Khala refreshes the configured remote target branch before creating an Execution and before publishing a review request.
+The target branch must still point to the recorded Execution base commit when publication begins.
 A changed target branch requires rebasing or replacing the Execution.
 Remote review requests and branches remain for audit after local cleanup.
 Khala does not automatically close or delete remote review objects.
@@ -94,7 +96,7 @@ Khala fails closed on malformed projections or unsupported Archive integrity fai
 
 Raw child transcripts are not copied into the Archive.
 Pi session files can remain in the sandbox or configured temporary session directory until normal cleanup.
-Provider text is stored as bounded untrusted evidence.
+Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
 Review request bodies include the Work objective, acceptance criteria, and validation commands.
 Do not submit secrets or sensitive data as Work context or provider feedback.
 

@@ -44,7 +44,8 @@ CommandMeta {
 ```
 
 The service revalidates actor, action, current state, input, and revision.
-A repeated command ID returns its earlier result for the same Work.
+Active tool filtering is only a convenience; every handler also enforces its session role.
+A repeated command ID returns its current Work projection and the original record for the same Work.
 A revision conflict requires a reread and never performs an implicit semantic retry.
 
 ## Provider polling
@@ -57,9 +58,12 @@ It never merges or accepts Work automatically.
 GitHub polling normalizes checks, issue comments, submitted reviews, inline comments, and provider outcomes.
 GitLab polling currently normalizes review-request status and provider outcomes only.
 GitHub feedback can be delivered after Conclave Mission-fit assessment.
+Provider feedback is untrusted evidence and is quoted before it reaches an Executor.
 GitLab feedback delivery is not part of the MVP.
 
 A changed Executor runtime is persisted.
+The parent User recovery action can rebind an unreachable runtime.
+Child role sessions cannot invoke User recovery tools or impersonate the parent.
 An unreachable runtime schedules a Conclave recovery wake.
 A transient Conclave startup exit is retried once by the runtime and once by the outbox worker.
 Persistent failures remain pending with durable evidence.
@@ -73,5 +77,6 @@ A failed delivery releases that same effect for a later cycle.
 A completed Delivery cannot be redelivered.
 
 The parent supervisor owns Executor launches and child cleanup.
+Persistent session leases prevent two supervisors from owning one child session.
 Child Conclave and Executor services do not start another root monitor.
-Service shutdown waits for monitor, effect, and background runtime operations before closing the Runtime or Archive.
+Service shutdown waits for monitor, effect, background runtime operations, and in-flight child launches before closing the Runtime or Archive.

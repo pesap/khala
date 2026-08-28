@@ -65,7 +65,7 @@ Direct `write` and `edit` calls outside those paths are blocked in the Executor 
 The service also rejects publication and ready evidence when the Git change set contains an outside path.
 Bash commands remain process-scoped and their resulting Git change set is checked before publication.
 
-Each Execution reserves half of the remaining Work budget, rounded down with a minimum of one token.
+Each Execution reserves half of the configured Work token cap, rounded down with a minimum of one token.
 The reservation is released when the Execution ends.
 Observed input and output tokens are charged against the reservation as turns complete.
 Cache counters remain usage metadata and are not added a second time to the budget total.
@@ -124,6 +124,7 @@ A `ready` Signal requires a current review request, head, diff, validation, and 
 
 A draft review request is created through a reconciled application action before `ready`.
 Khala commits and publishes the sandbox branch, then passes the branch and current head to the provider adapter.
+Khala refreshes the configured remote target branch before creating an Execution and before publication.
 The target branch must still point to the Execution's base commit at publication time.
 GitHub Pull Requests and GitLab Merge Requests are supported review-request types.
 `gh` and `glab` use their own authenticated sessions.
@@ -265,7 +266,8 @@ Configuration precedence and defaults are documented in [Operations](operations.
 Expected failures use the typed `ErrorEnvelope` when they pass through `perform`.
 A direct submission error is converted to a tool error by the Pi adapter.
 Khala may retry idempotent transport calls.
-It never silently retries semantic decisions, substitutes a model, increases an allowance, merges code, changes scope, or redelivers feedback.
+It never silently retries semantic decisions, substitutes a model, increases an allowance, merges code, changes scope, or redelivers completed feedback.
+Failed feedback remains durable evidence and requires an explicit retry after reconciliation.
 
 Archive deletion, replacement, or integrity failure fails closed because Khala has no in-process restore mechanism.
 The SQLite Archive uses WAL mode and short `BEGIN IMMEDIATE` transactions.

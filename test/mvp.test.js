@@ -1200,12 +1200,80 @@ test("authorized review feedback resumes the same Execution instead of leaving i
 	assert.equal(reviewed.value.missionState, "active");
 	await service.processPendingEffects();
 	assert.equal(controls.prompts.some((entry) => entry.message.includes("missing regression test")), true);
+	const deliveries = service.readRecords(
+		{ workId: running.workId, kinds: ["delivery"] },
+		meta("user", "feedback:deliveries", service.inspectWork(running.workId).revision),
+	);
+	assert.equal(deliveries.items.some((record) => record.payload.delivered === true && record.payload.observationId === undefined), true);
 	const resumed = service.inspectWork(running.workId);
 	controls.head = "feedback-head";
 	const republished = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "feedback:republish", resumed.revision, running.workId, running.execution.executionId) });
 	assert.equal(republished.value.reviewRequest.headCommit, "feedback-head");
 	const readyAgain = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Updated and validated", evidence: ["feedback-head", "validation"] }, meta: meta("executor", "feedback:ready-again", republished.value.revision, running.workId, running.execution.executionId) });
 	assert.equal(readyAgain.value.lastSignal.kind, "ready");
+	await service.close();
+});
+
+test("provider feedback from another review head cannot be delivered", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-stale-feedback-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "stale-feedback");
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "stale-feedback:review", running.revision, running.workId, running.execution.executionId),
+	});
+	controls.pollObservations = [
+		{
+			observationId: "review-comment:42:stale",
+			kind: "review-comment",
+			providerId: review.value.reviewRequest.providerId,
+			status: "changes-requested",
+			summary: "Stale feedback",
+			feedback: ["Stale feedback"],
+			actionable: true,
+			repository: "another/project",
+			sourceBranch: review.value.reviewRequest.sourceBranch,
+			targetBranch: review.value.reviewRequest.targetBranch,
+			headCommit: review.value.reviewRequest.headCommit,
+			changed: true,
+			observedAt: new Date().toISOString(),
+		},
+	];
+	const observed = await service.pollProvider(running.workId, meta("user", "stale-feedback:poll", review.value.revision));
+	const result = await service.perform({
+		action: "deliver-feedback",
+		workId: running.workId,
+		input: { observationId: observed.lastObservation.observationId },
+		meta: meta("conclave", "stale-feedback:deliver", observed.revision, running.workId),
+	});
+	assert.equal("error" in result, true);
+	assert.equal(result.error.code, "invalid-state");
+
+	controls.pollObservations[0] = {
+		...controls.pollObservations[0],
+		repository: review.value.reviewRequest.repository,
+	};
+	const current = await service.pollProvider(
+		running.workId,
+		meta("user", "stale-feedback:poll-current", service.inspectWork(running.workId).revision),
+	);
+	const firstDelivery = await service.perform({
+		action: "deliver-feedback",
+		workId: running.workId,
+		input: { observationId: current.lastObservation.observationId },
+		meta: meta("conclave", "stale-feedback:deliver-first", current.revision, running.workId),
+	});
+	const duplicateDelivery = await service.perform({
+		action: "deliver-feedback",
+		workId: running.workId,
+		input: { observationId: current.lastObservation.observationId },
+		meta: meta("conclave", "stale-feedback:deliver-duplicate", firstDelivery.value.revision, running.workId),
+	});
+	assert.equal("error" in firstDelivery, false);
+	assert.equal("error" in duplicateDelivery, false);
+	assert.equal(duplicateDelivery.value.revision, firstDelivery.value.revision);
 	await service.close();
 });
 
@@ -1370,10 +1438,15 @@ test("GitHub review feedback wakes the Conclave and resumes the same Execution w
 	controls.pollObservations = [7, 8].map((id) => ({
 		observationId: `review-comment:42:${id}`,
 		kind: "review-comment",
+		repository: review.value.reviewRequest.repository,
+		sourceBranch: review.value.reviewRequest.sourceBranch,
+		targetBranch: review.value.reviewRequest.targetBranch,
+		headCommit: review.value.reviewRequest.headCommit,
 		providerId: "42",
 		status: "changes-requested",
 		summary: `Please address review comment ${id}.`,
 		feedback: [`Please address review comment ${id}.`],
+		actionable: true,
 		changed: true,
 		observedAt: new Date().toISOString(),
 	}));

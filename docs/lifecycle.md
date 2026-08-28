@@ -27,7 +27,7 @@ Work that cannot start remains queued with the relevant waiting message.
 The Executor receives one Mission in an isolated Git worktree and a separate Pi JSON-RPC session.
 Model, thinking level, token allowance, sandbox, permitted paths, and prompt identity are persisted before the child starts.
 
-Each Execution reserves half of the remaining Work budget with a minimum allowance of one token.
+Each Execution reserves half of the configured Work token cap with a minimum allowance of one token.
 Observed input and output tokens are charged as turns complete.
 When usage reaches the allowance, the Execution becomes `blocked` with `blockReason` `budget-exhausted`.
 The Conclave must replace it or amend the Work budget.
@@ -65,15 +65,17 @@ It never merges or accepts Work automatically.
 
 GitHub feedback is actionable only when the authenticated review principal and trusted association checks pass.
 The Conclave decides whether feedback fits the Mission before creating one Delivery.
-A completed Delivery cannot be replayed.
-Failed delivery remains evidence for reconciliation.
+A completed Delivery cannot be replayed silently.
+Failed delivery remains evidence and can be explicitly retried after the Executor is reconciled.
 
 ## Recovery and closure
 
 The parent supervisor owns Executor launches and consumes durable outbox effects.
 The supervisor is not a standalone daemon and ends with the hosting User Pi session.
 Run `khala-recover` after reopening a project to drain pending effects and reconcile persisted bindings.
+The User recovery action can rebind an unreachable Executor through the parent supervisor.
 The autonomous monitor performs the same work on its next cycle.
+Child role sessions cannot invoke User recovery tools or impersonate the parent.
 
 A runtime probe reports `working`, `pending`, `idle`, `unreachable`, or `unknown`.
 A PID alone does not prove that Work is active.

@@ -77,6 +77,7 @@ type MutableChild = {
 	lastError: string;
 	closed: boolean;
 	sending: boolean;
+	latePromptError: Error | undefined;
 	lastAgentEnd: Promise<string> | undefined;
 	resolveAgentEnd: ((output: string) => void) | undefined;
 	rejectAgentEnd: ((error: Error) => void) | undefined;
@@ -89,23 +90,36 @@ type RpcCommandData = Readonly<{ message?: string | undefined }>;
 export class PiRpcRuntime implements AgentRuntimePort {
 	private readonly children = new Map<string, MutableChild>();
 	private readonly sessionLaunches = new Map<string, Promise<RuntimeBinding>>();
+	private readonly launches = new Set<Promise<RuntimeBinding>>();
 	private readonly options: PiRuntimeOptions;
+	private closing = false;
 
 	constructor(options: PiRuntimeOptions) {
 		this.options = options;
 	}
 
 	async ensureSession(input: Parameters<AgentRuntimePort["ensureSession"]>[0]): Promise<RuntimeBinding> {
-		if (input.sessionPath === undefined) return this.startSessionWithRetry(input);
-		const active = this.sessionLaunches.get(input.sessionPath);
-		if (active !== undefined) return active;
-		const launch = this.startSessionWithRetry(input);
-		this.sessionLaunches.set(input.sessionPath, launch);
-		try {
-			return await launch;
-		} finally {
-			if (this.sessionLaunches.get(input.sessionPath) === launch) this.sessionLaunches.delete(input.sessionPath);
-		}
+		if (this.closing) throw new Error("Pi runtime is closed.");
+		return input.sessionPath === undefined
+			? this.trackLaunch(this.startSessionWithRetry(input))
+			: this.ensurePersistentSession(input);
+	}
+
+	private ensurePersistentSession(input: Parameters<AgentRuntimePort["ensureSession"]>[0]): Promise<RuntimeBinding> {
+		const sessionPath = input.sessionPath ?? "";
+		const active = this.sessionLaunches.get(sessionPath);
+		return active ?? this.startPersistentSession(input, sessionPath);
+	}
+
+	private startPersistentSession(
+		input: Parameters<AgentRuntimePort["ensureSession"]>[0],
+		sessionPath: string,
+	): Promise<RuntimeBinding> {
+		const launch = this.trackLaunch(this.startSessionWithRetry(input));
+		this.sessionLaunches.set(sessionPath, launch);
+		return launch.finally(() => {
+			if (this.sessionLaunches.get(sessionPath) === launch) this.sessionLaunches.delete(sessionPath);
+		});
 	}
 
 	private async startSessionWithRetry(
@@ -122,6 +136,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 
 	// oxlint-disable-next-line complexity
 	private async startSession(input: Parameters<AgentRuntimePort["ensureSession"]>[0]): Promise<RuntimeBinding> {
+		if (this.closing) throw new Error("Pi runtime is closed.");
 		const args = [
 			...this.options.command.slice(1),
 			"--mode",
@@ -203,6 +218,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			lastOutput: "",
 			turnUsage: undefined,
 			lastError: "",
+			latePromptError: undefined,
 			closed: false,
 			sending: false,
 			lastAgentEnd: undefined,
@@ -220,12 +236,19 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			promptIdentity: input.promptIdentity,
 		};
 		try {
+			if (this.closing) throw new Error("Pi runtime is closed.");
 			if (input.sessionPath !== undefined) await writeLaunchLease(input.sessionPath, child.binding, capabilityFile);
 		} catch (error) {
 			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
 			killChild(child);
 			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
 			throw error;
+		}
+		if (this.closing) {
+			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
+			killChild(child);
+			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+			throw new Error("Pi runtime is closed.");
 		}
 		const key = `child-${++childCounter}`;
 		this.children.set(key, child);
@@ -270,6 +293,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			throw new Error(`Pi session ${binding.sessionId} is already processing a prompt.`);
 		}
 		child.turnUsage = undefined;
+		child.latePromptError = undefined;
 		child.lastOutput = "";
 		child.sending = true;
 		const completion = waitForAgentEnd(child, this.options.agentTimeoutMs ?? 1_800_000);
@@ -287,6 +311,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 				throw new Error(response.error ?? "Pi rejected the prompt.");
 			}
 			const output = await completion;
+			if (child.latePromptError !== undefined) throw child.latePromptError;
 			const usage = child.turnUsage;
 			return usage === undefined ? { output } : { output, usage };
 		} catch (error) {
@@ -339,12 +364,21 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	}
 
 	async close(): Promise<void> {
+		if (this.closing) return;
+		this.closing = true;
+		await Promise.allSettled(this.launches);
 		for (const child of this.children.values()) {
 			rejectAgentEnd(child, new Error("Pi runtime closed."));
 			killChild(child);
 			this.removeChild(child);
 		}
 		this.children.clear();
+	}
+
+	private trackLaunch(launch: Promise<RuntimeBinding>): Promise<RuntimeBinding> {
+		this.launches.add(launch);
+		void launch.finally(() => this.launches.delete(launch)).catch(() => undefined);
+		return launch;
 	}
 
 	private removeChild(child: MutableChild): void {
@@ -442,6 +476,8 @@ function consumeLines(child: MutableChild): void {
 					child.pending.delete(response.id);
 					clearTimeout(pending.timer);
 					pending.resolve(response);
+				} else if (response.command === "prompt" && !response.success) {
+					child.latePromptError = new Error(response.error ?? "Pi rejected the prompt.");
 				}
 			}
 			continue;
@@ -710,10 +746,26 @@ function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boole
 }
 
 function killChild(child: MutableChild): void {
-	killProcessGroup(child.binding.processGroupId ?? child.process.pid, child.binding.processStartTime);
-	// The direct handle is owned by this runtime; only persisted process IDs use the start-time check above.
+	if (child.binding.processStartTime !== undefined)
+		killProcessGroup(child.binding.processGroupId ?? child.process.pid, child.binding.processStartTime);
+	else killOwnedProcessGroup(child.process);
 	child.process.kill();
 	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+}
+
+function killOwnedProcessGroup(childProcess: ChildProcessWithoutNullStreams): void {
+	const processGroupId = ownedProcessGroupId(childProcess);
+	if (processGroupId === undefined) return;
+	try {
+		process.kill(-processGroupId, "SIGKILL");
+	} catch {
+		// The process group may have exited before reconciliation.
+	}
+}
+
+function ownedProcessGroupId(childProcess: ChildProcessWithoutNullStreams): number | undefined {
+	if (process.platform === "win32" || childProcess.exitCode !== null) return;
+	return childProcess.pid ?? undefined;
 }
 
 function request(child: MutableChild, command: string, data: RpcCommandData, timeoutMs: number): Promise<RpcResponse> {

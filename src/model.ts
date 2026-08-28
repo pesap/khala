@@ -54,7 +54,18 @@ export const RECORD_KINDS = [
 ] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
 
-export type Actor = "user" | "conclave" | "observer" | "executor" | "oracle" | "monitor" | "system";
+export const ACTORS = ["user", "conclave", "observer", "executor", "oracle", "monitor", "system"] as const;
+export type Actor = (typeof ACTORS)[number];
+
+export function isRecordKind(value: string): value is RecordKind {
+	// SAFETY: the cast only adapts the broad input to the literal-union argument required by includes.
+	return RECORD_KINDS.includes(value as RecordKind);
+}
+
+export function isActor(value: string): value is Actor {
+	// SAFETY: the cast only adapts the broad input to the literal-union argument required by includes.
+	return ACTORS.includes(value as Actor);
+}
 
 export const GOVERNED_ROLES = ["conclave", "executor", "observer", "oracle"] as const;
 export type GovernedRole = (typeof GOVERNED_ROLES)[number];

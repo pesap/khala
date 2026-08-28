@@ -31,8 +31,8 @@ export class GitWorkspace implements WorkspacePort {
 	async preflight(projectPath: string, targetBranch: string): Promise<WorkspacePreflight> {
 		this.projectPath = projectPath;
 		const origin = await git(projectPath, ["remote", "get-url", "origin"]);
-		await git(projectPath, ["rev-parse", "--verify", targetBranch]);
-		const headCommit = await git(projectPath, ["rev-parse", targetBranch]);
+		await git(projectPath, ["fetch", "--no-tags", "origin", targetBranch]);
+		const headCommit = await git(projectPath, ["rev-parse", `refs/remotes/origin/${targetBranch}`]);
 		return { projectPath, origin, targetBranch, headCommit };
 	}
 
@@ -301,7 +301,7 @@ export class CommandCodeHost implements CodeHostPort {
 					status: githubPollStatus(row, reviewRequest.status),
 					details,
 				},
-				...githubFeedback(row, reviewRequest.providerId, reviewRequest.principalId, inlineComments),
+				...githubFeedback(row, reviewRequest, inlineComments),
 			];
 		}
 		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
@@ -347,7 +347,7 @@ export class CommandCodeHost implements CodeHostPort {
 			sourceBranch: readTextValue(row, "source_branch"),
 			targetBranch: readTextValue(row, "target_branch"),
 			headCommit: readTextValue(row, "sha"),
-			mergeCommit: readTextValue(row, "merge_commit_sha"),
+			mergeCommit: readOptionalTextValue(row, "merge_commit_sha") ?? readTextValue(row, "sha"),
 		});
 	}
 }
@@ -490,6 +490,12 @@ function gitlabStatus(state: string, draft: boolean): ReviewRequest["status"] {
 	if (state.toLowerCase() === "merged") return "merged";
 	if (state.toLowerCase() !== "opened") return "closed";
 	return draft ? "draft" : "open";
+}
+
+function readOptionalTextValue(row: Record<string, JsonValue>, key: string): string | undefined {
+	const value = row[key];
+	const text = isTextValue(value) ? value.trim() : "";
+	return text.length === 0 ? undefined : text;
 }
 
 function readTextValue(row: Record<string, JsonValue>, key: string): string {
@@ -671,8 +677,7 @@ function githubCommentUrl(entry: Record<string, JsonValue>): string | undefined 
 
 function githubFeedback(
 	row: Record<string, JsonValue>,
-	providerId: string,
-	principalId: string,
+	reviewRequest: ReviewRequest,
 	inlineComments: readonly Record<string, JsonValue>[] = [],
 ): readonly ProviderObservation[] {
 	const sources = [
@@ -680,50 +685,62 @@ function githubFeedback(
 		{ prefix: "review", entries: row["reviews"] },
 		{ prefix: "inline", entries: inlineComments },
 	];
-	return sources.flatMap(({ prefix, entries }) => {
-		if (!Array.isArray(entries)) return [];
-		// oxlint-disable-next-line complexity
-		return entries.filter(isJsonObject).flatMap((entry) => {
-			const body = entry["body"];
-			const id = entry["id"];
-			const state = isTextValue(entry["state"]) ? entry["state"].toUpperCase() : "";
-			const author = githubAuthor(entry);
-			const authorAssociation = githubAssociation(entry);
-			const actionable = githubFeedbackIsActionable(prefix, state, authorAssociation, author, principalId);
-			if (
-				!isTextValue(body) ||
-				body.trim().length === 0 ||
-				(id !== String(id) && id !== Number(id)) ||
-				(prefix === "review" && ["APPROVED", "DISMISSED"].includes(state))
-			)
-				return [];
-			const commentId = String(id);
-			const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
-			const line = entry["line"] === undefined ? undefined : String(entry["line"]);
-			const location = path === undefined ? "" : ` (${path}${line === undefined ? "" : `:${line}`})`;
-			const feedback = `${body.trim()}${location}`.slice(0, 2_000);
-			const observationId =
-				prefix === "comment"
-					? `review-comment:${providerId}:${commentId}`
-					: `review-comment:${providerId}:${prefix}:${commentId}`;
-			return [
-				observation(
-					"review-comment",
-					providerId,
-					feedback,
-					state === "CHANGES_REQUESTED" ? "changes-requested" : "commented",
-					{
-						observationId,
-						feedback: [feedback],
-						author,
-						authorAssociation,
-						reviewState: state || undefined,
-						actionable,
-					},
-				),
-			];
-		});
-	});
+	return sources
+		.flatMap(({ prefix, entries }) => {
+			if (!Array.isArray(entries)) return [];
+			// oxlint-disable-next-line complexity
+			return entries.filter(isJsonObject).flatMap((entry) => {
+				const body = entry["body"];
+				const id = entry["id"];
+				const state = isTextValue(entry["state"]) ? entry["state"].toUpperCase() : "";
+				const author = githubAuthor(entry);
+				const authorAssociation = githubAssociation(entry);
+				const actionable = githubFeedbackIsActionable(
+					prefix,
+					state,
+					authorAssociation,
+					author,
+					reviewRequest.principalId,
+				);
+				if (
+					!isTextValue(body) ||
+					body.trim().length === 0 ||
+					(id !== String(id) && id !== Number(id)) ||
+					(prefix === "review" && ["APPROVED", "DISMISSED"].includes(state))
+				)
+					return [];
+				const commentId = String(id);
+				const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
+				const line = entry["line"] === undefined ? undefined : String(entry["line"]);
+				const location = path === undefined ? "" : ` (${path}${line === undefined ? "" : `:${line}`})`;
+				const feedback = `${body.trim()}${location}`.slice(0, 2_000);
+				const observationId =
+					prefix === "comment"
+						? `review-comment:${reviewRequest.providerId}:${commentId}`
+						: `review-comment:${reviewRequest.providerId}:${prefix}:${commentId}`;
+				return [
+					observation(
+						"review-comment",
+						reviewRequest.providerId,
+						feedback,
+						state === "CHANGES_REQUESTED" ? "changes-requested" : "commented",
+						{
+							observationId,
+							feedback: [feedback],
+							repository: reviewRequest.repository,
+							sourceBranch: reviewRequest.sourceBranch,
+							targetBranch: reviewRequest.targetBranch,
+							headCommit: reviewRequest.headCommit,
+							author,
+							authorAssociation,
+							reviewState: state || undefined,
+							actionable,
+						},
+					),
+				];
+			});
+		})
+		.slice(0, MAX_PROVIDER_COMMENTS);
 }
 
 // oxlint-disable-next-line complexity

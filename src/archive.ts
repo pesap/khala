@@ -3,8 +3,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
 	type Actor,
+	assertNonBlank,
 	assertPositiveInteger,
 	type ErrorEnvelope,
+	isActor,
+	isRecordKind,
 	type JsonObject,
 	type JsonValue,
 	type Page,
@@ -144,28 +147,34 @@ export class SQLiteArchive implements ArchivePort {
 
 	// Existing Archives did not persist path scopes. Treat those historical Work terms as repository-wide.
 	private migrateLegacyWorkTerms(): void {
-		const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
-		const migrations = rows.map(readLegacyWorkTermsMigration).filter(isDefined);
-		if (migrations.length > 0) applyWorkTermsMigrations(this.database, migrations);
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
+			const migrations = rows.map(readLegacyWorkTermsMigration).filter(isDefined);
+			const update = this.database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?");
+			for (const migration of migrations) update.run(JSON.stringify(migration.view), migration.workId);
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	// oxlint-disable-next-line complexity
 	private migrateLegacyWorkStates(): void {
-		const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
-		const migrations: Array<Readonly<{ workId: string; view: JsonObject }>> = [];
-		for (const row of rows) {
-			const view = parseJson(readString(row, "view_json"));
-			if (!isJsonObject(view)) throw new Error("Archive Work projection is invalid.");
-			const stopReason = legacyWorkStopReason(view["state"]);
-			if (stopReason === undefined) continue;
-			const migrated = { ...view, state: "stopped", stopReason };
-			if (!isWorkViewProjection(migrated)) throw new Error("Archive Work projection migration is invalid.");
-			migrations.push({ workId: readString(row, "work_id"), view: migrated });
-		}
-		if (migrations.length === 0) return;
-
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
+			const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
+			const migrations: Array<Readonly<{ workId: string; view: JsonObject }>> = [];
+			for (const row of rows) {
+				const view = parseJson(readString(row, "view_json"));
+				if (!isJsonObject(view)) throw new Error("Archive Work projection is invalid.");
+				const stopReason = legacyWorkStopReason(view["state"]);
+				if (stopReason === undefined) continue;
+				const migrated = { ...view, state: "stopped", stopReason };
+				if (!isWorkViewProjection(migrated)) throw new Error("Archive Work projection migration is invalid.");
+				migrations.push({ workId: readString(row, "work_id"), view: migrated });
+			}
 			const updateProjection = this.database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?");
 			const updateRecords = this.database.prepare(
 				"UPDATE archive_records SET state = 'stopped' WHERE work_id = ? AND state IN ('failed', 'cancelled')",
@@ -235,6 +244,7 @@ export class SQLiteArchive implements ArchivePort {
 
 	// oxlint-disable-next-line complexity
 	append(input: ArchiveAppend): ArchiveAppendResult {
+		validateArchiveAppendInput(input);
 		assertPositiveInteger(input.expectedWorkRevision + 1, "expectedWorkRevision");
 		const duplicate = this.database
 			.prepare("SELECT sequence, work_id FROM archive_records WHERE command_id = ?")
@@ -254,6 +264,9 @@ export class SQLiteArchive implements ArchivePort {
 
 		validateProjection(input.projection, input.workId, input.expectedWorkRevision + 1);
 		const serializedPayload = JSON.stringify(input.payload);
+		if (serializedPayload === undefined) {
+			throw new Error("Archive payload must be a JSON value.");
+		}
 		if (serializedPayload.length > 64_000) {
 			throw new Error("Archive payload exceeds the 64 KB limit.");
 		}
@@ -414,9 +427,10 @@ export class SQLiteArchive implements ArchivePort {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const claim = this.database
-				.prepare("SELECT effect_id FROM outbox_claim WHERE effect_id = ? AND owner = ?")
+				.prepare("SELECT effect_id, claimed_at FROM outbox_claim WHERE effect_id = ? AND owner = ?")
 				.get(effectId, owner);
-			if (claim === undefined) {
+			if (!activeClaim(claim)) {
+				deleteClaim(this.database, effectId, owner, claim);
 				this.database.exec("COMMIT");
 				return false;
 			}
@@ -440,9 +454,10 @@ export class SQLiteArchive implements ArchivePort {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const claim = this.database
-				.prepare("SELECT effect_id FROM outbox_claim WHERE effect_id = ? AND owner = ?")
+				.prepare("SELECT effect_id, claimed_at FROM outbox_claim WHERE effect_id = ? AND owner = ?")
 				.get(effectId, owner);
-			if (claim === undefined) {
+			if (!activeClaim(claim)) {
+				deleteClaim(this.database, effectId, owner, claim);
 				this.database.exec("COMMIT");
 				return false;
 			}
@@ -520,7 +535,7 @@ export class SQLiteArchive implements ArchivePort {
 				 archive_records.payload_json, archive_records.recorded_at,
 				 archive_record_numbers.record_number, archive_record_numbers.mission_record_number
 				 FROM archive_records
-				 JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
+				 LEFT JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
 				 WHERE ${clauses.join(" AND ")} ORDER BY archive_records.sequence LIMIT 100`,
 			)
 			.all(...parameters);
@@ -628,7 +643,7 @@ export class SQLiteArchive implements ArchivePort {
 				 archive_records.payload_json, archive_records.recorded_at,
 				 archive_record_numbers.record_number, archive_record_numbers.mission_record_number
 				 FROM archive_records
-				 JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
+				 LEFT JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
 				 WHERE archive_records.sequence = ?`,
 			)
 			.get(sequence);
@@ -640,8 +655,9 @@ export class SQLiteArchive implements ArchivePort {
 
 	private recordFromRow(row: SqlRow): RecordView {
 		const payloadText = readString(row, "payload_json");
+		const parsedPayload = parseJson(payloadText);
 		const boundedPayload =
-			payloadText.length > 16_000 ? { truncated: true, content: payloadText.slice(0, 16_000) } : parseJson(payloadText);
+			payloadText.length > 16_000 ? { truncated: true, content: payloadText.slice(0, 16_000) } : parsedPayload;
 		const evidenceRefs = parseJson(readString(row, "evidence_refs_json"));
 		if (!Array.isArray(evidenceRefs)) {
 			throw new Error("Archive evidence references are invalid.");
@@ -736,19 +752,39 @@ function isDefined<T>(value: T | undefined): value is T {
 	return value !== undefined;
 }
 
-function applyWorkTermsMigrations(
-	database: SqlDatabase,
-	migrations: readonly Readonly<{ workId: string; view: JsonObject }>[],
-): void {
-	database.exec("BEGIN IMMEDIATE");
-	try {
-		const update = database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?");
-		for (const migration of migrations) update.run(JSON.stringify(migration.view), migration.workId);
-		database.exec("COMMIT");
-	} catch (error) {
-		database.exec("ROLLBACK");
-		throw error;
-	}
+function validateArchiveAppendInput(input: ArchiveAppend): void {
+	const textFields: readonly [string, string | undefined][] = [
+		["commandId", input.commandId],
+		["workId", input.workId],
+		["missionId", input.missionId],
+		["executionId", input.executionId],
+	];
+	for (const [field, value] of textFields) validateOptionalText(value, field);
+	validateRecordKind(input.kind);
+	validateActor(input.actor);
+	assertPositiveInteger(input.payloadVersion, "payloadVersion");
+	if (!isJsonValue(input.payload)) throw new Error("Archive payload must be a JSON value.");
+}
+
+function validateOptionalText(value: string | undefined, field: string): void {
+	if (value !== undefined) assertNonBlank(value, field);
+}
+
+function validateRecordKind(value: RecordKind): void {
+	if (!isRecordKind(String(value))) throw new Error(`Archive record kind ${String(value)} is invalid.`);
+}
+
+function validateActor(value: Actor): void {
+	if (!isActor(String(value))) throw new Error(`Archive actor ${String(value)} is invalid.`);
+}
+
+function activeClaim(claim: SqlRow | undefined): claim is SqlRow {
+	return claim !== undefined && Date.now() - readInteger(claim, "claimed_at") < EFFECT_LEASE_MS;
+}
+
+function deleteClaim(database: SqlDatabase, effectId: string, owner: string, claim: SqlRow | undefined): void {
+	if (claim === undefined) return;
+	database.prepare("DELETE FROM outbox_claim WHERE effect_id = ? AND owner = ?").run(effectId, owner);
 }
 
 function normalizeQuery(query: RecordQuery): RecordQuery {
@@ -1234,66 +1270,21 @@ function readInteger(row: SqlRow, key: string): number {
 
 function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
 	return values.map((value) => {
-		if (
-			![
-				"submission",
-				"assessment",
-				"learning",
-				"mission",
-				"mission-change",
-				"execution",
-				"signal",
-				"review-request",
-				"observation",
-				"delivery",
-				"verdict",
-				"oracle-review",
-				"outcome",
-				"error",
-				"work-amended",
-			].includes(value)
-		) {
-			throw new Error(`Archive record kind ${value} is invalid.`);
-		}
-		// SAFETY: membership in the complete RecordKind list above proves the discriminant.
-		return value as RecordKind;
+		if (!isRecordKind(value)) throw new Error(`Archive record kind ${value} is invalid.`);
+		return value;
 	});
 }
 
 function readRecordKind(row: SqlRow, key: string): RecordKind {
 	const value = readString(row, key);
-	if (
-		![
-			"submission",
-			"assessment",
-			"learning",
-			"mission",
-			"mission-change",
-			"execution",
-			"signal",
-			"review-request",
-			"observation",
-			"delivery",
-			"verdict",
-			"oracle-review",
-			"outcome",
-			"error",
-			"work-amended",
-		].includes(value)
-	) {
-		throw new Error(`Archive record kind ${value} is invalid.`);
-	}
-	// SAFETY: membership in the complete RecordKind list above proves the discriminant.
-	return value as RecordKind;
+	if (!isRecordKind(value)) throw new Error(`Archive record kind ${value} is invalid.`);
+	return value;
 }
 
 function readActor(row: SqlRow, key: string): Actor {
 	const value = readString(row, key);
-	if (!["user", "conclave", "observer", "executor", "oracle", "monitor", "system"].includes(value)) {
-		throw new Error(`Archive actor ${value} is invalid.`);
-	}
-	// SAFETY: membership in the complete Actor list above proves the discriminant.
-	return value as Actor;
+	if (!isActor(value)) throw new Error(`Archive actor ${value} is invalid.`);
+	return value;
 }
 
 function readStringValue(value: JsonValue | undefined | SqlOutputValue, field: string): string {
