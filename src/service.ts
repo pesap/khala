@@ -66,6 +66,17 @@ type RoleCapability = Readonly<{
 }>;
 const providerPollAuthority = Symbol("provider-poll-authority");
 const AUTONOMOUS_MONITOR_INTERVAL_MS = 60_000;
+const SUPPORTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
+	"conclave-wake",
+	"scheduler-wake",
+	"executor-wake",
+	"executor-stop",
+	"executor-recovery",
+	"observer-wake",
+	"feedback-wake",
+	"workspace-cleanup",
+	"observer-cleanup",
+]);
 const DEFAULT_SCOPE = "Repository changes required by the objective.";
 const DEFAULT_VALIDATION = "Run the project's configured validation commands.";
 
@@ -92,8 +103,11 @@ export class ApplicationService {
 	private readonly activeExecutorTurns = new Map<string, Set<Promise<void>>>();
 	private readonly drivingObservers = new Set<string>();
 	private readonly backgroundOperations = new Set<Promise<void>>();
+	private pendingEffectsRun: Promise<void> | undefined;
+	// A caller can request another pass while the serialized worker is still unwinding.
+	private pendingEffectsRequested = false;
+	private autonomousCycleRun: Promise<void> | undefined;
 	private readonly monitorTimer: ReturnType<typeof setInterval> | undefined;
-	private monitorInFlight = false;
 	private closing = false;
 	private readonly archive: ArchivePort;
 	private readonly ports: ServicePorts;
@@ -268,56 +282,62 @@ export class ApplicationService {
 		};
 	}
 
-	// oxlint-disable-next-line complexity
 	async runAutonomousCycle(): Promise<void> {
-		if (this.closing || this.monitorInFlight) return;
-		this.monitorInFlight = true;
-		const bucket = Math.floor(Date.now() / AUTONOMOUS_MONITOR_INTERVAL_MS);
+		if (this.closing) return;
+		if (this.autonomousCycleRun !== undefined) return this.autonomousCycleRun;
+		const run = this.runAutonomousCycleOnce();
+		this.autonomousCycleRun = run;
 		try {
-			for (const item of this.archive.listProjects()) {
-				let work = this.inspectWork(item.workId);
-				if (shouldMonitorProvider(work)) {
-					try {
-						work = await this.pollProvider(work.workId, monitorMeta(work, "provider", bucket));
-					} catch (error) {
-						if (!(error instanceof RevisionConflict))
-							this.recordMonitorFailure(work, "Provider", error instanceof Error ? error : new Error(String(error)));
-					}
-				}
-				work = this.inspectWork(item.workId);
-				if (isProviderOutcomeSettlementPending(work)) {
-					try {
-						work = this.queueProviderOutcomeWake(work);
-					} catch (error) {
-						if (!(error instanceof RevisionConflict))
-							this.recordMonitorFailure(
-								work,
-								"Provider outcome reconciliation",
-								error instanceof Error ? error : new Error(String(error)),
-							);
-					}
-				}
-				const execution = work.execution;
-				if (execution?.pi !== undefined && (execution.state === "running" || execution.state === "awaiting-review")) {
-					try {
-						const observed = await this.inspectRuntime(work.workId);
-						const runtimeState = observed.execution?.runtimeState;
-						if (runtimeState !== undefined && runtimeState !== execution.runtimeState)
-							this.recordExecutorRuntimeState(work, runtimeState, runtimeState === "unreachable");
-					} catch (error) {
-						if (!(error instanceof RevisionConflict))
-							this.recordMonitorFailure(
-								work,
-								"Executor runtime",
-								error instanceof Error ? error : new Error(String(error)),
-							);
-					}
+			await run;
+		} finally {
+			if (this.autonomousCycleRun === run) this.autonomousCycleRun = undefined;
+		}
+	}
+
+	// oxlint-disable-next-line complexity
+	private async runAutonomousCycleOnce(): Promise<void> {
+		const bucket = Math.floor(Date.now() / AUTONOMOUS_MONITOR_INTERVAL_MS);
+		for (const item of this.archive.listProjects()) {
+			let work = this.inspectWork(item.workId);
+			if (shouldMonitorProvider(work)) {
+				try {
+					work = await this.pollProvider(work.workId, monitorMeta(work, "provider", bucket));
+				} catch (error) {
+					if (!(error instanceof RevisionConflict))
+						this.recordMonitorFailure(work, "Provider", error instanceof Error ? error : new Error(String(error)));
 				}
 			}
-			await this.processPendingEffects();
-		} finally {
-			this.monitorInFlight = false;
+			work = this.inspectWork(item.workId);
+			if (isProviderOutcomeSettlementPending(work)) {
+				try {
+					work = this.queueProviderOutcomeWake(work);
+				} catch (error) {
+					if (!(error instanceof RevisionConflict))
+						this.recordMonitorFailure(
+							work,
+							"Provider outcome reconciliation",
+							error instanceof Error ? error : new Error(String(error)),
+						);
+				}
+			}
+			const execution = work.execution;
+			if (execution?.pi !== undefined && (execution.state === "running" || execution.state === "awaiting-review")) {
+				try {
+					const observed = await this.inspectRuntime(work.workId);
+					const runtimeState = observed.execution?.runtimeState;
+					if (runtimeState !== undefined && runtimeState !== execution.runtimeState)
+						this.recordExecutorRuntimeState(work, runtimeState, runtimeState === "unreachable");
+				} catch (error) {
+					if (!(error instanceof RevisionConflict))
+						this.recordMonitorFailure(
+							work,
+							"Executor runtime",
+							error instanceof Error ? error : new Error(String(error)),
+						);
+				}
+			}
 		}
+		await this.processPendingEffects();
 	}
 
 	// oxlint-disable-next-line complexity
@@ -593,7 +613,6 @@ export class ApplicationService {
 			promptIdentity: this.options.conclavePromptIdentity,
 			bindingScope: { workId },
 			tools: ["khala_read_archive", "khala_inspect_runtime", "khala_perform_action", "khala_run_oracle"],
-			sessionPath: roleSessionPath(this.options.projectPath, "conclave", work.workId),
 		});
 		try {
 			const message =
@@ -613,8 +632,30 @@ export class ApplicationService {
 		}
 	}
 
-	// oxlint-disable-next-line complexity
 	async processPendingEffects(): Promise<void> {
+		if (this.closing) return;
+		if (this.pendingEffectsRun !== undefined) {
+			this.pendingEffectsRequested = true;
+			return this.pendingEffectsRun;
+		}
+		const run = this.drainPendingEffectsUntilIdle();
+		this.pendingEffectsRun = run;
+		try {
+			await run;
+		} finally {
+			if (this.pendingEffectsRun === run) this.pendingEffectsRun = undefined;
+		}
+	}
+
+	private async drainPendingEffectsUntilIdle(): Promise<void> {
+		do {
+			this.pendingEffectsRequested = false;
+			await this.drainPendingEffects();
+		} while (this.pendingEffectsRequested && !this.closing);
+	}
+
+	// oxlint-disable-next-line complexity
+	private async drainPendingEffects(): Promise<void> {
 		if (this.closing) return;
 		const owner = `khala-worker:${randomUUID()}`;
 		const retriedConclaveWakes = new Set<string>();
@@ -623,17 +664,7 @@ export class ApplicationService {
 			if (effects.length === 0) return;
 			let unsupportedEffect = false;
 			for (const effect of effects) {
-				if (
-					effect.kind !== "conclave-wake" &&
-					effect.kind !== "scheduler-wake" &&
-					effect.kind !== "executor-wake" &&
-					effect.kind !== "executor-stop" &&
-					effect.kind !== "executor-recovery" &&
-					effect.kind !== "observer-wake" &&
-					effect.kind !== "feedback-wake" &&
-					effect.kind !== "workspace-cleanup" &&
-					effect.kind !== "observer-cleanup"
-				) {
+				if (!SUPPORTED_EFFECT_KINDS.has(effect.kind)) {
 					this.archive.releaseEffect(effect.effectId, owner);
 					unsupportedEffect = true;
 					continue;
@@ -760,7 +791,6 @@ export class ApplicationService {
 					clearInterval(lease);
 				} catch (error) {
 					clearInterval(lease);
-					this.archive.releaseEffect(effect.effectId, owner);
 					// A child can exit during startup before the first RPC response. Retry this
 					// idempotent transport wake once in the same worker pass, then retain the
 					// pending effect and durable error for the autonomous monitor to revisit.
@@ -771,6 +801,7 @@ export class ApplicationService {
 						!retriedConclaveWakes.has(effect.effectId)
 					) {
 						retriedConclaveWakes.add(effect.effectId);
+						this.archive.releaseEffect(effect.effectId, owner);
 						continue;
 					}
 					if (
@@ -778,9 +809,15 @@ export class ApplicationService {
 						workId !== undefined &&
 						this.archive.project(workId)?.execution?.state !== "queued"
 					)
-						queueMicrotask(() => void this.processPendingEffects());
-					if (effect.kind === "workspace-cleanup") return;
-					if (effect.kind === "feedback-wake") return;
+						this.pendingEffectsRequested = true;
+					if (effect.kind === "workspace-cleanup") {
+						this.archive.releaseEffect(effect.effectId, owner);
+						return;
+					}
+					if (effect.kind === "feedback-wake") {
+						this.archive.releaseEffect(effect.effectId, owner);
+						return;
+					}
 					if (effect.kind === "observer-wake" && workId !== undefined) {
 						try {
 							const current = this.inspectWork(workId);
@@ -813,20 +850,29 @@ export class ApplicationService {
 					if (effect.kind === "conclave-wake" && workId !== undefined) {
 						try {
 							const current = this.inspectWork(workId);
-							this.recordWakeFailure(
-								workId,
-								error instanceof Error ? error : new Error(String(error)),
-								{
-									actor: "conclave",
-									commandId: `outbox-failure:${effect.effectId}:${current.revision}`,
-									expectedWorkRevision: current.revision,
-									schemaVersion: 1,
-								},
-								wakeReason,
-							);
+							if (current.state === "succeeded" || current.state === "stopped") {
+								if (!this.archive.completeEffect(effect.effectId, owner))
+									throw new Error(`Archive lease was lost for effect ${effect.effectId}.`);
+							} else {
+								this.archive.releaseEffect(effect.effectId, owner);
+								this.recordWakeFailure(
+									workId,
+									error instanceof Error ? error : new Error(String(error)),
+									{
+										actor: "conclave",
+										commandId: `outbox-failure:${effect.effectId}:${current.revision}`,
+										expectedWorkRevision: current.revision,
+										schemaVersion: 1,
+									},
+									wakeReason,
+								);
+							}
 						} catch {
 							// Preserve the pending effect when its Work cannot be reconciled.
+							this.archive.releaseEffect(effect.effectId, owner);
 						}
+					} else {
+						this.archive.releaseEffect(effect.effectId, owner);
 					}
 					return;
 				}
@@ -1328,6 +1374,7 @@ export class ApplicationService {
 	// oxlint-disable-next-line complexity
 	private recordWakeFailure(workId: string, failure: Error, meta: CommandMeta, reason?: string): WorkView {
 		const work = this.inspectWork(workId);
+		if (work.state === "succeeded" || work.state === "stopped") return work;
 		this.checkRevision(work, meta);
 		const feedbackWake = reason === "provider-feedback" || work.lastObservation?.kind === "review-comment";
 		const runtimeWake = reason === "runtime-unreachable";
@@ -1360,9 +1407,24 @@ export class ApplicationService {
 		if (this.closing) return;
 		this.closing = true;
 		if (this.monitorTimer !== undefined) clearInterval(this.monitorTimer);
+		await this.waitForOperations();
 		await this.ports.runtime.close();
-		await Promise.allSettled(this.backgroundOperations);
 		this.archive.close();
+	}
+
+	// oxlint-disable-next-line complexity
+	private async waitForOperations(): Promise<void> {
+		while (
+			this.autonomousCycleRun !== undefined ||
+			this.pendingEffectsRun !== undefined ||
+			this.backgroundOperations.size > 0
+		) {
+			await Promise.allSettled([
+				...(this.autonomousCycleRun === undefined ? [] : [this.autonomousCycleRun]),
+				...(this.pendingEffectsRun === undefined ? [] : [this.pendingEffectsRun]),
+				...this.backgroundOperations,
+			]);
+		}
 	}
 
 	// oxlint-disable-next-line complexity
@@ -2812,6 +2874,7 @@ export class ApplicationService {
 					? undefined
 					: { ...work.execution, state: "completed", endedAt: new Date().toISOString() },
 			budget: terminalBudget(work.budget, "completed"),
+			lastError: undefined,
 			nextAction: "Work succeeded.",
 		};
 		return this.append({
@@ -3547,10 +3610,9 @@ function executionFailure(work: WorkView, executionId: string, error: Error | st
 	};
 }
 
-function roleSessionPath(projectPath: string, role: "conclave" | "observer", workId?: string): string {
+function roleSessionPath(projectPath: string, role: "observer", workId: string): string {
 	const projectKey = createHash("sha256").update(projectPath).digest("hex").slice(0, 24);
-	const suffix =
-		workId === undefined ? role : `${role}-${createHash("sha256").update(workId).digest("hex").slice(0, 24)}`;
+	const suffix = `${role}-${createHash("sha256").update(workId).digest("hex").slice(0, 24)}`;
 	return join(tmpdir(), "khala-sessions", projectKey, `khala-${suffix}-session.jsonl`);
 }
 

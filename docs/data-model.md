@@ -70,15 +70,19 @@ sequence.
 
 GitHub and GitLab review requests are reconciled by deterministic Work markers.
 Khala stores provider-native IDs, URLs, branch/head information, validation,
-review status, and bounded observations. Review comments retain stable
-observation IDs and bounded feedback lists so replay cannot redeliver them.
+review status, and bounded observations. GitHub conversation details retain at
+most 8 comments and 8 checks with bounded fields; individual review-feedback
+observations do not duplicate the full conversation. Review comments retain
+stable observation IDs and bounded feedback lists so replay cannot redeliver them.
 Provider text is untrusted evidence.
 A merged provider observation is required before the Conclave can record the
 Work Outcome.
 
 ## Runtime bindings
 
-Pi child sessions use JSON-RPC over stdin/stdout. Khala persists the Pi session
-ID and session path but never copies the child transcript into the Archive.
+Pi child sessions use JSON-RPC over stdin/stdout. Conclave and Oracle turns are
+ephemeral; Observer sessions may persist a session path. Persistent sessions use
+an exclusive process-owned launch lease and transcript files are restricted to
+the Khala process owner. Khala never copies child transcripts into the Archive.
 `working`, `pending`, `idle`, `unreachable`, and `unknown` are runtime
 observations, not lifecycle states.

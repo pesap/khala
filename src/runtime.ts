@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -81,6 +81,7 @@ type MutableChild = {
 	resolveAgentEnd: ((output: string) => void) | undefined;
 	rejectAgentEnd: ((error: Error) => void) | undefined;
 	agentTimer: NodeJS.Timeout | undefined;
+	ephemeralSession: boolean;
 };
 
 type RpcCommandData = Readonly<{ message?: string | undefined }>;
@@ -130,10 +131,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			"--thinking",
 			input.thinking,
 		];
-		if (input.sessionPath !== undefined) {
-			await reconcileLaunch(input.sessionPath);
-			args.push("--session", input.sessionPath);
-		}
+		if (input.sessionPath !== undefined) args.push("--session", input.sessionPath);
 		if (input.tools.length === 0) {
 			args.push("--no-tools");
 		} else {
@@ -161,7 +159,6 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			...this.options.baseEnvironment,
 			KHALA_BOUND_WORK_ID: input.bindingScope?.workId,
 			KHALA_BOUND_EXECUTION_ID: input.bindingScope?.executionId,
-			KHALA_ROLE_NONCE: capabilityNonce,
 			KHALA_PROCESS_MARKER: processMarker,
 		};
 		delete environment["KHALA_ROLE_TOKEN"];
@@ -170,7 +167,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		if (capabilityFile !== undefined) environment["KHALA_ROLE_TOKEN_FILE"] = capabilityFile;
 		if (capabilityNonce !== undefined) environment["KHALA_ROLE_NONCE"] = capabilityNonce;
 		try {
-			if (input.sessionPath !== undefined) await writeLaunchIntent(input.sessionPath, capabilityFile, processMarker);
+			if (input.sessionPath !== undefined) await reserveLaunch(input.sessionPath, capabilityFile, processMarker);
 			if (capabilityFile !== undefined && capabilityToken !== undefined)
 				await writeCapabilityFile(capabilityFile, capabilityToken);
 		} catch (error) {
@@ -209,6 +206,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			resolveAgentEnd: undefined,
 			rejectAgentEnd: undefined,
 			agentTimer: undefined,
+			ephemeralSession: input.sessionPath === undefined,
 		};
 		child.binding = {
 			...child.binding,
@@ -222,6 +220,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		} catch (error) {
 			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
 			killChild(child);
+			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
 			throw error;
 		}
 		const key = `child-${++childCounter}`;
@@ -234,6 +233,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			}
 			const sessionId = readSessionText(state.data, "sessionId");
 			const sessionPath = readSessionText(state.data, "sessionFile");
+			await protectSessionFile(sessionPath);
 			if (child.closed || child.process.exitCode !== null || child.process.signalCode !== null)
 				throw new Error("Pi child exited during session startup.");
 			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
@@ -252,6 +252,8 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			this.children.delete(key);
 			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
 			killChild(child);
+			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+			removeEphemeralSession(child);
 			throw error;
 		}
 	}
@@ -328,7 +330,6 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		} finally {
 			killChild(child);
 			this.removeChild(child);
-			await terminateSessionProcesses(binding.sessionPath, binding.processMarker);
 		}
 	}
 
@@ -336,12 +337,14 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		for (const child of this.children.values()) {
 			rejectAgentEnd(child, new Error("Pi runtime closed."));
 			killChild(child);
+			this.removeChild(child);
 		}
 		this.children.clear();
 	}
 
 	private removeChild(child: MutableChild): void {
 		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+		removeEphemeralSession(child);
 		for (const [key, value] of this.children) {
 			if (value === child) {
 				this.children.delete(key);
@@ -355,6 +358,15 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			throw new Error(`Pi session ${binding.sessionId} is not attached with the supplied binding.`);
 		}
 		return child;
+	}
+}
+
+function removeEphemeralSession(child: MutableChild): void {
+	if (!child.ephemeralSession || child.binding.sessionPath.length === 0) return;
+	try {
+		unlinkSync(child.binding.sessionPath);
+	} catch {
+		// The child may have removed its session file already.
 	}
 }
 
@@ -448,7 +460,11 @@ type LaunchLease = Readonly<{
 	processStartTime?: string | undefined;
 	capabilityFile?: string | undefined;
 	processMarker?: string | undefined;
+	ownerProcessId?: number | undefined;
+	createdAt?: number | undefined;
 }>;
+
+const LAUNCH_INTENT_STALE_MS = 60_000;
 
 function capabilityFilePath(): string {
 	return join(tmpdir(), `khala-capability-${randomUUID()}`);
@@ -459,44 +475,74 @@ async function writeCapabilityFile(path: string, token: string): Promise<void> {
 }
 
 // oxlint-disable-next-line complexity
-async function reconcileLaunch(sessionPath: string): Promise<void> {
+async function reserveLaunch(
+	sessionPath: string,
+	capabilityFile: string | undefined,
+	processMarker: string,
+): Promise<void> {
 	const path = launchLeasePath(sessionPath);
 	const text = await readFile(path, "utf8").catch(() => undefined);
-	const lease = text === undefined ? undefined : parseLaunchLease(text);
-	if (
-		lease?.processGroupId !== undefined &&
-		lease.processStartTime !== undefined &&
-		readProcessStartTime(lease.processGroupId) === lease.processStartTime
-	)
-		killProcessGroup(lease.processGroupId, lease.processStartTime);
-	if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
-	await terminateSessionProcesses(sessionPath, lease?.processMarker);
-	await unlink(path).catch(() => undefined);
+	if (text !== undefined) {
+		const lease = parseLaunchLease(text);
+		if (lease?.processGroupId !== undefined) {
+			const currentStartTime = readProcessStartTime(lease.processGroupId);
+			if (
+				(lease.processStartTime === undefined && processExists(lease.processGroupId)) ||
+				(lease.processStartTime !== undefined &&
+					(currentStartTime === lease.processStartTime ||
+						(currentStartTime === undefined && processExists(lease.processGroupId))))
+			)
+				throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
+		} else {
+			if (lease?.ownerProcessId !== undefined && processExists(lease.ownerProcessId))
+				throw new Error(`Runtime session ${sessionPath} is already launching.`);
+			const createdAt = lease?.createdAt ?? (await stat(path)).mtimeMs;
+			if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
+				throw new Error(`Runtime session ${sessionPath} is already launching.`);
+		}
+		const displacedPath = `${path}.stale-${randomUUID()}`;
+		try {
+			await rename(path, displacedPath);
+		} catch (error) {
+			if (error instanceof Error && isMissingFileError(error))
+				throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
+			throw error;
+		}
+		if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
+		await unlink(displacedPath).catch(() => undefined);
+	}
+	try {
+		await writeLaunchIntent(sessionPath, capabilityFile, processMarker);
+	} catch (error) {
+		if (error instanceof Error && isExistsError(error))
+			throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
+		throw error;
+	}
 }
 
-async function terminateSessionProcesses(sessionPath: string, processMarker?: string): Promise<void> {
-	if (process.platform === "win32") return;
-	const entries = await readdir("/proc", { withFileTypes: true }).catch(() => []);
-	await Promise.all(
-		entries
-			.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-			// oxlint-disable-next-line complexity
-			.map(async (entry) => {
-				const processId = Number(entry.name);
-				const commandLine = await readFile(`/proc/${processId}/cmdline`, "utf8").catch(() => "");
-				const args = commandLine.split("\0");
-				const sessionIndex = args.indexOf("--session");
-				const matchesSession = args[sessionIndex + 1] === sessionPath;
-				const environment =
-					processMarker === undefined ? "" : await readFile(`/proc/${processId}/environ`, "utf8").catch(() => "");
-				const matchesMarker =
-					processMarker !== undefined && environment.split("\0").includes(`KHALA_PROCESS_MARKER=${processMarker}`);
-				if (processMarker !== undefined ? !matchesMarker : !matchesSession) return;
-				const startTime = readProcessStartTime(processId);
-				if (matchesSession) killProcessGroup(processId, startTime);
-				else killProcess(processId, startTime);
-			}),
-	);
+async function protectSessionFile(sessionPath: string): Promise<void> {
+	try {
+		await chmod(sessionPath, 0o600);
+	} catch (error) {
+		if (!(error instanceof Error) || !isMissingFileError(error)) throw error;
+	}
+}
+
+function isMissingFileError(error: Error): boolean {
+	return "code" in error && error.code === "ENOENT";
+}
+
+function isExistsError(error: Error): boolean {
+	return "code" in error && error.code === "EEXIST";
+}
+
+function processExists(processId: number): boolean {
+	try {
+		process.kill(processId, 0);
+		return true;
+	} catch (error) {
+		return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+	}
 }
 
 async function writeLaunchIntent(
@@ -505,11 +551,15 @@ async function writeLaunchIntent(
 	processMarker: string,
 ): Promise<void> {
 	await mkdir(dirname(sessionPath), { recursive: true });
-	await writeFile(launchLeasePath(sessionPath), JSON.stringify({ capabilityFile, processMarker }), {
-		encoding: "utf8",
-		mode: 0o600,
-		flag: "wx",
-	});
+	await writeFile(
+		launchLeasePath(sessionPath),
+		JSON.stringify({ capabilityFile, processMarker, ownerProcessId: process.pid, createdAt: Date.now() }),
+		{
+			encoding: "utf8",
+			mode: 0o600,
+			flag: "wx",
+		},
+	);
 }
 
 // oxlint-disable-next-line complexity
@@ -518,7 +568,7 @@ async function writeLaunchLease(
 	binding: RuntimeBinding,
 	capabilityFile: string | undefined,
 ): Promise<void> {
-	if (binding.processGroupId === undefined || binding.processStartTime === undefined) return;
+	if (binding.processGroupId === undefined) return;
 	const existing = parseLaunchLease(readFileSync(launchLeasePath(sessionPath), "utf8"));
 	if (existing?.processMarker !== binding.processMarker) throw new Error("Runtime launch ownership was lost.");
 	await writeFile(
@@ -528,6 +578,8 @@ async function writeLaunchLease(
 			processStartTime: binding.processStartTime,
 			capabilityFile,
 			processMarker: binding.processMarker,
+			ownerProcessId: existing?.ownerProcessId ?? process.pid,
+			createdAt: existing?.createdAt ?? Date.now(),
 		}),
 		{ encoding: "utf8", mode: 0o600 },
 	);
@@ -568,16 +620,25 @@ function parseLaunchLease(text: string): LaunchLease | undefined {
 	const processStartTime = parsed["processStartTime"];
 	const capabilityFile = parsed["capabilityFile"];
 	const processMarker = parsed["processMarker"];
+	const ownerProcessId = parsed["ownerProcessId"];
+	const createdAt = parsed["createdAt"];
 	if (
+		(ownerProcessId !== undefined && (!isInteger(ownerProcessId) || ownerProcessId <= 0)) ||
+		(createdAt !== undefined && (!isInteger(createdAt) || createdAt <= 0)) ||
 		(capabilityFile !== undefined && !isText(capabilityFile)) ||
 		(processMarker !== undefined && !isText(processMarker))
 	)
 		return;
 	if (processGroupId === undefined && processStartTime === undefined)
-		return capabilityFile === undefined && processMarker === undefined ? {} : { capabilityFile, processMarker };
-	if (!isInteger(processGroupId) || processGroupId <= 0 || !isText(processStartTime) || processStartTime.length === 0)
-		return;
-	return { processGroupId, processStartTime, capabilityFile, processMarker };
+		return capabilityFile === undefined &&
+			processMarker === undefined &&
+			ownerProcessId === undefined &&
+			createdAt === undefined
+			? {}
+			: { capabilityFile, processMarker, ownerProcessId, createdAt };
+	if (!isInteger(processGroupId) || processGroupId <= 0) return;
+	if (processStartTime !== undefined && (!isText(processStartTime) || processStartTime.length === 0)) return;
+	return { processGroupId, processStartTime, capabilityFile, processMarker, ownerProcessId, createdAt };
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
@@ -607,22 +668,6 @@ function readProcessStartTime(processId: number | undefined): string | undefined
 }
 
 // oxlint-disable-next-line complexity
-function killProcess(processId: number | undefined, processStartTime: string | undefined): void {
-	if (
-		processId === undefined ||
-		processStartTime === undefined ||
-		process.platform === "win32" ||
-		readProcessStartTime(processId) !== processStartTime
-	)
-		return;
-	try {
-		process.kill(processId, "SIGKILL");
-	} catch {
-		// The process may have exited before reconciliation.
-	}
-}
-
-// oxlint-disable-next-line complexity
 function killProcessGroup(processGroupId: number | undefined, processStartTime: string | undefined): void {
 	if (
 		processGroupId === undefined ||
@@ -643,13 +688,8 @@ function isTransientStartupFailure(message: string): boolean {
 }
 
 async function stopUnattachedBinding(binding: RuntimeBinding): Promise<void> {
-	if (binding.processMarker !== undefined) {
-		await terminateSessionProcesses(binding.sessionPath, binding.processMarker);
-		killProcessGroup(binding.processGroupId, binding.processStartTime);
-		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
-		return;
-	}
 	killProcessGroup(binding.processGroupId, binding.processStartTime);
+	removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
 }
 
 // oxlint-disable-next-line complexity

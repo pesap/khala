@@ -8,6 +8,10 @@ import type { CodeHostPort, ReviewRequestInput, WorkspacePort, WorkspacePrefligh
 
 const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 120_000;
+const MAX_PROVIDER_COMMENTS = 8;
+const MAX_PROVIDER_CHECKS = 8;
+const MAX_PROVIDER_COMMENT_BODY = 500;
+const MAX_PROVIDER_FIELD = 200;
 
 function commandOptions(cwd: string) {
 	return { cwd, timeout: COMMAND_TIMEOUT_MS, killSignal: "SIGKILL" as const, maxBuffer: 1_000_000 };
@@ -281,7 +285,7 @@ export class CommandCodeHost implements CodeHostPort {
 					status: githubPollStatus(row, reviewRequest.status),
 					details,
 				},
-				...githubFeedback(row, reviewRequest.providerId, reviewRequest.principalId, inlineComments, details),
+				...githubFeedback(row, reviewRequest.providerId, reviewRequest.principalId, inlineComments),
 			];
 		}
 		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
@@ -527,31 +531,39 @@ function githubProviderDetails(
 		{ source: "review" as const, entries: row["reviews"] },
 		{ source: "inline" as const, entries: inlineComments },
 	];
-	const comments = sources.flatMap(({ source, entries }) => {
-		if (!Array.isArray(entries)) return [];
-		// oxlint-disable-next-line complexity
-		return entries.filter(isJsonObject).flatMap((entry) => {
-			const id = entry["id"];
-			const body = isTextValue(entry["body"]) ? entry["body"].trim() : "";
-			if ((id !== String(id) && id !== Number(id)) || body.length === 0) return [];
-			const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
-			const line = entry["line"] === undefined ? undefined : String(entry["line"]);
-			return [
-				{
-					id: String(id),
-					author: githubAuthor(entry),
-					authorAssociation: githubAssociation(entry),
-					body,
-					createdAt: githubTimestamp(entry),
-					url: githubCommentUrl(entry),
-					state: isTextValue(entry["state"]) ? entry["state"].toUpperCase() : undefined,
-					source,
-					location: path === undefined ? undefined : `${path}${line === undefined ? "" : `:${line}`}`,
-					minimized: entry["isMinimized"] === true,
-				},
-			];
-		});
-	});
+	const comments = sources
+		.flatMap(({ source, entries }) => {
+			if (!Array.isArray(entries)) return [];
+			// oxlint-disable-next-line complexity
+			return entries.filter(isJsonObject).flatMap((entry) => {
+				const id = entry["id"];
+				const body = isTextValue(entry["body"]) ? entry["body"].trim() : "";
+				if ((id !== String(id) && id !== Number(id)) || body.length === 0) return [];
+				const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
+				const line = entry["line"] === undefined ? undefined : String(entry["line"]);
+				return [
+					{
+						id: boundedText(String(id), MAX_PROVIDER_FIELD),
+						author: boundedOptional(githubAuthor(entry), MAX_PROVIDER_FIELD),
+						authorAssociation: boundedOptional(githubAssociation(entry), MAX_PROVIDER_FIELD),
+						body: boundedText(body, MAX_PROVIDER_COMMENT_BODY),
+						createdAt: boundedOptional(githubTimestamp(entry), MAX_PROVIDER_FIELD),
+						url: boundedOptional(githubCommentUrl(entry), MAX_PROVIDER_FIELD),
+						state: boundedOptional(
+							isTextValue(entry["state"]) ? entry["state"].toUpperCase() : undefined,
+							MAX_PROVIDER_FIELD,
+						),
+						source,
+						location:
+							path === undefined
+								? undefined
+								: boundedText(`${path}${line === undefined ? "" : `:${line}`}`, MAX_PROVIDER_FIELD),
+						minimized: entry["isMinimized"] === true,
+					},
+				];
+			});
+		})
+		.slice(0, MAX_PROVIDER_COMMENTS);
 	const checks: ProviderCheck[] = (Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"] : [])
 		.filter(isJsonObject)
 		// oxlint-disable-next-line complexity
@@ -562,13 +574,28 @@ function githubProviderDetails(
 				return [
 					{
 						kind: "check-run" as const,
-						name: checkRunName,
-						status: checkRunStatus,
-						conclusion: isTextValue(entry["conclusion"]) ? entry["conclusion"] : undefined,
-						workflowName: isTextValue(entry["workflowName"]) ? entry["workflowName"] : undefined,
-						detailsUrl: isTextValue(entry["detailsUrl"]) ? entry["detailsUrl"] : undefined,
-						startedAt: isTextValue(entry["startedAt"]) ? entry["startedAt"] : undefined,
-						completedAt: isTextValue(entry["completedAt"]) ? entry["completedAt"] : undefined,
+						name: boundedText(checkRunName, MAX_PROVIDER_FIELD),
+						status: boundedText(checkRunStatus, MAX_PROVIDER_FIELD),
+						conclusion: boundedOptional(
+							isTextValue(entry["conclusion"]) ? entry["conclusion"] : undefined,
+							MAX_PROVIDER_FIELD,
+						),
+						workflowName: boundedOptional(
+							isTextValue(entry["workflowName"]) ? entry["workflowName"] : undefined,
+							MAX_PROVIDER_FIELD,
+						),
+						detailsUrl: boundedOptional(
+							isTextValue(entry["detailsUrl"]) ? entry["detailsUrl"] : undefined,
+							MAX_PROVIDER_FIELD,
+						),
+						startedAt: boundedOptional(
+							isTextValue(entry["startedAt"]) ? entry["startedAt"] : undefined,
+							MAX_PROVIDER_FIELD,
+						),
+						completedAt: boundedOptional(
+							isTextValue(entry["completedAt"]) ? entry["completedAt"] : undefined,
+							MAX_PROVIDER_FIELD,
+						),
 					},
 				];
 			}
@@ -578,23 +605,38 @@ function githubProviderDetails(
 			return [
 				{
 					kind: "status-context" as const,
-					name: context,
-					status: state,
-					detailsUrl: isTextValue(entry["targetUrl"]) ? entry["targetUrl"] : undefined,
+					name: boundedText(context, MAX_PROVIDER_FIELD),
+					status: boundedText(state, MAX_PROVIDER_FIELD),
+					detailsUrl: boundedOptional(
+						isTextValue(entry["targetUrl"]) ? entry["targetUrl"] : undefined,
+						MAX_PROVIDER_FIELD,
+					),
 				},
 			];
-		});
+		})
+		.slice(0, MAX_PROVIDER_CHECKS);
 	return {
 		pullRequest: {
-			url: reviewRequest.url,
+			url: boundedText(reviewRequest.url, MAX_PROVIDER_FIELD),
 			status: githubPollStatus(row, reviewRequest.status),
-			state: isTextValue(row["state"]) ? row["state"].toLowerCase() : "unknown",
-			reviewDecision: isTextValue(row["reviewDecision"]) ? row["reviewDecision"] : "",
-			mergedAt: row["mergedAt"] === null ? null : isTextValue(row["mergedAt"]) ? row["mergedAt"] : null,
+			state: boundedText(isTextValue(row["state"]) ? row["state"].toLowerCase() : "unknown", MAX_PROVIDER_FIELD),
+			reviewDecision: boundedText(isTextValue(row["reviewDecision"]) ? row["reviewDecision"] : "", MAX_PROVIDER_FIELD),
+			mergedAt:
+				row["mergedAt"] === null
+					? null
+					: (boundedOptional(isTextValue(row["mergedAt"]) ? row["mergedAt"] : undefined, MAX_PROVIDER_FIELD) ?? null),
 		},
 		comments,
 		checks,
 	};
+}
+
+function boundedText(value: string, limit: number): string {
+	return value.slice(0, limit);
+}
+
+function boundedOptional(value: string | undefined, limit: number): string | undefined {
+	return value === undefined ? undefined : boundedText(value, limit);
 }
 
 function githubTimestamp(entry: Record<string, JsonValue>): string | undefined {
@@ -616,7 +658,6 @@ function githubFeedback(
 	providerId: string,
 	principalId: string,
 	inlineComments: readonly Record<string, JsonValue>[] = [],
-	details?: NonNullable<ProviderObservation["details"]>,
 ): readonly ProviderObservation[] {
 	const sources = [
 		{ prefix: "comment", entries: row["comments"] },
@@ -662,7 +703,6 @@ function githubFeedback(
 						authorAssociation,
 						reviewState: state || undefined,
 						actionable,
-						details,
 					},
 				),
 			];

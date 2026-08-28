@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AgentRuntimePort, OraclePacket, OraclePort, OracleResult } from "./ports.js";
 import { promptIdentity } from "./runtime.js";
 
@@ -23,7 +20,7 @@ class PiOracle implements OraclePort {
 
 	async review(packet: OraclePacket, model: string, thinking: string): Promise<OracleResult> {
 		const started = Date.now();
-		const binding = await this.runtime.ensureSession(this.sessionInput(packet, model, thinking));
+		const binding = await this.runtime.ensureSession(this.sessionInput(model, thinking));
 		try {
 			return oracleResult(await this.runtime.send(binding, buildPrompt(packet)), started);
 		} finally {
@@ -31,7 +28,7 @@ class PiOracle implements OraclePort {
 		}
 	}
 
-	private sessionInput(packet: OraclePacket, model: string, thinking: string) {
+	private sessionInput(model: string, thinking: string) {
 		return {
 			cwd: this.projectPath,
 			model,
@@ -39,12 +36,6 @@ class PiOracle implements OraclePort {
 			role: "oracle" as const,
 			promptIdentity: promptIdentity(this.prompt, this.packageVersion),
 			tools: [],
-			sessionPath: join(
-				tmpdir(),
-				"khala-sessions",
-				createHash("sha256").update(this.projectPath).digest("hex").slice(0, 24),
-				`khala-oracle-${createHash("sha256").update(packet.mission.missionId).digest("hex").slice(0, 24)}-session.jsonl`,
-			),
 		};
 	}
 }

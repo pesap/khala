@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -344,6 +344,54 @@ test("generated Mission and Execution IDs use Nano ID format", async () => {
 	assert.match(running.mission.missionId, /^[A-Za-z0-9_-]{21}$/);
 	assert.match(running.execution.executionId, /^[A-Za-z0-9_-]{21}$/);
 	await service.close();
+});
+
+// oxlint-disable-next-line complexity
+test("Pending effect processing is serialized across callers and Works", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-effect-serialization-"));
+	let activeWakes = 0;
+	let maximumActiveWakes = 0;
+	const { service, controls } = makeService(join(directory, "archive.sqlite"));
+	controls.onConclaveWake = async () => {
+		activeWakes += 1;
+		maximumActiveWakes = Math.max(maximumActiveWakes, activeWakes);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		activeWakes -= 1;
+	};
+	service.submitWork({ title: "First", objective: "Queue one wake", acceptanceCriteria: ["It is processed"] }, meta("user", "effect-serialization:first", 0));
+	service.submitWork({ title: "Second", objective: "Queue another wake", acceptanceCriteria: ["It is processed"] }, meta("user", "effect-serialization:second", 0));
+	await Promise.all([service.processPendingEffects(), service.processPendingEffects()]);
+	assert.equal(maximumActiveWakes, 1);
+	await service.close();
+});
+
+test("Closing waits for an in-flight effect before closing its runtime", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-effect-close-"));
+	let releaseWake;
+	let runtimeClosed = false;
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			runtime: {
+				async send() {
+					return new Promise((resolve) => {
+						releaseWake = () => resolve({ output: "" });
+					});
+				},
+				async close() {
+					runtimeClosed = true;
+				},
+			},
+		},
+	});
+	service.submitWork({ title: "Close", objective: "Wait for the effect", acceptanceCriteria: ["The runtime closes last"] }, meta("user", "effect-close:submit", 0));
+	const processing = service.processPendingEffects();
+	await new Promise((resolve) => setImmediate(resolve));
+	const closing = service.close();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(runtimeClosed, false);
+	releaseWake();
+	await Promise.all([processing, closing]);
+	assert.equal(runtimeClosed, true);
 });
 
 // oxlint-disable-next-line complexity
@@ -743,6 +791,35 @@ test("stopped Work can be explicitly recovered after cancellation", async () => 
 	await service.close();
 });
 
+test("A late Conclave wake failure cannot overwrite a settled Outcome", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-terminal-wake-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			runtime: {
+				async requestStop(binding) {
+					if (binding.sessionId.startsWith("conclave-")) throw new Error("simulated stop race");
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "terminal-wake");
+	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "terminal-wake:review", running.revision, running.workId, running.execution.executionId) });
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head"] }, meta: meta("executor", "terminal-wake:ready", review.value.revision, running.workId, running.execution.executionId) });
+	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "Review", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "terminal-wake:handoff", ready.value.revision, running.workId) });
+	const merged = await service.perform({ action: "record-review", workId: running.workId, input: { status: "merged" }, meta: meta("user", "terminal-wake:merged", handoff.value.revision) });
+	controls.outcome = true;
+	await service.pollProvider(running.workId, meta("user", "terminal-wake:poll", merged.value.revision));
+	const outcomeWork = service.inspectWork(running.workId);
+	const outcome = await service.perform({ action: "record-outcome", workId: running.workId, input: {}, meta: meta("conclave", "terminal-wake:outcome", outcomeWork.revision, running.workId) });
+	assert.equal(outcome.value.state, "succeeded");
+	await service.processPendingEffects();
+	const settled = service.inspectWork(running.workId);
+	assert.equal(settled.state, "succeeded");
+	assert.equal(settled.lastError, undefined);
+	assert.equal(settled.nextAction, "Work succeeded.");
+	await service.close();
+});
+
 test("a Work reaches success through branch publication, handoff, polling, and outcome evidence", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-lifecycle-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
@@ -759,6 +836,7 @@ test("a Work reaches success through branch publication, handoff, polling, and o
 	const conclavesBeforeReadyWake = controls.sessions.filter((entry) => entry.input.role === "conclave").length;
 	await service.processPendingEffects();
 	assert.equal(controls.sessions.filter((entry) => entry.input.role === "conclave").length > conclavesBeforeReadyWake, true);
+	assert.equal(controls.sessions.find((entry) => entry.input.role === "conclave").input.sessionPath, undefined);
 	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "The evidence is complete", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "success:handoff", ready.value.revision, running.workId) });
 	assert.equal(handoff.value.state, "awaiting-review");
 
@@ -1689,6 +1767,24 @@ test("a real RPC startup retries one transient child exit", async () => {
 	await runtime.close();
 });
 
+test("Persistent runtime sessions have one owner and private transcripts", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-ownership-"));
+	const script = join(directory, "rpc-stub.mjs");
+	const sessionPath = join(directory, "session.jsonl");
+	await writeFile(sessionPath, "transcript", { mode: 0o644 });
+	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: ${JSON.stringify(sessionPath)}, isStreaming: false } }) + "\\n"); });\n`);
+	await chmod(script, 0o755);
+	const options = { command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 500 };
+	const first = new PiRpcRuntime(options);
+	const input = { cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [], sessionPath };
+	await first.ensureSession(input);
+	assert.equal((await stat(sessionPath)).mode & 0o777, 0o600);
+	const second = new PiRpcRuntime(options);
+	await assert.rejects(second.ensureSession(input), /already owned/);
+	await first.close();
+	await second.close();
+});
+
 test("a real RPC child is bounded and removed after an agent turn timeout", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-"));
 	const script = join(directory, "rpc-stub.mjs");
@@ -1730,7 +1826,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write(JSON.stringify([[{ id: 10, body: "Inline review note", path: "src/index.ts", line: 3, user: { login: "principal" }, author_association: "OWNER" }, ...Array.from({ length: 40 }, (_, index) => ({ id: index + 100, body: "x".repeat(4_000), user: { login: "principal" }, author_association: "OWNER" }))]]));\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
@@ -1762,8 +1858,10 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("Inline review note (src/index.ts:3)")), true);
 		const ciObservation = observations.find((item) => item.kind === "ci-status");
 		assert.equal(ciObservation?.details?.pullRequest.status, "merged");
-		assert.equal(ciObservation?.details?.comments.length, 3);
+		assert.equal(ciObservation?.details?.comments.length <= 8, true);
 		assert.equal(ciObservation?.details?.comments.some((comment) => comment.body === ""), false);
+		assert.equal((ciObservation?.details?.comments[3]?.body.length ?? 0) <= 500, true);
+		assert.equal(JSON.stringify(ciObservation).length <= 64_000, true);
 		assert.equal(ciObservation?.details?.comments[1]?.createdAt, "2026-08-25T21:12:06Z");
 		assert.equal(ciObservation?.details?.comments[2]?.location, "src/index.ts:3");
 		assert.deepEqual(ciObservation?.details?.checks.map((check) => check.kind), ["check-run", "status-context"]);
