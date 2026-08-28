@@ -24,10 +24,18 @@ test("Role settings persist without discarding other Khala configuration", async
 			roleSettingsKey: "s",
 			commentsKey: "c",
 		});
-		assert.equal(loadConfig(directory, false, false).keybindings.roleSettings, "s");
-		assert.equal(loadConfig(directory, false, false).keybindings.comments, "c");
+		const loadedConfig = loadConfig(directory, false, false);
+		assert.equal(loadedConfig.keybindings.roleSettings, "s");
+		assert.equal(loadedConfig.keybindings.comments, "c");
+		assert.equal(loadedConfig.keybindings.refresh, "ctrl+r");
+		assert.equal(loadedConfig.keybindings.help, "?");
+		assert.equal(loadedConfig.keybindings.history, "h");
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ commentsKey: "   " }));
 		assert.throws(() => loadConfig(directory, false, false), /commentsKey must not be blank/);
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ targetBranch: "feature/.hidden" }));
+		assert.throws(() => loadConfig(directory, false, false), /targetBranch must be a valid Git branch name/);
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ targetBranch: "release.lock" }));
+		assert.throws(() => loadConfig(directory, false, false), /targetBranch must be a valid Git branch name/);
 	} finally {
 		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDirectory;

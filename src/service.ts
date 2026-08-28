@@ -2,7 +2,13 @@ import { createHash, createPublicKey, type KeyObject, randomUUID, verify } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
-import { type ArchiveAppend, type ArchivePort, ExecutionAdmissionConflict, RevisionConflict } from "./archive.js";
+import {
+	type ArchiveAppend,
+	type ArchivePort,
+	CommandReuseConflict,
+	ExecutionAdmissionConflict,
+	RevisionConflict,
+} from "./archive.js";
 import {
 	type Action,
 	type ActionCommand,
@@ -57,6 +63,7 @@ export type ServiceOptions = Readonly<{
 	oraclePromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	rolePublicKey: string;
 	autonomousMonitor?: boolean | undefined;
+	shutdownGraceMs?: number | undefined;
 }>;
 
 type RoleCapability = Readonly<{
@@ -183,10 +190,21 @@ export class ApplicationService {
 	// oxlint-disable-next-line complexity
 	submitWork(input: SubmitWorkInput, meta: CommandMeta): WorkView {
 		this.requireActor(meta, "user");
-		const prior = this.archive.findCommand(meta.commandId);
-		if (prior !== undefined) {
-			return prior.projection;
+		const fingerprint = actionFingerprint("submit-work", input);
+		let prior: ReturnType<ArchivePort["findCommand"]>;
+		try {
+			prior = this.archive.findCommand(meta.commandId, fingerprint);
+		} catch (error) {
+			if (error instanceof CommandReuseConflict)
+				throw this.error(
+					"invalid-input",
+					error.message,
+					false,
+					"Use a new command ID for a different Work submission.",
+				);
+			throw error;
 		}
+		if (prior !== undefined) return prior.projection;
 		const workId = input.workId?.trim() || nanoid();
 		const existing = this.archive.project(workId);
 		if (existing !== undefined) {
@@ -212,7 +230,7 @@ export class ApplicationService {
 			queuedSequence: 0,
 		};
 		const result = this.append({
-			meta,
+			meta: { ...meta, commandFingerprint: fingerprint },
 			kind: "submission",
 			workId,
 			payload: terms,
@@ -327,7 +345,7 @@ export class ApplicationService {
 					const observed = await this.inspectRuntime(work.workId);
 					const runtimeState = observed.execution?.runtimeState;
 					if (runtimeState !== undefined && runtimeState !== execution.runtimeState)
-						this.recordExecutorRuntimeState(work, runtimeState, runtimeState === "unreachable");
+						this.recordExecutorRuntimeState(work, runtimeState, isRuntimeUnavailable(runtimeState));
 				} catch (error) {
 					if (!(error instanceof RevisionConflict))
 						this.recordMonitorFailure(
@@ -391,7 +409,7 @@ export class ApplicationService {
 		const runtimeUnavailable =
 			work.execution !== undefined &&
 			(work.execution.state === "running" || work.execution.state === "awaiting-review") &&
-			(runtimeState ?? work.execution.runtimeState) === "unreachable";
+			isRuntimeUnavailable(runtimeState ?? work.execution.runtimeState);
 		if (actor === "user") {
 			add(
 				"amend-terms",
@@ -525,6 +543,18 @@ export class ApplicationService {
 		}
 		if (actor === "executor") {
 			add(
+				"commit-sandbox",
+				work.execution?.state === "running",
+				"Commit sandbox changes",
+				"The current Execution is not running.",
+			);
+			add(
+				"run-validation",
+				work.execution?.state === "running",
+				"Run validation",
+				"The current Execution is not running.",
+			);
+			add(
 				"record-signal",
 				work.execution?.state === "running",
 				"Record Signal",
@@ -543,7 +573,8 @@ export class ApplicationService {
 	// oxlint-disable-next-line complexity
 	async perform(command: ActionCommand): Promise<ServiceResult<WorkView>> {
 		try {
-			const prior = this.archive.findCommand(command.meta.commandId);
+			const fingerprint = actionFingerprint(command.action, command.input);
+			const prior = this.archive.findCommand(command.meta.commandId, fingerprint);
 			if (prior !== undefined) {
 				if (prior.record.workId !== command.workId) {
 					throw this.error(
@@ -553,13 +584,29 @@ export class ApplicationService {
 						"Use a new command ID for this Work.",
 					);
 				}
+				if (prior.record.actor !== command.meta.actor) {
+					throw this.error(
+						"forbidden",
+						"A command can only be replayed by the actor that created it.",
+						false,
+						"Use a new command ID in the current role session.",
+					);
+				}
+				const current = this.inspectWork(command.workId);
+				if (command.meta.actor !== "user") this.requireRoleBinding(command.meta, current);
 				return { value: prior.projection };
 			}
-			const value = await this.performOrThrow(command);
+			const value = await this.performOrThrow({
+				...command,
+				meta: { ...command.meta, commandFingerprint: fingerprint },
+			});
 			return { value };
 		} catch (error) {
 			if (error instanceof ApplicationError) {
 				return { error: error.envelope };
+			}
+			if (error instanceof CommandReuseConflict) {
+				return { error: this.inputEnvelope(error.message) };
 			}
 			if (error instanceof ActionInputError) {
 				return { error: this.inputEnvelope(error.message) };
@@ -692,12 +739,14 @@ export class ApplicationService {
 			let unsupportedEffect = false;
 			for (const effect of effects) {
 				if (!SUPPORTED_EFFECT_KINDS.has(effect.kind)) {
-					this.archive.releaseEffect(effect.effectId, owner);
+					if (!this.archive.completeEffect(effect.effectId, owner))
+						throw new Error(`Archive lease was lost for unsupported effect ${effect.effectId}.`);
 					unsupportedEffect = true;
 					continue;
 				}
 				let workId: string | undefined;
 				let observationId: string | undefined;
+				let feedbackExecutionId: string | undefined;
 				let wakeReason: string | undefined;
 				let leaseLost = false;
 				const lease = setInterval(() => {
@@ -710,6 +759,7 @@ export class ApplicationService {
 				try {
 					workId = readEffectWorkId(effect.payload);
 					observationId = readOptionalEffectText(effect.payload, "observationId");
+					feedbackExecutionId = readOptionalEffectText(effect.payload, "executionId");
 					wakeReason = readOptionalEffectText(effect.payload, "reason");
 					const work = this.inspectWork(workId);
 					if (effect.kind === "conclave-wake") {
@@ -740,10 +790,12 @@ export class ApplicationService {
 						if (binding !== undefined)
 							await this.stopExecutorAfterTurn(work, binding, ["completed", "failed", "stopped"]);
 						await this.ports.workspace.removeSandbox(readCleanupSandbox(effect.payload));
+						this.recordCleanupSuccess(work.workId, effect.effectId, effect.kind);
 					} else if (effect.kind === "observer-cleanup") {
 						const binding = readEffectBinding(effect.payload);
 						if (work.observer === undefined || sameRuntimeBinding(work.observer, binding))
 							await this.ports.runtime.requestStop(binding);
+						this.recordCleanupSuccess(work.workId, effect.effectId, effect.kind);
 					} else if (effect.kind === "executor-stop") {
 						const binding = readEffectBinding(effect.payload);
 						const executionId = readEffectExecutionId(effect.payload);
@@ -769,7 +821,9 @@ export class ApplicationService {
 						}
 					} else if (effect.kind === "feedback-wake") {
 						const feedback = readEffectFeedback(effect.payload);
-						if (work.execution?.state === "running") {
+						if (feedbackExecutionId === undefined || work.execution?.executionId !== feedbackExecutionId) {
+							this.recordFeedbackSuperseded(work, feedback, effect.effectId, observationId);
+						} else if (work.execution?.state === "running") {
 							await this.resumeExecutor(work, feedback, effect.effectId, observationId);
 						} else if (!["succeeded", "stopped"].includes(work.state)) {
 							this.recordFeedbackUnavailable(work, feedback, effect.effectId, observationId);
@@ -810,7 +864,7 @@ export class ApplicationService {
 						if (
 							wakeReason === "runtime-unreachable" &&
 							work.execution?.executionId === current.execution?.executionId &&
-							current.execution?.runtimeState === "unreachable" &&
+							isRuntimeUnavailable(current.execution?.runtimeState) &&
 							!["succeeded", "stopped"].includes(current.state)
 						)
 							throw new Error("Conclave runtime-recovery wake returned without recording a recovery decision.");
@@ -844,8 +898,21 @@ export class ApplicationService {
 						this.archive.project(workId)?.execution?.state !== "queued"
 					)
 						this.pendingEffectsRequested = true;
-					if (effect.kind === "workspace-cleanup") {
+					if (effect.kind === "workspace-cleanup" || effect.kind === "observer-cleanup") {
 						this.archive.releaseEffect(effect.effectId, owner);
+						const cleanupWork = workId === undefined ? undefined : this.archive.project(workId);
+						if (cleanupWork !== undefined) {
+							try {
+								this.recordCleanupFailure(
+									cleanupWork,
+									effect.effectId,
+									error instanceof Error ? error : new Error(String(error)),
+									effect.kind,
+								);
+							} catch {
+								// Keep the released effect retryable when its diagnostic record cannot be appended.
+							}
+						}
 						return;
 					}
 					if (effect.kind === "feedback-wake") {
@@ -921,6 +988,13 @@ export class ApplicationService {
 		this.requireAnyActor(meta, ["user", "monitor"]);
 		let work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
+		if (["succeeded", "stopped"].includes(work.state))
+			throw this.error(
+				"invalid-state",
+				"Terminal Work cannot be polled.",
+				false,
+				"Inspect the terminal Work evidence instead of polling its review request.",
+			);
 		if (work.reviewRequest === undefined)
 			throw this.error(
 				"invalid-state",
@@ -966,7 +1040,7 @@ export class ApplicationService {
 				"Inspect the current Execution before recovering it.",
 			);
 		}
-		if ((await this.ports.runtime.getState(execution.pi)) !== "unreachable") {
+		if (!isRuntimeUnavailable(await this.ports.runtime.getState(execution.pi))) {
 			throw this.error(
 				"invalid-state",
 				"The Executor runtime is currently reachable and does not need recovery.",
@@ -1037,7 +1111,7 @@ export class ApplicationService {
 			this.validateModel("observer", this.options.observerModel, this.options.observerThinking);
 			let current = work;
 			let shouldResume = observerState === "idle";
-			if (observerState === "unreachable") {
+			if (isRuntimeUnavailable(observerState)) {
 				onRecoveryUpdate?.({ stage: "stopping", message: "Closing the unavailable assessment safely." });
 				await this.ports.runtime.requestStop(work.observer).catch(() => undefined);
 				onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work's assessment." });
@@ -1103,7 +1177,7 @@ export class ApplicationService {
 			}
 			return execution.runtimeState === "idle" ? work : this.recordExecutorRuntimeState(work, "idle");
 		}
-		if (executorState !== "unreachable") return work;
+		if (!isRuntimeUnavailable(executorState)) return work;
 		onRecoveryUpdate?.({ stage: "stopping", message: "Closing the unavailable Work attempt safely." });
 		const activeTurns = this.activeExecutorTurns.get(executorTurnKey(work.workId, execution.executionId));
 		if (activeTurns === undefined || activeTurns.size === 0)
@@ -1123,7 +1197,6 @@ export class ApplicationService {
 				bindingScope: { workId: work.workId, executionId: execution.executionId },
 				tools: [
 					"read",
-					"bash",
 					"edit",
 					"write",
 					"grep",
@@ -1136,8 +1209,8 @@ export class ApplicationService {
 				sessionPath: execution.pi.sessionPath,
 			});
 			onRecoveryUpdate?.({ stage: "confirming", message: "Confirming the restored Work can continue." });
-			if ((await this.ports.runtime.getState(rebound)) === "unreachable")
-				throw new Error("The recovered Executor runtime is still unreachable.");
+			if (isRuntimeUnavailable(await this.ports.runtime.getState(rebound)))
+				throw new Error("The recovered Executor runtime is still unavailable.");
 			const recovered: Execution = {
 				...execution,
 				pi: rebound,
@@ -1171,7 +1244,7 @@ export class ApplicationService {
 			const failed: Execution = {
 				...execution,
 				state: "failed",
-				runtimeState: "unreachable",
+				runtimeState: isRuntimeUnavailable(executorState) ? executorState : "unreachable",
 				endedAt: new Date().toISOString(),
 			};
 			const failure = executionFailure(work, execution.executionId, error instanceof Error ? error : String(error));
@@ -1244,9 +1317,10 @@ export class ApplicationService {
 				false,
 				"Use the provider adapter's confirmed merge observation.",
 			);
-		const key = observationKey(workId, observation);
-		const fingerprint = observationFingerprint(observation);
-		const previous = this.heartbeat.get(key) ?? this.persistedObservationFingerprint(work, observation);
+		const normalizedObservation = normalizeProviderObservation(observation, work.reviewRequest);
+		const key = observationKey(workId, normalizedObservation);
+		const fingerprint = observationFingerprint(normalizedObservation);
+		const previous = this.heartbeat.get(key) ?? this.persistedObservationFingerprint(work, normalizedObservation);
 		if (previous === fingerprint) {
 			this.heartbeat.set(key, fingerprint);
 			if (observation.kind === "provider-outcome") return this.queueProviderOutcomeWake(work);
@@ -1255,7 +1329,7 @@ export class ApplicationService {
 				: this.recordProviderPollRecovery(work, observation, `${commandId}:recovered`);
 		}
 		let nextObservation: ProviderObservation = {
-			...observation,
+			...normalizedObservation,
 			changed: true,
 			observedAt: new Date().toISOString(),
 		};
@@ -1342,7 +1416,7 @@ export class ApplicationService {
 						observedAt: new Date().toISOString(),
 					}
 				: {
-						...observation,
+						...normalizeProviderObservation(observation, reviewRequest),
 						changed: false,
 						observedAt: new Date().toISOString(),
 						feedback: observation.feedback === undefined ? undefined : boundedFeedback(observation.feedback),
@@ -1457,8 +1531,8 @@ export class ApplicationService {
 		if (this.closing) return;
 		this.closing = true;
 		if (this.monitorTimer !== undefined) clearInterval(this.monitorTimer);
-		await this.waitForOperations();
-		await this.ports.runtime.close();
+		const operations = this.waitForOperations();
+		await closeRuntimeAfterDrain(this.ports.runtime, operations, this.options.shutdownGraceMs ?? 5_000);
 		this.archive.close();
 	}
 
@@ -1480,7 +1554,11 @@ export class ApplicationService {
 	// oxlint-disable-next-line complexity
 	private persistedObservationFingerprint(work: WorkView, observation: ProviderObservation): string | undefined {
 		const last = work.lastObservation;
-		if (last?.kind === observation.kind && last.providerId === observation.providerId) {
+		if (
+			last?.kind === observation.kind &&
+			last.providerId === observation.providerId &&
+			last.observationId === observation.observationId
+		) {
 			return sameObservation(last, observation) ? observationFingerprint(last) : undefined;
 		}
 		const previous = this.archive.findLatestObservation(
@@ -1542,6 +1620,69 @@ export class ApplicationService {
 				current = latest;
 			}
 		}
+	}
+
+	private recordCleanupFailure(work: WorkView, effectId: string, failure: Error, kind: string): void {
+		const message = failure.message.trim().slice(0, 2_000) || "Cleanup returned no error detail.";
+		const marker = `cleanup-failure:${effectId}`;
+		if (this.heartbeat.get(marker) === message) return;
+		const label = cleanupLabel(kind);
+		const failureEnvelope: ErrorEnvelope = {
+			code: "external-failure",
+			summary: `${label} cleanup failed: ${message}`,
+			retryable: true,
+			remediation: "Khala will retry cleanup automatically; inspect Evidence if the failure persists.",
+			evidenceRefs: [effectId],
+		};
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastError: failureEnvelope,
+			nextAction: `${label} cleanup failed; retrying automatically.`,
+		};
+		this.append({
+			meta: {
+				actor: "system",
+				commandId: `${marker}:${work.revision}`,
+				expectedWorkRevision: work.revision,
+				schemaVersion: 1,
+			},
+			kind: "error",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			payload: { effectId, kind, message, previousNextAction: work.nextAction },
+			evidenceRefs: [effectId],
+			projection: next,
+			summary: failureEnvelope.summary,
+		});
+		this.heartbeat.set(marker, message);
+	}
+
+	private recordCleanupSuccess(workId: string, effectId: string, kind: string): void {
+		const work = this.archive.project(workId);
+		if (!cleanupFailureMatches(work, effectId)) return;
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastError: undefined,
+			nextAction: cleanupRestoredAction(work, kind),
+		};
+		this.append({
+			meta: {
+				actor: "system",
+				commandId: `cleanup-completed:${effectId}:${work.revision}`,
+				expectedWorkRevision: work.revision,
+				schemaVersion: 1,
+			},
+			kind: "execution",
+			workId,
+			missionId: work.mission?.missionId,
+			executionId: work.execution?.executionId,
+			payload: { effectId, kind, status: "completed" },
+			projection: next,
+			evidenceRefs: [effectId],
+			summary: `${cleanupLabel(kind)} cleanup completed after retry.`,
+		});
 	}
 
 	private recordServiceMonitorFailure(failure: Error): void {
@@ -1611,6 +1752,10 @@ export class ApplicationService {
 				return this.startExecution(work, command.meta);
 			case "record-signal":
 				return this.recordSignal(work, command.meta, command.input);
+			case "commit-sandbox":
+				return this.commitSandbox(work, command.meta);
+			case "run-validation":
+				return this.runValidation(work, command.meta);
 			case "create-review-request":
 				return this.createReviewRequest(work, command.meta);
 			case "run-oracle":
@@ -1714,6 +1859,7 @@ export class ApplicationService {
 			lastSignal: undefined,
 			lastObservation: undefined,
 			providerOutcome: undefined,
+			lastValidation: undefined,
 			lastError: undefined,
 			nextAction: "Waiting for budget or project concurrency.",
 			queuedSequence: 0,
@@ -1871,7 +2017,7 @@ export class ApplicationService {
 					effects: observerEffects(current.workId, next.revision, binding),
 				});
 			}
-			queueMicrotask(() => void this.processPendingEffects());
+			queueMicrotask(() => void this.processPendingEffects().catch(() => undefined));
 		} catch (error) {
 			const current = this.archive.project(work.workId);
 			if (current?.observerInFlight !== true || !sameRuntimeBinding(current.observer, binding)) return;
@@ -2055,6 +2201,7 @@ export class ApplicationService {
 			lastSignal: undefined,
 			lastObservation: undefined,
 			providerOutcome: undefined,
+			lastValidation: undefined,
 			execution,
 			nextAction: "Executor is starting.",
 		};
@@ -2138,7 +2285,6 @@ export class ApplicationService {
 				bindingScope: { workId: work.workId, executionId: execution.executionId },
 				tools: [
 					"read",
-					"bash",
 					"edit",
 					"write",
 					"grep",
@@ -2243,7 +2389,7 @@ export class ApplicationService {
 				`Work ${current.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${current.revision}.`,
 			);
 			this.recordExecutorTurn(current, result);
-			queueMicrotask(() => void this.processPendingEffects());
+			queueMicrotask(() => void this.processPendingEffects().catch(() => undefined));
 		} catch (error) {
 			await this.ports.runtime.requestStop(activeBinding ?? execution.pi).catch(() => undefined);
 			const current = this.archive.project(work.workId);
@@ -2283,7 +2429,7 @@ export class ApplicationService {
 					summary: "Executor runtime failed after launch.",
 					effects: lifecycleEffects(current.workId, failed.revision, failed.execution),
 				});
-				void this.processPendingEffects();
+				void this.processPendingEffects().catch(() => undefined);
 			} catch {
 				// Recovery rereads the unchanged currentness fence and records the failure explicitly.
 			}
@@ -2304,7 +2450,7 @@ export class ApplicationService {
 			revision: work.revision + 1,
 			execution: nextExecution,
 			nextAction:
-				runtimeState === "unreachable" && wakeConclave
+				isRuntimeUnavailable(runtimeState) && wakeConclave
 					? "Executor runtime is unreachable. Conclave is inspecting recovery."
 					: runtimeAction(work, runtimeState),
 		};
@@ -2389,6 +2535,14 @@ export class ApplicationService {
 		const summary = requiredNonBlank(requiredText(input?.summary, "summary"), "summary");
 		const evidence = readTextList(input, "evidence");
 		if (kind === "ready") {
+			if (evidence.length === 0)
+				throw this.error(
+					"invalid-input",
+					"A ready Signal must include validation evidence.",
+					false,
+					"Include the validation commands and results in the Signal evidence.",
+				);
+
 			await this.ensureAllowedPaths(work, execution);
 			const request = work.reviewRequest;
 			if (
@@ -2405,7 +2559,12 @@ export class ApplicationService {
 				);
 			}
 			const head = await this.ports.workspace.inspectHead(execution.sandbox.path);
-			if (request.headCommit !== head || request.diffSummary.trim().length === 0 || request.validation.length === 0) {
+			if (
+				request.headCommit !== head ||
+				request.diffSummary.trim().length === 0 ||
+				request.validation.length === 0 ||
+				(this.ports.workspace.runValidation !== undefined && !isCurrentValidation(work, execution, head))
+			) {
 				throw this.error(
 					"invalid-state",
 					"The review request does not contain current head, diff, and validation evidence.",
@@ -2463,6 +2622,80 @@ export class ApplicationService {
 				false,
 				"Revert changes outside the Mission paths before publishing or sending ready evidence.",
 			);
+	}
+
+	// oxlint-disable-next-line complexity
+	private async commitSandbox(work: WorkView, meta: CommandMeta): Promise<WorkView> {
+		this.requireActor(meta, "executor");
+		const execution = this.requireExecution(work, "running");
+		const commitSandbox = this.ports.workspace.commitSandbox;
+		if (commitSandbox === undefined)
+			throw this.error(
+				"external-failure",
+				"The configured workspace cannot commit sandbox changes.",
+				false,
+				"Use a workspace adapter that supports governed sandbox commits.",
+			);
+		await this.ensureAllowedPaths(work, execution);
+		const headCommit = await commitSandbox({
+			sandbox: execution.sandbox,
+			allowedPaths: work.terms.allowedPaths,
+			message: `Khala: ${work.terms.title}`,
+		});
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastValidation: undefined,
+			nextAction: `Sandbox committed at ${headCommit}; run validation before handoff.`,
+		};
+		return this.append({
+			meta,
+			kind: "execution",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: execution.executionId,
+			payload: execution,
+			projection: next,
+			summary: `Sandbox changes committed at ${headCommit}.`,
+		}).projection;
+	}
+
+	// oxlint-disable-next-line complexity
+	private async runValidation(work: WorkView, meta: CommandMeta): Promise<WorkView> {
+		this.requireActor(meta, "executor");
+		const execution = this.requireExecution(work, "running");
+		const runValidation = this.ports.workspace.runValidation;
+		if (runValidation === undefined)
+			throw this.error(
+				"external-failure",
+				"The configured workspace cannot run validation commands.",
+				false,
+				"Use a workspace adapter that supports governed validation.",
+			);
+		await this.ensureAllowedPaths(work, execution);
+		const headCommit = await this.ports.workspace.inspectHead(execution.sandbox.path);
+		const results = await runValidation({ path: execution.sandbox.path, commands: work.terms.validation });
+		const validation = { executionId: execution.executionId, headCommit, results };
+		const passed = results.length === work.terms.validation.length && results.every((result) => result.passed);
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastValidation: validation,
+			nextAction: passed
+				? "Validation passed; create or reconcile the draft review request."
+				: "Validation failed; inspect the results and revise the sandbox.",
+		};
+		return this.append({
+			meta,
+			kind: "validation",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: execution.executionId,
+			payload: validation,
+			projection: next,
+			evidenceRefs: results.map((result) => result.command),
+			summary: passed ? "All declared validation commands passed." : "One or more declared validation commands failed.",
+		}).projection;
 	}
 
 	// oxlint-disable-next-line complexity
@@ -2712,14 +2945,15 @@ export class ApplicationService {
 					? [executorEffect(work.workId, next.revision)]
 					: lifecycleEffects(work.workId, next.revision, nextExecution),
 		});
-		if (decision !== "replace") {
-			return result.projection;
-		}
-		return this.startExecution(result.projection, {
+		if (decision !== "replace") return result.projection;
+		const replacement = await this.startExecution(result.projection, {
 			...meta,
 			commandId: `${meta.commandId}:replacement`,
+			commandFingerprint: undefined,
 			expectedWorkRevision: result.projection.revision,
 		});
+		this.archive.updateCommandProjection(meta.commandId, replacement);
+		return replacement;
 	}
 
 	// oxlint-disable-next-line complexity
@@ -2764,7 +2998,9 @@ export class ApplicationService {
 						: "Review closed without acceptance.",
 		};
 		const feedbackDelivery =
-			status === "changes-requested" ? feedbackEffect(work.workId, next.revision, undefined, feedback) : undefined;
+			status === "changes-requested"
+				? feedbackEffect(work.workId, next.revision, work.execution?.executionId, undefined, feedback)
+				: undefined;
 		const result = this.append({
 			meta,
 			kind: "observation",
@@ -2820,7 +3056,13 @@ export class ApplicationService {
 			lastSignal: undefined,
 			nextAction: "Executor is resuming authorized provider feedback.",
 		};
-		const feedbackDelivery = feedbackEffect(work.workId, next.revision, observation.observationId, feedback);
+		const feedbackDelivery = feedbackEffect(
+			work.workId,
+			next.revision,
+			execution.executionId,
+			observation.observationId,
+			feedback,
+		);
 		return this.append({
 			meta,
 			kind: "delivery",
@@ -2873,7 +3115,7 @@ export class ApplicationService {
 		try {
 			let current = work;
 			let binding = activeBinding;
-			if ((await this.ports.runtime.getState(binding)) === "unreachable") {
+			if (isRuntimeUnavailable(await this.ports.runtime.getState(binding))) {
 				await this.ports.runtime.requestStop(binding).catch(() => undefined);
 				const rebound = await this.ports.runtime.ensureSession({
 					cwd: execution.sandbox.path,
@@ -2886,7 +3128,6 @@ export class ApplicationService {
 					bindingScope: { workId: work.workId, executionId: execution.executionId },
 					tools: [
 						"read",
-						"bash",
 						"edit",
 						"write",
 						"grep",
@@ -3029,7 +3270,11 @@ export class ApplicationService {
 			!sameRuntimeBinding(work.execution.pi, binding)
 		)
 			return false;
-		const next: WorkView = { ...work, revision: work.revision + 1 };
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			nextAction: "Executor is idle; waiting for a Signal.",
+		};
 		this.append({
 			meta: {
 				actor: "system",
@@ -3057,7 +3302,6 @@ export class ApplicationService {
 	): void {
 		const marker = `feedback-unavailable:${deliveryId}`;
 		if (this.heartbeat.has(marker)) return;
-		this.heartbeat.set(marker, "recorded");
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -3079,6 +3323,7 @@ export class ApplicationService {
 			evidenceRefs: feedback,
 			summary: "Authorized review feedback was retained for reconciliation.",
 		});
+		this.heartbeat.set(marker, "recorded");
 	}
 
 	private recordFeedbackSuperseded(
@@ -3184,6 +3429,13 @@ export class ApplicationService {
 			);
 		}
 		const reason = requiredNonBlank(requiredText(input?.reason, "reason"), "reason");
+		const failure: ErrorEnvelope = {
+			code: "external-failure",
+			summary: `Work failed: ${reason}`,
+			retryable: false,
+			remediation: "Inspect the Archive for the explicit failure decision.",
+			evidenceRefs: [],
+		};
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -3196,6 +3448,7 @@ export class ApplicationService {
 			observer: undefined,
 			observerInFlight: false,
 			budget: releaseExecutionReservation(work.budget, work.execution),
+			lastError: failure,
 			nextAction: "Work failed by explicit decision.",
 		};
 		return this.append({
@@ -3282,6 +3535,7 @@ export class ApplicationService {
 			payload: { previousMaxTokens: work.budget.maxTokens, maxTokens },
 			projection: next,
 			summary: `Work token cap amended to ${maxTokens}.`,
+			effects: work.state === "queued" ? [schedulerEffect(work.workId, next.revision)] : undefined,
 		}).projection;
 	}
 
@@ -3306,7 +3560,7 @@ export class ApplicationService {
 				"Inspect the current Execution before recovering it.",
 			);
 		}
-		if ((await this.ports.runtime.getState(execution.pi)) !== "unreachable") {
+		if (!isRuntimeUnavailable(await this.ports.runtime.getState(execution.pi))) {
 			throw this.error(
 				"invalid-state",
 				"The Executor runtime is reachable and does not need recovery.",
@@ -3349,6 +3603,7 @@ export class ApplicationService {
 			lastSignal: undefined,
 			lastObservation: undefined,
 			providerOutcome: undefined,
+			lastValidation: undefined,
 			budget: { ...work.budget, reservedTokens: 0 },
 			nextAction: "Recovered Work is pending Conclave admission.",
 		};
@@ -3418,6 +3673,7 @@ export class ApplicationService {
 		try {
 			const result = this.archive.append({
 				commandId: input.meta.commandId,
+				commandFingerprint: input.meta.commandFingerprint,
 				expectedWorkRevision: input.meta.expectedWorkRevision ?? 0,
 				kind: input.kind,
 				actor: input.meta.actor,
@@ -3835,9 +4091,18 @@ function normalizeAllowedPath(path: string): string {
 		.replace(/\\/g, "/")
 		.replace(/^\.\//, "")
 		.replace(/\/{2,}/g, "/");
-	if (/^(?:$|\.\.(?:\/|$)|\/)/.test(value))
-		throw new ActionInputError(`allowedPaths contains an invalid path: ${path}`);
+	const pathspecCharacters = ["!", "~", "^", ":", "*", "?", "[", "]"];
+	const invalidSyntax = [
+		/^(?:$|\.\.(?:\/|$)|\/)/.test(value),
+		value !== "." && value.split("/").some(isDotPathSegment),
+		pathspecCharacters.some((character) => value.includes(character)),
+	].some(Boolean);
+	if (invalidSyntax) throw new ActionInputError(`allowedPaths contains an invalid path: ${path}`);
 	return value === "." ? "." : value.replace(/\/$/, "");
+}
+
+function isDotPathSegment(segment: string): boolean {
+	return segment === "." || segment === "..";
 }
 
 function readActionTextList(values: readonly string[], key: string): readonly string[] {
@@ -3933,11 +4198,16 @@ function monitorMeta(work: WorkView, subject: string, bucket: number): CommandMe
 	};
 }
 
+function isRuntimeUnavailable(state: RuntimeState | undefined): boolean {
+	return state === "unreachable" || state === "unknown";
+}
+
 // oxlint-disable-next-line complexity
 function runtimeAction(work: WorkView, runtimeState: RuntimeState): string {
 	if (work.execution === undefined || !["running", "awaiting-review"].includes(work.execution.state))
 		return work.nextAction;
 	if (runtimeState === "unreachable") return "Executor runtime is unreachable. Recover it from Actions.";
+	if (runtimeState === "unknown") return "Executor runtime state is unknown. Recover it from Actions.";
 	if (work.execution.state !== "running") return work.nextAction;
 	if (
 		runtimeState === "idle" &&
@@ -4039,13 +4309,14 @@ function observerEffect(workId: string, revision: number) {
 function feedbackEffect(
 	workId: string,
 	revision: number,
+	executionId: string | undefined,
 	observationId: string | undefined,
 	feedback: readonly string[],
 ) {
 	return {
 		effectId: `feedback-wake:${workId}:${revision}`,
 		kind: "feedback-wake",
-		payload: { workId, observationId, feedback },
+		payload: { workId, executionId, observationId, feedback },
 	};
 }
 
@@ -4340,6 +4611,7 @@ function observationFingerprint(observation: ProviderObservation): string {
 		headCommit: observation.headCommit,
 		mergeCommit: observation.mergeCommit,
 		feedback: observation.feedback,
+		details: observation.details,
 		author: observation.author,
 		authorAssociation: observation.authorAssociation,
 		reviewState: observation.reviewState,
@@ -4358,12 +4630,11 @@ function isFeedbackObservation(record: RecordView, observationId: string): boole
 function isPendingFeedbackReservation(record: RecordView, observationId: string): boolean {
 	const payload = record.payload;
 	if (!isJsonObject(payload)) return false;
-	return [
-		payload["observationId"] === observationId,
-		payload["delivered"] === false,
-		payload["disposition"] === undefined,
-		payload["message"] === undefined,
-	].every(Boolean);
+	return (
+		payload["observationId"] === observationId &&
+		payload["delivered"] === false &&
+		payload["disposition"] !== "superseded"
+	);
 }
 
 function matchesFeedbackDelivery(
@@ -4389,6 +4660,27 @@ function hasFeedbackIdentifier(
 	);
 }
 
+function reviewObservationMatchesRequest(
+	observation: ProviderObservation,
+	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	return [
+		observation.repository === reviewRequest.repository,
+		observation.sourceBranch === reviewRequest.sourceBranch,
+		observation.targetBranch === reviewRequest.targetBranch,
+		observation.headCommit === reviewRequest.headCommit,
+	].every(Boolean);
+}
+
+function normalizeProviderObservation(
+	observation: ProviderObservation,
+	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+): ProviderObservation {
+	return observation.kind === "review-comment" && !reviewObservationMatchesRequest(observation, reviewRequest)
+		? { ...observation, actionable: false }
+		: observation;
+}
+
 function isCurrentReviewFeedback(
 	work: WorkView,
 	observation: ProviderObservation | undefined,
@@ -4398,14 +4690,10 @@ function isCurrentReviewFeedback(
 	feedback: readonly string[];
 } {
 	const reviewRequest = work.reviewRequest;
-	if (reviewRequest === undefined || !isOpenReview(reviewRequest) || !isReviewFeedback(observation)) return false;
-	return [
-		observation.providerId === reviewRequest.providerId,
-		observation.repository === reviewRequest.repository,
-		observation.sourceBranch === reviewRequest.sourceBranch,
-		observation.targetBranch === reviewRequest.targetBranch,
-		observation.headCommit === reviewRequest.headCommit,
-	].every(Boolean);
+	if (!isOpenReviewRequest(reviewRequest)) return false;
+	if (!isReviewFeedback(observation)) return false;
+	if (observation.providerId !== reviewRequest.providerId) return false;
+	return reviewObservationMatchesRequest(observation, reviewRequest);
 }
 
 function isReviewFeedback(
@@ -4422,6 +4710,29 @@ function isReviewComment(
 	return observation?.kind === "review-comment";
 }
 
+function isCurrentValidation(work: WorkView, execution: Execution, headCommit: string): boolean {
+	const validation = work.lastValidation;
+	return (
+		validation !== undefined &&
+		validationMatchesExecution(validation, execution, headCommit) &&
+		validationPassed(work, validation)
+	);
+}
+
+function validationMatchesExecution(
+	validation: NonNullable<WorkView["lastValidation"]>,
+	execution: Execution,
+	headCommit: string,
+): boolean {
+	return validation.executionId === execution.executionId && validation.headCommit === headCommit;
+}
+
+function validationPassed(work: WorkView, validation: NonNullable<WorkView["lastValidation"]>): boolean {
+	return (
+		validation.results.length === work.terms.validation.length && validation.results.every((result) => result.passed)
+	);
+}
+
 function isCurrentSignal(work: WorkView): boolean {
 	return work.execution !== undefined && work.lastSignal?.executionId === work.execution.executionId;
 }
@@ -4432,6 +4743,12 @@ function isCurrentReadySignal(work: WorkView): boolean {
 
 function isOpenReview(reviewRequest: WorkView["reviewRequest"]): boolean {
 	return reviewRequest?.status === "draft" || reviewRequest?.status === "open";
+}
+
+function isOpenReviewRequest(
+	reviewRequest: WorkView["reviewRequest"],
+): reviewRequest is NonNullable<WorkView["reviewRequest"]> {
+	return isOpenReview(reviewRequest);
 }
 
 function isMergedReview(work: WorkView): boolean {
@@ -4454,11 +4771,65 @@ function isCurrentProviderOutcome(work: WorkView): boolean {
 }
 
 function isProviderOutcomeSettlementPending(work: WorkView): boolean {
+	return isLiveMissionWork(work) && isMergedReview(work) && isCurrentProviderOutcome(work);
+}
+
+function isLiveMissionWork(work: WorkView): boolean {
 	return (
 		(work.state === "active" || work.state === "awaiting-review") &&
-		isMergedReview(work) &&
-		isCurrentProviderOutcome(work)
+		(work.missionState === "active" || work.missionState === "awaiting-review")
 	);
+}
+
+async function closeRuntimeAfterDrain(
+	runtime: Readonly<{ close: () => Promise<void> }>,
+	operations: Promise<void>,
+	timeoutMs: number,
+): Promise<void> {
+	const drained = await waitForDrain(operations, timeoutMs);
+	if (!drained) await runtime.close();
+	await operations;
+	if (drained) await runtime.close();
+}
+
+async function waitForDrain(operation: Promise<void>, timeoutMs: number): Promise<boolean> {
+	let timer: NodeJS.Timeout | undefined;
+	const timeout = new Promise<false>((resolve) => {
+		timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+		timer.unref();
+	});
+	const drained = await Promise.race([operation.then(() => true), timeout]);
+	if (timer !== undefined) clearTimeout(timer);
+	return drained;
+}
+
+function cleanupLabel(kind: string): string {
+	return kind === "workspace-cleanup" ? "Sandbox" : "Observer";
+}
+
+function cleanupRestoredAction(work: WorkView, kind: string): string {
+	return kind === "observer-cleanup"
+		? "Conclave must reread the Observer assessment."
+		: cleanupRestoredWorkAction(work);
+}
+
+function cleanupRestoredWorkAction(work: WorkView): string {
+	if (work.state === "succeeded") return "Work succeeded.";
+	if (work.state !== "stopped") return "Conclave may retry the Work.";
+	return stoppedWorkAction(work.stopReason);
+}
+
+function stoppedWorkAction(reason: WorkView["stopReason"]): string {
+	return reason === "failed" ? "Work failed by explicit decision." : "Work cancelled by the User.";
+}
+
+function cleanupFailureMatches(work: WorkView | undefined, effectId: string): work is WorkView {
+	return work?.lastError?.evidenceRefs.includes(effectId) === true;
+}
+
+function actionFingerprint(action: string, input: SubmitWorkInput | ActionInput | undefined): string {
+	const fields = input === undefined ? [] : Object.keys(input).sort();
+	return JSON.stringify({ action, input: input ?? {} }, ["action", "input", ...fields]) ?? `${action}:empty`;
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {

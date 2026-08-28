@@ -1,4 +1,12 @@
-import type { Execution, Mission, ProviderObservation, ReviewRequest, TokenUsage, WorkTerms } from "./model.js";
+import type {
+	Execution,
+	Mission,
+	ProviderObservation,
+	ReviewRequest,
+	TokenUsage,
+	ValidationResult,
+	WorkTerms,
+} from "./model.js";
 
 export type WorkspacePreflight = Readonly<{
 	projectPath: string;
@@ -20,6 +28,12 @@ export interface WorkspacePort {
 	) => Promise<Execution["sandbox"]>;
 	inspectHead: (path: string) => Promise<string>;
 	inspectChanges?: (input: Readonly<{ path: string; baseCommit: string }>) => Promise<readonly string[]>;
+	commitSandbox?: (
+		input: Readonly<{ sandbox: Execution["sandbox"]; allowedPaths: readonly string[]; message: string }>,
+	) => Promise<string>;
+	runValidation?: (
+		input: Readonly<{ path: string; commands: readonly string[] }>,
+	) => Promise<readonly ValidationResult[]>;
 	publishSandbox: (sandbox: Execution["sandbox"]) => Promise<string>;
 	removeSandbox: (sandbox: Execution["sandbox"]) => Promise<void>;
 }

@@ -1,4 +1,4 @@
-import { readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
@@ -94,6 +94,8 @@ const performSchema = Type.Object({
 		Type.Literal("record-assessment"),
 		Type.Literal("start-execution"),
 		Type.Literal("record-signal"),
+		Type.Literal("commit-sandbox"),
+		Type.Literal("run-validation"),
 		Type.Literal("create-review-request"),
 		Type.Literal("run-oracle"),
 		Type.Literal("verdict"),
@@ -120,10 +122,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerFlag(ROLE_FLAG, { description: "Khala role for an isolated child session", type: "string" });
 	pi.on("tool_call", (event) => {
 		if (sessionRole(pi) !== "executor") return;
-		const path = executorWritePath(event);
-		return path === undefined || executorPathAllowed(path)
-			? undefined
-			: { block: true, reason: `The Mission does not permit writes to ${path}.` };
+		const violation = executorToolViolation(event);
+		return violation === undefined ? undefined : { block: true, reason: violation };
 	});
 	let runtime: RuntimeState | undefined;
 	let executorStatusTimer: ReturnType<typeof setInterval> | undefined;
@@ -502,37 +502,114 @@ function roleTools(role: ReturnType<typeof sessionRole>): ReadonlySet<string> {
 	return new Set(tools[role]);
 }
 
-function executorWritePath(event: ToolCallEvent): string | undefined {
-	if (event.toolName === "write") {
-		// SAFETY: Pi's write schema supplies a path string; the assertion narrows the external tool event at this boundary.
-		return textValue(event.input.path as JsonValue);
-	}
-	if (event.toolName === "edit") {
-		// SAFETY: Pi's edit schema supplies a path string; the assertion narrows the external tool event at this boundary.
-		return textValue(event.input.path as JsonValue);
-	}
-	return undefined;
+function executorToolViolation(event: ToolCallEvent): string | undefined {
+	const path = executorToolPath(event);
+	if (path === null) return `The ${event.toolName} tool requires a path.`;
+	return path === undefined ? undefined : pathViolation(path, isWriteTool(event.toolName));
+}
+
+function pathViolation(path: string, write: boolean): string | undefined {
+	if (!executorPathInsideSandbox(path)) return `The Mission does not permit access to ${path}.`;
+	if (write && !executorPathAllowed(path)) return `The Mission does not permit writes to ${path}.`;
+	return;
+}
+
+function executorToolPath(event: ToolCallEvent): string | null | undefined {
+	const filePath = fileToolPath(event);
+	return filePath === undefined ? searchToolPath(event) : filePath;
+}
+
+type FileToolCallEvent = Extract<ToolCallEvent, { toolName: "read" | "write" | "edit" }>;
+
+function fileToolPath(event: ToolCallEvent): string | null | undefined {
+	if (!isFileTool(event)) return;
+	// SAFETY: Pi's file tool schemas supply a path string; the assertion narrows the external tool event at this boundary.
+	return textValue(event.input.path as JsonValue) ?? null;
+}
+
+function isFileTool(event: ToolCallEvent): event is FileToolCallEvent {
+	return ["read", "write", "edit"].includes(event.toolName);
+}
+
+type SearchToolCallEvent = Extract<ToolCallEvent, { toolName: "grep" | "find" | "ls" }>;
+
+function searchToolPath(event: ToolCallEvent): string | undefined {
+	if (!isSearchTool(event)) return;
+	// SAFETY: Pi's search/list schemas supply an optional path string; the assertion narrows the external tool event at this boundary.
+	return textValue(event.input.path as JsonValue) ?? ".";
+}
+
+function isSearchTool(event: ToolCallEvent): event is SearchToolCallEvent {
+	return event.toolName === "grep" || event.toolName === "find" || event.toolName === "ls";
+}
+
+function isWriteTool(toolName: string): boolean {
+	return toolName === "write" || toolName === "edit";
 }
 
 function textValue(value: JsonValue | undefined): string | undefined {
 	return value === String(value) ? String(value) : undefined;
 }
 
+function executorPathInsideSandbox(path: string): boolean {
+	const scope = executorPathScope();
+	return scope === undefined ? true : scope === null ? false : pathInsideRoot(path, scope.root);
+}
+
 function executorPathAllowed(path: string): boolean {
 	const scope = executorPathScope();
-	if (scope === undefined) return true;
-	if (scope === null) return false;
-	const rootRelative = relative(resolve(scope.root), resolveExecutorPath(scope.root, path)).replace(/\\/g, "/");
-	if (!isInsideRoot(rootRelative)) return false;
-	return scope.allowedPaths.some((allowed) => matchesAllowedPath(rootRelative, allowed));
+	return scope === undefined ? true : scope === null ? false : pathMatchesScope(path, scope);
+}
+
+function pathMatchesScope(path: string, scope: Readonly<{ root: string; allowedPaths: readonly string[] }>): boolean {
+	const rootRelative = relativeToRoot(path, scope.root);
+	return rootRelative !== undefined && scope.allowedPaths.some((allowed) => matchesAllowedPath(rootRelative, allowed));
+}
+
+function pathInsideRoot(path: string, root: string): boolean {
+	return relativeToRoot(path, root) !== undefined;
+}
+
+function relativeToRoot(path: string, root: string): string | undefined {
+	const resolvedRoot = realPath(root);
+	const candidate = resolveExistingPath(resolveExecutorPath(root, path));
+	if (resolvedRoot === undefined || candidate === undefined) return;
+	const rootRelative = relative(resolvedRoot, candidate).replace(/\\/g, "/");
+	return isInsideRoot(rootRelative) ? rootRelative : undefined;
+}
+
+function resolveExistingPath(path: string): string | undefined {
+	let current = path;
+	const suffix: string[] = [];
+	while (!existsSync(current)) {
+		const parent = dirname(current);
+		if (parent === current) return;
+		suffix.unshift(current.slice(parent.length + 1));
+		current = parent;
+	}
+	const resolved = realPath(current);
+	return resolved === undefined ? undefined : resolve(resolved, ...suffix);
+}
+
+function realPath(path: string): string | undefined {
+	try {
+		return realpathSync(path);
+	} catch {
+		return undefined;
+	}
 }
 
 function executorPathScope(): Readonly<{ root: string; allowedPaths: readonly string[] }> | null | undefined {
 	const root = process.env["KHALA_SANDBOX_ROOT"];
 	const encodedPaths = process.env["KHALA_ALLOWED_PATHS"];
-	if (root === undefined || encodedPaths === undefined) return;
+	if (root === undefined) return scopeWithoutRoot(encodedPaths);
+	if (encodedPaths === undefined) return null;
 	const allowedPaths = parseAllowedPaths(encodedPaths);
 	return allowedPaths === undefined ? null : { root, allowedPaths };
+}
+
+function scopeWithoutRoot(encodedPaths: string | undefined): null | undefined {
+	return encodedPaths === undefined ? undefined : null;
 }
 
 function resolveExecutorPath(root: string, path: string): string {
@@ -715,6 +792,8 @@ export type {
 	RoleSettings,
 	RoleSettingsMap,
 	SubmitWorkInput,
+	ValidationResult,
+	ValidationRun,
 	WorkView,
 } from "./model.js";
 export { ApplicationError, ApplicationService } from "./service.js";

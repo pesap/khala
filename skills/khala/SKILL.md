@@ -127,6 +127,8 @@ surface and required inputs.
 | `record-assessment` | Observer | `summary`, `evidence` |
 | `start-execution` | Conclave | none |
 | `record-signal` | Executor | `kind`, `summary`, `evidence` |
+| `commit-sandbox` | Executor | none |
+| `run-validation` | Executor | none |
 | `create-review-request` | Executor | none |
 | `run-oracle` | Conclave | `subject` |
 | `verdict` | Conclave | `decision`, `reason`, `signalId` |
@@ -151,8 +153,9 @@ provider comment into a different Work.
 1. Submit complete intent with `khala_submit_work`.
 2. Read the Work and Archive records with `khala_read_archive`.
 3. Let the Conclave admit the Mission and schedule an Execution.
-4. Let the Executor work in its isolated Git sandbox, create or reconcile the
-   draft review request, validate the change, and record a `ready` Signal.
+4. Let the Executor work in its isolated Git sandbox, commit through the
+   governed workspace action, run declared validation, create or reconcile the
+   draft review request, and record a `ready` Signal.
 5. Record User review evidence or poll the provider with
    `khala_poll_provider`.
 6. Let the Conclave assess provider observations, deliver only bounded feedback

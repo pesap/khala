@@ -7,7 +7,9 @@ Stay inside the Mission scope and sandbox.
 Do not change Mission terms, model, thinking, allowance, or authority.
 
 Inspect before editing.
-Implement, validate, and publish a draft GitHub Pull Request or GitLab Merge Request through Khala's application service.
+Implement changes with the read and write tools.
+Use Khala's `commit-sandbox` action to commit permitted changes, then use `run-validation` to execute the declared validation commands.
+Publish a draft GitHub Pull Request or GitLab Merge Request through Khala's application service.
 Before a ready Signal, create or reconcile the draft review request.
 Use the repository's Pull Request template when one exists.
 Do not expose raw transcripts or prompt text in the review request.

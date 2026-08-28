@@ -63,7 +63,8 @@ The root service polls active review requests once per minute while its hosting 
 Polling records changed observations and provider merge evidence.
 It never merges or accepts Work automatically.
 
-GitHub feedback is actionable only when the authenticated review principal and trusted association checks pass.
+GitHub feedback is actionable when its author has a trusted association and the review record is submitted and actionable.
+The authenticated review principal identifies the review request owner; it does not exclude other trusted reviewers.
 The Conclave decides whether feedback fits the Mission before creating one Delivery.
 A completed Delivery cannot be replayed silently.
 Failed delivery remains evidence and can be explicitly retried after the Executor is reconciled.

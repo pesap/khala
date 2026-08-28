@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
-import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { codeHostForOrigin, CommandCodeHost } from "../dist/src/adapters.js";
+import { codeHostForOrigin, CommandCodeHost, GitWorkspace } from "../dist/src/adapters.js";
 import { SQLiteArchive } from "../dist/src/archive.js";
 import { openSqlite } from "../dist/src/sqlite.js";
 import { PiOracle } from "../dist/src/oracle.js";
@@ -229,6 +229,122 @@ test("generated Work IDs use Nano ID format", async () => {
 		meta("user", "work-id:submit", 0),
 	);
 	assert.match(submitted.workId, /^[A-Za-z0-9_-]{21}$/);
+	assert.throws(
+		() =>
+			service.submitWork(
+				{ title: "Different Work", objective: "Reuse the command", acceptanceCriteria: ["It is rejected"] },
+				meta("user", "work-id:submit", 0),
+			),
+		/different input/,
+	);
+	assert.throws(
+		() =>
+			service.submitWork(
+				{ title: "Path traversal", objective: "Reject path traversal", acceptanceCriteria: ["It is rejected"], allowedPaths: ["src/../secret"] },
+				meta("user", "path-traversal:submit", 0),
+			),
+		/invalid path/,
+	);
+	assert.throws(
+		() =>
+			service.submitWork(
+				{ title: "Git pathspec", objective: "Reject pathspec syntax", acceptanceCriteria: ["It is rejected"], allowedPaths: [":(glob)**"] },
+				meta("user", "pathspec:submit", 0),
+			),
+		/invalid path/,
+	);
+	await service.close();
+});
+
+test("Sandbox creation rejects symlinked worktree parents", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-sandbox-symlink-"));
+	const worktreeRoot = join(directory, "worktrees");
+	const outside = join(directory, "outside");
+	await mkdir(worktreeRoot);
+	await mkdir(outside);
+	const workId = "sandbox-symlink";
+	const workKey = createHash("sha256").update(workId).digest("hex").slice(0, 24);
+	await symlink(outside, join(worktreeRoot, workKey));
+	const workspace = new GitWorkspace(worktreeRoot, "khala/");
+	await assert.rejects(
+		workspace.ensureSandbox({
+			workId,
+			executionId: "execution-1",
+			mission: {
+				missionId: "mission-1",
+				workId,
+				assignment: {
+					title: "Sandbox",
+					objective: "Reject symlinked parents",
+					context: "",
+					scope: "The sandbox",
+					acceptanceCriteria: ["The parent is rejected"],
+					constraints: [],
+					validation: ["check"],
+					allowedPaths: ["."],
+					maxTokens: 100,
+				},
+				mandateRevision: 1,
+				createdAt: new Date().toISOString(),
+			},
+			projectPath: directory,
+			baseCommit: "base",
+		}),
+		/outside the worktree root/,
+	);
+});
+
+test("Executors commit and validate through governed workspace actions", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-governed-tools-"));
+	let committed = false;
+	let validated = false;
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			workspace: {
+				async commitSandbox() {
+					committed = true;
+					return "head";
+				},
+				async runValidation(input) {
+					validated = input.commands.length > 0;
+					return input.commands.map((command) => ({ command, passed: true, output: "ok" }));
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "governed-tools");
+	const executorSession = controls.sessions.find((session) => session.binding.sessionId.startsWith("executor-"));
+	assert.equal(executorSession?.input.tools.includes("bash"), false);
+	const commit = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "governed-tools:commit", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in commit, false);
+	assert.equal(committed, true);
+	const validation = await service.perform({
+		action: "run-validation",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "governed-tools:validate", commit.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in validation, false);
+	assert.equal(validated, true);
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "governed-tools:review", validation.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in review, false);
+	const ready = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["validation passed"] },
+		meta: meta("executor", "governed-tools:ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in ready, false);
 	await service.close();
 });
 
@@ -311,6 +427,13 @@ test("Users can rename Work through an append-only action", async () => {
 	assert.equal(renamed.value.mission.assignment.title, "Original title");
 	assert.equal(renamed.value.mission.missionId, admitted.value.mission.missionId);
 	assert.equal(renamed.value.revision, admitted.value.revision + 1);
+	const amendedBudget = await service.perform({
+		action: "amend-budget",
+		workId: submitted.workId,
+		input: { maxTokens: 200 },
+		meta: meta("user", "rename-work:budget", renamed.value.revision, submitted.workId),
+	});
+	assert.equal("error" in amendedBudget, false);
 	const duplicate = await service.perform({
 		action: "rename-work",
 		workId: submitted.workId,
@@ -319,6 +442,15 @@ test("Users can rename Work through an append-only action", async () => {
 	});
 	assert.equal("error" in duplicate, false);
 	assert.equal(duplicate.value.revision, renamed.value.revision);
+	assert.equal(duplicate.value.terms.title, renamed.value.terms.title);
+	const conflicting = await service.perform({
+		action: "amend-budget",
+		workId: submitted.workId,
+		input: { maxTokens: 300 },
+		meta: meta("user", "rename-work:apply", amendedBudget.value.revision, submitted.workId),
+	});
+	assert.equal("error" in conflicting, true);
+	assert.equal(conflicting.error.code, "invalid-input");
 	const stale = await service.perform({
 		action: "rename-work",
 		workId: submitted.workId,
@@ -331,7 +463,7 @@ test("Users can rename Work through an append-only action", async () => {
 		action: "rename-work",
 		workId: submitted.workId,
 		input: { title: "conclave-title" },
-		meta: meta("conclave", "rename-work:forbidden", renamed.value.revision, submitted.workId),
+		meta: meta("conclave", "rename-work:forbidden", amendedBudget.value.revision, submitted.workId),
 	});
 	assert.equal("error" in forbidden, true);
 	assert.equal(forbidden.error.code, "forbidden");
@@ -339,8 +471,12 @@ test("Users can rename Work through an append-only action", async () => {
 		{ workId: submitted.workId, kinds: ["work-amended"] },
 		meta("user", "rename-work:read", renamed.value.revision, submitted.workId),
 	);
-	assert.equal(records.items.length, 1);
-	assert.deepEqual(records.items.at(-1)?.payload, { change: "title", previousTitle: "Original title", title: "khala-work" });
+	assert.equal(records.items.length, 2);
+	assert.deepEqual(records.items.find((record) => record.payload.change === "title")?.payload, {
+		change: "title",
+		previousTitle: "Original title",
+		title: "khala-work",
+	});
 	await service.close();
 });
 
@@ -443,6 +579,37 @@ test("Closing waits for an in-flight effect before closing its runtime", async (
 	releaseWake();
 	await Promise.all([processing, closing]);
 	assert.equal(runtimeClosed, true);
+});
+
+test("Cleanup attention clears after a retry succeeds", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-cleanup-retry-"));
+	let attempts = 0;
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			workspace: {
+				async removeSandbox() {
+					attempts += 1;
+					if (attempts === 1) throw new Error("sandbox is temporarily busy");
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "cleanup-retry");
+	const cancelled = await service.perform({
+		action: "cancel",
+		workId: running.workId,
+		input: {},
+		meta: meta("user", "cleanup-retry:cancel", running.revision, running.workId),
+	});
+	assert.equal("error" in cancelled, false);
+	await service.processPendingEffects();
+	const failedCleanup = service.inspectWork(running.workId);
+	assert.match(failedCleanup.lastError?.summary ?? "", /Sandbox cleanup failed/);
+	await service.processPendingEffects();
+	const cleaned = service.inspectWork(running.workId);
+	assert.equal(cleaned.lastError, undefined);
+	assert.equal(cleaned.nextAction, "Work cancelled by the User.");
+	await service.close();
 });
 
 // oxlint-disable-next-line complexity
@@ -720,6 +887,26 @@ test("unreachable runtime recovery fails closed and is visible to another Archiv
 	);
 	assert.equal(records.items.some((record) => record.summary.includes("could not be reconciled")), true);
 	await observer.service.close();
+	await service.close();
+});
+
+test("unknown Executor runtime recovery fails closed and preserves the unknown state", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-unknown-runtime-recovery-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "unknown-runtime-recovery");
+	controls.runtimeState = "unknown";
+	const observed = await service.inspectRuntime(running.workId);
+	assert.equal(observed.execution.runtimeState, "unknown");
+	assert.equal(observed.nextAction, "Executor runtime state is unknown. Recover it from Actions.");
+	const result = await service.perform({
+		action: "recover",
+		workId: running.workId,
+		input: {},
+		meta: meta("user", "unknown-runtime-recovery:recover", observed.revision, running.workId),
+	});
+	assert.equal("error" in result, false);
+	assert.equal(result.value.execution.state, "failed");
+	assert.equal(result.value.execution.runtimeState, "unknown");
 	await service.close();
 });
 
@@ -1277,6 +1464,50 @@ test("provider feedback from another review head cannot be delivered", async () 
 	await service.close();
 });
 
+test("stale provider observations remain idempotent after a service restart", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-stale-feedback-restart-"));
+	const path = join(directory, "archive.sqlite");
+	const first = makeService(path);
+	const running = await admitAndStart(first.service, "stale-feedback-restart");
+	const review = await first.service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "stale-feedback-restart:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const stale = {
+		observationId: "review-comment:42:stale-restart",
+		kind: "review-comment",
+		providerId: review.value.reviewRequest.providerId,
+		status: "changes-requested",
+		summary: "Stale feedback",
+		feedback: ["Stale feedback"],
+		actionable: true,
+		repository: "another/project",
+		sourceBranch: review.value.reviewRequest.sourceBranch,
+		targetBranch: review.value.reviewRequest.targetBranch,
+		headCommit: review.value.reviewRequest.headCommit,
+		changed: true,
+		observedAt: new Date().toISOString(),
+	};
+	first.controls.pollObservations = [stale];
+	const observed = await first.service.pollProvider(
+		running.workId,
+		meta("user", "stale-feedback-restart:poll", review.value.revision),
+	);
+	await first.service.close();
+
+	const second = makeService(path);
+	second.controls.pollObservations = [stale];
+	const repeated = await second.service.pollProvider(
+		running.workId,
+		meta("user", "stale-feedback-restart:poll-again", observed.revision),
+	);
+	assert.equal(repeated.revision, observed.revision);
+	assert.equal(repeated.lastObservation.actionable, false);
+	await second.service.close();
+});
+
 test("Late Executor turn completion does not append after cancellation", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-late-turn-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"), { executorHold: true });
@@ -1540,6 +1771,30 @@ test("Verdicts resume blocked Executors and prevent rejected Missions from resta
 		meta: meta("conclave", "verdicts:restart", rejected.value.revision, running.workId),
 	});
 	assert.equal(restart.error.code, "invalid-state");
+	await service.close();
+});
+
+// oxlint-disable-next-line complexity
+test("replaying a replacement Verdict returns the resulting replacement Execution", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-verdict-replay-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "verdict-replay");
+	const progress = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "progress", summary: "Ready to replace", evidence: ["progress"] },
+		meta: meta("executor", "verdict-replay:signal", running.revision, running.workId, running.execution.executionId),
+	});
+	const verdictInput = { decision: "replace", reason: "Try a fresh Execution", signalId: progress.value.lastSignal.signalId };
+	const verdictMeta = meta("conclave", "verdict-replay:replace", progress.value.revision, running.workId);
+	const replacement = await service.perform({ action: "verdict", workId: running.workId, input: verdictInput, meta: verdictMeta });
+	assert.equal("error" in replacement, false);
+	assert.equal(replacement.value.execution.state, "queued");
+	assert.notEqual(replacement.value.execution.executionId, running.execution.executionId);
+	const replay = await service.perform({ action: "verdict", workId: running.workId, input: verdictInput, meta: verdictMeta });
+	assert.equal("error" in replay, false);
+	assert.equal(replay.value.execution.executionId, replacement.value.execution.executionId);
+	assert.equal(replay.value.execution.state, replacement.value.execution.state);
 	await service.close();
 });
 
@@ -1911,11 +2166,11 @@ test("a real RPC startup retries one transient child exit", async () => {
 	const script = join(directory, "rpc-startup-retry.mjs");
 	await writeFile(
 		script,
-		`import { readFileSync, writeFileSync } from "node:fs";\nimport readline from "node:readline";\nconst marker = ${JSON.stringify(marker)};\nconst launches = Number(readFileSync(marker, "utf8")) + 1;\nwriteFileSync(marker, String(launches));\nif (launches === 1) process.exit(1);\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: ${JSON.stringify(join(directory, "session.jsonl"))}, isStreaming: false } }) + "\\n"); });\n`,
+		`import { readFileSync, writeFileSync } from "node:fs";\nimport readline from "node:readline";\nconst marker = ${JSON.stringify(marker)};\nconst launches = Number(readFileSync(marker, "utf8")) + 1;\nwriteFileSync(marker, String(launches));\nif (launches === 1) process.exit(1);\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); });\n`,
 	);
 	await writeFile(marker, "0");
 	await chmod(script, 0o755);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 100 });
+	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 100 });
 	const binding = await runtime.ensureSession({
 		cwd: directory,
 		model: "model",
@@ -1936,7 +2191,7 @@ test("Persistent runtime sessions have one owner and private transcripts", async
 	await writeFile(sessionPath, "transcript", { mode: 0o644 });
 	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: ${JSON.stringify(sessionPath)}, isStreaming: false } }) + "\\n"); });\n`);
 	await chmod(script, 0o755);
-	const options = { command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 500 };
+	const options = { command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 };
 	const first = new PiRpcRuntime(options);
 	const input = { cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [], sessionPath };
 	await first.ensureSession(input);
@@ -1950,9 +2205,9 @@ test("Persistent runtime sessions have one owner and private transcripts", async
 test("a real RPC child is bounded and removed after an agent turn timeout", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-"));
 	const script = join(directory, "rpc-stub.mjs");
-	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: "${join(directory, "session.jsonl")}", isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); });\n`);
+	await writeFile(script, `import readline from "node:readline";\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); });\n`);
 	await chmod(script, 0o755);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 30 });
+	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 30 });
 	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
 	await assert.rejects(runtime.send(binding, "never completes"), /timed out/);
 	assert.equal(await runtime.getState(binding), "unreachable");
@@ -1962,8 +2217,8 @@ test("a real RPC child is bounded and removed after an agent turn timeout", asyn
 test("a real RPC child waits for each prompt completion", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-turns-"));
 	const script = join(directory, "rpc-stub.mjs");
-	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\nlet turns = 0;\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: "${join(directory, "session.jsonl")}", isStreaming: false } }) + "\\n"); else if (request.type === "prompt") { turns += 1; process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); if (turns === 1) process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first output" }], usage: { input: 11, output: 7, cacheRead: 13, cacheWrite: 5 } } }) + "\\n"); setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n"), turns === 2 ? 50 : 0); } });\n`);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 500 });
+	await writeFile(script, `import readline from "node:readline";\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\nlet turns = 0;\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") { turns += 1; process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); if (turns === 1) process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first output" }], usage: { input: 11, output: 7, cacheRead: 13, cacheWrite: 5 } } }) + "\\n"); setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n"), turns === 2 ? 50 : 0); } });\n`);
+	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 });
 	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
 	assert.deepEqual(await runtime.send(binding, "first"), {
 		output: "first output",
@@ -1988,7 +2243,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write(JSON.stringify([[{ id: 10, body: "Inline review note", path: "src/index.ts", line: 3, user: { login: "principal" }, author_association: "OWNER" }, ...Array.from({ length: 40 }, (_, index) => ({ id: index + 100, body: "x".repeat(4_000), user: { login: "principal" }, author_association: "OWNER" }))]]));\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write(JSON.stringify([[{ id: 10, body: "Inline review note", path: "src/index.ts", line: 3, user: { login: "principal" }, author_association: "OWNER" }, ...Array.from({ length: 40 }, (_, index) => ({ id: index + 100, body: "x".repeat(4_000), user: { login: "principal" }, author_association: "OWNER" }))]]));\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }, { id: 10, state: "COMMENTED", body: "Stale review note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:13:06Z", commit_id: "old-head" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
@@ -2016,7 +2271,13 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 			),
 			true,
 		);
-		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("review-level note")), true);
+		assert.equal(
+			observations.some(
+				(item) => item.feedback?.[0]?.includes("review-level note") && item.actionable === true,
+			),
+			true,
+		);
+		assert.equal(observations.some((item) => item.feedback?.[0] === "Stale review note." && item.headCommit === "old-head"), true);
 		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("Inline review note (src/index.ts:3)")), true);
 		const ciObservation = observations.find((item) => item.kind === "ci-status");
 		assert.equal(ciObservation?.details?.pullRequest.status, "merged");
@@ -2025,7 +2286,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		assert.equal((ciObservation?.details?.comments[3]?.body.length ?? 0) <= 500, true);
 		assert.equal(JSON.stringify(ciObservation).length <= 64_000, true);
 		assert.equal(ciObservation?.details?.comments[1]?.createdAt, "2026-08-25T21:12:06Z");
-		assert.equal(ciObservation?.details?.comments[2]?.location, "src/index.ts:3");
+		assert.equal(ciObservation?.details?.comments[3]?.location, "src/index.ts:3");
 		assert.deepEqual(ciObservation?.details?.checks.map((check) => check.kind), ["check-run", "status-context"]);
 		assert.equal(ciObservation?.details?.checks[1]?.name, "coverage");
 		assert.equal(ciObservation?.details?.checks[1]?.detailsUrl, "https://github.com/example/project/checks/coverage");

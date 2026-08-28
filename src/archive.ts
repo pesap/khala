@@ -27,6 +27,7 @@ export type ArchiveEffect = Readonly<{
 
 export type ArchiveAppend = Readonly<{
 	commandId: string;
+	commandFingerprint?: string | undefined;
 	expectedWorkRevision: number;
 	kind: RecordKind;
 	actor: Actor;
@@ -57,7 +58,8 @@ export type PendingArchiveEffect = Readonly<{
 
 export interface ArchivePort {
 	append: (input: ArchiveAppend) => ArchiveAppendResult;
-	findCommand: (commandId: string) => ArchiveAppendResult | undefined;
+	updateCommandProjection: (commandId: string, projection: WorkView) => void;
+	findCommand: (commandId: string, commandFingerprint?: string) => ArchiveAppendResult | undefined;
 	pendingEffects: (owner?: string) => readonly PendingArchiveEffect[];
 	completeEffect: (effectId: string, owner?: string) => boolean;
 	releaseEffect: (effectId: string, owner?: string) => void;
@@ -93,12 +95,14 @@ CREATE TABLE IF NOT EXISTS archive_records (
 	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
 	record_id TEXT NOT NULL UNIQUE,
 	command_id TEXT NOT NULL UNIQUE,
+	command_fingerprint TEXT,
 	kind TEXT NOT NULL,
 	actor TEXT NOT NULL,
 	work_id TEXT NOT NULL,
 	mission_id TEXT,
 	execution_id TEXT,
 	payload_version INTEGER NOT NULL,
+	projection_json TEXT,
 	state TEXT NOT NULL,
 	summary TEXT NOT NULL,
 	evidence_refs_json TEXT NOT NULL,
@@ -140,9 +144,23 @@ export class SQLiteArchive implements ArchivePort {
 		this.database = openSqlite(path);
 		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
 		this.database.exec(SCHEMA);
+		this.migrateCommandColumns();
 		this.migrateLegacyWorkTerms();
 		this.migrateLegacyWorkStates();
 		this.migrateRecordNumbers();
+	}
+
+	private migrateCommandColumns(): void {
+		const columns = new Set(
+			this.database
+				.prepare("PRAGMA table_info(archive_records)")
+				.all()
+				.map((row) => readString(row, "name")),
+		);
+		if (!columns.has("command_fingerprint"))
+			this.database.exec("ALTER TABLE archive_records ADD COLUMN command_fingerprint TEXT");
+		if (!columns.has("projection_json"))
+			this.database.exec("ALTER TABLE archive_records ADD COLUMN projection_json TEXT");
 	}
 
 	// Existing Archives did not persist path scopes. Treat those historical Work terms as repository-wide.
@@ -247,20 +265,11 @@ export class SQLiteArchive implements ArchivePort {
 		validateArchiveAppendInput(input);
 		assertPositiveInteger(input.expectedWorkRevision + 1, "expectedWorkRevision");
 		const duplicate = this.database
-			.prepare("SELECT sequence, work_id FROM archive_records WHERE command_id = ?")
+			.prepare(
+				"SELECT sequence, work_id, command_fingerprint, projection_json FROM archive_records WHERE command_id = ?",
+			)
 			.get(input.commandId);
-		if (duplicate !== undefined) {
-			const duplicateWorkId = readString(duplicate, "work_id");
-			if (duplicateWorkId !== input.workId) {
-				throw new Error(`Archive command ${input.commandId} was already used for Work ${duplicateWorkId}.`);
-			}
-			const record = this.readRecord(readInteger(duplicate, "sequence"));
-			const projection = this.project(duplicateWorkId);
-			if (projection === undefined) {
-				throw new Error(`Archive command ${input.commandId} has no projection.`);
-			}
-			return { record, projection, duplicate: true };
-		}
+		if (duplicate !== undefined) return this.duplicateResult(duplicate, input.workId, input.commandFingerprint);
 
 		validateProjection(input.projection, input.workId, input.expectedWorkRevision + 1);
 		const serializedPayload = JSON.stringify(input.payload);
@@ -276,23 +285,14 @@ export class SQLiteArchive implements ArchivePort {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const concurrentDuplicate = this.database
-				.prepare("SELECT sequence, work_id FROM archive_records WHERE command_id = ?")
+				.prepare(
+					"SELECT sequence, work_id, command_fingerprint, projection_json FROM archive_records WHERE command_id = ?",
+				)
 				.get(input.commandId);
 			if (concurrentDuplicate !== undefined) {
-				const duplicateWorkId = readString(concurrentDuplicate, "work_id");
-				if (duplicateWorkId !== input.workId) {
-					throw new Error(`Archive command ${input.commandId} was already used for Work ${duplicateWorkId}.`);
-				}
-				const projection = this.project(duplicateWorkId);
-				if (projection === undefined) {
-					throw new Error(`Archive command ${input.commandId} has no projection.`);
-				}
+				const result = this.duplicateResult(concurrentDuplicate, input.workId, input.commandFingerprint);
 				this.database.exec("COMMIT");
-				return {
-					record: this.readRecord(readInteger(concurrentDuplicate, "sequence")),
-					projection,
-					duplicate: true,
-				};
+				return result;
 			}
 			const current = this.database.prepare("SELECT revision FROM work_projection WHERE work_id = ?").get(input.workId);
 			const currentRevision = current === undefined ? 0 : readInteger(current, "revision");
@@ -311,19 +311,21 @@ export class SQLiteArchive implements ArchivePort {
 			const inserted = this.database
 				.prepare(
 					`INSERT INTO archive_records
-					(record_id, command_id, kind, actor, work_id, mission_id, execution_id,
-					 payload_version, state, summary, evidence_refs_json, payload_json, recorded_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					(record_id, command_id, command_fingerprint, kind, actor, work_id, mission_id, execution_id,
+					 payload_version, projection_json, state, summary, evidence_refs_json, payload_json, recorded_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					recordId,
 					input.commandId,
+					input.commandFingerprint ?? null,
 					input.kind,
 					input.actor,
 					input.workId,
 					input.missionId ?? null,
 					input.executionId ?? null,
 					input.payloadVersion,
+					null,
 					input.projection.state,
 					boundText(input.summary, 500),
 					evidenceRefs,
@@ -354,6 +356,9 @@ export class SQLiteArchive implements ArchivePort {
 			const projection =
 				input.projection.queuedSequence === 0 ? { ...input.projection, queuedSequence: sequence } : input.projection;
 			this.database
+				.prepare("UPDATE archive_records SET projection_json = ? WHERE sequence = ?")
+				.run(JSON.stringify(projection), sequence);
+			this.database
 				.prepare(
 					`INSERT INTO work_projection(work_id, revision, queued_sequence, view_json) VALUES (?, ?, ?, ?)
 					 ON CONFLICT(work_id) DO UPDATE SET revision = excluded.revision,
@@ -382,6 +387,28 @@ export class SQLiteArchive implements ArchivePort {
 			}
 			this.database.exec("COMMIT");
 			return { record: this.readRecord(sequence), projection, duplicate: false };
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	// The projection snapshot is replay metadata; updating it does not alter the append-only record.
+	// oxlint-disable-next-line complexity
+	updateCommandProjection(commandId: string, projection: WorkView): void {
+		validateProjection(projection, projection.workId, projection.revision);
+		const serialized = JSON.stringify(projection);
+		if (serialized.length > 128_000) throw new Error("Archive projection exceeds the 128 KB limit.");
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const existing = this.database.prepare("SELECT work_id FROM archive_records WHERE command_id = ?").get(commandId);
+			if (existing === undefined) throw new Error(`Archive command ${commandId} was not found.`);
+			if (readString(existing, "work_id") !== projection.workId)
+				throw new Error(`Archive command ${commandId} belongs to another Work.`);
+			this.database
+				.prepare("UPDATE archive_records SET projection_json = ? WHERE command_id = ?")
+				.run(serialized, commandId);
+			this.database.exec("COMMIT");
 		} catch (error) {
 			this.database.exec("ROLLBACK");
 			throw error;
@@ -472,20 +499,28 @@ export class SQLiteArchive implements ArchivePort {
 		}
 	}
 
-	findCommand(commandId: string): ArchiveAppendResult | undefined {
+	findCommand(commandId: string, commandFingerprint?: string): ArchiveAppendResult | undefined {
 		const row = this.database
-			.prepare("SELECT sequence, work_id FROM archive_records WHERE command_id = ?")
+			.prepare(
+				"SELECT sequence, work_id, command_fingerprint, projection_json FROM archive_records WHERE command_id = ?",
+			)
 			.get(commandId);
-		if (row === undefined) {
-			return undefined;
-		}
-		const sequence = readInteger(row, "sequence");
+		return row === undefined ? undefined : this.duplicateResult(row, undefined, commandFingerprint, commandId);
+	}
+
+	private duplicateResult(
+		row: SqlRow,
+		expectedWorkId?: string,
+		commandFingerprint?: string,
+		commandId = `at sequence ${readInteger(row, "sequence")}`,
+	): ArchiveAppendResult {
 		const workId = readString(row, "work_id");
-		const projection = this.project(workId);
-		if (projection === undefined) {
-			throw new Error(`Archive command ${commandId} has no projection.`);
-		}
-		return { record: this.readRecord(sequence), projection, duplicate: true };
+		assertDuplicateWorkId(workId, expectedWorkId, commandId);
+		assertDuplicateFingerprint(readOptionalString(row, "command_fingerprint"), commandFingerprint, commandId);
+		const projectionText = readOptionalString(row, "projection_json");
+		const projection = projectionText === undefined ? this.project(workId) : parseWorkView(projectionText);
+		if (projection === undefined) throw new Error(`Archive command ${commandId} has no projection.`);
+		return { record: this.readRecord(readInteger(row, "sequence")), projection, duplicate: true };
 	}
 
 	// oxlint-disable-next-line complexity
@@ -683,6 +718,13 @@ export class SQLiteArchive implements ArchivePort {
 	}
 }
 
+export class CommandReuseConflict extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CommandReuseConflict";
+	}
+}
+
 export class ExecutionAdmissionConflict extends Error {
 	constructor(message: string) {
 		super(message);
@@ -752,9 +794,24 @@ function isDefined<T>(value: T | undefined): value is T {
 	return value !== undefined;
 }
 
+function assertDuplicateWorkId(workId: string, expectedWorkId: string | undefined, commandId: string): void {
+	if (expectedWorkId !== undefined && workId !== expectedWorkId)
+		throw new Error(`Archive command ${commandId} was already used for Work ${workId}.`);
+}
+
+function assertDuplicateFingerprint(
+	storedFingerprint: string | undefined,
+	commandFingerprint: string | undefined,
+	commandId: string,
+): void {
+	if (storedFingerprint !== undefined && commandFingerprint !== undefined && storedFingerprint !== commandFingerprint)
+		throw new CommandReuseConflict(`Archive command ${commandId} was already used with different input.`);
+}
+
 function validateArchiveAppendInput(input: ArchiveAppend): void {
 	const textFields: readonly [string, string | undefined][] = [
 		["commandId", input.commandId],
+		["commandFingerprint", input.commandFingerprint],
 		["workId", input.workId],
 		["missionId", input.missionId],
 		["executionId", input.executionId],
@@ -945,6 +1002,7 @@ function isWorkViewProjection(value: JsonValue): value is WorkView {
 		optional(value["lastSignal"], isSignal),
 		optional(value["lastObservation"], isObservation),
 		optional(value["providerOutcome"], isObservation),
+		optional(value["lastValidation"], isValidationRun),
 		optional(value["lastError"], isErrorEnvelope),
 	].every(Boolean);
 }
@@ -1064,6 +1122,19 @@ function isReviewRequest(value: JsonValue | undefined): boolean {
 		].every((key) => isText(value[key])) &&
 		isOneOf(value["status"], ["draft", "open", "merged", "closed"]) &&
 		isTextList(value["validation"])
+	);
+}
+
+// oxlint-disable-next-line complexity
+function isValidationRun(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value) || !isText(value["executionId"]) || !isText(value["headCommit"])) return false;
+	const results = value["results"];
+	return (
+		Array.isArray(results) &&
+		results.every(
+			(entry) =>
+				isJsonObject(entry) && isText(entry["command"]) && isBoolean(entry["passed"]) && isText(entry["output"]),
+		)
 	);
 }
 

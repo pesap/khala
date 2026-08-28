@@ -11,10 +11,8 @@ Each row is a Work, not a Mission.
 Work is the
 User's stable goal; after admission, its Mission is the bounded plan Khala
 runs, and its Execution is one attempt under that Mission.
-The picker hides
-succeeded and cancelled Work, keeps failed Work visible with a clear failure
-marker, and uses the same minimalist fuzzy filtering pattern as Pi's model
-selector.
+The picker hides succeeded and cancelled Work by default, keeps failed Work visible with a clear failure marker, and provides a history toggle for completed Work.
+It uses the same minimalist fuzzy filtering pattern as Pi's model selector.
 Work names are bounded before rendering and presented in aligned
 Work, ID, state, and Execution columns.
 Text labels and semantic colors together
@@ -56,8 +54,8 @@ polling, the Conclave can authorize a delivery without reopening the User
 session; the delivery and any recovery failure remain visible in Archive.
 
 Selection is pinned by Work ID.
-Refresh rereads the Archive and preserves the
-selected Work and filter.
+The configured refresh key rereads the Work list while preserving the selected Work and filter.
+The help panel lists refresh, history, settings, and navigation controls.
 Navigation never writes.
 Raw Executor output and
 provider text are hidden until the User explicitly reads bounded evidence.
@@ -66,7 +64,9 @@ summaries are presented as clean text for scanning or copying.
 
 Default interactions follow Pi selector conventions: type filters, Up/Down
 move, Enter opens or confirms, and Backspace or Escape goes back or cancels.
-`r` opens Role settings.
+Long detail pages support Up/Down, Page Up/Page Down, Home, and End scrolling.
+`r` opens Role settings when the filter is empty.
+`h` toggles history and `ctrl+r` refreshes the picker by default.
 When provider comments are available, `c` opens
 Peer-Review from the Work overview.
 An unreachable Executor exposes runtime

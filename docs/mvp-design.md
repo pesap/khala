@@ -61,9 +61,10 @@ The Conclave admits only safe, bounded Work with complete Mission terms and a re
 Admission is a role decision, while the service enforces state, capability, revision, and input contracts.
 Before Execution reservation the service verifies the target branch, sandbox base, prompt binding, token allowance, and validation contract.
 Permitted paths are stored as normalized repository-relative paths.
-Direct `write` and `edit` calls outside those paths are blocked in the Executor session.
+Direct `write` and `edit` calls outside those paths are blocked in the Executor session, including symlink escapes.
+Executors do not receive arbitrary shell access.
+They commit through the governed workspace action and run only the declared validation commands through the workspace adapter.
 The service also rejects publication and ready evidence when the Git change set contains an outside path.
-Bash commands remain process-scoped and their resulting Git change set is checked before publication.
 
 Each Execution reserves half of the configured Work token cap, rounded down with a minimum of one token.
 The reservation is released when the Execution ends.
@@ -94,6 +95,7 @@ Mission:   admitted -> active <-> awaiting-review -> succeeded | rejected | supe
 Execution: queued -> running <-> awaiting-review -> completed | blocked | failed | stopped
 ```
 
+A `ready` Signal requires nonempty evidence and current successful validation evidence when the workspace adapter supports governed validation.
 A `ready` Signal and `handoff` Verdict are review handoff evidence rather than acceptance.
 Only provider-confirmed merge evidence plus an explicit Conclave Outcome creates `succeeded`.
 A provider may merge while Work is active or awaiting review.
@@ -147,7 +149,8 @@ Monitor failures are retained as retryable evidence without an exhaustion thresh
 
 Provider text is untrusted evidence.
 At publication Khala records the provider-native principal ID.
-GitHub feedback is actionable only when its author matches the authenticated principal, has a trusted association, and the review is submitted and actionable.
+GitHub feedback is actionable only when it has a trusted author association and, for review records, is a submitted actionable review.
+The authenticated principal is retained as review-request ownership evidence, not as a restriction that excludes other trusted reviewers.
 The User may inspect provider text even when it is not eligible for delivery.
 Eligible feedback is not a direct instruction.
 The Conclave checks Mission fit and creates one bounded Delivery for an observation.

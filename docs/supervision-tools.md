@@ -15,7 +15,7 @@ They call the application service and never read SQLite or interpret lifecycle r
 
 - `khala_read_archive` reads authoritative records for its bound Work.
 - `khala_inspect_runtime` performs a read-only liveness inspection for the bound Work.
-- `khala_perform_action` can request User input, admit Work, amend an inactive Mission, launch an Observer, start or replace an Execution, recover an Executor, issue a Verdict, deliver bounded provider feedback, and record a Work Outcome.
+- `khala_perform_action` can request User input, admit Work, amend an inactive Mission, launch an Observer, start or replace an Execution, recover an Executor, commit sandbox changes, run declared validation, issue a Verdict, deliver bounded provider feedback, and record a Work Outcome.
 - `khala_run_oracle` runs the bounded no-tools Oracle review.
 
 ## Observer and Executor

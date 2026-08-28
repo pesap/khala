@@ -101,7 +101,7 @@ See the [lifecycle reference](docs/lifecycle.md).
 - [`src/archive.ts`](src/archive.ts) — SQLite WAL Archive, projections,
   cursors, idempotency, and transactional outbox.
 - [`src/service.ts`](src/service.ts) — lifecycle decisions, actor
-  authorization, scheduling, effects, and supervision.
+  authorization, scheduling, governed commit/validation actions, effects, and supervision.
 - [`src/runtime.ts`](src/runtime.ts) — isolated Pi JSON-RPC child sessions,
   bounded timeouts, process ownership, and transcript permissions.
 - [`src/adapters.ts`](src/adapters.ts) — Git worktrees and GitHub/GitLab

@@ -21,7 +21,7 @@ export type KhalaConfig = Readonly<{
 	oracleThinking: string;
 	observerModel: string;
 	observerThinking: string;
-	keybindings: Readonly<{ roleSettings: string; comments: string }>;
+	keybindings: Readonly<{ roleSettings: string; comments: string; refresh: string; help: string; history: string }>;
 }>;
 
 export class ConfigError extends Error {
@@ -47,7 +47,7 @@ const DEFAULTS: KhalaConfig = {
 	oracleThinking: "high",
 	observerModel: "",
 	observerThinking: "medium",
-	keybindings: { roleSettings: "r", comments: "c" },
+	keybindings: { roleSettings: "r", comments: "c", refresh: "ctrl+r", help: "?", history: "h" },
 };
 
 export function loadConfig(projectPath: string, trusted: boolean, requireModels = true): KhalaConfig {
@@ -135,8 +135,8 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 	return {
 		archiveRoot: readRequiredPath(values, "archiveRoot", base.archiveRoot),
 		worktreeRoot: readRequiredPath(values, "worktreeRoot", base.worktreeRoot),
-		worktreeBranchPrefix: readNonBlank(values, "worktreeBranchPrefix", base.worktreeBranchPrefix),
-		targetBranch: readNonBlank(values, "targetBranch", base.targetBranch),
+		worktreeBranchPrefix: readGitBranchPrefix(values, "worktreeBranchPrefix", base.worktreeBranchPrefix),
+		targetBranch: readGitBranch(values, "targetBranch", base.targetBranch),
 		maxConcurrentExecutions: readPositive(values, "maxConcurrentExecutions", base.maxConcurrentExecutions),
 		defaultWorkTokens: readPositive(values, "defaultWorkTokens", base.defaultWorkTokens),
 		piCommand: readTextList(values, "piCommand", base.piCommand),
@@ -151,6 +151,9 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		keybindings: {
 			roleSettings: readKeybinding(values, "roleSettingsKey", base.keybindings.roleSettings),
 			comments: readKeybinding(values, "commentsKey", base.keybindings.comments),
+			refresh: readKeybinding(values, "refreshKey", base.keybindings.refresh),
+			help: readKeybinding(values, "helpKey", base.keybindings.help),
+			history: readKeybinding(values, "historyKey", base.keybindings.history),
 		},
 	};
 }
@@ -164,6 +167,42 @@ function readText(values: JsonObject, key: string, fallback: string): string {
 		throw new ConfigError(`${key} must be a string.`);
 	}
 	return String(value);
+}
+
+function readGitBranch(values: JsonObject, key: string, fallback: string): string {
+	const value = readNonBlank(values, key, fallback);
+	assertGitRef(value, key, false);
+	return value;
+}
+
+function readGitBranchPrefix(values: JsonObject, key: string, fallback: string): string {
+	const value = readNonBlank(values, key, fallback);
+	assertGitRef(value, key, true);
+	return value;
+}
+
+// oxlint-disable-next-line complexity
+function assertGitRef(value: string, key: string, allowTrailingSlash: boolean): void {
+	if (
+		!/^[A-Za-z0-9._/-]+$/.test(value) ||
+		value.startsWith("/") ||
+		value.startsWith(".") ||
+		value.startsWith("-") ||
+		value.includes("..") ||
+		value.includes("//") ||
+		value.includes("@{") ||
+		value.endsWith(".") ||
+		(!allowTrailingSlash && value.endsWith("/")) ||
+		hasInvalidGitRefComponent(value, allowTrailingSlash)
+	)
+		throw new ConfigError(`${key} must be a valid Git branch name.`);
+}
+
+function hasInvalidGitRefComponent(value: string, allowTrailingSlash: boolean): boolean {
+	const normalized = allowTrailingSlash && value.endsWith("/") ? value.slice(0, -1) : value;
+	return normalized
+		.split("/")
+		.some((component) => component.startsWith(".") || component.toLowerCase().endsWith(".lock"));
 }
 
 function readRequiredPath(values: JsonObject, key: string, fallback: string): string {

@@ -1,20 +1,55 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import process from "node:process";
 import { promisify } from "node:util";
-import type { Execution, JsonValue, Mission, ProviderCheck, ProviderObservation, ReviewRequest } from "./model.js";
+import type {
+	Execution,
+	JsonValue,
+	Mission,
+	ProviderCheck,
+	ProviderObservation,
+	ProviderReviewComment,
+	ReviewRequest,
+	ValidationResult,
+} from "./model.js";
 import type { CodeHostPort, ReviewRequestInput, WorkspacePort, WorkspacePreflight } from "./ports.js";
 
 const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 120_000;
+const MAX_COMMAND_BUFFER = 8_000_000;
+const SENSITIVE_ENVIRONMENT_KEY = /(API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)/i;
 const MAX_PROVIDER_COMMENTS = 8;
 const MAX_PROVIDER_CHECKS = 8;
 const MAX_PROVIDER_COMMENT_BODY = 500;
 const MAX_PROVIDER_FIELD = 200;
 
-function commandOptions(cwd: string) {
-	return { cwd, timeout: COMMAND_TIMEOUT_MS, killSignal: "SIGKILL" as const, maxBuffer: 1_000_000 };
+type CommandOptions = {
+	cwd: string;
+	timeout: number;
+	killSignal: "SIGKILL";
+	maxBuffer: number;
+	env?: NodeJS.ProcessEnv;
+};
+
+function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv) {
+	const options: CommandOptions = {
+		cwd,
+		timeout: COMMAND_TIMEOUT_MS,
+		killSignal: "SIGKILL",
+		maxBuffer: MAX_COMMAND_BUFFER,
+	};
+	if (environment !== undefined) options.env = environment;
+	return options;
+}
+
+function validationEnvironment(): NodeJS.ProcessEnv {
+	const environment = { ...process.env };
+	for (const key of Object.keys(environment)) {
+		if (SENSITIVE_ENVIRONMENT_KEY.test(key)) delete environment[key];
+	}
+	return environment;
 }
 
 export class GitWorkspace implements WorkspacePort {
@@ -36,6 +71,7 @@ export class GitWorkspace implements WorkspacePort {
 		return { projectPath, origin, targetBranch, headCommit };
 	}
 
+	// oxlint-disable-next-line complexity
 	async ensureSandbox(
 		input: Readonly<{
 			workId: string;
@@ -47,18 +83,25 @@ export class GitWorkspace implements WorkspacePort {
 	): Promise<Execution["sandbox"]> {
 		const workKey = createHash("sha256").update(input.workId).digest("hex").slice(0, 24);
 		const branch = `${this.branchPrefix}${workKey}/${input.executionId.slice(0, 8)}`;
-		const path = join(this.worktreeRoot, workKey, input.executionId);
+		const path = resolve(this.worktreeRoot, workKey, input.executionId);
+		if (!isContainedPath(this.worktreeRoot, path)) throw new Error(`Sandbox ${path} is outside the worktree root.`);
 		await mkdir(dirname(path), { recursive: true });
-		const exists = await stat(path)
-			.then(() => true)
-			.catch(() => false);
-		if (!exists) {
+		if (!(await isRealContainedPath(this.worktreeRoot, dirname(path))))
+			throw new Error(`Sandbox parent ${dirname(path)} is outside the worktree root.`);
+		const existing = await lstat(path).catch(() => undefined);
+		if (existing === undefined) {
 			await execFileAsync(
 				"git",
 				["worktree", "add", "-b", branch, path, input.baseCommit],
-				commandOptions(input.projectPath),
+				commandOptions(input.projectPath, sanitizedEnvironment()),
 			);
 		} else {
+			if (existing.isSymbolicLink() || !existing.isDirectory())
+				throw new Error(`Sandbox ${path} is not a directory owned by Khala.`);
+			if (!(await isRealContainedPath(this.worktreeRoot, path)))
+				throw new Error(`Sandbox ${path} is outside the worktree root.`);
+			if (!(await isRegisteredWorktree(input.projectPath, path)))
+				throw new Error(`Sandbox ${path} is not registered by the project repository.`);
 			const existingBranch = await git(path, ["branch", "--show-current"]);
 			if (existingBranch !== branch) {
 				throw new Error(`Sandbox ${path} is attached to branch ${existingBranch}, not ${branch}.`);
@@ -91,6 +134,40 @@ export class GitWorkspace implements WorkspacePort {
 		];
 	}
 
+	async commitSandbox(input: {
+		sandbox: Execution["sandbox"];
+		allowedPaths: readonly string[];
+		message: string;
+	}): Promise<string> {
+		if (input.allowedPaths.length === 0)
+			throw new Error("At least one permitted path is required to commit a sandbox.");
+		await git(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths]);
+		await git(input.sandbox.path, ["commit", "-m", input.message]);
+		return this.inspectHead(input.sandbox.path);
+	}
+
+	async runValidation(input: { path: string; commands: readonly string[] }): Promise<readonly ValidationResult[]> {
+		const results: ValidationResult[] = [];
+		const environment = validationEnvironment();
+		for (const command of input.commands) {
+			try {
+				const result = await execFileAsync(
+					validationShell(),
+					validationShellArguments(command),
+					commandOptions(input.path, environment),
+				);
+				results.push({ command, passed: true, output: result.stdout.slice(-4_000) });
+			} catch (error) {
+				results.push({
+					command,
+					passed: false,
+					output: error instanceof Error ? error.message.slice(-4_000) : String(error),
+				});
+			}
+		}
+		return results;
+	}
+
 	async publishSandbox(sandbox: Execution["sandbox"]): Promise<string> {
 		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch]);
 		return this.inspectHead(sandbox.path);
@@ -101,11 +178,21 @@ export class GitWorkspace implements WorkspacePort {
 		if (this.projectPath === undefined) {
 			throw new Error("Workspace project path is not initialized.");
 		}
-		const exists = await stat(sandbox.path)
-			.then(() => true)
-			.catch(() => false);
-		if (exists) {
-			await execFileAsync("git", ["worktree", "remove", "--force", sandbox.path], commandOptions(this.projectPath));
+		if (!isContainedPath(this.worktreeRoot, sandbox.path))
+			throw new Error(`Sandbox ${sandbox.path} is outside the worktree root.`);
+		const existing = await lstat(sandbox.path).catch(() => undefined);
+		if (existing !== undefined) {
+			if (existing.isSymbolicLink() || !existing.isDirectory())
+				throw new Error(`Sandbox ${sandbox.path} is not a directory owned by Khala.`);
+			if (!(await isRealContainedPath(this.worktreeRoot, sandbox.path)))
+				throw new Error(`Sandbox ${sandbox.path} is outside the worktree root.`);
+			if (!(await isRegisteredWorktree(this.projectPath, sandbox.path)))
+				throw new Error(`Sandbox ${sandbox.path} is not registered by the project repository.`);
+			await execFileAsync(
+				"git",
+				["worktree", "remove", "--force", sandbox.path],
+				commandOptions(this.projectPath, sanitizedEnvironment()),
+			);
 		}
 		try {
 			await git(this.projectPath, ["branch", "-D", sandbox.branch]);
@@ -376,8 +463,45 @@ function originHost(origin: string): string {
 	}
 }
 
+function validationShell(): string {
+	return process.platform === "win32" ? (process.env["ComSpec"] ?? "cmd.exe") : "sh";
+}
+
+function validationShellArguments(command: string): readonly string[] {
+	return process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
+}
+
 async function git(cwd: string, args: readonly string[]): Promise<string> {
-	return (await execFileAsync("git", [...args], commandOptions(cwd))).stdout.trim();
+	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment()))).stdout.trim();
+}
+
+async function isRegisteredWorktree(projectPath: string, sandboxPath: string): Promise<boolean> {
+	const listing = await git(projectPath, ["worktree", "list", "--porcelain"]);
+	const expected = `worktree ${resolve(sandboxPath)}`;
+	return listing.split("\n").some((line) => line.trim() === expected);
+}
+
+function isContainedPath(root: string, candidate: string): boolean {
+	const rootRelative = relative(resolve(root), resolve(candidate));
+	return rootRelative.length === 0 || (!rootRelative.startsWith("..") && !isAbsolute(rootRelative));
+}
+
+async function isRealContainedPath(root: string, candidate: string): Promise<boolean> {
+	const [resolvedRoot, resolvedCandidate] = await Promise.all([
+		realpath(root).catch(() => undefined),
+		realpath(candidate).catch(() => undefined),
+	]);
+	return (
+		resolvedRoot !== undefined && resolvedCandidate !== undefined && isContainedPath(resolvedRoot, resolvedCandidate)
+	);
+}
+
+function sanitizedEnvironment(): NodeJS.ProcessEnv {
+	const environment = { ...process.env };
+	for (const key of Object.keys(environment)) {
+		if (SENSITIVE_ENVIRONMENT_KEY.test(key)) delete environment[key];
+	}
+	return environment;
 }
 
 async function run(command: string, args: readonly string[], cwd: string): Promise<string> {
@@ -585,6 +709,7 @@ function githubProviderDetails(
 				];
 			});
 		})
+		.sort(compareProviderComments)
 		.slice(0, MAX_PROVIDER_COMMENTS);
 	const checks: ProviderCheck[] = (Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"] : [])
 		.filter(isJsonObject)
@@ -653,6 +778,16 @@ function githubProviderDetails(
 	};
 }
 
+function compareProviderComments(left: ProviderReviewComment, right: ProviderReviewComment): number {
+	return compareProviderDates(left.createdAt, right.createdAt);
+}
+
+function compareProviderDates(left: string | undefined, right: string | undefined): number {
+	const leftValue = left ?? "";
+	const rightValue = right ?? "";
+	return rightValue.localeCompare(leftValue);
+}
+
 function boundedText(value: string, limit: number): string {
 	return value.slice(0, limit);
 }
@@ -685,62 +820,63 @@ function githubFeedback(
 		{ prefix: "review", entries: row["reviews"] },
 		{ prefix: "inline", entries: inlineComments },
 	];
-	return sources
-		.flatMap(({ prefix, entries }) => {
-			if (!Array.isArray(entries)) return [];
-			// oxlint-disable-next-line complexity
-			return entries.filter(isJsonObject).flatMap((entry) => {
-				const body = entry["body"];
-				const id = entry["id"];
-				const state = isTextValue(entry["state"]) ? entry["state"].toUpperCase() : "";
-				const author = githubAuthor(entry);
-				const authorAssociation = githubAssociation(entry);
-				const actionable = githubFeedbackIsActionable(
-					prefix,
-					state,
-					authorAssociation,
-					author,
-					reviewRequest.principalId,
-				);
-				if (
-					!isTextValue(body) ||
-					body.trim().length === 0 ||
-					(id !== String(id) && id !== Number(id)) ||
-					(prefix === "review" && ["APPROVED", "DISMISSED"].includes(state))
-				)
-					return [];
-				const commentId = String(id);
-				const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
-				const line = entry["line"] === undefined ? undefined : String(entry["line"]);
-				const location = path === undefined ? "" : ` (${path}${line === undefined ? "" : `:${line}`})`;
-				const feedback = `${body.trim()}${location}`.slice(0, 2_000);
-				const observationId =
-					prefix === "comment"
-						? `review-comment:${reviewRequest.providerId}:${commentId}`
-						: `review-comment:${reviewRequest.providerId}:${prefix}:${commentId}`;
-				return [
-					observation(
-						"review-comment",
-						reviewRequest.providerId,
-						feedback,
-						state === "CHANGES_REQUESTED" ? "changes-requested" : "commented",
-						{
-							observationId,
-							feedback: [feedback],
-							repository: reviewRequest.repository,
-							sourceBranch: reviewRequest.sourceBranch,
-							targetBranch: reviewRequest.targetBranch,
-							headCommit: reviewRequest.headCommit,
-							author,
-							authorAssociation,
-							reviewState: state || undefined,
-							actionable,
-						},
-					),
-				];
-			});
-		})
+	const entries = sources.flatMap(({ prefix, entries: sourceEntries }) =>
+		Array.isArray(sourceEntries) ? sourceEntries.filter(isJsonObject).map((entry) => ({ prefix, entry })) : [],
+	);
+	entries.sort((left, right) => compareProviderDates(githubTimestamp(left.entry), githubTimestamp(right.entry)));
+	return entries
+		.flatMap(({ prefix, entry }) => githubFeedbackEntry(prefix, entry, reviewRequest))
 		.slice(0, MAX_PROVIDER_COMMENTS);
+}
+
+// oxlint-disable-next-line complexity
+function githubFeedbackEntry(
+	prefix: string,
+	entry: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+): readonly ProviderObservation[] {
+	const body = entry["body"];
+	const id = entry["id"];
+	const state = isTextValue(entry["state"]) ? entry["state"].toUpperCase() : "";
+	const author = githubAuthor(entry);
+	const authorAssociation = githubAssociation(entry);
+	if (
+		!isTextValue(body) ||
+		body.trim().length === 0 ||
+		(id !== String(id) && id !== Number(id)) ||
+		(prefix === "review" && ["APPROVED", "DISMISSED"].includes(state))
+	)
+		return [];
+	const commentId = String(id);
+	const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
+	const line = entry["line"] === undefined ? undefined : String(entry["line"]);
+	const location = path === undefined ? "" : ` (${path}${line === undefined ? "" : `:${line}`})`;
+	const headCommit = githubCommentCommit(entry) ?? reviewRequest.headCommit;
+	const feedback = `${body.trim()}${location}`.slice(0, 2_000);
+	const observationId =
+		prefix === "comment"
+			? `review-comment:${reviewRequest.providerId}:${commentId}`
+			: `review-comment:${reviewRequest.providerId}:${prefix}:${commentId}`;
+	return [
+		observation(
+			"review-comment",
+			reviewRequest.providerId,
+			feedback,
+			state === "CHANGES_REQUESTED" ? "changes-requested" : "commented",
+			{
+				observationId,
+				feedback: [feedback],
+				repository: reviewRequest.repository,
+				sourceBranch: reviewRequest.sourceBranch,
+				targetBranch: reviewRequest.targetBranch,
+				headCommit,
+				author,
+				authorAssociation,
+				reviewState: state || undefined,
+				actionable: githubFeedbackIsActionable(prefix, state, authorAssociation),
+			},
+		),
+	];
 }
 
 // oxlint-disable-next-line complexity
@@ -751,6 +887,10 @@ function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest
 	if (row["isDraft"] === true) return "draft";
 	if (row["isDraft"] === false) return "open";
 	return current === "draft" ? "draft" : "open";
+}
+
+function githubCommentCommit(entry: Record<string, JsonValue>): string | undefined {
+	return readOptionalTextValue(entry, "commit_id") ?? readOptionalTextValue(entry, "commitId");
 }
 
 function githubAuthor(entry: Record<string, JsonValue>): string | undefined {
@@ -767,14 +907,7 @@ function githubAssociation(entry: Record<string, JsonValue>): string | undefined
 }
 
 // oxlint-disable-next-line complexity
-function githubFeedbackIsActionable(
-	prefix: string,
-	state: string,
-	association: string | undefined,
-	author: string | undefined,
-	principalId: string,
-): boolean {
-	if (author !== principalId) return false;
+function githubFeedbackIsActionable(prefix: string, state: string, association: string | undefined): boolean {
 	if (!["COLLABORATOR", "CONTRIBUTOR", "MEMBER", "OWNER"].includes(association ?? "")) return false;
 	return prefix !== "review" || ["CHANGES_REQUESTED", "COMMENTED"].includes(state);
 }

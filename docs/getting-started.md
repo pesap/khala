@@ -39,8 +39,8 @@ Submission is persisted immediately; Conclave processing
 runs asynchronously.
 
 Reopen `/khala` to inspect the Work.
-The picker hides succeeded and cancelled
-Work by default and keeps failed Work visible for attention.
+The picker hides succeeded and cancelled Work by default and keeps failed Work visible for attention.
+Use the history key to inspect completed and cancelled Work.
 
 ## Follow the review cycle
 
@@ -49,8 +49,9 @@ Work by default and keeps failed Work visible for attention.
    Observer assessment.
 3. The scheduler reserves an Execution within project concurrency and Work
    token limits.
-4. The Executor works in an isolated Git worktree, validates the change, and
-   creates or reconciles a draft Pull Request or Merge Request.
+4. The Executor works in an isolated Git worktree, commits through the governed
+   workspace action, runs the declared validation commands, and creates or
+   reconciles a draft Pull Request or Merge Request.
 5. The Executor sends a `ready` Signal with validation evidence.
 6. The Conclave hands the Work to User review, where handoff is not acceptance.
 7. Record review evidence and use `khala_poll_provider` after the request is

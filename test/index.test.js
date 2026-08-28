@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -69,5 +69,51 @@ test("user sessions show a branded Executor status in the footer", async () => {
 		await rm(join(process.cwd(), "dist", "package.json"), { force: true });
 		await rm(join(process.cwd(), "dist", "system-prompts"), { recursive: true, force: true });
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+// oxlint-disable-next-line complexity
+test("Executor write checks resolve symlinks before enforcing sandbox paths", async () => {
+	const root = await mkdtemp(join(tmpdir(), "khala-path-scope-"));
+	const outside = await mkdtemp(join(tmpdir(), "khala-path-outside-"));
+	await symlink(outside, join(root, "linked"));
+	const previousRoot = process.env.KHALA_SANDBOX_ROOT;
+	const previousPaths = process.env.KHALA_ALLOWED_PATHS;
+	process.env.KHALA_SANDBOX_ROOT = root;
+	process.env.KHALA_ALLOWED_PATHS = JSON.stringify(["."]);
+	try {
+		const { default: khalaExtension } = await import("../dist/src/index.js");
+		const handlers = new Map();
+		const pi = {
+			registerFlag() {},
+			registerTool() {},
+			registerCommand() {},
+			on(event, handler) {
+				handlers.set(event, handler);
+			},
+			getFlag() {
+				return "executor";
+			},
+			getActiveTools() {
+				return [];
+			},
+			setActiveTools() {},
+		};
+		khalaExtension(pi);
+		const handler = handlers.get("tool_call");
+		assert.equal(handler({ toolName: "write", input: {} })?.block, true);
+		assert.equal(handler({ toolName: "write", input: { path: join(root, "linked", "secret.txt") } })?.block, true);
+		assert.equal(handler({ toolName: "read", input: { path: join(root, "linked", "secret.txt") } })?.block, true);
+		assert.equal(handler({ toolName: "write", input: { path: join(root, "inside.txt") } }), undefined);
+		delete process.env.KHALA_SANDBOX_ROOT;
+		assert.equal(handler({ toolName: "write", input: { path: join(root, "inside.txt") } })?.block, true);
+		process.env.KHALA_SANDBOX_ROOT = root;
+	} finally {
+		if (previousRoot === undefined) delete process.env.KHALA_SANDBOX_ROOT;
+		else process.env.KHALA_SANDBOX_ROOT = previousRoot;
+		if (previousPaths === undefined) delete process.env.KHALA_ALLOWED_PATHS;
+		else process.env.KHALA_ALLOWED_PATHS = previousPaths;
+		await rm(root, { recursive: true, force: true });
+		await rm(outside, { recursive: true, force: true });
 	}
 });

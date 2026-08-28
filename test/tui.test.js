@@ -203,11 +203,51 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	const unadmittedOverview = screens[11].render(100).join("\n");
 	assert.match(unadmittedOverview, /Work\s+Work\s+submitted/);
 	assert.doesNotMatch(unadmittedOverview, /Mission|Execution|Runtime/);
-	assert.doesNotMatch(unadmittedOverview, /Conclave admission failed/);
+	assert.match(unadmittedOverview, /Attention\s+Conclave admission failed/);
 	assert.doesNotMatch(unadmittedOverview, /remediation Open \/khala/);
 	screens[11].handleInput("\u007f");
 	await nextTurn();
 	screens[12].handleInput("\u001b");
+	await result;
+});
+
+test("Work picker refreshes, exposes history, and opens complete help", async () => {
+	const screens = [];
+	let work = {
+		workId: "active-work",
+		title: "Active Work",
+		state: "active",
+		executionState: "running",
+		nextAction: "Executor is working.",
+	};
+	const service = { listWork: () => [work] };
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context, "user", { roleSettings: "r", comments: "c" });
+	await nextTurn();
+	assert.match(screens[0].render(100).join("\n"), /Active Work/);
+	work = { ...work, title: "Refreshed Work" };
+	screens[0].handleInput("\u0012");
+	assert.match(screens[0].render(100).join("\n"), /Refreshed Work/);
+	work = { ...work, state: "succeeded", executionState: "completed" };
+	screens[0].handleInput("h");
+	assert.match(screens[0].render(100).join("\n"), /Refreshed Work/);
+	screens[0].handleInput("?");
+	await nextTurn();
+	assert.match(screens[1].render(100).join("\n"), /Work picker help/);
+	assert.match(screens[1].render(100).join("\n"), /Refresh Work/);
+	screens[1].handleInput("\u001b");
+	await nextTurn();
+	screens[2].handleInput("\u001b");
 	await result;
 });
 
@@ -767,8 +807,8 @@ test("Work picker stays minimal, shows active Work, and marks failures", async (
 	const current = screens[0].render(100).join("\n");
 	assert.match(current, /Work/);
 	assert.match(current, /Add a compact Khala lifecycle/);
-	assert.match(current, /stopped\s+failed/);
-	assert.match(current, /active\s+failed/);
+	assert.match(current, /failed-wor[^\n]*failed/);
+	assert.match(current, /attention\s+failed/);
 	assert.match(current, /failed-wor/);
 	assert.match(current, /→\s+Add a compact Khala lifecycle/);
 	assert.match(current, /type to filter/);

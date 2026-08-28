@@ -47,11 +47,12 @@ A blocked Execution has a `blockReason` of `signal` or `budget-exhausted`.
 A Mission has at most one active `queued`, `running`, or `awaiting-review` Execution.
 Historical Executions remain available through Archive records.
 Khala records the latest runtime state and cumulative input, output, cache-hit, and cache-miss token usage reported by Pi.
+Executor validation records bind passed or failed command results to an Execution and exact sandbox head.
 Only input and output tokens count toward the Work budget.
 
 ### Record
 
-Record kinds include `submission`, `assessment`, `learning`, `mission`, `mission-change`, `execution`, `signal`, `review-request`, `observation`, `delivery`, `verdict`, `oracle-review`, `outcome`, `error`, and `work-amended`.
+Record kinds include `submission`, `assessment`, `learning`, `mission`, `mission-change`, `execution`, `validation`, `signal`, `review-request`, `observation`, `delivery`, `verdict`, `oracle-review`, `outcome`, `error`, and `work-amended`.
 Record views are bounded.
 Each view exposes internal sequence, global record number, optional per-Mission record number, opaque ID, kind, actor, bindings, payload version, summary, evidence references, timestamp, and bounded payload.
 Queries compose Work, Mission, Execution, kind, state, and time filters with AND.
@@ -76,6 +77,7 @@ Pi child sessions use JSON-RPC over stdin and stdout.
 Conclave and Oracle turns are ephemeral.
 Observer sessions may persist a session path.
 Persistent sessions use an exclusive process-owned launch lease.
+Ephemeral sessions use runtime-owned paths and reject child-reported paths outside those paths.
 Transcript files are restricted to the Khala process owner.
 Prompt identity is persisted for Executor bindings, Observer bindings, and Oracle records.
 Khala never copies child transcripts into the Archive.

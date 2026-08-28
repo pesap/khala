@@ -50,6 +50,7 @@ export const RECORD_KINDS = [
 	"oracle-review",
 	"outcome",
 	"error",
+	"validation",
 	"work-amended",
 ] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
@@ -184,6 +185,18 @@ export type ReviewRequest = Readonly<{
 	validation: readonly string[];
 }>;
 
+export type ValidationResult = Readonly<{
+	command: string;
+	passed: boolean;
+	output: string;
+}>;
+
+export type ValidationRun = Readonly<{
+	executionId: string;
+	headCommit: string;
+	results: readonly ValidationResult[];
+}>;
+
 export type Signal = Readonly<{
 	signalId: string;
 	executionId: string;
@@ -267,6 +280,7 @@ export type WorkView = Readonly<{
 	lastSignal?: Signal | undefined;
 	lastObservation?: ProviderObservation | undefined;
 	providerOutcome?: ProviderObservation | undefined;
+	lastValidation?: ValidationRun | undefined;
 	lastError?: ErrorEnvelope | undefined;
 	nextAction: string;
 	queuedSequence: number;
@@ -292,6 +306,7 @@ export type CommandMeta = Readonly<{
 	expectedWorkRevision?: number | undefined;
 	roleToken?: string | undefined;
 	roleNonce?: string | undefined;
+	commandFingerprint?: string | undefined;
 	boundWorkId?: string | undefined;
 	boundExecutionId?: string | undefined;
 	schemaVersion: 1;
@@ -352,6 +367,8 @@ export type Action = Readonly<{
 		| "record-assessment"
 		| "start-execution"
 		| "record-signal"
+		| "commit-sandbox"
+		| "run-validation"
 		| "create-review-request"
 		| "run-oracle"
 		| "verdict"

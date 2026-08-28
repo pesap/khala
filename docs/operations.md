@@ -98,6 +98,7 @@ Raw child transcripts are not copied into the Archive.
 Pi session files can remain in the sandbox or configured temporary session directory until normal cleanup.
 Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
 Review request bodies include the Work objective, acceptance criteria, and validation commands.
+Executors commit sandbox changes and run declared validation through governed workspace actions rather than arbitrary shell tools.
 Do not submit secrets or sensitive data as Work context or provider feedback.
 
 ## Verification checklist

@@ -12,12 +12,14 @@ import {
 	Input,
 	matchesKey,
 	parseKey,
+	ScrollView,
 	type SelectItem,
 	SelectList,
 	type SelectListTheme,
 	Spacer,
 	Text,
 	truncateToWidth,
+	VStack,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
@@ -119,9 +121,9 @@ function hasWorkFailure(item: WorkSummary): boolean {
 
 // oxlint-disable-next-line complexity
 function workState(item: WorkSummary): WorkStatus {
-	if (item.state === "stopped" && item.stopReason === "failed") return { label: "stopped", tone: "failure" };
+	if (item.state === "stopped" && item.stopReason === "failed") return { label: "failed", tone: "failure" };
 	if (item.state === "stopped") return { label: "stopped", tone: "inactive" };
-	if (hasWorkFailure(item)) return { label: formatStatus(item.state), tone: "failure" };
+	if (hasWorkFailure(item)) return { label: "attention", tone: "failure" };
 	if (item.state === "succeeded") return { label: "succeeded", tone: "success" };
 	if (item.state === "queued" || item.state === "awaiting-review")
 		return { label: formatStatus(item.state), tone: "waiting" };
@@ -167,7 +169,13 @@ export async function showKhala(
 	service: ApplicationService,
 	context: ExtensionContext,
 	actor: Actor = "user",
-	keybindings: KhalaConfig["keybindings"] = { roleSettings: "r", comments: "c" },
+	keybindings: KhalaConfig["keybindings"] = {
+		roleSettings: "r",
+		comments: "c",
+		refresh: "ctrl+r",
+		help: "?",
+		history: "h",
+	},
 	roleSettings?: RoleSettingsController,
 ): Promise<void> {
 	if (!context.hasUI || context.mode !== "tui") {
@@ -175,38 +183,47 @@ export async function showKhala(
 		return;
 	}
 	const pickerState: WorkPickerState = {};
+	const effectiveKeybindings = normalizeKeybindings(keybindings);
 	for (;;) {
-		const workId = await pickWork(service.listWork(), context, keybindings, pickerState);
-		if (workId === null) return;
-		if (workId === "settings") {
+		const result = await pickWork(() => service.listWork(), context, effectiveKeybindings, pickerState);
+		if (result === null) return;
+		if (result === "settings") {
 			if (roleSettings !== undefined) await showRoleSettings(roleSettings, context);
 			continue;
 		}
-		await showWork(service, context, workId, actor, keybindings);
+		if (result === "help") {
+			await showTextPage(context, "Work picker help", workPickerHelp(effectiveKeybindings));
+			continue;
+		}
+		await showWork(service, context, result, actor, effectiveKeybindings);
 	}
 }
 
 type WorkPickerState = {
 	selectedWorkId?: string | undefined;
 	filter?: string | undefined;
+	showHistory?: boolean | undefined;
 };
 
+type WorkPickerResult = string | "settings" | "help" | null;
+
 async function pickWork(
-	work: readonly WorkSummary[],
+	getWork: () => readonly WorkSummary[],
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
 	pickerState: WorkPickerState,
-): Promise<string | "settings" | null> {
+): Promise<WorkPickerResult> {
 	// oxlint-disable-next-line complexity
-	return context.ui.custom<string | "settings" | null>((tui, theme, _keybindings, done) => {
+	return context.ui.custom<WorkPickerResult>((tui, theme, _keybindings, done) => {
 		const filterInput = new Input();
 		filterInput.focused = true;
 		filterInput.setValue(pickerState.filter ?? "");
-		const availableWork = work.filter((item) => !isHiddenWork(item));
+		let availableWork = pickerWork(getWork(), pickerState.showHistory === true);
 		let filtered = filterWork(availableWork, filterInput.getValue());
 		let selectedIndex = 0;
 		let tableRows: readonly Readonly<{ item: WorkSummary; selected: boolean }>[] = [];
 		let listMessages: readonly string[] = [];
+
 		const listContainer: Component = {
 			render: (width: number) => {
 				const layout = workTableLayout(width);
@@ -236,7 +253,16 @@ async function pickWork(
 				messages.push(theme.fg("muted", `  ${selectedIndex + 1} of ${filtered.length}`));
 			}
 			if (filtered.length === 0) {
-				messages.push(theme.fg("muted", availableWork.length === 0 ? "  No active Work" : "  No matching Work"));
+				messages.push(
+					theme.fg(
+						"muted",
+						availableWork.length === 0
+							? pickerState.showHistory === true
+								? "  No Work has been submitted"
+								: "  No active Work; press history to view completed Work"
+							: "  No matching Work",
+					),
+				);
 			}
 			tableRows = rows;
 			listMessages = messages;
@@ -249,8 +275,15 @@ async function pickWork(
 			selectedIndex = query.length === 0 ? Math.min(selectedIndex, Math.max(0, filtered.length - 1)) : 0;
 			updateList();
 		};
-		const finish = (value: string | "settings" | null): void => {
-			if (value !== null && value !== "settings") pickerState.selectedWorkId = value;
+		const refresh = (): void => {
+			const selectedWorkId = filtered[selectedIndex]?.workId ?? pickerState.selectedWorkId;
+			availableWork = pickerWork(getWork(), pickerState.showHistory === true);
+			filtered = filterWork(availableWork, filterInput.getValue().trim());
+			selectedIndex = refreshedWorkIndex(selectedWorkId, filtered, selectedIndex);
+			updateList();
+		};
+		const finish = (value: WorkPickerResult): void => {
+			if (value !== null && value !== "settings" && value !== "help") pickerState.selectedWorkId = value;
 			done(value);
 		};
 		const restoredIndex =
@@ -265,19 +298,43 @@ async function pickWork(
 		container.addChild(new Spacer(1));
 		container.addChild(listContainer);
 		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, workPickerKeybindings(keybindings));
+		const footer = addPanelKeybindings(
+			container,
+			theme,
+			workPickerKeybindings(keybindings, pickerState.showHistory === true),
+		);
 		updateList();
 		return {
+			get focused() {
+				return filterInput.focused;
+			},
+			set focused(value: boolean) {
+				filterInput.focused = value;
+			},
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			// oxlint-disable-next-line complexity
 			handleInput: (data: string) => {
-				if (filterInput.getValue().length === 0 && parseKey(data) === keybindings.roleSettings) {
+				if (filterInput.getValue().trim().length === 0 && parseKey(data) === keybindings.roleSettings) {
 					finish("settings");
 					return;
 				}
-				if (data === "?") {
-					context.ui.notify?.("Type to filter Work by title, ID, or state.", "info");
+				const filterEmpty = filterInput.getValue().trim().length === 0;
+				if (filterEmpty && parseKey(data) === keybindings.help) {
+					finish("help");
+					return;
+				}
+				if (parseKey(data) === keybindings.refresh) {
+					refresh();
+					return;
+				}
+				if (filterEmpty && parseKey(data) === keybindings.history) {
+					pickerState.showHistory = pickerState.showHistory !== true;
+					availableWork = pickerWork(getWork(), pickerState.showHistory === true);
+					filtered = filterWork(availableWork, filterInput.getValue().trim());
+					selectedIndex = Math.min(selectedIndex, Math.max(0, filtered.length - 1));
+					footer.setText(theme.fg("dim", workPickerKeybindings(keybindings, pickerState.showHistory === true)));
+					updateList();
 					return;
 				}
 				if (matchesKey(data, "home")) {
@@ -306,7 +363,7 @@ async function pickWork(
 					finish(null);
 					return;
 				}
-				if (matchesKey(data, "backspace") && filterInput.getValue().length === 0) {
+				if (matchesKey(data, "backspace") && filterInput.getValue().trim().length === 0) {
 					finish(null);
 					return;
 				}
@@ -316,6 +373,14 @@ async function pickWork(
 			},
 		};
 	});
+}
+
+function refreshedWorkIndex(selectedWorkId: string | undefined, work: readonly WorkSummary[], index: number): number {
+	if (selectedWorkId !== undefined) {
+		const refreshedIndex = work.findIndex((item) => item.workId === selectedWorkId);
+		if (refreshedIndex >= 0) return refreshedIndex;
+	}
+	return Math.min(index, Math.max(0, work.length - 1));
 }
 
 function filterWork(work: readonly WorkSummary[], query: string): readonly WorkSummary[] {
@@ -331,8 +396,39 @@ const NAVIGATION_FOOTER = "up/down move  enter select  escape/ctrl+c/backspace b
 const RECORD_NAVIGATION_FOOTER = "up/down move  enter inspect  escape/ctrl+c/backspace back";
 const PANEL_BACK_FOOTER = "escape/ctrl+c/backspace back";
 
-function workPickerKeybindings(keybindings: KhalaConfig["keybindings"]): string {
-	return `type to filter  home first  up/down move  enter open  ? help  ${keybindings.roleSettings} settings  escape/ctrl+c/backspace back`;
+function workPickerKeybindings(keybindings: KhalaConfig["keybindings"], showHistory: boolean): string {
+	return `type to filter  ${keybindings.refresh} refresh  ${keybindings.history} ${showHistory ? "active Work" : "history"} when filter is empty  home first  up/down move  enter open  ${keybindings.help} help when filter is empty  ${keybindings.roleSettings} settings when filter is empty  escape/ctrl+c/backspace back`;
+}
+
+function normalizeKeybindings(keybindings: KhalaConfig["keybindings"]): KhalaConfig["keybindings"] {
+	return {
+		roleSettings: configuredKeybinding(keybindings.roleSettings, "r"),
+		comments: configuredKeybinding(keybindings.comments, "c"),
+		refresh: configuredKeybinding(keybindings.refresh, "ctrl+r"),
+		help: configuredKeybinding(keybindings.help, "?"),
+		history: configuredKeybinding(keybindings.history, "h"),
+	};
+}
+
+function configuredKeybinding(value: string, fallback: string): string {
+	return value || fallback;
+}
+
+function pickerWork(work: readonly WorkSummary[], showHistory: boolean): readonly WorkSummary[] {
+	return showHistory ? work : work.filter((item) => !isHiddenWork(item));
+}
+
+function workPickerHelp(keybindings: KhalaConfig["keybindings"]): readonly string[] {
+	return [
+		"Use the Work picker to inspect active or historical Work.",
+		"",
+		`${keybindings.refresh}  Refresh Work and preserve the current selection and filter.`,
+		`${keybindings.history}  Toggle completed and cancelled Work when the filter is empty.`,
+		`${keybindings.help}  Open this help when the filter is empty.`,
+		`${keybindings.roleSettings}  Open role settings when the filter is empty.`,
+		"Up/Down  Move selection; Home  select the first Work; Enter  open.",
+		"Backspace  Clear a nonempty filter; otherwise go back. Escape or Ctrl-C  Close the picker.",
+	];
 }
 
 function addPanelKeybindings(container: Container, theme: Theme, footer: string): Text {
@@ -340,6 +436,19 @@ function addPanelKeybindings(container: Container, theme: Theme, footer: string)
 	container.addChild(keybindings);
 	container.addChild(new Spacer(1));
 	return keybindings;
+}
+
+function recoveryDisplayRows(display: RecoveryDisplay): readonly (readonly [string, string])[] {
+	const rows: Array<readonly [string, string]> = [
+		["Status", display.status],
+		["Progress", display.progress],
+		["Doing", display.doing],
+		["Next", display.next],
+	];
+	if (display.reason !== undefined) rows.splice(3, 0, ["Reason", display.reason]);
+	if (display.evidence !== undefined && display.evidence.length > 0)
+		rows.splice(4, 0, ["Evidence", display.evidence.join(", ")]);
+	return rows;
 }
 
 function addHeading(container: Container, theme: Theme, title: string): void {
@@ -418,7 +527,10 @@ async function pickSection(
 			rows.push(["Execution", formatExecutionState(execution)]);
 			if (shouldShowRuntime(execution)) rows.push(["Runtime", formatRuntimeState(execution)]);
 		}
-		if (work.reviewRequest !== undefined) rows.push(["PR", `#${work.reviewRequest.providerId}`]);
+		if (work.reviewRequest !== undefined)
+			rows.push([work.reviewRequest.provider === "gitlab" ? "MR" : "PR", `#${work.reviewRequest.providerId}`]);
+		if (work.lastError !== undefined)
+			rows.push(["Attention", truncateToWidth(presentEvidenceText(work.lastError.summary), 120, "")]);
 		if (work.nextAction.trim().length > 0) rows.push(["Next", presentEvidenceText(work.nextAction)]);
 		const list = new SelectList(items, items.length, selectorTheme(theme));
 		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
@@ -517,6 +629,8 @@ function displayActionLabel(action: Action): string {
 		"record-assessment": "Record assessment",
 		"start-execution": "Start execution",
 		"record-signal": "Record signal",
+		"commit-sandbox": "Commit sandbox changes",
+		"run-validation": "Run validation",
 		"create-review-request": "Create review request",
 		"run-oracle": "Run oracle",
 		verdict: "Record verdict",
@@ -533,7 +647,7 @@ function displayActionLabel(action: Action): string {
 }
 
 function schedulePendingEffects(service: ApplicationService): void {
-	queueMicrotask(() => void service.processPendingEffects());
+	queueMicrotask(() => void service.processPendingEffects().catch(() => undefined));
 }
 
 type RecoveryDisplay = Readonly<{
@@ -542,6 +656,7 @@ type RecoveryDisplay = Readonly<{
 	doing: string;
 	next: string;
 	reason?: string | undefined;
+	evidence?: readonly string[] | undefined;
 }>;
 
 async function showRecovery(
@@ -571,14 +686,7 @@ async function showRecovery(
 		const footer = addPanelKeybindings(container, theme, "recovery is in progress");
 
 		const renderDisplay = (): void => {
-			const rows: Array<readonly [string, string]> = [
-				["Status", display.status],
-				["Progress", display.progress],
-				["Doing", display.doing],
-				["Next", display.next],
-			];
-			if (display.reason !== undefined) rows.splice(3, 0, ["Reason", display.reason]);
-			body.setText(theme.fg("muted", formatFieldRows(rows).join("\n")));
+			body.setText(theme.fg("muted", formatFieldRows(recoveryDisplayRows(display)).join("\n")));
 			footer.setText(theme.fg("dim", display.status === "in progress" ? "recovery is in progress" : PANEL_BACK_FOOTER));
 			tui.requestRender();
 		};
@@ -616,11 +724,9 @@ async function showRecovery(
 							status: "failed",
 							progress: "stopped",
 							doing: "Khala could not restore the Executor",
-							reason: "The recovery operation could not be completed",
-							next:
-								result.error.code === "revision-conflict"
-									? "Refresh and try again."
-									: "Inspect Evidence for the failure details.",
+							reason: `${result.error.code}: ${presentEvidenceText(result.error.summary)}`,
+							next: presentEvidenceText(result.error.remediation),
+							evidence: result.error.evidenceRefs,
 						});
 						return;
 					}
@@ -656,13 +762,13 @@ async function showRecovery(
 								},
 					);
 				})
-				.catch(() =>
+				.catch((error) =>
 					update({
 						status: "failed",
 						progress: "stopped",
 						doing: "Khala could not restore the Executor",
-						reason: "The recovery operation ended unexpectedly",
-						next: "Inspect Evidence for the failure details.",
+						reason: error instanceof Error ? error.message : String(error),
+						next: "Return to Actions and retry after inspecting Evidence.",
 					}),
 				);
 		});
@@ -740,6 +846,12 @@ async function selectRoleModel(context: ExtensionContext, currentReference: stri
 			() => done(undefined),
 		);
 		return {
+			get focused() {
+				return selector.getSearchInput().focused;
+			},
+			set focused(value: boolean) {
+				selector.getSearchInput().focused = value;
+			},
 			render: (width: number) => selector.render(width),
 			invalidate: () => selector.invalidate(),
 			handleInput: (data: string) => {
@@ -861,7 +973,8 @@ function formatStatus(value: string): string {
 }
 
 function formatWorkState(work: WorkView): string {
-	return work.state === "stopped" ? "stopped" : formatStatus(work.state);
+	const state = work.state === "stopped" ? "stopped" : formatStatus(work.state);
+	return work.lastError === undefined ? state : `${state} (attention)`;
 }
 
 function formatMissionState(value: string): string {
@@ -917,11 +1030,17 @@ function providerReviewComments(records: readonly RecordView[]): readonly Provid
 			readPayloadObject(readPayloadObjectValue(record.payload), "providerObservation");
 		const commentsValue = payload?.["comments"];
 		if (!Array.isArray(commentsValue)) continue;
+		const seen = new Set<string>();
 		return commentsValue
 			.filter(isJsonObject)
 			.map(readProviderReviewComment)
 			.filter((comment): comment is ProviderReviewComment => comment !== undefined)
-			.filter((comment) => comment.body.trim().length > 0);
+			.filter((comment) => comment.body.trim().length > 0)
+			.filter((comment) => {
+				if (seen.has(comment.id)) return false;
+				seen.add(comment.id);
+				return true;
+			});
 	}
 	return [];
 }
@@ -976,6 +1095,7 @@ function hasCurrentBlockedSignal(work: WorkView): boolean {
 const EVIDENCE_RECORD_KINDS: readonly RecordKind[] = [
 	"assessment",
 	"learning",
+	"validation",
 	"signal",
 	"review-request",
 	"observation",
@@ -1476,6 +1596,7 @@ function recordKindLabel(record: RecordView): string {
 		mission: "mission",
 		"mission-change": "mission change",
 		execution: "execution",
+		validation: "validation",
 		signal: "signal",
 		"review-request": "review request",
 		observation: "observation",
@@ -1547,6 +1668,11 @@ function formatRecordedAt(value: string): string {
 // oxlint-disable-next-line complexity
 function formatErrorSections(error: ErrorEnvelope | undefined): readonly PageSection[] {
 	if (error === undefined) return [];
+	const metadata: Array<readonly [string, string]> = [
+		["code", error.code],
+		["retryable", error.retryable ? "yes" : "no"],
+	];
+	if (error.evidenceRefs.length > 0) metadata.push(["evidence", error.evidenceRefs.join(", ")]);
 	const nextStep = [
 		...(error.remediation.trim().length === 0 ? [] : [presentEvidenceText(error.remediation)]),
 		...(error.learning?.missionSpecificity === undefined
@@ -1555,6 +1681,7 @@ function formatErrorSections(error: ErrorEnvelope | undefined): readonly PageSec
 	];
 	return [
 		...(error.summary.trim().length === 0 ? [] : [pageSection([presentEvidenceText(error.summary)], "Error")]),
+		pageSection(formatFieldRows(metadata)),
 		...(nextStep.length === 0 ? [] : [pageSection(nextStep, "Next step")]),
 	];
 }
@@ -1626,6 +1753,37 @@ async function showTextPage(
 	await showPage(context, title, [pageSection(lines)], footer);
 }
 
+function isPanelBack(data: string): boolean {
+	return matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "backspace");
+}
+
+function scrollPage(scroll: ScrollView, data: string): boolean {
+	const key = parseKey(data) ?? "";
+	const distance = new Map<string, number>([
+		["up", -1],
+		["down", 1],
+		["pageUp", -Math.max(1, scroll.viewportHeight - 1)],
+		["pageDown", Math.max(1, scroll.viewportHeight - 1)],
+	]).get(key);
+	if (distance !== undefined) {
+		scroll.scrollBy(distance ?? 0);
+		return true;
+	}
+	return scrollPageBoundary(scroll, key);
+}
+
+function scrollPageBoundary(scroll: ScrollView, key: string): boolean {
+	if (key === "home") {
+		scroll.scrollToStart();
+		return true;
+	}
+	if (key === "end") {
+		scroll.scrollToEnd();
+		return true;
+	}
+	return false;
+}
+
 function addPageContent(container: Container, theme: Theme, title: string, sections: readonly PageSection[]): void {
 	container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
 	addPageSections(container, theme, sections);
@@ -1649,17 +1807,19 @@ async function showPage(
 	footer = PANEL_BACK_FOOTER,
 ): Promise<void> {
 	await context.ui.custom<void>((_tui, theme, _keybindings, done) => {
-		const container = new Container();
-		addPageContent(container, theme, title, sections);
-		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, footer);
-		return {
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "backspace")) done();
-			},
+		const content = new Container();
+		addPageContent(content, theme, title, sections);
+		const scroll = new ScrollView(content, { overscroll: "contain", scrollbar: "auto" });
+		const footerContainer = new Container();
+		addPanelKeybindings(footerContainer, theme, footer);
+		const page = new VStack([scroll, footerContainer]);
+		// SAFETY: The custom page adds only the input handler while preserving VStack and ScrollView layout contracts.
+		const interactivePage = page as VStack & { handleInput: (data: string) => void };
+		interactivePage.handleInput = (data: string): void => {
+			if (scrollPage(scroll, data)) return;
+			if (isPanelBack(data)) done();
 		};
+		return interactivePage;
 	});
 }
 
