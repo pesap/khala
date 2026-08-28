@@ -49,23 +49,26 @@ files with the packaged fresh-eyes review prompt.
 6. User review evidence and provider merge evidence are recorded separately.
    Poll the provider with `khala_poll_provider` after a review request is open.
    New GitHub review comments wake the Conclave, which may deliver bounded
-   feedback to the same Execution without another User action. Only the
+   feedback to the same Execution without another User action. A confirmed
+   provider merge wakes the Conclave to record the explicit Outcome, including
+   when the provider merged before local review handoff settled; restart
+   reconciliation requeues an already-recorded unsettled merge. Only the
    Conclave can record the succeeded Work Outcome.
 
 `/khala` is quiet and on demand. It opens a Work list; Work is the User's goal,
 each admitted Work has one Mission, and each Mission may have an Execution.
 The picker shows active Work by default, hides succeeded and cancelled Work,
 and keeps failed Work visible. It presents title, short ID, Work state, and
-Execution state in aligned columns. The Work overview shows only the Work,
-Mission, Execution, actionable runtime state, next action, and links to Actions,
-Evidence, and Archive. Actions lists enabled actions with short labels such as
+Execution state in aligned columns. The Work overview shows Work, Mission,
+Execution, actionable runtime state, the linked PR number, next action, and
+links to Actions, Evidence, Peer-Review, and Archive. Actions lists enabled actions with short labels such as
 `Recover`, `Rename`, and `Cancel`.
 
 Evidence is a selectable Archive-derived record list with sequence, actual kind,
 summary, actor, and time. It does not duplicate lifecycle, provider, review, CI,
-error, or handoff sections. Provider comments appear as a selectable Evidence
-entry when available. Archive lists every Work record newest first. Selecting a
-record opens its complete metadata, full IDs, structured fields, and evidence
+error, or handoff sections. Peer-Review is a separate section when provider
+comments are available. Archive lists every Work record newest first. Selecting
+a record opens its complete metadata, full IDs, structured fields, and evidence
 references. Empty values and sections are omitted. The panels use headings,
 whitespace, aligned columns, plain text status labels, and a dimmed navigation
 footer without decorative separators. The layout adapts to narrow terminals.
@@ -75,10 +78,9 @@ panel while it runs, ignores close keys until the operation finishes, and then
 shows the final result. Navigation does not write the Archive. Up/down and Enter
 select; Backspace or Escape navigates back or closes the selector. Press the
 configured Role settings key in the Work picker to open Role settings. Press the configured comments key in the
-Work overview or Evidence view to open Review comments. `r` and `c` can be
-changed with `roleSettingsKey` and `commentsKey` in configuration. Use `Rename`
-in Work actions to change the Work label without changing the admitted Mission
-terms.
+Work overview to open Peer-Review. `r` and `c` can be changed with
+`roleSettingsKey` and `commentsKey` in configuration. Use `Rename` in Work
+actions to change the Work label without changing the admitted Mission terms.
 
 Token usage, including cache hits and misses, remains tracked on the Execution;
 USD cost is not tracked without provider pricing and usage data.

@@ -180,25 +180,42 @@ export class SQLiteArchive implements ArchivePort {
 			const records = this.database
 				.prepare("SELECT record_id, mission_id FROM archive_records ORDER BY sequence")
 				.all();
-			const existing = this.database.prepare("SELECT COUNT(*) AS count FROM archive_record_numbers").get();
-			const existingCount = existing === undefined ? 0 : readInteger(existing, "count");
-			if (existingCount !== 0 && existingCount !== records.length) {
-				throw new Error("Archive record numbering is incomplete.");
+			const numbered = this.database
+				.prepare("SELECT record_id, record_number, mission_id, mission_record_number FROM archive_record_numbers")
+				.all();
+			if (numbered.length > records.length) {
+				throw new Error("Archive record numbering has orphaned rows.");
 			}
-			if (existingCount === 0 && records.length > 0) {
+			const numberedRecordIds = new Set(numbered.map((row) => readString(row, "record_id")));
+			const missing = records.filter((record) => !numberedRecordIds.has(readString(record, "record_id")));
+			if (missing.length > 0) {
+				const usedRecordNumbers = new Set(numbered.map((row) => readInteger(row, "record_number")));
+				const usedMissionNumbers = new Map<string, Set<number>>();
+				for (const row of numbered) {
+					const missionId = readOptionalString(row, "mission_id");
+					const missionRecordNumber = readOptionalInteger(row, "mission_record_number");
+					if (missionId === undefined || missionRecordNumber === undefined) continue;
+					const numbers = usedMissionNumbers.get(missionId) ?? new Set<number>();
+					numbers.add(missionRecordNumber);
+					usedMissionNumbers.set(missionId, numbers);
+				}
 				const insert = this.database.prepare(
 					"INSERT INTO archive_record_numbers(record_id, record_number, mission_id, mission_record_number) VALUES (?, ?, ?, ?)",
 				);
-				const missionNumbers = new Map<string, number>();
-				for (const [index, record] of records.entries()) {
+				for (const record of missing) {
+					let recordNumber = 1;
+					while (usedRecordNumbers.has(recordNumber)) recordNumber += 1;
+					usedRecordNumbers.add(recordNumber);
 					const missionId = readOptionalString(record, "mission_id");
-					if (missionId === undefined) {
-						insert.run(readString(record, "record_id"), index + 1, null, null);
-						continue;
+					let missionRecordNumber: number | null = null;
+					if (missionId !== undefined) {
+						const numbers = usedMissionNumbers.get(missionId) ?? new Set<number>();
+						missionRecordNumber = 1;
+						while (numbers.has(missionRecordNumber)) missionRecordNumber += 1;
+						numbers.add(missionRecordNumber);
+						usedMissionNumbers.set(missionId, numbers);
 					}
-					const missionRecordNumber = (missionNumbers.get(missionId) ?? 0) + 1;
-					missionNumbers.set(missionId, missionRecordNumber);
-					insert.run(readString(record, "record_id"), index + 1, missionId, missionRecordNumber);
+					insert.run(readString(record, "record_id"), recordNumber, missionId ?? null, missionRecordNumber);
 				}
 			}
 			this.database.exec("COMMIT");

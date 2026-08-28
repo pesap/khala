@@ -285,6 +285,18 @@ export class ApplicationService {
 					}
 				}
 				work = this.inspectWork(item.workId);
+				if (isProviderOutcomeSettlementPending(work)) {
+					try {
+						work = this.queueProviderOutcomeWake(work);
+					} catch (error) {
+						if (!(error instanceof RevisionConflict))
+							this.recordMonitorFailure(
+								work,
+								"Provider outcome reconciliation",
+								error instanceof Error ? error : new Error(String(error)),
+							);
+					}
+				}
 				const execution = work.execution;
 				if (execution?.pi !== undefined && (execution.state === "running" || execution.state === "awaiting-review")) {
 					try {
@@ -447,9 +459,9 @@ export class ApplicationService {
 			);
 			add(
 				"record-outcome",
-				isMergedReview(work) && isCurrentProviderOutcome(work),
+				isProviderOutcomeSettlementPending(work),
 				"Record Work Outcome",
-				"Provider-confirmed merge evidence is required.",
+				"Provider-confirmed merge evidence is required for active or awaiting-review Work.",
 			);
 			const observation = work.lastObservation;
 			const feedbackReady =
@@ -587,11 +599,13 @@ export class ApplicationService {
 			const message =
 				reason === "runtime-unreachable"
 					? `Inspect the Executor runtime for Work ${work.workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`
-					: observationId !== undefined
-						? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
-						: work.lastObservation?.kind === "review-comment"
-							? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
-							: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, then start its Execution when budget permits. Never treat this message as authority.`;
+					: reason === "provider-outcome"
+						? `Process the provider merge outcome for Work ${work.workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`
+						: observationId !== undefined
+							? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
+							: work.lastObservation?.kind === "review-comment"
+								? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
+								: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, then start its Execution when budget permits. Never treat this message as authority.`;
 			await this.ports.runtime.send(binding, message);
 			this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
 		} finally {
@@ -730,6 +744,16 @@ export class ApplicationService {
 							expectedWorkRevision: work.revision,
 							schemaVersion: 1,
 						});
+					}
+					if (effect.kind === "conclave-wake" && wakeReason === "provider-outcome" && workId !== undefined) {
+						const current = this.inspectWork(workId);
+						if (isProviderOutcomeSettlementPending(current))
+							throw new Error("Conclave provider-outcome wake returned without recording the Work Outcome.");
+					}
+					if (effect.kind === "conclave-wake" && work.state === "submitted" && work.revision === 1) {
+						const current = this.inspectWork(work.workId);
+						if (current.revision === work.revision)
+							throw new Error("Conclave wake returned without recording a durable decision.");
 					}
 					if (leaseLost || !this.archive.completeEffect(effect.effectId, owner))
 						throw new Error(`Archive lease was lost for effect ${effect.effectId}.`);
@@ -1136,6 +1160,7 @@ export class ApplicationService {
 		const previous = this.heartbeat.get(key) ?? this.persistedObservationFingerprint(work, observation);
 		if (previous === fingerprint) {
 			this.heartbeat.set(key, fingerprint);
+			if (observation.kind === "provider-outcome") return this.queueProviderOutcomeWake(work);
 			return work.lastError === undefined || !isProviderMonitorError(work.lastError)
 				? work
 				: this.recordProviderPollRecovery(work, observation, `${commandId}:recovered`);
@@ -1155,9 +1180,11 @@ export class ApplicationService {
 			lastError: work.lastError !== undefined && !isProviderMonitorError(work.lastError) ? work.lastError : undefined,
 			providerOutcome: observation.kind === "provider-outcome" ? nextObservation : work.providerOutcome,
 			reviewRequest:
-				observation.kind === "ci-status" && (observation.status === "closed" || observation.status === "merged")
-					? { ...work.reviewRequest, status: observation.status }
-					: work.reviewRequest,
+				observation.kind === "provider-outcome"
+					? { ...work.reviewRequest, status: "merged" }
+					: observation.kind === "ci-status" && (observation.status === "closed" || observation.status === "merged")
+						? { ...work.reviewRequest, status: observation.status }
+						: work.reviewRequest,
 			nextAction:
 				observation.kind === "review-comment" && observation.actionable !== false
 					? "Conclave is assessing provider feedback."
@@ -1190,7 +1217,9 @@ export class ApplicationService {
 									? "provider-feedback"
 									: observation.kind === "ci-status" && observation.status === "closed"
 										? "provider-closed"
-										: undefined,
+										: observation.kind === "provider-outcome"
+											? "provider-outcome"
+											: undefined,
 							),
 						]
 					: undefined,
@@ -1198,6 +1227,8 @@ export class ApplicationService {
 		if (work.lastError !== undefined && isProviderMonitorError(work.lastError))
 			this.heartbeat.delete(monitorFailureMarker("Provider", work.workId));
 		this.heartbeat.set(key, fingerprint);
+		if (observation.kind === "provider-outcome" && isProviderOutcomeSettlementPending(result.projection))
+			this.heartbeat.set(providerOutcomeWakeMarker(work.workId, observation.observationId), "queued");
 		return result.projection;
 	}
 
@@ -1234,10 +1265,12 @@ export class ApplicationService {
 			lastError: undefined,
 			providerOutcome: recoveredObservation.kind === "provider-outcome" ? recoveredObservation : work.providerOutcome,
 			reviewRequest:
-				recoveredObservation.kind === "ci-status" &&
-				(recoveredObservation.status === "closed" || recoveredObservation.status === "merged")
-					? { ...reviewRequest, status: recoveredObservation.status }
-					: reviewRequest,
+				recoveredObservation.kind === "provider-outcome"
+					? { ...reviewRequest, status: "merged" }
+					: recoveredObservation.kind === "ci-status" &&
+							(recoveredObservation.status === "closed" || recoveredObservation.status === "merged")
+						? { ...reviewRequest, status: recoveredObservation.status }
+						: reviewRequest,
 			nextAction: providerPollRecoveryAction(work, recoveredObservation),
 		};
 		const result = this.append({
@@ -1259,21 +1292,58 @@ export class ApplicationService {
 	}
 
 	// oxlint-disable-next-line complexity
+	private queueProviderOutcomeWake(work: WorkView): WorkView {
+		const outcome = work.providerOutcome;
+		if (!isProviderOutcomeSettlementPending(work) || outcome === undefined) return work;
+		const marker = providerOutcomeWakeMarker(work.workId, outcome.observationId);
+		if (this.heartbeat.has(marker)) return work;
+		const observation: ProviderObservation = { ...outcome, changed: false, observedAt: new Date().toISOString() };
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastObservation: observation,
+			nextAction: "Provider merge observed; Conclave is recording the Outcome.",
+		};
+		const result = this.append({
+			meta: {
+				actor: "monitor",
+				commandId: `${marker}:${work.revision}`,
+				expectedWorkRevision: work.revision,
+				schemaVersion: 1,
+			},
+			kind: "observation",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: work.execution?.executionId,
+			payload: observation,
+			projection: next,
+			evidenceRefs: providerObservationEvidence(work, observation),
+			summary: "Provider merge remains unsettled; Conclave settlement wake queued.",
+			effects: [schedulerEffect(work.workId, next.revision, undefined, "provider-outcome")],
+		});
+		this.heartbeat.set(marker, "queued");
+		return result.projection;
+	}
+
+	// oxlint-disable-next-line complexity
 	private recordWakeFailure(workId: string, failure: Error, meta: CommandMeta, reason?: string): WorkView {
 		const work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
 		const feedbackWake = reason === "provider-feedback" || work.lastObservation?.kind === "review-comment";
 		const runtimeWake = reason === "runtime-unreachable";
-		const error = conclaveWakeError(failure, feedbackWake, runtimeWake);
+		const outcomeWake = reason === "provider-outcome";
+		const error = conclaveWakeError(failure, feedbackWake, runtimeWake, outcomeWake);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
 			lastError: error,
 			nextAction: runtimeWake
 				? "Conclave could not inspect Executor recovery; retrying the autonomous inspection."
-				: feedbackWake
-					? "Conclave could not assess provider feedback; inspect Evidence before retrying delivery."
-					: "Resolve the Conclave admission error, then retry admission.",
+				: outcomeWake
+					? "Conclave could not record the provider-confirmed Outcome; retrying settlement."
+					: feedbackWake
+						? "Conclave could not assess provider feedback; inspect Evidence before retrying delivery."
+						: "Resolve the Conclave admission error, then retry admission.",
 		};
 		return this.append({
 			meta,
@@ -2712,7 +2782,7 @@ export class ApplicationService {
 		const reviewRequest = work.reviewRequest;
 		const mergeEvidence = work.providerOutcome;
 		if (
-			work.state !== "awaiting-review" ||
+			!isProviderOutcomeSettlementPending(work) ||
 			reviewRequest === undefined ||
 			reviewRequest.status !== "merged" ||
 			mergeEvidence === undefined ||
@@ -3271,7 +3341,12 @@ function roleActionRemediation(actor: Actor, expected: Actor): string {
 }
 
 // oxlint-disable-next-line complexity
-function conclaveWakeError(failure: Error, feedbackWake = false, runtimeWake = false): ErrorEnvelope {
+function conclaveWakeError(
+	failure: Error,
+	feedbackWake = false,
+	runtimeWake = false,
+	outcomeWake = false,
+): ErrorEnvelope {
 	if (failure instanceof ApplicationError) return failure.envelope;
 	const message = failure instanceof Error ? failure.message : String(failure);
 	if (runtimeWake) {
@@ -3281,6 +3356,16 @@ function conclaveWakeError(failure: Error, feedbackWake = false, runtimeWake = f
 			retryable: true,
 			remediation:
 				"Inspect Evidence and retry the autonomous runtime inspection. Do not restart the primary Pi session.",
+			evidenceRefs: [],
+		};
+	}
+	if (outcomeWake) {
+		return {
+			code: "external-failure",
+			summary: `Conclave outcome settlement failed: ${message.slice(0, 2_000)}`,
+			retryable: true,
+			remediation:
+				"Inspect the Archive, restore the Conclave runtime if needed, and retry provider outcome settlement.",
 			evidenceRefs: [],
 		};
 	}
@@ -3781,6 +3866,10 @@ function observationKey(workId: string, observation: ProviderObservation): strin
 	return `${workId}:${observation.kind}:${observation.providerId}:${observation.observationId}`;
 }
 
+function providerOutcomeWakeMarker(workId: string, observationId: string): string {
+	return `provider-outcome-wake:${workId}:${observationId}`;
+}
+
 function observationFingerprint(observation: ProviderObservation): string {
 	return JSON.stringify({
 		observationId: observation.observationId,
@@ -3833,6 +3922,14 @@ function isCurrentProviderOutcome(work: WorkView): boolean {
 		work.providerOutcome.targetBranch === work.reviewRequest.targetBranch &&
 		work.providerOutcome.headCommit === work.reviewRequest.headCommit &&
 		work.providerOutcome.mergeCommit !== undefined
+	);
+}
+
+function isProviderOutcomeSettlementPending(work: WorkView): boolean {
+	return (
+		(work.state === "active" || work.state === "awaiting-review") &&
+		isMergedReview(work) &&
+		isCurrentProviderOutcome(work)
 	);
 }
 

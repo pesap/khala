@@ -309,7 +309,7 @@ test("Provider observation archive entries show feedback and evidence", async ()
 	await result;
 });
 
-test("Evidence lists Archive records and exposes provider comments", async () => {
+test("Peer-Review lists provider comments separately from Evidence", async () => {
 	const screens = [];
 	const work = {
 		workId: "evidence-work",
@@ -359,6 +359,13 @@ test("Evidence lists Archive records and exposes provider comments", async () =>
 					mergedAt: null,
 				},
 				comments: [
+					{
+						id: "review-empty",
+						author: "pesap",
+						authorAssociation: "OWNER",
+						source: "review",
+						body: "",
+					},
 					{
 						id: "IC_kwDOTlm-4c8AAAABQt6GhQ",
 						author: "pesap",
@@ -497,6 +504,8 @@ test("Evidence lists Archive records and exposes provider comments", async () =>
 	const overview = screens[1].render(120).join("\n");
 	assert.match(overview, /Execution\s+running/);
 	assert.match(overview, /Runtime\s+unreachable/);
+	assert.match(overview, /PR\s+#43/);
+	assert.match(overview, /Peer-Review/);
 	assert.doesNotMatch(overview, /no active runtime/);
 	screens[1].handleInput("\u001b[B");
 	screens[1].handleInput("\r");
@@ -526,27 +535,29 @@ test("Evidence lists Archive records and exposes provider comments", async () =>
 	assert.doesNotMatch(evidence, /Learning/);
 	assert.match(evidence, /Provider observation changed: review-comment/);
 	assert.match(evidence, /Authorized provider review feedback was delivered/);
-	assert.match(evidence, /Review comments\s+2 available/);
-	assert.doesNotMatch(evidence, /Provider summary|Conclave handoff|CI checks/);
-	assert.match(evidence, /escape\/ctrl\+c\/backspace back\s+v comments/);
+	assert.doesNotMatch(evidence, /Review comments\s+2 available/);
+	assert.doesNotMatch(evidence, /v comments/);
 	assert.doesNotMatch(evidence, /select Review comments to explore/);
 	const narrowEvidence = screens[2].render(70).join("\n");
 	assert.match(narrowEvidence, /SEQ\s+KIND\s+SUMMARY/);
 	assert.doesNotMatch(narrowEvidence, /2026-08-25 22:35:00\.000Z/);
-	screens[2].handleInput("v");
+	screens[2].handleInput("\u001b");
 	await nextTurn();
-	assert.match(screens[3].render(120).join("\n"), /Review comments/);
-	assert.match(screens[3].render(120).join("\n"), /pesap/);
+	screens[3].handleInput("\u001b[B");
+	screens[3].handleInput("\u001b[B");
 	screens[3].handleInput("\r");
 	await nextTurn();
-	const comment = screens[4].render(120).join("\n");
+	assert.match(screens[4].render(120).join("\n"), /Peer-Review/);
+	assert.match(screens[4].render(120).join("\n"), /2 comments/);
+	assert.match(screens[4].render(120).join("\n"), /pesap/);
+	screens[4].handleInput("\r");
+	await nextTurn();
+	const comment = screens[5].render(120).join("\n");
 	assert.match(comment, /author: pesap \(OWNER\)/);
 	assert.match(comment, /source: issue-comment/);
 	assert.match(comment, /location: docs\/demo-work\.md:12/);
 	assert.match(comment, /Changes requested: add one sentence to docs\/demo-work\.md/);
 	assert.match(comment, /https:\/\/github\.com\/pesap\/khala\/pull\/43#issuecomment-5416846981/);
-	screens[4].handleInput("\u001b");
-	await nextTurn();
 	screens[5].handleInput("\u001b");
 	await nextTurn();
 	screens[6].handleInput("\u001b");

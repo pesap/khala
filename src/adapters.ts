@@ -532,7 +532,8 @@ function githubProviderDetails(
 		// oxlint-disable-next-line complexity
 		return entries.filter(isJsonObject).flatMap((entry) => {
 			const id = entry["id"];
-			if (id !== String(id) && id !== Number(id)) return [];
+			const body = isTextValue(entry["body"]) ? entry["body"].trim() : "";
+			if ((id !== String(id) && id !== Number(id)) || body.length === 0) return [];
 			const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
 			const line = entry["line"] === undefined ? undefined : String(entry["line"]);
 			return [
@@ -540,7 +541,7 @@ function githubProviderDetails(
 					id: String(id),
 					author: githubAuthor(entry),
 					authorAssociation: githubAssociation(entry),
-					body: isTextValue(entry["body"]) ? entry["body"].trim() : "",
+					body,
 					createdAt: githubTimestamp(entry),
 					url: githubCommentUrl(entry),
 					state: isTextValue(entry["state"]) ? entry["state"].toUpperCase() : undefined,

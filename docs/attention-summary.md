@@ -16,14 +16,14 @@ communicate status. The user-session footer shows a branded status such as
 for the immediate action required or performed by Khala, reports Work as
 `stopped` with a cancellation or failure reason, and avoids repeating active
 state labels. It does not repeat revision, budget, or token metadata. Evidence explicitly distinguishes active lifecycle state from
-recorded activity. It then provides three core sections:
+recorded activity. It then provides three core sections and a conditional peer-review section:
 
 1. **Actions** — actor-authorized actions that are currently available.
 2. **Evidence** — Execution turn status, bounded Signals, review request, provider observations, and explicit missing evidence.
-3. **Archive** — append-ordered Archive records with selectable details.
+3. **Peer-Review** — provider comments from the current review request, when available.
+4. **Archive** — append-ordered Archive records with selectable details.
 
-When provider comments are available, Evidence adds a selectable Review comments
-section. Blocked Executions add a blocking-signal section.
+Blocked Executions add a blocking-signal section.
 
 A complete evidence walkthrough reads:
 
@@ -33,13 +33,14 @@ Work active
 Mission in progress
 Execution running
 Runtime unreachable
+PR: #43
 Next: Executor runtime is unreachable. Recover it from Actions.
-→ Actions → Evidence → Archive
+→ Actions → Evidence → Peer-Review → Archive
 ```
 
-Provider review comments appear as bounded Evidence. After polling, the
-Conclave can authorize a delivery without reopening the User session; the
-delivery and any recovery failure remain visible in Archive.
+Provider review comments appear in the dedicated Peer-Review section. After
+polling, the Conclave can authorize a delivery without reopening the User
+session; the delivery and any recovery failure remain visible in Archive.
 
 Selection is pinned by Work ID. Refresh rereads the Archive and preserves the
 selected Work and filter. Navigation never writes. Raw Executor output and
@@ -50,9 +51,8 @@ summaries are presented as clean text for scanning or copying.
 Default interactions follow Pi selector conventions: type filters, Up/Down
 move, Enter opens or confirms, and Backspace or Escape goes back or cancels.
 `r` opens Role settings. When provider comments are available, `c` opens
-Review comments from the Work or Evidence view. The Evidence view also
-provides a selectable comments section. An unreachable Executor exposes
-runtime recovery in Actions, and the Conclave can inspect and recover it
-without opening the User session. Role settings change the model and thinking
-level for future role launches. The Role settings and comments keys can be
-changed in `khala.json`.
+Peer-Review from the Work overview. An unreachable Executor exposes runtime
+recovery in Actions, and the Conclave can inspect and recover it without
+opening the User session. Role settings change the model and thinking level
+for future role launches. The Role settings and comments keys can be changed in
+`khala.json`.

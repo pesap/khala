@@ -384,9 +384,12 @@ test("transient Conclave child failures retry once before recording durable fail
 	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
 		ports: {
 			runtime: {
-				async send(binding) {
-					if (binding.sessionId.startsWith("conclave-") && attempts++ === 0)
-						throw new Error("Pi child exited before responding.");
+				async send(binding, message) {
+					const isConclave = binding.sessionId.startsWith("conclave-");
+					if (isConclave) {
+						if (attempts++ === 0) throw new Error("Pi child exited before responding.");
+						await controls.onConclaveWake?.(message);
+					}
 					return { output: "" };
 				},
 			},
@@ -396,15 +399,43 @@ test("transient Conclave child failures retry once before recording durable fail
 		{ title: "Conclave wake retry", objective: "Retry transient startup loss", acceptanceCriteria: ["The wake is retried"] },
 		meta("user", "conclave-wake-retry:submit", 0),
 	);
+	controls.onConclaveWake = async () => {
+		const current = service.inspectWork(submitted.workId);
+		if (current.state !== "submitted") return;
+		const admitted = await service.perform({
+			action: "admit",
+			workId: submitted.workId,
+			input: {},
+			meta: meta("conclave", "conclave-wake-retry:admit", current.revision, submitted.workId),
+		});
+		assert.equal("error" in admitted, false);
+	};
 	await service.processPendingEffects();
 	const current = service.inspectWork(submitted.workId);
-	assert.equal(attempts, 2);
-	assert.equal(controls.sessions.filter((entry) => entry.input.role === "conclave").length, 2);
+	assert.equal(attempts, 3);
+	assert.equal(controls.sessions.filter((entry) => entry.input.role === "conclave").length, 3);
+	assert.equal(current.state, "queued");
 	assert.equal(current.lastError, undefined);
 	assert.equal(
 		service.readRecords({ workId: submitted.workId, kinds: ["error"] }, meta("user", "conclave-wake-retry:errors", current.revision)).items.length,
 		0,
 	);
+	await service.close();
+});
+
+test("A Conclave wake remains retryable when the child records no decision", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-conclave-wake-no-decision-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const submitted = service.submitWork(
+		{ title: "No decision", objective: "Keep the wake retryable", acceptanceCriteria: ["The pending wake remains visible"] },
+		meta("user", "no-decision:submit", 0),
+	);
+	await service.processPendingEffects();
+	const current = service.inspectWork(submitted.workId);
+	assert.equal(current.state, "submitted");
+	assert.match(current.lastError?.summary ?? "", /Conclave wake returned without recording a durable decision/);
+	assert.equal(service.readRecords({ workId: submitted.workId, kinds: ["error"] }, meta("user", "no-decision:read", current.revision)).items.length, 1);
+	assert.equal(service.readRecords({ workId: submitted.workId }, meta("user", "no-decision:read-all", current.revision)).items.length, 2);
 	await service.close();
 });
 
@@ -748,7 +779,75 @@ test("a Work reaches success through branch publication, handoff, polling, and o
 	await service.close();
 });
 
-test("Provider polling remains idempotent across restart for multi-observation polls", async () => {
+// oxlint-disable-next-line complexity
+test("Provider merge evidence wakes the Conclave and repairs an unsettled Work after restart", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-provider-outcome-wake-"));
+	const path = join(directory, "archive.sqlite");
+	const first = makeService(path);
+	const running = await admitAndStart(first.service, "provider-outcome-wake");
+	const review = await first.service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "provider-outcome-wake:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const merge = {
+		observationId: "merge:42",
+		kind: "provider-outcome",
+		providerId: review.value.reviewRequest.providerId,
+		status: "merged",
+		repository: review.value.reviewRequest.repository,
+		summary: "Merged",
+		sourceBranch: review.value.reviewRequest.sourceBranch,
+		targetBranch: review.value.reviewRequest.targetBranch,
+		headCommit: review.value.reviewRequest.headCommit,
+		mergeCommit: "merge-commit",
+		changed: true,
+		observedAt: new Date().toISOString(),
+	};
+	first.controls.pollObservations = [];
+	first.controls.outcomeObservation = merge;
+	const observed = await first.service.pollProvider(
+		running.workId,
+		meta("user", "provider-outcome-wake:poll", review.value.revision),
+	);
+	assert.equal(observed.state, "active");
+	await first.service.processPendingEffects();
+	assert.equal(observed.reviewRequest.status, "merged");
+	assert.equal(first.controls.prompts.some((entry) => entry.message.includes("provider merge outcome")), true);
+	assert.match(first.service.inspectWork(running.workId).lastError?.summary ?? "", /outcome settlement failed/);
+	for (;;) {
+		const effects = first.archive.pendingEffects("provider-outcome-test");
+		if (effects.length === 0) break;
+		for (const effect of effects) {
+			assert.equal(first.archive.completeEffect(effect.effectId, "provider-outcome-test"), true);
+		}
+	}
+	await first.service.close();
+
+	const second = makeService(path);
+	second.controls.pollObservations = [];
+	second.controls.outcomeObservation = merge;
+	second.controls.onConclaveWake = async (message) => {
+		if (!message.includes("provider merge outcome")) return;
+		const current = second.service.inspectWork(running.workId);
+		const outcome = await second.service.perform({
+			action: "record-outcome",
+			workId: running.workId,
+			input: {},
+			meta: meta("conclave", "provider-outcome-wake:outcome", current.revision, running.workId),
+		});
+		assert.equal("error" in outcome, false);
+	};
+	await second.service.runAutonomousCycle();
+	const succeeded = second.service.inspectWork(running.workId);
+	assert.equal(succeeded.state, "succeeded");
+	assert.equal(succeeded.missionState, "succeeded");
+	assert.equal(second.controls.prompts.some((entry) => entry.message.includes("provider merge outcome")), true);
+	await second.service.close();
+});
+
+test("Provider polling remains idempotent across restart and requeues unsettled merge outcomes", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-observations-"));
 	const path = join(directory, "archive.sqlite");
 	const first = makeService(path);
@@ -765,7 +864,8 @@ test("Provider polling remains idempotent across restart for multi-observation p
 	second.controls.pollObservations = [ci];
 	second.controls.outcomeObservation = merge;
 	const replayed = await second.service.pollProvider(running.workId, meta("user", "observations:replay", observed.revision));
-	assert.equal(replayed.revision, observed.revision);
+	assert.equal(replayed.revision, observed.revision + 1);
+	assert.equal(replayed.nextAction, "Provider merge observed; Conclave is recording the Outcome.");
 	await second.service.close();
 });
 
@@ -1447,6 +1547,44 @@ test("Executor authority is bound to the current Work and ready evidence rejects
 	await service.close();
 });
 
+test("Archive repairs missing record numbers without changing existing assignments", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-number-repair-"));
+	const path = join(directory, "archive.sqlite");
+	const archive = new SQLiteArchive(path);
+	const projection = {
+		workId: "w1",
+		revision: 1,
+		state: "submitted",
+		terms: { title: "Title", objective: "Objective", context: "", scope: "scope", acceptanceCriteria: ["accept"], constraints: [], validation: ["check"], maxTokens: 100 },
+		budget: { maxTokens: 100, reservedTokens: 0, consumedTokens: 0 },
+		nextAction: "pending",
+		queuedSequence: 0,
+	};
+	const first = archive.append({ commandId: "repair-command-1", expectedWorkRevision: 0, kind: "submission", actor: "user", workId: "w1", payloadVersion: 1, summary: "submitted", payload: projection.terms, projection });
+	const second = archive.append({ ...firstInput(first, projection), commandId: "repair-command-2", expectedWorkRevision: 1, missionId: "mission-1", projection: { ...projection, revision: 2, state: "queued" } });
+	const third = archive.append({ ...firstInput(first, projection), commandId: "repair-command-3", expectedWorkRevision: 2, missionId: "mission-1", projection: { ...projection, revision: 3, state: "active" } });
+	archive.close();
+
+	const database = openSqlite(path);
+	database.prepare("DELETE FROM archive_record_numbers WHERE record_id = ?").run(second.record.id);
+	database.close();
+
+	const migrated = new SQLiteArchive(path);
+	assert.deepEqual(
+		migrated.query().items.map(({ sequence, recordNumber, missionRecordNumber }) => ({ sequence, recordNumber, missionRecordNumber })),
+		[
+			{ sequence: first.record.sequence, recordNumber: 1, missionRecordNumber: undefined },
+			{ sequence: second.record.sequence, recordNumber: 2, missionRecordNumber: 1 },
+			{ sequence: third.record.sequence, recordNumber: 3, missionRecordNumber: 2 },
+		],
+	);
+	migrated.close();
+});
+
+function firstInput(first, projection) {
+	return { commandId: first.record.commandId, expectedWorkRevision: 0, kind: "submission", actor: "user", workId: "w1", payloadVersion: 1, summary: "submitted", payload: projection.terms, projection };
+}
+
 test("Archive appends validate projections and claim each external effect once", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-archive-"));
 	const archive = new SQLiteArchive(join(directory, "archive.sqlite"));
@@ -1592,7 +1730,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write("[[{\\"id\\":10,\\"body\\":\\"Inline review note\\",\\"path\\":\\"src/index.ts\\",\\"line\\":3,\\"user\\":{\\"login\\":\\"principal\\"},\\"author_association\\":\\"OWNER\\"}]]");\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
@@ -1625,6 +1763,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		const ciObservation = observations.find((item) => item.kind === "ci-status");
 		assert.equal(ciObservation?.details?.pullRequest.status, "merged");
 		assert.equal(ciObservation?.details?.comments.length, 3);
+		assert.equal(ciObservation?.details?.comments.some((comment) => comment.body === ""), false);
 		assert.equal(ciObservation?.details?.comments[1]?.createdAt, "2026-08-25T21:12:06Z");
 		assert.equal(ciObservation?.details?.comments[2]?.location, "src/index.ts:3");
 		assert.deepEqual(ciObservation?.details?.checks.map((check) => check.kind), ["check-run", "status-context"]);

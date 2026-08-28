@@ -53,11 +53,12 @@ Only the Conclave can issue a Verdict:
 
 The User can record `changes-requested`, `merged`, or `closed` provider review
 evidence. Changes requested returns the current Execution to running. A merged
-review request still needs a changed provider-outcome observation. Provider
+review request needs provider-outcome evidence before the Conclave can record
+an Outcome. Provider
 observation records retain the review URL and observation ID as evidence
 references. The Evidence view presents normalized pull request status, CI
-checks, review comments, and review-request metadata without exposing the raw
-provider response. Review comments are available in a selectable subpanel;
+checks, and review-request metadata without exposing the raw provider response.
+When comments exist, the Work overview provides a Peer-Review section;
 selecting one shows its author, timestamp, body, location, and URL. The view
 also shows the Conclave handoff, including the feedback delivered to the target
 Execution.
@@ -65,7 +66,11 @@ Execution.
 ## Acceptance and failure
 
 Only a Conclave `outcome` record linked to provider-confirmed merge evidence
-sets Work to `succeeded`. A closed request, failed CI, missing provider result,
+sets Work to `succeeded`. A provider may merge before the local handoff is settled;
+current merge evidence can therefore settle active or awaiting-review Work, but
+only through the explicit Conclave Outcome. A merge observation durably wakes the
+Conclave, and a restart requeues an already-recorded unsettled merge so it cannot
+leave Work active indefinitely. A closed request, failed CI, missing provider result,
 blocked Execution, and monitor failure remain evidence that requires a decision.
 A successful provider observation clears a stale monitor error from the current
 Work projection; the original failure remains in the append-only Archive. An

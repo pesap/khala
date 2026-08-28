@@ -266,9 +266,17 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		child.lastOutput = "";
 		child.sending = true;
 		const completion = waitForAgentEnd(child, this.options.agentTimeoutMs ?? 1_800_000);
+		void completion.catch(() => undefined);
 		try {
-			const response = await request(child, "prompt", { message }, this.options.rpcTimeoutMs ?? 10_000);
-			if (!response.success) {
+			let response: RpcResponse | undefined;
+			try {
+				response = await request(child, "prompt", { message }, this.options.rpcTimeoutMs ?? 10_000);
+			} catch (error) {
+				if (!(error instanceof Error) || !error.message.startsWith("Pi RPC prompt timed out after ")) throw error;
+				// Pi sends the prompt response as an acceptance acknowledgement. A late acknowledgement does not
+				// invalidate the agent events already emitted for the turn, so let agent_end decide whether it completed.
+			}
+			if (response?.success === false) {
 				throw new Error(response.error ?? "Pi rejected the prompt.");
 			}
 			const output = await completion;
@@ -277,12 +285,8 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		} catch (error) {
 			const failure = error instanceof Error ? error : new Error(String(error));
 			rejectAgentEnd(child, failure);
-			try {
-				await request(child, "abort", {}, this.options.rpcTimeoutMs ?? 10_000);
-			} catch {
-				// A nonresponsive child is terminated below.
-			}
-			killChild(child);
+			const aborted = await tryAbort(child, this.options.rpcTimeoutMs ?? 10_000);
+			if (!aborted) killChild(child);
 			await completion.catch(() => undefined);
 			throw failure;
 		} finally {
@@ -684,6 +688,15 @@ function request(child: MutableChild, command: string, data: RpcCommandData, tim
 			reject(error instanceof Error ? error : new Error(String(error)));
 		}
 	});
+}
+
+async function tryAbort(child: MutableChild, timeoutMs: number): Promise<boolean> {
+	try {
+		const response = await request(child, "abort", {}, timeoutMs);
+		return response.success;
+	} catch {
+		return false;
+	}
 }
 
 function rejectPending(child: MutableChild, error: Error): void {

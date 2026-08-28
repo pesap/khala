@@ -358,7 +358,7 @@ function addKeyValueRows(container: Container, theme: Theme, rows: readonly (rea
 	container.addChild(new Text(theme.fg("muted", lines.join("\n")), 1, 0));
 }
 
-type WorkSection = "actions" | "evidence" | "archive" | "review-comments" | "blocking-signal";
+type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal";
 
 // oxlint-disable-next-line complexity
 async function showWork(
@@ -378,15 +378,15 @@ async function showWork(
 			continue;
 		}
 		if (section === "evidence") {
-			await showEvidence(service, work, context, actor, keybindings);
+			await showEvidence(service, work, context, actor);
 			continue;
 		}
 		if (section === "archive") {
-			await showArchive(service, context, work, actor, keybindings);
+			await showArchive(service, context, work, actor);
 			continue;
 		}
-		if (section === "review-comments") {
-			await showReviewComments(providerReviewComments(records), context);
+		if (section === "peer-review") {
+			await showPeerReview(providerReviewComments(records), context);
 			continue;
 		}
 		await showBlockingSignal(work, context);
@@ -403,6 +403,7 @@ async function pickSection(
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
+		...(reviewComments.length === 0 ? [] : [{ value: "peer-review", label: "Peer-Review" }]),
 		{ value: "archive", label: "Archive" },
 		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
@@ -417,6 +418,7 @@ async function pickSection(
 			rows.push(["Execution", formatExecutionState(execution)]);
 			if (shouldShowRuntime(execution)) rows.push(["Runtime", formatRuntimeState(execution)]);
 		}
+		if (work.reviewRequest !== undefined) rows.push(["PR", `#${work.reviewRequest.providerId}`]);
 		if (work.nextAction.trim().length > 0) rows.push(["Next", presentEvidenceText(work.nextAction)]);
 		const list = new SelectList(items, items.length, selectorTheme(theme));
 		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
@@ -429,7 +431,7 @@ async function pickSection(
 		container.addChild(list);
 		container.addChild(new Spacer(1));
 		const footer =
-			reviewComments.length === 0 ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} comments`;
+			reviewComments.length === 0 ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
 		addPanelKeybindings(container, theme, footer);
 		return selectableComponent(
 			container,
@@ -438,7 +440,7 @@ async function pickSection(
 			() => done("back"),
 			(data) => {
 				if (reviewComments.length === 0 || parseKey(data) !== keybindings.comments) return false;
-				done("review-comments");
+				done("peer-review");
 				return true;
 			},
 		);
@@ -846,7 +848,7 @@ function isWorkSection(value: string): value is WorkSection {
 		value === "actions" ||
 		value === "evidence" ||
 		value === "archive" ||
-		value === "review-comments" ||
+		value === "peer-review" ||
 		value === "blocking-signal"
 	);
 }
@@ -888,7 +890,7 @@ function pageSection(lines: readonly string[], heading?: string): PageSection {
 }
 
 type RecordListMode = "evidence" | "archive";
-type RecordListEntry = Readonly<{ kind: "record"; record: RecordView }> | Readonly<{ kind: "comments"; count: number }>;
+type RecordListEntry = Readonly<{ kind: "record"; record: RecordView }>;
 type MutableJsonObject = { [key: string]: JsonValue | undefined };
 type MutableProviderReviewComment = {
 	id: string;
@@ -910,11 +912,13 @@ function providerReviewComments(records: readonly RecordView[]): readonly Provid
 		const payload =
 			readPayloadObject(readPayloadObjectValue(record.payload), "details") ??
 			readPayloadObject(readPayloadObjectValue(record.payload), "providerObservation");
-		const comments = readPayloadObjects(payload, "comments");
-		const parsed = comments
+		const commentsValue = payload?.["comments"];
+		if (!Array.isArray(commentsValue)) continue;
+		return commentsValue
+			.filter(isJsonObject)
 			.map(readProviderReviewComment)
-			.filter((comment): comment is ProviderReviewComment => comment !== undefined);
-		if (parsed.length > 0) return parsed;
+			.filter((comment): comment is ProviderReviewComment => comment !== undefined)
+			.filter((comment) => comment.body.trim().length > 0);
 	}
 	return [];
 }
@@ -985,7 +989,6 @@ async function showEvidence(
 	work: WorkView,
 	context: ExtensionContext,
 	actor: Actor,
-	keybindings: KhalaConfig["keybindings"],
 ): Promise<void> {
 	let records: readonly RecordView[];
 	try {
@@ -997,21 +1000,9 @@ async function showEvidence(
 		return;
 	}
 	const evidenceRecords = selectRelevantEvidence(work, records);
-	const comments = providerReviewComments(records);
 	for (;;) {
-		const selected = await selectRecordPanel(
-			evidenceRecords,
-			comments.length,
-			context,
-			"evidence",
-			keybindings,
-			formatEvidenceSupplement(work),
-		);
+		const selected = await selectRecordPanel(evidenceRecords, context, "evidence", formatEvidenceSupplement(work));
 		if (selected === null) return;
-		if (selected === "comments") {
-			await showReviewComments(comments, context);
-			continue;
-		}
 		const record = evidenceRecords.find((candidate) => String(candidate.sequence) === selected);
 		if (record === undefined) return;
 		const page = formatRecordPage(record);
@@ -1074,17 +1065,14 @@ function formatEvidenceSupplement(work: WorkView): readonly PageSection[] {
 }
 
 // oxlint-disable-next-line complexity
-async function showReviewComments(
-	comments: readonly ProviderReviewComment[],
-	context: ExtensionContext,
-): Promise<void> {
+async function showPeerReview(comments: readonly ProviderReviewComment[], context: ExtensionContext): Promise<void> {
 	if (comments.length === 0) return;
 	for (;;) {
 		const selected = await selectReviewComment(comments, context);
 		if (selected === null) return;
 		const comment = comments[Number(selected)];
 		if (comment === undefined) return;
-		await showPage(context, "Review comment", formatReviewCommentSections(comment));
+		await showPage(context, "Peer-Review comment", formatReviewCommentSections(comment));
 	}
 }
 
@@ -1102,7 +1090,7 @@ async function selectReviewComment(
 			selectorTheme(theme),
 		);
 		const container = new Container();
-		addHeading(container, theme, "Review comments");
+		addHeading(container, theme, "Peer-Review");
 		container.addChild(new Text(theme.fg("muted", `${comments.length} comments`), 1, 0));
 		container.addChild(new Spacer(1));
 		container.addChild(list);
@@ -1158,16 +1146,11 @@ function formatExecutorEvidenceSections(response: string, evidence: readonly str
 // oxlint-disable-next-line complexity
 async function selectRecordPanel(
 	records: readonly RecordView[],
-	commentCount: number,
 	context: ExtensionContext,
 	mode: RecordListMode,
-	keybindings: KhalaConfig["keybindings"],
 	supplement: readonly PageSection[] = [],
-): Promise<string | "comments" | null> {
-	const entries: readonly RecordListEntry[] = [
-		...records.map((record) => ({ kind: "record" as const, record })),
-		...(commentCount === 0 ? [] : [{ kind: "comments" as const, count: commentCount }]),
-	];
+): Promise<string | null> {
+	const entries: readonly RecordListEntry[] = records.map((record) => ({ kind: "record" as const, record }));
 	const title = recordPanelTitle(mode, records.length);
 	if (entries.length === 0) {
 		await showPage(context, title, [
@@ -1178,7 +1161,7 @@ async function selectRecordPanel(
 		]);
 		return null;
 	}
-	return context.ui.custom<string | "comments" | null>((tui, theme, _keybindings, done) => {
+	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 		let selectedIndex = 0;
 		const list = createRecordList(entries, mode, theme, () => selectedIndex);
 		const container = new Container();
@@ -1188,18 +1171,12 @@ async function selectRecordPanel(
 		if (supplement.length > 0) container.addChild(new Spacer(1));
 		addPageSections(container, theme, supplement);
 		container.addChild(new Spacer(1));
-		const footer =
-			commentCount === 0 ? RECORD_NAVIGATION_FOOTER : `${RECORD_NAVIGATION_FOOTER}  ${keybindings.comments} comments`;
-		addPanelKeybindings(container, theme, footer);
+		addPanelKeybindings(container, theme, RECORD_NAVIGATION_FOOTER);
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			// oxlint-disable-next-line complexity
 			handleInput: (data: string) => {
-				if (commentCount > 0 && parseKey(data) === keybindings.comments) {
-					done("comments");
-					return;
-				}
 				if (matchesKey(data, "up") || matchesKey(data, "down")) {
 					selectedIndex = nextRecordIndex(selectedIndex, entries.length, matchesKey(data, "up"));
 					tui.requestRender();
@@ -1207,8 +1184,7 @@ async function selectRecordPanel(
 				}
 				if (matchesKey(data, "enter")) {
 					const entry = entries[selectedIndex];
-					if (entry?.kind === "comments") done("comments");
-					else if (entry?.kind === "record") done(String(entry.record.sequence));
+					if (entry?.kind === "record") done(String(entry.record.sequence));
 					return;
 				}
 				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "backspace")) done(null);
@@ -1285,9 +1261,6 @@ function recordListEntryLines(
 	selected: boolean,
 	theme: Theme,
 ): readonly string[] {
-	if (entry.kind === "comments") {
-		return markRecordListEntry(["  Review comments", `    ${entry.count} available`], selected, theme);
-	}
 	const record = entry.record;
 	const summary = compactRecordSummary(record.summary);
 	const lines =
@@ -1620,7 +1593,6 @@ async function showArchive(
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
-	keybindings: KhalaConfig["keybindings"],
 ): Promise<void> {
 	let records: readonly RecordView[];
 	try {
@@ -1633,8 +1605,8 @@ async function showArchive(
 	}
 	const newestFirst = [...records].reverse();
 	for (;;) {
-		const selected = await selectRecordPanel(newestFirst, 0, context, "archive", keybindings);
-		if (selected === null || selected === "comments") return;
+		const selected = await selectRecordPanel(newestFirst, context, "archive");
+		if (selected === null) return;
 		const record = newestFirst.find((candidate) => String(candidate.sequence) === selected);
 		if (record === undefined) return;
 		const page = formatRecordPage(record);
