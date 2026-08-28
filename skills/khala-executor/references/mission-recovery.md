@@ -29,7 +29,9 @@ do not claim that the Signal, review, or Verdict failed without Archive evidence
 Normal agent settlement is not success. If a current evidence-bearing Signal is
 not present, cooperate with the single bounded no-file-change settlement
 handoff. Do not send a second prompt or synthesize a Signal when required
-handoff evidence is absent.
+handoff evidence is absent. If transport or startup failure prevents the
+Executor from signaling, Khala records the failed Execution and wakes the
+Conclave through its critical recovery path; do not fabricate a Signal.
 
 ## Mandatory stop
 

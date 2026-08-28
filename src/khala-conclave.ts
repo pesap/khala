@@ -392,8 +392,17 @@ function createConclaveCoordinator(
 						),
 						supervision: runtime.supervision,
 						isSupervisionAvailable: () => !runtime.isLaunchBlocked(input.mission.workId),
-						onLaunchFailure: (failure) =>
-							runtime.session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, failure),
+						onLaunchFailure: (failure) => {
+							runtime.session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, failure);
+							runtime.supervision.handleRuntimeFailure(
+								{
+									workId: failure.workId,
+									missionId: failure.missionId,
+									executionId: failure.replacementExecutionId,
+								},
+								new Error(`Fresh Executor recovery failed: ${failure.error}`),
+							);
+						},
 						onLaunchSuccess: (replacementExecutionId) => {
 							if (selectedRecovery !== undefined) {
 								markUserExecutorModelRecoveryApplied(
@@ -1446,8 +1455,17 @@ async function initializeRuntime(
 						),
 						supervision,
 						isSupervisionAvailable: () => recoveryLaunchAvailable(pending),
-						onLaunchFailure: (failure) =>
-							session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, failure),
+						onLaunchFailure: (failure) => {
+							session.sessionManager.appendCustomEntry(SUPERVISION_ENTRY_TYPES.critical, failure);
+							supervision?.handleRuntimeFailure(
+								{
+									workId: failure.workId,
+									missionId: failure.missionId,
+									executionId: failure.replacementExecutionId,
+								},
+								new Error(`Fresh Executor recovery failed: ${failure.error}`),
+							);
+						},
 						onLaunchSuccess: (replacementExecutionId) => {
 							if (selectedModelRecovery !== undefined) {
 								markUserExecutorModelRecoveryApplied(

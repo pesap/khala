@@ -128,7 +128,10 @@ manufacturing evidence.
 
 ## Verdicts and settlement
 
-The Conclave may issue exactly one current Verdict for a Signal:
+The Conclave may issue exactly one current Verdict for a Signal. For a
+Mission-bound Verdict, its reason must cite a term from the current Mission
+assignment or governing Mandate. A reason cannot introduce an absent
+constraint, non-goal, or authority boundary.
 
 - **Continue** leaves the Mission and Execution active.
 - **Retry** fails the predecessor, preserves its history, creates a complete
@@ -180,10 +183,14 @@ Mission. Each action persists an idempotent request and outcome. Conclave-model
 outages remain a separate recovery condition. If a fresh launch fails, the
 replacement Execution is durably failed and the Conclave session records a
 bounded, credential-redacted diagnostic with the Work, Mission, predecessor
-Execution, replacement Execution, and primary launch error. Executor readiness
-is established before review preparation, so a startup failure does not
-publish a branch or empty Pull Request. A stale eligibility check records no
-launch diagnostic.
+Execution, replacement Execution, and primary launch error. The same failure
+wakes the Conclave with a critical recovery notification. The Conclave re-reads
+the Archive and calls `khala_launch_execution` for the current Work when no
+active Executor or Coordination hold blocks a replacement; it does not issue a
+Verdict for the failed Execution. If the Conclave is unavailable, use
+`/khala-recover`. Executor readiness is established before review preparation,
+so a startup failure does not publish a branch or empty Pull Request. A stale
+eligibility check records no launch diagnostic.
 
 Session recovery validates the persisted Pi session identity and path, catches
 up its stable entry cursor, and resumes supervision. Missing, corrupt, or

@@ -88,7 +88,10 @@ for later records.
 - **Verdict**: `verdictId`, source Signal, Work/Execution and optional Mission,
   governing Mandate and issuing participant, decision (`continue`, `retry`,
   `finish`, or `reject`), reason, time, and complete successor assignment for
-  Retry.
+  Retry. For a Mission-bound Verdict, the reason must contain an exact current
+  Mission or governing Mandate term after whitespace and punctuation
+  normalization. This durable citation prevents absent constraints, non-goals,
+  or authority boundaries from becoming Verdict rationale.
 - **Verdict Delivery**: durable pending, delivered, or failed transport
   evidence for the headless Executor. Delivery is not a Verdict.
 - **Pull Request**: review identity, Work/Mission/Execution, status, URL/number,

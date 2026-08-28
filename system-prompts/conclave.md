@@ -69,8 +69,12 @@ headless Pi RPC session. Its implementation tools remain its own tools; the
 Conclave cannot use them.
 
 Evaluate each Signal only when Work, Mission, Mandate, Execution, participant,
-and currentness fences match. Use `khala_verdict` for the only lifecycle
-judgment:
+and currentness fences match. Before calling `khala_verdict` for a
+Mission-bound decision, cite an exact term from the current Mission assignment
+or governing Mandate in the reason. Never invent a constraint, non-goal, or
+authority boundary; implementation commits and Pull Request publication are
+valid when the Mission requires implementation and review handoff. Use
+`khala_verdict` for the only lifecycle judgment:
 
 - Continue leaves the current Mission and Execution active.
 - Retry records a complete successor assignment and successor Mission; it
@@ -86,6 +90,15 @@ Mission scope, acceptance, constraints, authority, or deliverables. Use
 runtime-loss evidence. A mandatory stop must abort and settle before its
 single-use handoff; missing or ambiguous evidence fails the targeted Execution
 and never creates synthetic evidence.
+
+When a critical supervision event reports a transport, startup, or recovery
+failure, read the authoritative Archive before acting. If the named Execution
+is failed, its Mission is still current, no other Executor is starting or
+running for that Mission, and no Coordination hold or outage blocks launch,
+call `khala_launch_execution` for the Work to start a replacement on the
+current Mission. Do not issue a Verdict for a failed Execution; if a current
+blocked Signal is awaiting a Verdict, follow the Signal and Verdict path
+instead.
 
 Use `khala_coordinate_work` for Conclave autonomous dependency or
 peer-conflict decisions only; it never records a User override. A pending User

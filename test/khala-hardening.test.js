@@ -467,7 +467,26 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 		};
 		const signal = await runtimeTools.get("khala_signal").execute("signal", { kind: "blocked", summary: "Retry is required.", evidence: ["test evidence"] }, null, null, executorContext);
 		const successorAssignment = { ...work, plan: ["Run the corrected lifecycle."] };
-		const retry = await runtimeTools.get("khala_verdict").execute("retry", { workId: "mission-work", executionId: firstExecution.executionId, signalId: signal.details.signalId, decision: "retry", reason: "The first execution is intentionally retryable.", retryHandoff: { failedCriteria: ["The first execution must be retried."], completedWork: ["The first execution lifecycle was recorded."], requiredChanges: ["Run the corrected lifecycle."], nonGoals: ["Do not change the lifecycle contract."], validation: ["Read durable records."] }, successorAssignment }, null, null, conclaveContext);
+		assert.throws(
+			() =>
+				runtimeTools.get("khala_verdict").execute("unstated-constraint", {
+					workId: "mission-work",
+					executionId: firstExecution.executionId,
+					signalId: signal.details.signalId,
+					decision: "retry",
+					reason: "The successor finishes acceptance criterion passed, but the Executor violated the immutable constraint: Do not commit changes.",
+					retryHandoff: {
+						failedCriteria: ["The first execution must be retried."],
+						completedWork: ["The first execution lifecycle was recorded."],
+						requiredChanges: ["Run the corrected lifecycle."],
+						nonGoals: ["Do not change the lifecycle contract."],
+						validation: ["Read durable records."],
+					},
+					successorAssignment,
+				}, null, null, conclaveContext),
+			/absent Mission constraint/,
+		);
+		const retry = await runtimeTools.get("khala_verdict").execute("retry", { workId: "mission-work", executionId: firstExecution.executionId, signalId: signal.details.signalId, decision: "retry", reason: "The successor finishes criterion requires a retry.", retryHandoff: { failedCriteria: ["The first execution must be retried."], completedWork: ["The first execution lifecycle was recorded."], requiredChanges: ["Run the corrected lifecycle."], nonGoals: ["Do not change the lifecycle contract."], validation: ["Read durable records."] }, successorAssignment }, null, null, conclaveContext);
 		assert.equal(retry.details.missionId, firstMission.missionId);
 		assert.equal(listArchiveRecords(projectPath).filter((record) => record.type === "mission").length, 2);
 		assert.equal(readCurrentMission(projectPath, "mission-work").mission.predecessorMissionId, firstMission.missionId);
@@ -494,7 +513,18 @@ test("Mandate, immutable Mission, retry successor, and Finish fences form one li
 			},
 		};
 		const finishedSignal = await runtimeTools.get("khala_signal").execute("finished-signal", { kind: "finished", summary: "The successor passed.", evidence: ["validation passed"] }, null, null, secondExecutorContext);
-		await runtimeTools.get("khala_verdict").execute("finish", { workId: "mission-work", executionId: secondExecution.executionId, signalId: finishedSignal.details.signalId, decision: "finish", reason: "Acceptance criteria passed." }, null, null, conclaveContext);
+		assert.throws(
+			() =>
+				runtimeTools.get("khala_verdict").execute("unstated-finish-constraint", {
+					workId: "mission-work",
+					executionId: secondExecution.executionId,
+					signalId: finishedSignal.details.signalId,
+					decision: "reject",
+					reason: "The immutable constraint Do not commit changes was violated.",
+				}, null, null, conclaveContext),
+			/durable Mission or Mandate term/,
+		);
+		await runtimeTools.get("khala_verdict").execute("finish", { workId: "mission-work", executionId: secondExecution.executionId, signalId: finishedSignal.details.signalId, decision: "finish", reason: "THE SUCCESSOR FINISHES! ACCEPTANCE CRITERION PASSED." }, null, null, conclaveContext);
 		assert.equal(readCurrentMission(projectPath, "mission-work").state, "finished");
 	} finally {
 		delete process.env.PI_CODING_AGENT_DIR;

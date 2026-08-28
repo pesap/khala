@@ -1140,15 +1140,21 @@ test("fresh RPC failure after startup emits one diagnostic and fails the replace
     const { mission, failedExecution } = failedRecoveryFixture(root);
     initializeRecoveryRepository(root);
     const markerPath = join(root, "first-rpc-process");
+    const failurePath = join(root, "fail-first-rpc");
     const rpcScript = join(root, "pi");
     writeFileSync(rpcScript, `#!/usr/bin/env node
 const fs = require("node:fs");
 const markerPath = ${JSON.stringify(markerPath)};
+const failurePath = ${JSON.stringify(failurePath)};
 const first = !fs.existsSync(markerPath);
 if (first) fs.writeFileSync(markerPath, "started");
 let buffer = "";
 function respond(request, data = {}) {
   process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data }) + "\\n");
+}
+function waitForFailure() {
+  if (fs.existsSync(failurePath)) process.exit(1);
+  setTimeout(waitForFailure, 5);
 }
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -1164,7 +1170,7 @@ process.stdin.on("data", (chunk) => {
     if (request.type === "get_state") respond(request, { sessionId: "late-session", sessionFile: process.cwd() + "/session.jsonl" });
     else {
       respond(request);
-      setTimeout(() => process.exit(1), 30);
+      waitForFailure();
     }
   }
 });
@@ -1189,7 +1195,8 @@ process.stdin.on("data", (chunk) => {
       isSupervisionAvailable: () => true,
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
-    assert.equal(result.status, "launch-failed");
+    assert.equal(result.status, "started");
+    writeFileSync(failurePath, "fail");
     await waitForClose();
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1).payload;
     assert.equal(replacement.status, "failed");
@@ -1211,15 +1218,21 @@ test("fresh RPC failure after a successor Mission is created fails the replaceme
     const { mission, failedExecution } = failedRecoveryFixture(root);
     initializeRecoveryRepository(root);
     const markerPath = join(root, "first-rpc-process");
+    const failurePath = join(root, "fail-successor-rpc");
     const rpcScript = join(root, "pi");
     writeFileSync(rpcScript, `#!/usr/bin/env node
 const fs = require("node:fs");
 const markerPath = ${JSON.stringify(markerPath)};
+const failurePath = ${JSON.stringify(failurePath)};
 const first = !fs.existsSync(markerPath);
 if (first) fs.writeFileSync(markerPath, "started");
 let buffer = "";
 function respond(request, data = {}) {
   process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data }) + "\\n");
+}
+function waitForFailure() {
+  if (fs.existsSync(failurePath)) process.exit(1);
+  setTimeout(waitForFailure, 5);
 }
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -1235,7 +1248,7 @@ process.stdin.on("data", (chunk) => {
     if (request.type === "get_state") respond(request, { sessionId: "successor-late-session", sessionFile: process.cwd() + "/session.jsonl" });
     else {
       respond(request);
-      setTimeout(() => process.exit(1), 30);
+      waitForFailure();
     }
   }
 });
@@ -1260,7 +1273,7 @@ process.stdin.on("data", (chunk) => {
       isSupervisionAvailable: () => true,
       onLaunchFailure: (failure) => diagnostics.push(failure),
     });
-    assert.equal(result.status, "launch-failed");
+    assert.equal(result.status, "started");
 
     appendArchiveRecord(root, {
       schemaVersion: 2,
@@ -1294,6 +1307,7 @@ process.stdin.on("data", (chunk) => {
         createdAt: new Date(Date.now() + 1).toISOString(),
       },
     });
+    writeFileSync(failurePath, "fail");
     await waitForClose();
 
     const replacement = listArchiveRecords(root).filter((record) => record.type === "execution").at(-1).payload;

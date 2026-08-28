@@ -158,6 +158,7 @@ test("normal Executor supervision preserves a bounded redacted runtime diagnosti
   }
   const diagnostic = session.calls.map((call) => JSON.stringify(call.message.content)).join("\\n");
   assert.match(diagnostic, /Executor RPC failure/);
+  assert.match(diagnostic, /khala_launch_execution/);
   assert.doesNotMatch(diagnostic, /NORMAL_SECRET/);
   assert.ok(diagnostic.length <= 5000);
   controller.dispose();
