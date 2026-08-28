@@ -48,6 +48,7 @@
     "lint:fix": "biome check --write",
     "typecheck": "tsc --noEmit",
     "check": "npm run lint && npm run typecheck",
+    "check:markdown": "node scripts/check-markdown-sentences.mjs",
     "dev": "tsc --watch",
     "test": "npm run build && node --test test/*.js"
   },

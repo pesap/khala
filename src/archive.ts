@@ -137,8 +137,16 @@ export class SQLiteArchive implements ArchivePort {
 		this.database = openSqlite(path);
 		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
 		this.database.exec(SCHEMA);
+		this.migrateLegacyWorkTerms();
 		this.migrateLegacyWorkStates();
 		this.migrateRecordNumbers();
+	}
+
+	// Existing Archives did not persist path scopes. Treat those historical Work terms as repository-wide.
+	private migrateLegacyWorkTerms(): void {
+		const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
+		const migrations = rows.map(readLegacyWorkTermsMigration).filter(isDefined);
+		if (migrations.length > 0) applyWorkTermsMigrations(this.database, migrations);
 	}
 
 	// oxlint-disable-next-line complexity
@@ -680,6 +688,69 @@ export class RevisionConflict extends Error {
 	}
 }
 
+function readLegacyWorkTermsMigration(row: SqlRow): Readonly<{ workId: string; view: JsonObject }> | undefined {
+	const view = parseJson(readString(row, "view_json"));
+	if (!isJsonObject(view)) throw new Error("Archive Work projection is invalid.");
+	const viewMigration = migrateLegacyWorkTermsView(view);
+	return viewMigration === undefined ? undefined : { workId: readString(row, "work_id"), view: viewMigration };
+}
+
+function migrateLegacyWorkTermsView(view: JsonObject): JsonObject | undefined {
+	const terms = requiredJsonObject(view["terms"], "Archive Work terms");
+	const mission = view["mission"];
+	const needsTerms = needsPathScope(terms);
+	const needsMission = needsMissionPathScope(mission);
+	if (!needsTerms && !needsMission) return undefined;
+	const migrated = {
+		...view,
+		terms: addDefaultPathScope(terms, needsTerms),
+		mission: addMissionPathScope(mission, needsMission),
+	};
+	if (!isWorkViewProjection(migrated)) throw new Error("Archive Work terms migration is invalid.");
+	return migrated;
+}
+
+function requiredJsonObject(value: JsonValue | undefined, field: string): JsonObject {
+	if (!isJsonObject(value)) throw new Error(`${field} are invalid.`);
+	return value;
+}
+
+function needsPathScope(value: JsonObject): boolean {
+	return value["allowedPaths"] === undefined;
+}
+
+function needsMissionPathScope(mission: JsonValue | undefined): boolean {
+	return isJsonObject(mission) && isJsonObject(mission["assignment"]) && needsPathScope(mission["assignment"]);
+}
+
+function addDefaultPathScope(terms: JsonObject, needed: boolean): JsonObject {
+	return needed ? { ...terms, allowedPaths: ["."] } : terms;
+}
+
+function addMissionPathScope(mission: JsonValue | undefined, needed: boolean): JsonValue | undefined {
+	if (!needed || !isJsonObject(mission) || !isJsonObject(mission["assignment"])) return mission;
+	return { ...mission, assignment: { ...mission["assignment"], allowedPaths: ["."] } };
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+	return value !== undefined;
+}
+
+function applyWorkTermsMigrations(
+	database: SqlDatabase,
+	migrations: readonly Readonly<{ workId: string; view: JsonObject }>[],
+): void {
+	database.exec("BEGIN IMMEDIATE");
+	try {
+		const update = database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?");
+		for (const migration of migrations) update.run(JSON.stringify(migration.view), migration.workId);
+		database.exec("COMMIT");
+	} catch (error) {
+		database.exec("ROLLBACK");
+		throw error;
+	}
+}
+
 function normalizeQuery(query: RecordQuery): RecordQuery {
 	return {
 		workId: query.workId,
@@ -850,7 +921,7 @@ function isTerms(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
 		["title", "objective", "context", "scope"].every((key) => isText(value[key])) &&
-		["acceptanceCriteria", "constraints", "validation"].every((key) => isTextList(value[key])) &&
+		["acceptanceCriteria", "constraints", "validation", "allowedPaths"].every((key) => isTextList(value[key])) &&
 		isPositiveInteger(value["maxTokens"])
 	);
 }
@@ -889,6 +960,7 @@ function isExecution(value: JsonValue | undefined): boolean {
 		["executionId", "workId", "missionId", "model", "thinking"].every((key) => isText(value[key])) &&
 		isExecutionState(value["state"]) &&
 		isInteger(value["tokenAllowance"]) &&
+		optional(value["blockReason"], (entry) => entry === "signal" || entry === "budget-exhausted") &&
 		optional(value["runtimeState"], isExecutionRuntimeState) &&
 		optional(value["usage"], isTokenUsage) &&
 		isPromptIdentity(prompt) &&
@@ -931,6 +1003,7 @@ function isExecutionRuntimeState(value: JsonValue | undefined): boolean {
 function isPiBinding(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value) || !isText(value["sessionId"]) || !isText(value["sessionPath"])) return false;
 	return (
+		optional(value["promptIdentity"], isPromptIdentity) &&
 		optional(value["processGroupId"], (entry) => isPositiveInteger(entry)) &&
 		optional(value["processStartTime"], isText) &&
 		optional(value["capabilityNonce"], isText) &&

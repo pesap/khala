@@ -25,12 +25,14 @@
 </p>
 
 
-khala is a Pi-native governance extension for isolated coding work. It keeps the
+khala is a Pi-native governance extension for isolated coding work.
+It keeps the
 User conversation quiet while a Conclave admits Work, schedules a bounded
 Executor in a Git worktree, records evidence, and waits for a
 provider-confirmed review outcome.
 
-The [Archive](docs/data-model.md) is authoritative. Runtime state, Git,
+The [Archive](docs/data-model.md) is authoritative.
+Runtime state, Git,
 providers, model output, and TUI views are evidence or projections only.
 
 > [!IMPORTANT]
@@ -72,8 +74,10 @@ flowchart LR
 ```
 
 A `ready` Signal, review handoff, provider approval, or provider merge is not
-acceptance. Only an explicit Conclave Outcome backed by verified merge evidence
-succeeds Work. See the [lifecycle reference](docs/lifecycle.md).
+acceptance.
+Only an explicit Conclave Outcome backed by verified merge evidence
+succeeds Work.
+See the [lifecycle reference](docs/lifecycle.md).
 
 ## Explore the repository
 
@@ -85,6 +89,7 @@ succeeds Work. See the [lifecycle reference](docs/lifecycle.md).
 | Inspect records and runtime bindings | [Data model](docs/data-model.md) |
 | Navigate the TUI | [TUI navigation](docs/tui-navigation.md) |
 | Understand the design and limits | [MVP design](docs/mvp-design.md) and [glossary](docs/glossary.md) |
+| Configure and recover Work | [Operations](docs/operations.md) |
 | Develop or validate changes | [Development](docs/development.md) |
 | Tune role behavior | [Role prompts](docs/role-prompts.md) |
 | Extend Pi integration | [Pi extensions](docs/pi-extensions.md) |
@@ -130,5 +135,6 @@ succeeds Work. See the [lifecycle reference](docs/lifecycle.md).
   `/end-review` for reviewing uncommitted changes, branches, commits, pull
   requests, and snapshots.
 - [`pi-clarify`](extensions/pi-clarify/clarify.ts) provides `/clarify` and the
-  `-clarify` marker. It places a rewritten prompt in the editor for User review;
+  `-clarify` marker.
+  It places a rewritten prompt in the editor for User review;
   it does not send the prompt.

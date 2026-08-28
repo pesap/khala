@@ -10,8 +10,11 @@ npm run check
 npm test
 ```
 
-`npm run check` runs Oxlint, Biome, and TypeScript validation. `npm test` builds
-`dist` and runs every Node test in `test/`. Tests use local port adapters and do
+`npm run check` runs Oxlint, Biome, and TypeScript validation.
+`npm run check:markdown` checks paragraph sentence boundaries and bullet length.
+`npm test` builds
+`dist` and runs every Node test in `test/`.
+Tests use local port adapters and do
 not require provider credentials.
 
 For a focused test run after building:
@@ -33,18 +36,21 @@ The GitHub Actions workflow runs these checks and validates the package with
 - `templates/` — repository templates used by the extension.
 - `test/` — behavioral tests for the service, runtime, adapters, commands, and
   TUI.
-- `docs/` — lifecycle, data model, supervision, design, and navigation
-  references.
+- `docs/` — lifecycle, data model, supervision, design, operations, and
+  navigation references.
 
 Start with [Architecture](architecture.md), then read the relevant source and
-behavioral tests together. Keep tests focused on observable behavior rather
+behavioral tests together.
+Use [Operations](operations.md) for configuration, limits, and recovery.
+Keep tests focused on observable behavior rather
 than private implementation details.
 
 ## Packaging
 
 The package exposes `src/index.ts` as its Pi extension entry point and includes
 extensions, prompts, system prompts, templates, themes, assets, and packaged
-skill. Validate the package file list without publishing it:
+skill.
+Validate the package file list without publishing it:
 
 ```sh
 npm pack --dry-run

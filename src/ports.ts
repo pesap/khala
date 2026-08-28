@@ -19,6 +19,7 @@ export interface WorkspacePort {
 		}>,
 	) => Promise<Execution["sandbox"]>;
 	inspectHead: (path: string) => Promise<string>;
+	inspectChanges?: (input: Readonly<{ path: string; baseCommit: string }>) => Promise<readonly string[]>;
 	publishSandbox: (sandbox: Execution["sandbox"]) => Promise<string>;
 	removeSandbox: (sandbox: Execution["sandbox"]) => Promise<void>;
 }
@@ -48,6 +49,7 @@ export type RuntimeTurn = Readonly<{ output: string; usage?: TokenUsage | undefi
 export type RuntimeBinding = Readonly<{
 	sessionId: string;
 	sessionPath: string;
+	promptIdentity?: Readonly<{ packageVersion: string; promptSha256: string }> | undefined;
 	processGroupId?: number | undefined;
 	processStartTime?: string | undefined;
 	capabilityNonce?: string | undefined;
@@ -63,6 +65,8 @@ export interface AgentRuntimePort {
 			role: "conclave" | "observer" | "executor" | "oracle";
 			promptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 			tools: readonly string[];
+			allowedPaths?: readonly string[] | undefined;
+			sandboxRoot?: string | undefined;
 			bindingScope?: Readonly<{
 				workId?: string | undefined;
 				executionId?: string | undefined;

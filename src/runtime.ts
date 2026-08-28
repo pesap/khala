@@ -157,6 +157,8 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		const environment: NodeJS.ProcessEnv = {
 			...process.env,
 			...this.options.baseEnvironment,
+			KHALA_ALLOWED_PATHS: input.allowedPaths === undefined ? undefined : JSON.stringify(input.allowedPaths),
+			KHALA_SANDBOX_ROOT: input.sandboxRoot,
 			KHALA_BOUND_WORK_ID: input.bindingScope?.workId,
 			KHALA_BOUND_EXECUTION_ID: input.bindingScope?.executionId,
 			KHALA_PROCESS_MARKER: processMarker,
@@ -195,6 +197,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 				sessionPath: input.sessionPath ?? "",
 				capabilityNonce,
 				processMarker,
+				promptIdentity: input.promptIdentity,
 			},
 			buffer: "",
 			lastOutput: "",
@@ -214,6 +217,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			processStartTime: readProcessStartTime(child.process.pid),
 			capabilityNonce,
 			processMarker,
+			promptIdentity: input.promptIdentity,
 		};
 		try {
 			if (input.sessionPath !== undefined) await writeLaunchLease(input.sessionPath, child.binding, capabilityFile);
@@ -244,6 +248,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 				processStartTime: readProcessStartTime(child.process.pid),
 				capabilityNonce,
 				processMarker,
+				promptIdentity: input.promptIdentity,
 			};
 			this.children.delete(key);
 			this.children.set(sessionId, child);

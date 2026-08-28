@@ -124,6 +124,20 @@ stages = [
 # ---------------------------------------------------------------------------
 
 [[repos.hooks]]
+id = "markdown-sentences"
+name = "markdown sentence-per-line"
+entry = "npm run check:markdown"
+language = "system"
+
+pass_filenames = false
+always_run = true
+
+stages = [
+  "pre-commit",
+]
+
+
+[[repos.hooks]]
 id = "test"
 name = "test"
 # Git exports repository-local variables to pre-push hooks. Tests create nested

@@ -1,14 +1,17 @@
 # Role prompts
 
-Khala uses Pi system prompts to shape the behavior of its child roles. The
+Khala uses Pi system prompts to shape the behavior of its child roles.
+The
 shared [`khala` skill](../skills/khala/SKILL.md) explains the tool contracts;
-role prompts explain what each role is responsible for. The application service
+role prompts explain what each role is responsible for.
+The application service
 still enforces actor permissions, Work state, and revisions.
 
 ## How Pi applies a role prompt
 
 When Khala starts a child session, it passes the internal `--khala-role` flag to
-Pi. The Khala extension handles Pi's `before_agent_start` event and appends the
+Pi.
+The Khala extension handles Pi's `before_agent_start` event and appends the
 matching file from [`system-prompts/`](../system-prompts/) to Pi's system
 prompt:
 
@@ -19,11 +22,13 @@ prompt:
 | Observer | [`observer.md`](../system-prompts/observer.md) | Archive, assessment |
 | Oracle | [`oracle.md`](../system-prompts/oracle.md) | No tools during Oracle review |
 
-The ordinary User session is not assigned a child role. [`user.md`](../system-prompts/user.md)
+The ordinary User session is not assigned a child role.
+[`user.md`](../system-prompts/user.md)
 is packaged as reference guidance but is not appended by the current extension.
 
 Pi's `prompts/` directory is separate: those files are user-invoked prompt
-templates such as `/fresh-eyes`. Files in `system-prompts/` are role instructions
+templates such as `/fresh-eyes`.
+Files in `system-prompts/` are role instructions
 injected automatically into matching child sessions.
 
 ## Tweak a role
@@ -45,8 +50,10 @@ injected automatically into matching child sessions.
    npm test
    ```
 
-A running child keeps the prompt it received for that session. Restart the
-relevant child or begin a new Work to test prompt changes cleanly. Installed
+A running child keeps the prompt it received for that session.
+Restart the
+relevant child or begin a new Work to test prompt changes cleanly.
+Installed
 packages use the prompt files shipped in that package; update or reinstall the
 package after changing a checkout before testing the installed copy.
 
@@ -62,8 +69,10 @@ Use prompts to clarify:
 - how to handle untrusted repository, provider, and model text.
 
 Do not use prompts to grant permissions, bypass revision checks, change Mission
-terms, merge provider requests, or invent tools. Those rules belong to the
-application service and tool schemas. Do not duplicate the full tool reference
+terms, merge provider requests, or invent tools.
+Those rules belong to the
+application service and tool schemas.
+Do not duplicate the full tool reference
 in every role prompt; link to the shared skill instead.
 
 ## Prompt design by role
@@ -71,7 +80,8 @@ in every role prompt; link to the shared skill instead.
 ### Conclave
 
 Tune admission criteria, scheduling decisions, Verdict handling, provider
-feedback assessment, runtime recovery, and Outcome verification. Keep the
+feedback assessment, runtime recovery, and Outcome verification.
+Keep the
 Conclave read-only with respect to the repository and require Archive evidence
 before each decision.
 
@@ -83,20 +93,23 @@ Keep the Executor inside the bound sandbox and immutable Mission.
 
 ### Observer
 
-Tune which bounded repository facts to gather for missing context. Keep the
+Tune which bounded repository facts to gather for missing context.
+Keep the
 Observer read-only, relevant to the submitted Work, and limited to one concise
 assessment.
 
 ### Oracle
 
-Tune the bounded review rubric and response format. The Oracle receives only
+Tune the bounded review rubric and response format.
+The Oracle receives only
 its packet, has no tools, and produces advisory findings; the Conclave makes the
 actual Verdict.
 
 ## Prompt changes and traceability
 
-Khala computes and stores a prompt identity when configuring a role runtime and
-persists prompt identity with Missions and Executions. Treat prompt changes as
-behavior changes: review the diff, run the checks, and verify the resulting
-Archive evidence. The service remains the final authority even when a prompt is
+Khala computes a prompt identity when configuring a role runtime and persists it with Executions, Observer bindings, and Oracle records.
+Conclave wake prompts are transient and are not represented as a separate lifecycle object.
+Treat prompt changes as behavior changes.
+Review the diff, run the checks, and verify the resulting Archive evidence.
+The service remains the final authority even when a prompt is
 ambiguous or malicious text attempts to override it.

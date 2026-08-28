@@ -88,6 +88,7 @@ export type WorkTerms = Readonly<{
 	acceptanceCriteria: readonly string[];
 	constraints: readonly string[];
 	validation: readonly string[];
+	allowedPaths: readonly string[];
 	maxTokens: number;
 }>;
 
@@ -105,6 +106,7 @@ export type SubmitWorkInput = Readonly<{
 	acceptanceCriteria: readonly string[];
 	constraints?: readonly string[] | undefined;
 	validation?: readonly string[] | undefined;
+	allowedPaths?: readonly string[] | undefined;
 	maxTokens?: number | undefined;
 }>;
 
@@ -132,6 +134,7 @@ export type Sandbox = Readonly<{
 export type PiBinding = Readonly<{
 	sessionId: string;
 	sessionPath: string;
+	promptIdentity?: PromptIdentity | undefined;
 	processGroupId?: number | undefined;
 	processStartTime?: string | undefined;
 	capabilityNonce?: string | undefined;
@@ -143,6 +146,7 @@ export type Execution = Readonly<{
 	workId: string;
 	missionId: string;
 	state: ExecutionState;
+	blockReason?: "signal" | "budget-exhausted" | undefined;
 	runtimeState?: ExecutionRuntimeState | undefined;
 	usage?: TokenUsage | undefined;
 	model: string;
@@ -330,6 +334,9 @@ export type Action = Readonly<{
 	scope: "work" | "mission" | "execution" | "project";
 	kind:
 		| "admit"
+		| "request-input"
+		| "amend-terms"
+		| "amend-mission"
 		| "launch-observer"
 		| "record-assessment"
 		| "start-execution"
@@ -362,6 +369,14 @@ export type ActionInput = Readonly<{
 	status?: string | undefined;
 	feedback?: readonly string[] | undefined;
 	title?: string | undefined;
+	objective?: string | undefined;
+	context?: string | undefined;
+	scope?: string | undefined;
+	acceptanceCriteria?: readonly string[] | undefined;
+	constraints?: readonly string[] | undefined;
+	validation?: readonly string[] | undefined;
+	allowedPaths?: readonly string[] | undefined;
+	missing?: readonly string[] | undefined;
 	observationId?: string | undefined;
 	subject?: string | undefined;
 	maxTokens?: number | undefined;

@@ -16,7 +16,8 @@
 - Record — one immutable Archive fact with actor, bindings, payload version,
   summary, and evidence references.
 - Signal — Executor evidence describing progress, blockage, or review
-  readiness. It is not acceptance.
+  readiness.
+  It is not acceptance.
 - Verdict — a Conclave decision to continue, replace, hand off, or reject a
   current Execution.
 - Work — the stable User goal with a budget and terminal `succeeded` or

@@ -30,7 +30,7 @@ export function createApplication(
 	const version = packageVersion(packageRoot);
 	const prompts = readPromptIdentities(packageRoot, version);
 	const models = new ConfiguredModels(config);
-	const ports = createPorts(config, context.projectPath, runtime, models, version, prompts.oracle);
+	const ports = createPorts(config, context.projectPath, runtime, models, prompts.oracle);
 	const service = new ApplicationService(archive, ports, createServiceOptions(config, context, prompts));
 	return createApplicationRuntime(service, config, models);
 }
@@ -89,7 +89,7 @@ type PromptIdentities = Readonly<{
 	conclave: ReturnType<typeof promptIdentity>;
 	executor: ReturnType<typeof promptIdentity>;
 	observer: ReturnType<typeof promptIdentity>;
-	oracle: string;
+	oracle: ReturnType<typeof promptIdentity>;
 }>;
 
 function readPromptIdentities(packageRoot: string, version: string): PromptIdentities {
@@ -99,7 +99,7 @@ function readPromptIdentities(packageRoot: string, version: string): PromptIdent
 		conclave: readPrompt("conclave"),
 		executor: readPrompt("executor"),
 		observer: readPrompt("observer"),
-		oracle: readFileSync(join(packageRoot, "system-prompts", "oracle.md"), "utf8"),
+		oracle: promptIdentity(readFileSync(join(packageRoot, "system-prompts", "oracle.md"), "utf8"), version),
 	};
 }
 
@@ -108,15 +108,14 @@ function createPorts(
 	projectPath: string,
 	runtime: PiRpcRuntime,
 	models: ConfiguredModels,
-	version: string,
-	oraclePrompt: string,
+	oraclePrompt: Readonly<{ packageVersion: string; promptSha256: string }>,
 ): ServicePorts {
 	return {
 		workspace: new GitWorkspace(config.worktreeRoot, config.worktreeBranchPrefix, projectPath),
 		codeHost: new LazyCodeHost(projectPath, config.targetBranch),
 		runtime,
 		models,
-		oracle: new PiOracle(runtime, projectPath, version, oraclePrompt),
+		oracle: new PiOracle(runtime, projectPath, oraclePrompt),
 	};
 }
 
@@ -141,6 +140,7 @@ function createServiceOptions(
 		conclavePromptIdentity: prompts.conclave,
 		executorPromptIdentity: prompts.executor,
 		observerPromptIdentity: prompts.observer,
+		oraclePromptIdentity: prompts.oracle,
 		rolePublicKey: context.rolePublicKey,
 		autonomousMonitor: !context.child,
 	};

@@ -1,7 +1,7 @@
 import { readFileSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { persistRoleSetting } from "./config.js";
 import { type ApplicationRuntime, createApplication } from "./factory.js";
@@ -34,6 +34,7 @@ const submitSchema = Type.Object({
 	acceptanceCriteria: Type.Array(Type.String()),
 	constraints: Type.Optional(Type.Array(Type.String())),
 	validation: Type.Optional(Type.Array(Type.String())),
+	allowedPaths: Type.Optional(Type.Array(Type.String())),
 	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 type SubmitParams = Static<typeof submitSchema>;
@@ -63,6 +64,14 @@ const actionInputSchema = Type.Object({
 	status: Type.Optional(Type.String()),
 	feedback: Type.Optional(Type.Array(Type.String())),
 	title: Type.Optional(Type.String()),
+	objective: Type.Optional(Type.String()),
+	context: Type.Optional(Type.String()),
+	scope: Type.Optional(Type.String()),
+	acceptanceCriteria: Type.Optional(Type.Array(Type.String())),
+	constraints: Type.Optional(Type.Array(Type.String())),
+	validation: Type.Optional(Type.Array(Type.String())),
+	allowedPaths: Type.Optional(Type.Array(Type.String())),
+	missing: Type.Optional(Type.Array(Type.String())),
 	observationId: Type.Optional(Type.String()),
 	subject: Type.Optional(Type.String()),
 	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -70,6 +79,9 @@ const actionInputSchema = Type.Object({
 const performSchema = Type.Object({
 	action: Type.Union([
 		Type.Literal("admit"),
+		Type.Literal("request-input"),
+		Type.Literal("amend-terms"),
+		Type.Literal("amend-mission"),
 		Type.Literal("launch-observer"),
 		Type.Literal("record-assessment"),
 		Type.Literal("start-execution"),
@@ -98,6 +110,13 @@ type ToolErrorResult = { content: [{ type: "text"; text: string }]; details: Jso
 
 export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerFlag(ROLE_FLAG, { description: "Khala role for an isolated child session", type: "string" });
+	pi.on("tool_call", (event) => {
+		if (sessionRole(pi) !== "executor") return;
+		const path = executorWritePath(event);
+		return path === undefined || executorPathAllowed(path)
+			? undefined
+			: { block: true, reason: `The Mission does not permit writes to ${path}.` };
+	});
 	let runtime: RuntimeState | undefined;
 	let executorStatusTimer: ReturnType<typeof setInterval> | undefined;
 	let userContext: ExtensionContext | undefined;
@@ -317,6 +336,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		if (sessionRole(pi) === "user") {
 			try {
 				const application = getRuntime(context);
+				schedulePendingEffects(application.service);
 				userContext = context;
 				updateExecutorStatus(application.service, context);
 				executorStatusTimer = setInterval(() => updateExecutorStatus(application.service, context), 5_000);
@@ -437,6 +457,62 @@ function roleTools(role: ReturnType<typeof sessionRole>): ReadonlySet<string> {
 		oracle: ["khala_read_archive"],
 	} satisfies Record<ReturnType<typeof sessionRole>, readonly string[]>;
 	return new Set(tools[role]);
+}
+
+function executorWritePath(event: ToolCallEvent): string | undefined {
+	if (event.toolName === "write") {
+		// SAFETY: Pi's write schema supplies a path string; the assertion narrows the external tool event at this boundary.
+		return textValue(event.input.path as JsonValue);
+	}
+	if (event.toolName === "edit") {
+		// SAFETY: Pi's edit schema supplies a path string; the assertion narrows the external tool event at this boundary.
+		return textValue(event.input.path as JsonValue);
+	}
+	return undefined;
+}
+
+function textValue(value: JsonValue | undefined): string | undefined {
+	return value === String(value) ? String(value) : undefined;
+}
+
+function executorPathAllowed(path: string): boolean {
+	const scope = executorPathScope();
+	if (scope === undefined) return true;
+	if (scope === null) return false;
+	const rootRelative = relative(resolve(scope.root), resolveExecutorPath(scope.root, path)).replace(/\\/g, "/");
+	if (!isInsideRoot(rootRelative)) return false;
+	return scope.allowedPaths.some((allowed) => matchesAllowedPath(rootRelative, allowed));
+}
+
+function executorPathScope(): Readonly<{ root: string; allowedPaths: readonly string[] }> | null | undefined {
+	const root = process.env["KHALA_SANDBOX_ROOT"];
+	const encodedPaths = process.env["KHALA_ALLOWED_PATHS"];
+	if (root === undefined || encodedPaths === undefined) return;
+	const allowedPaths = parseAllowedPaths(encodedPaths);
+	return allowedPaths === undefined ? null : { root, allowedPaths };
+}
+
+function resolveExecutorPath(root: string, path: string): string {
+	return isAbsolute(path) ? resolve(path) : resolve(root, path);
+}
+
+function parseAllowedPaths(encoded: string): readonly string[] | undefined {
+	try {
+		// SAFETY: isTextValue verifies every JSON array member before narrowing it to a string.
+		const parsed = JSON.parse(encoded) as JsonValue;
+		return Array.isArray(parsed) && parsed.every(isTextValue) ? parsed.filter(isTextValue) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function isInsideRoot(rootRelative: string): boolean {
+	return !rootRelative.startsWith("..") && !isAbsolute(rootRelative);
+}
+
+function matchesAllowedPath(rootRelative: string, allowed: string): boolean {
+	const normalized = allowed.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
+	return normalized === "." || rootRelative === normalized || rootRelative.startsWith(`${normalized}/`);
 }
 
 function readRoleToken(): string | undefined {

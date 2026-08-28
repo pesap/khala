@@ -184,6 +184,7 @@ function makeService(path, overrides = {}) {
 		conclavePromptIdentity: { packageVersion: "1.1.0", promptSha256: "conclave" },
 		executorPromptIdentity: { packageVersion: "1.1.0", promptSha256: "executor" },
 		observerPromptIdentity: { packageVersion: "1.1.0", promptSha256: "observer" },
+		oraclePromptIdentity: { packageVersion: "1.1.0", promptSha256: "oracle" },
 		rolePublicKey: ROLE_PUBLIC_KEY,
 	});
 	return { service, controls: fake.controls, runtime: fake.ports.runtime, archive };
@@ -228,6 +229,56 @@ test("generated Work IDs use Nano ID format", async () => {
 		meta("user", "work-id:submit", 0),
 	);
 	assert.match(submitted.workId, /^[A-Za-z0-9_-]{21}$/);
+	await service.close();
+});
+
+test("Conclave can request missing intent and the User can amend terms before admission", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-input-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const submitted = service.submitWork(
+		{ title: "Input", objective: "Collect missing terms", acceptanceCriteria: ["The terms are complete"] },
+		meta("user", "input:submit", 0),
+	);
+	const requested = await service.perform({
+		action: "request-input",
+		workId: submitted.workId,
+		input: { reason: "Scope must identify the files to change", missing: ["scope", "allowedPaths"] },
+		meta: meta("conclave", "input:request", submitted.revision, submitted.workId),
+	});
+	assert.equal(requested.value.state, "needs-input");
+	const amended = await service.perform({
+		action: "amend-terms",
+		workId: submitted.workId,
+		input: { scope: "Only the service implementation", validation: ["npm run check"], allowedPaths: ["src/service.ts"] },
+		meta: meta("user", "input:amend", requested.value.revision),
+	});
+	assert.equal(amended.value.state, "submitted");
+	assert.deepEqual(amended.value.terms.allowedPaths, ["src/service.ts"]);
+	await service.close();
+});
+
+test("Mission amendments create a successor without mutating the predecessor", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-mission-amendment-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	const submitted = service.submitWork(
+		{ title: "Mission", objective: "Amend the Mission", acceptanceCriteria: ["A successor exists"], scope: "Initial scope", validation: ["check"] },
+		meta("user", "mission:submit", 0),
+	);
+	const admitted = await service.perform({ action: "admit", workId: submitted.workId, input: {}, meta: meta("conclave", "mission:admit", submitted.revision, submitted.workId) });
+	assert.equal("error" in admitted, false, JSON.stringify(admitted));
+	const predecessorId = admitted.value.mission.missionId;
+	const amended = await service.perform({
+		action: "amend-mission",
+		workId: submitted.workId,
+		input: { objective: "Use the successor scope", reason: "Repository evidence changed", evidence: ["architecture.md"] },
+		meta: meta("conclave", "mission:amend", admitted.value.revision, submitted.workId),
+	});
+	assert.equal("error" in amended, false, JSON.stringify(amended));
+	assert.equal(amended.value.mission.predecessorMissionId, predecessorId);
+	assert.equal(amended.value.mission.assignment.objective, "Use the successor scope");
+	assert.equal(amended.value.state, "queued");
+	const changes = service.readRecords({ workId: submitted.workId, kinds: ["mission-change"] }, meta("user", "mission:records", amended.value.revision));
+	assert.equal(changes.items.at(-1).payload.predecessorMissionId, predecessorId);
 	await service.close();
 });
 
@@ -504,28 +555,66 @@ test("Executor usage records cache hits, misses, and idle runtime state", async 
 	await service.close();
 });
 
-// oxlint-disable-next-line complexity
+test("Observed token usage blocks an Execution at its allowance", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-budget-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		turnUsage: { inputTokens: 60, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 },
+	});
+	const blocked = await admitAndStart(service, "budget");
+	assert.equal(blocked.execution.state, "blocked");
+	assert.equal(blocked.execution.blockReason, "budget-exhausted");
+	assert.equal(blocked.budget.consumedTokens, 50);
+	assert.equal(blocked.budget.reservedTokens, 0);
+	const verdict = await service.perform({
+		action: "verdict",
+		workId: blocked.workId,
+		input: { decision: "continue", reason: "Continue", signalId: blocked.lastSignal?.signalId ?? "missing" },
+		meta: meta("conclave", "budget:continue", blocked.revision, blocked.workId),
+	});
+	assert.equal(verdict.error.code, "budget-exhausted");
+	await service.close();
+});
+
+test("Permitted paths reject out-of-scope sandbox changes before publication", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-paths-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: { workspace: { async inspectChanges() { return ["src/service.ts", "README.md"]; } } },
+	});
+	const submitted = service.submitWork(
+		{ title: "Paths", objective: "Enforce paths", acceptanceCriteria: ["Out-of-scope changes are rejected"], scope: "Service only", validation: ["check"], allowedPaths: ["src"] },
+		meta("user", "paths:submit", 0),
+	);
+	const admitted = await service.perform({ action: "admit", workId: submitted.workId, input: {}, meta: meta("conclave", "paths:admit", submitted.revision, submitted.workId) });
+	const queued = await service.perform({ action: "start-execution", workId: submitted.workId, input: {}, meta: meta("conclave", "paths:start", admitted.value.revision, submitted.workId) });
+	await service.processPendingEffects();
+	const running = service.inspectWork(submitted.workId);
+	const result = await service.perform({ action: "create-review-request", workId: submitted.workId, input: {}, meta: meta("executor", "paths:review", running.revision, submitted.workId, queued.value.execution.executionId) });
+	assert.equal(result.error.code, "invalid-state");
+	assert.match(result.error.summary, /outside the permitted paths/);
+	await service.close();
+});
+
+function disconnectedRuntime() {
+	return {
+		async send(binding) {
+			if (binding.sessionId.startsWith("executor-")) throw new Error("runtime disconnected");
+			return { output: "" };
+		},
+	};
+}
+
 test("a runtime failure during the first Executor turn is recorded as unreachable", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-turn-failure-"));
-	const { service } = makeService(join(directory, "archive.sqlite"), {
-		ports: {
-			runtime: {
-				async send(binding) {
-					if (binding.sessionId.startsWith("executor-")) throw new Error("runtime disconnected");
-					return { output: "" };
-				},
-			},
-		},
-	});
+	const { service } = makeService(join(directory, "archive.sqlite"), { ports: { runtime: disconnectedRuntime() } });
 	const failed = await admitAndStart(service, "runtime-turn-failure");
 	assert.equal(failed.state, "active");
 	assert.equal(failed.execution.state, "failed");
 	assert.equal(failed.execution.runtimeState, "unreachable");
 	assert.equal(failed.nextAction, "Executor runtime failed; Conclave may replace it.");
-	assert.equal(failed.lastError?.learning?.failure, "runtime disconnected");
-	assert.match(failed.lastError?.learning?.nextMissionGuidance ?? "", /missing intent/);
+	assert.equal(failed.lastError.learning.failure, "runtime disconnected");
+	assert.match(failed.lastError.learning.nextMissionGuidance, /missing intent/);
 	assert.equal(
-		service.availableActions(failed.workId, "conclave", failed.revision).find((action) => action.kind === "start-execution")?.enabled,
+		service.availableActions(failed.workId, "conclave", failed.revision).find((action) => action.kind === "start-execution").enabled,
 		true,
 	);
 	await service.close();
@@ -607,7 +696,7 @@ test("unreachable runtime recovery fails closed and is visible to another Archiv
 	);
 	assert.deepEqual(
 		actions.map((action) => action.kind),
-		["recover", "rename-work", "fail-work", "amend-budget", "record-review", "cancel"],
+		["amend-terms", "recover", "rename-work", "fail-work", "amend-budget", "record-review", "cancel"],
 	);
 	assert.equal(actions.find((action) => action.kind === "recover")?.enabled, true);
 	const result = await service.perform({
@@ -1633,7 +1722,7 @@ test("Archive repairs missing record numbers without changing existing assignmen
 		workId: "w1",
 		revision: 1,
 		state: "submitted",
-		terms: { title: "Title", objective: "Objective", context: "", scope: "scope", acceptanceCriteria: ["accept"], constraints: [], validation: ["check"], maxTokens: 100 },
+		terms: { title: "Title", objective: "Objective", context: "", scope: "scope", acceptanceCriteria: ["accept"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 },
 		budget: { maxTokens: 100, reservedTokens: 0, consumedTokens: 0 },
 		nextAction: "pending",
 		queuedSequence: 0,
@@ -1670,7 +1759,7 @@ test("Archive appends validate projections and claim each external effect once",
 		workId: "w1",
 		revision: 1,
 		state: "submitted",
-		terms: { title: "Title", objective: "Objective", context: "", scope: "scope", acceptanceCriteria: ["accept"], constraints: [], validation: ["check"], maxTokens: 100 },
+		terms: { title: "Title", objective: "Objective", context: "", scope: "scope", acceptanceCriteria: ["accept"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 },
 		budget: { maxTokens: 100, reservedTokens: 0, consumedTokens: 0 },
 		nextAction: "pending",
 		queuedSequence: 0,
@@ -1834,9 +1923,9 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		const host = new CommandCodeHost("github", directory);
 		const request = await host.ensureReviewRequest({
 			workId: "work-1",
-			mission: { missionId: "mission-1", workId: "work-1", assignment: { title: "Feature", objective: "Implement", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["npm test"], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() },
+			mission: { missionId: "mission-1", workId: "work-1", assignment: { title: "Feature", objective: "Implement", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["npm test"], allowedPaths: ["."], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() },
 			execution: { executionId: "execution-1", workId: "work-1", missionId: "mission-1", state: "running", model: "model", thinking: "high", tokenAllowance: 50, promptIdentity: { packageVersion: "1", promptSha256: "hash" }, sandbox: { path: directory, baseCommit: "base", branch: "khala/branch" } },
-			terms: { title: "Feature", objective: "Implement", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["npm test"], maxTokens: 100 },
+			terms: { title: "Feature", objective: "Implement", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["npm test"], allowedPaths: ["."], maxTokens: 100 },
 			sandbox: { path: directory, baseCommit: "base", branch: "khala/branch" },
 			headCommit: "head",
 			targetBranch: "main",
@@ -1892,8 +1981,8 @@ test("Oracle keeps advisory output bounded and origin matching rejects lookalike
 		},
 		async requestStop() {},
 		async close() {},
-	}, "/project", "1.1.0", "oracle prompt");
-	const result = await oracle.review({ subject: "Review", mission: { missionId: "m", workId: "w", assignment: { title: "T", objective: "O", context: "", scope: "S", acceptanceCriteria: ["A"], constraints: [], validation: ["check"], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() }, diff: "diff", validation: ["check"], providerEvidence: [] }, "provider/oracle", "high");
+	}, "/project", { packageVersion: "1.1.0", promptSha256: "oracle" });
+	const result = await oracle.review({ subject: "Review", mission: { missionId: "m", workId: "w", assignment: { title: "T", objective: "O", context: "", scope: "S", acceptanceCriteria: ["A"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() }, diff: "diff", validation: ["check"], providerEvidence: [] }, "provider/oracle", "high");
 	assert.equal(result.verdict, "needs-revision");
 	assert.equal(result.findings[0].summary, "Missing test");
 	assert.equal(codeHostForOrigin("git@github.com:example/project.git", "/project").provider, "github");

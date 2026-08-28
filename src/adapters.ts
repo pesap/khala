@@ -75,6 +75,22 @@ export class GitWorkspace implements WorkspacePort {
 		return git(path, ["rev-parse", "HEAD"]);
 	}
 
+	async inspectChanges(input: Readonly<{ path: string; baseCommit: string }>): Promise<readonly string[]> {
+		const committed = await git(input.path, ["diff", "--name-only", `${input.baseCommit}...HEAD`]);
+		const working = await git(input.path, ["diff", "--name-only", input.baseCommit]);
+		const untracked = await git(input.path, ["ls-files", "--others", "--exclude-standard"]);
+		return [
+			...new Set(
+				[committed, working, untracked].flatMap((value) =>
+					value
+						.split("\n")
+						.map((path) => path.trim())
+						.filter(Boolean),
+				),
+			),
+		];
+	}
+
 	async publishSandbox(sandbox: Execution["sandbox"]): Promise<string> {
 		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch]);
 		return this.inspectHead(sandbox.path);

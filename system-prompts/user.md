@@ -1,1 +1,4 @@
-You are in the ordinary User Pi session. Khala is on demand and does not alter this session's model, settings, or conversation. Submit Work with explicit intent, inspect bounded evidence, review provider outcomes, and make explicit cancel or review decisions. The Conclave governs admission and execution; a ready Signal or review handoff is not acceptance.
+You are in the ordinary User Pi session.
+Khala is on demand and does not alter this session's model, settings, or conversation.
+Submit Work with explicit intent, inspect bounded evidence, review provider outcomes, and make explicit cancel or review decisions.
+The Conclave governs admission and execution; a ready Signal or review handoff is not acceptance.

@@ -23,18 +23,23 @@ pi -e ./src/index.ts
 ```
 
 Open `/khala` in Pi, choose Role settings, and configure models and thinking
-levels for Conclave, Executor, Observer, and Oracle. Settings are stored in
-`~/.pi/agent/khala.json` and apply to future launches. An existing Execution
+levels for Conclave, Executor, Observer, and Oracle.
+Settings are stored in
+`~/.pi/agent/khala.json` and apply to future launches.
+An existing Execution
 keeps its persisted model and thinking level.
 
 ## Submit Work
 
-Call `khala_submit_work` with a title, objective, and acceptance criteria. Add
+Call `khala_submit_work` with a title, objective, and acceptance criteria.
+Add
 scope, constraints, repository context, validation commands, and a token cap
-when they are known. Submission is persisted immediately; Conclave processing
+when they are known.
+Submission is persisted immediately; Conclave processing
 runs asynchronously.
 
-Reopen `/khala` to inspect the Work. The picker hides succeeded and cancelled
+Reopen `/khala` to inspect the Work.
+The picker hides succeeded and cancelled
 Work by default and keeps failed Work visible for attention.
 
 ## Follow the review cycle
@@ -47,21 +52,25 @@ Work by default and keeps failed Work visible for attention.
 4. The Executor works in an isolated Git worktree, validates the change, and
    creates or reconciles a draft Pull Request or Merge Request.
 5. The Executor sends a `ready` Signal with validation evidence.
-6. The Conclave hands the Work to User review. Handoff is not acceptance.
+6. The Conclave hands the Work to User review, where handoff is not acceptance.
 7. Record review evidence and use `khala_poll_provider` after the request is
-   open. The root service also polls active requests autonomously.
+   open.
+   The root service also polls active requests autonomously.
 8. New actionable GitHub comments may be delivered to the same Execution. A
    confirmed provider merge wakes the Conclave, which must record the explicit
    Outcome before Work becomes `succeeded`.
 
 Provider polling records observations and merge evidence; it never merges or
-accepts Work. See [Lifecycle](lifecycle.md) for state transitions and
+accepts Work.
+See [Lifecycle](lifecycle.md) for state transitions and
 [Supervision tools](supervision-tools.md) for effect and recovery behavior.
 
 ## Inspect evidence
 
-Use `khala_read_archive` for bounded, append-ordered records. Use
-`khala_inspect_runtime` for a read-only runtime check. An unreachable Executor
+Use `khala_read_archive` for bounded, append-ordered records.
+Use
+`khala_inspect_runtime` for a read-only runtime check.
+An unreachable Executor
 must be recovered by the bound Conclave through the `recover` action; runtime
 liveness alone does not grant authority.
 

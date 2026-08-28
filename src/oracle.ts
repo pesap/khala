@@ -1,5 +1,5 @@
+import type { PromptIdentity } from "./model.js";
 import type { AgentRuntimePort, OraclePacket, OraclePort, OracleResult } from "./ports.js";
-import { promptIdentity } from "./runtime.js";
 
 const MAX_PACKET_TEXT = 16_000;
 const VERDICT_PATTERN = /^\s*Verdict:\s*(Pass|Needs revision|Blocked|Incomplete)\b/im;
@@ -8,14 +8,12 @@ const FINDING_PATTERN = /^\s*-\s*\[(blocker|major|minor)\]\s+(.+?)(?:\s+\|\s+Evi
 class PiOracle implements OraclePort {
 	private readonly runtime: AgentRuntimePort;
 	private readonly projectPath: string;
-	private readonly packageVersion: string;
-	private readonly prompt: string;
+	private readonly promptIdentity: PromptIdentity;
 
-	constructor(runtime: AgentRuntimePort, projectPath: string, packageVersion: string, prompt: string) {
+	constructor(runtime: AgentRuntimePort, projectPath: string, promptIdentity: PromptIdentity) {
 		this.runtime = runtime;
 		this.projectPath = projectPath;
-		this.packageVersion = packageVersion;
-		this.prompt = prompt;
+		this.promptIdentity = promptIdentity;
 	}
 
 	async review(packet: OraclePacket, model: string, thinking: string): Promise<OracleResult> {
@@ -34,7 +32,7 @@ class PiOracle implements OraclePort {
 			model,
 			thinking,
 			role: "oracle" as const,
-			promptIdentity: promptIdentity(this.prompt, this.packageVersion),
+			promptIdentity: this.promptIdentity,
 			tools: [],
 		};
 	}

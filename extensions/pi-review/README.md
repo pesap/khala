@@ -10,7 +10,8 @@ It registers the Pi commands `/review` and `/end-review` for scoped code reviews
 - GitHub pull requests
 - file or folder snapshots
 
-The extension is currently a standalone Pi workflow. Its review lifecycle can be
+The extension is currently a standalone Pi workflow.
+Its review lifecycle can be
 adapted to submit Khala Work and consume evidence-bearing Signals in a later
 change.
 

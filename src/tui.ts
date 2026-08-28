@@ -510,6 +510,9 @@ async function chooseAction(
 function displayActionLabel(action: Action): string {
 	const labels = {
 		admit: "Admit",
+		"request-input": "Request User input",
+		"amend-terms": "Amend Work terms",
+		"amend-mission": "Amend Mission",
 		"launch-observer": "Launch observer",
 		"record-assessment": "Record assessment",
 		"start-execution": "Start execution",
@@ -1662,6 +1665,31 @@ async function showPage(
 
 // oxlint-disable-next-line complexity
 async function actionInput(action: Action, context: ExtensionContext): Promise<JsonObject | undefined | null> {
+	if (action.kind === "amend-terms") {
+		const field = await context.ui.select("Term to amend:", [
+			"objective",
+			"context",
+			"scope",
+			"acceptanceCriteria",
+			"constraints",
+			"validation",
+			"allowedPaths",
+		]);
+		if (field === undefined) return null;
+		if (["acceptanceCriteria", "constraints", "validation", "allowedPaths"].includes(field)) {
+			const value = await context.ui.editor(`${field}, one item per line:`, "");
+			return value === undefined
+				? null
+				: {
+						[field]: value
+							.split("\n")
+							.map((entry) => entry.trim())
+							.filter(Boolean),
+					};
+		}
+		const value = await context.ui.input(`${field}:`, "");
+		return value === undefined ? null : { [field]: value };
+	}
 	if (action.kind === "record-review") {
 		const status = await context.ui.select("Provider review result:", ["changes-requested", "merged", "closed"]);
 		if (status === undefined) {
