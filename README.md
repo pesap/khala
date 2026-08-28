@@ -1,17 +1,45 @@
-# Khala
+<div>
 
-Khala is a Pi-native governance extension for isolated coding work. It keeps the
-User conversation quiet while a project Conclave admits Work, schedules a
-bounded Executor, records evidence, and waits for provider-confirmed review
-outcomes.
+<img src="assets/khala-sigil.svg" alt="forge" align="left" width="192px" height="192px"/>
+<img align="left" width="0" height="192px" hspace="10"/>
 
-The Archive is authoritative. Runtime state, Git, providers, model output, and
-TUI views are evidence only.
+### khala
+> Govern coding work with a Conclave, execute it in isolated sandboxes, and keep the evidence.
+>
+> [![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
+> [![CI](https://github.com/pesap/khala/actions/workflows/ci.yaml/badge.svg)](https://github.com/pesap/khala/actions/workflows/ci.yaml)
+> [![Release](https://img.shields.io/github/v/release/pesap/khala)](https://github.com/pesap/khala/releases)
+> [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT.txt)
+> [![Latest commit](https://img.shields.io/github/last-commit/pesap/khala?style=flat-square)](https://github.com/pesap/khala/commits)
+<br/>
+<br/>
+<br/>
+
+<p align="center">
+  <a href="#khala">Why Khala</a> ·
+  <a href="#core-boundaries">Features</a> ·
+  <a href="src/index.ts">Pi Tools</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#explore-the-repository">Documentation</a> ·
+  <a href="docs/development.md">Development</a>
+</p>
+
+
+khala is a Pi-native governance extension for isolated coding work. It keeps the
+User conversation quiet while a Conclave admits Work, schedules a bounded
+Executor in a Git worktree, records evidence, and waits for a
+provider-confirmed review outcome.
+
+The [Archive](docs/data-model.md) is authoritative. Runtime state, Git,
+providers, model output, and TUI views are evidence or projections only.
+
+> [!IMPORTANT]
+> Review-request workflows require Node.js 22.19 or newer, Pi, Git, and an
+authenticated `gh` or `glab` session.
 
 ## Quick start
 
-Requirements: Node.js 22.19 or newer, Pi, Git, and an authenticated `gh` or
-`glab` session for review requests.
+From a checkout:
 
 ```sh
 npm install
@@ -19,135 +47,88 @@ npm run check
 pi -e ./src/index.ts
 ```
 
-In Pi, open `/khala` and choose **Role settings** to configure the model and
-thinking level for Conclave, Executor, Observer, and Oracle. Settings persist to
-`~/.pi/agent/khala.json` and apply to future launches; an existing Execution
-keeps its persisted model and thinking level.
+In Pi:
 
-Then submit complete intent with `khala_submit_work`. Submission returns after
-SQLite persistence; Conclave processing is scheduled independently.
+1. Open `/khala` and configure Conclave, Executor, Observer, and Oracle models
+   in Role settings.
+2. Submit complete intent with `khala_submit_work`.
+3. Reopen `/khala` to inspect Work through Actions, Evidence, Peer-Review,
+   and Archive.
 
-Use `/fresh-eyes [scope or focus]` to review the current dirty diff and touched
-files with the packaged fresh-eyes review prompt.
+See [Getting started](docs/getting-started.md) for the complete first-Work
+workflow and verification steps.
 
-## User workflow
+## How a Work reaches completion
 
-1. Submit title, objective, and acceptance criteria. Scope, constraints,
-   validation, context, and the Work token cap may be supplied explicitly.
-2. The Conclave admits complete terms into one immutable Mission. Missing
-   repository facts may launch one read-only Observer assessment.
-3. FIFO scheduling reserves an Execution before launch, starts at most the
-   configured number of Executions, and never exceeds the Work token cap.
-4. The persistent parent supervisor launches the Executor from the durable
-   outbox; a Conclave child never owns the Executor runtime. A transient child
-   startup exit receives one bounded retry before the outbox records durable
-   failure evidence. The Executor works in a Git worktree, creates a draft
-   GitHub Pull Request or GitLab Merge Request, validates the change, and sends
-   a `ready` Signal.
-5. The Conclave may continue, replace, hand off, or reject the current
-   Execution. Handoff enters User review; it is not acceptance.
-6. User review evidence and provider merge evidence are recorded separately.
-   Poll the provider with `khala_poll_provider` after a review request is open.
-   New GitHub review comments wake the Conclave, which may deliver bounded
-   feedback to the same Execution without another User action. A confirmed
-   provider merge wakes the Conclave to record the explicit Outcome, including
-   when the provider merged before local review handoff settled; restart
-   reconciliation requeues an already-recorded unsettled merge. Only the
-   Conclave can record the succeeded Work Outcome.
-
-`/khala` is quiet and on demand. It opens a Work list; Work is the User's goal,
-each admitted Work has one Mission, and each Mission may have an Execution.
-The picker shows active Work by default, hides succeeded and cancelled Work,
-and keeps failed Work visible. It presents title, short ID, Work state, and
-Execution state in aligned columns. The Work overview shows Work, Mission,
-Execution, actionable runtime state, the linked PR number, next action, and
-links to Actions, Evidence, Peer-Review, and Archive. Actions lists enabled actions with short labels such as
-`Recover`, `Rename`, and `Cancel`.
-
-Evidence is a selectable Archive-derived record list with sequence, actual kind,
-summary, actor, and time. It does not duplicate lifecycle, provider, review, CI,
-error, or handoff sections. Peer-Review is a separate section when provider
-comments are available. Archive lists every Work record newest first. Selecting
-a record opens its complete metadata, full IDs, structured fields, and evidence
-references. Empty values and sections are omitted. The panels use headings,
-whitespace, aligned columns, plain text status labels, and a dimmed navigation
-footer without decorative separators. The layout adapts to narrow terminals.
-
-An unreachable Executor exposes recovery in `Actions`. Recovery stays in one
-panel while it runs, ignores close keys until the operation finishes, and then
-shows the final result. Navigation does not write the Archive. Up/down and Enter
-select; Backspace or Escape navigates back or closes the selector. Press the
-configured Role settings key in the Work picker to open Role settings. Press the configured comments key in the
-Work overview to open Peer-Review. `r` and `c` can be changed with
-`roleSettingsKey` and `commentsKey` in configuration. Use `Rename` in Work
-actions to change the Work label without changing the admitted Mission terms.
-
-Token usage, including cache hits and misses, remains tracked on the Execution;
-USD cost is not tracked without provider pricing and usage data.
-
-## Application service
-
-All Pi tools call the versioned application service. Its public operations are:
-
-```text
-submit_work(input, meta)
-list_work(filter?, cursor?)
-inspect_work(work_id)
-inspect_runtime(work_id, meta?)
-available_actions(scope, revision?)
-perform(action_command)
-read_records(query?, cursor?)
+```mermaid
+flowchart LR
+    U[User submits Work] --> C[Conclave admits Mission]
+    C --> E[Executor works in Git worktree]
+    E --> R[Draft PR or MR and ready Signal]
+    R --> V[User reviews provider request]
+    V --> M[Provider merge evidence]
+    M --> O[Conclave records Outcome]
+    O --> S[Succeeded Work]
 ```
 
-Actor, expected revision, schema version, and idempotency command ID are checked
-before every mutation. Revision conflicts require a reread. Records are bounded
-projections; raw Executor transcripts and provider text are not shown by
-navigation by default.
+A `ready` Signal, review handoff, provider approval, or provider merge is not
+acceptance. Only an explicit Conclave Outcome backed by verified merge evidence
+succeeds Work. See the [lifecycle reference](docs/lifecycle.md).
 
-## Architecture
+## Explore the repository
 
-- `src/model.ts` defines domain contracts and discriminants.
-- `src/archive.ts` implements the SQLite WAL Archive, projections, cursors,
-  idempotency, and transactional outbox.
-- `src/service.ts` owns lifecycle and actor authorization.
-- `src/ports.ts` defines runtime, workspace, code-host, model, and Oracle ports.
-- `src/adapters.ts` provides Git and GitHub/GitLab adapters.
-- `src/runtime.ts` supervises isolated Pi JSON-RPC children with bounded RPC and
-  agent-turn timeouts, retrying one transient startup exit before surfacing the
-  failure.
-- Child role sessions inherit the parent project identity and carry a
-  parent-signed role, Work, and Execution capability; Archive reads and
-  mutations remain service-authorized.
-- `src/tui.ts` provides the on-demand Work-first view.
+| Goal | Start here |
+| --- | --- |
+| Complete a first Work | [Getting started](docs/getting-started.md) |
+| Understand states and recovery | [Lifecycle](docs/lifecycle.md) |
+| Understand provider polling and effects | [Supervision tools](docs/supervision-tools.md) |
+| Inspect records and runtime bindings | [Data model](docs/data-model.md) |
+| Navigate the TUI | [TUI navigation](docs/tui-navigation.md) |
+| Understand the design and limits | [MVP design](docs/mvp-design.md) and [glossary](docs/glossary.md) |
+| Develop or validate changes | [Development](docs/development.md) |
+| Tune role behavior | [Role prompts](docs/role-prompts.md) |
+| Extend Pi integration | [Pi extensions](docs/pi-extensions.md) |
 
-The SQLite file is under `archiveRoot` (default `~/.pi/agent/khala`) and is
-keyed by the resolved project path. It uses WAL mode and short `BEGIN IMMEDIATE`
-transactions.
+<details>
+<summary>Source map</summary>
+
+- [`src/model.ts`](src/model.ts) — domain contracts and state discriminants.
+- [`src/archive.ts`](src/archive.ts) — SQLite WAL Archive, projections,
+  cursors, idempotency, and transactional outbox.
+- [`src/service.ts`](src/service.ts) — lifecycle decisions, actor
+  authorization, scheduling, effects, and supervision.
+- [`src/runtime.ts`](src/runtime.ts) — isolated Pi JSON-RPC child sessions,
+  bounded timeouts, process ownership, and transcript permissions.
+- [`src/adapters.ts`](src/adapters.ts) — Git worktrees and GitHub/GitLab
+  provider adapters.
+- [`src/tui.ts`](src/tui.ts) — on-demand Work-first terminal interface.
+- [`src/index.ts`](src/index.ts) — Pi tools, commands, role boundaries, and
+  runtime wiring.
+- [`system-prompts/`](system-prompts/) — role instructions for Conclave,
+  Executor, Observer, and Oracle.
+- [`skills/`](skills/) — tool-usage guidance packaged with Khala.
+
+</details>
+
+## Core boundaries
+
+- The User submits intent and makes explicit review, rename, budget, failure,
+  cancellation, and eligible recovery decisions.
+- The Conclave admits Missions, schedules Executions, issues Verdicts, handles
+  bounded provider feedback, and records Outcomes.
+- The Executor changes only its immutable Mission in its isolated sandbox and
+  reports evidence-bearing Signals.
+- The Observer is read-only and records at most one bounded assessment when
+  repository context is missing.
+- The Oracle is advisory and has no tools.
+- Provider polling and runtime monitoring record evidence; they do not merge or
+  accept Work automatically.
 
 ## Bundled extensions
 
-- `pi-review` provides `/review` and `/end-review` with the upstream review
-  selector interaction for uncommitted changes, branches, commits, pull
+- [`pi-review`](extensions/pi-review/review.ts) provides `/review` and
+  `/end-review` for reviewing uncommitted changes, branches, commits, pull
   requests, and snapshots.
-- `pi-clarify` provides `/clarify` and the `-clarify` marker. It places the
-  rewritten prompt in the editor for User review; it does not send the prompt.
-
-## MVP exclusions
-
-The MVP does not implement automatic merge, token top-up, semantic retry,
-priority controls, dependencies, peer-conflict coordination, non-Git VCS, or
-more than one active Execution per Mission.
-
-## Development
-
-```sh
-npm run check
-npm run build
-node --test test/mvp.test.js
-```
-
-`npm run check` runs Oxlint with the generic anti-slop plugin, Biome formatting,
-and TypeScript validation. Tests use local port adapters and do not require
-provider credentials.
-
-Khala's root service also runs an unref'ed autonomous monitor. It polls active provider reviews and inspects active Executor runtimes without using the user's primary Pi session. GitHub review bodies, conversation comments, and inline review comments wake the shadow Conclave; feedback remains pending until delivery succeeds, and runtime failures wake Conclave recovery with Archive evidence.
+- [`pi-clarify`](extensions/pi-clarify/clarify.ts) provides `/clarify` and the
+  `-clarify` marker. It places a rewritten prompt in the editor for User review;
+  it does not send the prompt.

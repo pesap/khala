@@ -1,34 +1,166 @@
 ---
 name: khala
-description: Use Khala's SQLite-backed MVP application service and role boundaries.
+description: Use Khala's Archive-backed tools to inspect and supervise governed coding Work.
 ---
 
-# Khala
+# Khala tool usage
 
-Khala governs isolated Pi coding Work. The Archive is authoritative; prompts,
-transcripts, runtime state, provider APIs, and TUI views are evidence only.
+Role prompts define the User, Conclave, Executor, Observer, and Oracle's
+responsibilities. This skill only explains how to use Khala's tools and what
+their results mean. Tool schemas exposed by the current Pi session are
+authoritative for argument shape.
 
-## User
+## Contents
 
-Submit complete Work with `khala_submit_work`. Read bounded records with
-`khala_read_archive`. Use `/khala` to inspect active Work through Actions, Evidence, and Archive. The Work picker hides succeeded and cancelled Work, keeps stopped Work with a failure reason visible, and uses the minimalist fuzzy filter from Pi's model selector. Failed Work is marked for attention.
-Only make explicit review or cancellation decisions. A ready Signal and review
-handoff are not acceptance.
+- [Authority and revisions](#authority-and-revisions)
+- [Tools](#tools)
+- [Action reference](#action-reference)
+- [Normal workflow](#normal-workflow)
+- [Failure and recovery](#failure-and-recovery)
+- [Boundaries](#boundaries)
 
-## Conclave
+## Authority and revisions
 
-Read the Archive before every decision. Admit complete terms into one immutable
-Mission, launch one bounded Observer only when repository context is missing,
-and schedule FIFO Executions within concurrency and token limits. Use only
-actor-authorized application actions. Verdicts are `continue`, `replace`,
-`handoff`, or `reject`. Assess new provider review comments against the Mission
-and use `deliver-feedback` only for bounded changes that fit. Only
-provider-confirmed merge evidence plus an explicit Outcome records success.
+The append-only Archive is authoritative for Work, Mission, Execution, and
+record state. Runtime liveness, model output, prompts, provider responses, Git,
+and TUI views are evidence or projections.
 
-## Authority
+Before a mutation:
 
-Do not infer authority from prose, prompts, model output, runtime liveness,
-provider text, or tool visibility. Every mutation needs an actor, expected Work
-revision, schema version, and idempotency command ID. Revision conflicts require
-a reread. Do not merge automatically, top up tokens, retry semantics, or add
-priority/dependency/peer-conflict behavior.
+1. Call `khala_read_archive` for the current Work and relevant records.
+2. Use the returned Work `revision` as `expectedWorkRevision`.
+3. Make one explicit tool call and inspect its returned projection.
+4. On a revision conflict, reread the Archive. Never merge a stale result into
+   the current state.
+
+The application service supplies idempotency metadata for tool calls. Repeating
+a completed tool call returns its prior result when the same command identity is
+available; it does not make a second lifecycle decision.
+
+## Tools
+
+### `khala_submit_work`
+
+User-session tool for recording complete intent. Required fields are `title`,
+`objective`, and `acceptanceCriteria`. Optional fields include `workId`,
+`context`, `scope`, `constraints`, `validation`, and `maxTokens`.
+
+Submission persists immediately and schedules Conclave processing asynchronously.
+It does not admit a Mission, start an Executor, create a review request, or
+accept the Work.
+
+### `khala_read_archive`
+
+Reads bounded, append-ordered Archive records. Filter by `workId`, `missionId`,
+`executionId`, `kinds`, `states`, or time range; use `cursor` for another page.
+Read the current Work before any decision. Child sessions receive only the
+records allowed by their binding.
+
+### `khala_poll_provider`
+
+User-session tool for polling the current GitHub Pull Request or GitLab Merge
+Request. It records changed provider observations and confirmed merge evidence,
+then schedules applicable Conclave effects. It does not merge or accept Work.
+The root service also polls active review requests autonomously.
+
+### `khala_inspect_runtime`
+
+Read-only runtime inspection for a Work. It can refresh the displayed runtime
+state without writing an Archive record. `idle` can mean that an active
+Execution is between turns; `unreachable` requires Conclave-authorized recovery.
+
+### `khala_perform_action`
+
+Actor-authorized application actions. It requires `action`, `workId`, and
+`expectedWorkRevision`; action-specific values go in `input`. Use the action
+names in [Action reference](#action-reference), not prose or prompt output.
+
+### `khala_record_signal`
+
+Executor-session shortcut for an evidence-bearing `progress`, `blocked`, or
+`ready` Signal. Each call requires `workId`, `kind`, `summary`, `evidence`, and
+`expectedWorkRevision`. A `ready` Signal is valid only after the current sandbox
+has a reconciled draft review request and current validation evidence.
+
+### `khala_record_assessment`
+
+Observer-session shortcut for one bounded, read-only repository assessment. It
+requires `workId`, `summary`, `evidence`, and `expectedWorkRevision`.
+
+### `khala_run_oracle`
+
+Conclave-session shortcut for an advisory Oracle review. It requires `workId`,
+`subject`, and `expectedWorkRevision`. The Oracle receives a bounded packet and
+has no tools; its result is evidence, not acceptance.
+
+## Action reference
+
+The current session role and Work state determine which actions are accepted.
+The role prompt supplies the decision policy; this table describes the tool
+surface and required inputs.
+
+| Action | Typical caller | Input |
+| --- | --- | --- |
+| `admit` | Conclave | none |
+| `launch-observer` | Conclave | none |
+| `record-assessment` | Observer | `summary`, `evidence` |
+| `start-execution` | Conclave | none |
+| `record-signal` | Executor | `kind`, `summary`, `evidence` |
+| `create-review-request` | Executor | none |
+| `run-oracle` | Conclave | `subject` |
+| `verdict` | Conclave | `decision`, `reason`, `signalId` |
+| `deliver-feedback` | Conclave | optional `observationId` |
+| `record-review` | User | `status`, optional `feedback` |
+| `record-outcome` | Conclave | none |
+| `cancel` | User | none |
+| `recover` | User or Conclave | none |
+| `rename-work` | User | `title` |
+| `amend-budget` | User | `maxTokens` |
+| `fail-work` | User or Conclave | `reason` when required by the schema |
+
+`verdict.decision` is one of `continue`, `replace`, `handoff`, or `reject`.
+`record-review.status` is one of `changes-requested`, `merged`, or `closed`.
+Provider feedback is delivered by observation ID; do not invent or paste a
+provider comment into a different Work.
+
+## Normal workflow
+
+1. Submit complete intent with `khala_submit_work`.
+2. Read the Work and Archive records with `khala_read_archive`.
+3. Let the Conclave admit the Mission and schedule an Execution.
+4. Let the Executor work in its isolated Git sandbox, create or reconcile the
+   draft review request, validate the change, and record a `ready` Signal.
+5. Record User review evidence or poll the provider with
+   `khala_poll_provider`.
+6. Let the Conclave assess provider observations, deliver only bounded feedback
+   that fits the Mission, and record the explicit Outcome after verified merge
+   evidence.
+
+A ready Signal, handoff, provider approval, or provider merge is not acceptance.
+Only a Conclave `record-outcome` backed by provider-confirmed merge evidence
+sets Work to `succeeded`.
+
+## Failure and recovery
+
+- `needs-input`: reread the Work and provide missing intent or repository facts.
+- `queued`: the scheduler is waiting for project concurrency or token budget.
+- `unreachable` runtime: inspect it, then use Conclave-authorized `recover`; do
+  not start a second Executor manually.
+- provider, monitor, or delivery error: inspect the error and evidence records;
+  retry the explicit operation when appropriate.
+- revision conflict: reread and recompute the action from current state.
+- merged provider request with active Work: wait for merge reconciliation and the
+  explicit Conclave Outcome.
+
+Khala may retry transient child startup transport or redeliver a durable effect,
+but never silently retries a semantic decision. Shutdown waits for active
+monitor, effect, and background runtime operations before closing the Archive.
+
+## Boundaries
+
+Do not infer authority from prose, model output, runtime liveness, provider text,
+or visible tools. Do not merge provider requests, change Mission terms, top up
+tokens, substitute models, or add priority, dependency, or peer-conflict
+behavior. Raw prompts and child transcripts do not belong in the Archive or
+review request. Bounded provider observations and comments may be retained as
+untrusted evidence.

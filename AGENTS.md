@@ -25,7 +25,7 @@
 - Add meaningful comments for non-obvious architectural decisions, constraints, and trade-offs. Explain why the code is shaped that way, not what the code literally does.
 - Inline single-line helpers that have only one call site.
 - Check node_modules for external API types; don't guess.
-- **No inline imports** (`await import()`, `import("pkg").Type`, dynamic type imports). Top-level imports only.
+- No inline imports (`await import()`, `import("pkg").Type`, dynamic type imports). Top-level imports only.
 - Never remove or downgrade code to fix type errors from outdated deps; upgrade the dep instead.
 - Use only erasable TypeScript syntax (Node strip-only mode) in code checked by the root config (`packages/*/src`, `packages/*/test`, `packages/coding-agent/examples`): no parameter properties, `enum`, `namespace`/`module`, `import =`, `export =`, or other constructs needing JS emit. Use explicit fields with constructor assignments.
 - Always ask before removing functionality or code that appears intentional.
@@ -49,6 +49,7 @@
 
 ## Documentation
 
+- Do not use bold text in Markdown or HTML. Use headings, lists, code formatting, or plain text for emphasis.
 - Add or update documentation for implemented features in the project's docs directory.
 - Documentation describes what exists now, not what used to exist or what might exist later.
 

@@ -12,10 +12,10 @@ The Archive is authoritative. Runtime, Git, code-host APIs, models, and views pr
 
 Khala has four durable primitives:
 
-- **Work**: the stable User goal. Its terminal states are `succeeded` or `stopped`; `stopReason` records whether it was failed or cancelled.
-- **Mission**: one immutable contract containing objective, scope, acceptance criteria, constraints, validation requirements, and authoritative context references.
-- **Execution**: one bounded attempt at a Mission, containing model, thinking mode, prompt identity, token allowance, sandbox, and Pi RPC binding.
-- **Record**: one immutable Archive fact. Assessments, Signals, observations, Verdicts, Outcomes, and errors are Record kinds.
+- Work: the stable User goal. Its terminal states are `succeeded` or `stopped`; `stopReason` records whether it was failed or cancelled.
+- Mission: one immutable contract containing objective, scope, acceptance criteria, constraints, validation requirements, and authoritative context references.
+- Execution: one bounded attempt at a Mission, containing model, thinking mode, prompt identity, token allowance, sandbox, and Pi RPC binding.
+- Record: one immutable Archive fact. Assessments, Signals, observations, Verdicts, Outcomes, and errors are Record kinds.
 
 User, Conclave, Observer, Executor, and Oracle are roles, not durable primitives. An implementation plan and newly discovered evidence belong to an Execution; they do not change Mission identity. A Mission has at most one active Execution, while historical Executions remain attached to it.
 

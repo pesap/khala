@@ -24,8 +24,7 @@
       "./prompts"
     ],
     "skills": [
-      "./skills/khala",
-      "./skills/khala-executor"
+      "./skills/khala"
     ]
   },
   "exports": {
@@ -39,7 +38,6 @@
     "themes",
     "assets",
     "skills/khala",
-    "skills/khala-executor",
     "src"
   ],
   "scripts": {
