@@ -52,7 +52,8 @@ A revision conflict requires a reread and never performs an implicit semantic re
 
 The root service polls active review requests once per minute while its hosting User Pi session is alive.
 `khala_poll_provider` can trigger the same poll explicitly.
-Polling records changed observations and provider merge evidence.
+Polling records changed observations, provider check failures, and provider merge evidence.
+A changed provider head or base is surfaced as reconciliation evidence before ready handoff.
 It never merges or accepts Work automatically.
 
 GitHub polling normalizes checks, issue comments, submitted reviews, inline comments, and provider outcomes.

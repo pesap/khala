@@ -29,7 +29,7 @@ recorded activity.
 It then provides three core sections and a conditional peer-review section:
 
 1. Actions — actor-authorized actions that are currently available.
-2. Evidence — Execution turn status, bounded Signals, review request, provider observations, and explicit missing evidence.
+2. Evidence — Current Execution status, bounded Signals, review request, provider observations, and explicit missing evidence.
 3. Peer-Review — provider comments from the current review request, when available.
 4. Archive — append-ordered Archive records with selectable details.
 

@@ -121,19 +121,44 @@ type ToolErrorResult = { content: [{ type: "text"; text: string }]; details: Jso
 export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerFlag(ROLE_FLAG, { description: "Khala role for an isolated child session", type: "string" });
 	pi.on("tool_call", (event) => {
-		if (sessionRole(pi) !== "executor") return;
+		const role = sessionRole(pi);
+		if (role !== "executor" && role !== "observer") return;
 		const violation = executorToolViolation(event);
 		return violation === undefined ? undefined : { block: true, reason: violation };
 	});
 	let runtime: RuntimeState | undefined;
+	let runtimeTransition: Promise<void> | undefined;
 	let executorStatusTimer: ReturnType<typeof setInterval> | undefined;
 	let userContext: ExtensionContext | undefined;
 
-	const getRuntime = (context: ExtensionContext): ApplicationRuntime => {
-		const trusted = context.isProjectTrusted?.() === true;
-		if (runtimeMatches(runtime, context.cwd, trusted)) return runtime.runtime;
+	const replaceRuntime = async (context: ExtensionContext, trusted: boolean): Promise<void> => {
+		if (runtimeMatches(runtime, context.cwd, trusted)) return;
+		if (executorStatusTimer !== undefined) clearInterval(executorStatusTimer);
+		executorStatusTimer = undefined;
+		const previous = runtime;
+		runtime = undefined;
+		if (previous !== undefined) await previous.runtime.service.close();
 		runtime = createRuntimeState(context.cwd, trusted);
-		return runtime.runtime;
+	};
+	const awaitRuntimeTransition = async (context: ExtensionContext, trusted: boolean): Promise<void> => {
+		const queued = (runtimeTransition ?? Promise.resolve()).then(
+			() => replaceRuntime(context, trusted),
+			() => replaceRuntime(context, trusted),
+		);
+		runtimeTransition = queued;
+		try {
+			await queued;
+		} finally {
+			if (runtimeTransition === queued) runtimeTransition = undefined;
+		}
+	};
+	const canUseRuntime = (context: ExtensionContext, trusted: boolean): boolean =>
+		runtimeMatches(runtime, context.cwd, trusted) && runtimeTransition === undefined;
+	const getRuntime = async (context: ExtensionContext): Promise<ApplicationRuntime> => {
+		const trusted = isTrustedProject(context);
+		if (canUseRuntime(context, trusted)) return requireRuntime(runtime);
+		await awaitRuntimeTransition(context, trusted);
+		return requireRuntime(runtime);
 	};
 
 	pi.registerTool({
@@ -144,7 +169,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params: SubmitParams, _signal, _onUpdate, context) {
 			try {
 				requireSessionRole(pi, "user");
-				const service = getRuntime(context).service;
+				const service = (await getRuntime(context)).service;
 				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
 				schedulePendingEffects(service);
 				return toolResult(work, false);
@@ -166,7 +191,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			try {
 				const actor = sessionActor(pi);
 				const query = readArchiveQuery(params, actor);
-				const page = getRuntime(context).service.readRecords(
+				const page = (await getRuntime(context)).service.readRecords(
 					query,
 					meta(actor, `tool:archive:${toolCallId}`, 0),
 					params.cursor,
@@ -189,7 +214,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
 			try {
 				requireSessionRole(pi, "user");
-				const service = getRuntime(context).service;
+				const service = (await getRuntime(context)).service;
 				const work = await service.pollProvider(
 					params.workId,
 					meta("user", `tool:poll:${toolCallId}`, params.expectedWorkRevision),
@@ -211,7 +236,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params: InspectRuntimeParams, _signal, _onUpdate, context) {
 			try {
 				const actor = sessionActor(pi);
-				const work = await getRuntime(context).service.inspectRuntime(
+				const work = await (await getRuntime(context)).service.inspectRuntime(
 					params.workId,
 					meta(actor, `tool:inspect-runtime:${toolCallId}`, params.expectedWorkRevision),
 				);
@@ -248,7 +273,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
 			try {
 				requireSessionRole(pi, "executor");
-				const result = await getRuntime(context).service.perform({
+				const result = await (await getRuntime(context)).service.perform({
 					action: "record-signal",
 					workId: params.workId,
 					input: { kind: params.kind, summary: params.summary, evidence: params.evidence },
@@ -276,7 +301,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
 			try {
 				requireSessionRole(pi, "observer");
-				const result = await getRuntime(context).service.perform({
+				const result = await (await getRuntime(context)).service.perform({
 					action: "record-assessment",
 					workId: params.workId,
 					input: { summary: params.summary, evidence: params.evidence },
@@ -303,7 +328,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params, _signal, _onUpdate, context) {
 			try {
 				requireSessionRole(pi, "conclave");
-				const result = await getRuntime(context).service.perform({
+				const result = await (await getRuntime(context)).service.perform({
 					action: "run-oracle",
 					workId: params.workId,
 					input: { subject: params.subject },
@@ -322,7 +347,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		description: "Open the Khala view.",
 		handler: async (_args, context) => {
 			try {
-				const application = getRuntime(context);
+				const application = await getRuntime(context);
 				await showKhala(application.service, context, sessionActor(pi), application.config.keybindings, {
 					get: () => application.service.getRoleSettings(),
 					set: (role, setting, value) => {
@@ -332,7 +357,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				});
 				updateExecutorStatus(application.service, context);
 			} catch (error) {
-				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				context.ui.notify(formatCommandError(error instanceof Error ? error : new Error(String(error))), "error");
 			}
 		},
 	});
@@ -342,7 +367,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		// oxlint-disable-next-line complexity
 		handler: async (_args, context) => {
 			try {
-				const service = getRuntime(context).service;
+				requireSessionRole(pi, "user");
+				const service = (await getRuntime(context)).service;
 				await service.processPendingEffects();
 				const work = service.listWork();
 				for (const item of work) {
@@ -358,23 +384,28 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 					"info",
 				);
 			} catch (error) {
-				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				context.ui.notify(formatCommandError(error instanceof Error ? error : new Error(String(error))), "error");
 			}
 		},
 	});
 
-	pi.on("session_start", (_event, context) => {
-		if (sessionRole(pi) === "user") {
-			try {
-				const application = getRuntime(context);
-				schedulePendingEffects(application.service);
-				userContext = context;
-				updateExecutorStatus(application.service, context);
-				executorStatusTimer = setInterval(() => updateExecutorStatus(application.service, context), 5_000);
-			} catch (error) {
-				context.ui.notify(error instanceof Error ? error.message : String(error), "error");
-			}
+	const initializeUserSession = async (context: ExtensionContext): Promise<void> => {
+		try {
+			const application = await getRuntime(context);
+			schedulePendingEffects(application.service);
+			userContext = context;
+			updateExecutorStatus(application.service, context);
+			executorStatusTimer = setInterval(() => {
+				if (runtime?.runtime.service === application.service) updateExecutorStatus(application.service, context);
+			}, 5_000);
+		} catch (error) {
+			context.ui.notify(error instanceof Error ? error.message : String(error), "error");
 		}
+	};
+	const initializeRoleSession = (context: ExtensionContext): Promise<void> =>
+		sessionRole(pi) === "user" ? initializeUserSession(context) : Promise.resolve();
+	pi.on("session_start", async (_event, context) => {
+		await initializeRoleSession(context);
 		setRoleTools(pi);
 	});
 	pi.on("before_agent_start", (event) => {
@@ -385,24 +416,35 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		const prompt = readFileSync(join(packageRoot, "system-prompts", promptFile), "utf8");
 		return { systemPrompt: `${event.systemPrompt}\n\n${prompt}` };
 	});
-	pi.on("session_shutdown", async () => {
+	const clearExecutorStatus = (): void => {
 		if (executorStatusTimer !== undefined) clearInterval(executorStatusTimer);
 		executorStatusTimer = undefined;
 		userContext?.ui.setStatus("khala-executors", undefined);
 		userContext = undefined;
-		if (runtime !== undefined) {
-			await runtime.runtime.service.close();
-			runtime = undefined;
-		}
+	};
+	const closeApplicationRuntime = async (): Promise<void> => {
+		if (runtimeTransition !== undefined) await runtimeTransition.catch(() => undefined);
+		const current = runtime;
+		runtime = undefined;
+		if (current !== undefined) await current.runtime.service.close();
+	};
+	pi.on("session_shutdown", async () => {
+		clearExecutorStatus();
+		await closeApplicationRuntime();
 	});
 }
 
-function runtimeMatches(
-	runtime: RuntimeState | undefined,
-	projectPath: string,
-	trusted: boolean,
-): runtime is RuntimeState {
+function runtimeMatches(runtime: RuntimeState | undefined, projectPath: string, trusted: boolean): boolean {
 	return runtime !== undefined && runtime.projectPath === projectPath && runtime.trusted === trusted;
+}
+
+function isTrustedProject(context: ExtensionContext): boolean {
+	return context.isProjectTrusted?.() === true;
+}
+
+function requireRuntime(runtime: RuntimeState | undefined): ApplicationRuntime {
+	if (runtime === undefined) throw new Error("Khala runtime could not be initialized.");
+	return runtime.runtime;
 }
 
 function createRuntimeState(projectPath: string, trusted: boolean): RuntimeState {
@@ -416,14 +458,14 @@ function createRuntimeState(projectPath: string, trusted: boolean): RuntimeState
 // oxlint-disable-next-line complexity
 async function executeActionTool(
 	pi: ExtensionAPI,
-	getRuntime: (context: ExtensionContext) => ApplicationRuntime,
+	getRuntime: (context: ExtensionContext) => Promise<ApplicationRuntime>,
 	toolCallId: string,
 	params: PerformParams,
 	context: ExtensionContext,
 ): Promise<ToolResult | ToolErrorResult> {
 	try {
 		const actor = sessionActor(pi);
-		const service = getRuntime(context).service;
+		const service = (await getRuntime(context)).service;
 		const result = await service.perform({
 			action: params.action,
 			workId: params.workId,
@@ -553,12 +595,12 @@ function textValue(value: JsonValue | undefined): string | undefined {
 
 function executorPathInsideSandbox(path: string): boolean {
 	const scope = executorPathScope();
-	return scope === undefined ? true : scope === null ? false : pathInsideRoot(path, scope.root);
+	return scope === null ? false : pathInsideRoot(path, scope.root);
 }
 
 function executorPathAllowed(path: string): boolean {
 	const scope = executorPathScope();
-	return scope === undefined ? true : scope === null ? false : pathMatchesScope(path, scope);
+	return scope === null ? false : pathMatchesScope(path, scope);
 }
 
 function pathMatchesScope(path: string, scope: Readonly<{ root: string; allowedPaths: readonly string[] }>): boolean {
@@ -599,17 +641,13 @@ function realPath(path: string): string | undefined {
 	}
 }
 
-function executorPathScope(): Readonly<{ root: string; allowedPaths: readonly string[] }> | null | undefined {
+function executorPathScope(): Readonly<{ root: string; allowedPaths: readonly string[] }> | null {
 	const root = process.env["KHALA_SANDBOX_ROOT"];
 	const encodedPaths = process.env["KHALA_ALLOWED_PATHS"];
-	if (root === undefined) return scopeWithoutRoot(encodedPaths);
+	if (root === undefined) return null;
 	if (encodedPaths === undefined) return null;
 	const allowedPaths = parseAllowedPaths(encodedPaths);
 	return allowedPaths === undefined ? null : { root, allowedPaths };
-}
-
-function scopeWithoutRoot(encodedPaths: string | undefined): null | undefined {
-	return encodedPaths === undefined ? undefined : null;
 }
 
 function resolveExecutorPath(root: string, path: string): string {
@@ -693,6 +731,13 @@ function toolResult(value: JsonValue, isError: boolean): ToolResult {
 
 function toolError(error: JsonObject): ToolErrorResult {
 	return { content: [{ type: "text", text: summarizeToolError(error) }], details: error, isError: true };
+}
+
+function formatCommandError(error: Error): string {
+	if (!(error instanceof ApplicationError)) return error.message;
+	const envelope = error.envelope;
+	const evidence = envelope.evidenceRefs.length === 0 ? "" : `\nEvidence: ${envelope.evidenceRefs.join(", ")}`;
+	return `Code: ${envelope.code}\n${envelope.summary}\nNext: ${envelope.remediation}${evidence}`;
 }
 
 function toolErrorText(message: string): ToolErrorResult {

@@ -180,6 +180,7 @@ export type ReviewRequest = Readonly<{
 	status: "draft" | "open" | "merged" | "closed";
 	sourceBranch: string;
 	targetBranch: string;
+	baseCommit?: string | undefined;
 	headCommit: string;
 	diffSummary: string;
 	validation: readonly string[];
@@ -258,6 +259,7 @@ export type ProviderObservation = Readonly<{
 	repository?: string | undefined;
 	sourceBranch?: string | undefined;
 	targetBranch?: string | undefined;
+	baseCommit?: string | undefined;
 	headCommit?: string | undefined;
 	mergeCommit?: string | undefined;
 	details?: ProviderObservationDetails | undefined;

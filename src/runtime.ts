@@ -420,18 +420,27 @@ function attachOutput(child: MutableChild, onExit: () => void): void {
 	child.process.stderr.on("data", (chunk: Buffer) => {
 		child.lastError = `${child.lastError}${chunk.toString("utf8")}`.slice(-4000);
 	});
+	let exited = false;
+	const cleanupAfterExit = (): void => {
+		if (exited) return;
+		exited = true;
+		// A detached child can leave shells or tools behind after its own exit.
+		// Kill its owned group before dropping the binding so recovery cannot race those descendants.
+		killExitedProcessGroup(child);
+		onExit();
+	};
 	child.process.stdin.on("error", (error) => {
 		child.closed = true;
 		child.lastError = `${child.lastError}${error.message}`.slice(-4000);
 		rejectPending(child, error);
 		rejectAgentEnd(child, error);
-		onExit();
+		cleanupAfterExit();
 	});
 	child.process.on("error", (error) => {
 		child.closed = true;
 		rejectPending(child, error);
 		rejectAgentEnd(child, error);
-		onExit();
+		cleanupAfterExit();
 	});
 	child.process.on("exit", () => {
 		child.closed = true;
@@ -439,7 +448,7 @@ function attachOutput(child: MutableChild, onExit: () => void): void {
 		const error = new Error(detail.length === 0 ? "Pi child exited before responding." : `Pi child exited: ${detail}`);
 		rejectPending(child, error);
 		rejectAgentEnd(child, error);
-		onExit();
+		cleanupAfterExit();
 	});
 }
 
@@ -642,18 +651,25 @@ async function writeLaunchLease(
 	if (binding.processGroupId === undefined) return;
 	const existing = parseLaunchLease(readFileSync(launchLeasePath(sessionPath), "utf8"));
 	if (existing?.processMarker !== binding.processMarker) throw new Error("Runtime launch ownership was lost.");
-	await writeFile(
-		launchLeasePath(sessionPath),
-		JSON.stringify({
-			processGroupId: binding.processGroupId,
-			processStartTime: binding.processStartTime,
-			capabilityFile,
-			processMarker: binding.processMarker,
-			ownerProcessId: existing?.ownerProcessId ?? process.pid,
-			createdAt: existing?.createdAt ?? Date.now(),
-		}),
-		{ encoding: "utf8", mode: 0o600 },
-	);
+	const leasePath = launchLeasePath(sessionPath);
+	const temporaryPath = `${leasePath}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(
+			temporaryPath,
+			JSON.stringify({
+				processGroupId: binding.processGroupId,
+				processStartTime: binding.processStartTime,
+				capabilityFile,
+				processMarker: binding.processMarker,
+				ownerProcessId: existing?.ownerProcessId ?? process.pid,
+				createdAt: existing?.createdAt ?? Date.now(),
+			}),
+			{ encoding: "utf8", mode: 0o600, flag: "wx" },
+		);
+		await rename(temporaryPath, leasePath);
+	} finally {
+		await unlink(temporaryPath).catch(() => undefined);
+	}
 }
 
 function launchLeasePath(sessionPath: string): string {
@@ -765,11 +781,14 @@ function readProcessStartTime(processId: number | undefined): string | undefined
 function killProcessGroup(processGroupId: number | undefined, processStartTime: string | undefined): boolean {
 	if (
 		processGroupId === undefined ||
-		processStartTime === undefined ||
-		process.platform === "win32" ||
-		readProcessStartTime(processGroupId) !== processStartTime
+		(process.platform !== "win32" &&
+			(processStartTime === undefined || readProcessStartTime(processGroupId) !== processStartTime))
 	)
 		return false;
+	if (process.platform === "win32") {
+		killProcessTree(processGroupId);
+		return !processExists(processGroupId);
+	}
 	try {
 		process.kill(-processGroupId, "SIGKILL");
 		return true;
@@ -810,6 +829,33 @@ function killChild(child: MutableChild): void {
 	else killOwnedProcessGroup(child.process);
 	child.process.kill();
 	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+}
+
+function killExitedProcessGroup(child: MutableChild): void {
+	const processId = child.binding.processGroupId ?? child.process.pid;
+	if (process.platform === "win32") {
+		killProcessTree(processId);
+		return;
+	}
+	killPosixProcessGroup(processId);
+}
+
+function killPosixProcessGroup(processGroupId: number | undefined): void {
+	if (processGroupId === undefined) return;
+	try {
+		process.kill(-processGroupId, "SIGKILL");
+	} catch {
+		// The process group may have exited with its parent.
+	}
+}
+
+function killProcessTree(processId: number | undefined): void {
+	if (processId === undefined) return;
+	try {
+		execFileSync("taskkill", ["/PID", String(processId), "/T", "/F"], { stdio: "ignore" });
+	} catch {
+		// The process tree may have exited before reconciliation.
+	}
 }
 
 function killOwnedProcessGroup(childProcess: ChildProcessWithoutNullStreams): void {

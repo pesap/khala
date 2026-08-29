@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { codeHostForOrigin, CommandCodeHost, GitWorkspace } from "../dist/src/adapters.js";
+import { codeHostForOrigin, CommandCodeHost, GitWorkspace, readPullRequestTemplate } from "../dist/src/adapters.js";
 import { SQLiteArchive } from "../dist/src/archive.js";
 import { openSqlite } from "../dist/src/sqlite.js";
 import { PiOracle } from "../dist/src/oracle.js";
@@ -355,6 +355,7 @@ test("Conclave can request missing intent and the User can amend terms before ad
 		{ title: "Input", objective: "Collect missing terms", acceptanceCriteria: ["The terms are complete"] },
 		meta("user", "input:submit", 0),
 	);
+	assert.deepEqual(submitted.terms.validation, ["npm run check"]);
 	const requested = await service.perform({
 		action: "request-input",
 		workId: submitted.workId,
@@ -370,6 +371,16 @@ test("Conclave can request missing intent and the User can amend terms before ad
 	});
 	assert.equal(amended.value.state, "submitted");
 	assert.deepEqual(amended.value.terms.allowedPaths, ["src/service.ts"]);
+	await service.close();
+});
+
+test("invalid Work submissions return a non-retryable input error", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-invalid-submit-"));
+	const { service } = makeService(join(directory, "archive.sqlite"));
+	assert.throws(
+		() => service.submitWork({ title: " ", objective: "Objective", acceptanceCriteria: ["works"] }, meta("user", "invalid-submit", 0)),
+		(error) => error instanceof Error && "envelope" in error && error.envelope.code === "invalid-input" && error.envelope.retryable === false,
+	);
 	await service.close();
 });
 
@@ -2243,7 +2254,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write(JSON.stringify([[{ id: 10, body: "Inline review note", path: "src/index.ts", line: 3, user: { login: "principal" }, author_association: "OWNER" }, ...Array.from({ length: 40 }, (_, index) => ({ id: index + 100, body: "x".repeat(4_000), user: { login: "principal" }, author_association: "OWNER" }))]]));\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }, { id: 10, state: "COMMENTED", body: "Stale review note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:13:06Z", commit_id: "old-head" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write(JSON.stringify([[{ id: 10, body: "Inline review note", path: "src/index.ts", line: 3, user: { login: "principal" }, author_association: "OWNER" }, ...Array.from({ length: 40 }, (_, index) => ({ id: index + 100, body: "x".repeat(4_000), user: { login: "principal" }, author_association: "OWNER" }))]]));\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }, { id: 10, state: "COMMENTED", body: "Stale review note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:13:06Z", commit_id: "old-head" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
@@ -2294,12 +2305,22 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		const create = commands.find((args) => args[1] === "create");
 		assert.equal(create.includes("--head"), true);
 		assert.equal(create[create.indexOf("--head") + 1], "khala/branch");
-		const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews"));
+		const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid"));
 		assert.ok(pollingView);
 	} finally {
 		if (previousPath === undefined) delete process.env.PATH;
 		else process.env.PATH = previousPath;
 	}
+});
+
+test("Pull request templates cannot read files through repository symlinks", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-template-"));
+	const secret = join(directory, "secret.txt");
+	const githubDirectory = join(directory, ".github");
+	await mkdir(githubDirectory, { recursive: true });
+	await writeFile(secret, "private content");
+	await symlink(secret, join(githubDirectory, "pull_request_template.md"));
+	assert.equal(await readPullRequestTemplate(directory), undefined);
 });
 
 test("Oracle keeps advisory output bounded and origin matching rejects lookalike hosts", async () => {
@@ -2319,6 +2340,21 @@ test("Oracle keeps advisory output bounded and origin matching rejects lookalike
 	const result = await oracle.review({ subject: "Review", mission: { missionId: "m", workId: "w", assignment: { title: "T", objective: "O", context: "", scope: "S", acceptanceCriteria: ["A"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() }, diff: "diff", validation: ["check"], providerEvidence: [] }, "provider/oracle", "high");
 	assert.equal(result.verdict, "needs-revision");
 	assert.equal(result.findings[0].summary, "Missing test");
+	const incompleteOracle = new PiOracle({
+		async ensureSession() {
+			return { sessionId: "oracle-session", sessionPath: "/tmp/oracle-session.jsonl" };
+		},
+		async send() {
+			return { output: "analysis\nVerdict: Pass\n\nFindings:" };
+		},
+		async getState() {
+			return "idle";
+		},
+		async requestStop() {},
+		async close() {},
+	}, "/project", { packageVersion: "1.1.0", promptSha256: "oracle" });
+	const incomplete = await incompleteOracle.review({ subject: "Review", mission: { missionId: "m", workId: "w", assignment: { title: "T", objective: "O", context: "", scope: "S", acceptanceCriteria: ["A"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() }, diff: "diff", validation: ["check"], providerEvidence: [] }, "provider/oracle", "high");
+	assert.equal(incomplete.verdict, "incomplete");
 	assert.equal(codeHostForOrigin("git@github.com:example/project.git", "/project").provider, "github");
 	assert.equal(codeHostForOrigin("https://gitlab.com/example/project.git", "/project").provider, "gitlab");
 	assert.throws(() => codeHostForOrigin("https://github.com.attacker.example/project.git", "/project"));

@@ -479,8 +479,8 @@ async function showWork(
 ): Promise<"back"> {
 	for (;;) {
 		const work = await service.inspectRuntime(workId);
-		const records = readArchiveRecordsForNavigation(service, work, actor);
-		const section = await pickSection(work, records, context, keybindings);
+		const navigation = readArchiveRecordsForNavigation(service, work, actor);
+		const section = await pickSection(work, navigation.records, navigation.error, context, keybindings);
 		if (section === null || section === "back") return "back";
 		if (section === "actions") {
 			await chooseAction(service, context, work, actor);
@@ -495,7 +495,7 @@ async function showWork(
 			continue;
 		}
 		if (section === "peer-review") {
-			await showPeerReview(providerReviewComments(records), context);
+			await showPeerReview(providerReviewComments(navigation.records), context);
 			continue;
 		}
 		await showBlockingSignal(work, context);
@@ -505,6 +505,7 @@ async function showWork(
 async function pickSection(
 	work: WorkView,
 	records: readonly RecordView[],
+	archiveError: string | undefined,
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
 ): Promise<WorkSection | "back" | null> {
@@ -520,9 +521,10 @@ async function pickSection(
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
 		const execution = work.execution;
 		const rows: Array<readonly [string, string]> = [["Work", formatWorkState(work)]];
-		if (work.mission !== undefined && work.missionState !== undefined) {
+		if (work.state !== "stopped" && work.mission !== undefined && work.missionState !== undefined) {
 			rows.push(["Mission", formatMissionState(work.missionState)]);
 		}
+		if (archiveError !== undefined) rows.push(["Archive", `unavailable: ${archiveError}`]);
 		if (execution !== undefined) {
 			rows.push(["Execution", formatExecutionState(execution)]);
 			if (shouldShowRuntime(execution)) rows.push(["Runtime", formatRuntimeState(execution)]);
@@ -973,7 +975,10 @@ function formatStatus(value: string): string {
 }
 
 function formatWorkState(work: WorkView): string {
-	const state = work.state === "stopped" ? "stopped" : formatStatus(work.state);
+	const state =
+		work.state === "stopped" && work.stopReason !== undefined
+			? `stopped (${formatStatus(work.stopReason)})`
+			: formatStatus(work.state);
 	return work.lastError === undefined ? state : `${state} (attention)`;
 }
 
@@ -1006,6 +1011,7 @@ function pageSection(lines: readonly string[], heading?: string): PageSection {
 }
 
 type RecordListMode = "evidence" | "archive";
+type NavigationRecords = Readonly<{ records: readonly RecordView[]; error?: string }>;
 type RecordListEntry = Readonly<{ kind: "record"; record: RecordView }>;
 type MutableJsonObject = { [key: string]: JsonValue | undefined };
 type MutableProviderReviewComment = {
@@ -1690,15 +1696,11 @@ function presentEvidenceText(value: string): string {
 	return value.trim();
 }
 
-function readArchiveRecordsForNavigation(
-	service: ApplicationService,
-	work: WorkView,
-	actor: Actor,
-): readonly RecordView[] {
+function readArchiveRecordsForNavigation(service: ApplicationService, work: WorkView, actor: Actor): NavigationRecords {
 	try {
-		return readAllArchiveRecords(service, work, actor);
-	} catch {
-		return [];
+		return { records: readAllArchiveRecords(service, work, actor) };
+	} catch (error) {
+		return { records: [], error: error instanceof Error ? error.message : String(error) };
 	}
 }
 
@@ -1886,7 +1888,9 @@ async function actionInput(action: Action, context: ExtensionContext): Promise<J
 			return null;
 		}
 		const maxTokens = Number(value);
-		return Number.isSafeInteger(maxTokens) && maxTokens > 0 ? { maxTokens } : null;
+		if (Number.isSafeInteger(maxTokens) && maxTokens > 0) return { maxTokens };
+		context.ui.notify("Enter a positive whole-number token budget.", "error");
+		return actionInput(action, context);
 	}
 	return {};
 }

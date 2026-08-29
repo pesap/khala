@@ -83,14 +83,16 @@ Khala stores provider IDs and URLs but does not store provider credentials.
 
 Khala refreshes the configured remote target branch before creating an Execution and before publishing a review request.
 The target branch must still point to the recorded Execution base commit when publication begins.
-A changed target branch requires rebasing or replacing the Execution.
+Khala also records provider base and head commits during polling and blocks ready evidence when they drift.
+A changed target branch or provider review identity requires reconciling, rebasing, or replacing the Execution.
 Remote review requests and branches remain for audit after local cleanup.
 Khala does not automatically close or delete remote review objects.
 
 ## Archive backup and privacy
 
-The Archive is an SQLite database in WAL mode.
-Back up the main `.sqlite` file together with its WAL file when the service is active, or after closing the hosting Pi session.
+The Archive is an SQLite database in WAL mode with full synchronous durability.
+Back it up after closing the hosting Pi session, or use SQLite's backup API while the service remains quiesced.
+Do not copy the main `.sqlite` file and WAL independently while writes are active.
 Restore only from a trusted copy and verify the project path before reopening it.
 Khala fails closed on malformed projections or unsupported Archive integrity failures.
 

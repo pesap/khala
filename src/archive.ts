@@ -142,12 +142,39 @@ export class SQLiteArchive implements ArchivePort {
 	constructor(path: string) {
 		mkdirSync(dirname(path), { recursive: true });
 		this.database = openSqlite(path);
-		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
+		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
 		this.database.exec(SCHEMA);
 		this.migrateCommandColumns();
 		this.migrateLegacyWorkTerms();
 		this.migrateLegacyWorkStates();
 		this.migrateRecordNumbers();
+		this.validateIntegrity();
+	}
+
+	private validateIntegrity(): void {
+		const check = this.database.prepare("PRAGMA quick_check").get();
+		if (check === undefined || readString(check, "quick_check") !== "ok")
+			throw new Error("Archive SQLite integrity check failed.");
+		this.validateWorkProjections();
+		this.validateRecordPayloads();
+		this.validateOutboxPayloads();
+	}
+
+	private validateWorkProjections(): void {
+		for (const row of this.database.prepare("SELECT view_json FROM work_projection").all())
+			parseWorkView(readString(row, "view_json"));
+	}
+
+	private validateRecordPayloads(): void {
+		for (const row of this.database.prepare("SELECT payload_json FROM archive_records").all())
+			parseJson(readString(row, "payload_json"));
+	}
+
+	private validateOutboxPayloads(): void {
+		for (const row of this.database.prepare("SELECT payload_json FROM outbox").all()) {
+			const payload = parseJson(readString(row, "payload_json"));
+			if (!isJsonObject(payload)) throw new Error("Archive outbox payload is invalid.");
+		}
 	}
 
 	private migrateCommandColumns(): void {
@@ -804,7 +831,12 @@ function assertDuplicateFingerprint(
 	commandFingerprint: string | undefined,
 	commandId: string,
 ): void {
-	if (storedFingerprint !== undefined && commandFingerprint !== undefined && storedFingerprint !== commandFingerprint)
+	if (commandFingerprint === undefined) return;
+	if (storedFingerprint === undefined)
+		throw new CommandReuseConflict(
+			`Archive command ${commandId} has no input fingerprint and cannot be replayed safely.`,
+		);
+	if (storedFingerprint !== commandFingerprint)
 		throw new CommandReuseConflict(`Archive command ${commandId} was already used with different input.`);
 }
 
@@ -1121,6 +1153,7 @@ function isReviewRequest(value: JsonValue | undefined): boolean {
 			"diffSummary",
 		].every((key) => isText(value[key])) &&
 		isOneOf(value["status"], ["draft", "open", "merged", "closed"]) &&
+		optional(value["baseCommit"], isText) &&
 		isTextList(value["validation"])
 	);
 }
@@ -1164,6 +1197,7 @@ function isObservation(value: JsonValue | undefined): value is ProviderObservati
 		"repository",
 		"sourceBranch",
 		"targetBranch",
+		"baseCommit",
 		"headCommit",
 		"mergeCommit",
 	];

@@ -60,7 +60,8 @@ The Conclave verifies the reviewed head and merge commit before recording the Ou
 ## Monitoring and feedback
 
 The root service polls active review requests once per minute while its hosting User Pi session is alive.
-Polling records changed observations and provider merge evidence.
+Polling records changed observations, provider check failures, and provider merge evidence.
+A changed provider head or base is surfaced as reconciliation evidence before ready handoff.
 It never merges or accepts Work automatically.
 
 GitHub feedback is actionable when its author has a trusted association and the review record is submitted and actionable.

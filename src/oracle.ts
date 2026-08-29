@@ -2,7 +2,7 @@ import type { PromptIdentity } from "./model.js";
 import type { AgentRuntimePort, OraclePacket, OraclePort, OracleResult } from "./ports.js";
 
 const MAX_PACKET_TEXT = 16_000;
-const VERDICT_PATTERN = /^\s*Verdict:\s*(Pass|Needs revision|Blocked|Incomplete)\b/im;
+const VERDICT_PATTERN = /^Verdict:\s*(Pass|Needs revision|Blocked|Incomplete)\s*$/i;
 const FINDING_PATTERN = /^\s*-\s*\[(blocker|major|minor)\]\s+(.+?)(?:\s+\|\s+Evidence:\s*(.+))?\s*$/i;
 
 class PiOracle implements OraclePort {
@@ -85,21 +85,28 @@ type ParsedVerdict = Readonly<{
 
 // oxlint-disable-next-line complexity
 function parseVerdict(output: string): ParsedVerdict | undefined {
-	const match = output.match(VERDICT_PATTERN);
+	const lines = output.split("\n");
+	const first = lines.find((line) => line.trim().length > 0)?.trim();
+	const match = first?.match(VERDICT_PATTERN);
 	const label = match?.[1];
 	if (label === undefined) return undefined;
 	const findings: Array<OracleResult["findings"][number]> = [];
 	const validationGaps: string[] = [];
 	let section: "findings" | "validation-gaps" | undefined;
-	for (const line of output.split("\n")) {
+	let hasFindingsSection = false;
+	let hasValidationGapsSection = false;
+	for (const line of lines) {
 		const nextSection = verdictSection(line);
 		if (nextSection !== undefined) {
 			section = nextSection;
+			if (nextSection === "findings") hasFindingsSection = true;
+			if (nextSection === "validation-gaps") hasValidationGapsSection = true;
 			continue;
 		}
 		if (section === "findings") addFinding(findings, line);
 		if (section === "validation-gaps") addValidationGap(validationGaps, line);
 	}
+	if (!hasFindingsSection || !hasValidationGapsSection) return undefined;
 	return { verdict: verdictValue(label), findings: findings.slice(0, 20), validationGaps: validationGaps.slice(0, 20) };
 }
 

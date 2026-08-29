@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -91,24 +91,63 @@ export function persistRoleSetting(role: GovernedRole, setting: RoleSetting, val
 	if (normalized.length === 0) {
 		throw new ConfigError(`${role} ${setting} must not be blank.`);
 	}
-	const path = join(agentDirectory(), "khala.json");
-	const current = readConfig(path) ?? {};
-	const next = { ...current, [roleConfigKey(role, setting)]: normalized };
-	mkdirSync(agentDirectory(), { recursive: true });
-	const temporaryPath = `${path}.${randomUUID()}.tmp`;
+	const directory = agentDirectory();
+	const path = join(directory, "khala.json");
+	mkdirSync(directory, { recursive: true });
+	const lockPath = `${path}.lock`;
+	acquireConfigLock(lockPath);
 	try {
-		writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-			flag: "wx",
-		});
-		renameSync(temporaryPath, path);
-	} finally {
+		const current = readConfig(path) ?? {};
+		const next = { ...current, [roleConfigKey(role, setting)]: normalized };
+		const temporaryPath = `${path}.${randomUUID()}.tmp`;
 		try {
-			unlinkSync(temporaryPath);
-		} catch {
-			// The temporary file was renamed or was never created.
+			writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+				flag: "wx",
+			});
+			renameSync(temporaryPath, path);
+		} finally {
+			try {
+				unlinkSync(temporaryPath);
+			} catch {
+				// The temporary file was renamed or was never created.
+			}
 		}
+	} finally {
+		unlinkSync(lockPath);
+	}
+}
+
+function acquireConfigLock(path: string): void {
+	const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+	for (let attempt = 0; attempt < 300; attempt += 1) {
+		if (tryAcquireConfigLock(path)) return;
+		removeStaleConfigLock(path);
+		Atomics.wait(waitBuffer, 0, 0, 10);
+	}
+	throw new ConfigError(`Could not acquire the configuration lock at ${path}.`);
+}
+
+function tryAcquireConfigLock(path: string): boolean {
+	try {
+		writeFileSync(path, `${process.pid}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		return true;
+	} catch (error) {
+		if (!(error instanceof Error) || !isLockContention(error)) throw error;
+		return false;
+	}
+}
+
+function isLockContention(error: Error): boolean {
+	return "code" in error && error.code === "EEXIST";
+}
+
+function removeStaleConfigLock(path: string): void {
+	try {
+		if (Date.now() - statSync(path).mtimeMs > 30_000) unlinkSync(path);
+	} catch {
+		// The lock was removed between inspection and cleanup.
 	}
 }
 
@@ -117,15 +156,27 @@ function roleConfigKey(role: GovernedRole, setting: RoleSetting): string {
 }
 
 function readConfig(path: string): JsonObject | undefined {
-	if (!existsSync(path)) {
-		return;
-	}
-	const text = readFileSync(path, "utf8");
-	const parsed: JsonValue = JSON.parse(text);
-	if (!isJsonObject(parsed)) {
-		throw new ConfigError(`${path} must contain a JSON object.`);
-	}
+	if (!existsSync(path)) return;
+	const parsed = parseConfig(readConfigText(path), path);
+	if (!isJsonObject(parsed)) throw new ConfigError(`${path} must contain a JSON object.`);
 	return parsed;
+}
+
+function readConfigText(path: string): string {
+	try {
+		return readFileSync(path, "utf8");
+	} catch (error) {
+		throw new ConfigError(`${path} could not be read: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+function parseConfig(text: string, path: string): JsonValue {
+	try {
+		// SAFETY: JSON.parse returns a value narrowed by the JsonValue contract before object validation.
+		return JSON.parse(text) as JsonValue;
+	} catch (error) {
+		throw new ConfigError(`${path} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {

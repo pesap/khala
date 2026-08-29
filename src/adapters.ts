@@ -368,7 +368,7 @@ export class CommandCodeHost implements CodeHostPort {
 					"view",
 					reviewRequest.providerId,
 					"--json",
-					"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews",
+					"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid",
 				],
 				this.cwd,
 			);
@@ -382,10 +382,16 @@ export class CommandCodeHost implements CodeHostPort {
 			);
 			const inlineComments = parseJsonPages(inlineData);
 			const details = githubProviderDetails(row, reviewRequest, inlineComments);
+			const reviewStatus = githubPollStatus(row, reviewRequest.status);
 			return [
 				{
 					...observation("ci-status", reviewRequest.providerId, data),
-					status: githubPollStatus(row, reviewRequest.status),
+					status: githubCheckStatus(reviewStatus, details),
+					repository,
+					sourceBranch: readOptionalTextValue(row, "headRefName"),
+					targetBranch: readOptionalTextValue(row, "baseRefName"),
+					baseCommit: readOptionalTextValue(row, "baseRefOid"),
+					headCommit: readOptionalTextValue(row, "headRefOid"),
 					details,
 				},
 				...githubFeedback(row, reviewRequest, inlineComments),
@@ -398,6 +404,11 @@ export class CommandCodeHost implements CodeHostPort {
 			{
 				...observation("ci-status", reviewRequest.providerId, data),
 				status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
+				repository: readRepository(row),
+				sourceBranch: readOptionalTextValue(row, "source_branch"),
+				targetBranch: readOptionalTextValue(row, "target_branch"),
+				baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
+				headCommit: readOptionalTextValue(row, "sha"),
 			},
 		];
 	}
@@ -412,7 +423,7 @@ export class CommandCodeHost implements CodeHostPort {
 					"view",
 					reviewRequest.providerId,
 					"--json",
-					"state,mergedAt,mergeCommit,headRefName,baseRefName,headRefOid",
+					"state,mergedAt,mergeCommit,headRefName,baseRefName,headRefOid,baseRefOid",
 				],
 				this.cwd,
 			);
@@ -422,6 +433,7 @@ export class CommandCodeHost implements CodeHostPort {
 				repository: reviewRequest.repository,
 				sourceBranch: readTextValue(row, "headRefName"),
 				targetBranch: readTextValue(row, "baseRefName"),
+				baseCommit: readOptionalTextValue(row, "baseRefOid"),
 				headCommit: readTextValue(row, "headRefOid"),
 				mergeCommit: readMergeCommit(row),
 			});
@@ -429,12 +441,16 @@ export class CommandCodeHost implements CodeHostPort {
 		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
 		const row = parseJsonArray(`[${data}]`)[0];
 		if (row === undefined || readValue(row, "state").toLowerCase() !== "merged") return;
+		const mergeCommit =
+			readOptionalTextValue(row, "merge_commit_sha") ?? readOptionalTextValue(row, "squash_commit_sha");
+		if (mergeCommit === undefined) return;
 		return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
 			repository: readRepository(row),
 			sourceBranch: readTextValue(row, "source_branch"),
 			targetBranch: readTextValue(row, "target_branch"),
+			baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
 			headCommit: readTextValue(row, "sha"),
-			mergeCommit: readOptionalTextValue(row, "merge_commit_sha") ?? readTextValue(row, "sha"),
+			mergeCommit,
 		});
 	}
 }
@@ -545,6 +561,7 @@ function githubReview(
 		status: githubStatus(readValue(row, "state"), readBoolean(row, "isDraft")),
 		sourceBranch: readTextValue(row, "headRefName"),
 		targetBranch: readTextValue(row, "baseRefName"),
+		baseCommit: input.sandbox.baseCommit,
 		headCommit: readTextValue(row, "headRefOid"),
 		diffSummary: `Review request ${readValue(row, "number")} for ${input.terms.title}.`,
 		validation: input.terms.validation,
@@ -604,6 +621,7 @@ function gitlabReview(row: Record<string, JsonValue>, input: ReviewRequestInput,
 		status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
 		sourceBranch: readTextValue(row, "source_branch"),
 		targetBranch: readTextValue(row, "target_branch"),
+		baseCommit: readNestedTextValue(row, "diff_refs", "base_sha") ?? input.sandbox.baseCommit,
 		headCommit: readTextValue(row, "sha"),
 		diffSummary: `Review request ${id} for ${input.terms.title}.`,
 		validation: input.terms.validation,
@@ -620,6 +638,11 @@ function readOptionalTextValue(row: Record<string, JsonValue>, key: string): str
 	const value = row[key];
 	const text = isTextValue(value) ? value.trim() : "";
 	return text.length === 0 ? undefined : text;
+}
+
+function readNestedTextValue(row: Record<string, JsonValue>, objectKey: string, valueKey: string): string | undefined {
+	const nested = row[objectKey];
+	return isJsonObject(nested) ? readOptionalTextValue(nested, valueKey) : undefined;
 }
 
 function readTextValue(row: Record<string, JsonValue>, key: string): string {
@@ -853,10 +876,11 @@ function githubFeedbackEntry(
 	const location = path === undefined ? "" : ` (${path}${line === undefined ? "" : `:${line}`})`;
 	const headCommit = githubCommentCommit(entry) ?? reviewRequest.headCommit;
 	const feedback = `${body.trim()}${location}`.slice(0, 2_000);
+	const version = createHash("sha256").update(`${body}\u0000${headCommit}\u0000${state}`).digest("hex").slice(0, 16);
 	const observationId =
 		prefix === "comment"
-			? `review-comment:${reviewRequest.providerId}:${commentId}`
-			: `review-comment:${reviewRequest.providerId}:${prefix}:${commentId}`;
+			? `review-comment:${reviewRequest.providerId}:${commentId}:${version}`
+			: `review-comment:${reviewRequest.providerId}:${prefix}:${commentId}:${version}`;
 	return [
 		observation(
 			"review-comment",
@@ -887,6 +911,21 @@ function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest
 	if (row["isDraft"] === true) return "draft";
 	if (row["isDraft"] === false) return "open";
 	return current === "draft" ? "draft" : "open";
+}
+
+function githubCheckStatus(
+	reviewStatus: ReviewRequest["status"],
+	details: NonNullable<ProviderObservation["details"]>,
+): string {
+	if (reviewStatus === "merged" || reviewStatus === "closed") return reviewStatus;
+	return details.checks.some(providerCheckFailed) ? "checks-failed" : reviewStatus;
+}
+
+function providerCheckFailed(check: ProviderCheck): boolean {
+	const value = `${check.status} ${check.conclusion ?? ""}`.toLowerCase();
+	return ["failure", "failed", "error", "cancelled", "timed_out", "action_required"].some((term) =>
+		value.includes(term),
+	);
 }
 
 function githubCommentCommit(entry: Record<string, JsonValue>): string | undefined {
@@ -929,6 +968,8 @@ function isTextValue(value: JsonValue | undefined): value is string {
 
 // oxlint-disable-next-line complexity
 export async function readPullRequestTemplate(projectPath: string): Promise<string | undefined> {
+	const root = await realpath(projectPath).catch(() => undefined);
+	if (root === undefined) return;
 	const paths = [
 		"pull_request_template.md",
 		"docs/pull_request_template.md",
@@ -936,20 +977,38 @@ export async function readPullRequestTemplate(projectPath: string): Promise<stri
 		".github/PULL_REQUEST_TEMPLATE.md",
 	];
 	for (const relativePath of paths) {
-		const content = await readFile(join(projectPath, relativePath), "utf8").catch(() => "");
-		if (content.trim().length > 0) {
-			return content;
-		}
+		const content = await readSafeTemplateFile(root, relativePath);
+		if (content !== undefined && content.trim().length > 0) return content;
 	}
-	const templateDirectory = join(projectPath, ".github", "PULL_REQUEST_TEMPLATE");
+	const templateDirectory = await safeTemplateDirectory(root);
+	if (templateDirectory === undefined) return;
 	const entries = await readdir(templateDirectory, { withFileTypes: true }).catch(() => []);
 	for (const entry of entries
 		.filter((candidate) => candidate.isFile())
 		.sort((left, right) => left.name.localeCompare(right.name))) {
-		const content = await readFile(join(templateDirectory, entry.name), "utf8").catch(() => "");
-		if (content.trim().length > 0) {
-			return content;
-		}
+		const content = await readSafeTemplateFile(root, join(".github", "PULL_REQUEST_TEMPLATE", entry.name));
+		if (content !== undefined && content.trim().length > 0) return content;
 	}
 	return undefined;
+}
+
+async function readSafeTemplateFile(root: string, relativePath: string): Promise<string | undefined> {
+	const candidate = resolve(root, relativePath);
+	if (!isContainedPath(root, candidate)) return;
+	if (!(await isRegularContainedFile(root, candidate))) return;
+	return readFile(candidate, "utf8").catch(() => undefined);
+}
+
+async function isRegularContainedFile(root: string, candidate: string): Promise<boolean> {
+	const info = await lstat(candidate).catch(() => undefined);
+	if (info === undefined) return false;
+	if (!info.isFile()) return false;
+	return isRealContainedPath(root, candidate);
+}
+
+async function safeTemplateDirectory(root: string): Promise<string | undefined> {
+	const directory = resolve(root, ".github", "PULL_REQUEST_TEMPLATE");
+	const info = await lstat(directory).catch(() => undefined);
+	if (info === undefined || !info.isDirectory() || !(await isRealContainedPath(root, directory))) return;
+	return directory;
 }

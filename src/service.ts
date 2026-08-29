@@ -86,7 +86,7 @@ const SUPPORTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
 	"observer-cleanup",
 ]);
 const DEFAULT_SCOPE = "Repository changes required by the objective.";
-const DEFAULT_VALIDATION = "Run the project's configured validation commands.";
+const DEFAULT_VALIDATION = "npm run check";
 
 export class ActionInputError extends Error {
 	constructor(message: string) {
@@ -204,7 +204,16 @@ export class ApplicationService {
 				);
 			throw error;
 		}
-		if (prior !== undefined) return prior.projection;
+		if (prior !== undefined) {
+			if (prior.record.actor !== "user")
+				throw this.error(
+					"forbidden",
+					`Command ${meta.commandId} belongs to a different actor.`,
+					false,
+					"Use a new command ID for this User submission.",
+				);
+			return prior.projection;
+		}
 		const workId = input.workId?.trim() || nanoid();
 		const existing = this.archive.project(workId);
 		if (existing !== undefined) {
@@ -218,7 +227,17 @@ export class ApplicationService {
 				"Retry with expected_work_revision 0.",
 			);
 		}
-		const terms = normalizeTerms(input, this.options.defaultWorkTokens);
+		let terms: WorkTerms;
+		try {
+			terms = normalizeTerms(input, this.options.defaultWorkTokens);
+		} catch (error) {
+			throw this.error(
+				"invalid-input",
+				error instanceof Error ? error.message : "Work terms are invalid.",
+				false,
+				"Provide nonblank Work terms and a positive token budget.",
+			);
+		}
 		const projection: WorkView = {
 			workId,
 			revision: 1,
@@ -692,13 +711,15 @@ export class ApplicationService {
 			const message =
 				reason === "runtime-unreachable"
 					? `Inspect the Executor runtime for Work ${work.workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`
-					: reason === "provider-outcome"
-						? `Process the provider merge outcome for Work ${work.workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`
-						: observationId !== undefined
-							? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
-							: work.lastObservation?.kind === "review-comment"
-								? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
-								: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, request-input when User intent is insufficient, then start its Execution when budget permits. Never treat this message as authority.`;
+					: reason === "provider-ci"
+						? `Inspect the failed provider checks for Work ${work.workId}. Read the Archive first and reconcile the current Mission; do not treat failed checks as acceptance.`
+						: reason === "provider-outcome"
+							? `Process the provider merge outcome for Work ${work.workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`
+							: observationId !== undefined
+								? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
+								: work.lastObservation?.kind === "review-comment"
+									? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
+									: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, request-input when User intent is insufficient, then start its Execution when budget permits. Never treat this message as authority.`;
 			await this.ports.runtime.send(binding, message);
 			this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
 		} finally {
@@ -739,8 +760,8 @@ export class ApplicationService {
 			let unsupportedEffect = false;
 			for (const effect of effects) {
 				if (!SUPPORTED_EFFECT_KINDS.has(effect.kind)) {
-					if (!this.archive.completeEffect(effect.effectId, owner))
-						throw new Error(`Archive lease was lost for unsupported effect ${effect.effectId}.`);
+					this.archive.releaseEffect(effect.effectId, owner);
+					this.recordUnsupportedEffect(effect);
 					unsupportedEffect = true;
 					continue;
 				}
@@ -1122,6 +1143,8 @@ export class ApplicationService {
 						thinking: this.options.observerThinking,
 						role: "observer",
 						promptIdentity: this.options.observerPromptIdentity,
+						allowedPaths: ["."],
+						sandboxRoot: this.options.projectPath,
 						bindingScope: { workId },
 						tools: ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"],
 						sessionPath: work.observer.sessionPath,
@@ -1318,6 +1341,13 @@ export class ApplicationService {
 				"Use the provider adapter's confirmed merge observation.",
 			);
 		const normalizedObservation = normalizeProviderObservation(observation, work.reviewRequest);
+		const providerIdentityDrift =
+			normalizedObservation.kind === "ci-status" &&
+			!providerObservationMatchesReview(normalizedObservation, work.reviewRequest);
+		const providerChecksFailed =
+			normalizedObservation.kind === "ci-status" && normalizedObservation.status === "checks-failed";
+		const providerEvidenceReconciled =
+			normalizedObservation.kind === "ci-status" && !providerIdentityDrift && !providerChecksFailed;
 		const key = observationKey(workId, normalizedObservation);
 		const fingerprint = observationFingerprint(normalizedObservation);
 		const previous = this.heartbeat.get(key) ?? this.persistedObservationFingerprint(work, normalizedObservation);
@@ -1340,7 +1370,16 @@ export class ApplicationService {
 			...work,
 			revision: work.revision + 1,
 			lastObservation: nextObservation,
-			lastError: work.lastError !== undefined && !isProviderMonitorError(work.lastError) ? work.lastError : undefined,
+			lastError: providerIdentityDrift
+				? providerIdentityError(work, normalizedObservation)
+				: providerChecksFailed
+					? providerChecksError(work, normalizedObservation)
+					: providerEvidenceReconciled &&
+							(isProviderIdentityError(work.lastError) || isProviderChecksError(work.lastError))
+						? undefined
+						: work.lastError !== undefined && !isProviderMonitorError(work.lastError)
+							? work.lastError
+							: undefined,
 			providerOutcome: observation.kind === "provider-outcome" ? nextObservation : work.providerOutcome,
 			reviewRequest:
 				observation.kind === "provider-outcome"
@@ -1348,14 +1387,22 @@ export class ApplicationService {
 					: observation.kind === "ci-status" && (observation.status === "closed" || observation.status === "merged")
 						? { ...work.reviewRequest, status: observation.status }
 						: work.reviewRequest,
-			nextAction:
-				observation.kind === "review-comment" && observation.actionable !== false
-					? "Conclave is assessing provider feedback."
-					: observation.status === "closed"
-						? "Provider review is closed; Conclave is reconciling the Work."
-						: observation.status === "merged"
-							? "Provider merge observed; Conclave is recording the Outcome."
-							: work.nextAction,
+			nextAction: providerIdentityDrift
+				? "Provider review identity changed; Conclave must reconcile the review request."
+				: providerChecksFailed
+					? "Provider checks failed; Conclave must reconcile the Work."
+					: providerEvidenceReconciled &&
+							(isProviderIdentityError(work.lastError) || isProviderChecksError(work.lastError))
+						? "Provider evidence was reconciled; Conclave may continue."
+						: observation.kind === "review-comment" && observation.actionable !== false
+							? "Conclave is assessing provider feedback."
+							: observation.status === "closed"
+								? "Provider review is closed; Conclave is reconciling the Work."
+								: observation.status === "merged"
+									? "Provider merge observed; Conclave is recording the Outcome."
+									: observation.status === "checks-failed"
+										? "Provider checks failed; Conclave is reconciling the Work."
+										: work.nextAction,
 		};
 		const result = this.append({
 			meta,
@@ -1370,7 +1417,11 @@ export class ApplicationService {
 			effects:
 				observation.kind === "provider-outcome" ||
 				(observation.kind === "review-comment" && observation.actionable !== false) ||
-				(observation.kind === "ci-status" && (observation.status === "closed" || observation.status === "merged"))
+				(observation.kind === "ci-status" &&
+					(observation.status === "closed" ||
+						observation.status === "merged" ||
+						observation.status === "checks-failed" ||
+						providerIdentityDrift))
 					? [
 							schedulerEffect(
 								workId,
@@ -1380,9 +1431,12 @@ export class ApplicationService {
 									? "provider-feedback"
 									: observation.kind === "ci-status" && observation.status === "closed"
 										? "provider-closed"
-										: observation.kind === "provider-outcome"
-											? "provider-outcome"
-											: undefined,
+										: observation.kind === "ci-status" &&
+												(observation.status === "checks-failed" || providerIdentityDrift)
+											? "provider-ci"
+											: observation.kind === "provider-outcome"
+												? "provider-outcome"
+												: undefined,
 							),
 						]
 					: undefined,
@@ -1525,6 +1579,57 @@ export class ApplicationService {
 			summary: error.summary,
 			effects: [schedulerEffect(workId, next.revision, observationId, reason)],
 		}).projection;
+	}
+
+	private recordUnsupportedEffect(effect: Readonly<{ effectId: string; kind: string; payload: JsonObject }>): void {
+		const workId = effect.payload["workId"];
+		if (!isTextValue(workId)) return;
+		const work = this.archive.project(workId);
+		if (work === undefined) return;
+		const marker = `unsupported-effect:${effect.effectId}`;
+		if (this.heartbeat.has(marker)) return;
+		this.appendUnsupportedEffect(work, effect, marker);
+	}
+
+	private appendUnsupportedEffect(
+		work: WorkView,
+		effect: Readonly<{ effectId: string; kind: string; payload: JsonObject }>,
+		marker: string,
+	): void {
+		const failure: ErrorEnvelope = {
+			code: "integrity-failure",
+			summary: `Unsupported Archive effect ${effect.kind} was retained for inspection.`,
+			retryable: false,
+			remediation: "Upgrade Khala to a version that supports this effect before retrying the worker.",
+			evidenceRefs: [effect.effectId],
+		};
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastError: failure,
+			nextAction: "An unsupported Archive effect requires operator reconciliation.",
+		};
+		try {
+			this.append({
+				meta: {
+					actor: "system",
+					commandId: `${marker}:${work.revision}`,
+					expectedWorkRevision: work.revision,
+					schemaVersion: 1,
+				},
+				kind: "error",
+				workId: work.workId,
+				missionId: work.mission?.missionId,
+				executionId: work.execution?.executionId,
+				payload: { effectId: effect.effectId, kind: effect.kind, error: failure },
+				projection: next,
+				evidenceRefs: failure.evidenceRefs,
+				summary: failure.summary,
+			});
+			this.heartbeat.set(marker, failure.summary);
+		} catch {
+			// Leave both the effect and the diagnostic available for the next pass.
+		}
 	}
 
 	async close(): Promise<void> {
@@ -1695,21 +1800,34 @@ export class ApplicationService {
 		}
 	}
 
+	private providerEvidenceAllowsReady(work: WorkView, request: NonNullable<WorkView["reviewRequest"]>): boolean {
+		const latestChecks = this.archive.findLatestObservation(work.workId, "ci-status", request.providerId);
+		return (
+			latestChecks === undefined ||
+			(latestChecks.status !== "checks-failed" && providerObservationMatchesReview(latestChecks, request))
+		);
+	}
+
 	private hasFeedbackDelivery(workId: string, observationId: string, delivered: boolean): boolean {
 		return this.hasDeliveredFeedback(workId, observationId, undefined, delivered);
 	}
 
 	private hasPendingFeedbackDelivery(workId: string, observationId: string): boolean {
-		let cursor: string | undefined;
-		let pending = false;
-		do {
-			const page = this.archive.query({ workId, kinds: ["delivery"] }, cursor);
-			for (const record of page.items) {
-				if (isFeedbackObservation(record, observationId)) pending = isPendingFeedbackReservation(record, observationId);
-			}
-			cursor = page.nextCursor;
-		} while (cursor !== undefined);
-		return pending;
+		const executionId = this.archive.project(workId)?.execution?.executionId;
+		return this.findPendingFeedbackDelivery(workId, observationId, executionId);
+	}
+
+	private findPendingFeedbackDelivery(
+		workId: string,
+		observationId: string,
+		executionId: string | undefined,
+		cursor?: string,
+	): boolean {
+		const page = this.archive.query({ workId, kinds: ["delivery"] }, cursor);
+		if (page.items.some((record) => pendingFeedbackMatches(record, observationId, executionId))) return true;
+		return page.nextCursor === undefined
+			? false
+			: this.findPendingFeedbackDelivery(workId, observationId, executionId, page.nextCursor);
 	}
 
 	private hasDeliveredFeedback(
@@ -1808,7 +1926,10 @@ export class ApplicationService {
 		this.requireActor(meta, "user");
 		this.requirePreAdmissionWork(work, "Work terms can only change before admission.");
 		const terms = mergeTermChanges(work.terms, input, false);
-		const specificity = missionSpecificity(terms);
+		const specificity = amendedMissionSpecificity(
+			work.missionSpecificity ?? { status: "explicit", missing: [] },
+			input,
+		);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -1954,6 +2075,8 @@ export class ApplicationService {
 				thinking: this.options.observerThinking,
 				role: "observer",
 				promptIdentity: this.options.observerPromptIdentity,
+				allowedPaths: ["."],
+				sandboxRoot: this.options.projectPath,
 				bindingScope: { workId: work.workId },
 				tools: ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"],
 				sessionPath: roleSessionPath(this.options.projectPath, "observer", work.workId),
@@ -2561,6 +2684,7 @@ export class ApplicationService {
 			const head = await this.ports.workspace.inspectHead(execution.sandbox.path);
 			if (
 				request.headCommit !== head ||
+				!this.providerEvidenceAllowsReady(work, request) ||
 				request.diffSummary.trim().length === 0 ||
 				request.validation.length === 0 ||
 				(this.ports.workspace.runValidation !== undefined && !isCurrentValidation(work, execution, head))
@@ -2898,6 +3022,8 @@ export class ApplicationService {
 				signal === undefined ||
 				signal.kind !== "ready" ||
 				!isOpenReview(work.reviewRequest) ||
+				work.reviewRequest === undefined ||
+				!this.providerEvidenceAllowsReady(work, work.reviewRequest) ||
 				execution.state !== "running"
 			) {
 				throw this.error(
@@ -3072,6 +3198,7 @@ export class ApplicationService {
 			payload: {
 				observationId: observation.observationId,
 				deliveryId: feedbackDelivery.effectId,
+				executionId: execution.executionId,
 				feedback,
 				delivered: false,
 			},
@@ -3235,6 +3362,7 @@ export class ApplicationService {
 						observationId,
 						deliveryId,
 						feedback,
+						executionId: execution.executionId,
 						delivered: false,
 						message: error instanceof Error ? error.message : String(error),
 					},
@@ -3266,14 +3394,14 @@ export class ApplicationService {
 		if (
 			work === undefined ||
 			work.execution?.executionId !== executionId ||
-			work.execution.state !== "running" ||
+			!canRecordFeedback(work.execution) ||
 			!sameRuntimeBinding(work.execution.pi, binding)
 		)
 			return false;
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
-			nextAction: "Executor is idle; waiting for a Signal.",
+			nextAction: work.execution?.state === "blocked" ? work.nextAction : "Executor is idle; waiting for a Signal.",
 		};
 		this.append({
 			meta: {
@@ -3300,30 +3428,7 @@ export class ApplicationService {
 		deliveryId: string,
 		observationId?: string,
 	): void {
-		const marker = `feedback-unavailable:${deliveryId}`;
-		if (this.heartbeat.has(marker)) return;
-		const next: WorkView = {
-			...work,
-			revision: work.revision + 1,
-			nextAction: "Authorized review feedback remains recorded. Reconcile the next Executor.",
-		};
-		this.append({
-			meta: {
-				actor: "system",
-				commandId: `feedback-unavailable:${deliveryId}:${work.revision}`,
-				expectedWorkRevision: work.revision,
-				schemaVersion: 1,
-			},
-			kind: "delivery",
-			workId: work.workId,
-			missionId: work.mission?.missionId,
-			executionId: work.execution?.executionId,
-			payload: { observationId, deliveryId, feedback, delivered: false, disposition: "retry" },
-			projection: next,
-			evidenceRefs: feedback,
-			summary: "Authorized review feedback was retained for reconciliation.",
-		});
-		this.heartbeat.set(marker, "recorded");
+		this.recordFeedbackDisposition(work, feedback, deliveryId, observationId, "retry");
 	}
 
 	private recordFeedbackSuperseded(
@@ -3332,17 +3437,36 @@ export class ApplicationService {
 		deliveryId: string,
 		observationId?: string,
 	): void {
-		const marker = `feedback-superseded:${deliveryId}`;
+		this.recordFeedbackDisposition(work, feedback, deliveryId, observationId, "superseded");
+	}
+
+	private recordFeedbackDisposition(
+		work: WorkView,
+		feedback: readonly string[],
+		deliveryId: string,
+		observationId: string | undefined,
+		disposition: "retry" | "superseded",
+	): void {
+		const marker = `feedback-${disposition}:${deliveryId}`;
 		if (this.heartbeat.has(marker)) return;
-		const next: WorkView = {
-			...work,
-			revision: work.revision + 1,
-			nextAction: "Provider feedback was superseded by terminal Work; inspect the Archive.",
-		};
+		this.appendFeedbackDisposition(work, feedback, deliveryId, observationId, disposition, marker);
+		this.heartbeat.set(marker, "recorded");
+	}
+
+	private appendFeedbackDisposition(
+		work: WorkView,
+		feedback: readonly string[],
+		deliveryId: string,
+		observationId: string | undefined,
+		disposition: "retry" | "superseded",
+		marker: string,
+	): void {
+		const details = feedbackDispositionDetails(disposition);
+		const next: WorkView = { ...work, revision: work.revision + 1, nextAction: details.nextAction };
 		this.append({
 			meta: {
 				actor: "system",
-				commandId: `feedback-superseded:${deliveryId}:${work.revision}`,
+				commandId: `${marker}:${work.revision}`,
 				expectedWorkRevision: work.revision,
 				schemaVersion: 1,
 			},
@@ -3350,12 +3474,18 @@ export class ApplicationService {
 			workId: work.workId,
 			missionId: work.mission?.missionId,
 			executionId: work.execution?.executionId,
-			payload: { observationId, deliveryId, feedback, delivered: false, disposition: "superseded" },
+			payload: {
+				observationId,
+				deliveryId,
+				executionId: work.execution?.executionId,
+				feedback,
+				delivered: false,
+				disposition,
+			},
 			projection: next,
 			evidenceRefs: feedback,
-			summary: "Authorized provider feedback was superseded by terminal Work.",
+			summary: details.summary,
 		});
-		this.heartbeat.set(marker, "recorded");
 	}
 
 	// oxlint-disable-next-line complexity
@@ -3374,6 +3504,7 @@ export class ApplicationService {
 			mergeEvidence.repository !== reviewRequest.repository ||
 			mergeEvidence.sourceBranch !== reviewRequest.sourceBranch ||
 			mergeEvidence.targetBranch !== reviewRequest.targetBranch ||
+			(reviewRequest.baseCommit !== undefined && mergeEvidence.baseCommit !== reviewRequest.baseCommit) ||
 			mergeEvidence.headCommit !== reviewRequest.headCommit ||
 			mergeEvidence.mergeCommit === undefined
 		) {
@@ -4113,20 +4244,20 @@ function readOptionalActionTextList(values: readonly string[] | undefined, key: 
 	return values === undefined ? [] : readActionTextList(values, key);
 }
 
-function missionSpecificity(terms: WorkTerms): MissionSpecificity {
-	const missing = defaultTermNames(terms);
+function missionSpecificity(_terms: WorkTerms): MissionSpecificity {
+	return { status: "explicit", missing: [] };
+}
+
+function amendedMissionSpecificity(previous: MissionSpecificity, input: ActionInput | undefined): MissionSpecificity {
+	const provided = {
+		scope: input?.scope !== undefined,
+		validation: input?.validation !== undefined,
+	};
+	const missing = previous.missing.filter((field) => {
+		// SAFETY: mission specificity can only name fields represented in this map.
+		return provided[field as keyof typeof provided] !== true;
+	});
 	return { status: missing.length === 0 ? "explicit" : "defaults-used", missing };
-}
-
-function defaultTermNames(terms: WorkTerms): readonly string[] {
-	const missing: string[] = [];
-	if (terms.scope === DEFAULT_SCOPE) missing.push("scope");
-	if (isDefaultValidation(terms.validation)) missing.push("validation");
-	return missing;
-}
-
-function isDefaultValidation(validation: readonly string[]): boolean {
-	return validation.length === 1 && validation[0] === DEFAULT_VALIDATION;
 }
 
 // oxlint-disable-next-line complexity
@@ -4578,6 +4709,34 @@ function isProviderMonitorError(error: ErrorEnvelope): boolean {
 	return error.source === "provider-monitor" || error.summary.startsWith("Provider monitor failed:");
 }
 
+function isProviderIdentityError(error: ErrorEnvelope | undefined): boolean {
+	return error?.code === "integrity-failure" && error.summary === "Provider review identity changed after publication.";
+}
+
+function isProviderChecksError(error: ErrorEnvelope | undefined): boolean {
+	return error?.code === "external-failure" && error.summary === "Provider checks failed.";
+}
+
+function providerIdentityError(work: WorkView, observation: ProviderObservation): ErrorEnvelope {
+	return {
+		code: "integrity-failure",
+		summary: "Provider review identity changed after publication.",
+		retryable: false,
+		remediation: "Reconcile the review request before sending ready evidence or recording an Outcome.",
+		evidenceRefs: providerObservationEvidence(work, observation),
+	};
+}
+
+function providerChecksError(work: WorkView, observation: ProviderObservation): ErrorEnvelope {
+	return {
+		code: "external-failure",
+		summary: "Provider checks failed.",
+		retryable: false,
+		remediation: "Inspect the provider checks and reconcile the Work before handoff.",
+		evidenceRefs: providerObservationEvidence(work, observation),
+	};
+}
+
 function monitorFailureMarker(subject: string, workId: string): string {
 	return `monitor-failure:${subject}:${workId}`;
 }
@@ -4608,6 +4767,7 @@ function observationFingerprint(observation: ProviderObservation): string {
 		repository: observation.repository,
 		sourceBranch: observation.sourceBranch,
 		targetBranch: observation.targetBranch,
+		baseCommit: observation.baseCommit,
 		headCommit: observation.headCommit,
 		mergeCommit: observation.mergeCommit,
 		feedback: observation.feedback,
@@ -4635,6 +4795,39 @@ function isPendingFeedbackReservation(record: RecordView, observationId: string)
 		payload["delivered"] === false &&
 		payload["disposition"] !== "superseded"
 	);
+}
+
+function canRecordFeedback(execution: Execution | undefined): boolean {
+	return execution !== undefined && (execution.state === "running" || execution.state === "blocked");
+}
+
+function feedbackDispositionDetails(
+	disposition: "retry" | "superseded",
+): Readonly<{ nextAction: string; summary: string }> {
+	return disposition === "superseded"
+		? {
+				nextAction: "Provider feedback was superseded by terminal Work; inspect the Archive.",
+				summary: "Authorized provider feedback was superseded by terminal Work.",
+			}
+		: {
+				nextAction: "Authorized review feedback remains recorded. Reconcile the next Executor.",
+				summary: "Authorized review feedback was retained for reconciliation.",
+			};
+}
+
+function pendingFeedbackMatches(record: RecordView, observationId: string, executionId: string | undefined): boolean {
+	return (
+		isFeedbackObservation(record, observationId) &&
+		isPendingFeedbackReservation(record, observationId) &&
+		pendingDeliveryMatchesExecution(record, executionId)
+	);
+}
+
+function pendingDeliveryMatchesExecution(record: RecordView, executionId: string | undefined): boolean {
+	const payload = record.payload;
+	if (!isJsonObject(payload)) return false;
+	const deliveryExecutionId = payload["executionId"];
+	return deliveryExecutionId === undefined || deliveryExecutionId === executionId;
 }
 
 function matchesFeedbackDelivery(
@@ -4669,7 +4862,29 @@ function reviewObservationMatchesRequest(
 		observation.sourceBranch === reviewRequest.sourceBranch,
 		observation.targetBranch === reviewRequest.targetBranch,
 		observation.headCommit === reviewRequest.headCommit,
+		observation.baseCommit === undefined ||
+			reviewRequest.baseCommit === undefined ||
+			observation.baseCommit === reviewRequest.baseCommit,
 	].every(Boolean);
+}
+
+function providerObservationMatchesReview(
+	observation: ProviderObservation,
+	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	return [
+		matchesProviderField(observation.repository, reviewRequest.repository),
+		matchesProviderField(observation.sourceBranch, reviewRequest.sourceBranch),
+		matchesProviderField(observation.targetBranch, reviewRequest.targetBranch),
+		matchesProviderField(observation.headCommit, reviewRequest.headCommit),
+		observation.baseCommit === undefined ||
+			reviewRequest.baseCommit === undefined ||
+			observation.baseCommit === reviewRequest.baseCommit,
+	].every(Boolean);
+}
+
+function matchesProviderField(observed: string | undefined, expected: string): boolean {
+	return observed === undefined || observed === expected;
 }
 
 function normalizeProviderObservation(
@@ -4766,6 +4981,9 @@ function isCurrentProviderOutcome(work: WorkView): boolean {
 		work.providerOutcome.sourceBranch === work.reviewRequest.sourceBranch &&
 		work.providerOutcome.targetBranch === work.reviewRequest.targetBranch &&
 		work.providerOutcome.headCommit === work.reviewRequest.headCommit &&
+		(work.reviewRequest.baseCommit === undefined ||
+			work.providerOutcome.baseCommit === undefined ||
+			work.providerOutcome.baseCommit === work.reviewRequest.baseCommit) &&
 		work.providerOutcome.mergeCommit !== undefined
 	);
 }

@@ -45,7 +45,7 @@ A Work budget amendment creates a `work-amended` Record.
 A submission requires a title, objective, and at least one acceptance criterion.
 It may provide context, scope, constraints, validation requirements, permitted paths, and a maximum token budget.
 The default scope is repository-wide work.
-The default validation requirement is the project's configured validation command.
+The default validation command is `npm run check`; submissions can provide different commands when the project uses another validation workflow.
 The default permitted path is the entire repository.
 The default Work budget is 20,000 tokens and the default project concurrency is two Executions.
 
@@ -135,6 +135,7 @@ Khala stores no provider credentials.
 Provider capabilities are checked before publication.
 The built-in GitHub and GitLab adapters support draft review requests and merge observation.
 GitHub polling records normalized checks, issue comments, submitted reviews, inline comments, and provider outcomes.
+Failed checks wake the Conclave for reconciliation, and provider base/head drift blocks ready handoff.
 GitLab polling currently records review-request status and provider outcomes but does not normalize comments or checks.
 Feedback delivery is therefore GitHub-only in the MVP.
 

@@ -36,6 +36,8 @@ test("Role settings persist without discarding other Khala configuration", async
 		assert.throws(() => loadConfig(directory, false, false), /targetBranch must be a valid Git branch name/);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ targetBranch: "release.lock" }));
 		assert.throws(() => loadConfig(directory, false, false), /targetBranch must be a valid Git branch name/);
+		await writeFile(join(directory, "khala.json"), "{invalid");
+		assert.throws(() => loadConfig(directory, false, false), /contains invalid JSON/);
 	} finally {
 		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDirectory;
