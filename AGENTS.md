@@ -22,6 +22,7 @@
 
 - Read files in full and think through changes before writing code instead of relying on search snippets for broad changes.
 - No `any` unless absolutely necessary.
+- Do not disable, suppress, or weaken a linter rule; refactor the code so the configured checks pass.
 - Add meaningful comments for non-obvious architectural decisions, constraints, and trade-offs. Explain why the code is shaped that way, not what the code literally does.
 - Inline single-line helpers that have only one call site.
 - Check node_modules for external API types; don't guess.

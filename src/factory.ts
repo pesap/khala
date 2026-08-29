@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { type Api, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import { codeHostForOrigin, GitWorkspace } from "./adapters.js";
 import { SQLiteArchive } from "./archive.js";
 import { archivePath, type KhalaConfig, loadConfig } from "./config.js";
@@ -10,6 +11,10 @@ import { PiOracle } from "./oracle.js";
 import type { CodeHostPort, ModelCatalogPort, ServicePorts } from "./ports.js";
 import { PiRpcRuntime, promptIdentity } from "./runtime.js";
 import { ApplicationService, type ServiceOptions } from "./service.js";
+
+export type ApplicationModelRegistry = Readonly<{
+	find: (provider: string, modelId: string) => Model<Api> | undefined;
+}>;
 
 export type ApplicationRuntime = Readonly<{
 	service: ApplicationService;
@@ -21,7 +26,10 @@ export function createApplication(
 	projectPath: string,
 	trusted: boolean,
 	packageRoot: string,
-	options?: Readonly<{ requireModels?: boolean }>,
+	options?: Readonly<{
+		requireModels?: boolean;
+		modelRegistry?: ApplicationModelRegistry;
+	}>,
 ): ApplicationRuntime {
 	const context = applicationContext(projectPath, trusted);
 	const config = loadConfig(context.projectPath, context.trusted, options?.requireModels ?? true);
@@ -29,7 +37,7 @@ export function createApplication(
 	const runtime = createRuntime(config, packageRoot, context, context.authorityPrivateKey);
 	const version = packageVersion(packageRoot);
 	const prompts = readPromptIdentities(packageRoot, version);
-	const models = new ConfiguredModels(config);
+	const models = new ConfiguredModels(config, options?.modelRegistry);
 	const ports = createPorts(config, context.projectPath, runtime, models, prompts.oracle);
 	const service = new ApplicationService(archive, ports, createServiceOptions(config, context, prompts));
 	return createApplicationRuntime(service, config, models);
@@ -42,23 +50,44 @@ type ApplicationContext = Readonly<{
 	rolePublicKey: string;
 	authorityPrivateKey: KeyObject | undefined;
 }>;
-
-// oxlint-disable-next-line complexity
 function applicationContext(projectPath: string, trusted: boolean): ApplicationContext {
-	const child = process.env["KHALA_BOUND_WORK_ID"] !== undefined;
-	const effectiveProjectPath = child ? (process.env["KHALA_PROJECT_PATH"] ?? projectPath) : projectPath;
-	const trustedValue = child ? process.env["KHALA_PROJECT_TRUSTED"] : undefined;
-	const effectiveTrusted = trustedValue === undefined ? trusted : trustedValue === "1";
-	const configuredPublicKey = process.env["KHALA_ROLE_PUBLIC_KEY"];
-	const authority = configuredPublicKey === undefined ? generateKeyPairSync("ed25519") : undefined;
-	const rolePublicKey = configuredPublicKey ?? exportPublicKey(authority);
+	return process.env["KHALA_BOUND_WORK_ID"] === undefined
+		? parentApplicationContext(projectPath, trusted)
+		: childApplicationContext(projectPath, trusted);
+}
+
+function parentApplicationContext(projectPath: string, trusted: boolean): ApplicationContext {
+	const authority = generateKeyPairSync("ed25519");
 	return {
-		projectPath: effectiveProjectPath,
-		trusted: effectiveTrusted,
-		child,
-		rolePublicKey,
+		projectPath,
+		trusted,
+		child: false,
+		rolePublicKey: exportPublicKey(authority),
+		authorityPrivateKey: authority.privateKey,
+	};
+}
+
+function childApplicationContext(projectPath: string, trusted: boolean): ApplicationContext {
+	const configuredPublicKey = process.env["KHALA_ROLE_PUBLIC_KEY"];
+	const authority = childAuthority(configuredPublicKey);
+	return {
+		projectPath: process.env["KHALA_PROJECT_PATH"] ?? projectPath,
+		trusted: childTrust(trusted),
+		child: true,
+		rolePublicKey: configuredPublicKey ?? exportPublicKey(authority),
 		authorityPrivateKey: authority?.privateKey,
 	};
+}
+
+function childAuthority(
+	configuredPublicKey: string | undefined,
+): { privateKey: KeyObject; publicKey: KeyObject } | undefined {
+	return configuredPublicKey === undefined ? generateKeyPairSync("ed25519") : undefined;
+}
+
+function childTrust(fallback: boolean): boolean {
+	const trustedValue = process.env["KHALA_PROJECT_TRUSTED"];
+	return trustedValue === undefined ? fallback : trustedValue === "1";
 }
 
 function exportPublicKey(authority: Readonly<{ publicKey: KeyObject }> | undefined): string {
@@ -162,11 +191,31 @@ function createApplicationRuntime(
 }
 
 type ModelResolution = Readonly<{ model: string; supportedThinking: readonly string[] }>;
+type ModelReference = Readonly<{ provider: string; modelId: string }>;
+
+function parseModelReference(model: string): ModelReference | undefined {
+	const separator = model.indexOf("/");
+	if (separator <= 0 || separator === model.length - 1) return undefined;
+	return { provider: model.slice(0, separator), modelId: model.slice(separator + 1) };
+}
+
+function resolveModelMetadata(
+	registry: ApplicationModelRegistry | undefined,
+	reference: ModelReference,
+	model: string,
+): Model<Api> {
+	if (registry === undefined) throw new Error("Pi model metadata is unavailable.");
+	const metadata = registry.find(reference.provider, reference.modelId);
+	if (metadata === undefined) throw new Error(`Model ${model} is not available in Pi.`);
+	return metadata;
+}
 
 class ConfiguredModels implements ModelCatalogPort {
 	private scopedModels: Readonly<Record<GovernedRole, string>>;
+	private readonly modelRegistry: ApplicationModelRegistry | undefined;
 
-	constructor(config: KhalaConfig) {
+	constructor(config: KhalaConfig, modelRegistry?: ApplicationModelRegistry) {
+		this.modelRegistry = modelRegistry;
 		this.scopedModels = {
 			conclave: config.conclaveModel,
 			executor: config.executorModel,
@@ -183,12 +232,12 @@ class ConfiguredModels implements ModelCatalogPort {
 	updateRoleModel(role: GovernedRole, model: string): void {
 		this.scopedModels = { ...this.scopedModels, [role]: model };
 	}
-
 	resolve(model: string): ModelResolution {
-		if (model.trim().length === 0) {
-			throw new Error("A model is required.");
-		}
-		return { model, supportedThinking: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] };
+		if (model.trim().length === 0) throw new Error("A model is required.");
+		const reference = parseModelReference(model);
+		if (reference === undefined) throw new Error(`Model ${model} is not a valid provider/model reference.`);
+		const metadata = resolveModelMetadata(this.modelRegistry, reference, model);
+		return { model, supportedThinking: getSupportedThinkingLevels(metadata) };
 	}
 }
 
@@ -202,27 +251,37 @@ class LazyCodeHost implements CodeHostPort {
 		this.targetBranch = targetBranch;
 	}
 
-	async capabilities(): Promise<Readonly<{ supportsDraft: boolean; supportsMergeObservation: boolean }>> {
-		return (await this.get()).capabilities();
+	async capabilities(
+		operation?: Parameters<CodeHostPort["capabilities"]>[0],
+	): Promise<Readonly<{ supportsDraft: boolean; supportsMergeObservation: boolean }>> {
+		return (await this.get(operation)).capabilities(operation);
 	}
 
-	async identity(): Promise<Readonly<{ principalId: string; verified: boolean }>> {
-		return (await this.get()).identity();
+	async identity(
+		operation?: Parameters<CodeHostPort["identity"]>[0],
+	): Promise<Readonly<{ principalId: string; verified: boolean }>> {
+		return (await this.get(operation)).identity(operation);
 	}
 
-	async ensureReviewRequest(input: Parameters<CodeHostPort["ensureReviewRequest"]>[0]) {
-		return (await this.get()).ensureReviewRequest({ ...input, targetBranch: this.targetBranch });
+	async ensureReviewRequest(
+		input: Parameters<CodeHostPort["ensureReviewRequest"]>[0],
+		operation?: Parameters<CodeHostPort["ensureReviewRequest"]>[1],
+	) {
+		return (await this.get(operation)).ensureReviewRequest({ ...input, targetBranch: this.targetBranch }, operation);
 	}
 
-	async poll(reviewRequest: Parameters<CodeHostPort["poll"]>[0]) {
-		return (await this.get()).poll(reviewRequest);
+	async poll(reviewRequest: Parameters<CodeHostPort["poll"]>[0], operation?: Parameters<CodeHostPort["poll"]>[1]) {
+		return (await this.get(operation)).poll(reviewRequest, operation);
 	}
 
-	async inspectOutcome(reviewRequest: Parameters<CodeHostPort["inspectOutcome"]>[0]) {
-		return (await this.get()).inspectOutcome(reviewRequest);
+	async inspectOutcome(
+		reviewRequest: Parameters<CodeHostPort["inspectOutcome"]>[0],
+		operation?: Parameters<CodeHostPort["inspectOutcome"]>[1],
+	) {
+		return (await this.get(operation)).inspectOutcome(reviewRequest, operation);
 	}
 
-	private async get(): Promise<CodeHostPort> {
+	private async get(operation?: Parameters<CodeHostPort["capabilities"]>[0]): Promise<CodeHostPort> {
 		if (this.adapter !== undefined) {
 			return this.adapter;
 		}
@@ -230,7 +289,7 @@ class LazyCodeHost implements CodeHostPort {
 			execFile(
 				"git",
 				["remote", "get-url", "origin"],
-				{ cwd: this.projectPath, timeout: 120_000, killSignal: "SIGKILL" },
+				{ cwd: this.projectPath, timeout: 120_000, killSignal: "SIGKILL", signal: operation?.signal },
 				(error, stdout) => {
 					if (error !== null) {
 						reject(error);

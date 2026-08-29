@@ -56,27 +56,37 @@ export default function reviewExtension(pi: ExtensionAPI): void {
 		}
 	});
 }
-
-// oxlint-disable-next-line complexity
 async function resolveTarget(args: string | undefined, context: ExtensionContext): Promise<string | null> {
-	const direct = args?.trim() ?? "";
+	const direct = reviewArgument(args);
 	if (direct.length > 0) return direct;
 	const selected = await context.ui.select("Select review scope:", [...REVIEW_OPTIONS]);
+	return selectReviewTargetOrCancel(selected, context);
+}
+
+function reviewArgument(args: string | undefined): string {
+	return args === undefined ? "" : args.trim();
+}
+async function selectReviewTargetOrCancel(
+	selected: string | undefined,
+	context: ExtensionContext,
+): Promise<string | null> {
 	if (selected === undefined) return null;
 	return selectReviewTarget(selected, context);
 }
 
-// oxlint-disable-next-line complexity
 async function selectReviewTarget(selected: string, context: ExtensionContext): Promise<string | null> {
 	const index = REVIEW_OPTIONS.findIndex((option) => option === selected);
 	if (index === 0) return "uncommitted changes (staged, unstaged, and untracked)";
-	const prompts = ["Base branch:", "Commit SHA:", "GitHub PR number or URL:"];
-	if (index < 4) {
-		const value = await context.ui.input(prompts[index - 1] ?? "", index === 1 ? "main" : "");
-		return nonBlankReviewTarget(value, reviewTargetPrefix(index));
-	}
+	if (index > 0 && index < 4) return promptReviewTarget(index, context);
 	const paths = await context.ui.editor("Files or folders, one per line:", ".");
 	return nonBlankReviewTarget(paths, "snapshot of:\n");
+}
+
+async function promptReviewTarget(index: number, context: ExtensionContext): Promise<string | null> {
+	const prompts = ["Base branch:", "Commit SHA:", "GitHub PR number or URL:"];
+	const defaults = ["main", "", ""];
+	const value = await context.ui.input(prompts[index - 1] ?? "", defaults[index - 1] ?? "");
+	return nonBlankReviewTarget(value, reviewTargetPrefix(index));
 }
 
 function reviewTargetPrefix(index: number): string {
@@ -107,12 +117,19 @@ function isReviewStateEntry(entry: {
 }): entry is { data?: unknown } & { type: "custom"; customType: typeof REVIEW_STATE } {
 	return entry.type === "custom" && entry.customType === REVIEW_STATE;
 }
-
-// oxlint-disable-next-line complexity
 function isReviewState(value: ReviewState | null | undefined): boolean | undefined {
-	if (value === null || value === undefined || Object(value) !== value || Array.isArray(value)) return undefined;
-	const active = value.active;
-	return active === true || active === false ? active : undefined;
+	if (!isReviewStateObject(value)) return undefined;
+	return readReviewActive(value.active);
+}
+
+function isReviewStateObject(value: ReviewState | null | undefined): value is ReviewState {
+	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
+}
+
+function readReviewActive(value: boolean | undefined): boolean | undefined {
+	if (value === true) return true;
+	if (value === false) return false;
+	return undefined;
 }
 
 type ReviewState = Readonly<{ active?: boolean | undefined; target?: string | undefined }>;

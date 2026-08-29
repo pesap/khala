@@ -231,22 +231,20 @@ function readGitBranchPrefix(values: JsonObject, key: string, fallback: string):
 	assertGitRef(value, key, true);
 	return value;
 }
-
-// oxlint-disable-next-line complexity
 function assertGitRef(value: string, key: string, allowTrailingSlash: boolean): void {
-	if (
-		!/^[A-Za-z0-9._/-]+$/.test(value) ||
-		value.startsWith("/") ||
-		value.startsWith(".") ||
-		value.startsWith("-") ||
-		value.includes("..") ||
-		value.includes("//") ||
-		value.includes("@{") ||
-		value.endsWith(".") ||
-		(!allowTrailingSlash && value.endsWith("/")) ||
-		hasInvalidGitRefComponent(value, allowTrailingSlash)
-	)
-		throw new ConfigError(`${key} must be a valid Git branch name.`);
+	const invalid = [
+		!/^[A-Za-z0-9._/-]+$/.test(value),
+		value.startsWith("/"),
+		value.startsWith("."),
+		value.startsWith("-"),
+		value.includes(".."),
+		value.includes("//"),
+		value.includes("@{"),
+		value.endsWith("."),
+		!allowTrailingSlash && value.endsWith("/"),
+		hasInvalidGitRefComponent(value, allowTrailingSlash),
+	].some(Boolean);
+	if (invalid) throw new ConfigError(`${key} must be a valid Git branch name.`);
 }
 
 function hasInvalidGitRefComponent(value: string, allowTrailingSlash: boolean): boolean {

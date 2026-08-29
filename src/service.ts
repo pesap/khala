@@ -42,7 +42,14 @@ import {
 	type WorkTerms,
 	type WorkView,
 } from "./model.js";
-import type { OracleResult, RuntimeBinding, RuntimeState, RuntimeTurn, ServicePorts } from "./ports.js";
+import type {
+	OperationContext,
+	OracleResult,
+	RuntimeBinding,
+	RuntimeState,
+	RuntimeTurn,
+	ServicePorts,
+} from "./ports.js";
 
 export type ServiceOptions = Readonly<{
 	projectPath: string;
@@ -71,6 +78,12 @@ type RoleCapability = Readonly<{
 	workId?: string | undefined;
 	executionId?: string | undefined;
 	nonce?: string | undefined;
+}>;
+type ActionSpec = Readonly<{
+	kind: Action["kind"];
+	enabled: boolean;
+	label: string;
+	disabledReason?: string | undefined;
 }>;
 const providerPollAuthority = Symbol("provider-poll-authority");
 const AUTONOMOUS_MONITOR_INTERVAL_MS = 60_000;
@@ -153,92 +166,18 @@ export class ApplicationService {
 			oracle: { model: this.options.oracleModel, thinking: this.options.oracleThinking },
 		};
 	}
-
-	// oxlint-disable-next-line complexity
 	updateRoleSetting(role: GovernedRole, setting: RoleSetting, value: string): void {
 		const normalized = assertNonBlank(value, `${role} ${setting}`);
-		if (role === "conclave") {
-			this.options = {
-				...this.options,
-				conclaveModel: setting === "model" ? normalized : this.options.conclaveModel,
-				conclaveThinking: setting === "thinking" ? normalized : this.options.conclaveThinking,
-			};
-			return;
-		}
-		if (role === "executor") {
-			this.options = {
-				...this.options,
-				executorModel: setting === "model" ? normalized : this.options.executorModel,
-				executorThinking: setting === "thinking" ? normalized : this.options.executorThinking,
-			};
-			return;
-		}
-		if (role === "observer") {
-			this.options = {
-				...this.options,
-				observerModel: setting === "model" ? normalized : this.options.observerModel,
-				observerThinking: setting === "thinking" ? normalized : this.options.observerThinking,
-			};
-			return;
-		}
-		this.options = {
-			...this.options,
-			oracleModel: setting === "model" ? normalized : this.options.oracleModel,
-			oracleThinking: setting === "thinking" ? normalized : this.options.oracleThinking,
-		};
+		this.options = { ...this.options, ...roleSettingChange(role, setting, normalized) };
 	}
-
-	// oxlint-disable-next-line complexity
 	submitWork(input: SubmitWorkInput, meta: CommandMeta): WorkView {
 		this.requireActor(meta, "user");
 		const fingerprint = actionFingerprint("submit-work", input);
-		let prior: ReturnType<ArchivePort["findCommand"]>;
-		try {
-			prior = this.archive.findCommand(meta.commandId, fingerprint);
-		} catch (error) {
-			if (error instanceof CommandReuseConflict)
-				throw this.error(
-					"invalid-input",
-					error.message,
-					false,
-					"Use a new command ID for a different Work submission.",
-				);
-			throw error;
-		}
-		if (prior !== undefined) {
-			if (prior.record.actor !== "user")
-				throw this.error(
-					"forbidden",
-					`Command ${meta.commandId} belongs to a different actor.`,
-					false,
-					"Use a new command ID for this User submission.",
-				);
-			return prior.projection;
-		}
+		const prior = this.findSubmissionPrior(meta, fingerprint);
+		if (prior !== undefined) return prior;
 		const workId = input.workId?.trim() || nanoid();
-		const existing = this.archive.project(workId);
-		if (existing !== undefined) {
-			throw this.error("invalid-input", `Work ID ${workId} is already in use.`, false, "Choose a new Work ID.");
-		}
-		if (meta.expectedWorkRevision !== 0) {
-			throw this.error(
-				"revision-conflict",
-				"A new Work must use revision zero.",
-				false,
-				"Retry with expected_work_revision 0.",
-			);
-		}
-		let terms: WorkTerms;
-		try {
-			terms = normalizeTerms(input, this.options.defaultWorkTokens);
-		} catch (error) {
-			throw this.error(
-				"invalid-input",
-				error instanceof Error ? error.message : "Work terms are invalid.",
-				false,
-				"Provide nonblank Work terms and a positive token budget.",
-			);
-		}
+		this.assertNewSubmission(workId, meta);
+		const terms = this.submissionTerms(input);
 		const projection: WorkView = {
 			workId,
 			revision: 1,
@@ -249,7 +188,7 @@ export class ApplicationService {
 			nextAction: "Conclave admission is pending.",
 			queuedSequence: 0,
 		};
-		const result = this.append({
+		return this.append({
 			meta: { ...meta, commandFingerprint: fingerprint },
 			kind: "submission",
 			workId,
@@ -257,33 +196,68 @@ export class ApplicationService {
 			projection,
 			summary: `Work submitted: ${terms.title}`,
 			effects: [{ effectId: `conclave-wake:${workId}`, kind: "conclave-wake", payload: { workId } }],
-		});
-		return result.projection;
+		}).projection;
+	}
+
+	private findSubmissionPrior(meta: CommandMeta, fingerprint: string): WorkView | undefined {
+		const prior = this.readSubmissionCommand(meta, fingerprint);
+		return prior === undefined ? undefined : this.validateSubmissionCommand(prior, meta);
+	}
+
+	private readSubmissionCommand(meta: CommandMeta, fingerprint: string): ReturnType<ArchivePort["findCommand"]> {
+		try {
+			return this.archive.findCommand(meta.commandId, fingerprint);
+		} catch (error) {
+			if (error instanceof CommandReuseConflict)
+				throw this.error("invalid-input", error.message, false, "Use a new command ID for a different Work submission.");
+			throw error;
+		}
+	}
+
+	private validateSubmissionCommand(
+		prior: NonNullable<ReturnType<ArchivePort["findCommand"]>>,
+		meta: CommandMeta,
+	): WorkView {
+		if (prior.record.actor !== "user")
+			throw this.error(
+				"forbidden",
+				`Command ${meta.commandId} belongs to a different actor.`,
+				false,
+				"Use a new command ID for this User submission.",
+			);
+		return prior.projection;
+	}
+
+	private assertNewSubmission(workId: string, meta: CommandMeta): void {
+		if (this.archive.project(workId) !== undefined)
+			throw this.error("invalid-input", `Work ID ${workId} is already in use.`, false, "Choose a new Work ID.");
+		if (meta.expectedWorkRevision !== 0)
+			throw this.error(
+				"revision-conflict",
+				"A new Work must use revision zero.",
+				false,
+				"Retry with expected_work_revision 0.",
+			);
+	}
+
+	private submissionTerms(input: SubmitWorkInput): WorkTerms {
+		try {
+			return normalizeTerms(input, this.options.defaultWorkTokens);
+		} catch (error) {
+			throw this.error(
+				"invalid-input",
+				error instanceof Error ? error.message : "Work terms are invalid.",
+				false,
+				"Provide nonblank Work terms and a positive token budget.",
+			);
+		}
 	}
 
 	listWork(): readonly WorkSummary[] {
 		const projects = this.archive.listProjects();
-		const queue = projects
-			.filter((work) => work.state === "queued")
-			.sort((a, b) => a.queuedSequence - b.queuedSequence);
+		const queue = projects.filter((work) => work.state === "queued").sort((a, b) => a.queuedSequence - b.queuedSequence);
 		const queuePositions = new Map(queue.map((work, index) => [work.workId, index + 1]));
-		// oxlint-disable-next-line complexity
-		return projects.map((work) => ({
-			workId: work.workId,
-			title: work.terms.title,
-			state: work.state,
-			stopReason: work.stopReason,
-			missionState: work.missionState,
-			executionState: work.execution?.state,
-			hasFailure:
-				work.lastError !== undefined ||
-				(work.state === "stopped" && work.stopReason === "failed") ||
-				work.execution?.state === "failed",
-			revision: work.revision,
-			queuePosition: queuePositions.get(work.workId),
-			budget: work.budget,
-			nextAction: work.nextAction,
-		}));
+		return projects.map((work) => workSummary(work, queuePositions));
 	}
 
 	inspectWork(workId: string): WorkView {
@@ -298,27 +272,21 @@ export class ApplicationService {
 		}
 		return work;
 	}
-
-	// oxlint-disable-next-line complexity
-	async inspectRuntime(workId: string, meta?: CommandMeta): Promise<WorkView> {
+	async inspectRuntime(workId: string, meta?: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		const work = this.inspectWork(workId);
-		if (meta !== undefined) {
-			this.requireReadableActor(meta.actor);
-			this.checkRevision(work, meta);
-			if (meta.actor !== "user") this.requireRoleBinding(meta, work);
-		}
-		const execution = work.execution;
-		if (execution?.pi === undefined || (execution.state !== "running" && execution.state !== "awaiting-review")) {
-			return work;
-		}
-		const runtimeState: RuntimeState = await this.ports.runtime.getState(execution.pi);
-		const nextAction = runtimeAction(work, runtimeState);
-		if (execution.runtimeState === runtimeState && nextAction === work.nextAction) return work;
-		return {
-			...work,
-			execution: { ...execution, runtimeState },
-			nextAction,
-		};
+		this.authorizeRuntimeInspection(work, meta);
+		if (!runtimeNeedsInspection(work)) return work;
+		operation?.onUpdate?.("Inspecting the bound Pi runtime.");
+		const runtimeState = await this.ports.runtime.getState(runtimeBinding(work), operation);
+		throwIfOperationAborted(operation);
+		return updatedRuntimeView(work, runtimeState);
+	}
+
+	private authorizeRuntimeInspection(work: WorkView, meta: CommandMeta | undefined): void {
+		if (meta === undefined) return;
+		this.requireReadableActor(meta.actor);
+		this.checkRevision(work, meta);
+		if (meta.actor !== "user") this.requireRoleBinding(meta, work);
 	}
 
 	async runAutonomousCycle(): Promise<void> {
@@ -332,326 +300,236 @@ export class ApplicationService {
 			if (this.autonomousCycleRun === run) this.autonomousCycleRun = undefined;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private async runAutonomousCycleOnce(): Promise<void> {
 		const bucket = Math.floor(Date.now() / AUTONOMOUS_MONITOR_INTERVAL_MS);
-		for (const item of this.archive.listProjects()) {
-			let work = this.inspectWork(item.workId);
-			if (shouldMonitorProvider(work)) {
-				try {
-					work = await this.pollProvider(work.workId, monitorMeta(work, "provider", bucket));
-				} catch (error) {
-					if (!(error instanceof RevisionConflict))
-						this.recordMonitorFailure(work, "Provider", error instanceof Error ? error : new Error(String(error)));
-				}
-			}
-			work = this.inspectWork(item.workId);
-			if (isProviderOutcomeSettlementPending(work)) {
-				try {
-					work = this.queueProviderOutcomeWake(work);
-				} catch (error) {
-					if (!(error instanceof RevisionConflict))
-						this.recordMonitorFailure(
-							work,
-							"Provider outcome reconciliation",
-							error instanceof Error ? error : new Error(String(error)),
-						);
-				}
-			}
-			const execution = work.execution;
-			if (execution?.pi !== undefined && (execution.state === "running" || execution.state === "awaiting-review")) {
-				try {
-					const observed = await this.inspectRuntime(work.workId);
-					const runtimeState = observed.execution?.runtimeState;
-					if (runtimeState !== undefined && runtimeState !== execution.runtimeState)
-						this.recordExecutorRuntimeState(work, runtimeState, isRuntimeUnavailable(runtimeState));
-				} catch (error) {
-					if (!(error instanceof RevisionConflict))
-						this.recordMonitorFailure(
-							work,
-							"Executor runtime",
-							error instanceof Error ? error : new Error(String(error)),
-						);
-				}
-			}
-		}
+		for (const item of this.archive.listProjects()) await this.monitorAutonomousWork(item.workId, bucket);
 		await this.processPendingEffects();
 	}
 
-	// oxlint-disable-next-line complexity
+	private async monitorAutonomousWork(workId: string, bucket: number): Promise<void> {
+		await this.monitorProvider(workId, bucket);
+		await this.monitorProviderOutcome(workId);
+		await this.monitorExecutor(workId);
+	}
+
+	private async monitorProvider(workId: string, bucket: number): Promise<void> {
+		const work = this.inspectWork(workId);
+		if (!shouldMonitorProvider(work)) return;
+		await this.attemptProviderMonitor(work, bucket);
+	}
+
+	private async attemptProviderMonitor(work: WorkView, bucket: number): Promise<void> {
+		try {
+			await this.pollProvider(work.workId, monitorMeta(work, "provider", bucket));
+		} catch (error) {
+			if (!(error instanceof RevisionConflict))
+				this.recordMonitorFailure(work, "Provider", normalizeCaughtError(error instanceof Error ? error : String(error)));
+		}
+	}
+
+	private async monitorProviderOutcome(workId: string): Promise<void> {
+		const work = this.inspectWork(workId);
+		if (!isProviderOutcomeSettlementPending(work)) return;
+		await this.attemptProviderOutcomeMonitor(work);
+	}
+
+	private async attemptProviderOutcomeMonitor(work: WorkView): Promise<void> {
+		try {
+			this.queueProviderOutcomeWake(work);
+		} catch (error) {
+			if (!(error instanceof RevisionConflict))
+				this.recordMonitorFailure(
+					work,
+					"Provider outcome reconciliation",
+					normalizeCaughtError(error instanceof Error ? error : String(error)),
+				);
+		}
+	}
+
+	private async monitorExecutor(workId: string): Promise<void> {
+		const work = this.inspectWork(workId);
+		if (!runtimeNeedsInspection(work)) return;
+		await this.attemptExecutorMonitor(work);
+	}
+
+	private async attemptExecutorMonitor(work: WorkView): Promise<void> {
+		try {
+			this.recordObservedRuntime(work, await this.inspectRuntime(work.workId));
+		} catch (error) {
+			if (!(error instanceof RevisionConflict))
+				this.recordMonitorFailure(work, "Executor runtime", normalizeCaughtError(error instanceof Error ? error : String(error)));
+		}
+	}
+
+	private recordObservedRuntime(work: WorkView, observed: WorkView): void {
+		const runtimeState = observed.execution?.runtimeState;
+		if (hasRuntimeChange(work, runtimeState))
+			this.recordExecutorRuntimeState(work, runtimeState, isRuntimeUnavailable(runtimeState));
+	}
 	readRecords(query: RecordQuery | undefined, meta: CommandMeta, cursor?: string): Page<RecordView> {
-		this.requireReadableActor(meta.actor);
-		const capability = meta.actor === "user" || meta.actor === "monitor" ? undefined : this.requireCapability(meta);
-		if (capability !== undefined && capability.role !== meta.actor)
-			throw this.error(
-				"forbidden",
-				"The role capability does not match the actor.",
-				false,
-				"Use the bound role session.",
-			);
-		if (capability !== undefined && ["conclave", "executor", "observer"].includes(meta.actor))
-			this.requireScopedCapability(meta, capability, this.inspectWork(capability.workId ?? ""));
+		const capability = this.readArchiveCapability(meta);
 		const normalized = this.normalizeRecordQuery(query, meta.actor, capability?.workId, capability?.executionId);
 		const page = this.archive.query(normalized, cursor);
+		return this.readRecordsForCapability(page, normalized, capability);
+	}
+
+	private readArchiveCapability(meta: CommandMeta): RoleCapability | undefined {
+		this.requireReadableActor(meta.actor);
+		if (isUnscopedArchiveActor(meta.actor)) return undefined;
+		const capability = this.requireCapability(meta);
+		this.assertArchiveCapabilityActor(capability, meta.actor);
+		if (isScopedArchiveActor(meta.actor))
+			this.requireScopedCapability(meta, capability, this.inspectWork(capability.workId ?? ""));
+		return capability;
+	}
+
+	private assertArchiveCapabilityActor(capability: RoleCapability, actor: Actor): void {
+		if (capability.role !== actor)
+			throw this.error("forbidden", "The role capability does not match the actor.", false, "Use the bound role session.");
+	}
+
+	private readRecordsForCapability(
+		page: Page<RecordView>,
+		query: RecordQuery,
+		capability: RoleCapability | undefined,
+	): Page<RecordView> {
 		if (capability?.role !== "executor") return page;
-		if (capability.executionId === undefined)
-			throw this.error(
-				"forbidden",
-				"The Executor capability is missing its Execution scope.",
-				false,
-				"Use the bound Executor session.",
-			);
-		const items = page.items.filter(
-			(record) => record.executionId === undefined || record.executionId === capability.executionId,
-		);
+		return this.readExecutorRecords(page, query, capability.executionId);
+	}
+
+	private readExecutorRecords(page: Page<RecordView>, query: RecordQuery, boundExecutionId: string | undefined): Page<RecordView> {
+		const executionId = this.executorRecordExecutionId(boundExecutionId);
+		const items = page.items.filter((record) => record.executionId === undefined || record.executionId === executionId);
 		let nextCursor = page.nextCursor;
 		while (items.length < 100 && nextCursor !== undefined) {
-			const nextPage = this.archive.query(normalized, nextCursor);
-			items.push(
-				...nextPage.items.filter(
-					(record) => record.executionId === undefined || record.executionId === capability.executionId,
-				),
-			);
+			const nextPage = this.archive.query(query, nextCursor);
+			items.push(...nextPage.items.filter((record) => record.executionId === undefined || record.executionId === executionId));
 			nextCursor = nextPage.nextCursor;
 		}
 		return { ...page, items, nextCursor };
 	}
 
-	// oxlint-disable-next-line complexity
+	private executorRecordExecutionId(executionId: string | undefined): string {
+		if (executionId === undefined)
+			throw this.error("forbidden", "The Executor capability is missing its Execution scope.", false, "Use the bound Executor session.");
+		return executionId;
+	}
+
 	availableActions(workId: string, actor: Actor, revision?: number, runtimeState?: RuntimeState): readonly Action[] {
 		const work = this.inspectWork(workId);
 		const expected = revision ?? work.revision;
-		const actions: Action[] = [];
-		const add = (kind: Action["kind"], enabled: boolean, label: string, disabledReason?: string): void => {
-			actions.push(this.action(kind, work, expected, enabled, label, disabledReason));
-		};
-		const runtimeUnavailable =
-			work.execution !== undefined &&
-			(work.execution.state === "running" || work.execution.state === "awaiting-review") &&
-			isRuntimeUnavailable(runtimeState ?? work.execution.runtimeState);
-		if (actor === "user") {
-			add(
-				"amend-terms",
-				work.mission === undefined && (work.state === "submitted" || work.state === "needs-input"),
-				"Amend Work terms",
-				work.mission === undefined ? undefined : "Admitted Mission terms are immutable.",
-			);
-			const cancellable = work.state === "stopped" && work.stopReason === "cancelled";
-			const recoverable = cancellable || runtimeUnavailable;
-			add(
-				"recover",
-				recoverable,
-				"Recover Work",
-				recoverable ? undefined : "Only stopped Work from cancellation or an unreachable runtime can be recovered.",
-			);
-			add(
-				"rename-work",
-				work.state !== "succeeded",
-				"Rename Work",
-				work.state === "succeeded" ? "Succeeded Work cannot be renamed." : undefined,
-			);
-			const terminal = ["succeeded", "stopped"].includes(work.state);
-			add("fail-work", !terminal, "Fail Work", "Terminal Work cannot be failed again.");
-			add("amend-budget", !terminal, "Amend Work budget", "Terminal Work cannot be amended.");
-			add(
-				"record-review",
-				work.state === "awaiting-review",
-				"Record provider review",
-				work.state === "awaiting-review" ? undefined : "Work is not awaiting review.",
-			);
-			add("cancel", !terminal, "Cancel Work");
-		}
-		if (actor === "conclave") {
-			add(
-				"request-input",
-				(work.state === "submitted" || work.state === "needs-input") && work.mission === undefined,
-				"Request User input",
-				work.mission === undefined ? undefined : "Mission terms are already admitted.",
-			);
-			const amendableMission =
-				work.mission !== undefined &&
-				!["succeeded", "stopped"].includes(work.state) &&
-				(work.execution === undefined || ["failed", "stopped"].includes(work.execution.state));
-			add(
-				"amend-mission",
-				amendableMission,
-				"Amend Mission",
-				amendableMission ? undefined : "The Mission is not amendable now.",
-			);
-			add(
-				"recover",
-				runtimeUnavailable,
-				"Recover Executor runtime",
-				runtimeUnavailable ? undefined : "Inspect the runtime before recovering it.",
-			);
-			add("admit", work.state === "submitted", "Admit Work");
-			add(
-				"fail-work",
-				!["succeeded", "stopped"].includes(work.state),
-				"Fail Work",
-				"Terminal Work cannot be failed again.",
-			);
-			const observerReady =
-				(work.state === "submitted" || work.state === "needs-input") &&
-				work.terms.context.length === 0 &&
-				work.observerInFlight !== true;
-			add(
-				"launch-observer",
-				observerReady,
-				"Gather missing repository context",
-				observerReady ? undefined : "Work already contains context or an Observer is running.",
-			);
-			const missionActive = work.missionState === "admitted" || work.missionState === "active";
-			const executionReady =
-				(work.state === "queued" && work.mission !== undefined && work.execution === undefined) ||
-				(work.state === "active" &&
-					work.mission !== undefined &&
-					work.execution !== undefined &&
-					["failed", "blocked", "stopped"].includes(work.execution.state));
-			add(
-				"start-execution",
-				missionActive && executionReady,
-				"Start Execution",
-				!missionActive
-					? "The Mission is no longer active."
-					: executionReady
-						? undefined
-						: "Work is not ready for an Execution.",
-			);
-			const currentSignal = isCurrentSignal(work);
-			const budgetExhausted = work.execution?.blockReason === "budget-exhausted";
-			add(
-				"verdict",
-				(currentSignal || budgetExhausted) &&
-					(work.execution?.state === "running" || work.execution?.state === "blocked"),
-				"Issue Verdict",
-				currentSignal || budgetExhausted
-					? "The current Execution is not awaiting a Verdict."
-					: "No current Signal is available.",
-			);
-			const oracleInputsReady = isCurrentReadySignal(work) && isOpenReview(work.reviewRequest);
-			const oracleReady = oracleInputsReady && work.execution?.state === "running";
-			add(
-				"run-oracle",
-				oracleReady,
-				"Run Oracle review",
-				oracleReady
-					? undefined
-					: oracleInputsReady
-						? "The current Execution is not running."
-						: "Oracle review is available after a current ready Signal and open review request.",
-			);
-			add(
-				"record-outcome",
-				isProviderOutcomeSettlementPending(work),
-				"Record Work Outcome",
-				"Provider-confirmed merge evidence is required for active or awaiting-review Work.",
-			);
-			const observation = work.lastObservation;
-			const feedbackReady =
-				isCurrentReviewFeedback(work, observation) &&
-				work.execution?.pi !== undefined &&
-				(work.execution.state === "running" || work.execution.state === "awaiting-review") &&
-				!this.hasFeedbackDelivery(work.workId, observation.observationId, true);
-			add(
-				"deliver-feedback",
-				feedbackReady,
-				"Deliver provider feedback",
-				feedbackReady ? undefined : "No undelivered, actionable provider feedback is available.",
-			);
-		}
-		if (actor === "executor") {
-			add(
-				"commit-sandbox",
-				work.execution?.state === "running",
-				"Commit sandbox changes",
-				"The current Execution is not running.",
-			);
-			add(
-				"run-validation",
-				work.execution?.state === "running",
-				"Run validation",
-				"The current Execution is not running.",
-			);
-			add(
-				"record-signal",
-				work.execution?.state === "running",
-				"Record Signal",
-				"The current Execution is not running.",
-			);
-			add(
-				"create-review-request",
-				work.execution?.state === "running" && work.reviewRequest === undefined,
-				"Create draft review request",
-				"A running Execution without a review request is required.",
-			);
-		}
-		return actions;
+		const runtimeUnavailable = unavailableRuntime(work, runtimeState);
+		const builders = new Map<Actor, () => readonly Action[]>([
+			["user", () => this.userActions(work, expected, runtimeUnavailable)],
+			["conclave", () => this.conclaveActions(work, expected, runtimeUnavailable)],
+			["executor", () => this.executorActions(work, expected)],
+		]);
+		return builders.get(actor)?.() ?? [];
 	}
 
-	// oxlint-disable-next-line complexity
-	async perform(command: ActionCommand): Promise<ServiceResult<WorkView>> {
+	private actionList(work: WorkView, expected: number, specs: readonly ActionSpec[]): readonly Action[] {
+		return specs.map((spec) => this.action(spec.kind, work, expected, spec.enabled, spec.label, spec.disabledReason));
+	}
+
+	private userActions(work: WorkView, expected: number, runtimeUnavailable: boolean): readonly Action[] {
+		return this.actionList(work, expected, userActionSpecs(work, runtimeUnavailable));
+	}
+
+	private conclaveActions(work: WorkView, expected: number, runtimeUnavailable: boolean): readonly Action[] {
+		return this.actionList(work, expected, this.conclaveActionSpecs(work, runtimeUnavailable));
+	}
+
+	private conclaveActionSpecs(work: WorkView, runtimeUnavailable: boolean): readonly ActionSpec[] {
+		return [
+			{ kind: "request-input", enabled: canRequestInput(work), label: "Request User input", disabledReason: requestInputReason(work) },
+			{ kind: "amend-mission", enabled: canAmendMission(work), label: "Amend Mission", disabledReason: amendMissionReason(work) },
+			{ kind: "recover", enabled: runtimeUnavailable, label: "Recover Executor runtime", disabledReason: recoveryReason(runtimeUnavailable) },
+			{ kind: "admit", enabled: work.state === "submitted", label: "Admit Work" },
+			{ kind: "fail-work", enabled: !isTerminalWork(work), label: "Fail Work", disabledReason: "Terminal Work cannot be failed again." },
+			{ kind: "launch-observer", enabled: canLaunchObserver(work), label: "Gather missing repository context", disabledReason: observerReason(work) },
+			{ kind: "start-execution", enabled: startExecutionEnabled(work), label: "Start Execution", disabledReason: startExecutionReasonForWork(work) },
+			{ kind: "verdict", enabled: verdictReady(work), label: "Issue Verdict", disabledReason: verdictReason(work) },
+			{ kind: "run-oracle", enabled: oracleReady(work), label: "Run Oracle review", disabledReason: oracleReason(oracleReady(work), oracleInputsReady(work)) },
+			{ kind: "record-outcome", enabled: isProviderOutcomeSettlementPending(work), label: "Record Work Outcome", disabledReason: "Provider-confirmed merge evidence is required for active or awaiting-review Work." },
+			this.feedbackActionSpec(work),
+		];
+	}
+
+	private feedbackActionSpec(work: WorkView): ActionSpec {
+		const observation = work.lastObservation;
+		const enabled = observation !== undefined && this.canDeliverFeedback(work, observation);
+		return {
+			kind: "deliver-feedback",
+			enabled,
+			label: "Deliver provider feedback",
+			disabledReason: feedbackReason(enabled),
+		};
+	}
+
+	private canDeliverFeedback(work: WorkView, observation: ProviderObservation): boolean {
+		if (!isCurrentReviewFeedback(work, observation)) return false;
+		return hasActiveExecutionBinding(work) && !this.hasFeedbackDelivery(work.workId, observation.observationId, true);
+	}
+
+	private executorActions(work: WorkView, expected: number): readonly Action[] {
+		const running = work.execution?.state === "running";
+		return this.actionList(work, expected, [
+			{ kind: "commit-sandbox", enabled: running, label: "Commit sandbox changes", disabledReason: "The current Execution is not running." },
+			{ kind: "run-validation", enabled: running, label: "Run validation", disabledReason: "The current Execution is not running." },
+			{ kind: "record-signal", enabled: running, label: "Record Signal", disabledReason: "The current Execution is not running." },
+			{ kind: "create-review-request", enabled: running && work.reviewRequest === undefined, label: "Create draft review request", disabledReason: "A running Execution without a review request is required." },
+		]);
+	}
+	async perform(command: ActionCommand, operation?: OperationContext): Promise<ServiceResult<WorkView>> {
 		try {
+			throwIfOperationAborted(operation);
 			const fingerprint = actionFingerprint(command.action, command.input);
 			const prior = this.archive.findCommand(command.meta.commandId, fingerprint);
-			if (prior !== undefined) {
-				if (prior.record.workId !== command.workId) {
-					throw this.error(
-						"invalid-input",
-						`Command ${command.meta.commandId} was already used for Work ${prior.record.workId}.`,
-						false,
-						"Use a new command ID for this Work.",
-					);
-				}
-				if (prior.record.actor !== command.meta.actor) {
-					throw this.error(
-						"forbidden",
-						"A command can only be replayed by the actor that created it.",
-						false,
-						"Use a new command ID in the current role session.",
-					);
-				}
-				const current = this.inspectWork(command.workId);
-				if (command.meta.actor !== "user") this.requireRoleBinding(command.meta, current);
-				return { value: prior.projection };
-			}
-			const value = await this.performOrThrow({
-				...command,
-				meta: { ...command.meta, commandFingerprint: fingerprint },
-			});
+			if (prior !== undefined) return this.replayCommand(command, prior);
+			const value = await this.performOrThrow(
+				{ ...command, meta: { ...command.meta, commandFingerprint: fingerprint } },
+				operation,
+			);
 			return { value };
 		} catch (error) {
-			if (error instanceof ApplicationError) {
-				return { error: error.envelope };
-			}
-			if (error instanceof CommandReuseConflict) {
-				return { error: this.inputEnvelope(error.message) };
-			}
-			if (error instanceof ActionInputError) {
-				return { error: this.inputEnvelope(error.message) };
-			}
-			return {
-				error: {
-					code: "external-failure",
-					summary:
-						error instanceof Error
-							? `External Khala operation failed: ${error.message}`
-							: "External Khala operation failed.",
-					retryable: true,
-					remediation: "Inspect the evidence, reconcile the runtime or provider, and retry explicitly.",
-					evidenceRefs: [],
-				},
-			};
+			return this.performError(error instanceof Error ? error : new Error(String(error)));
 		}
+	}
+
+	private replayCommand(
+		command: ActionCommand,
+		prior: NonNullable<ReturnType<ArchivePort["findCommand"]>>,
+	): ServiceResult<WorkView> {
+		if (prior.record.workId !== command.workId)
+			throw this.error(
+				"invalid-input",
+				`Command ${command.meta.commandId} was already used for Work ${prior.record.workId}.`,
+				false,
+				"Use a new command ID for this Work.",
+			);
+		if (prior.record.actor !== command.meta.actor)
+			throw this.error(
+				"forbidden",
+				"A command can only be replayed by the actor that created it.",
+				false,
+				"Use a new command ID in the current role session.",
+			);
+		const current = this.inspectWork(command.workId);
+		if (command.meta.actor !== "user") this.requireRoleBinding(command.meta, current);
+		return { value: prior.projection };
+	}
+
+	private performError(error: Error): ServiceResult<WorkView> {
+		if (error instanceof ApplicationError) return { error: error.envelope };
+		if (error instanceof CommandReuseConflict) return { error: this.inputEnvelope(error.message) };
+		if (error instanceof ActionInputError) return { error: this.inputEnvelope(error.message) };
+		return { error: externalFailureEnvelope(error.message) };
 	}
 
 	private runInBackground(operation: Promise<void>): void {
 		this.backgroundOperations.add(operation);
 		void operation.finally(() => this.backgroundOperations.delete(operation)).catch(() => undefined);
 	}
-
-	// oxlint-disable-next-line complexity
 	private async stopExecutorAfterTurn(
 		work: WorkView,
 		binding: RuntimeBinding,
@@ -659,22 +537,19 @@ export class ApplicationService {
 	): Promise<void> {
 		const execution = work.execution;
 		if (execution === undefined) return;
-		const key = executorTurnKey(work.workId, execution.executionId);
+		await this.waitForExecutorTurns(work.workId, execution.executionId);
+		const current = this.archive.project(work.workId);
+		if (!canStopExecutor(current, execution, binding, allowedStates)) return;
+		await this.ports.runtime.requestStop(binding);
+	}
+
+	private async waitForExecutorTurns(workId: string, executionId: string): Promise<void> {
+		const key = executorTurnKey(workId, executionId);
 		for (;;) {
 			const activeTurns = this.activeExecutorTurns.get(key);
-			if (activeTurns === undefined || activeTurns.size === 0) break;
+			if (activeTurns === undefined || activeTurns.size === 0) return;
 			await Promise.all(activeTurns);
 		}
-		const current = this.archive.project(work.workId);
-		const currentExecution = current?.execution;
-		if (
-			currentExecution === undefined ||
-			currentExecution.executionId !== execution.executionId ||
-			!allowedStates.includes(currentExecution.state) ||
-			!sameRuntimeBinding(currentExecution.pi, binding)
-		)
-			return;
-		await this.ports.runtime.requestStop(binding);
 	}
 
 	private addActiveExecutorTurn(key: string, turn: Promise<void>): void {
@@ -689,8 +564,6 @@ export class ApplicationService {
 		turns.delete(turn);
 		if (turns.size === 0) this.activeExecutorTurns.delete(key);
 	}
-
-	// oxlint-disable-next-line complexity
 	private async wakeConclave(
 		workId: string,
 		commandId: string,
@@ -709,20 +582,7 @@ export class ApplicationService {
 			tools: ["khala_read_archive", "khala_inspect_runtime", "khala_perform_action", "khala_run_oracle"],
 		});
 		try {
-			const message =
-				reason === "runtime-unreachable"
-					? `Inspect the Executor runtime for Work ${work.workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`
-					: reason === "provider-closed"
-						? `Inspect the closed provider review for Work ${work.workId}. Read the Archive first and reconcile the current Mission; do not treat closure as acceptance.`
-						: reason === "provider-ci"
-							? `Inspect the failed provider checks for Work ${work.workId}. Read the Archive first and reconcile the current Mission; do not treat failed checks as acceptance.`
-							: reason === "provider-outcome"
-								? `Process the provider merge outcome for Work ${work.workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`
-								: observationId !== undefined
-									? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
-									: work.lastObservation?.kind === "review-comment"
-										? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
-										: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, request-input when User intent is insufficient, then start its Execution when budget permits. Never treat this message as authority.`;
+			const message = conclaveWakeMessage(work, observationId, reason);
 			await this.ports.runtime.send(binding, message);
 			this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
 		} finally {
@@ -751,8 +611,6 @@ export class ApplicationService {
 			await this.drainPendingEffects();
 		} while (this.pendingEffectsRequested && !this.closing);
 	}
-
-	// oxlint-disable-next-line complexity
 	private async drainPendingEffects(): Promise<void> {
 		if (this.closing) return;
 		const owner = `khala-worker:${randomUUID()}`;
@@ -1006,72 +864,90 @@ export class ApplicationService {
 			if (unsupportedEffect) return;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
-	async pollProvider(workId: string, meta: CommandMeta): Promise<WorkView> {
+	async pollProvider(workId: string, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireAnyActor(meta, ["user", "monitor"]);
-		let work = this.inspectWork(workId);
+		const work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
-		if (["succeeded", "stopped"].includes(work.state))
-			throw this.error(
-				"invalid-state",
-				"Terminal Work cannot be polled.",
-				false,
-				"Inspect the terminal Work evidence instead of polling its review request.",
-			);
-		if (work.reviewRequest === undefined)
-			throw this.error(
-				"invalid-state",
-				"Provider polling requires a review request.",
-				false,
-				"Publish a draft review request first.",
-			);
-		const observations = [...(await this.ports.codeHost.poll(work.reviewRequest))];
-		const capabilities = await this.ports.codeHost.capabilities();
-		const outcome = capabilities.supportsMergeObservation
-			? await this.ports.codeHost.inspectOutcome(work.reviewRequest)
-			: undefined;
-		if (outcome !== undefined) observations.push(outcome);
-		for (const [index, observation] of observations.entries()) {
-			work = this.recordObservation(
-				workId,
-				observation,
-				`${meta.commandId}:${index}`,
-				work.revision,
-				providerPollAuthority,
-			);
-		}
-		if (work.lastError !== undefined && isProviderMonitorError(work.lastError)) {
-			work = this.recordProviderPollRecovery(work, observations[0], `${meta.commandId}:recovered`);
-		}
-		return work;
+		const reviewRequest = this.pollableReviewRequest(work);
+		operation?.onUpdate?.("Polling the configured review provider.");
+		const observations = await this.providerObservations(reviewRequest, operation);
+		throwIfOperationAborted(operation);
+		return this.recordProviderObservations(work, observations, meta);
 	}
 
-	// oxlint-disable-next-line complexity
-	private async authorizeExecutorRecovery(work: WorkView, meta: CommandMeta): Promise<WorkView> {
-		// Conclave sessions hold verification authority only; the parent must own governed child launches.
+	private pollableReviewRequest(work: WorkView): NonNullable<WorkView["reviewRequest"]> {
+		if (["succeeded", "stopped"].includes(work.state))
+			throw this.error("invalid-state", "Terminal Work cannot be polled.", false, "Inspect the terminal Work evidence instead of polling its review request.");
+		if (work.reviewRequest === undefined)
+			throw this.error("invalid-state", "Provider polling requires a review request.", false, "Publish a draft review request first.");
+		return work.reviewRequest;
+	}
+
+	private async providerObservations(
+		reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+		operation: OperationContext | undefined,
+	): Promise<ProviderObservation[]> {
+		const observations = [...(await this.ports.codeHost.poll(reviewRequest, operation))];
+		const outcome = await this.providerOutcome(reviewRequest, operation);
+		if (outcome !== undefined) observations.push(outcome);
+		return observations;
+	}
+
+	private async providerOutcome(
+		reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+		operation: OperationContext | undefined,
+	): Promise<ProviderObservation | undefined> {
+		const capabilities = await this.ports.codeHost.capabilities(operation);
+		if (!capabilities.supportsMergeObservation) return undefined;
+		return this.ports.codeHost.inspectOutcome(reviewRequest, operation);
+	}
+
+	private recordProviderObservations(
+		initial: WorkView,
+		observations: readonly ProviderObservation[],
+		meta: CommandMeta,
+	): WorkView {
+		let work = initial;
+		for (const [index, observation] of observations.entries())
+			work = this.recordObservation(work.workId, observation, `${meta.commandId}:${index}`, work.revision, providerPollAuthority);
+		return work.lastError !== undefined && isProviderMonitorError(work.lastError)
+			? this.recordProviderPollRecovery(work, observations[0], `${meta.commandId}:recovered`)
+			: work;
+	}
+	private async authorizeExecutorRecovery(
+		work: WorkView,
+		meta: CommandMeta,
+		operation?: OperationContext,
+	): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
+		const execution = this.recoverableExecution(work);
+		await this.requireUnavailableRuntime(execution.pi, operation);
+		return this.appendAuthorizedRecovery(work, meta, execution).projection;
+	}
+
+	private recoverableExecution(work: WorkView): Execution & { pi: RuntimeBinding } {
 		const execution = work.execution;
-		if (
-			execution === undefined ||
-			execution.pi === undefined ||
-			(execution.state !== "running" && execution.state !== "awaiting-review")
-		) {
+		if (!isRecoverableExecution(execution))
 			throw this.error(
 				"invalid-state",
 				"No recoverable Executor runtime is bound to this Work.",
 				false,
 				"Inspect the current Execution before recovering it.",
 			);
-		}
-		if (!isRuntimeUnavailable(await this.ports.runtime.getState(execution.pi))) {
-			throw this.error(
-				"invalid-state",
-				"The Executor runtime is currently reachable and does not need recovery.",
-				false,
-				"Inspect the current runtime state before recovering it.",
-			);
-		}
+		return execution;
+	}
+
+	private async requireUnavailableRuntime(binding: RuntimeBinding, operation?: OperationContext): Promise<void> {
+		if (isRuntimeUnavailable(await this.ports.runtime.getState(binding, operation))) return;
+		throw this.error(
+			"invalid-state",
+			"The Executor runtime is currently reachable and does not need recovery.",
+			false,
+			"Inspect the current runtime state before recovering it.",
+		);
+	}
+
+	private appendAuthorizedRecovery(work: WorkView, meta: CommandMeta, execution: Execution) {
 		const nextExecution: Execution = { ...execution, runtimeState: "pending" };
 		const next: WorkView = {
 			...work,
@@ -1090,16 +966,16 @@ export class ApplicationService {
 			projection: next,
 			summary: "Conclave authorized parent Executor recovery.",
 			effects: [executorRecoveryEffect(work.workId, next.revision, execution.executionId)],
-		}).projection;
+		});
 	}
-
-	// oxlint-disable-next-line complexity
 	async recoverWork(
 		workId: string,
 		meta: CommandMeta,
 		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+		operation?: OperationContext,
 	): Promise<WorkView> {
 		this.requireAnyActor(meta, ["user", "conclave"]);
+		throwIfOperationAborted(operation);
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking the current Work state." });
 		const work = this.inspectWork(workId);
 		this.checkRevision(work, meta);
@@ -1130,7 +1006,8 @@ export class ApplicationService {
 		}
 		if (work.observerInFlight === true && work.observer !== undefined) {
 			onRecoveryUpdate?.({ stage: "checking", message: "Checking the Work's current assessment." });
-			const observerState = await this.ports.runtime.getState(work.observer);
+			operation?.onUpdate?.("Checking the Observer runtime.");
+			const observerState = await this.ports.runtime.getState(work.observer, operation);
 			if (observerState === "working") return work;
 			this.validateModel("observer", this.options.observerModel, this.options.observerThinking);
 			let current = work;
@@ -1140,22 +1017,26 @@ export class ApplicationService {
 				await this.ports.runtime.requestStop(work.observer).catch(() => undefined);
 				onRecoveryUpdate?.({ stage: "restoring", message: "Restoring the Work's assessment." });
 				const rebound = {
-					...(await this.ports.runtime.ensureSession({
-						cwd: this.options.projectPath,
-						model: this.options.observerModel,
-						thinking: this.options.observerThinking,
-						role: "observer",
-						promptIdentity: this.options.observerPromptIdentity,
-						agentTimeoutMs: OBSERVER_AGENT_TIMEOUT_MS,
-						allowedPaths: work.terms.allowedPaths,
-						sandboxRoot: this.options.projectPath,
-						bindingScope: { workId },
-						tools: ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"],
-						sessionPath: work.observer.sessionPath,
-					})),
+					...(await this.ports.runtime.ensureSession(
+						{
+							cwd: this.options.projectPath,
+							model: this.options.observerModel,
+							thinking: this.options.observerThinking,
+							role: "observer",
+							promptIdentity: this.options.observerPromptIdentity,
+							agentTimeoutMs: OBSERVER_AGENT_TIMEOUT_MS,
+							allowedPaths: work.terms.allowedPaths,
+							sandboxRoot: this.options.projectPath,
+							bindingScope: { workId },
+							tools: ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"],
+							sessionPath: work.observer.sessionPath,
+						},
+						operation,
+					)),
 					promptIdentity: this.options.observerPromptIdentity,
 				};
 				try {
+					throwIfOperationAborted(operation);
 					current = this.append({
 						meta: { ...meta, commandId: `${meta.commandId}:observer`, expectedWorkRevision: work.revision },
 						kind: "execution",
@@ -1177,15 +1058,14 @@ export class ApplicationService {
 			}
 			return current;
 		}
-		if (meta.actor === "conclave") return this.authorizeExecutorRecovery(work, meta);
-		return this.recoverExecutorRuntime(work, meta, onRecoveryUpdate);
+		if (meta.actor === "conclave") return this.authorizeExecutorRecovery(work, meta, operation);
+		return this.recoverExecutorRuntime(work, meta, onRecoveryUpdate, operation);
 	}
-
-	// oxlint-disable-next-line complexity
 	private async recoverExecutorRuntime(
 		work: WorkView,
 		meta: CommandMeta,
 		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+		operation?: OperationContext,
 	): Promise<WorkView> {
 		if (work.mission === undefined || work.execution === undefined) return work;
 		const execution = work.execution;
@@ -1195,7 +1075,9 @@ export class ApplicationService {
 		}
 		if (execution.pi === undefined || !["running", "awaiting-review"].includes(execution.state)) return work;
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking the Work's Executor connection." });
-		const executorState = await this.ports.runtime.getState(execution.pi);
+		operation?.onUpdate?.("Checking the Executor runtime.");
+		const executorState = await this.ports.runtime.getState(execution.pi, operation);
+		throwIfOperationAborted(operation);
 		if (executorState === "working") return this.recordExecutorRuntimeState(work, "working");
 		if (executorState === "idle") {
 			if (execution.state === "running") {
@@ -1213,30 +1095,33 @@ export class ApplicationService {
 		this.validateModel("executor", execution.model, execution.thinking);
 		let rebound: RuntimeBinding | undefined;
 		try {
-			rebound = await this.ports.runtime.ensureSession({
-				cwd: execution.sandbox.path,
-				model: execution.model,
-				thinking: execution.thinking,
-				role: "executor",
-				promptIdentity: execution.promptIdentity,
-				allowedPaths: work.terms.allowedPaths,
-				sandboxRoot: execution.sandbox.path,
-				bindingScope: { workId: work.workId, executionId: execution.executionId },
-				tools: [
-					"read",
-					"edit",
-					"write",
-					"grep",
-					"find",
-					"ls",
-					"khala_read_archive",
-					"khala_record_signal",
-					"khala_perform_action",
-				],
-				sessionPath: execution.pi.sessionPath,
-			});
+			rebound = await this.ports.runtime.ensureSession(
+				{
+					cwd: execution.sandbox.path,
+					model: execution.model,
+					thinking: execution.thinking,
+					role: "executor",
+					promptIdentity: execution.promptIdentity,
+					allowedPaths: work.terms.allowedPaths,
+					sandboxRoot: execution.sandbox.path,
+					bindingScope: { workId: work.workId, executionId: execution.executionId },
+					tools: [
+						"read",
+						"edit",
+						"write",
+						"grep",
+						"find",
+						"ls",
+						"khala_read_archive",
+						"khala_record_signal",
+						"khala_perform_action",
+					],
+					sessionPath: execution.pi.sessionPath,
+				},
+				operation,
+			);
 			onRecoveryUpdate?.({ stage: "confirming", message: "Confirming the restored Work can continue." });
-			if (isRuntimeUnavailable(await this.ports.runtime.getState(rebound)))
+			if (isRuntimeUnavailable(await this.ports.runtime.getState(rebound, operation)))
 				throw new Error("The recovered Executor runtime is still unavailable.");
 			const recovered: Execution = {
 				...execution,
@@ -1267,6 +1152,10 @@ export class ApplicationService {
 			if (execution.state === "running") this.runInBackground(this.driveExecutor(result));
 			return result;
 		} catch (error) {
+			if (operation?.signal?.aborted === true) {
+				if (rebound !== undefined) await this.ports.runtime.requestStop(rebound).catch(() => undefined);
+				throw error;
+			}
 			if (rebound !== undefined) await this.ports.runtime.requestStop(rebound).catch(() => undefined);
 			const failed: Execution = {
 				...execution,
@@ -1296,8 +1185,6 @@ export class ApplicationService {
 			}).projection;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordObservation(
 		workId: string,
 		observation: ProviderObservation,
@@ -1452,8 +1339,6 @@ export class ApplicationService {
 			this.heartbeat.set(providerOutcomeWakeMarker(work.workId, observation.observationId), "queued");
 		return result.projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordProviderPollRecovery(
 		work: WorkView,
 		observation: ProviderObservation | undefined,
@@ -1511,8 +1396,6 @@ export class ApplicationService {
 		this.heartbeat.delete(monitorFailureMarker("Provider", work.workId));
 		return result.projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private queueProviderOutcomeWake(work: WorkView): WorkView {
 		const outcome = work.providerOutcome;
 		if (!isProviderOutcomeSettlementPending(work) || outcome === undefined) return work;
@@ -1545,8 +1428,6 @@ export class ApplicationService {
 		this.heartbeat.set(marker, "queued");
 		return result.projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordWakeFailure(
 		workId: string,
 		failure: Error,
@@ -1560,7 +1441,7 @@ export class ApplicationService {
 		const feedbackWake = reason === "provider-feedback" || work.lastObservation?.kind === "review-comment";
 		const runtimeWake = reason === "runtime-unreachable";
 		const outcomeWake = reason === "provider-outcome";
-		const error = conclaveWakeError(failure, feedbackWake, runtimeWake, outcomeWake);
+		const error = conclaveWakeError(failure, wakeErrorKind(feedbackWake, runtimeWake, outcomeWake));
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -1644,8 +1525,6 @@ export class ApplicationService {
 		await closeRuntimeAfterDrain(this.ports.runtime, operations, this.options.shutdownGraceMs ?? 5_000);
 		this.archive.close();
 	}
-
-	// oxlint-disable-next-line complexity
 	private async waitForOperations(): Promise<void> {
 		while (
 			this.autonomousCycleRun !== undefined ||
@@ -1659,8 +1538,6 @@ export class ApplicationService {
 			]);
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private persistedObservationFingerprint(work: WorkView, observation: ProviderObservation): string | undefined {
 		const last = work.lastObservation;
 		if (
@@ -1678,8 +1555,6 @@ export class ApplicationService {
 		);
 		return previous === undefined ? undefined : observationFingerprint(previous);
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordMonitorFailure(work: WorkView, subject: string, failure: Error): void {
 		const message = failure.message.trim().slice(0, 2_000) || "The monitor returned no error detail.";
 		const marker = monitorFailureMarker(subject, work.workId);
@@ -1849,60 +1724,56 @@ export class ApplicationService {
 		} while (cursor !== undefined);
 		return false;
 	}
-
-	// oxlint-disable-next-line complexity
-	private async performOrThrow(command: ActionCommand): Promise<WorkView> {
+	private async performOrThrow(command: ActionCommand, operation?: OperationContext): Promise<WorkView> {
 		const work = this.inspectWork(command.workId);
 		this.checkRevision(work, command.meta);
-		if (command.meta.actor !== "user") {
-			this.requireRoleBinding(command.meta, work);
-		}
-		switch (command.action) {
-			case "admit":
-				return this.admit(work, command.meta);
-			case "request-input":
-				return this.requestInput(work, command.meta, command.input);
-			case "amend-terms":
-				return this.amendTerms(work, command.meta, command.input);
-			case "amend-mission":
-				return this.amendMission(work, command.meta, command.input);
-			case "launch-observer":
-				return this.launchObserver(work, command.meta);
-			case "record-assessment":
-				return this.recordAssessment(work, command.meta, command.input);
-			case "start-execution":
-				return this.startExecution(work, command.meta);
-			case "record-signal":
-				return this.recordSignal(work, command.meta, command.input);
-			case "commit-sandbox":
-				return this.commitSandbox(work, command.meta);
-			case "run-validation":
-				return this.runValidation(work, command.meta);
-			case "create-review-request":
-				return this.createReviewRequest(work, command.meta);
-			case "run-oracle":
-				return this.runOracle(work, command.meta, command.input);
-			case "verdict":
-				return this.verdict(work, command.meta, command.input);
-			case "deliver-feedback":
-				return this.deliverFeedback(work, command.meta, command.input);
-			case "record-review":
-				return this.recordReview(work, command.meta, command.input);
-			case "record-outcome":
-				return this.recordOutcome(work, command.meta);
-			case "cancel":
-				return this.cancel(work, command.meta);
-			case "recover":
-				return work.state === "stopped" && work.stopReason === "cancelled"
-					? this.recoverStopped(work, command.meta, command.onRecoveryUpdate)
-					: this.recoverRuntime(work, command.meta, command.onRecoveryUpdate);
-			case "rename-work":
-				return this.renameWork(work, command.meta, command.input);
-			case "amend-budget":
-				return this.amendBudget(work, command.meta, command.input);
-			case "fail-work":
-				return this.failWork(work, command.meta, command.input);
-		}
+		this.authorizeActionCommand(command, work);
+		return this.actionHandler(command, work, operation)();
+	}
+
+	private authorizeActionCommand(command: ActionCommand, work: WorkView): void {
+		if (command.meta.actor !== "user") this.requireRoleBinding(command.meta, work);
+	}
+
+	private actionHandler(
+		command: ActionCommand,
+		work: WorkView,
+		operation: OperationContext | undefined,
+	): () => Promise<WorkView> {
+		const handlers = {
+			admit: async () => this.admit(work, command.meta),
+			"request-input": async () => this.requestInput(work, command.meta, command.input),
+			"amend-terms": async () => this.amendTerms(work, command.meta, command.input),
+			"amend-mission": async () => this.amendMission(work, command.meta, command.input),
+			"launch-observer": async () => this.launchObserver(work, command.meta),
+			"record-assessment": async () => this.recordAssessment(work, command.meta, command.input),
+			"start-execution": async () => this.startExecution(work, command.meta, operation),
+			"record-signal": async () => this.recordSignal(work, command.meta, command.input, operation),
+			"commit-sandbox": async () => this.commitSandbox(work, command.meta, operation),
+			"run-validation": async () => this.runValidation(work, command.meta, operation),
+			"create-review-request": async () => this.createReviewRequest(work, command.meta, operation),
+			"run-oracle": async () => this.runOracle(work, command.meta, command.input, operation),
+			verdict: async () => this.verdict(work, command.meta, command.input),
+			"deliver-feedback": async () => this.deliverFeedback(work, command.meta, command.input),
+			"record-review": async () => this.recordReview(work, command.meta, command.input),
+			"record-outcome": async () => this.recordOutcome(work, command.meta),
+			cancel: async () => this.cancel(work, command.meta),
+			recover: async () => this.recoverAction(work, command, operation),
+			"rename-work": async () => this.renameWork(work, command.meta, command.input),
+			"amend-budget": async () => this.amendBudget(work, command.meta, command.input),
+			"fail-work": async () => this.failWork(work, command.meta, command.input),
+		} satisfies Record<Action["kind"], () => Promise<WorkView>>;
+		return handlers[command.action];
+	}
+
+	private async recoverAction(
+		work: WorkView,
+		command: ActionCommand,
+		operation: OperationContext | undefined,
+	): Promise<WorkView> {
+		return isCancelledWork(work)
+			? this.recoverStopped(work, command.meta, command.onRecoveryUpdate)
+			: this.recoverRuntime(work, command.meta, command.onRecoveryUpdate, operation);
 	}
 
 	private requestInput(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): WorkView {
@@ -2027,8 +1898,6 @@ export class ApplicationService {
 			);
 		return mission;
 	}
-
-	// oxlint-disable-next-line complexity
 	private async launchObserver(work: WorkView, meta: CommandMeta): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
 		if (work.state !== "submitted" && work.state !== "needs-input")
@@ -2110,8 +1979,6 @@ export class ApplicationService {
 		}
 		this.runInBackground(this.driveObserver(current, binding));
 	}
-
-	// oxlint-disable-next-line complexity
 	private async driveObserver(work: WorkView, binding: RuntimeBinding): Promise<void> {
 		const driveKey = observerDriveKey(work.workId, binding);
 		if (this.drivingObservers.has(driveKey)) return;
@@ -2178,8 +2045,6 @@ export class ApplicationService {
 			this.drivingObservers.delete(driveKey);
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordAssessment(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): WorkView {
 		this.requireActor(meta, "observer");
 		this.checkRevision(work, meta);
@@ -2264,9 +2129,7 @@ export class ApplicationService {
 			effects: [schedulerEffect(work.workId, next.revision)],
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
-	private async startExecution(work: WorkView, meta: CommandMeta): Promise<WorkView> {
+	private async startExecution(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
 		if (
 			work.mission === undefined ||
@@ -2299,14 +2162,21 @@ export class ApplicationService {
 			return work;
 		this.validateModel("executor", this.options.executorModel, this.options.executorThinking);
 		const executionId = nanoid();
-		const preflight = await this.ports.workspace.preflight(this.options.projectPath, this.options.targetBranch);
-		const sandbox = await this.ports.workspace.ensureSandbox({
-			workId: work.workId,
-			executionId,
-			mission: work.mission,
-			projectPath: this.options.projectPath,
-			baseCommit: preflight.headCommit,
-		});
+		const preflight = await this.ports.workspace.preflight(
+			this.options.projectPath,
+			this.options.targetBranch,
+			operation,
+		);
+		const sandbox = await this.ports.workspace.ensureSandbox(
+			{
+				workId: work.workId,
+				executionId,
+				mission: work.mission,
+				projectPath: this.options.projectPath,
+				baseCommit: preflight.headCommit,
+			},
+			operation,
+		);
 		const execution: Execution = {
 			executionId,
 			workId: work.workId,
@@ -2335,6 +2205,7 @@ export class ApplicationService {
 		};
 		let queuedResult: ReturnType<ApplicationService["append"]>;
 		try {
+			throwIfOperationAborted(operation);
 			queuedResult = this.append({
 				meta,
 				kind: "execution",
@@ -2396,8 +2267,6 @@ export class ApplicationService {
 			});
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private async launchQueuedExecution(work: WorkView, meta: CommandMeta): Promise<WorkView> {
 		const execution = this.requireExecution(work, "queued");
 		let binding: RuntimeBinding | undefined;
@@ -2485,8 +2354,6 @@ export class ApplicationService {
 			);
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private async driveExecutor(work: WorkView): Promise<void> {
 		const execution = work.execution;
 		if (execution?.pi === undefined) return;
@@ -2567,8 +2434,6 @@ export class ApplicationService {
 			this.removeActiveExecutorTurn(turnKey, turn);
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordExecutorRuntimeState(work: WorkView, runtimeState: RuntimeState, wakeConclave = false): WorkView {
 		const execution = work.execution;
 		if (execution === undefined || execution.runtimeState === runtimeState) return work;
@@ -2601,8 +2466,6 @@ export class ApplicationService {
 				: undefined,
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordExecutorTurn(work: WorkView, turn: RuntimeTurn): WorkView {
 		const current = this.archive.project(work.workId);
 		const execution = current?.execution;
@@ -2654,9 +2517,12 @@ export class ApplicationService {
 			effects: exhausted ? [schedulerEffect(current.workId, next.revision, undefined, "token-exhausted")] : undefined,
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
-	private async recordSignal(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
+	private async recordSignal(
+		work: WorkView,
+		meta: CommandMeta,
+		input: ActionInput | undefined,
+		operation?: OperationContext,
+	): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
 		const kind = readSignalKind(input);
@@ -2671,7 +2537,7 @@ export class ApplicationService {
 					"Include the validation commands and results in the Signal evidence.",
 				);
 
-			await this.ensureAllowedPaths(work, execution);
+			await this.ensureAllowedPaths(work, execution, operation);
 			const request = work.reviewRequest;
 			if (
 				request === undefined ||
@@ -2686,7 +2552,8 @@ export class ApplicationService {
 					"Publish the current sandbox and create its draft review request.",
 				);
 			}
-			const head = await this.ports.workspace.inspectHead(execution.sandbox.path);
+			const head = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
+			throwIfOperationAborted(operation);
 			if (
 				request.headCommit !== head ||
 				!this.providerEvidenceAllowsReady(work, request) ||
@@ -2736,13 +2603,16 @@ export class ApplicationService {
 		}).projection;
 	}
 
-	private async ensureAllowedPaths(work: WorkView, execution: Execution): Promise<void> {
+	private async ensureAllowedPaths(work: WorkView, execution: Execution, operation?: OperationContext): Promise<void> {
 		const inspectChanges = this.ports.workspace.inspectChanges;
 		if (inspectChanges === undefined) return;
-		const changedPaths = await inspectChanges({
-			path: execution.sandbox.path,
-			baseCommit: execution.sandbox.baseCommit,
-		});
+		const changedPaths = await inspectChanges(
+			{
+				path: execution.sandbox.path,
+				baseCommit: execution.sandbox.baseCommit,
+			},
+			operation,
+		);
 		const unauthorized = changedPaths.filter((path) => !isAllowedPath(path, work.terms.allowedPaths));
 		if (unauthorized.length > 0)
 			throw this.error(
@@ -2752,9 +2622,7 @@ export class ApplicationService {
 				"Revert changes outside the Mission paths before publishing or sending ready evidence.",
 			);
 	}
-
-	// oxlint-disable-next-line complexity
-	private async commitSandbox(work: WorkView, meta: CommandMeta): Promise<WorkView> {
+	private async commitSandbox(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
 		const commitSandbox = this.ports.workspace.commitSandbox;
@@ -2765,12 +2633,16 @@ export class ApplicationService {
 				false,
 				"Use a workspace adapter that supports governed sandbox commits.",
 			);
-		await this.ensureAllowedPaths(work, execution);
-		const headCommit = await commitSandbox({
-			sandbox: execution.sandbox,
-			allowedPaths: work.terms.allowedPaths,
-			message: `Khala: ${work.terms.title}`,
-		});
+		await this.ensureAllowedPaths(work, execution, operation);
+		const headCommit = await commitSandbox(
+			{
+				sandbox: execution.sandbox,
+				allowedPaths: work.terms.allowedPaths,
+				message: `Khala: ${work.terms.title}`,
+			},
+			operation,
+		);
+		throwIfOperationAborted(operation);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -2788,9 +2660,7 @@ export class ApplicationService {
 			summary: `Sandbox changes committed at ${headCommit}.`,
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
-	private async runValidation(work: WorkView, meta: CommandMeta): Promise<WorkView> {
+	private async runValidation(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
 		const runValidation = this.ports.workspace.runValidation;
@@ -2801,9 +2671,10 @@ export class ApplicationService {
 				false,
 				"Use a workspace adapter that supports governed validation.",
 			);
-		await this.ensureAllowedPaths(work, execution);
-		const headCommit = await this.ports.workspace.inspectHead(execution.sandbox.path);
-		const results = await runValidation({ path: execution.sandbox.path, commands: work.terms.validation });
+		await this.ensureAllowedPaths(work, execution, operation);
+		const headCommit = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
+		const results = await runValidation({ path: execution.sandbox.path, commands: work.terms.validation }, operation);
+		throwIfOperationAborted(operation);
 		const validation = { executionId: execution.executionId, headCommit, results };
 		const passed = results.length === work.terms.validation.length && results.every((result) => result.passed);
 		const next: WorkView = {
@@ -2826,12 +2697,14 @@ export class ApplicationService {
 			summary: passed ? "All declared validation commands passed." : "One or more declared validation commands failed.",
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
-	private async createReviewRequest(work: WorkView, meta: CommandMeta): Promise<WorkView> {
+	private async createReviewRequest(
+		work: WorkView,
+		meta: CommandMeta,
+		operation?: OperationContext,
+	): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
-		await this.ensureAllowedPaths(work, execution);
+		await this.ensureAllowedPaths(work, execution, operation);
 		if (work.mission === undefined) {
 			throw this.error(
 				"invalid-state",
@@ -2840,7 +2713,7 @@ export class ApplicationService {
 				"Ask the Conclave to admit Work.",
 			);
 		}
-		const capabilities = await this.ports.codeHost.capabilities();
+		const capabilities = await this.ports.codeHost.capabilities(operation);
 		if (!capabilities.supportsDraft)
 			throw this.error(
 				"external-failure",
@@ -2848,7 +2721,11 @@ export class ApplicationService {
 				false,
 				"Use a GitHub or GitLab provider with draft review support.",
 			);
-		const preflight = await this.ports.workspace.preflight(this.options.projectPath, this.options.targetBranch);
+		const preflight = await this.ports.workspace.preflight(
+			this.options.projectPath,
+			this.options.targetBranch,
+			operation,
+		);
 		if (preflight.headCommit !== execution.sandbox.baseCommit)
 			throw this.error(
 				"invalid-state",
@@ -2856,7 +2733,8 @@ export class ApplicationService {
 				false,
 				"Rebase or replace the Execution before publishing its review request.",
 			);
-		const headCommit = await this.ports.workspace.inspectHead(execution.sandbox.path);
+		const headCommit = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
+		throwIfOperationAborted(operation);
 		if (
 			work.reviewRequest !== undefined &&
 			work.reviewRequest.headCommit === headCommit &&
@@ -2874,7 +2752,7 @@ export class ApplicationService {
 				"Implement and commit the Mission changes before publishing.",
 			);
 		}
-		const publishedHead = await this.ports.workspace.publishSandbox(execution.sandbox);
+		const publishedHead = await this.ports.workspace.publishSandbox(execution.sandbox, operation);
 		if (publishedHead !== headCommit) {
 			throw this.error(
 				"external-failure",
@@ -2883,16 +2761,20 @@ export class ApplicationService {
 				"Reconcile the sandbox and review provider.",
 			);
 		}
-		const request = await this.ports.codeHost.ensureReviewRequest({
-			workId: work.workId,
-			mission: work.mission,
-			execution,
-			terms: work.terms,
-			sandbox: execution.sandbox,
-			headCommit,
-			targetBranch: this.options.targetBranch,
-			draftMarker: `Khala-Work: ${work.workId}`,
-		});
+		const request = await this.ports.codeHost.ensureReviewRequest(
+			{
+				workId: work.workId,
+				mission: work.mission,
+				execution,
+				terms: work.terms,
+				sandbox: execution.sandbox,
+				headCommit,
+				targetBranch: this.options.targetBranch,
+				draftMarker: `Khala-Work: ${work.workId}`,
+			},
+			operation,
+		);
+		throwIfOperationAborted(operation);
 		if (
 			request.sourceBranch !== execution.sandbox.branch ||
 			request.targetBranch !== this.options.targetBranch ||
@@ -2922,9 +2804,12 @@ export class ApplicationService {
 			summary: `Draft ${request.provider} review request ${request.providerId} is ready.`,
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
-	private async runOracle(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
+	private async runOracle(
+		work: WorkView,
+		meta: CommandMeta,
+		input: ActionInput | undefined,
+		operation?: OperationContext,
+	): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
 		if (
 			work.mission === undefined ||
@@ -2961,7 +2846,9 @@ export class ApplicationService {
 			},
 			this.options.oracleModel,
 			this.options.oracleThinking,
+			operation,
 		);
+		throwIfOperationAborted(operation);
 		const next: WorkView = { ...work, revision: work.revision + 1, nextAction: "Conclave must decide the Verdict." };
 		return this.append({
 			meta,
@@ -2974,8 +2861,6 @@ export class ApplicationService {
 			summary: `Oracle advisory result: ${result.verdict}.`,
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private async verdict(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
 		const execution = this.requireExecution(work);
@@ -3086,8 +2971,6 @@ export class ApplicationService {
 		this.archive.updateCommandProjection(meta.commandId, replacement);
 		return replacement;
 	}
-
-	// oxlint-disable-next-line complexity
 	private async recordReview(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
 		this.requireActor(meta, "user");
 		if (work.state !== "awaiting-review" || work.reviewRequest === undefined) {
@@ -3154,8 +3037,6 @@ export class ApplicationService {
 		});
 		return result.projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private async deliverFeedback(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
 		const observationId = input?.observationId ?? work.lastObservation?.observationId;
@@ -3213,8 +3094,6 @@ export class ApplicationService {
 			effects: [feedbackDelivery],
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private async resumeExecutor(
 		work: WorkView,
 		feedback: readonly string[],
@@ -3384,8 +3263,6 @@ export class ApplicationService {
 			this.removeActiveExecutorTurn(turnKey, turn);
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private recordFeedbackDelivered(
 		workId: string,
 		observationId: string | undefined,
@@ -3492,95 +3369,33 @@ export class ApplicationService {
 			summary: details.summary,
 		});
 	}
-
-	// oxlint-disable-next-line complexity
 	private async recordOutcome(work: WorkView, meta: CommandMeta): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
-		const reviewRequest = work.reviewRequest;
-		const mergeEvidence = work.providerOutcome;
-		if (
-			!isProviderOutcomeSettlementPending(work) ||
-			reviewRequest === undefined ||
-			reviewRequest.status !== "merged" ||
-			mergeEvidence === undefined ||
-			mergeEvidence.kind !== "provider-outcome" ||
-			mergeEvidence.providerId !== reviewRequest.providerId ||
-			mergeEvidence.status !== "merged" ||
-			mergeEvidence.repository !== reviewRequest.repository ||
-			mergeEvidence.sourceBranch !== reviewRequest.sourceBranch ||
-			mergeEvidence.targetBranch !== reviewRequest.targetBranch ||
-			(reviewRequest.baseCommit !== undefined && mergeEvidence.baseCommit !== reviewRequest.baseCommit) ||
-			mergeEvidence.headCommit !== reviewRequest.headCommit ||
-			mergeEvidence.mergeCommit === undefined
-		) {
-			throw this.error(
-				"invalid-state",
-				"A Work Outcome requires provider-confirmed merge evidence.",
-				false,
-				"Poll and inspect the provider outcome first.",
-			);
-		}
-		const next: WorkView = {
-			...work,
-			revision: work.revision + 1,
-			state: "succeeded",
-			missionState: "succeeded",
-			execution:
-				work.execution === undefined
-					? undefined
-					: { ...work.execution, state: "completed", endedAt: new Date().toISOString() },
-			budget: releaseExecutionReservation(work.budget, work.execution),
-			lastError: undefined,
-			nextAction: "Work succeeded.",
-		};
+		const evidence = requireOutcomeEvidence(work);
+		const next = succeededWork(work);
 		return this.append({
 			meta,
 			kind: "outcome",
 			workId: work.workId,
 			missionId: work.mission?.missionId,
 			executionId: work.execution?.executionId,
-			payload: { reviewRequestId: reviewRequest.providerId, mergeEvidence: mergeEvidence.summary },
+			payload: { reviewRequestId: evidence.request.providerId, mergeEvidence: evidence.outcome.summary },
 			projection: next,
 			summary: "Provider-confirmed merge accepted as the Work Outcome.",
 			effects: lifecycleEffects(work.workId, next.revision, next.execution, undefined, false),
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private async failWork(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): Promise<WorkView> {
-		if (meta.actor !== "user" && meta.actor !== "conclave") {
-			throw this.error(
-				"forbidden",
-				"Only User or Conclave can fail Work explicitly.",
-				false,
-				"Use an authorized actor.",
-			);
-		}
-		if (["succeeded", "stopped"].includes(work.state)) {
-			throw this.error(
-				"invalid-state",
-				"Terminal Work cannot be failed again.",
-				false,
-				"Inspect the existing terminal Outcome.",
-			);
-		}
+		this.requireFailureActor(meta);
+		this.requireNonTerminalWork(work);
 		const reason = requiredNonBlank(requiredText(input?.reason, "reason"), "reason");
-		const failure: ErrorEnvelope = {
-			code: "external-failure",
-			summary: `Work failed: ${reason}`,
-			retryable: false,
-			remediation: "Inspect the Archive for the explicit failure decision.",
-			evidenceRefs: [],
-		};
+		const failure = workFailure(reason);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
 			state: "stopped",
 			stopReason: "failed",
-			execution:
-				work.execution === undefined
-					? undefined
-					: { ...work.execution, state: "failed", endedAt: new Date().toISOString() },
+			execution: failedExecution(work.execution),
 			observer: undefined,
 			observerInFlight: false,
 			budget: releaseExecutionReservation(work.budget, work.execution),
@@ -3599,27 +3414,26 @@ export class ApplicationService {
 			effects: lifecycleEffects(work.workId, next.revision, next.execution, work.observer, false),
 		}).projection;
 	}
+	private requireFailureActor(meta: CommandMeta): void {
+		if (meta.actor === "user" || meta.actor === "conclave") return;
+		throw this.error("forbidden", "Only User or Conclave can fail Work explicitly.", false, "Use an authorized actor.");
+	}
 
-	// oxlint-disable-next-line complexity
+	private requireNonTerminalWork(work: WorkView): void {
+		if (!isTerminalWork(work)) return;
+		throw this.error(
+			"invalid-state",
+			"Terminal Work cannot be failed again.",
+			false,
+			"Inspect the existing terminal Outcome.",
+		);
+	}
+
 	private renameWork(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): WorkView {
 		this.requireActor(meta, "user");
-		if (work.state === "succeeded") {
-			throw this.error(
-				"invalid-state",
-				"Succeeded Work cannot be renamed.",
-				false,
-				"Rename an active or failed Work instead.",
-			);
-		}
+		this.requireRenameableWork(work);
 		const title = requiredNonBlank(requiredText(input?.title, "title"), "title");
-		if (title === work.terms.title) {
-			throw this.error(
-				"invalid-input",
-				"The new Work title matches the current title.",
-				false,
-				"Choose a different title.",
-			);
-		}
+		this.requireNewTitle(work, title);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -3636,27 +3450,33 @@ export class ApplicationService {
 			summary: `Work title renamed to ${title}.`,
 		}).projection;
 	}
+	private requireRenameableWork(work: WorkView): void {
+		if (work.state !== "succeeded") return;
+		throw this.error("invalid-state", "Succeeded Work cannot be renamed.", false, "Rename an active or failed Work instead.");
+	}
 
-	// oxlint-disable-next-line complexity
-	private amendBudget(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): WorkView {
-		this.requireActor(meta, "user");
+	private requireBudgetChange(work: WorkView, input: ActionInput | undefined): number {
 		const maxTokens = input?.maxTokens;
-		if (maxTokens === undefined || !Number.isSafeInteger(maxTokens) || maxTokens <= 0) {
-			throw this.error(
-				"invalid-input",
-				"maxTokens must be a positive integer.",
-				false,
-				"Supply a larger positive Work budget.",
-			);
-		}
-		if (maxTokens < work.budget.reservedTokens + work.budget.consumedTokens) {
-			throw this.error(
-				"invalid-input",
-				"The amended cap cannot be below reserved or consumed tokens.",
-				false,
-				"Choose a cap that covers current reservations and consumption.",
-			);
-		}
+		this.requirePositiveBudget(maxTokens);
+		if (maxTokens < work.budget.reservedTokens + work.budget.consumedTokens)
+			throw this.error("invalid-input", "The amended cap cannot be below reserved or consumed tokens.", false, "Choose a cap that covers current reservations and consumption.");
+		return maxTokens;
+	}
+
+	private requirePositiveBudget(maxTokens: number | undefined): asserts maxTokens is number {
+		if (maxTokens !== undefined && Number.isSafeInteger(maxTokens) && maxTokens > 0) return;
+		throw this.error("invalid-input", "maxTokens must be a positive integer.", false, "Supply a larger positive Work budget.");
+	}
+
+	private requireNewTitle(work: WorkView, title: string): void {
+		if (title !== work.terms.title) return;
+		throw this.error("invalid-input", "The new Work title matches the current title.", false, "Choose a different title.");
+	}
+
+	private amendBudget(work: WorkView, meta: CommandMeta, input: ActionInput | undefined) {
+		this.requireActor(meta, "user");
+		const maxTokens = this.requireBudgetChange(work, input);
+
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -3674,40 +3494,31 @@ export class ApplicationService {
 			effects: work.state === "queued" ? [schedulerEffect(work.workId, next.revision)] : undefined,
 		}).projection;
 	}
-
-	// oxlint-disable-next-line complexity
 	private async recoverRuntime(
 		work: WorkView,
 		meta: CommandMeta,
 		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+		operation?: OperationContext,
 	): Promise<WorkView> {
 		this.requireAnyActor(meta, ["user", "conclave"]);
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking whether this Work can be recovered." });
-		const execution = work.execution;
-		if (
-			execution === undefined ||
-			execution.pi === undefined ||
-			(execution.state !== "running" && execution.state !== "awaiting-review")
-		) {
-			throw this.error(
-				"invalid-state",
-				"No recoverable Executor runtime is bound to this Work.",
-				false,
-				"Inspect the current Execution before recovering it.",
-			);
-		}
-		if (!isRuntimeUnavailable(await this.ports.runtime.getState(execution.pi))) {
-			throw this.error(
-				"invalid-state",
-				"The Executor runtime is reachable and does not need recovery.",
-				false,
-				"Refresh the Work and use the available action for its current state.",
-			);
-		}
-		return this.recoverWork(work.workId, meta, onRecoveryUpdate);
+		const execution = this.recoverableExecution(work);
+		await this.requireUnavailableRuntimeForRecovery(execution.pi, operation);
+		return this.recoverWork(work.workId, meta, onRecoveryUpdate, operation);
 	}
 
-	// oxlint-disable-next-line complexity
+	private async requireUnavailableRuntimeForRecovery(
+		binding: RuntimeBinding,
+		operation?: OperationContext,
+	): Promise<void> {
+		if (isRuntimeUnavailable(await this.ports.runtime.getState(binding, operation))) return;
+		throw this.error(
+			"invalid-state",
+			"The Executor runtime is reachable and does not need recovery.",
+			false,
+			"Refresh the Work and use the available action for its current state.",
+		);
+	}
 	private recoverStopped(
 		work: WorkView,
 		meta: CommandMeta,
@@ -3715,14 +3526,7 @@ export class ApplicationService {
 	): WorkView {
 		this.requireActor(meta, "user");
 		onRecoveryUpdate?.({ stage: "checking", message: "Preparing the cancelled Work for recovery." });
-		if (work.state !== "stopped" || work.stopReason !== "cancelled") {
-			throw this.error(
-				"invalid-state",
-				"Only Work stopped by cancellation can be recovered.",
-				false,
-				"Inspect the Work state before recovering it.",
-			);
-		}
+		this.requireCancelledWork(work);
 		onRecoveryUpdate?.({ stage: "finishing", message: "Returning the recovered Work to admission." });
 		const next: WorkView = {
 			...work,
@@ -3791,6 +3595,16 @@ export class ApplicationService {
 		}).projection;
 	}
 
+	private requireCancelledWork(work: WorkView): void {
+		if (isCancelledWork(work)) return;
+		throw this.error(
+			"invalid-state",
+			"Only Work stopped by cancellation can be recovered.",
+			false,
+			"Inspect the Work state before recovering it.",
+		);
+	}
+
 	private append(
 		input: Readonly<{
 			meta: CommandMeta;
@@ -3837,34 +3651,16 @@ export class ApplicationService {
 			throw error;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private normalizeRecordQuery(
 		query: RecordQuery | undefined,
 		actor: Actor,
 		boundWorkId?: string,
 		boundExecutionId?: string,
 	): RecordQuery {
-		if (actor === "user" || actor === "monitor") {
-			return query ?? {};
-		}
-		const workId = query?.workId;
-		if (workId === undefined || (boundWorkId !== undefined && boundWorkId !== workId)) {
-			throw this.error(
-				"forbidden",
-				"This role must read its bound Work at a time.",
-				false,
-				"Supply the bound Work ID.",
-			);
-		}
-		if (actor === "executor" && query?.executionId !== undefined && query.executionId !== boundExecutionId)
-			throw this.error(
-				"forbidden",
-				"This Executor must read its bound Execution at a time.",
-				false,
-				"Supply the bound Execution ID.",
-			);
-		return { ...query, workId };
+		if (actor === "user" || actor === "monitor") return query ?? {};
+		return normalizeScopedQuery(query, actor, boundWorkId, boundExecutionId, (message) =>
+			this.error("forbidden", message, false, "Supply the bound Work or Execution ID."),
+		);
 	}
 
 	private requireReadableActor(actor: Actor): void {
@@ -3916,8 +3712,6 @@ export class ApplicationService {
 		}
 		return work.execution;
 	}
-
-	// oxlint-disable-next-line complexity
 	private validateModel(role: "conclave" | "observer" | "executor" | "oracle", model: string, thinking: string): void {
 		try {
 			if (!this.ports.models.listScoped(role).includes(model)) {
@@ -3977,8 +3771,6 @@ export class ApplicationService {
 			);
 		this.requireScopedCapability(meta, capability, work);
 	}
-
-	// oxlint-disable-next-line complexity
 	private requireScopedCapability(meta: CommandMeta, capability: RoleCapability, work: WorkView): void {
 		if (meta.actor === "conclave" && (capability.workId !== work.workId || meta.roleNonce !== capability.nonce)) {
 			throw this.error(
@@ -4016,8 +3808,6 @@ export class ApplicationService {
 			);
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private requireCapability(meta: CommandMeta): RoleCapability {
 		const token = meta.roleToken;
 		const [encoded, signature] = token?.split(".") ?? [];
@@ -4055,73 +3845,398 @@ export class ApplicationService {
 	}
 }
 
-function isTransientConclaveWakeFailure(message: string): boolean {
-	return message.includes("Pi child exited") || message.includes("Pi RPC get_state timed out");
-}
-
-// oxlint-disable-next-line complexity
-function roleActionRemediation(actor: Actor, expected: Actor): string {
-	if (actor === "user" && expected === "executor") {
-		return "Executor Signals and review requests come from the bound Executor session. Read the Archive or poll the provider instead of recording Executor evidence as the User.";
-	}
-	if (actor === "user" && expected === "conclave") {
-		return "Conclave actions run in the bound Conclave session. Read the Archive and wait for the autonomous Conclave wake.";
-	}
-	return "Use the role-bound application adapter.";
-}
-
-// oxlint-disable-next-line complexity
-function conclaveWakeError(
-	failure: Error,
-	feedbackWake = false,
-	runtimeWake = false,
-	outcomeWake = false,
-): ErrorEnvelope {
-	if (failure instanceof ApplicationError) return failure.envelope;
-	const message = failure instanceof Error ? failure.message : String(failure);
-	if (runtimeWake) {
-		return {
-			code: "external-failure",
-			summary: `Conclave runtime recovery failed: ${message.slice(0, 2_000)}`,
-			retryable: true,
-			remediation:
-				"Inspect Evidence and retry the autonomous runtime inspection. Do not restart the primary Pi session.",
-			evidenceRefs: [],
-		};
-	}
-	if (outcomeWake) {
-		return {
-			code: "external-failure",
-			summary: `Conclave outcome settlement failed: ${message.slice(0, 2_000)}`,
-			retryable: true,
-			remediation:
-				"Inspect the Archive, restore the Conclave runtime if needed, and retry provider outcome settlement.",
-			evidenceRefs: [],
-		};
-	}
-	if (feedbackWake) {
-		return {
-			code: "external-failure",
-			summary: `Conclave feedback assessment failed: ${message.slice(0, 2_000)}`,
-			retryable: true,
-			remediation: "Inspect Evidence, restore the Conclave runtime if needed, and retry delivery explicitly.",
-			evidenceRefs: [],
-		};
-	}
+function workFailure(reason: string): ErrorEnvelope {
 	return {
 		code: "external-failure",
-		summary: `Conclave admission failed: ${message.slice(0, 2000)}`,
-		retryable: true,
-		remediation:
-			"Open /khala, press r, choose a working Conclave model and thinking level, then run khala-recover to retry admission.",
+		summary: `Work failed: ${reason}`,
+		retryable: false,
+		remediation: "Inspect the Archive for the explicit failure decision.",
 		evidenceRefs: [],
 	};
 }
 
-// oxlint-disable-next-line complexity
+function failedExecution(execution: Execution | undefined): Execution | undefined {
+	return execution === undefined ? undefined : { ...execution, state: "failed", endedAt: new Date().toISOString() };
+}
+
+function normalizeScopedQuery(
+	query: RecordQuery | undefined,
+	actor: Actor,
+	boundWorkId: string | undefined,
+	boundExecutionId: string | undefined,
+	createError: (summary: string, remediation: string) => Error,
+): RecordQuery {
+	const workId = query?.workId;
+	if (workId === undefined || boundWorkId !== undefined && boundWorkId !== workId)
+		throw createError("This role must read its bound Work at a time.", "Supply the bound Work ID.");
+	if (actor === "executor") return normalizeExecutorQuery(query, workId, boundExecutionId, createError);
+	return { ...query, workId };
+}
+
+function normalizeExecutorQuery(
+	query: RecordQuery | undefined,
+	workId: string,
+	boundExecutionId: string | undefined,
+	createError: (summary: string, remediation: string) => Error,
+): RecordQuery {
+	if (query?.executionId !== undefined && query.executionId !== boundExecutionId)
+		throw createError("This Executor must read its bound Execution at a time.", "Supply the bound Execution ID.");
+	return { ...query, workId };
+}
+
+function unavailableRuntime(work: WorkView, runtimeState: RuntimeState | undefined): boolean {
+	const execution = work.execution;
+	return hasActiveExecutionBinding(work) && isRuntimeUnavailable(runtimeState ?? execution?.runtimeState);
+}
+
+function isCancelledWork(work: WorkView): boolean {
+	return work.state === "stopped" && work.stopReason === "cancelled";
+}
+
+function canAmendTerms(work: WorkView): boolean {
+	return work.mission === undefined && (work.state === "submitted" || work.state === "needs-input");
+}
+
+function amendTermsReason(work: WorkView): string | undefined {
+	return work.mission === undefined ? undefined : "Admitted Mission terms are immutable.";
+}
+
+function canAmendMission(work: WorkView): boolean {
+	return hasMission(work) && !isTerminalWork(work) && failedOrStoppedExecution(work);
+}
+
+function hasMission(work: WorkView): boolean {
+	return work.mission !== undefined;
+}
+
+function isTerminalWork(work: WorkView): boolean {
+	return ["succeeded", "stopped"].includes(work.state);
+}
+
+function failedOrStoppedExecution(work: WorkView): boolean {
+	return work.execution === undefined || ["failed", "stopped"].includes(work.execution.state);
+}
+
+function canRequestInput(work: WorkView): boolean {
+	return (work.state === "submitted" || work.state === "needs-input") && work.mission === undefined;
+}
+
+function canLaunchObserver(work: WorkView): boolean {
+	return canRequestInput(work) && work.terms.context.length === 0 && work.observerInFlight !== true;
+}
+
+function canStartExecution(work: WorkView): boolean {
+	return canStartQueuedExecution(work) || canRestartExecution(work);
+}
+
+function canStartQueuedExecution(work: WorkView): boolean {
+	return work.state === "queued" && work.mission !== undefined && work.execution === undefined;
+}
+
+function canRestartExecution(work: WorkView): boolean {
+	return work.state === "active" && work.mission !== undefined && failedOrStoppedExecution(work) && work.execution !== undefined;
+}
+
+function startExecutionReason(missionActive: boolean, executionReady: boolean): string | undefined {
+	if (!missionActive) return "The Mission is no longer active.";
+	return executionReady ? undefined : "Work is not ready for an Execution.";
+}
+
+function startExecutionEnabled(work: WorkView): boolean {
+	return isActiveMission(work) && canStartExecution(work);
+}
+
+function startExecutionReasonForWork(work: WorkView): string | undefined {
+	return startExecutionReason(isActiveMission(work), canStartExecution(work));
+}
+
+function isRunningOrBlocked(work: WorkView): boolean {
+	return work.execution?.state === "running" || work.execution?.state === "blocked";
+}
+
+function oracleReason(oracleReady: boolean, inputsReady: boolean): string | undefined {
+	if (oracleReady) return undefined;
+	return inputsReady
+		? "The current Execution is not running."
+		: "Oracle review is available after a current ready Signal and open review request.";
+}
+
+function hasActiveExecutionBinding(work: WorkView): boolean {
+	const execution = work.execution;
+	return execution?.pi !== undefined && ["running", "awaiting-review"].includes(execution.state);
+}
+
+function isRecoverableExecution(
+	execution: Execution | undefined,
+): execution is Execution & { pi: RuntimeBinding } {
+	return execution?.pi !== undefined && ["running", "awaiting-review"].includes(execution.state);
+}
+
+function userActionSpecs(work: WorkView, runtimeUnavailable: boolean): readonly ActionSpec[] {
+	const terminal = isTerminalWork(work);
+	const recoverable = isCancelledWork(work) || runtimeUnavailable;
+	return [
+		{ kind: "amend-terms", enabled: canAmendTerms(work), label: "Amend Work terms", disabledReason: amendTermsReason(work) },
+		{ kind: "recover", enabled: recoverable, label: "Recover Work", disabledReason: recoveryReason(recoverable) },
+		{ kind: "rename-work", enabled: work.state !== "succeeded", label: "Rename Work", disabledReason: renameReason(work) },
+		{ kind: "fail-work", enabled: !terminal, label: "Fail Work", disabledReason: "Terminal Work cannot be failed again." },
+		{ kind: "amend-budget", enabled: !terminal, label: "Amend Work budget", disabledReason: "Terminal Work cannot be amended." },
+		{ kind: "record-review", enabled: work.state === "awaiting-review", label: "Record provider review", disabledReason: reviewReason(work) },
+		{ kind: "cancel", enabled: !terminal, label: "Cancel Work" },
+	];
+}
+
+function recoveryReason(enabled: boolean): string | undefined {
+	return enabled ? undefined : "Only stopped Work from cancellation or an unreachable runtime can be recovered.";
+}
+
+function renameReason(work: WorkView): string | undefined {
+	return work.state === "succeeded" ? "Succeeded Work cannot be renamed." : undefined;
+}
+
+function reviewReason(work: WorkView): string | undefined {
+	return work.state === "awaiting-review" ? undefined : "Work is not awaiting review.";
+}
+
+function requestInputReason(work: WorkView): string | undefined {
+	return work.mission === undefined ? undefined : "Mission terms are already admitted.";
+}
+
+function amendMissionReason(work: WorkView): string | undefined {
+	const enabled = canAmendMission(work);
+	return enabled ? undefined : "The Mission is not amendable now.";
+}
+
+function observerReason(work: WorkView): string | undefined {
+	return canLaunchObserver(work) ? undefined : "Work already contains context or an Observer is running.";
+}
+
+function isActiveMission(work: WorkView): boolean {
+	return work.missionState === "admitted" || work.missionState === "active";
+}
+
+function verdictReady(work: WorkView): boolean {
+	return (isCurrentSignal(work) || work.execution?.blockReason === "budget-exhausted") && isRunningOrBlocked(work);
+}
+
+function verdictReason(work: WorkView): string {
+	return isCurrentSignal(work) || work.execution?.blockReason === "budget-exhausted"
+		? "The current Execution is not awaiting a Verdict."
+		: "No current Signal is available.";
+}
+
+function oracleInputsReady(work: WorkView): boolean {
+	return isCurrentReadySignal(work) && isOpenReview(work.reviewRequest);
+}
+
+function oracleReady(work: WorkView): boolean {
+	return oracleInputsReady(work) && work.execution?.state === "running";
+}
+
+function feedbackReason(enabled: boolean): string | undefined {
+	return enabled ? undefined : "No undelivered, actionable provider feedback is available.";
+}
+
+const ROLE_SETTING_CHANGES = {
+	conclave: { model: (value) => ({ conclaveModel: value }), thinking: (value) => ({ conclaveThinking: value }) },
+	executor: { model: (value) => ({ executorModel: value }), thinking: (value) => ({ executorThinking: value }) },
+	observer: { model: (value) => ({ observerModel: value }), thinking: (value) => ({ observerThinking: value }) },
+	oracle: { model: (value) => ({ oracleModel: value }), thinking: (value) => ({ oracleThinking: value }) },
+} satisfies Record<GovernedRole, Readonly<Record<RoleSetting, (value: string) => Partial<ServiceOptions>>>>;
+
+function roleSettingChange(role: GovernedRole, setting: RoleSetting, value: string): Partial<ServiceOptions> {
+	return ROLE_SETTING_CHANGES[role][setting](value);
+}
+
+function workSummary(work: WorkView, queuePositions: ReadonlyMap<string, number>): WorkSummary {
+	return {
+		workId: work.workId,
+		title: work.terms.title,
+		state: work.state,
+		stopReason: work.stopReason,
+		missionState: work.missionState,
+		executionState: work.execution?.state,
+		hasFailure: workHasFailure(work),
+		revision: work.revision,
+		queuePosition: queuePositions.get(work.workId),
+		budget: work.budget,
+		nextAction: work.nextAction,
+	};
+}
+
+function workHasFailure(work: WorkView): boolean {
+	return hasWorkError(work) || hasFailedWorkStop(work) || hasFailedExecution(work);
+}
+
+function hasWorkError(work: WorkView): boolean {
+	return work.lastError !== undefined;
+}
+
+function normalizeCaughtError(error: Error | string): Error {
+	return error instanceof Error ? error : new Error(error);
+}
+
+function externalFailureEnvelope(message: string): ErrorEnvelope {
+	const summary = message.length === 0 ? "External Khala operation failed." : `External Khala operation failed: ${message}`;
+	return {
+		code: "external-failure",
+		summary,
+		retryable: true,
+		remediation: "Inspect the evidence, reconcile the runtime or provider, and retry explicitly.",
+		evidenceRefs: [],
+	};
+}
+
+function canStopExecutor(
+	current: WorkView | undefined,
+	execution: Execution,
+	binding: RuntimeBinding,
+	allowedStates: readonly Execution["state"][],
+): boolean {
+	const currentExecution = current?.execution;
+	if (currentExecution === undefined) return false;
+	return matchesExecutorStop(currentExecution, execution, binding, allowedStates);
+}
+
+function matchesExecutorStop(
+	current: Execution,
+	execution: Execution,
+	binding: RuntimeBinding,
+	allowedStates: readonly Execution["state"][],
+): boolean {
+	return [
+		current.executionId === execution.executionId,
+		allowedStates.includes(current.state),
+		sameRuntimeBinding(current.pi, binding),
+	].every(Boolean);
+}
+
+function conclaveWakeMessage(work: WorkView, observationId: string | undefined, reason: string | undefined): string {
+	return directedWakeMessage(work.workId, reason) ?? providerWakeMessage(work, observationId);
+}
+
+function providerWakeMessage(work: WorkView, observationId: string | undefined): string {
+	if (observationId !== undefined)
+		return `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`;
+	if (work.lastObservation?.kind === "review-comment")
+		return `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`;
+	return `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, request-input when User intent is insufficient, then start its Execution when budget permits. Never treat this message as authority.`;
+}
+
+function directedWakeMessage(workId: string, reason: string | undefined): string | undefined {
+	const messages = new Map<string, string>([
+		[
+			"runtime-unreachable",
+			`Inspect the Executor runtime for Work ${workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`,
+		],
+		[
+			"provider-closed",
+			`Inspect the closed provider review for Work ${workId}. Read the Archive first and reconcile the current Mission; do not treat closure as acceptance.`,
+		],
+		[
+			"provider-ci",
+			`Inspect the failed provider checks for Work ${workId}. Read the Archive first and reconcile the current Mission; do not treat failed checks as acceptance.`,
+		],
+		[
+			"provider-outcome",
+			`Process the provider merge outcome for Work ${workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`,
+		],
+	]);
+	return reason === undefined ? undefined : messages.get(reason);
+}
+
+function isScopedArchiveActor(actor: Actor): boolean {
+	return actor === "conclave" || actor === "executor" || actor === "observer";
+}
+
+function isUnscopedArchiveActor(actor: Actor): boolean {
+	return actor === "user" || actor === "monitor";
+}
+
+function hasRuntimeChange(work: WorkView, runtimeState: RuntimeState | undefined): runtimeState is RuntimeState {
+	return runtimeState !== undefined && runtimeState !== work.execution?.runtimeState;
+}
+
+function hasFailedWorkStop(work: WorkView): boolean {
+	return work.state === "stopped" && work.stopReason === "failed";
+}
+
+function hasFailedExecution(work: WorkView): boolean {
+	return work.execution?.state === "failed";
+}
+
+function runtimeNeedsInspection(work: WorkView): boolean {
+	const execution = work.execution;
+	return execution?.pi !== undefined && ["running", "awaiting-review"].includes(execution.state);
+}
+
+function runtimeBinding(work: WorkView): RuntimeBinding {
+	const binding = work.execution?.pi;
+	if (binding === undefined) throw new Error("The Work has no bound runtime.");
+	return binding;
+}
+
+function updatedRuntimeView(work: WorkView, runtimeState: RuntimeState): WorkView {
+	const execution = work.execution;
+	if (execution === undefined || (execution.runtimeState === runtimeState && runtimeAction(work, runtimeState) === work.nextAction))
+		return work;
+	return { ...work, execution: { ...execution, runtimeState }, nextAction: runtimeAction(work, runtimeState) };
+}
+
+function isTransientConclaveWakeFailure(message: string): boolean {
+	return message.includes("Pi child exited") || message.includes("Pi RPC get_state timed out");
+}
+function roleActionRemediation(actor: Actor, expected: Actor): string {
+	const key = `${actor}:${expected}`;
+	return (
+		{
+			"user:executor":
+				"Executor Signals and review requests come from the bound Executor session. Read the Archive or poll the provider instead of recording Executor evidence as the User.",
+			"user:conclave":
+				"Conclave actions run in the bound Conclave session. Read the Archive and wait for the autonomous Conclave wake.",
+		}[key] ?? "Use the role-bound application adapter."
+	);
+}
+function conclaveWakeError(failure: Error, kind: ConclaveWakeErrorKind): ErrorEnvelope {
+	if (failure instanceof ApplicationError) return failure.envelope;
+	return conclaveWakeErrorFor(kind, failure.message.slice(0, 2_000));
+}
+
+type ConclaveWakeErrorKind = "runtime" | "outcome" | "feedback" | "admission";
+
+function wakeErrorKind(feedbackWake: boolean, runtimeWake: boolean, outcomeWake: boolean): ConclaveWakeErrorKind {
+	if (runtimeWake) return "runtime";
+	if (outcomeWake) return "outcome";
+	return feedbackWake ? "feedback" : "admission";
+}
+
+function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): ErrorEnvelope {
+	const details = {
+		runtime: {
+			summary: `Conclave runtime recovery failed: ${message}`,
+			remediation: "Inspect Evidence and retry the autonomous runtime inspection. Do not restart the primary Pi session.",
+		},
+		outcome: {
+			summary: `Conclave outcome settlement failed: ${message}`,
+			remediation: "Inspect the Archive, restore the Conclave runtime if needed, and retry provider outcome settlement.",
+		},
+		feedback: {
+			summary: `Conclave feedback assessment failed: ${message}`,
+			remediation: "Inspect Evidence, restore the Conclave runtime if needed, and retry delivery explicitly.",
+		},
+		admission: {
+			summary: `Conclave admission failed: ${message}`,
+			remediation: "Open /khala, press r, choose a working Conclave model and thinking level, then run khala-recover to retry admission.",
+		},
+	} satisfies Record<ConclaveWakeErrorKind, Readonly<{ summary: string; remediation: string }>>;
+	return { code: "external-failure", ...details[kind], retryable: true, evidenceRefs: [] };
+}
 function readCapabilityRole(value: JsonValue | undefined): GovernedRole | undefined {
-	if (value === "conclave" || value === "observer" || value === "executor" || value === "oracle") return value;
-	return undefined;
+	return isTextValue(value) && isGovernedRole(value) ? value : undefined;
+}
+
+function isGovernedRole(value: string): value is GovernedRole {
+	return ["conclave", "observer", "executor", "oracle"].includes(value);
 }
 
 function readCapabilityText(value: JsonValue | undefined): string | undefined {
@@ -4131,27 +4246,50 @@ function readCapabilityText(value: JsonValue | undefined): string | undefined {
 function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
 }
-
-// oxlint-disable-next-line complexity
 function normalizeTerms(input: SubmitWorkInput, defaultWorkTokens: number): WorkTerms {
-	const title = assertNonBlank(input.title, "title");
-	const objective = assertNonBlank(input.objective, "objective");
-	if (input.acceptanceCriteria.length === 0 || input.acceptanceCriteria.some((entry) => entry.trim().length === 0)) {
-		throw new Error("acceptanceCriteria must contain at least one nonblank item.");
-	}
-	const maxTokens = input.maxTokens ?? defaultWorkTokens;
-	assertPositiveInteger(maxTokens, "maxTokens");
 	return {
-		title,
-		objective,
-		context: input.context?.trim() ?? "",
-		scope: input.scope?.trim() || DEFAULT_SCOPE,
-		acceptanceCriteria: input.acceptanceCriteria.map((entry) => assertNonBlank(entry, "acceptanceCriteria item")),
-		constraints: (input.constraints ?? []).map((entry) => assertNonBlank(entry, "constraints item")),
-		validation: (input.validation ?? [DEFAULT_VALIDATION]).map((entry) => assertNonBlank(entry, "validation item")),
-		allowedPaths: normalizeAllowedPaths(input.allowedPaths ?? ["."]),
-		maxTokens,
+		title: assertNonBlank(input.title, "title"),
+		objective: assertNonBlank(input.objective, "objective"),
+		context: termContext(input.context),
+		scope: termScope(input.scope),
+		acceptanceCriteria: nonBlankCriteria(input.acceptanceCriteria),
+		constraints: normalizeTermList(input.constraints, "constraints item"),
+		validation: normalizeValidation(input.validation),
+		allowedPaths: normalizePaths(input.allowedPaths),
+		maxTokens: positiveTermTokens(input.maxTokens, defaultWorkTokens),
 	};
+}
+
+function termContext(value: string | undefined): string {
+	return value?.trim() ?? "";
+}
+
+function termScope(value: string | undefined): string {
+	return value?.trim() || DEFAULT_SCOPE;
+}
+
+function nonBlankCriteria(values: readonly string[]): readonly string[] {
+	if (values.length === 0 || values.some((entry) => entry.trim().length === 0))
+		throw new Error("acceptanceCriteria must contain at least one nonblank item.");
+	return values.map((entry) => assertNonBlank(entry, "acceptanceCriteria item"));
+}
+
+function normalizeTermList(values: readonly string[] | undefined, key: string): readonly string[] {
+	return (values ?? []).map((entry) => assertNonBlank(entry, key));
+}
+
+function normalizeValidation(value: readonly string[] | undefined): readonly string[] {
+	return normalizeTermList(value ?? [DEFAULT_VALIDATION], "validation item");
+}
+
+function normalizePaths(value: readonly string[] | undefined): readonly string[] {
+	return normalizeAllowedPaths(value ?? ["."]);
+}
+
+function positiveTermTokens(value: number | undefined, fallback: number): number {
+	const maxTokens = value ?? fallback;
+	assertPositiveInteger(maxTokens, "maxTokens");
+	return maxTokens;
 }
 
 function mergeTermChanges(terms: WorkTerms, input: ActionInput | undefined, mission: boolean): WorkTerms {
@@ -4264,14 +4402,21 @@ function amendedMissionSpecificity(previous: MissionSpecificity, input: ActionIn
 	});
 	return { status: missing.length === 0 ? "explicit" : "defaults-used", missing };
 }
+function isDefinedText(value: string | undefined): value is string {
+	return value !== undefined;
+}
 
-// oxlint-disable-next-line complexity
 function rawMissionSpecificity(input: SubmitWorkInput): MissionSpecificity {
-	const missing = [
-		input.scope?.trim() ? undefined : "scope",
-		input.validation !== undefined && input.validation.length > 0 ? undefined : "validation",
-	].filter((entry): entry is string => entry !== undefined);
+	const missing = [missingScope(input), missingValidation(input)].filter(isDefinedText);
 	return { status: missing.length === 0 ? "explicit" : "defaults-used", missing };
+}
+
+function missingScope(input: SubmitWorkInput): string | undefined {
+	return input.scope?.trim() ? undefined : "scope";
+}
+
+function missingValidation(input: SubmitWorkInput): string | undefined {
+	return input.validation !== undefined && input.validation.length > 0 ? undefined : "validation";
 }
 
 function isAllowedPath(path: string, allowedPaths: readonly string[]): boolean {
@@ -4284,19 +4429,16 @@ function isAllowedPath(path: string, allowedPaths: readonly string[]): boolean {
 function executorTurnKey(workId: string, executionId: string): string {
 	return `${workId}:${executionId}`;
 }
-
-// oxlint-disable-next-line complexity
 function sameRuntimeBinding(left: RuntimeBinding | undefined, right: RuntimeBinding | undefined): boolean {
-	return (
-		left !== undefined &&
-		right !== undefined &&
-		left.sessionId === right.sessionId &&
-		left.sessionPath === right.sessionPath &&
-		left.processGroupId === right.processGroupId &&
-		left.processStartTime === right.processStartTime &&
-		left.capabilityNonce === right.capabilityNonce &&
-		left.processMarker === right.processMarker
-	);
+	if (left === undefined || right === undefined) return false;
+	return [
+		left.sessionId === right.sessionId,
+		left.sessionPath === right.sessionPath,
+		left.processGroupId === right.processGroupId,
+		left.processStartTime === right.processStartTime,
+		left.capabilityNonce === right.capabilityNonce,
+		left.processMarker === right.processMarker,
+	].every(Boolean);
 }
 
 function executionDriveKey(workId: string, execution: Execution): string {
@@ -4310,18 +4452,23 @@ function observerDriveKey(workId: string, binding: RuntimeBinding): string {
 function runtimeBindingKey(binding: RuntimeBinding | undefined): string {
 	return JSON.stringify(binding ?? null);
 }
-
-// oxlint-disable-next-line complexity
 function shouldMonitorProvider(work: WorkView): boolean {
-	return (
-		work.reviewRequest !== undefined &&
-		(work.reviewRequest.status === "draft" ||
-			work.reviewRequest.status === "open" ||
-			(work.reviewRequest.status === "merged" && !isCurrentProviderOutcome(work))) &&
-		!["succeeded", "stopped"].includes(work.state) &&
-		(work.state === "awaiting-review" ||
-			work.execution?.state === "running" ||
-			work.execution?.state === "awaiting-review")
+	return [
+		hasMonitorableReview(work),
+		!["succeeded", "stopped"].includes(work.state),
+		hasMonitorableExecution(work),
+	].every(Boolean);
+}
+
+function hasMonitorableReview(work: WorkView): boolean {
+	const status = work.reviewRequest?.status;
+	if (status === "merged") return !isCurrentProviderOutcome(work);
+	return status === "draft" || status === "open";
+}
+
+function hasMonitorableExecution(work: WorkView): boolean {
+	return ["awaiting-review", "running"].includes(
+		work.state === "awaiting-review" ? work.state : (work.execution?.state ?? ""),
 	);
 }
 
@@ -4337,31 +4484,50 @@ function monitorMeta(work: WorkView, subject: string, bucket: number): CommandMe
 function isRuntimeUnavailable(state: RuntimeState | undefined): boolean {
 	return state === "unreachable" || state === "unknown";
 }
-
-// oxlint-disable-next-line complexity
 function runtimeAction(work: WorkView, runtimeState: RuntimeState): string {
-	if (work.execution === undefined || !["running", "awaiting-review"].includes(work.execution.state))
-		return work.nextAction;
+	if (!hasRuntimeAction(work)) return work.nextAction;
 	if (runtimeState === "unreachable") return "Executor runtime is unreachable. Recover it from Actions.";
 	if (runtimeState === "unknown") return "Executor runtime state is unknown. Recover it from Actions.";
-	if (work.execution.state !== "running") return work.nextAction;
-	if (
-		runtimeState === "idle" &&
-		["Executor is working.", "Executor is resuming authorized review feedback."].includes(work.nextAction)
-	)
-		return "Executor is idle; waiting for a Signal.";
-	if (runtimeState === "working" && work.nextAction === "Executor is idle; waiting for a Signal.")
-		return "Executor is working.";
-	return work.nextAction;
+	return activeRuntimeAction(work, runtimeState);
 }
 
-// oxlint-disable-next-line complexity
+function hasRuntimeAction(work: WorkView): boolean {
+	return work.execution !== undefined && ["running", "awaiting-review"].includes(work.execution.state);
+}
+
+function activeRuntimeAction(work: WorkView, runtimeState: RuntimeState): string {
+	if (work.execution?.state !== "running") return work.nextAction;
+	return activeExecutorRuntimeAction(work.nextAction, runtimeState);
+}
+
+function activeExecutorRuntimeAction(nextAction: string, runtimeState: RuntimeState): string {
+	if (runtimeState === "idle") return idleExecutorRuntimeAction(nextAction);
+	if (runtimeState === "working" && nextAction === "Executor is idle; waiting for a Signal.")
+		return "Executor is working.";
+	return nextAction;
+}
+
+function idleExecutorRuntimeAction(nextAction: string): string {
+	return executorIsWorking(nextAction) ? "Executor is idle; waiting for a Signal." : nextAction;
+}
+
+function executorIsWorking(nextAction: string): boolean {
+	return ["Executor is working.", "Executor is resuming authorized review feedback."].includes(nextAction);
+}
 function addTokenUsage(previous: TokenUsage | undefined, current: TokenUsage): TokenUsage {
+	return mergeTokenUsage(previous ?? emptyTokenUsage(), current);
+}
+
+function emptyTokenUsage(): TokenUsage {
+	return { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
+}
+
+function mergeTokenUsage(previous: TokenUsage, current: TokenUsage): TokenUsage {
 	return {
-		inputTokens: (previous?.inputTokens ?? 0) + current.inputTokens,
-		outputTokens: (previous?.outputTokens ?? 0) + current.outputTokens,
-		cacheHitTokens: (previous?.cacheHitTokens ?? 0) + current.cacheHitTokens,
-		cacheMissTokens: (previous?.cacheMissTokens ?? 0) + current.cacheMissTokens,
+		inputTokens: previous.inputTokens + current.inputTokens,
+		outputTokens: previous.outputTokens + current.outputTokens,
+		cacheHitTokens: previous.cacheHitTokens + current.cacheHitTokens,
+		cacheMissTokens: previous.cacheMissTokens + current.cacheMissTokens,
 	};
 }
 
@@ -4384,27 +4550,36 @@ function releaseExecutionReservation(budget: WorkBudget, execution: Execution | 
 	if (execution === undefined) return budget;
 	return { ...budget, reservedTokens: Math.max(0, budget.reservedTokens - execution.tokenAllowance) };
 }
-
-// oxlint-disable-next-line complexity
 function executionFailure(work: WorkView, executionId: string, error: Error | string): ErrorEnvelope {
-	const failure = (error instanceof Error ? error.message : error).trim().slice(0, 2_000);
-	const missingTerms = work.mission?.specificity?.missing ?? [];
+	const failure = String(error instanceof Error ? error.message : error).trim().slice(0, 2_000);
 	return {
 		code: "external-failure",
 		summary: `Execution ${executionId} failed${failure.length === 0 ? "." : `: ${failure}`}`,
 		retryable: true,
 		remediation: "Inspect Evidence, then replace the Execution or amend the Mission before retrying.",
 		evidenceRefs: [executionId],
-		learning: {
-			failure: failure.length === 0 ? "The Executor failed without a provider error message." : failure,
-			missionSpecificity:
-				missingTerms.length === 0
-					? "Mission terms were explicit; inspect the runtime failure before changing scope."
-					: `Mission relied on default ${missingTerms.join(" and ")}; make those terms explicit before retrying.`,
-			nextMissionGuidance:
-				"If the failure exposed missing intent, make that constraint explicit before starting a replacement Execution.",
-		},
+		learning: executionFailureLearning(work, failure),
 	};
+}
+
+function executionFailureLearning(work: WorkView, failure: string) {
+	const missingTerms = work.mission?.specificity?.missing ?? [];
+	return {
+		failure: failureMessage(failure),
+		missionSpecificity: missionSpecificityMessage(missingTerms),
+		nextMissionGuidance:
+			"If the failure exposed missing intent, make that constraint explicit before starting a replacement Execution.",
+	} satisfies Readonly<{ failure: string; missionSpecificity: string; nextMissionGuidance: string }>;
+}
+
+function failureMessage(failure: string): string {
+	return failure || "The Executor failed without a provider error message.";
+}
+
+function missionSpecificityMessage(missingTerms: readonly string[]): string {
+	return missingTerms.length === 0
+		? "Mission terms were explicit; inspect the runtime failure before changing scope."
+		: `Mission relied on default ${missingTerms.join(" and ")}; make those terms explicit before retrying.`;
 }
 
 function roleSessionPath(projectPath: string, role: "observer", workId: string): string {
@@ -4463,25 +4638,40 @@ function sandboxCleanupEffect(workId: string, executionId: string, sandbox: Exec
 		payload: { workId, path: sandbox.path, baseCommit: sandbox.baseCommit, branch: sandbox.branch },
 	};
 }
-
-// oxlint-disable-next-line complexity
 function cleanupEffect(workId: string, execution: Execution) {
-	const bindingIdentity = execution.pi?.processMarker ?? execution.pi?.sessionId ?? "unbound";
 	return {
-		effectId: `workspace-cleanup:${workId}:${execution.executionId}:${bindingIdentity}`,
+		effectId: `workspace-cleanup:${workId}:${execution.executionId}:${cleanupBindingIdentity(execution.pi)}`,
 		kind: "workspace-cleanup",
-		payload: {
-			workId,
-			path: execution.sandbox.path,
-			baseCommit: execution.sandbox.baseCommit,
-			branch: execution.sandbox.branch,
-			sessionId: execution.pi?.sessionId,
-			sessionPath: execution.pi?.sessionPath,
-			processGroupId: execution.pi?.processGroupId,
-			processStartTime: execution.pi?.processStartTime,
-			capabilityNonce: execution.pi?.capabilityNonce,
-			processMarker: execution.pi?.processMarker,
-		},
+		payload: cleanupPayload(workId, execution),
+	};
+}
+
+function cleanupBindingIdentity(binding: RuntimeBinding | undefined): string {
+	if (binding === undefined) return "unbound";
+	return binding.processMarker ?? binding.sessionId;
+}
+
+
+function cleanupPayload(workId: string, execution: Execution) {
+	const binding = execution.pi;
+	return {
+		workId,
+		path: execution.sandbox.path,
+		baseCommit: execution.sandbox.baseCommit,
+		branch: execution.sandbox.branch,
+		...cleanupBindingPayload(binding),
+	};
+}
+
+function cleanupBindingPayload(binding: RuntimeBinding | undefined) {
+	if (binding === undefined) return {};
+	return {
+		sessionId: binding.sessionId,
+		sessionPath: binding.sessionPath,
+		processGroupId: binding.processGroupId,
+		processStartTime: binding.processStartTime,
+		capabilityNonce: binding.capabilityNonce,
+		processMarker: binding.processMarker,
 	};
 }
 
@@ -4524,8 +4714,6 @@ function observerEffects(workId: string, revision: number, binding: RuntimeBindi
 	if (binding !== undefined) effects.push(observerCleanupEffect(workId, binding));
 	return effects;
 }
-
-// oxlint-disable-next-line complexity
 function lifecycleEffects(
 	workId: string,
 	revision: number,
@@ -4533,25 +4721,36 @@ function lifecycleEffects(
 	observer?: RuntimeBinding,
 	wakeConclave = true,
 ) {
-	const effects: Array<
-		| ReturnType<typeof schedulerEffect>
-		| ReturnType<typeof queueSchedulerEffect>
-		| ReturnType<typeof cleanupEffect>
-		| ReturnType<typeof executorStopEffect>
-		| ReturnType<typeof observerCleanupEffect>
-	> = [];
-	if (wakeConclave) effects.push(schedulerEffect(workId, revision));
-	if (
-		execution !== undefined &&
-		["awaiting-review", "blocked", "completed", "failed", "stopped"].includes(execution.state)
-	)
-		effects.push(queueSchedulerEffect(workId, revision));
-	if (execution?.state === "awaiting-review" && execution.pi !== undefined)
-		effects.push(executorStopEffect(workId, revision, execution));
-	if (execution !== undefined && ["completed", "failed", "stopped"].includes(execution.state))
-		effects.push(cleanupEffect(workId, execution));
-	if (observer !== undefined) effects.push(observerCleanupEffect(workId, observer));
+	return [
+		...(wakeConclave ? [schedulerEffect(workId, revision)] : []),
+		...executionLifecycleEffects(workId, revision, execution),
+		...(observer === undefined ? [] : [observerCleanupEffect(workId, observer)]),
+	];
+}
+
+function executionLifecycleEffects(workId: string, revision: number, execution: Execution | undefined) {
+	if (execution === undefined) return [];
+	return executionEffectsForState(workId, revision, execution);
+}
+
+function executionEffectsForState(workId: string, revision: number, execution: Execution) {
+	const effects = [];
+	if (needsSchedulerWake(execution)) effects.push(queueSchedulerEffect(workId, revision));
+	if (needsExecutorStop(execution)) effects.push(executorStopEffect(workId, revision, execution));
+	if (needsWorkspaceCleanup(execution)) effects.push(cleanupEffect(workId, execution));
 	return effects;
+}
+
+function needsSchedulerWake(execution: Execution): boolean {
+	return ["awaiting-review", "blocked", "completed", "failed", "stopped"].includes(execution.state);
+}
+
+function needsExecutorStop(execution: Execution): boolean {
+	return execution.state === "awaiting-review" && execution.pi !== undefined;
+}
+
+function needsWorkspaceCleanup(execution: Execution): boolean {
+	return ["completed", "failed", "stopped"].includes(execution.state);
 }
 
 function readEffectWorkId(payload: JsonObject): string {
@@ -4586,24 +4785,25 @@ function readCleanupSandbox(payload: JsonObject): Execution["sandbox"] {
 		branch: readEffectText(payload, "branch"),
 	};
 }
-
-// oxlint-disable-next-line complexity
 function readEffectBinding(payload: JsonObject): RuntimeBinding {
-	const processGroupId = payload["processGroupId"];
-	const processStartTime = payload["processStartTime"];
-	const processMarker = payload["processMarker"];
 	return {
 		sessionId: readEffectText(payload, "sessionId"),
 		sessionPath: readEffectText(payload, "sessionPath"),
-		processGroupId: processGroupId === undefined ? undefined : readEffectInteger(processGroupId, "processGroupId"),
-		processStartTime:
-			processStartTime === undefined ? undefined : readEffectTextValue(processStartTime, "processStartTime"),
-		capabilityNonce:
-			payload["capabilityNonce"] === undefined
-				? undefined
-				: readEffectTextValue(payload["capabilityNonce"], "capabilityNonce"),
-		processMarker: processMarker === undefined ? undefined : readEffectTextValue(processMarker, "processMarker"),
+		processGroupId: optionalEffectInteger(payload, "processGroupId"),
+		processStartTime: optionalEffectText(payload, "processStartTime"),
+		capabilityNonce: optionalEffectText(payload, "capabilityNonce"),
+		processMarker: optionalEffectText(payload, "processMarker"),
 	};
+}
+
+function optionalEffectInteger(payload: JsonObject, key: string): number | undefined {
+	const value = payload[key];
+	return value === undefined ? undefined : readEffectInteger(value, key);
+}
+
+function optionalEffectText(payload: JsonObject, key: string): string | undefined {
+	const value = payload[key];
+	return value === undefined ? undefined : readEffectTextValue(value, key);
 }
 
 function readOptionalEffectBinding(payload: JsonObject): RuntimeBinding | undefined {
@@ -4645,10 +4845,11 @@ function requiredNonBlank(value: string, key: string): string {
 		throw new ActionInputError(error instanceof Error ? error.message : `${key} must not be blank.`);
 	}
 }
-
-// oxlint-disable-next-line complexity
 function readTextList(input: ActionInput | undefined, key: "evidence" | "feedback"): readonly string[] {
-	const value = key === "evidence" ? input?.evidence : input?.feedback;
+	return actionTextList(key === "evidence" ? input?.evidence : input?.feedback, key);
+}
+
+function actionTextList(value: readonly string[] | undefined, key: string): readonly string[] {
 	if (value === undefined) throw new ActionInputError(`Action input ${key} must be a list of text.`);
 	return value.map((entry) => requiredNonBlank(entry, `${key} item`));
 }
@@ -4659,32 +4860,22 @@ function boundedFeedback(feedback: readonly string[]): readonly string[] {
 		.filter((item) => item.length > 0)
 		.slice(0, 20);
 }
-
-// oxlint-disable-next-line complexity
 function readSignalKind(input: ActionInput | undefined): Signal["kind"] {
-	const value = requiredText(input?.kind, "kind");
-	if (value !== "progress" && value !== "blocked" && value !== "ready") {
-		throw new ActionInputError(`Signal kind ${value} is invalid.`);
-	}
-	return value;
+	return readActionChoice(requiredText(input?.kind, "kind"), ["progress", "blocked", "ready"], "Signal kind");
 }
 
-// oxlint-disable-next-line complexity
 function readDecision(input: ActionInput | undefined): "continue" | "replace" | "handoff" | "reject" {
-	const value = requiredText(input?.decision, "decision");
-	if (value !== "continue" && value !== "replace" && value !== "handoff" && value !== "reject") {
-		throw new ActionInputError(`Verdict decision ${value} is invalid.`);
-	}
-	return value;
+	return readActionChoice(requiredText(input?.decision, "decision"), ["continue", "replace", "handoff", "reject"], "Verdict decision");
 }
 
-// oxlint-disable-next-line complexity
 function readReviewStatus(input: ActionInput | undefined): "changes-requested" | "merged" | "closed" {
-	const value = requiredText(input?.status, "status");
-	if (value !== "changes-requested" && value !== "merged" && value !== "closed") {
-		throw new ActionInputError(`Review status ${value} is invalid.`);
-	}
-	return value;
+	return readActionChoice(requiredText(input?.status, "status"), ["changes-requested", "merged", "closed"], "Review status");
+}
+
+function readActionChoice<const T extends string>(value: string, choices: readonly T[], label: string): T {
+	const choice = choices.find((candidate) => candidate === value);
+	if (choice === undefined) throw new ActionInputError(`${label} ${value} is invalid.`);
+	return choice;
 }
 
 function oraclePayload(
@@ -4745,13 +4936,13 @@ function providerChecksError(work: WorkView, observation: ProviderObservation): 
 function monitorFailureMarker(subject: string, workId: string): string {
 	return `monitor-failure:${subject}:${workId}`;
 }
-
-// oxlint-disable-next-line complexity
 function providerPollRecoveryAction(work: WorkView, observation: ProviderObservation): string {
-	if (observation.kind === "review-comment" && observation.actionable !== false)
-		return "Conclave is assessing provider feedback.";
-	if (work.execution?.state === "running") return "Khala is continuing the Work automatically.";
-	return work.nextAction;
+	if (isActionableReviewComment(observation)) return "Conclave is assessing provider feedback.";
+	return work.execution?.state === "running" ? "Khala is continuing the Work automatically." : work.nextAction;
+}
+
+function isActionableReviewComment(observation: ProviderObservation): boolean {
+	return observation.kind === "review-comment" && observation.actionable !== false;
 }
 
 function observationKey(workId: string, observation: ProviderObservation): string {
@@ -4974,23 +5165,65 @@ function isOpenReviewRequest(
 function isMergedReview(work: WorkView): boolean {
 	return work.reviewRequest?.status === "merged";
 }
-
-// oxlint-disable-next-line complexity
 function isCurrentProviderOutcome(work: WorkView): boolean {
-	return (
-		work.reviewRequest !== undefined &&
-		work.providerOutcome?.kind === "provider-outcome" &&
-		work.providerOutcome.status === "merged" &&
-		work.providerOutcome.providerId === work.reviewRequest.providerId &&
-		work.providerOutcome.repository === work.reviewRequest.repository &&
-		work.providerOutcome.sourceBranch === work.reviewRequest.sourceBranch &&
-		work.providerOutcome.targetBranch === work.reviewRequest.targetBranch &&
-		work.providerOutcome.headCommit === work.reviewRequest.headCommit &&
-		(work.reviewRequest.baseCommit === undefined ||
-			work.providerOutcome.baseCommit === undefined ||
-			work.providerOutcome.baseCommit === work.reviewRequest.baseCommit) &&
-		work.providerOutcome.mergeCommit !== undefined
-	);
+	const request = work.reviewRequest;
+	const outcome = work.providerOutcome;
+	return request !== undefined && isMatchingProviderOutcome(outcome, request);
+}
+
+function isMatchingProviderOutcome(
+	outcome: ProviderObservation | undefined,
+	request: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	if (!isMergedProviderOutcome(outcome)) return false;
+	return reviewObservationMatchesRequest(outcome, request);
+}
+
+function isMergedProviderOutcome(
+	outcome: ProviderObservation | undefined,
+): outcome is ProviderObservation & { kind: "provider-outcome" } {
+	return outcome?.kind === "provider-outcome" && outcome.status === "merged" && outcome.mergeCommit !== undefined;
+}
+
+
+function requireOutcomeEvidence(work: WorkView) {
+	if (!isProviderOutcomeSettlementPending(work)) throw outcomeEvidenceError();
+	return completeOutcomeEvidence(work);
+}
+
+function completeOutcomeEvidence(work: WorkView) {
+	const request = work.reviewRequest;
+	const outcome = work.providerOutcome;
+	if (request === undefined || outcome?.kind !== "provider-outcome")
+		throw new Error("Provider outcome evidence is incomplete.");
+	return { request, outcome };
+}
+
+function outcomeEvidenceError(): ApplicationError {
+	return new ApplicationError({
+		code: "invalid-state",
+		summary: "A Work Outcome requires provider-confirmed merge evidence.",
+		retryable: false,
+		remediation: "Poll and inspect the provider outcome first.",
+		evidenceRefs: [],
+	});
+}
+
+function succeededWork(work: WorkView): WorkView {
+	return {
+		...work,
+		revision: work.revision + 1,
+		state: "succeeded",
+		missionState: "succeeded",
+		execution: completedExecution(work.execution),
+		budget: releaseExecutionReservation(work.budget, work.execution),
+		lastError: undefined,
+		nextAction: "Work succeeded.",
+	};
+}
+
+function completedExecution(execution: Execution | undefined): Execution | undefined {
+	return execution === undefined ? undefined : { ...execution, state: "completed", endedAt: new Date().toISOString() };
 }
 
 function isProviderOutcomeSettlementPending(work: WorkView): boolean {
@@ -5053,6 +5286,10 @@ function cleanupFailureMatches(work: WorkView | undefined, effectId: string): wo
 function actionFingerprint(action: string, input: SubmitWorkInput | ActionInput | undefined): string {
 	const fields = input === undefined ? [] : Object.keys(input).sort();
 	return JSON.stringify({ action, input: input ?? {} }, ["action", "input", ...fields]) ?? `${action}:empty`;
+}
+
+function throwIfOperationAborted(operation: OperationContext | undefined): void {
+	if (operation?.signal?.aborted === true) throw new Error("Khala operation was cancelled.");
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {

@@ -1,10 +1,16 @@
 import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import {
+	type AgentToolUpdateCallback,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ToolCallEvent,
+	truncateHead,
+} from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { persistRoleSetting } from "./config.js";
-import { type ApplicationRuntime, createApplication } from "./factory.js";
+import { type ApplicationModelRegistry, type ApplicationRuntime, createApplication } from "./factory.js";
 import {
 	type Actor,
 	type CommandMeta,
@@ -13,7 +19,10 @@ import {
 	type MutableRecordQuery,
 	parseRecordKind,
 	type RecordKind,
+	type ServiceResult,
+	type WorkView,
 } from "./model.js";
+import type { OperationContext } from "./ports.js";
 import { ApplicationError } from "./service.js";
 import { showKhala } from "./tui.js";
 
@@ -138,7 +147,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		const previous = runtime;
 		runtime = undefined;
 		if (previous !== undefined) await previous.runtime.service.close();
-		runtime = createRuntimeState(context.cwd, trusted);
+		runtime = createRuntimeState(context.cwd, trusted, context.modelRegistry);
 	};
 	const awaitRuntimeTransition = async (context: ExtensionContext, trusted: boolean): Promise<void> => {
 		const queued = (runtimeTransition ?? Promise.resolve()).then(
@@ -166,14 +175,16 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		label: "Submit Work",
 		description: "Submit complete User intent to the project Conclave without waiting for admission.",
 		parameters: submitSchema,
-		async execute(toolCallId, params: SubmitParams, _signal, _onUpdate, context) {
+		async execute(toolCallId, params: SubmitParams, signal, _onUpdate, context) {
 			try {
+				throwIfAborted(signal);
 				requireSessionRole(pi, "user");
 				const service = (await getRuntime(context)).service;
 				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
 				schedulePendingEffects(service);
 				return toolResult(work, false);
 			} catch (error) {
+				throwIfAborted(signal);
 				if (error instanceof ApplicationError) {
 					return toolError(error.envelope);
 				}
@@ -187,8 +198,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		label: "Read Khala Archive",
 		description: "Read bounded, append-ordered Archive record projections through the application service.",
 		parameters: readArchiveSchema,
-		async execute(toolCallId, params: ReadArchiveParams, _signal, _onUpdate, context) {
+		async execute(toolCallId, params: ReadArchiveParams, signal, _onUpdate, context) {
 			try {
+				throwIfAborted(signal);
 				const actor = sessionActor(pi);
 				const query = readArchiveQuery(params, actor);
 				const page = (await getRuntime(context)).service.readRecords(
@@ -198,6 +210,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				);
 				return toolResult(page, false);
 			} catch (error) {
+				throwIfAborted(signal);
 				if (error instanceof ApplicationError) {
 					return toolError(error.envelope);
 				}
@@ -211,17 +224,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		label: "Poll Provider",
 		description: "Poll the current review provider for changed observations and merge evidence.",
 		parameters: Type.Object({ workId: Type.String(), expectedWorkRevision: Type.Integer({ minimum: 0 }) }),
-		async execute(toolCallId, params, _signal, _onUpdate, context) {
+		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
 				requireSessionRole(pi, "user");
 				const service = (await getRuntime(context)).service;
 				const work = await service.pollProvider(
 					params.workId,
 					meta("user", `tool:poll:${toolCallId}`, params.expectedWorkRevision),
+					toolOperation(signal, onUpdate),
 				);
+				throwIfAborted(signal);
 				schedulePendingEffects(service);
 				return toolResult(work, false);
 			} catch (error) {
+				throwIfAborted(signal);
 				if (error instanceof ApplicationError) return toolError(error.envelope);
 				return toolErrorText(error instanceof Error ? error.message : "Provider polling failed.");
 			}
@@ -233,15 +249,18 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		label: "Inspect Khala Runtime",
 		description: "Inspect bounded Pi runtime liveness without writing the Archive.",
 		parameters: inspectRuntimeSchema,
-		async execute(toolCallId, params: InspectRuntimeParams, _signal, _onUpdate, context) {
+		async execute(toolCallId, params: InspectRuntimeParams, signal, onUpdate, context) {
 			try {
 				const actor = sessionActor(pi);
 				const work = await (await getRuntime(context)).service.inspectRuntime(
 					params.workId,
 					meta(actor, `tool:inspect-runtime:${toolCallId}`, params.expectedWorkRevision),
+					toolOperation(signal, onUpdate),
 				);
+				throwIfAborted(signal);
 				return toolResult(work, false);
 			} catch (error) {
+				throwIfAborted(signal);
 				if (error instanceof ApplicationError) return toolError(error.envelope);
 				return toolErrorText(error instanceof Error ? error.message : "Runtime inspection failed.");
 			}
@@ -254,8 +273,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		description:
 			"Perform one actor-authorized, revision-checked Khala application action. User actions include review, recovery, cancellation, renaming, budget, and failure decisions; Executor and Conclave actions run only in their bound child sessions. Provider comments enter through khala_poll_provider.",
 		parameters: performSchema,
-		async execute(toolCallId, params: PerformParams, _signal, _onUpdate, context) {
-			return executeActionTool(pi, getRuntime, toolCallId, params, context);
+		async execute(toolCallId, params: PerformParams, signal, onUpdate, context) {
+			return executeActionTool(pi, getRuntime, toolCallId, params, signal, onUpdate, context);
 		},
 	});
 
@@ -270,17 +289,22 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			evidence: Type.Array(Type.String()),
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
-		async execute(toolCallId, params, _signal, _onUpdate, context) {
+		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
 				requireSessionRole(pi, "executor");
-				const result = await (await getRuntime(context)).service.perform({
-					action: "record-signal",
-					workId: params.workId,
-					input: { kind: params.kind, summary: params.summary, evidence: params.evidence },
-					meta: meta("executor", `tool:signal:${toolCallId}`, params.expectedWorkRevision),
-				});
+				const result = await (await getRuntime(context)).service.perform(
+					{
+						action: "record-signal",
+						workId: params.workId,
+						input: { kind: params.kind, summary: params.summary, evidence: params.evidence },
+						meta: meta("executor", `tool:signal:${toolCallId}`, params.expectedWorkRevision),
+					},
+					toolOperation(signal, onUpdate),
+				);
+				throwIfAborted(signal);
 				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
 			} catch (error) {
+				throwIfAborted(signal);
 				return error instanceof Error
 					? toolErrorFromError(error, "Executor signal recording failed.")
 					: toolErrorText("Executor signal recording failed.");
@@ -298,17 +322,22 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			evidence: Type.Array(Type.String()),
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
-		async execute(toolCallId, params, _signal, _onUpdate, context) {
+		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
 				requireSessionRole(pi, "observer");
-				const result = await (await getRuntime(context)).service.perform({
-					action: "record-assessment",
-					workId: params.workId,
-					input: { summary: params.summary, evidence: params.evidence },
-					meta: meta("observer", `tool:assessment:${toolCallId}`, params.expectedWorkRevision),
-				});
+				const result = await (await getRuntime(context)).service.perform(
+					{
+						action: "record-assessment",
+						workId: params.workId,
+						input: { summary: params.summary, evidence: params.evidence },
+						meta: meta("observer", `tool:assessment:${toolCallId}`, params.expectedWorkRevision),
+					},
+					toolOperation(signal, onUpdate),
+				);
+				throwIfAborted(signal);
 				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
 			} catch (error) {
+				throwIfAborted(signal);
 				return error instanceof Error
 					? toolErrorFromError(error, "Observer assessment recording failed.")
 					: toolErrorText("Observer assessment recording failed.");
@@ -325,17 +354,22 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			subject: Type.String(),
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
-		async execute(toolCallId, params, _signal, _onUpdate, context) {
+		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
 				requireSessionRole(pi, "conclave");
-				const result = await (await getRuntime(context)).service.perform({
-					action: "run-oracle",
-					workId: params.workId,
-					input: { subject: params.subject },
-					meta: meta("conclave", `tool:oracle:${toolCallId}`, params.expectedWorkRevision),
-				});
+				const result = await (await getRuntime(context)).service.perform(
+					{
+						action: "run-oracle",
+						workId: params.workId,
+						input: { subject: params.subject },
+						meta: meta("conclave", `tool:oracle:${toolCallId}`, params.expectedWorkRevision),
+					},
+					toolOperation(signal, onUpdate),
+				);
+				throwIfAborted(signal);
 				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
 			} catch (error) {
+				throwIfAborted(signal);
 				return error instanceof Error
 					? toolErrorFromError(error, "Oracle review failed.")
 					: toolErrorText("Oracle review failed.");
@@ -364,25 +398,15 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("khala-recover", {
 		description: "Reread Archive state and reconcile Khala runtime bindings.",
-		// oxlint-disable-next-line complexity
 		handler: async (_args, context) => {
 			try {
 				requireSessionRole(pi, "user");
 				const service = (await getRuntime(context)).service;
 				await service.processPendingEffects();
 				const work = service.listWork();
-				for (const item of work) {
-					const current = service.inspectWork(item.workId);
-					await service.recoverWork(
-						item.workId,
-						meta("user", `recover:${item.workId}:${current.revision}`, current.revision),
-					);
-				}
+				await recoverUserWork(service, work);
 				updateExecutorStatus(service, context);
-				context.ui.notify(
-					`Archive reread and runtime reconciliation completed for ${work.length} Work item${work.length === 1 ? "" : "s"}.`,
-					"info",
-				);
+				notifyRecoveryComplete(context, work.length);
 			} catch (error) {
 				context.ui.notify(formatCommandError(error instanceof Error ? error : new Error(String(error))), "error");
 			}
@@ -447,38 +471,79 @@ function requireRuntime(runtime: RuntimeState | undefined): ApplicationRuntime {
 	return runtime.runtime;
 }
 
-function createRuntimeState(projectPath: string, trusted: boolean): RuntimeState {
+function createRuntimeState(
+	projectPath: string,
+	trusted: boolean,
+	modelRegistry: ApplicationModelRegistry,
+): RuntimeState {
 	return {
-		runtime: createApplication(projectPath, trusted, packageRoot, { requireModels: false }),
+		runtime: createApplication(projectPath, trusted, packageRoot, { requireModels: false, modelRegistry }),
 		projectPath,
 		trusted,
 	};
 }
 
-// oxlint-disable-next-line complexity
+async function recoverUserWork(
+	service: ApplicationRuntime["service"],
+	work: readonly ReturnType<ApplicationRuntime["service"]["listWork"]>[number][],
+): Promise<void> {
+	for (const item of work) {
+		const current = service.inspectWork(item.workId);
+		await service.recoverWork(
+			item.workId,
+			meta("user", `recover:${item.workId}:${current.revision}`, current.revision),
+		);
+	}
+}
+
+function notifyRecoveryComplete(context: ExtensionContext, workCount: number): void {
+	const noun = workCount === 1 ? "item" : "items";
+	context.ui.notify(`Archive reread and runtime reconciliation completed for ${workCount} Work ${noun}.`, "info");
+}
+
 async function executeActionTool(
 	pi: ExtensionAPI,
 	getRuntime: (context: ExtensionContext) => Promise<ApplicationRuntime>,
 	toolCallId: string,
 	params: PerformParams,
+	signal: AbortSignal | undefined,
+	onUpdate: AgentToolUpdateCallback<JsonValue> | undefined,
 	context: ExtensionContext,
 ): Promise<ToolResult | ToolErrorResult> {
 	try {
 		const actor = sessionActor(pi);
 		const service = (await getRuntime(context)).service;
-		const result = await service.perform({
-			action: params.action,
-			workId: params.workId,
-			input: params.input,
-			meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision),
-		});
-		if (!("error" in result) && actor === "user") schedulePendingEffects(service);
-		return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+		const result = await service.perform(
+			{
+				action: params.action,
+				workId: params.workId,
+				input: params.input,
+				meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision),
+			},
+			toolOperation(signal, onUpdate),
+		);
+		throwIfAborted(signal);
+		return actionToolResult(result, actor, service);
 	} catch (error) {
-		return error instanceof ApplicationError
-			? toolError(error.envelope)
-			: toolErrorText(error instanceof Error ? error.message : "Khala action failed.");
+		throwIfAborted(signal);
+		const normalized = error instanceof Error ? error : new Error(String(error));
+		return actionToolError(normalized);
 	}
+}
+
+function actionToolResult(
+	result: ServiceResult<WorkView>,
+	actor: Actor,
+	service: ApplicationRuntime["service"],
+): ToolResult | ToolErrorResult {
+	if ("error" in result) return toolResult(result.error, true);
+	if (actor === "user") schedulePendingEffects(service);
+	return toolResult(result.value, false);
+}
+
+function actionToolError(error: Error): ToolErrorResult {
+	if (error instanceof ApplicationError) return toolError(error.envelope);
+	return toolErrorText(error.message || "Khala action failed.");
 }
 
 function schedulePendingEffects(service: ApplicationRuntime["service"]): void {
@@ -719,11 +784,52 @@ function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
 }
 
 function toolResult(value: JsonValue, isError: boolean): ToolResult {
-	return { content: [{ type: "text", text: summarizeToolValue(value) }], details: value, isError };
+	return {
+		content: [{ type: "text", text: boundedToolText(summarizeToolValue(value), value) }],
+		details: value,
+		isError,
+	};
 }
 
 function toolError(error: JsonObject): ToolErrorResult {
-	return { content: [{ type: "text", text: summarizeToolError(error) }], details: error, isError: true };
+	return {
+		content: [{ type: "text", text: boundedToolText(summarizeToolError(error), error) }],
+		details: error,
+		isError: true,
+	};
+}
+
+function toolOperation(
+	signal: AbortSignal | undefined,
+	onUpdate: AgentToolUpdateCallback<JsonValue> | undefined,
+): OperationContext {
+	return {
+		signal,
+		onUpdate:
+			onUpdate === undefined
+				? undefined
+				: (message) =>
+						onUpdate({
+							content: [{ type: "text", text: message }],
+							details: { progress: message },
+						}),
+	};
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted === true) throw new Error("Khala operation was cancelled.");
+}
+function boundedToolText(text: string, value: JsonValue): string {
+	const truncated = truncateHead(text, { maxBytes: 48_000, maxLines: 1_800 });
+	if (!truncated.truncated) return truncated.content;
+	return `${truncated.content}\n[Output truncated. ${continuationHint(value)}]`;
+}
+
+function continuationHint(value: JsonValue): string {
+	const cursor = isJsonObject(value) && isTextValue(value["nextCursor"]) ? value["nextCursor"] : undefined;
+	return cursor === undefined
+		? "Use narrower filters or a targeted query to retrieve the remainder."
+		: `Use nextCursor ${cursor} to continue.`;
 }
 
 function formatCommandError(error: Error): string {
@@ -746,45 +852,86 @@ function toolErrorText(message: string): ToolErrorResult {
 function toolErrorFromError(error: Error, fallback: string): ToolErrorResult {
 	return error instanceof ApplicationError ? toolError(error.envelope) : toolErrorText(error.message || fallback);
 }
-
-// oxlint-disable-next-line complexity
 function summarizeToolValue(value: JsonValue): string {
-	if (
-		isJsonObject(value) &&
-		isTextValue(value["workId"]) &&
-		isTextValue(value["state"]) &&
-		isTextValue(value["nextAction"])
-	) {
-		return [
-			`Work: ${value["workId"]}`,
-			`State: ${value["state"]}`,
-			`Next action: ${presentToolText(String(value["nextAction"]))}`,
-			`Revision: ${value["revision"] ?? "unknown"}`,
-		].join("\n");
-	}
-	if (isJsonObject(value) && Array.isArray(value["items"]) && isIntegerValue(value["asOfSequence"])) {
-		// oxlint-disable-next-line complexity
-		const records = value["items"].filter(isJsonObject).map((record) => {
-			const sequence = isIntegerValue(record["sequence"]) ? `#${record["sequence"]} ` : "";
-			const kind = isTextValue(record["kind"]) ? record["kind"] : "record";
-			const summary = isTextValue(record["summary"]) ? record["summary"] : "";
-			return `${sequence}${kind}${summary.length === 0 ? "" : `: ${summary}`}`;
-		});
-		return [`Archive records: ${records.length}`, `As of sequence: ${value["asOfSequence"]}`, ...records].join("\n");
-	}
-	return prettyJson(value);
+	const workSummary = summarizeWorkValue(value);
+	if (workSummary !== undefined) return workSummary;
+	const archiveSummary = summarizeArchiveValue(value);
+	return archiveSummary ?? prettyJson(value);
 }
 
-// oxlint-disable-next-line complexity
+function summarizeWorkValue(value: JsonValue): string | undefined {
+	if (!isWorkSummary(value)) return undefined;
+	return [
+		`Work: ${value["workId"]}`,
+		`State: ${value["state"]}`,
+		`Next action: ${presentToolText(String(value["nextAction"]))}`,
+		`Revision: ${value["revision"] ?? "unknown"}`,
+	].join("\n");
+}
+
+function summarizeArchiveValue(value: JsonValue): string | undefined {
+	if (!isArchiveSummary(value)) return undefined;
+	const records = value["items"].filter(isJsonObject).map(archiveRecordSummary);
+	const nextCursor = archiveNextCursor(value);
+	return [
+		`Archive records: ${records.length}`,
+		`As of sequence: ${value["asOfSequence"]}`,
+		...(nextCursor === undefined ? [] : [nextCursor]),
+		...records,
+	].join("\n");
+}
+
+function isWorkSummary(value: JsonValue): value is JsonObject {
+	if (!isJsonObject(value)) return false;
+	return ["workId", "state", "nextAction"].every((key) => isTextValue(value[key]));
+}
+
+function isArchiveSummary(
+	value: JsonValue,
+): value is JsonObject & { items: readonly JsonObject[]; asOfSequence: number } {
+	if (!isJsonObject(value)) return false;
+	return Array.isArray(value["items"]) && isIntegerValue(value["asOfSequence"]);
+}
+
+function archiveRecordSummary(record: JsonObject): string {
+	const sequence = archiveSequence(record);
+	const kind = archiveKind(record);
+	const summary = archiveSummary(record);
+	return `${sequence}${kind}${summary.length === 0 ? "" : `: ${summary}`}`;
+}
+
+function archiveSequence(record: JsonObject): string {
+	return isIntegerValue(record["sequence"]) ? `#${record["sequence"]} ` : "";
+}
+
+function archiveKind(record: JsonObject): string {
+	return isTextValue(record["kind"]) ? record["kind"] : "record";
+}
+
+function archiveSummary(record: JsonObject): string {
+	return isTextValue(record["summary"]) ? record["summary"] : "";
+}
+
+function archiveNextCursor(value: JsonObject): string | undefined {
+	if (!isTextValue(value["nextCursor"]) || value["nextCursor"].length === 0) return undefined;
+	return `Next cursor: ${value["nextCursor"]}`;
+}
 export function summarizeToolError(error: JsonObject): string {
-	const lines = [
-		isTextValue(error["summary"]) ? `Error: ${presentToolText(error["summary"])}` : "Khala action failed.",
-	];
-	if (isTextValue(error["remediation"])) lines.push(`Next step: ${presentToolText(error["remediation"])}`);
-	if (Array.isArray(error["evidenceRefs"]) && error["evidenceRefs"].length > 0) {
-		lines.push(`Evidence: ${error["evidenceRefs"].filter(isTextValue).join(", ")}`);
-	}
-	return lines.join("\n");
+	return [errorSummary(error), errorRemediation(error), errorEvidence(error)].filter(isTextValue).join("\n");
+}
+
+function errorSummary(error: JsonObject): string {
+	return isTextValue(error["summary"]) ? `Error: ${presentToolText(error["summary"])}` : "Khala action failed.";
+}
+
+function errorRemediation(error: JsonObject): string | undefined {
+	return isTextValue(error["remediation"]) ? `Next step: ${presentToolText(error["remediation"])}` : undefined;
+}
+
+function errorEvidence(error: JsonObject): string | undefined {
+	const refs = error["evidenceRefs"];
+	if (!Array.isArray(refs) || refs.length === 0) return undefined;
+	return `Evidence: ${refs.filter(isTextValue).join(", ")}`;
 }
 
 function presentToolText(value: string): string {

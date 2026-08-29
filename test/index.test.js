@@ -71,8 +71,6 @@ test("user sessions show a branded Executor status in the footer", async () => {
 		await rm(directory, { recursive: true, force: true });
 	}
 });
-
-// oxlint-disable-next-line complexity
 test("Executor write checks resolve symlinks before enforcing sandbox paths", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-path-scope-"));
 	const outside = await mkdtemp(join(tmpdir(), "khala-path-outside-"));

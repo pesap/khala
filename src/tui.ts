@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
 	type ExtensionContext,
 	type ModelRuntime,
@@ -84,62 +85,63 @@ function tableCell(value: string, width: number): string {
 function selectionMarker(selected: boolean): string {
 	return selected ? "→ " : "  ";
 }
-
-// oxlint-disable-next-line complexity
 function workTableLayout(width: number): WorkTableLayout {
 	if (width >= 95) return WIDE_WORK_TABLE_COLUMNS;
 	const available = Math.max(1, width - 2);
-	if (available >= 33) {
-		const id = available >= 43 ? 8 : 6;
-		const state = available >= 43 ? 10 : 7;
-		const execution = 9;
-		return {
-			title: Math.max(1, available - id - state - execution - 6),
-			id,
-			state,
-			execution,
-			showId: true,
-		};
-	}
+	return available >= 33 ? mediumWorkTableLayout(available) : narrowWorkTableLayout(available);
+}
+
+function mediumWorkTableLayout(available: number): WorkTableLayout {
+	const wide = available >= 43;
+	const id = wide ? 8 : 6;
+	const state = wide ? 10 : 7;
+	return { title: Math.max(1, available - id - state - 15), id, state, execution: 9, showId: true };
+}
+
+function narrowWorkTableLayout(available: number): WorkTableLayout {
 	const state = available >= 24 ? 6 : Math.max(1, Math.min(8, Math.floor((available - 4) / 4)));
 	const execution =
-		available >= 24
-			? Math.min(9, Math.max(1, available - state - 8))
-			: Math.max(1, Math.min(9, Math.floor((available - state - 4) / 2)));
-	return {
-		title: Math.max(1, available - state - execution - 4),
-		id: 0,
-		state,
-		execution,
-		showId: false,
-	};
+		available >= 24 ? Math.min(9, Math.max(1, available - state - 8)) : narrowExecutionWidth(available, state);
+	return { title: Math.max(1, available - state - execution - 4), id: 0, state, execution, showId: false };
+}
+
+function narrowExecutionWidth(available: number, state: number): number {
+	return Math.max(1, Math.min(9, Math.floor((available - state - 4) / 2)));
 }
 
 function hasWorkFailure(item: WorkSummary): boolean {
 	return item.hasFailure === true || (item.state === "stopped" && item.stopReason === "failed");
 }
-
-// oxlint-disable-next-line complexity
 function workState(item: WorkSummary): WorkStatus {
-	if (item.state === "stopped" && item.stopReason === "failed") return { label: "failed", tone: "failure" };
-	if (item.state === "stopped") return { label: "stopped", tone: "inactive" };
+	if (item.state === "stopped") return stoppedWorkStatus(item);
 	if (hasWorkFailure(item)) return { label: "attention", tone: "failure" };
 	if (item.state === "succeeded") return { label: "succeeded", tone: "success" };
-	if (item.state === "queued" || item.state === "awaiting-review")
-		return { label: formatStatus(item.state), tone: "waiting" };
-	return { label: formatStatus(item.state), tone: "active" };
+	return { label: formatStatus(item.state), tone: workStatusTone(item.state) };
 }
 
-// oxlint-disable-next-line complexity
+function workStatusTone(state: WorkSummary["state"]): WorkStatusTone {
+	return state === "queued" || state === "awaiting-review" ? "waiting" : "active";
+}
+
+function stoppedWorkStatus(item: WorkSummary): WorkStatus {
+	return item.stopReason === "failed" ? { label: "failed", tone: "failure" } : { label: "stopped", tone: "inactive" };
+}
 function executionState(item: WorkSummary): WorkStatus {
 	const state = item.executionState;
-	if (state === undefined) return { label: "not started", tone: "inactive" };
-	if (state === "failed") return { label: "failed", tone: "failure" };
-	if (state === "blocked") return { label: "blocked", tone: "attention" };
-	if (state === "queued" || state === "awaiting-review") return { label: formatStatus(state), tone: "waiting" };
-	if (state === "completed") return { label: "completed", tone: "success" };
-	if (state === "stopped") return { label: "stopped", tone: "inactive" };
-	return { label: "running", tone: "active" };
+	return state === undefined ? { label: "not started", tone: "inactive" } : executionStatus(state);
+}
+
+function executionStatus(state: NonNullable<WorkSummary["executionState"]>): WorkStatus {
+	const statuses = {
+		failed: { label: "failed", tone: "failure" },
+		blocked: { label: "blocked", tone: "attention" },
+		queued: { label: formatStatus(state), tone: "waiting" },
+		"awaiting-review": { label: formatStatus(state), tone: "waiting" },
+		completed: { label: "completed", tone: "success" },
+		stopped: { label: "stopped", tone: "inactive" },
+		running: { label: "running", tone: "active" },
+	} satisfies Record<typeof state, WorkStatus>;
+	return statuses[state];
 }
 
 function workTableHeader(theme: Theme, layout: WorkTableLayout): string {
@@ -163,8 +165,6 @@ function workTableRow(theme: Theme, item: WorkSummary, selected: boolean, layout
 	const indented = `${selectionMarker(selected)}${row}`;
 	return selected ? theme.fg("accent", theme.bold(indented)) : indented;
 }
-
-// oxlint-disable-next-line complexity
 export async function showKhala(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -178,25 +178,50 @@ export async function showKhala(
 	},
 	roleSettings?: RoleSettingsController,
 ): Promise<void> {
-	if (!context.hasUI || context.mode !== "tui") {
+	if (!isTuiContext(context)) {
 		context.ui.notify(renderDashboard(service.listWork()), "info");
 		return;
 	}
+	await runKhalaPicker(service, context, actor, keybindings, roleSettings);
+}
+
+function isTuiContext(context: ExtensionContext): boolean {
+	return context.hasUI && context.mode === "tui";
+}
+
+async function runKhalaPicker(
+	service: ApplicationService,
+	context: ExtensionContext,
+	actor: Actor,
+	keybindings: KhalaConfig["keybindings"],
+	roleSettings: RoleSettingsController | undefined,
+): Promise<void> {
 	const pickerState: WorkPickerState = {};
 	const effectiveKeybindings = normalizeKeybindings(keybindings);
 	for (;;) {
 		const result = await pickWork(() => service.listWork(), context, effectiveKeybindings, pickerState);
 		if (result === null) return;
-		if (result === "settings") {
-			if (roleSettings !== undefined) await showRoleSettings(roleSettings, context);
-			continue;
-		}
-		if (result === "help") {
-			await showTextPage(context, "Work picker help", workPickerHelp(effectiveKeybindings));
-			continue;
-		}
-		await showWork(service, context, result, actor, effectiveKeybindings);
+		await handlePickerResult(result, service, context, actor, effectiveKeybindings, roleSettings);
 	}
+}
+
+async function handlePickerResult(
+	result: Exclude<WorkPickerResult, null>,
+	service: ApplicationService,
+	context: ExtensionContext,
+	actor: Actor,
+	keybindings: KhalaConfig["keybindings"],
+	roleSettings: RoleSettingsController | undefined,
+): Promise<void> {
+	if (result === "settings") {
+		if (roleSettings !== undefined) await showRoleSettings(roleSettings, context);
+		return;
+	}
+	if (result === "help") {
+		await showTextPage(context, "Work picker help", workPickerHelp(keybindings));
+		return;
+	}
+	await showWork(service, context, result, actor, keybindings);
 }
 
 type WorkPickerState = {
@@ -213,7 +238,6 @@ async function pickWork(
 	keybindings: KhalaConfig["keybindings"],
 	pickerState: WorkPickerState,
 ): Promise<WorkPickerResult> {
-	// oxlint-disable-next-line complexity
 	return context.ui.custom<WorkPickerResult>((tui, theme, _keybindings, done) => {
 		const filterInput = new Input();
 		filterInput.focused = true;
@@ -235,7 +259,6 @@ async function pickWork(
 			},
 			invalidate: () => {},
 		};
-		// oxlint-disable-next-line complexity
 		const updateList = (): void => {
 			const rows: Array<Readonly<{ item: WorkSummary; selected: boolean }>> = [];
 			const messages: string[] = [];
@@ -252,18 +275,7 @@ async function pickWork(
 			if (startIndex > 0 || endIndex < filtered.length) {
 				messages.push(theme.fg("muted", `  ${selectedIndex + 1} of ${filtered.length}`));
 			}
-			if (filtered.length === 0) {
-				messages.push(
-					theme.fg(
-						"muted",
-						availableWork.length === 0
-							? pickerState.showHistory === true
-								? "  No Work has been submitted"
-								: "  No active Work; press history to view completed Work"
-							: "  No matching Work",
-					),
-				);
-			}
+			if (filtered.length === 0) messages.push(theme.fg("muted", emptyPickerMessage(availableWork, pickerState.showHistory)));
 			tableRows = rows;
 			listMessages = messages;
 			tui.requestRender();
@@ -313,22 +325,17 @@ async function pickWork(
 			},
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
-			// oxlint-disable-next-line complexity
 			handleInput: (data: string) => {
-				if (filterInput.getValue().trim().length === 0 && parseKey(data) === keybindings.roleSettings) {
-					finish("settings");
+				const action = pickerInputAction(data, filterInput, keybindings);
+				if (action === "settings" || action === "help" || action === "back") {
+					finish(action === "back" ? null : action);
 					return;
 				}
-				const filterEmpty = filterInput.getValue().trim().length === 0;
-				if (filterEmpty && parseKey(data) === keybindings.help) {
-					finish("help");
-					return;
-				}
-				if (parseKey(data) === keybindings.refresh) {
+				if (action === "refresh") {
 					refresh();
 					return;
 				}
-				if (filterEmpty && parseKey(data) === keybindings.history) {
+				if (action === "history") {
 					pickerState.showHistory = pickerState.showHistory !== true;
 					availableWork = pickerWork(getWork(), pickerState.showHistory === true);
 					filtered = filterWork(availableWork, filterInput.getValue().trim());
@@ -337,34 +344,20 @@ async function pickWork(
 					updateList();
 					return;
 				}
-				if (matchesKey(data, "home")) {
+				if (action === "home") {
 					selectedIndex = 0;
 					updateList();
 					return;
 				}
-				if (matchesKey(data, "up") || matchesKey(data, "down")) {
+				if (action === "up" || action === "down") {
 					if (filtered.length === 0) return;
-					selectedIndex = matchesKey(data, "up")
-						? selectedIndex === 0
-							? filtered.length - 1
-							: selectedIndex - 1
-						: selectedIndex === filtered.length - 1
-							? 0
-							: selectedIndex + 1;
+					selectedIndex = nextPickerIndex(selectedIndex, filtered.length, action === "up");
 					updateList();
 					return;
 				}
-				if (matchesKey(data, "enter")) {
+				if (action === "enter") {
 					const item = filtered[selectedIndex];
 					if (item !== undefined) finish(item.workId);
-					return;
-				}
-				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-					finish(null);
-					return;
-				}
-				if (matchesKey(data, "backspace") && filterInput.getValue().trim().length === 0) {
-					finish(null);
 					return;
 				}
 				const previousFilter = filterInput.getValue();
@@ -373,6 +366,53 @@ async function pickWork(
 			},
 		};
 	});
+}
+
+type PickerInputAction = "settings" | "help" | "refresh" | "history" | "home" | "up" | "down" | "enter" | "back" | "type";
+
+function pickerInputAction(
+	data: string,
+	input: Input,
+	keybindings: KhalaConfig["keybindings"],
+): PickerInputAction {
+	const key = parseKey(data);
+	const filterEmpty = input.getValue().trim().length === 0;
+	if (filterEmpty) {
+		const action = pickerShortcut(key, keybindings);
+		if (action !== undefined) return action;
+	}
+	if (key === keybindings.refresh) return "refresh";
+	if (filterEmpty && key === keybindings.history) return "history";
+	if (key === "home" || key === "up" || key === "down" || key === "enter") return key;
+	if (key === "escape" || key === "ctrl+c" || (key === "backspace" && filterEmpty)) return "back";
+	return "type";
+}
+
+function pickerShortcut(key: string | undefined, keybindings: KhalaConfig["keybindings"]): PickerInputAction | undefined {
+	return (
+		matchingShortcut(key, keybindings.roleSettings, "settings") ??
+		matchingShortcut(key, keybindings.help, "help") ??
+		matchingShortcut(key, keybindings.refresh, "refresh") ??
+		matchingShortcut(key, keybindings.history, "history")
+	);
+}
+
+function matchingShortcut(
+	key: string | undefined,
+	expected: string,
+	action: PickerInputAction,
+): PickerInputAction | undefined {
+	return key === expected ? action : undefined;
+}
+
+function nextPickerIndex(index: number, length: number, movingUp: boolean): number {
+	if (movingUp) return index === 0 ? length - 1 : index - 1;
+	return index === length - 1 ? 0 : index + 1;
+}
+
+function emptyPickerMessage(work: readonly WorkSummary[], showHistory: boolean | undefined): string {
+	if (work.length > 0) return "  No matching Work";
+	return showHistory === true ? "  No Work has been submitted" : "  No active Work; press history to view completed Work";
 }
 
 function refreshedWorkIndex(selectedWorkId: string | undefined, work: readonly WorkSummary[], index: number): number {
@@ -468,8 +508,6 @@ function addKeyValueRows(container: Container, theme: Theme, rows: readonly (rea
 }
 
 type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal";
-
-// oxlint-disable-next-line complexity
 async function showWork(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -482,24 +520,26 @@ async function showWork(
 		const navigation = readArchiveRecordsForNavigation(service, work, actor);
 		const section = await pickSection(work, navigation.records, navigation.error, context, keybindings);
 		if (section === null || section === "back") return "back";
-		if (section === "actions") {
-			await chooseAction(service, context, work, actor);
-			continue;
-		}
-		if (section === "evidence") {
-			await showEvidence(service, work, context, actor);
-			continue;
-		}
-		if (section === "archive") {
-			await showArchive(service, context, work, actor);
-			continue;
-		}
-		if (section === "peer-review") {
-			await showPeerReview(providerReviewComments(navigation.records), context);
-			continue;
-		}
-		await showBlockingSignal(work, context);
+		await showWorkSection(section, service, context, work, actor, navigation.records);
 	}
+}
+
+async function showWorkSection(
+	section: WorkSection,
+	service: ApplicationService,
+	context: ExtensionContext,
+	work: WorkView,
+	actor: Actor,
+	records: readonly RecordView[],
+): Promise<void> {
+	const handlers = {
+		actions: () => chooseAction(service, context, work, actor),
+		evidence: () => showEvidence(service, work, context, actor),
+		archive: () => showArchive(service, context, work, actor),
+		"peer-review": () => showPeerReview(providerReviewComments(records), context),
+		"blocking-signal": () => showBlockingSignal(work, context),
+	} satisfies Record<WorkSection, () => Promise<void>>;
+	await handlers[section]();
 }
 
 async function pickSection(
@@ -517,23 +557,8 @@ async function pickSection(
 		{ value: "archive", label: "Archive" },
 		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
-	// oxlint-disable-next-line complexity
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
-		const execution = work.execution;
-		const rows: Array<readonly [string, string]> = [["Work", formatWorkState(work)]];
-		if (work.state !== "stopped" && work.mission !== undefined && work.missionState !== undefined) {
-			rows.push(["Mission", formatMissionState(work.missionState)]);
-		}
-		if (archiveError !== undefined) rows.push(["Archive", `unavailable: ${archiveError}`]);
-		if (execution !== undefined) {
-			rows.push(["Execution", formatExecutionState(execution)]);
-			if (shouldShowRuntime(execution)) rows.push(["Runtime", formatRuntimeState(execution)]);
-		}
-		if (work.reviewRequest !== undefined)
-			rows.push([work.reviewRequest.provider === "gitlab" ? "MR" : "PR", `#${work.reviewRequest.providerId}`]);
-		if (work.lastError !== undefined)
-			rows.push(["Attention", truncateToWidth(presentEvidenceText(work.lastError.summary), 120, "")]);
-		if (work.nextAction.trim().length > 0) rows.push(["Next", presentEvidenceText(work.nextAction)]);
+		const rows = workSectionRows(work, archiveError);
 		const list = new SelectList(items, items.length, selectorTheme(theme));
 		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
 		list.onCancel = () => done("back");
@@ -561,11 +586,55 @@ async function pickSection(
 	});
 }
 
-function shouldShowRuntime(execution: NonNullable<WorkView["execution"]>): boolean {
-	return execution.runtimeState !== undefined && !["completed", "failed", "stopped"].includes(execution.state);
+function workSectionRows(work: WorkView, archiveError: string | undefined): readonly (readonly [string, string])[] {
+	return [
+		["Work", formatWorkState(work)],
+		...missionRow(work),
+		...archiveErrorRow(archiveError),
+		...executionRows(work.execution),
+		...reviewRequestRow(work),
+		...workErrorRow(work),
+		...nextActionRow(work),
+	];
 }
 
-// oxlint-disable-next-line complexity
+function missionRow(work: WorkView): readonly (readonly [string, string])[] {
+	return work.state !== "stopped" && work.mission !== undefined && work.missionState !== undefined
+		? [["Mission", formatMissionState(work.missionState)]]
+		: [];
+}
+
+function archiveErrorRow(error: string | undefined): readonly (readonly [string, string])[] {
+	return error === undefined ? [] : [["Archive", `unavailable: ${error}`]];
+}
+
+function executionRows(execution: WorkView["execution"]): readonly (readonly [string, string])[] {
+	if (execution === undefined) return [];
+	return [["Execution", formatExecutionState(execution)] as const, ...(shouldShowRuntime(execution) ? [["Runtime", formatRuntimeState(execution)] as const] : [])];
+}
+
+function reviewRequestRow(work: WorkView): readonly (readonly [string, string])[] {
+	const request = work.reviewRequest;
+	return request === undefined ? [] : [[request.provider === "gitlab" ? "MR" : "PR", `#${request.providerId}`]];
+}
+
+function workErrorRow(work: WorkView): readonly (readonly [string, string])[] {
+	return work.lastError === undefined
+		? []
+		: [["Attention", truncateToWidth(presentEvidenceText(work.lastError.summary), 120, "")]];
+}
+
+function nextActionRow(work: WorkView): readonly (readonly [string, string])[] {
+	return work.nextAction.trim().length === 0 ? [] : [["Next", presentEvidenceText(work.nextAction)]];
+}
+
+function shouldShowRuntime(execution: NonNullable<WorkView["execution"]>): boolean {
+	return execution.runtimeState !== undefined && !isTerminalExecutionState(execution.state);
+}
+
+function isTerminalExecutionState(state: NonNullable<WorkView["execution"]>["state"]): boolean {
+	return ["completed", "failed", "stopped"].includes(state);
+}
 async function chooseAction(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -719,7 +788,6 @@ async function showRecovery(
 					},
 					onRecoveryUpdate,
 				})
-				// oxlint-disable-next-line complexity
 				.then((result) => {
 					if ("error" in result) {
 						update({
@@ -777,7 +845,6 @@ async function showRecovery(
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
-			// oxlint-disable-next-line complexity
 			handleInput: (data: string) => {
 				if (display.status === "in progress") return;
 				if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "backspace")) {
@@ -796,7 +863,6 @@ const ROLE_LABELS = {
 	observer: "Observer",
 	oracle: "Oracle",
 } satisfies Readonly<Record<GovernedRole, string>>;
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 type PiModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
 type NativeModelRuntimeAdapter = {
 	getAvailableSnapshot: () => readonly PiModel[];
@@ -886,8 +952,6 @@ async function selectRoleOption(
 		unsubscribe();
 	}
 }
-
-// oxlint-disable-next-line complexity
 async function showRoleSettings(controller: RoleSettingsController, context: ExtensionContext): Promise<void> {
 	for (;;) {
 		const settings = controller.get();
@@ -914,7 +978,13 @@ async function showRoleSettings(controller: RoleSettingsController, context: Ext
 			if (selectedModel === undefined) continue;
 			value = `${selectedModel.provider}/${selectedModel.id}`;
 		} else {
-			const thinkingOptions = Array.from(new Set([current.thinking, ...THINKING_LEVELS]));
+			const separator = current.model.indexOf("/");
+			const model =
+				separator <= 0
+					? undefined
+					: context.modelRegistry.find(current.model.slice(0, separator), current.model.slice(separator + 1));
+			const supportedThinking = model === undefined ? ["off"] : getSupportedThinkingLevels(model);
+			const thinkingOptions = Array.from(new Set([current.thinking, ...supportedThinking]));
 			value = await selectRoleOption(context, `${ROLE_LABELS[role]} thinking:`, thinkingOptions);
 		}
 		if (value === undefined) continue;
@@ -958,16 +1028,10 @@ function selectableComponent(
 		},
 	};
 }
+const WORK_SECTIONS: readonly WorkSection[] = ["actions", "evidence", "archive", "peer-review", "blocking-signal"];
 
-// oxlint-disable-next-line complexity
 function isWorkSection(value: string): value is WorkSection {
-	return (
-		value === "actions" ||
-		value === "evidence" ||
-		value === "archive" ||
-		value === "peer-review" ||
-		value === "blocking-signal"
-	);
+	return WORK_SECTIONS.some((section) => section === value);
 }
 
 function formatStatus(value: string): string {
@@ -990,17 +1054,21 @@ function formatExecutionState(execution: WorkView["execution"]): string {
 	if (execution === undefined) return "not started";
 	return execution.state === "running" ? "running" : formatStatus(execution.state);
 }
-
-// oxlint-disable-next-line complexity
 function formatRuntimeState(execution: WorkView["execution"]): string {
 	if (execution === undefined) return "unavailable";
 	const runtime = execution.runtimeState ?? "unknown";
-	if (execution.state !== "blocked") return formatStatus(runtime);
-	if (runtime === "working") return "finishing current turn";
-	if (runtime === "pending") return "awaiting Conclave";
-	if (runtime === "idle") return "idle (awaiting Conclave)";
-	if (runtime === "unreachable") return "unreachable (awaiting Conclave)";
-	return "unknown (awaiting Conclave)";
+	return execution.state === "blocked" ? blockedRuntimeLabel(runtime) : formatStatus(runtime);
+}
+
+const BLOCKED_RUNTIME_LABELS = new Map<string, string>([
+	["working", "finishing current turn"],
+	["pending", "awaiting Conclave"],
+	["idle", "idle (awaiting Conclave)"],
+	["unreachable", "unreachable (awaiting Conclave)"],
+]);
+
+function blockedRuntimeLabel(runtime: string): string {
+	return BLOCKED_RUNTIME_LABELS.get(runtime) ?? "unknown (awaiting Conclave)";
 }
 
 type PageSection = Readonly<{ heading?: string; lines: readonly string[] }>;
@@ -1026,8 +1094,6 @@ type MutableProviderReviewComment = {
 	location?: string;
 	minimized?: boolean;
 };
-
-// oxlint-disable-next-line complexity
 function providerReviewComments(records: readonly RecordView[]): readonly ProviderReviewComment[] {
 	for (const record of [...records].reverse()) {
 		if (record.kind !== "observation") continue;
@@ -1050,8 +1116,6 @@ function providerReviewComments(records: readonly RecordView[]): readonly Provid
 	}
 	return [];
 }
-
-// oxlint-disable-next-line complexity
 function readProviderReviewComment(value: JsonObject): ProviderReviewComment | undefined {
 	const id = readObjectText(value, "id");
 	const body = readObjectText(value, "body");
@@ -1085,17 +1149,15 @@ function readObjectBoolean(object: JsonObject | undefined, key: string): boolean
 	const value = object?.[key];
 	return value === true || value === false ? value : undefined;
 }
-
-// oxlint-disable-next-line complexity
 function hasCurrentBlockedSignal(work: WorkView): boolean {
 	const signal = work.lastSignal;
-	return (
-		signal !== undefined &&
-		work.execution !== undefined &&
-		work.execution.state === "blocked" &&
-		signal.kind === "blocked" &&
-		signal.executionId === work.execution.executionId
-	);
+	const execution = work.execution;
+	return [
+		signal !== undefined,
+		execution?.state === "blocked",
+		signal?.kind === "blocked",
+		signal?.executionId === execution?.executionId,
+	].every(Boolean);
 }
 
 const EVIDENCE_RECORD_KINDS: readonly RecordKind[] = [
@@ -1111,8 +1173,6 @@ const EVIDENCE_RECORD_KINDS: readonly RecordKind[] = [
 	"outcome",
 	"error",
 ];
-
-// oxlint-disable-next-line complexity
 async function showEvidence(
 	service: ApplicationService,
 	work: WorkView,
@@ -1138,8 +1198,6 @@ async function showEvidence(
 		await showPage(context, page.title, page.sections);
 	}
 }
-
-// oxlint-disable-next-line complexity
 function selectRelevantEvidence(work: WorkView, records: readonly RecordView[]): readonly RecordView[] {
 	const selected = new Map<number, RecordView>();
 	const missionId = work.mission?.missionId;
@@ -1171,7 +1229,6 @@ function selectRelevantEvidence(work: WorkView, records: readonly RecordView[]):
 	);
 	add(
 		latest(
-			// oxlint-disable-next-line complexity
 			(record) =>
 				record.kind === "review-request" &&
 				((currentReviewProviderId !== undefined &&
@@ -1192,8 +1249,6 @@ function formatEvidenceSupplement(work: WorkView): readonly PageSection[] {
 	const next = presentEvidenceText(work.nextAction);
 	return next.length === 0 ? [] : [pageSection([next], "Next")];
 }
-
-// oxlint-disable-next-line complexity
 async function showPeerReview(comments: readonly ProviderReviewComment[], context: ExtensionContext): Promise<void> {
 	if (comments.length === 0) return;
 	for (;;) {
@@ -1230,8 +1285,6 @@ async function selectReviewComment(
 		return selectableComponent(container, list, tui, () => done(null));
 	});
 }
-
-// oxlint-disable-next-line complexity
 function formatReviewCommentSections(comment: ProviderReviewComment): readonly PageSection[] {
 	const details: string[] = [];
 	if (comment.author !== undefined) {
@@ -1271,8 +1324,6 @@ function formatExecutorEvidenceSections(response: string, evidence: readonly str
 		...(evidence.length === 0 ? [] : [pageSection(evidence, "Evidence")]),
 	];
 }
-
-// oxlint-disable-next-line complexity
 async function selectRecordPanel(
 	records: readonly RecordView[],
 	context: ExtensionContext,
@@ -1304,7 +1355,6 @@ async function selectRecordPanel(
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
-			// oxlint-disable-next-line complexity
 			handleInput: (data: string) => {
 				if (matchesKey(data, "up") || matchesKey(data, "down")) {
 					selectedIndex = nextRecordIndex(selectedIndex, entries.length, matchesKey(data, "up"));
@@ -1429,8 +1479,6 @@ function wrapPrefixed(value: string, prefix: string, prefixWidth: number, width:
 	const wrapped = wrapTextWithAnsi(value.length === 0 ? " " : value, available);
 	return wrapped.map((line, index) => `${index === 0 ? prefix : " ".repeat(prefixWidth)}${line}`);
 }
-
-// oxlint-disable-next-line complexity
 function formatRecordPage(record: RecordView): RecordPage {
 	const metadata: Array<readonly [string, string]> = [
 		["Recorded", formatRecordedAt(record.recordedAt)],
@@ -1475,8 +1523,6 @@ function recordTitle(record: RecordView): string {
 			: `${capitalize(kind)} signal ${record.sequence}`
 		: `${capitalize(kind)} ${record.sequence}`;
 }
-
-// oxlint-disable-next-line complexity
 function recordDetailPayloadFields(record: RecordView): RecordDetailFields {
 	const payload = readPayloadObjectValue(record.payload);
 	if (record.kind === "signal") {
@@ -1512,23 +1558,25 @@ function recordDetailPayloadFields(record: RecordView): RecordDetailFields {
 		displayed: ["summary"],
 	};
 }
-
-// oxlint-disable-next-line complexity
 function formatRecordSummarySections(
 	record: RecordView,
 	payload: JsonObject | undefined,
 	payloadHeading = "Payload summary",
 ): readonly PageSection[] {
-	const sections: PageSection[] = [];
-	if (record.summary.trim().length > 0) sections.push(pageSection([record.summary], "Summary"));
-	const payloadSummary = readObjectText(payload, "summary");
-	if (payloadSummary !== undefined && payloadSummary.trim() !== record.summary.trim()) {
-		sections.push(pageSection([payloadSummary], payloadHeading));
-	}
-	return sections;
+	return [
+		...(record.summary.trim().length === 0 ? [] : [pageSection([record.summary], "Summary")]),
+		...payloadSummarySection(record, payload, payloadHeading),
+	];
 }
 
-// oxlint-disable-next-line complexity
+function payloadSummarySection(
+	record: RecordView,
+	payload: JsonObject | undefined,
+	heading: string,
+): readonly PageSection[] {
+	const summary = readObjectText(payload, "summary");
+	return summary === undefined || summary.trim() === record.summary.trim() ? [] : [pageSection([summary], heading)];
+}
 function formatOracleDetailFields(record: RecordView, payload: JsonObject | undefined): RecordDetailFields {
 	const findings = readPayloadObjects(payload, "findings");
 	const gaps = readObjectTextList(payload, "validationGaps") ?? [];
@@ -1577,8 +1625,6 @@ function formatStructuredFields(payload: JsonValue, displayed: readonly string[]
 	const serialized = JSON.stringify(remaining, null, 2);
 	return serialized === "{}" || serialized === "[]" ? [] : serialized.split("\n");
 }
-
-// oxlint-disable-next-line complexity
 function omitPayloadFields(payload: JsonValue, displayed: readonly string[]): JsonValue | undefined {
 	if (!isJsonObject(payload)) return payload;
 	const excluded = new Set(displayed);
@@ -1588,13 +1634,9 @@ function omitPayloadFields(payload: JsonValue, displayed: readonly string[]): Js
 	}
 	return Object.keys(remaining).length === 0 ? undefined : remaining;
 }
-
-// oxlint-disable-next-line complexity
 function recordKindLabel(record: RecordView): string {
-	if (record.kind === "signal") {
-		const signalKind = readPayloadText(record.payload, "kind");
-		if (signalKind === "ready" || signalKind === "progress" || signalKind === "blocked") return signalKind;
-	}
+	const signalKind = record.kind === "signal" ? readPayloadText(record.payload, "kind") : undefined;
+	if (signalKind !== undefined && SIGNAL_KINDS.some((kind) => kind === signalKind)) return signalKind;
 	const labels = {
 		submission: "submission",
 		assessment: "assessment",
@@ -1615,6 +1657,8 @@ function recordKindLabel(record: RecordView): string {
 	} satisfies Record<RecordKind, string>;
 	return labels[record.kind];
 }
+
+const SIGNAL_KINDS: readonly string[] = ["ready", "progress", "blocked"];
 
 function capitalize(value: string): string {
 	return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
@@ -1643,11 +1687,13 @@ function readPayloadObjects(object: JsonObject | undefined, key: string): readon
 	const value = object?.[key];
 	return Array.isArray(value) ? value.filter(isJsonObject) : [];
 }
-
-// oxlint-disable-next-line complexity
 function readObjectNumber(object: JsonObject | undefined, key: string): number | undefined {
-	const value = object?.[key];
-	return value !== undefined && value === Number(value) && Number.isFinite(Number(value)) ? Number(value) : undefined;
+	return finiteNumber(object?.[key]);
+}
+
+function finiteNumber(value: JsonValue | undefined): number | undefined {
+	const number = Number(value);
+	return value !== undefined && value === number && Number.isFinite(number) ? number : undefined;
 }
 
 function readPayloadText(payload: JsonValue, key: string): string | undefined {
@@ -1670,8 +1716,6 @@ function formatRecordedAt(value: string): string {
 	const parsed = new Date(value);
 	return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().replace("T", " ");
 }
-
-// oxlint-disable-next-line complexity
 function formatErrorSections(error: ErrorEnvelope | undefined): readonly PageSection[] {
 	if (error === undefined) return [];
 	const metadata: Array<readonly [string, string]> = [
@@ -1718,8 +1762,6 @@ function readAllArchiveRecords(service: ApplicationService, work: WorkView, acto
 	} while (cursor !== undefined);
 	return records;
 }
-
-// oxlint-disable-next-line complexity
 async function showArchive(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -1824,75 +1866,84 @@ async function showPage(
 		return interactivePage;
 	});
 }
+type InputActionKind = "amend-terms" | "record-review" | "cancel" | "fail-work" | "run-oracle" | "rename-work" | "amend-budget";
+const INPUT_ACTION_KINDS: readonly InputActionKind[] = [
+	"amend-terms", "record-review", "cancel", "fail-work", "run-oracle", "rename-work", "amend-budget",
+];
 
-// oxlint-disable-next-line complexity
 async function actionInput(action: Action, context: ExtensionContext): Promise<JsonObject | undefined | null> {
-	if (action.kind === "amend-terms") {
-		const field = await context.ui.select("Term to amend:", [
-			"objective",
-			"context",
-			"scope",
-			"acceptanceCriteria",
-			"constraints",
-			"validation",
-			"allowedPaths",
-		]);
-		if (field === undefined) return null;
-		if (["acceptanceCriteria", "constraints", "validation", "allowedPaths"].includes(field)) {
-			const value = await context.ui.editor(`${field}, one item per line:`, "");
-			return value === undefined
-				? null
-				: {
-						[field]: value
-							.split("\n")
-							.map((entry) => entry.trim())
-							.filter(Boolean),
-					};
-		}
-		const value = await context.ui.input(`${field}:`, "");
-		return value === undefined ? null : { [field]: value };
-	}
-	if (action.kind === "record-review") {
-		const status = await context.ui.select("Provider review result:", ["changes-requested", "merged", "closed"]);
-		if (status === undefined) {
-			return null;
-		}
-		const feedback = await context.ui.editor("Feedback, one item per line:", "");
-		return {
-			status,
-			feedback: (feedback ?? "")
-				.split("\n")
-				.map((entry) => entry.trim())
-				.filter((entry) => entry.length > 0),
-		};
-	}
-	if (action.kind === "cancel") {
-		const confirmed = await context.ui.confirm("Cancel?", "This records an explicit cancellation.");
-		return confirmed ? {} : null;
-	}
-	if (action.kind === "fail-work") {
-		const reason = await context.ui.input("Failure reason:", "");
-		return reason === undefined ? null : { reason };
-	}
-	if (action.kind === "run-oracle") {
-		const subject = await context.ui.input("Oracle review subject:", "Review this Work");
-		return subject === undefined ? null : { subject };
-	}
-	if (action.kind === "rename-work") {
-		const title = await context.ui.input("New Work title:", "");
-		return title === undefined ? null : { title };
-	}
-	if (action.kind === "amend-budget") {
-		const value = await context.ui.input("New maximum token budget:", "");
-		if (value === undefined) {
-			return null;
-		}
-		const maxTokens = Number(value);
-		if (Number.isSafeInteger(maxTokens) && maxTokens > 0) return { maxTokens };
-		context.ui.notify("Enter a positive whole-number token budget.", "error");
-		return actionInput(action, context);
-	}
-	return {};
+	if (!isInputActionKind(action.kind)) return {};
+	const handlers = {
+		"amend-terms": () => amendTermsInput(context),
+		"record-review": () => recordReviewInput(context),
+		cancel: () => cancelInput(context),
+		"fail-work": () => simpleTextInput(context, "Failure reason", "reason"),
+		"run-oracle": () => simpleTextInput(context, "Oracle review subject", "subject", "Review this Work"),
+		"rename-work": () => simpleTextInput(context, "New Work title", "title"),
+		"amend-budget": () => amendBudgetInput(action, context),
+	} satisfies Record<InputActionKind, () => Promise<JsonObject | undefined | null>>;
+	return handlers[action.kind]();
+}
+
+function isInputActionKind(value: Action["kind"]): value is InputActionKind {
+	return INPUT_ACTION_KINDS.some((kind) => kind === value);
+}
+
+async function amendTermsInput(context: ExtensionContext): Promise<JsonObject | null> {
+	const field = await context.ui.select("Term to amend:", [
+		"objective", "context", "scope", "acceptanceCriteria", "constraints", "validation", "allowedPaths",
+	]);
+	if (field === undefined) return null;
+	return isListTerm(field) ? listTermInput(context, field) : scalarTermInput(context, field);
+}
+
+function isListTerm(field: string): boolean {
+	return ["acceptanceCriteria", "constraints", "validation", "allowedPaths"].includes(field);
+}
+
+async function listTermInput(context: ExtensionContext, field: string): Promise<JsonObject | null> {
+	const value = await context.ui.editor(`${field}, one item per line:`, "");
+	return value === undefined ? null : { [field]: splitInputLines(value) };
+}
+
+async function scalarTermInput(context: ExtensionContext, field: string): Promise<JsonObject | null> {
+	const value = await context.ui.input(`${field}:`, "");
+	return value === undefined ? null : { [field]: value };
+}
+
+function splitInputLines(value: string): readonly string[] {
+	return value.split("\n").map((entry) => entry.trim()).filter(Boolean);
+}
+
+async function recordReviewInput(context: ExtensionContext): Promise<JsonObject | null> {
+	const status = await context.ui.select("Provider review result:", ["changes-requested", "merged", "closed"]);
+	if (status === undefined) return null;
+	const feedback = await context.ui.editor("Feedback, one item per line:", "");
+	return { status, feedback: splitInputLines(feedback ?? "") };
+}
+
+async function cancelInput(context: ExtensionContext): Promise<JsonObject | null> {
+	const confirmed = await context.ui.confirm("Cancel?", "This records an explicit cancellation.");
+	return confirmed ? {} : null;
+}
+
+async function simpleTextInput(
+	context: ExtensionContext,
+	label: string,
+	key: string,
+	placeholder = "",
+): Promise<JsonObject | null> {
+	const value = await context.ui.input(`${label}:`, placeholder);
+	return value === undefined ? null : { [key]: value };
+}
+
+async function amendBudgetInput(action: Action, context: ExtensionContext): Promise<JsonObject | undefined | null> {
+	const value = await context.ui.input("New maximum token budget:", "");
+	if (value === undefined) return null;
+	const maxTokens = Number(value);
+	if (Number.isSafeInteger(maxTokens) && maxTokens > 0) return { maxTokens };
+	context.ui.notify("Enter a positive whole-number token budget.", "error");
+	return actionInput(action, context);
 }
 
 function renderDashboard(work: readonly WorkSummary[]): string {

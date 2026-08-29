@@ -25,6 +25,7 @@ input.on("line", (line) => {
 			respond();
 			process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "completed" }] } }) + "\\n");
 			process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
+			setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n"), 50);
 		};
 		if (prompts === 1) setTimeout(complete, 250);
 		else complete();
@@ -51,6 +52,50 @@ input.on("line", (line) => {
 	await runtime.close();
 });
 
+test("cancelling a child turn aborts the Pi process and rejects the turn", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-cancel-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(
+		script,
+		`import readline from "node:readline";
+const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
+const input = readline.createInterface({ input: process.stdin });
+input.on("line", (line) => {
+	const request = JSON.parse(line);
+	if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n");
+	else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n");
+	else if (request.type === "abort") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n");
+});
+`,
+	);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 5000 });
+	const binding = await runtime.ensureSession({
+		cwd: directory,
+		model: "model",
+		thinking: "medium",
+		role: "executor",
+		promptIdentity: { packageVersion: "1", promptSha256: "hash" },
+		tools: [],
+	});
+	const controller = new AbortController();
+	const turn = runtime.send(binding, "cancel me", { signal: controller.signal });
+	controller.abort();
+	await assert.rejects(turn, /cancelled/);
+	await runtime.close();
+});
+
+test("runtime state inspection honors cancellation before binding lookup", async () => {
+	const runtime = new PiRpcRuntime({ command: [process.execPath, "missing-pi-command.mjs"] });
+	const controller = new AbortController();
+	controller.abort();
+	await assert.rejects(
+		runtime.getState({ sessionId: "missing", sessionPath: "/tmp/missing.jsonl" }, { signal: controller.signal }),
+		/cancelled/,
+	);
+	await runtime.close();
+});
+
 test("child runtimes do not inherit credential-shaped environment variables", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-environment-"));
 	const script = join(directory, "rpc-stub.mjs");
@@ -66,7 +111,7 @@ input.on("line", (line) => {
 	} else if (request.type === "prompt") {
 		process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n");
 		process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: process.env.OPENAI_API_KEY ?? "missing" }] } }) + "\\n");
-		process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
+		process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
 	}
 });
 `,

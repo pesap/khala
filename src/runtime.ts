@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
-import type { AgentRuntimePort, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
+import type { AgentRuntimePort, OperationContext, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
 
 export type PiRuntimeOptions = Readonly<{
 	command: readonly string[];
@@ -86,6 +86,27 @@ type MutableChild = {
 };
 
 type RpcCommandData = Readonly<{ message?: string | undefined }>;
+type SessionInput = Parameters<AgentRuntimePort["ensureSession"]>[0];
+type CapabilityScopeInput = Readonly<{
+	workId?: string | undefined;
+	executionId?: string | undefined;
+	nonce?: string | undefined;
+}>;
+type SessionLaunch = Readonly<{
+	sessionPath: string;
+	args: string[];
+	capabilityNonce: string | undefined;
+	capabilityToken: string | undefined;
+	capabilityFile: string | undefined;
+	environment: NodeJS.ProcessEnv;
+	processMarker: string;
+}>;
+type RpcEventType = "response" | "message_end" | "agent_settled";
+const RPC_EVENT_TYPES: ReadonlyMap<string, RpcEventType> = new Map([
+	["response", "response"],
+	["message_end", "message_end"],
+	["agent_settled", "agent_settled"],
+]);
 
 export class PiRpcRuntime implements AgentRuntimePort {
 	private readonly children = new Map<string, MutableChild>();
@@ -98,24 +119,34 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		this.options = options;
 	}
 
-	async ensureSession(input: Parameters<AgentRuntimePort["ensureSession"]>[0]): Promise<RuntimeBinding> {
+	async ensureSession(
+		input: Parameters<AgentRuntimePort["ensureSession"]>[0],
+		operation?: OperationContext,
+	): Promise<RuntimeBinding> {
 		if (this.closing) throw new Error("Pi runtime is closed.");
+		throwIfAborted(operation);
 		return input.sessionPath === undefined
-			? this.trackLaunch(this.startSessionWithRetry(input))
-			: this.ensurePersistentSession(input);
+			? this.trackLaunch(this.startSessionWithRetry(input, operation))
+			: this.ensurePersistentSession(input, operation);
 	}
 
-	private ensurePersistentSession(input: Parameters<AgentRuntimePort["ensureSession"]>[0]): Promise<RuntimeBinding> {
+	private ensurePersistentSession(
+		input: Parameters<AgentRuntimePort["ensureSession"]>[0],
+		operation: OperationContext | undefined,
+	): Promise<RuntimeBinding> {
 		const sessionPath = input.sessionPath ?? "";
 		const active = this.sessionLaunches.get(sessionPath);
-		return active ?? this.startPersistentSession(input, sessionPath);
+		return active === undefined
+			? this.startPersistentSession(input, sessionPath, operation)
+			: awaitOperation(active, operation);
 	}
 
 	private startPersistentSession(
 		input: Parameters<AgentRuntimePort["ensureSession"]>[0],
 		sessionPath: string,
+		operation: OperationContext | undefined,
 	): Promise<RuntimeBinding> {
-		const launch = this.trackLaunch(this.startSessionWithRetry(input));
+		const launch = this.trackLaunch(this.startSessionWithRetry(input, operation));
 		this.sessionLaunches.set(sessionPath, launch);
 		return launch.finally(() => {
 			if (this.sessionLaunches.get(sessionPath) === launch) this.sessionLaunches.delete(sessionPath);
@@ -124,228 +155,113 @@ export class PiRpcRuntime implements AgentRuntimePort {
 
 	private async startSessionWithRetry(
 		input: Parameters<AgentRuntimePort["ensureSession"]>[0],
+		operation: OperationContext | undefined,
 	): Promise<RuntimeBinding> {
 		try {
-			return await this.startSession(input);
+			return await this.startSession(input, operation);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (!isTransientStartupFailure(message)) throw error;
-			return this.startSession(input);
+			return this.startSession(input, operation);
+		}
+	}
+	private async startSession(
+		input: Parameters<AgentRuntimePort["ensureSession"]>[0],
+		operation: OperationContext | undefined,
+	): Promise<RuntimeBinding> {
+		if (this.closing) throw new Error("Pi runtime is closed.");
+		throwIfAborted(operation);
+		const launch = createSessionLaunch(input, this.options);
+		await prepareSessionLaunch(input, launch);
+		const childProcess = await spawnSessionSafely(this.options.command[0] ?? "pi", launch, input);
+		const child = createStartingChild(childProcess, input, launch);
+		await this.registerStartingChild(input, launch, child);
+		return this.completeSessionStartup(input, launch, child, operation);
+	}
+
+	private async registerStartingChild(input: SessionInput, launch: SessionLaunch, child: MutableChild): Promise<void> {
+		try {
+			if (this.closing) throw new Error("Pi runtime is closed.");
+			await writePersistentLaunchLease(input, launch, child);
+		} catch (error) {
+			await cleanupStartingChild(launch, child);
+			throw error;
 		}
 	}
 
-	// oxlint-disable-next-line complexity
-	private async startSession(input: Parameters<AgentRuntimePort["ensureSession"]>[0]): Promise<RuntimeBinding> {
-		if (this.closing) throw new Error("Pi runtime is closed.");
-		const sessionPath = input.sessionPath ?? ephemeralSessionPath();
-		const args = [
-			...this.options.command.slice(1),
-			"--mode",
-			"rpc",
-			"--model",
-			input.model,
-			"--thinking",
-			input.thinking,
-		];
-		args.push("--session", sessionPath);
-		if (input.tools.length === 0) {
-			args.push("--no-tools");
-		} else {
-			args.push("--tools", input.tools.join(","));
-		}
-		if (this.options.extensionPath !== undefined) {
-			args.push("--extension", this.options.extensionPath);
-		}
-		args.push("--khala-role", input.role);
-		const capabilityNonce = input.tools.length === 0 ? undefined : (input.bindingScope?.nonce ?? randomUUID());
-		const processMarker = randomUUID();
-		const capabilityToken =
-			input.tools.length === 0
-				? undefined
-				: createCapability(this.options.authorityPrivateKey, input.role, {
-						workId: input.bindingScope?.workId,
-						executionId: input.bindingScope?.executionId,
-						nonce: capabilityNonce,
-					});
-		if (input.tools.length > 0 && capabilityToken === undefined)
-			throw new Error("This runtime cannot launch a governed child without an authority key.");
-		const capabilityFile = capabilityToken === undefined ? undefined : capabilityFilePath();
-		const environment = childEnvironment({
-			...process.env,
-			...this.options.baseEnvironment,
-			KHALA_ALLOWED_PATHS: input.allowedPaths === undefined ? undefined : JSON.stringify(input.allowedPaths),
-			KHALA_SANDBOX_ROOT: input.sandboxRoot,
-			KHALA_BOUND_WORK_ID: input.bindingScope?.workId,
-			KHALA_BOUND_EXECUTION_ID: input.bindingScope?.executionId,
-			KHALA_PROCESS_MARKER: processMarker,
-		});
-		delete environment["KHALA_ROLE_TOKEN"];
-		delete environment["KHALA_ROLE_TOKEN_FILE"];
-		delete environment["KHALA_ROLE_NONCE"];
-		if (capabilityFile !== undefined) environment["KHALA_ROLE_TOKEN_FILE"] = capabilityFile;
-		if (capabilityNonce !== undefined) environment["KHALA_ROLE_NONCE"] = capabilityNonce;
-		try {
-			if (input.sessionPath === undefined) await mkdir(dirname(sessionPath), { recursive: true });
-			if (input.sessionPath !== undefined) await reserveLaunch(sessionPath, capabilityFile, processMarker);
-			if (capabilityFile !== undefined && capabilityToken !== undefined)
-				await writeCapabilityFile(capabilityFile, capabilityToken);
-		} catch (error) {
-			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
-			throw error;
-		}
-		let childProcess: ChildProcessWithoutNullStreams;
-		try {
-			childProcess = spawn(this.options.command[0] ?? "pi", args, {
-				cwd: input.cwd,
-				detached: process.platform !== "win32",
-				env: environment,
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-		} catch (error) {
-			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
-			if (input.sessionPath !== undefined) removeLaunchLeaseSync(sessionPath, processMarker);
-			throw error;
-		}
-		const child: MutableChild = {
-			process: childProcess,
-			pending: new Map(),
-			binding: {
-				sessionId: "starting",
-				sessionPath,
-				capabilityNonce,
-				processMarker,
-				promptIdentity: input.promptIdentity,
-			},
-			agentTimeoutMs: input.agentTimeoutMs,
-			buffer: "",
-			lastOutput: "",
-			turnUsage: undefined,
-			lastError: "",
-			closed: false,
-			sending: false,
-			lastAgentEnd: undefined,
-			resolveAgentEnd: undefined,
-			rejectAgentEnd: undefined,
-			agentTimer: undefined,
-			ephemeralSession: input.sessionPath === undefined,
-		};
-		child.binding = {
-			...child.binding,
-			processGroupId: child.process.pid,
-			processStartTime: readProcessStartTime(child.process.pid),
-			capabilityNonce,
-			processMarker,
-			promptIdentity: input.promptIdentity,
-		};
-		try {
-			if (this.closing) throw new Error("Pi runtime is closed.");
-			if (input.sessionPath !== undefined) await writeLaunchLease(sessionPath, child.binding, capabilityFile);
-		} catch (error) {
-			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
-			killChild(child);
-			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
-			throw error;
-		}
-		if (this.closing) {
-			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
-			killChild(child);
-			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
-			throw new Error("Pi runtime is closed.");
-		}
+	private async completeSessionStartup(
+		input: SessionInput,
+		launch: SessionLaunch,
+		child: MutableChild,
+		operation: OperationContext | undefined,
+	): Promise<RuntimeBinding> {
 		const key = `child-${++childCounter}`;
 		this.children.set(key, child);
 		attachOutput(child, () => this.removeChild(child));
 		try {
-			const state = await request(child, "get_state", {}, this.options.rpcTimeoutMs ?? 10_000);
-			if (!state.success) {
-				throw new Error(state.error ?? "Pi did not return its session state.");
-			}
-			const sessionId = readSessionText(state.data, "sessionId");
-			const reportedSessionPath = readSessionText(state.data, "sessionFile");
-			if (resolve(reportedSessionPath) !== resolve(sessionPath))
-				throw new Error("Pi returned a session file outside the runtime-owned session path.");
-			await protectSessionFile(sessionPath);
-			if (child.closed || child.process.exitCode !== null || child.process.signalCode !== null)
-				throw new Error("Pi child exited during session startup.");
-			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
-			child.binding = {
-				sessionId,
-				sessionPath,
-				processGroupId: child.process.pid,
-				processStartTime: readProcessStartTime(child.process.pid),
-				capabilityNonce,
-				processMarker,
-				promptIdentity: input.promptIdentity,
-			};
+			const state = await request(child, "get_state", {}, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
+			const sessionId = startupSessionId(state, launch.sessionPath);
+			await protectSessionFile(launch.sessionPath);
+			assertChildRunning(child);
+			await removeSessionCapability(launch);
+			child.binding = { ...child.binding, sessionId, promptIdentity: input.promptIdentity };
 			this.children.delete(key);
 			this.children.set(sessionId, child);
 			return child.binding;
 		} catch (error) {
 			this.children.delete(key);
-			if (capabilityFile !== undefined) await unlink(capabilityFile).catch(() => undefined);
+			await removeSessionCapability(launch);
 			killChild(child);
 			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
 			removeEphemeralSession(child);
 			throw error;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
-	async send(binding: RuntimeBinding, message: string): Promise<RuntimeTurn> {
+	async send(binding: RuntimeBinding, message: string, operation?: OperationContext): Promise<RuntimeTurn> {
 		const child = this.requireChild(binding);
-		if (child.sending) {
-			throw new Error(`Pi session ${binding.sessionId} is already processing a prompt.`);
-		}
+		if (child.sending) throw new Error(`Pi session ${binding.sessionId} is already processing a prompt.`);
+		throwIfAborted(operation);
+		return this.sendTurn(child, message, operation);
+	}
+
+	private async sendTurn(
+		child: MutableChild,
+		message: string,
+		operation: OperationContext | undefined,
+	): Promise<RuntimeTurn> {
 		child.turnUsage = undefined;
 		child.lastOutput = "";
 		child.sending = true;
-		const completion = waitForAgentEnd(child, child.agentTimeoutMs ?? this.options.agentTimeoutMs ?? 1_800_000);
+		const completion = waitForAgentSettled(child, agentTimeout(child, this.options.agentTimeoutMs));
+		const abortHandler = createAbortHandler(child, operation, rpcTimeout(this.options.rpcTimeoutMs));
+		registerAbortHandler(operation, abortHandler);
 		void completion.catch(() => undefined);
 		try {
-			let response: RpcResponse | undefined;
-			try {
-				response = await request(child, "prompt", { message }, this.options.rpcTimeoutMs ?? 10_000);
-			} catch (error) {
-				if (!(error instanceof Error) || !error.message.startsWith("Pi RPC prompt timed out after ")) throw error;
-				// Pi sends the prompt response as an acceptance acknowledgement. A late acknowledgement does not
-				// invalidate the agent events already emitted for the turn, so let agent_end decide whether it completed.
-			}
-			if (response?.success === false) {
-				throw new Error(response.error ?? "Pi rejected the prompt.");
-			}
-			const output = await completion;
-			const usage = child.turnUsage;
-			return usage === undefined ? { output } : { output, usage };
+			await sendPrompt(child, message, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
+			return await completedTurn(child, completion);
 		} catch (error) {
 			const failure = error instanceof Error ? error : new Error(String(error));
-			rejectAgentEnd(child, failure);
-			// A failed turn has ambiguous event ownership. Kill the child instead of reusing it,
-			// because a late agent_end or message event cannot be correlated to the next turn.
-			killChild(child);
-			this.removeChild(child);
-			await completion.catch(() => undefined);
+			await failTurn(child, completion, failure);
 			throw failure;
 		} finally {
+			removeAbortHandler(operation, abortHandler);
 			child.sending = false;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
-	async getState(binding: RuntimeBinding): Promise<RuntimeState> {
+	async getState(binding: RuntimeBinding, operation?: OperationContext): Promise<RuntimeState> {
+		throwIfAborted(operation);
 		const child = this.children.get(binding.sessionId);
-		if (child === undefined || !sameBindingIdentity(binding, child.binding)) {
-			return "unreachable";
-		}
-		if (child.sending) {
-			return "working";
-		}
+		if (child === undefined || !sameBindingIdentity(binding, child.binding)) return "unreachable";
+		if (child.sending) return "working";
+		return this.readChildState(child, operation);
+	}
+
+	private async readChildState(child: MutableChild, operation: OperationContext | undefined): Promise<RuntimeState> {
 		try {
-			const response = await request(child, "get_state", {}, this.options.rpcTimeoutMs ?? 10_000);
-			if (!response.success) {
-				return "unknown";
-			}
-			return response.data?.isStreaming === true ? "working" : "idle";
+			const response = await request(child, "get_state", {}, this.options.rpcTimeoutMs ?? 10_000, operation?.signal);
+			return childRuntimeState(response);
 		} catch {
+			throwIfAborted(operation);
 			killChild(child);
 			this.removeChild(child);
 			return "unreachable";
@@ -453,55 +369,67 @@ function attachOutput(child: MutableChild, onExit: () => void): void {
 		cleanupAfterExit();
 	});
 }
-
-// oxlint-disable-next-line complexity
 function consumeLines(child: MutableChild): void {
-	for (;;) {
-		const newline = child.buffer.indexOf("\n");
-		if (newline < 0) {
-			return;
-		}
-		let line = child.buffer.slice(0, newline);
-		child.buffer = child.buffer.slice(newline + 1);
-		if (line.endsWith("\r")) {
-			line = line.slice(0, -1);
-		}
-		if (line.trim().length === 0) {
-			continue;
-		}
-		let event: RpcEvent;
-		try {
-			// SAFETY: Pi RPC emits one JSON object per LF-delimited event; consumers validate required fields below.
-			event = JSON.parse(line) as RpcEvent;
-		} catch {
-			continue;
-		}
-		if (event.type === "response") {
-			let response: RpcResponse;
-			try {
-				response = readResponse(event);
-			} catch {
-				continue;
-			}
-			if (response.id !== undefined) {
-				const pending = child.pending.get(response.id);
-				if (pending !== undefined) {
-					child.pending.delete(response.id);
-					clearTimeout(pending.timer);
-					pending.resolve(response);
-				}
-			}
-			continue;
-		}
-		if (event.type === "message_end" && isAssistantMessage(event.message)) {
-			child.lastOutput = assistantText(event.message);
-			const usage = readTokenUsage(event.message.usage);
-			if (usage !== undefined) child.turnUsage = addTokenUsage(child.turnUsage, usage);
-		}
-		if (event.type === "agent_end") {
-			resolveAgentEnd(child);
-		}
+	let line = nextLine(child);
+	while (line !== undefined) {
+		consumeLine(child, line);
+		line = nextLine(child);
 	}
+}
+
+function nextLine(child: MutableChild): string | undefined {
+	const newline = child.buffer.indexOf("\n");
+	if (newline < 0) return undefined;
+	const line = child.buffer.slice(0, newline).replace(/\r$/, "");
+	child.buffer = child.buffer.slice(newline + 1);
+	return line.trim().length === 0 ? nextLine(child) : line;
+}
+
+function consumeLine(child: MutableChild, line: string): void {
+	const event = parseRpcEvent(line);
+	if (event === undefined) return;
+	const type = RPC_EVENT_TYPES.get(event.type ?? "");
+	if (type === undefined) return;
+	dispatchRpcEvent(child, event, type);
+}
+
+function dispatchRpcEvent(child: MutableChild, event: RpcEvent, type: RpcEventType): void {
+	if (type === "response") consumeResponse(child, event);
+	if (type === "message_end") consumeMessage(child, event);
+	if (type === "agent_settled") resolveAgentEnd(child);
+}
+
+function parseRpcEvent(line: string): RpcEvent | undefined {
+	try {
+		// SAFETY: Pi RPC emits one JSON object per LF-delimited event; consumers validate required fields below.
+		return JSON.parse(line) as RpcEvent;
+	} catch {
+		return undefined;
+	}
+}
+
+function consumeResponse(child: MutableChild, event: RpcEvent): void {
+	try {
+		const response = readResponse(event);
+		if (response.id !== undefined) resolvePendingResponse(child, response.id, response);
+	} catch {
+		// Ignore malformed responses and continue consuming the stream.
+	}
+}
+
+function resolvePendingResponse(child: MutableChild, id: string, response: RpcResponse): void {
+	const pending = child.pending.get(id);
+	if (pending === undefined) return;
+	child.pending.delete(id);
+	clearTimeout(pending.timer);
+	pending.resolve(response);
+}
+
+function consumeMessage(child: MutableChild, event: RpcEvent): void {
+	if (!isAssistantMessage(event.message)) return;
+	child.lastOutput = assistantText(event.message);
+	const usage = readTokenUsage(event.message.usage);
+	if (usage !== undefined) child.turnUsage = addTokenUsage(child.turnUsage, usage);
 }
 
 let requestCounter = 0;
@@ -526,80 +454,347 @@ function capabilityFilePath(): string {
 	return join(tmpdir(), `khala-capability-${randomUUID()}`);
 }
 
+function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions): SessionLaunch {
+	const sessionPath = input.sessionPath ?? ephemeralSessionPath();
+	const capabilityNonce = sessionCapabilityNonce(input);
+	const capabilityToken = createSessionCapability(input, options, capabilityNonce);
+	const capabilityFile = sessionCapabilityFile(capabilityToken);
+	const processMarker = randomUUID();
+	return {
+		sessionPath,
+		args: sessionArguments(input, options, sessionPath),
+		capabilityNonce,
+		capabilityToken,
+		capabilityFile,
+		environment: sessionEnvironment(input, options, capabilityFile, capabilityNonce, processMarker),
+		processMarker,
+	};
+}
+
+function sessionArguments(input: SessionInput, options: PiRuntimeOptions, sessionPath: string): string[] {
+	return [
+		...options.command.slice(1),
+		"--mode",
+		"rpc",
+		"--model",
+		input.model,
+		"--thinking",
+		input.thinking,
+		"--session",
+		sessionPath,
+		...toolArguments(input.tools),
+		...extensionArguments(options.extensionPath),
+		"--khala-role",
+		input.role,
+	];
+}
+
+function toolArguments(tools: readonly string[]): readonly string[] {
+	return tools.length === 0 ? ["--no-tools"] : ["--tools", tools.join(",")];
+}
+
+function extensionArguments(extensionPath: string | undefined): readonly string[] {
+	return extensionPath === undefined ? [] : ["--extension", extensionPath];
+}
+
+function sessionCapabilityNonce(input: SessionInput): string | undefined {
+	return input.tools.length === 0 ? undefined : (input.bindingScope?.nonce ?? randomUUID());
+}
+
+function sessionCapabilityFile(token: string | undefined): string | undefined {
+	return token === undefined ? undefined : capabilityFilePath();
+}
+
+function createSessionCapability(
+	input: SessionInput,
+	options: PiRuntimeOptions,
+	capabilityNonce: string | undefined,
+): string | undefined {
+	if (input.tools.length === 0) return undefined;
+	const token = createCapability(
+		options.authorityPrivateKey,
+		input.role,
+		capabilityScopeForInput(input, capabilityNonce),
+	);
+	if (token === undefined) throw new Error("This runtime cannot launch a governed child without an authority key.");
+	return token;
+}
+
+function capabilityScopeForInput(input: SessionInput, nonce: string | undefined): CapabilityScopeInput {
+	return { workId: input.bindingScope?.workId, executionId: input.bindingScope?.executionId, nonce };
+}
+
+function sessionEnvironment(
+	input: SessionInput,
+	options: PiRuntimeOptions,
+	capabilityFile: string | undefined,
+	capabilityNonce: string | undefined,
+	processMarker: string,
+): NodeJS.ProcessEnv {
+	const environment = childEnvironment({
+		...process.env,
+		...options.baseEnvironment,
+		KHALA_ALLOWED_PATHS: input.allowedPaths === undefined ? undefined : JSON.stringify(input.allowedPaths),
+		KHALA_SANDBOX_ROOT: input.sandboxRoot,
+		KHALA_BOUND_WORK_ID: input.bindingScope?.workId,
+		KHALA_BOUND_EXECUTION_ID: input.bindingScope?.executionId,
+		KHALA_PROCESS_MARKER: processMarker,
+	});
+	delete environment["KHALA_ROLE_TOKEN"];
+	delete environment["KHALA_ROLE_TOKEN_FILE"];
+	delete environment["KHALA_ROLE_NONCE"];
+	addCapabilityEnvironment(environment, capabilityFile, capabilityNonce);
+	return environment;
+}
+
+function addCapabilityEnvironment(
+	environment: NodeJS.ProcessEnv,
+	capabilityFile: string | undefined,
+	capabilityNonce: string | undefined,
+): void {
+	if (capabilityFile !== undefined) environment["KHALA_ROLE_TOKEN_FILE"] = capabilityFile;
+	if (capabilityNonce !== undefined) environment["KHALA_ROLE_NONCE"] = capabilityNonce;
+}
+
+async function prepareSessionLaunch(input: SessionInput, launch: SessionLaunch): Promise<void> {
+	try {
+		await prepareSessionPath(input, launch);
+		await writeSessionCapability(launch);
+	} catch (error) {
+		await removeSessionCapability(launch);
+		throw error;
+	}
+}
+
+async function prepareSessionPath(input: SessionInput, launch: SessionLaunch): Promise<void> {
+	if (input.sessionPath === undefined) await mkdir(dirname(launch.sessionPath), { recursive: true });
+	if (input.sessionPath !== undefined)
+		await reserveLaunch(launch.sessionPath, launch.capabilityFile, launch.processMarker);
+}
+
+async function writeSessionCapability(launch: SessionLaunch): Promise<void> {
+	if (launch.capabilityFile !== undefined && launch.capabilityToken !== undefined)
+		await writeCapabilityFile(launch.capabilityFile, launch.capabilityToken);
+}
+
+async function removeSessionCapability(launch: SessionLaunch): Promise<void> {
+	if (launch.capabilityFile !== undefined) await unlink(launch.capabilityFile).catch(() => undefined);
+}
+
+function spawnSessionProcess(
+	command: string,
+	args: readonly string[],
+	cwd: string,
+	environment: NodeJS.ProcessEnv,
+): ChildProcessWithoutNullStreams {
+	return spawn(command, args, {
+		cwd,
+		detached: process.platform !== "win32",
+		env: environment,
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+}
+
+async function spawnSessionSafely(
+	command: string,
+	launch: SessionLaunch,
+	input: SessionInput,
+): Promise<ChildProcessWithoutNullStreams> {
+	try {
+		return spawnSessionProcess(command, launch.args, input.cwd, launch.environment);
+	} catch (error) {
+		await removeSessionCapability(launch);
+		if (input.sessionPath !== undefined) removeLaunchLeaseSync(launch.sessionPath, launch.processMarker);
+		throw error;
+	}
+}
+
+function startupSessionId(state: RpcResponse, sessionPath: string): string {
+	if (!state.success) throw new Error(state.error ?? "Pi did not return its session state.");
+	const sessionId = readSessionText(state.data, "sessionId");
+	const reportedSessionPath = readSessionText(state.data, "sessionFile");
+	if (resolve(reportedSessionPath) !== resolve(sessionPath))
+		throw new Error("Pi returned a session file outside the runtime-owned session path.");
+	return sessionId;
+}
+
+function assertChildRunning(child: MutableChild): void {
+	if ([child.closed, child.process.exitCode !== null, child.process.signalCode !== null].some(Boolean))
+		throw new Error("Pi child exited during session startup.");
+}
+
+async function writePersistentLaunchLease(
+	input: SessionInput,
+	launch: SessionLaunch,
+	child: MutableChild,
+): Promise<void> {
+	if (input.sessionPath !== undefined) await writeLaunchLease(launch.sessionPath, child.binding, launch.capabilityFile);
+}
+
+async function cleanupStartingChild(launch: SessionLaunch, child: MutableChild): Promise<void> {
+	await removeSessionCapability(launch);
+	killChild(child);
+	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+}
+
+function createStartingChild(
+	process: ChildProcessWithoutNullStreams,
+	input: SessionInput,
+	launch: SessionLaunch,
+): MutableChild {
+	const binding: RuntimeBinding = {
+		sessionId: "starting",
+		sessionPath: launch.sessionPath,
+		processGroupId: process.pid,
+		processStartTime: readProcessStartTime(process.pid),
+		capabilityNonce: launch.capabilityNonce,
+		processMarker: launch.processMarker,
+		promptIdentity: input.promptIdentity,
+	};
+	return {
+		process,
+		pending: new Map(),
+		binding,
+		agentTimeoutMs: input.agentTimeoutMs,
+		buffer: "",
+		lastOutput: "",
+		turnUsage: undefined,
+		lastError: "",
+		closed: false,
+		sending: false,
+		lastAgentEnd: undefined,
+		resolveAgentEnd: undefined,
+		rejectAgentEnd: undefined,
+		agentTimer: undefined,
+		ephemeralSession: input.sessionPath === undefined,
+	};
+}
+
 async function writeCapabilityFile(path: string, token: string): Promise<void> {
 	await writeFile(path, token, { encoding: "utf8", mode: 0o600, flag: "wx" });
 }
-
-// oxlint-disable-next-line complexity
 async function reserveLaunch(
 	sessionPath: string,
 	capabilityFile: string | undefined,
 	processMarker: string,
 ): Promise<void> {
-	// oxlint-disable-next-line complexity
 	await withLaunchLock(sessionPath, async () => {
 		const path = launchLeasePath(sessionPath);
 		const text = await readFile(path, "utf8").catch(() => undefined);
-		if (text !== undefined) {
-			const lease = parseLaunchLease(text);
-			if (lease?.processGroupId !== undefined) {
-				const currentStartTime = readProcessStartTime(lease.processGroupId);
-				if (
-					(lease.processStartTime === undefined && processExists(lease.processGroupId)) ||
-					(lease.processStartTime !== undefined &&
-						(currentStartTime === lease.processStartTime ||
-							(currentStartTime === undefined && processExists(lease.processGroupId))))
-				)
-					throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
-			} else {
-				if (lease?.ownerProcessId !== undefined && processExists(lease.ownerProcessId))
-					throw new Error(`Runtime session ${sessionPath} is already launching.`);
-				const createdAt = lease?.createdAt ?? (await stat(path)).mtimeMs;
-				if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
-					throw new Error(`Runtime session ${sessionPath} is already launching.`);
-			}
-			const displacedPath = `${path}.stale-${randomUUID()}`;
-			try {
-				await rename(path, displacedPath);
-			} catch (error) {
-				if (error instanceof Error && isMissingFileError(error))
-					throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
-				throw error;
-			}
-			if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
-			await unlink(displacedPath).catch(() => undefined);
-		}
-		try {
-			await writeLaunchIntent(sessionPath, capabilityFile, processMarker);
-		} catch (error) {
-			if (error instanceof Error && isExistsError(error))
-				throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
-			throw error;
-		}
+		if (text !== undefined) await replaceExistingLaunch(path, sessionPath, text);
+		await writeLaunchIntentSafely(sessionPath, capabilityFile, processMarker);
 	});
 }
 
-// oxlint-disable-next-line complexity
+async function writeLaunchIntentSafely(
+	sessionPath: string,
+	capabilityFile: string | undefined,
+	processMarker: string,
+): Promise<void> {
+	try {
+		await writeLaunchIntent(sessionPath, capabilityFile, processMarker);
+	} catch (error) {
+		if (error instanceof Error && isExistsError(error))
+			throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
+		throw error;
+	}
+}
+
+async function replaceExistingLaunch(path: string, sessionPath: string, text: string): Promise<void> {
+	const lease = parseLaunchLease(text);
+	await assertLaunchAvailable(path, sessionPath, lease);
+	const displacedPath = `${path}.stale-${randomUUID()}`;
+	await renameStaleLaunch(path, displacedPath, sessionPath);
+	if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
+	await unlink(displacedPath).catch(() => undefined);
+}
+
+async function assertLaunchAvailable(path: string, sessionPath: string, lease: LaunchLease | undefined): Promise<void> {
+	if (isProcessLease(lease)) {
+		assertLiveProcessLease(sessionPath, lease);
+		return;
+	}
+	await assertLaunchIntentAvailable(path, sessionPath, lease);
+}
+
+function isProcessLease(lease: LaunchLease | undefined): lease is ProcessLease {
+	return lease?.processGroupId !== undefined;
+}
+
+type ProcessLease = LaunchLease & Readonly<{ processGroupId: number }>;
+
+function assertLiveProcessLease(sessionPath: string, lease: ProcessLease): void {
+	if (leaseIsOwnedByLiveProcess(lease))
+		throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
+}
+
+function leaseIsOwnedByLiveProcess(lease: ProcessLease): boolean {
+	const currentStartTime = readProcessStartTime(lease.processGroupId);
+	if (lease.processStartTime === undefined) return processExists(lease.processGroupId);
+	return (
+		currentStartTime === lease.processStartTime ||
+		(currentStartTime === undefined && processExists(lease.processGroupId))
+	);
+}
+
+async function assertLaunchIntentAvailable(
+	path: string,
+	sessionPath: string,
+	lease: LaunchLease | undefined,
+): Promise<void> {
+	if (liveLaunchIntent(lease)) throw new Error(`Runtime session ${sessionPath} is already launching.`);
+	const createdAt = await launchIntentCreatedAt(path, lease);
+	if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
+		throw new Error(`Runtime session ${sessionPath} is already launching.`);
+}
+
+function liveLaunchIntent(lease: LaunchLease | undefined): boolean {
+	return lease?.ownerProcessId !== undefined && processExists(lease.ownerProcessId);
+}
+
+async function launchIntentCreatedAt(path: string, lease: LaunchLease | undefined): Promise<number> {
+	return lease?.createdAt ?? (await stat(path)).mtimeMs;
+}
+
+async function renameStaleLaunch(path: string, displacedPath: string, sessionPath: string): Promise<void> {
+	try {
+		await rename(path, displacedPath);
+	} catch (error) {
+		if (error instanceof Error && isMissingFileError(error))
+			throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
+		throw error;
+	}
+}
+
 async function withLaunchLock<T>(sessionPath: string, operation: () => Promise<T>): Promise<T> {
 	const lockPath = `${launchLeasePath(sessionPath)}.lock`;
 	await mkdir(dirname(lockPath), { recursive: true });
-	try {
-		await mkdir(lockPath);
-	} catch (error) {
-		if (!(error instanceof Error) || !isExistsError(error)) throw error;
-		const createdAt = await stat(lockPath)
-			.then((entry) => entry.mtimeMs)
-			.catch(() => Date.now());
-		if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
-			throw new Error(`Runtime session ${sessionPath} is already launching.`);
-		await rmdir(lockPath).catch(() => undefined);
-		await mkdir(lockPath);
-	}
+	await acquireLaunchLock(lockPath, sessionPath);
 	try {
 		return await operation();
 	} finally {
 		await rmdir(lockPath).catch(() => undefined);
 	}
+}
+
+async function acquireLaunchLock(lockPath: string, sessionPath: string): Promise<void> {
+	try {
+		await mkdir(lockPath);
+	} catch (error) {
+		if (!(error instanceof Error)) throw error;
+		await replaceStaleLaunchLock(lockPath, sessionPath, error);
+	}
+}
+
+async function replaceStaleLaunchLock(lockPath: string, sessionPath: string, error: Error): Promise<void> {
+	if (!isExistsError(error)) throw error;
+	const createdAt = await stat(lockPath)
+		.then((entry) => entry.mtimeMs)
+		.catch(() => Date.now());
+	if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
+		throw new Error(`Runtime session ${sessionPath} is already launching.`);
+	await rmdir(lockPath).catch(() => undefined);
+	await mkdir(lockPath);
 }
 
 async function protectSessionFile(sessionPath: string): Promise<void> {
@@ -643,8 +838,6 @@ async function writeLaunchIntent(
 		},
 	);
 }
-
-// oxlint-disable-next-line complexity
 async function writeLaunchLease(
 	sessionPath: string,
 	binding: RuntimeBinding,
@@ -656,78 +849,155 @@ async function writeLaunchLease(
 	const leasePath = launchLeasePath(sessionPath);
 	const temporaryPath = `${leasePath}.${randomUUID()}.tmp`;
 	try {
-		await writeFile(
-			temporaryPath,
-			JSON.stringify({
-				processGroupId: binding.processGroupId,
-				processStartTime: binding.processStartTime,
-				capabilityFile,
-				processMarker: binding.processMarker,
-				ownerProcessId: existing?.ownerProcessId ?? process.pid,
-				createdAt: existing?.createdAt ?? Date.now(),
-			}),
-			{ encoding: "utf8", mode: 0o600, flag: "wx" },
-		);
+		await writeFile(temporaryPath, launchLeaseJson(binding, capabilityFile, existing), {
+			encoding: "utf8",
+			mode: 0o600,
+			flag: "wx",
+		});
 		await rename(temporaryPath, leasePath);
 	} finally {
 		await unlink(temporaryPath).catch(() => undefined);
 	}
 }
 
+function launchOwner(existing: LaunchLease | undefined): number {
+	return existing?.ownerProcessId ?? process.pid;
+}
+
+function launchCreatedAt(existing: LaunchLease | undefined): number {
+	return existing?.createdAt ?? Date.now();
+}
+
+function launchLeaseJson(
+	binding: RuntimeBinding,
+	capabilityFile: string | undefined,
+	existing: LaunchLease | undefined,
+): string {
+	return JSON.stringify({
+		processGroupId: binding.processGroupId,
+		processStartTime: binding.processStartTime,
+		capabilityFile,
+		processMarker: binding.processMarker,
+		ownerProcessId: launchOwner(existing),
+		createdAt: launchCreatedAt(existing),
+	});
+}
+
 function launchLeasePath(sessionPath: string): string {
 	return `${sessionPath}.khala-process`;
 }
-
-// oxlint-disable-next-line complexity
 function removeLaunchLeaseSync(sessionPath: string, processMarker?: string): void {
 	if (sessionPath.length === 0) return;
 	try {
 		const existing = parseLaunchLease(readFileSync(launchLeasePath(sessionPath), "utf8"));
-		if (
-			processMarker !== undefined &&
-			existing?.processMarker !== undefined &&
-			existing.processMarker !== processMarker
-		)
-			return;
+		if (leaseBelongsToAnotherProcess(existing, processMarker)) return;
 		unlinkSync(launchLeasePath(sessionPath));
 	} catch {
 		// The lease may already have been removed by normal completion.
 	}
 }
 
-// oxlint-disable-next-line complexity
+function leaseBelongsToAnotherProcess(lease: LaunchLease | undefined, processMarker: string | undefined): boolean {
+	return processMarker !== undefined && lease?.processMarker !== undefined && lease.processMarker !== processMarker;
+}
 function parseLaunchLease(text: string): LaunchLease | undefined {
-	let parsed: JsonValue;
+	const parsed = readLaunchLeaseJson(text);
+	if (parsed === undefined || !isJsonObject(parsed)) return undefined;
+	return launchLeaseFromObject(parsed);
+}
+
+function readLaunchLeaseJson(text: string): JsonValue | undefined {
 	try {
-		// SAFETY: the parsed JSON is checked as a JsonObject before its fields are read below.
-		parsed = JSON.parse(text) as JsonValue;
+		// SAFETY: launch lease JSON is parsed and validated as a JsonValue before its fields are read.
+		return JSON.parse(text) as JsonValue;
 	} catch {
-		return;
+		return undefined;
 	}
-	if (!isJsonObject(parsed)) return;
+}
+
+type LaunchLeaseFields = Readonly<{
+	capabilityFile: string | undefined;
+	processMarker: string | undefined;
+	ownerProcessId: number | undefined;
+	createdAt: number | undefined;
+}>;
+
+function launchLeaseFromObject(parsed: JsonObject): LaunchLease | undefined {
+	const fields = readLaunchLeaseFields(parsed);
+	if (fields === undefined) return undefined;
+	if (isLaunchIntent(parsed)) return launchIntentLease(fields);
 	const processGroupId = parsed["processGroupId"];
 	const processStartTime = parsed["processStartTime"];
-	const capabilityFile = parsed["capabilityFile"];
-	const processMarker = parsed["processMarker"];
-	const ownerProcessId = parsed["ownerProcessId"];
-	const createdAt = parsed["createdAt"];
-	if (
-		(ownerProcessId !== undefined && (!isInteger(ownerProcessId) || ownerProcessId <= 0)) ||
-		(createdAt !== undefined && (!isInteger(createdAt) || createdAt <= 0)) ||
-		(capabilityFile !== undefined && !isText(capabilityFile)) ||
-		(processMarker !== undefined && !isText(processMarker))
-	)
-		return;
-	if (processGroupId === undefined && processStartTime === undefined)
-		return capabilityFile === undefined &&
-			processMarker === undefined &&
-			ownerProcessId === undefined &&
-			createdAt === undefined
-			? {}
-			: { capabilityFile, processMarker, ownerProcessId, createdAt };
-	if (!isInteger(processGroupId) || processGroupId <= 0) return;
-	if (processStartTime !== undefined && (!isText(processStartTime) || processStartTime.length === 0)) return;
-	return { processGroupId, processStartTime, capabilityFile, processMarker, ownerProcessId, createdAt };
+	const process = readLeaseProcess(processGroupId, processStartTime);
+	if (process === undefined) return undefined;
+	return { ...fields, ...process };
+}
+
+function isLaunchIntent(parsed: JsonObject): boolean {
+	return parsed["processGroupId"] === undefined && parsed["processStartTime"] === undefined;
+}
+
+function readLeaseProcess(
+	processGroupId: JsonValue | undefined,
+	processStartTime: JsonValue | undefined,
+): { processGroupId: number; processStartTime: string | undefined } | undefined {
+	if (!validProcessGroup(processGroupId) || !validProcessStartTime(processStartTime)) return undefined;
+	return { processGroupId, processStartTime };
+}
+
+function readLaunchLeaseFields(parsed: JsonObject): LaunchLeaseFields | undefined {
+	const valid = validLaunchLeaseFields(parsed);
+	if (!valid) return undefined;
+	return {
+		capabilityFile: optionalLeaseText(parsed["capabilityFile"]),
+		processMarker: optionalLeaseText(parsed["processMarker"]),
+		ownerProcessId: optionalLeaseInteger(parsed["ownerProcessId"]),
+		createdAt: optionalLeaseInteger(parsed["createdAt"]),
+	};
+}
+
+function validLaunchLeaseFields(parsed: JsonObject): boolean {
+	return [
+		validOptionalPositiveInteger(parsed["ownerProcessId"]),
+		validOptionalPositiveInteger(parsed["createdAt"]),
+		parsed["capabilityFile"] === undefined || isText(parsed["capabilityFile"]),
+		parsed["processMarker"] === undefined || isText(parsed["processMarker"]),
+	].every(Boolean);
+}
+
+function validOptionalPositiveInteger(value: JsonValue | undefined): boolean {
+	return value === undefined || (isInteger(value) && value > 0);
+}
+
+function optionalLeaseText(value: JsonValue | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	return isText(value) ? value : undefined;
+}
+
+function optionalLeaseInteger(value: JsonValue | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	return isInteger(value) ? value : undefined;
+}
+
+function launchIntentLease(fields: LaunchLeaseFields): LaunchLease {
+	return hasLeaseFields(fields) ? fields : {};
+}
+
+function hasLeaseFields(fields: LaunchLeaseFields): boolean {
+	return [
+		fields.capabilityFile !== undefined,
+		fields.processMarker !== undefined,
+		fields.ownerProcessId !== undefined,
+		fields.createdAt !== undefined,
+	].some(Boolean);
+}
+
+function validProcessGroup(value: JsonValue | undefined): value is number {
+	return isInteger(value) && value > 0;
+}
+
+function validProcessStartTime(value: JsonValue | undefined): value is string | undefined {
+	return value === undefined || (isText(value) && value.length > 0);
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
@@ -750,52 +1020,65 @@ function childEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	}
 	return environment;
 }
-
-// oxlint-disable-next-line complexity
 function readProcessStartTime(processId: number | undefined): string | undefined {
-	if (processId === undefined) return;
-	if (process.platform !== "win32") {
-		try {
-			const stat = readFileSync(`/proc/${processId}/stat`, "utf8");
-			const endOfCommand = stat.lastIndexOf(")");
-			const linuxStartTime = stat
-				.slice(endOfCommand + 2)
-				.trim()
-				.split(/\s+/)[19];
-			if (linuxStartTime !== undefined) return linuxStartTime;
-		} catch {
-			// Darwin does not expose /proc; use ps below.
-		}
-		try {
-			const darwinStartTime = execFileSync("ps", ["-o", "lstart=", "-p", String(processId)], {
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "ignore"],
-			}).trim();
-			return darwinStartTime.length === 0 ? undefined : darwinStartTime;
-		} catch {
-			return;
-		}
-	}
-	return;
+	if (processId === undefined || process.platform === "win32") return undefined;
+	return readUnixProcessStartTime(processId);
 }
 
-// oxlint-disable-next-line complexity
-function killProcessGroup(processGroupId: number | undefined, processStartTime: string | undefined): boolean {
-	if (
-		processGroupId === undefined ||
-		(process.platform !== "win32" &&
-			(processStartTime === undefined || readProcessStartTime(processGroupId) !== processStartTime))
-	)
-		return false;
-	if (process.platform === "win32") {
-		killProcessTree(processGroupId);
-		return !processExists(processGroupId);
+function readUnixProcessStartTime(processId: number): string | undefined {
+	const linuxStartTime = readLinuxProcessStartTime(processId);
+	return linuxStartTime ?? readPsProcessStartTime(processId);
+}
+
+function readLinuxProcessStartTime(processId: number): string | undefined {
+	try {
+		const stat = readFileSync(`/proc/${processId}/stat`, "utf8");
+		const endOfCommand = stat.lastIndexOf(")");
+		return stat
+			.slice(endOfCommand + 2)
+			.trim()
+			.split(/\s+/)[19];
+	} catch {
+		return undefined;
 	}
+}
+
+function readPsProcessStartTime(processId: number): string | undefined {
+	try {
+		const value = execFileSync("ps", ["-o", "lstart=", "-p", String(processId)], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return value.length === 0 ? undefined : value;
+	} catch {
+		return undefined;
+	}
+}
+function killProcessGroup(processGroupId: number | undefined, processStartTime: string | undefined): boolean {
+	if (!isKillableProcessGroup(processGroupId, processStartTime)) return false;
+	if (process.platform === "win32") return killWindowsProcessGroup(processGroupId);
+	return killPosixProcessGroupResult(processGroupId);
+}
+
+function isKillableProcessGroup(
+	processGroupId: number | undefined,
+	processStartTime: string | undefined,
+): processGroupId is number {
+	if (processGroupId === undefined) return false;
+	if (process.platform === "win32") return true;
+	return processStartTime !== undefined && readProcessStartTime(processGroupId) === processStartTime;
+}
+
+function killWindowsProcessGroup(processGroupId: number): boolean {
+	killProcessTree(processGroupId);
+	return !processExists(processGroupId);
+}
+
+function killPosixProcessGroupResult(processGroupId: number): boolean {
 	try {
 		process.kill(-processGroupId, "SIGKILL");
 		return true;
 	} catch {
-		// The process group may have exited before reconciliation.
 		return !processExists(processGroupId);
 	}
 }
@@ -812,17 +1095,15 @@ async function stopUnattachedBinding(binding: RuntimeBinding): Promise<void> {
 	if (killProcessGroup(binding.processGroupId, binding.processStartTime))
 		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
 }
-
-// oxlint-disable-next-line complexity
 function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boolean {
-	return (
-		left.sessionId === right.sessionId &&
-		left.sessionPath === right.sessionPath &&
-		left.processGroupId === right.processGroupId &&
-		left.processStartTime === right.processStartTime &&
-		left.capabilityNonce === right.capabilityNonce &&
-		left.processMarker === right.processMarker
-	);
+	return [
+		left.sessionId === right.sessionId,
+		left.sessionPath === right.sessionPath,
+		left.processGroupId === right.processGroupId,
+		left.processStartTime === right.processStartTime,
+		left.capabilityNonce === right.capabilityNonce,
+		left.processMarker === right.processMarker,
+	].every(Boolean);
 }
 
 function killChild(child: MutableChild): void {
@@ -874,24 +1155,170 @@ function ownedProcessGroupId(childProcess: ChildProcessWithoutNullStreams): numb
 	if (process.platform === "win32" || childProcess.exitCode !== null) return;
 	return childProcess.pid ?? undefined;
 }
-
-function request(child: MutableChild, command: string, data: RpcCommandData, timeoutMs: number): Promise<RpcResponse> {
+function request(
+	child: MutableChild,
+	command: string,
+	data: RpcCommandData,
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<RpcResponse> {
 	const id = `khala-${++requestCounter}`;
 	const payload = JSON.stringify({ id, type: command, ...data });
-	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => {
-			child.pending.delete(id);
-			reject(new Error(`Pi RPC ${command} timed out after ${timeoutMs}ms.`));
-		}, timeoutMs);
-		child.pending.set(id, { resolve, reject, timer });
-		try {
-			child.process.stdin.write(`${payload}\n`);
-		} catch (error) {
+	return new Promise((resolve, reject) =>
+		initializeRequest(child, id, payload, command, timeoutMs, signal, resolve, reject),
+	);
+}
+
+function initializeRequest(
+	child: MutableChild,
+	id: string,
+	payload: string,
+	command: string,
+	timeoutMs: number,
+	signal: AbortSignal | undefined,
+	resolve: (response: RpcResponse) => void,
+	reject: (error: Error) => void,
+): void {
+	if (signal?.aborted === true) {
+		reject(abortError());
+		return;
+	}
+	let onAbort: () => void = () => undefined;
+	const timer = setTimeout(() => timeoutRequest(child, id, command, timeoutMs, signal, onAbort, reject), timeoutMs);
+	onAbort = () => abortRequest(child, id, timer, reject);
+	signal?.addEventListener("abort", onAbort, { once: true });
+	child.pending.set(id, pendingRequest(timer, signal, onAbort, resolve, reject));
+	writeRequest(child, id, payload, timer, signal, onAbort, reject);
+}
+
+function timeoutRequest(
+	child: MutableChild,
+	id: string,
+	command: string,
+	timeoutMs: number,
+	signal: AbortSignal | undefined,
+	onAbort: () => void,
+	reject: (error: Error) => void,
+): void {
+	child.pending.delete(id);
+	signal?.removeEventListener("abort", onAbort);
+	reject(new Error(`Pi RPC ${command} timed out after ${timeoutMs}ms.`));
+}
+
+function abortRequest(child: MutableChild, id: string, timer: NodeJS.Timeout, reject: (error: Error) => void): void {
+	child.pending.delete(id);
+	clearTimeout(timer);
+	reject(abortError());
+}
+
+function pendingRequest(
+	timer: NodeJS.Timeout,
+	signal: AbortSignal | undefined,
+	onAbort: () => void,
+	resolve: (response: RpcResponse) => void,
+	reject: (error: Error) => void,
+): PendingResponse {
+	return {
+		resolve: (response) => {
 			clearTimeout(timer);
-			child.pending.delete(id);
-			reject(error instanceof Error ? error : new Error(String(error)));
-		}
-	});
+			signal?.removeEventListener("abort", onAbort);
+			resolve(response);
+		},
+		reject: (error) => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			reject(error);
+		},
+		timer,
+	};
+}
+
+function writeRequest(
+	child: MutableChild,
+	id: string,
+	payload: string,
+	timer: NodeJS.Timeout,
+	signal: AbortSignal | undefined,
+	onAbort: () => void,
+	reject: (error: Error) => void,
+): void {
+	try {
+		child.process.stdin.write(`${payload}\n`);
+	} catch (error) {
+		clearTimeout(timer);
+		signal?.removeEventListener("abort", onAbort);
+		child.pending.delete(id);
+		reject(error instanceof Error ? error : new Error(String(error)));
+	}
+}
+
+function agentTimeout(child: MutableChild, fallback: number | undefined): number {
+	return child.agentTimeoutMs ?? fallback ?? 1_800_000;
+}
+
+function rpcTimeout(value: number | undefined): number {
+	return value ?? 10_000;
+}
+
+async function completedTurn(child: MutableChild, completion: Promise<string>): Promise<RuntimeTurn> {
+	const output = await completion;
+	return child.turnUsage === undefined ? { output } : { output, usage: child.turnUsage };
+}
+
+async function failTurn(child: MutableChild, completion: Promise<string>, failure: Error): Promise<void> {
+	rejectAgentEnd(child, failure);
+	killChild(child);
+	await completion.catch(() => undefined);
+}
+
+async function sendPrompt(
+	child: MutableChild,
+	message: string,
+	timeoutMs: number,
+	signal: AbortSignal | undefined,
+): Promise<void> {
+	const response = await sendPromptRequest(child, message, timeoutMs, signal);
+	if (response?.success === false) throw new Error(response.error ?? "Pi rejected the prompt.");
+}
+
+async function sendPromptRequest(
+	child: MutableChild,
+	message: string,
+	timeoutMs: number,
+	signal: AbortSignal | undefined,
+): Promise<RpcResponse | undefined> {
+	try {
+		return await request(child, "prompt", { message }, timeoutMs, signal);
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith("Pi RPC prompt timed out after ")) return undefined;
+		throw error;
+	}
+}
+
+function createAbortHandler(
+	child: MutableChild,
+	operation: OperationContext | undefined,
+	timeoutMs: number,
+): (() => void) | undefined {
+	if (operation?.signal === undefined) return undefined;
+	return () => {
+		void request(child, "abort", {}, timeoutMs).catch(() => undefined);
+		rejectAgentEnd(child, abortError());
+	};
+}
+
+function registerAbortHandler(operation: OperationContext | undefined, handler: (() => void) | undefined): void {
+	if (operation?.signal !== undefined && handler !== undefined)
+		operation.signal.addEventListener("abort", handler, { once: true });
+}
+
+function removeAbortHandler(operation: OperationContext | undefined, handler: (() => void) | undefined): void {
+	if (operation?.signal !== undefined && handler !== undefined) operation.signal.removeEventListener("abort", handler);
+}
+
+function childRuntimeState(response: RpcResponse): RuntimeState {
+	if (!response.success) return "unknown";
+	return response.data?.isStreaming === true ? "working" : "idle";
 }
 
 function rejectPending(child: MutableChild, error: Error): void {
@@ -902,7 +1329,7 @@ function rejectPending(child: MutableChild, error: Error): void {
 	child.pending.clear();
 }
 
-function waitForAgentEnd(child: MutableChild, timeoutMs: number): Promise<string> {
+function waitForAgentSettled(child: MutableChild, timeoutMs: number): Promise<string> {
 	child.lastAgentEnd = new Promise((resolve, reject) => {
 		child.resolveAgentEnd = resolve;
 		child.rejectAgentEnd = reject;
@@ -940,16 +1367,44 @@ function rejectAgentEnd(child: MutableChild, error: Error): void {
 	child.lastAgentEnd = undefined;
 }
 
-// oxlint-disable-next-line complexity
+function abortError(): Error {
+	return new Error("Pi agent turn was cancelled.");
+}
+
+function awaitOperation<T>(promise: Promise<T>, operation: OperationContext | undefined): Promise<T> {
+	const signal = operation?.signal;
+	if (signal === undefined) return promise;
+	if (signal.aborted) return Promise.reject(abortError());
+	return abortableOperation(promise, signal);
+}
+
+function abortableOperation<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const cleanup = (): void => signal.removeEventListener("abort", onAbort);
+		const onAbort = (): void => {
+			cleanup();
+			reject(abortError());
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		void promise.then(
+			(value) => {
+				cleanup();
+				resolve(value);
+			},
+			(error) => {
+				cleanup();
+				const message = error instanceof Error ? error.message : String(error);
+				reject(new Error(message));
+			},
+		);
+	});
+}
+
+function throwIfAborted(operation: OperationContext | undefined): void {
+	if (operation?.signal?.aborted === true) throw abortError();
+}
 function readResponse(value: RpcEvent): RpcResponse {
-	if (
-		value.type !== "response" ||
-		value.command === undefined ||
-		value.command !== String(value.command) ||
-		(value.success !== true && value.success !== false)
-	) {
-		throw new Error("Pi RPC response is invalid.");
-	}
+	if (!isValidResponse(value)) throw new Error("Pi RPC response is invalid.");
 	return {
 		type: "response",
 		id: value.id,
@@ -960,13 +1415,22 @@ function readResponse(value: RpcEvent): RpcResponse {
 	};
 }
 
-// oxlint-disable-next-line complexity
+function isValidResponse(value: RpcEvent): value is RpcEvent & RpcResponse {
+	return [
+		value.type === "response",
+		value.command !== undefined,
+		value.command === String(value.command),
+		value.success === true || value.success === false,
+	].every(Boolean);
+}
 function readSessionText(value: RpcData | undefined, key: "sessionId" | "sessionFile"): string {
 	const entry = value?.[key];
-	if (entry === undefined || entry !== String(entry) || entry.length === 0) {
-		throw new Error(`Pi RPC state is missing ${key}.`);
-	}
+	if (!isSessionText(entry)) throw new Error(`Pi RPC state is missing ${key}.`);
 	return entry;
+}
+
+function isSessionText(value: JsonValue | undefined): value is string {
+	return value !== undefined && value === String(value) && value.length > 0;
 }
 
 function isAssistantMessage(
@@ -982,41 +1446,64 @@ function assistantText(message: Readonly<{ content: readonly RpcBlock[] }>): str
 		.join("\n")
 		.trim();
 }
-
-// oxlint-disable-next-line complexity
 function readTokenUsage(value: RpcUsage | undefined): TokenUsage | undefined {
 	if (value === undefined) return;
-	const inputTokens = readTokenCount(value.input);
-	const outputTokens = readTokenCount(value.output);
-	const cacheHitTokens = readTokenCount(value.cacheRead);
-	const cacheWriteTokens = readTokenCount(value.cacheWrite);
-	if (
-		inputTokens === undefined ||
-		outputTokens === undefined ||
-		cacheHitTokens === undefined ||
-		cacheWriteTokens === undefined
-	)
-		return;
-	const cacheMissTokens = inputTokens + cacheWriteTokens;
+	const counts = [value.input, value.output, value.cacheRead, value.cacheWrite].map(readTokenCount);
+	if (!allTokenCounts(counts)) return;
+	const cacheMissTokens = counts[0] + counts[3];
 	if (!Number.isSafeInteger(cacheMissTokens)) return;
-	return { inputTokens, outputTokens, cacheHitTokens, cacheMissTokens };
+	return { inputTokens: counts[0], outputTokens: counts[1], cacheHitTokens: counts[2], cacheMissTokens };
+}
+
+function allTokenCounts(value: readonly (number | undefined)[]): value is readonly [number, number, number, number] {
+	return value.length === 4 && value.every(isDefinedNumber);
+}
+
+function isDefinedNumber(value: number | undefined): value is number {
+	return value !== undefined;
 }
 
 function readTokenCount(value: number | undefined): number | undefined {
 	return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
-
-// oxlint-disable-next-line complexity
 function addTokenUsage(previous: TokenUsage | undefined, current: TokenUsage): TokenUsage {
-	return {
-		inputTokens: (previous?.inputTokens ?? 0) + current.inputTokens,
-		outputTokens: (previous?.outputTokens ?? 0) + current.outputTokens,
-		cacheHitTokens: (previous?.cacheHitTokens ?? 0) + current.cacheHitTokens,
-		cacheMissTokens: (previous?.cacheMissTokens ?? 0) + current.cacheMissTokens,
-	};
+	const totals = tokenTotals(previous, current);
+	return { inputTokens: totals[0], outputTokens: totals[1], cacheHitTokens: totals[2], cacheMissTokens: totals[3] };
 }
 
-// oxlint-disable-next-line complexity
+function tokenTotals(previous: TokenUsage | undefined, current: TokenUsage): readonly [number, number, number, number] {
+	return [
+		tokenTotal(previous, current, "inputTokens"),
+		tokenTotal(previous, current, "outputTokens"),
+		tokenTotal(previous, current, "cacheHitTokens"),
+		tokenTotal(previous, current, "cacheMissTokens"),
+	];
+}
+
+function tokenTotal(previous: TokenUsage | undefined, current: TokenUsage, key: keyof TokenUsage): number {
+	return (previous?.[key] ?? 0) + current[key];
+}
+type CapabilityScope = Readonly<{
+	role: "conclave" | "observer" | "executor" | "oracle";
+	workId: string | undefined;
+	executionId: string | undefined;
+	nonce: string | undefined;
+}>;
+
+function capabilityScope(
+	role: CapabilityScope["role"],
+	scope:
+		| Readonly<{ workId?: string | undefined; executionId?: string | undefined; nonce?: string | undefined }>
+		| undefined,
+): CapabilityScope {
+	return {
+		role,
+		workId: scope?.workId,
+		executionId: scope?.executionId,
+		nonce: scope?.nonce,
+	} satisfies CapabilityScope;
+}
+
 function createCapability(
 	privateKey: KeyObject | undefined,
 	role: "conclave" | "observer" | "executor" | "oracle",
@@ -1025,10 +1512,7 @@ function createCapability(
 		| undefined,
 ): string | undefined {
 	if (privateKey === undefined) return;
-	const payload = Buffer.from(
-		JSON.stringify({ role, workId: scope?.workId, executionId: scope?.executionId, nonce: scope?.nonce }),
-		"utf8",
-	).toString("base64url");
+	const payload = Buffer.from(JSON.stringify(capabilityScope(role, scope)), "utf8").toString("base64url");
 	const signature = sign(null, Buffer.from(payload, "utf8"), privateKey).toString("base64url");
 	return `${payload}.${signature}`;
 }

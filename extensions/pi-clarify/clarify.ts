@@ -89,8 +89,6 @@ function splitModelReference(value: string): { provider: string; modelId: string
 	if (separator <= 0 || separator === reference.length - 1) return undefined;
 	return { provider: reference.slice(0, separator), modelId: reference.slice(separator + 1) };
 }
-
-// oxlint-disable-next-line complexity
 async function callModel(
 	text: string,
 	model: RewriteModel,
@@ -98,26 +96,26 @@ async function callModel(
 	signal?: AbortSignal,
 ): Promise<string | null> {
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
+	const authWithKey = requireClarifyAuth(auth, model);
 	const userMessage: UserMessage = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
-	const options = clarifyStreamOptions({ ...auth, apiKey: auth.apiKey }, signal);
+	const options = clarifyStreamOptions(authWithKey, signal);
 	const response = await completeSimple(model, { systemPrompt: SYSTEM_PROMPT, messages: [userMessage] }, options);
-
-	if (response.stopReason === "aborted") {
-		return null;
-	}
-
-	return extractClarifyText(response);
+	return response.stopReason === "aborted" ? null : extractClarifyText(response);
 }
 
 type ClarifyAuth = Awaited<ReturnType<ClarifyUi["modelRegistry"]["getApiKeyAndHeaders"]>>;
 type ClarifyAuthWithKey = Extract<ClarifyAuth, { ok: true }> & { apiKey: string };
 
-// oxlint-disable-next-line complexity
+function requireClarifyAuth(auth: ClarifyAuth, model: RewriteModel): ClarifyAuthWithKey {
+	if (!auth.ok) throw new Error(auth.error);
+	if (!auth.apiKey) throw new Error(`No API key for ${model.provider}`);
+	return { ...auth, apiKey: auth.apiKey };
+}
+
 function clarifyStreamOptions(auth: ClarifyAuthWithKey, signal: AbortSignal | undefined): SimpleStreamOptions {
 	const options: SimpleStreamOptions = { apiKey: auth.apiKey, cacheRetention: "none" };
-	if (auth.ok && auth.headers !== undefined) options.headers = auth.headers;
-	if (auth.ok && auth.env !== undefined) options.env = auth.env;
+	if (auth.headers !== undefined) options.headers = auth.headers;
+	if (auth.env !== undefined) options.env = auth.env;
 	if (signal !== undefined) options.signal = signal;
 	return options;
 }
@@ -141,16 +139,17 @@ export function extractClarifyText(
 function contentTypes(response: Pick<AssistantMessage, "content">): string {
 	return response.content.map((content) => content.type).join(", ") || "none";
 }
-
-// oxlint-disable-next-line complexity
 async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<ClarifyOutcome> {
 	const text = raw.trim();
 	if (text.length === 0) return { result: "invalid", reason: USAGE };
 	const resolved = resolveRewriteModel(ctx);
 	if ("reason" in resolved) return { result: "unavailable", reason: resolved.reason };
-	return ctx.mode === "tui" && ctx.hasUI
-		? rewriteWithLoader(text, resolved.model, ctx)
-		: rewriteDirect(text, resolved.model, ctx);
+	return rewriteResolvedPrompt(text, resolved.model, ctx);
+}
+
+function rewriteResolvedPrompt(text: string, model: RewriteModel, ctx: ClarifyUi): Promise<ClarifyOutcome> {
+	if (ctx.mode === "tui" && ctx.hasUI) return rewriteWithLoader(text, model, ctx);
+	return rewriteDirect(text, model, ctx);
 }
 
 async function rewriteWithLoader(text: string, model: RewriteModel, ctx: ClarifyUi): Promise<ClarifyOutcome> {
@@ -198,63 +197,68 @@ function applyReadyOutcome(text: string, ctx: ClarifyUi): void {
 	ctx.ui.notify(text, "info");
 }
 
+function createClarifyUi(
+	ctx: Pick<ClarifyUi, "hasUI" | "mode" | "modelRegistry" | "ui" | "cwd" | "isProjectTrusted">,
+): ClarifyUi {
+	return {
+		hasUI: ctx.hasUI,
+		mode: ctx.mode,
+		modelRegistry: ctx.modelRegistry,
+		ui: ctx.ui,
+		cwd: ctx.cwd,
+		isProjectTrusted: ctx.isProjectTrusted,
+	};
+}
+
+function clarifyCommandSource(args: string | undefined, ui: ClarifyUi): string {
+	const fromArgs = clarifyCommandArgs(args);
+	return fromArgs.length > 0 ? fromArgs : clarifyEditorText(ui);
+}
+
+function clarifyCommandArgs(args: string | undefined): string {
+	return args === undefined ? "" : args.trim();
+}
+
+function clarifyEditorText(ui: ClarifyUi): string {
+	if (!ui.hasUI) return "";
+	const text = ui.ui.getEditorText?.();
+	return text === undefined ? "" : text.trim();
+}
+
+async function handleClarifyCommand(args: string | undefined, ctx: ClarifyUi): Promise<void> {
+	const source = clarifyCommandSource(args, ctx);
+	if (!source) {
+		ctx.ui.notify(USAGE, "warning");
+		return;
+	}
+	await applyClarifyOutcome(await rewritePrompt(source, ctx), ctx);
+}
+
+async function handleClarifyInput(
+	event: { source: string; text: string },
+	ctx: ClarifyUi,
+): Promise<{ action: "continue" | "handled" }> {
+	if (event.source === "extension") return { action: "continue" };
+	if (!hasClarifyMarker(event.text)) return { action: "continue" };
+	const rough = stripClarifyMarker(event.text);
+	if (!rough) {
+		notifyClarifyUsage(ctx);
+		return { action: "handled" };
+	}
+	await applyClarifyOutcome(await rewritePrompt(rough, ctx), ctx);
+	return { action: "handled" };
+}
+
+function notifyClarifyUsage(ctx: ClarifyUi): void {
+	if (ctx.hasUI) ctx.ui.notify(USAGE, "warning");
+}
+
 export type { ClarifyOutcome };
 export { applyClarifyOutcome, USAGE };
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("clarify", {
 		description: "Rewrite a rough idea into a precise technical prompt (result goes in the editor)",
-		// oxlint-disable-next-line complexity
-		handler: async (args, ctx) => {
-			const rawArgs = (args ?? "").trim();
-			const ui: ClarifyUi = {
-				hasUI: ctx.hasUI,
-				mode: ctx.mode,
-				modelRegistry: ctx.modelRegistry,
-				ui: ctx.ui,
-				cwd: ctx.cwd,
-				isProjectTrusted: ctx.isProjectTrusted,
-			};
-
-			const fromArgs = rawArgs;
-			const fromEditor = ctx.hasUI ? (ctx.ui.getEditorText?.()?.trim() ?? "") : "";
-			const source = fromArgs || fromEditor;
-
-			if (!source) {
-				ctx.ui.notify(USAGE, "warning");
-				return;
-			}
-
-			await applyClarifyOutcome(await rewritePrompt(source, ui), ui);
-		},
+		handler: async (args, ctx) => handleClarifyCommand(args, createClarifyUi(ctx)),
 	});
-
-	// oxlint-disable-next-line complexity
-	pi.on("input", async (event, ctx) => {
-		if (event.source === "extension") {
-			return { action: "continue" };
-		}
-
-		const text = event.text;
-		if (!hasClarifyMarker(text)) {
-			return { action: "continue" };
-		}
-
-		const rough = stripClarifyMarker(text);
-		if (!rough) {
-			if (ctx.hasUI) ctx.ui.notify(USAGE, "warning");
-			return { action: "handled" };
-		}
-
-		const ui: ClarifyUi = {
-			hasUI: ctx.hasUI,
-			mode: ctx.mode,
-			modelRegistry: ctx.modelRegistry,
-			ui: ctx.ui,
-			cwd: ctx.cwd,
-			isProjectTrusted: ctx.isProjectTrusted,
-		};
-
-		await applyClarifyOutcome(await rewritePrompt(rough, ui), ui);
-		return { action: "handled" };
-	});
+	pi.on("input", async (event, ctx) => handleClarifyInput(event, createClarifyUi(ctx)));
 }

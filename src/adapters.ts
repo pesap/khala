@@ -14,7 +14,7 @@ import type {
 	ReviewRequest,
 	ValidationResult,
 } from "./model.js";
-import type { CodeHostPort, ReviewRequestInput, WorkspacePort, WorkspacePreflight } from "./ports.js";
+import type { CodeHostPort, OperationContext, ReviewRequestInput, WorkspacePort, WorkspacePreflight } from "./ports.js";
 
 const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 120_000;
@@ -31,9 +31,10 @@ type CommandOptions = {
 	killSignal: "SIGKILL";
 	maxBuffer: number;
 	env?: NodeJS.ProcessEnv;
+	signal?: AbortSignal;
 };
 
-function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv) {
+function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: AbortSignal) {
 	const options: CommandOptions = {
 		cwd,
 		timeout: COMMAND_TIMEOUT_MS,
@@ -41,6 +42,7 @@ function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv) {
 		maxBuffer: MAX_COMMAND_BUFFER,
 	};
 	if (environment !== undefined) options.env = environment;
+	if (signal !== undefined) options.signal = signal;
 	return options;
 }
 
@@ -63,15 +65,17 @@ export class GitWorkspace implements WorkspacePort {
 		this.projectPath = projectPath;
 	}
 
-	async preflight(projectPath: string, targetBranch: string): Promise<WorkspacePreflight> {
+	async preflight(
+		projectPath: string,
+		targetBranch: string,
+		operation?: OperationContext,
+	): Promise<WorkspacePreflight> {
 		this.projectPath = projectPath;
-		const origin = await git(projectPath, ["remote", "get-url", "origin"]);
-		await git(projectPath, ["fetch", "--no-tags", "origin", targetBranch]);
-		const headCommit = await git(projectPath, ["rev-parse", `refs/remotes/origin/${targetBranch}`]);
+		const origin = await git(projectPath, ["remote", "get-url", "origin"], operation?.signal);
+		await git(projectPath, ["fetch", "--no-tags", "origin", targetBranch], operation?.signal);
+		const headCommit = await git(projectPath, ["rev-parse", `refs/remotes/origin/${targetBranch}`], operation?.signal);
 		return { projectPath, origin, targetBranch, headCommit };
 	}
-
-	// oxlint-disable-next-line complexity
 	async ensureSandbox(
 		input: Readonly<{
 			workId: string;
@@ -80,48 +84,29 @@ export class GitWorkspace implements WorkspacePort {
 			projectPath: string;
 			baseCommit: string;
 		}>,
+		operation?: OperationContext,
 	): Promise<Execution["sandbox"]> {
 		const workKey = createHash("sha256").update(input.workId).digest("hex").slice(0, 24);
 		const branch = `${this.branchPrefix}${workKey}/${input.executionId.slice(0, 8)}`;
 		const path = resolve(this.worktreeRoot, workKey, input.executionId);
-		if (!isContainedPath(this.worktreeRoot, path)) throw new Error(`Sandbox ${path} is outside the worktree root.`);
-		await mkdir(dirname(path), { recursive: true });
-		if (!(await isRealContainedPath(this.worktreeRoot, dirname(path))))
-			throw new Error(`Sandbox parent ${dirname(path)} is outside the worktree root.`);
+		await prepareSandboxParent(this.worktreeRoot, path);
 		const existing = await lstat(path).catch(() => undefined);
-		if (existing === undefined) {
-			await execFileAsync(
-				"git",
-				["worktree", "add", "-b", branch, path, input.baseCommit],
-				commandOptions(input.projectPath, sanitizedEnvironment()),
-			);
-		} else {
-			if (existing.isSymbolicLink() || !existing.isDirectory())
-				throw new Error(`Sandbox ${path} is not a directory owned by Khala.`);
-			if (!(await isRealContainedPath(this.worktreeRoot, path)))
-				throw new Error(`Sandbox ${path} is outside the worktree root.`);
-			if (!(await isRegisteredWorktree(input.projectPath, path)))
-				throw new Error(`Sandbox ${path} is not registered by the project repository.`);
-			const existingBranch = await git(path, ["branch", "--show-current"]);
-			if (existingBranch !== branch) {
-				throw new Error(`Sandbox ${path} is attached to branch ${existingBranch}, not ${branch}.`);
-			}
-			const existingHead = await git(path, ["rev-parse", "HEAD"]);
-			if (existingHead !== input.baseCommit) {
-				throw new Error(`Sandbox ${path} has unexpected base ${existingHead}.`);
-			}
-		}
+		if (existing === undefined) await createSandbox(input, branch, path, operation);
+		else await validateExistingSandbox(this.worktreeRoot, input, branch, path, existing, operation);
 		return { path, baseCommit: input.baseCommit, branch };
 	}
 
-	async inspectHead(path: string): Promise<string> {
-		return git(path, ["rev-parse", "HEAD"]);
+	async inspectHead(path: string, operation?: OperationContext): Promise<string> {
+		return git(path, ["rev-parse", "HEAD"], operation?.signal);
 	}
 
-	async inspectChanges(input: Readonly<{ path: string; baseCommit: string }>): Promise<readonly string[]> {
-		const committed = await git(input.path, ["diff", "--name-only", `${input.baseCommit}...HEAD`]);
-		const working = await git(input.path, ["diff", "--name-only", input.baseCommit]);
-		const untracked = await git(input.path, ["ls-files", "--others", "--exclude-standard"]);
+	async inspectChanges(
+		input: Readonly<{ path: string; baseCommit: string }>,
+		operation?: OperationContext,
+	): Promise<readonly string[]> {
+		const committed = await git(input.path, ["diff", "--name-only", `${input.baseCommit}...HEAD`], operation?.signal);
+		const working = await git(input.path, ["diff", "--name-only", input.baseCommit], operation?.signal);
+		const untracked = await git(input.path, ["ls-files", "--others", "--exclude-standard"], operation?.signal);
 		return [
 			...new Set(
 				[committed, working, untracked].flatMap((value) =>
@@ -134,59 +119,38 @@ export class GitWorkspace implements WorkspacePort {
 		];
 	}
 
-	async commitSandbox(input: {
-		sandbox: Execution["sandbox"];
-		allowedPaths: readonly string[];
-		message: string;
-	}): Promise<string> {
+	async commitSandbox(
+		input: {
+			sandbox: Execution["sandbox"];
+			allowedPaths: readonly string[];
+			message: string;
+		},
+		operation?: OperationContext,
+	): Promise<string> {
 		if (input.allowedPaths.length === 0)
 			throw new Error("At least one permitted path is required to commit a sandbox.");
-		await git(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths]);
-		await git(input.sandbox.path, ["commit", "-m", input.message]);
-		return this.inspectHead(input.sandbox.path);
+		await git(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths], operation?.signal);
+		await git(input.sandbox.path, ["commit", "-m", input.message], operation?.signal);
+		return this.inspectHead(input.sandbox.path, operation);
 	}
-
-	async runValidation(input: { path: string; commands: readonly string[] }): Promise<readonly ValidationResult[]> {
-		const results: ValidationResult[] = [];
+	async runValidation(
+		input: { path: string; commands: readonly string[] },
+		operation?: OperationContext,
+	): Promise<readonly ValidationResult[]> {
 		const environment = validationEnvironment();
-		for (const command of input.commands) {
-			const result = await runValidationCommand(command, input.path, environment);
-			results.push({ command, ...result });
-		}
-		return results;
+		return runValidationCommands(input, environment, operation);
 	}
 
-	async publishSandbox(sandbox: Execution["sandbox"]): Promise<string> {
-		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch]);
-		return this.inspectHead(sandbox.path);
+	async publishSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<string> {
+		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch], operation?.signal);
+		return this.inspectHead(sandbox.path, operation);
 	}
-
-	// oxlint-disable-next-line complexity
-	async removeSandbox(sandbox: Execution["sandbox"]): Promise<void> {
-		if (this.projectPath === undefined) {
-			throw new Error("Workspace project path is not initialized.");
-		}
-		if (!isContainedPath(this.worktreeRoot, sandbox.path))
-			throw new Error(`Sandbox ${sandbox.path} is outside the worktree root.`);
-		const existing = await lstat(sandbox.path).catch(() => undefined);
-		if (existing !== undefined) {
-			if (existing.isSymbolicLink() || !existing.isDirectory())
-				throw new Error(`Sandbox ${sandbox.path} is not a directory owned by Khala.`);
-			if (!(await isRealContainedPath(this.worktreeRoot, sandbox.path)))
-				throw new Error(`Sandbox ${sandbox.path} is outside the worktree root.`);
-			if (!(await isRegisteredWorktree(this.projectPath, sandbox.path)))
-				throw new Error(`Sandbox ${sandbox.path} is not registered by the project repository.`);
-			await execFileAsync(
-				"git",
-				["worktree", "remove", "--force", sandbox.path],
-				commandOptions(this.projectPath, sanitizedEnvironment()),
-			);
-		}
-		try {
-			await git(this.projectPath, ["branch", "-D", sandbox.branch]);
-		} catch (error) {
-			if (!(error instanceof Error) || !/branch .* not found/i.test(error.message)) throw error;
-		}
+	async removeSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<void> {
+		const projectPath = this.projectPath;
+		if (projectPath === undefined) throw new Error("Workspace project path is not initialized.");
+		validateSandboxPath(this.worktreeRoot, sandbox.path);
+		await removeExistingSandbox(this.worktreeRoot, projectPath, sandbox, operation);
+		await removeSandboxBranch(projectPath, sandbox.branch, operation);
 	}
 }
 
@@ -200,107 +164,144 @@ export class CommandCodeHost implements CodeHostPort {
 		this.cwd = cwd;
 	}
 
-	async capabilities(): Promise<Readonly<{ supportsDraft: boolean; supportsMergeObservation: boolean }>> {
+	async capabilities(
+		_operation?: OperationContext,
+	): Promise<Readonly<{ supportsDraft: boolean; supportsMergeObservation: boolean }>> {
 		return { supportsDraft: true, supportsMergeObservation: true };
 	}
 
-	async identity(): Promise<Readonly<{ principalId: string; verified: boolean }>> {
+	async identity(operation?: OperationContext): Promise<Readonly<{ principalId: string; verified: boolean }>> {
 		const command = this.provider === "github" ? "gh" : "glab";
 		const args = this.provider === "github" ? ["api", "user", "--jq", ".login"] : ["api", "user", "--jq", ".id"];
-		const principalId = (await run(command, args, this.cwd)).trim();
+		const principalId = (await run(command, args, this.cwd, operation?.signal)).trim();
 		return { principalId, verified: principalId.length > 0 };
 	}
+	async ensureReviewRequest(input: ReviewRequestInput, operation?: OperationContext): Promise<ReviewRequest> {
+		const body = await reviewRequestBody(input, this.cwd);
+		const principal = await this.identity(operation);
+		if (!principal.verified) throw new Error("The authenticated code-host identity is not verified.");
+		return this.provider === "github"
+			? this.ensureGithubReview(input, body, principal.principalId, operation)
+			: this.ensureGitlabReview(input, body, principal.principalId, operation);
+	}
 
-	// oxlint-disable-next-line complexity
-	async ensureReviewRequest(input: ReviewRequestInput): Promise<ReviewRequest> {
+	private async ensureGithubReview(
+		input: ReviewRequestInput,
+		body: string,
+		principalId: string,
+		operation: OperationContext | undefined,
+	): Promise<ReviewRequest> {
+		const repository = await this.repository(operation?.signal);
+		const existing = await run(
+			"gh",
+			[
+				"pr",
+				"list",
+				"--state",
+				"all",
+				"--search",
+				input.draftMarker,
+				"--json",
+				"number,url,state,isDraft,headRefName,baseRefName,headRefOid",
+			],
+			this.cwd,
+			operation?.signal,
+		);
+		const first = parseJsonArray(existing).find(
+			(row) => row["headRefName"] === input.sandbox.branch && row["baseRefName"] === input.targetBranch,
+		);
+		return first === undefined
+			? this.createGithubReview(input, body, principalId, repository, operation)
+			: this.existingGithubReview(first, input, principalId, repository, operation);
+	}
+
+	private async existingGithubReview(
+		row: Record<string, JsonValue>,
+		input: ReviewRequestInput,
+		principalId: string,
+		repository: string,
+		operation: OperationContext | undefined,
+	): Promise<ReviewRequest> {
+		const request = githubReview(row, input, principalId, repository);
+		return { ...request, diffSummary: await this.readDiff(request.providerId, operation?.signal) };
+	}
+
+	private async createGithubReview(
+		input: ReviewRequestInput,
+		body: string,
+		principalId: string,
+		repository: string,
+		operation: OperationContext | undefined,
+	): Promise<ReviewRequest> {
 		const title = `Khala: ${input.terms.title}`;
-		const generatedBody = [
-			input.draftMarker,
-			`Mission: ${input.mission.missionId}`,
-			`Execution: ${input.execution.executionId}`,
-			"",
-			input.terms.objective,
-			"",
-			"Acceptance criteria:",
-			...input.terms.acceptanceCriteria.map((criterion) => `- ${criterion}`),
-			"",
-			"Validation:",
-			...input.terms.validation.map((command) => `- ${command}`),
-		].join("\n");
-		const template = await readPullRequestTemplate(this.cwd);
-		const body = template === undefined ? generatedBody : `${template.trim()}\n\n${generatedBody}`;
-		const principal = await this.identity();
-		if (!principal.verified) {
-			throw new Error("The authenticated code-host identity is not verified.");
-		}
-		if (this.provider === "github") {
-			const repository = await this.repository();
-			const existing = await run(
+		const url = (
+			await run(
 				"gh",
 				[
 					"pr",
-					"list",
-					"--state",
-					"all",
-					"--search",
-					input.draftMarker,
-					"--json",
-					"number,url,state,isDraft,headRefName,baseRefName,headRefOid",
+					"create",
+					"--draft",
+					"--title",
+					title,
+					"--body",
+					body,
+					"--base",
+					input.targetBranch,
+					"--head",
+					input.sandbox.branch,
 				],
 				this.cwd,
-			);
-			const rows = parseJsonArray(existing);
-			const first = rows.find(
-				(row) => row["headRefName"] === input.sandbox.branch && row["baseRefName"] === input.targetBranch,
-			);
-			if (first !== undefined) {
-				const request = githubReview(first, input, principal.principalId, repository);
-				return { ...request, diffSummary: await this.readDiff(request.providerId) };
-			}
-			const url = (
-				await run(
-					"gh",
-					[
-						"pr",
-						"create",
-						"--draft",
-						"--title",
-						title,
-						"--body",
-						body,
-						"--base",
-						input.targetBranch,
-						"--head",
-						input.sandbox.branch,
-					],
-					this.cwd,
-				)
-			).trim();
-			const created = await run(
-				"gh",
-				["pr", "view", url, "--json", "number,url,state,isDraft,headRefName,baseRefName,headRefOid"],
-				this.cwd,
-			);
-			const createdRow = parseJsonArray(`[${created}]`)[0];
-			if (createdRow === undefined) {
-				throw new Error("GitHub did not return review request metadata.");
-			}
-			const request = githubReview(createdRow, input, principal.principalId, repository);
-			return { ...request, diffSummary: await this.readDiff(request.providerId) };
-		}
+				operation?.signal,
+			)
+		).trim();
+		const created = await run(
+			"gh",
+			["pr", "view", url, "--json", "number,url,state,isDraft,headRefName,baseRefName,headRefOid"],
+			this.cwd,
+			operation?.signal,
+		);
+		const row = requireProviderRow(created, "GitHub did not return review request metadata.");
+		const request = githubReview(row, input, principalId, repository);
+		return { ...request, diffSummary: await this.readDiff(request.providerId, operation?.signal) };
+	}
+
+	private async ensureGitlabReview(
+		input: ReviewRequestInput,
+		body: string,
+		principalId: string,
+		operation: OperationContext | undefined,
+	): Promise<ReviewRequest> {
 		const existing = await run(
 			"glab",
 			["mr", "list", "--all", "--search", input.draftMarker, "--output", "json"],
 			this.cwd,
+			operation?.signal,
 		);
-		const rows = parseJsonArray(existing);
-		const first = rows.find(
+		const first = parseJsonArray(existing).find(
 			(row) => row["source_branch"] === input.sandbox.branch && row["target_branch"] === input.targetBranch,
 		);
-		if (first !== undefined) {
-			const request = gitlabReview(first, input, principal.principalId);
-			return { ...request, diffSummary: await this.readDiff(request.providerId) };
-		}
+		return first === undefined
+			? this.createGitlabReview(input, body, principalId, operation)
+			: this.existingGitlabReview(first, input, principalId, operation);
+	}
+
+	private async existingGitlabReview(
+		row: Record<string, JsonValue>,
+		input: ReviewRequestInput,
+		principalId: string,
+		operation: OperationContext | undefined,
+	): Promise<ReviewRequest> {
+		const request = gitlabReview(row, input, principalId);
+		return { ...request, diffSummary: await this.readDiff(request.providerId, operation?.signal) };
+	}
+
+	private async createGitlabReview(
+		input: ReviewRequestInput,
+		body: string,
+		principalId: string,
+		operation: OperationContext | undefined,
+	): Promise<ReviewRequest> {
+		const title = `Khala: ${input.terms.title}`;
 		const created = await run(
 			"glab",
 			[
@@ -317,130 +318,153 @@ export class CommandCodeHost implements CodeHostPort {
 				input.targetBranch,
 			],
 			this.cwd,
+			operation?.signal,
 		);
-		const url = created.trim().split(/\s+/).at(-1);
-		if (url === undefined || url.length === 0) {
-			throw new Error("GitLab did not return a review request URL.");
-		}
-		const viewed = await run("glab", ["mr", "view", url, "--output", "json"], this.cwd);
-		const createdRow = parseJsonArray(`[${viewed}]`)[0];
-		if (createdRow === undefined) {
-			throw new Error("GitLab did not return merge request metadata.");
-		}
-		const request = gitlabReview(createdRow, input, principal.principalId);
-		return { ...request, diffSummary: await this.readDiff(request.providerId) };
+		const url = requireReviewUrl(created);
+		const viewed = await run("glab", ["mr", "view", url, "--output", "json"], this.cwd, operation?.signal);
+		const row = requireProviderRow(viewed, "GitLab did not return merge request metadata.");
+		const request = gitlabReview(row, input, principalId);
+		return { ...request, diffSummary: await this.readDiff(request.providerId, operation?.signal) };
 	}
 
-	private async repository(): Promise<string> {
+	private async repository(signal?: AbortSignal): Promise<string> {
 		if (this.repositoryName !== undefined) return this.repositoryName;
 		const repository = (
-			await run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], this.cwd)
+			await run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], this.cwd, signal)
 		).trim();
 		if (repository.length === 0) throw new Error("GitHub did not return repository identity.");
 		this.repositoryName = repository;
 		return repository;
 	}
 
-	private async readDiff(providerId: string): Promise<string> {
+	private async readDiff(providerId: string, signal?: AbortSignal): Promise<string> {
 		const command = this.provider === "github" ? "gh" : "glab";
 		const args = this.provider === "github" ? ["pr", "diff", providerId] : ["mr", "diff", providerId];
-		return (await run(command, args, this.cwd)).slice(0, 16_000);
+		return (await run(command, args, this.cwd, signal)).slice(0, 16_000);
+	}
+	async poll(reviewRequest: ReviewRequest, operation?: OperationContext): Promise<readonly ProviderObservation[]> {
+		return this.provider === "github"
+			? this.pollGithub(reviewRequest, operation)
+			: this.pollGitlab(reviewRequest, operation);
 	}
 
-	async poll(reviewRequest: ReviewRequest): Promise<readonly ProviderObservation[]> {
-		if (this.provider === "github") {
-			const data = await run(
-				"gh",
-				[
-					"pr",
-					"view",
-					reviewRequest.providerId,
-					"--json",
-					"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid",
-				],
-				this.cwd,
-			);
-			const row = parseJsonArray(`[${data}]`)[0];
-			if (row === undefined) throw new Error("GitHub did not return review request polling data.");
-			const repository = await this.repository();
-			const inlineData = await run(
-				"gh",
-				["api", `repos/${repository}/pulls/${reviewRequest.providerId}/comments`, "--paginate", "--slurp"],
-				this.cwd,
-			);
-			const inlineComments = parseJsonPages(inlineData);
-			const details = githubProviderDetails(row, reviewRequest, inlineComments);
-			const reviewStatus = githubPollStatus(row, reviewRequest.status);
-			return [
-				{
-					...observation("ci-status", reviewRequest.providerId, data),
-					status: githubCheckStatus(reviewStatus, details),
-					repository,
-					sourceBranch: readOptionalTextValue(row, "headRefName"),
-					targetBranch: readOptionalTextValue(row, "baseRefName"),
-					baseCommit: readOptionalTextValue(row, "baseRefOid"),
-					headCommit: readOptionalTextValue(row, "headRefOid"),
-					details,
-				},
-				...githubFeedback(row, reviewRequest, inlineComments),
-			];
-		}
-		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
-		const row = parseJsonArray(`[${data}]`)[0];
-		if (row === undefined) throw new Error("GitLab did not return review request polling data.");
+	private async pollGithub(
+		reviewRequest: ReviewRequest,
+		operation: OperationContext | undefined,
+	): Promise<readonly ProviderObservation[]> {
+		const data = await run(
+			"gh",
+			[
+				"pr",
+				"view",
+				reviewRequest.providerId,
+				"--json",
+				"state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid",
+			],
+			this.cwd,
+			operation?.signal,
+		);
+		const row = requireProviderRow(data, "GitHub did not return review request polling data.");
+		const repository = await this.repository(operation?.signal);
+		const inlineData = await run(
+			"gh",
+			["api", `repos/${repository}/pulls/${reviewRequest.providerId}/comments`, "--paginate", "--slurp"],
+			this.cwd,
+			operation?.signal,
+		);
+		const inlineComments = parseJsonPages(inlineData);
+		const details = githubProviderDetails(row, reviewRequest, inlineComments);
 		return [
-			{
-				...observation("ci-status", reviewRequest.providerId, data),
-				status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
-				repository: readRepository(row),
-				sourceBranch: readOptionalTextValue(row, "source_branch"),
-				targetBranch: readOptionalTextValue(row, "target_branch"),
-				baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
-				headCommit: readOptionalTextValue(row, "sha"),
-			},
+			githubCiObservation(data, row, reviewRequest, repository, details),
+			...githubFeedback(row, reviewRequest, inlineComments),
 		];
 	}
 
-	// oxlint-disable-next-line complexity
-	async inspectOutcome(reviewRequest: ReviewRequest): Promise<ProviderObservation | undefined> {
-		if (this.provider === "github") {
-			const data = await run(
-				"gh",
-				[
-					"pr",
-					"view",
-					reviewRequest.providerId,
-					"--json",
-					"state,mergedAt,mergeCommit,headRefName,baseRefName,headRefOid,baseRefOid",
-				],
-				this.cwd,
-			);
-			const row = parseJsonArray(`[${data}]`)[0];
-			if (row === undefined || readValue(row, "state").toLowerCase() !== "merged" || row["mergedAt"] === null) return;
-			return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
-				repository: reviewRequest.repository,
-				sourceBranch: readTextValue(row, "headRefName"),
-				targetBranch: readTextValue(row, "baseRefName"),
-				baseCommit: readOptionalTextValue(row, "baseRefOid"),
-				headCommit: readTextValue(row, "headRefOid"),
-				mergeCommit: readMergeCommit(row),
-			});
-		}
-		const data = await run("glab", ["mr", "view", reviewRequest.providerId, "--output", "json"], this.cwd);
-		const row = parseJsonArray(`[${data}]`)[0];
-		if (row === undefined || readValue(row, "state").toLowerCase() !== "merged") return;
-		const mergeCommit =
-			readOptionalTextValue(row, "merge_commit_sha") ?? readOptionalTextValue(row, "squash_commit_sha");
-		if (mergeCommit === undefined) return;
-		return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
-			repository: readRepository(row),
-			sourceBranch: readTextValue(row, "source_branch"),
-			targetBranch: readTextValue(row, "target_branch"),
-			baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
-			headCommit: readTextValue(row, "sha"),
-			mergeCommit,
-		});
+	private async pollGitlab(
+		reviewRequest: ReviewRequest,
+		operation: OperationContext | undefined,
+	): Promise<readonly ProviderObservation[]> {
+		const data = await run(
+			"glab",
+			["mr", "view", reviewRequest.providerId, "--output", "json"],
+			this.cwd,
+			operation?.signal,
+		);
+		const row = requireProviderRow(data, "GitLab did not return review request polling data.");
+		return [gitlabCiObservation(data, row, reviewRequest)];
 	}
+	async inspectOutcome(
+		reviewRequest: ReviewRequest,
+		operation?: OperationContext,
+	): Promise<ProviderObservation | undefined> {
+		return this.provider === "github"
+			? this.inspectGithubOutcome(reviewRequest, operation)
+			: this.inspectGitlabOutcome(reviewRequest, operation);
+	}
+
+	private async inspectGithubOutcome(
+		reviewRequest: ReviewRequest,
+		operation: OperationContext | undefined,
+	): Promise<ProviderObservation | undefined> {
+		const data = await run(
+			"gh",
+			[
+				"pr",
+				"view",
+				reviewRequest.providerId,
+				"--json",
+				"state,mergedAt,mergeCommit,headRefName,baseRefName,headRefOid,baseRefOid",
+			],
+			this.cwd,
+			operation?.signal,
+		);
+		const row = requireProviderRow(data, "GitHub did not return review request outcome data.");
+		if (!isMergedGithubOutcome(row)) return undefined;
+		return githubOutcomeObservation(row, reviewRequest);
+	}
+
+	private async inspectGitlabOutcome(
+		reviewRequest: ReviewRequest,
+		operation: OperationContext | undefined,
+	): Promise<ProviderObservation | undefined> {
+		const data = await run(
+			"glab",
+			["mr", "view", reviewRequest.providerId, "--output", "json"],
+			this.cwd,
+			operation?.signal,
+		);
+		const row = requireProviderRow(data, "GitLab did not return review request outcome data.");
+		if (readValue(row, "state").toLowerCase() !== "merged") return undefined;
+		return gitlabOutcomeObservation(row, reviewRequest);
+	}
+}
+
+function requireReviewUrl(output: string): string {
+	const url = output.trim().split(/\s+/).at(-1);
+	if (url === undefined || url.length === 0) throw new Error("GitLab did not return a review request URL.");
+	return url;
+}
+
+async function reviewRequestBody(input: ReviewRequestInput, projectPath: string): Promise<string> {
+	const generated = generatedReviewBody(input);
+	const template = await readPullRequestTemplate(projectPath);
+	return template === undefined ? generated : `${template.trim()}\n\n${generated}`;
+}
+
+function generatedReviewBody(input: ReviewRequestInput): string {
+	return [
+		input.draftMarker,
+		`Mission: ${input.mission.missionId}`,
+		`Execution: ${input.execution.executionId}`,
+		"",
+		input.terms.objective,
+		"",
+		"Acceptance criteria:",
+		...input.terms.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+		"",
+		"Validation:",
+		...input.terms.validation.map((command) => `- ${command}`),
+	].join("\n");
 }
 
 export function codeHostForOrigin(origin: string, cwd: string): CommandCodeHost {
@@ -475,12 +499,12 @@ function validationShellArguments(command: string): readonly string[] {
 	return process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
 }
 
-async function git(cwd: string, args: readonly string[]): Promise<string> {
-	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment()))).stdout.trim();
+async function git(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
+	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment(), signal))).stdout.trim();
 }
 
-async function isRegisteredWorktree(projectPath: string, sandboxPath: string): Promise<boolean> {
-	const listing = await git(projectPath, ["worktree", "list", "--porcelain"]);
+async function isRegisteredWorktree(projectPath: string, sandboxPath: string, signal?: AbortSignal): Promise<boolean> {
+	const listing = await git(projectPath, ["worktree", "list", "--porcelain"], signal);
 	const expected = `worktree ${resolve(sandboxPath)}`;
 	return listing.split("\n").some((line) => line.trim() === expected);
 }
@@ -508,16 +532,160 @@ function sanitizedEnvironment(): NodeJS.ProcessEnv {
 	return environment;
 }
 
+async function prepareSandboxParent(root: string, path: string): Promise<void> {
+	if (!isContainedPath(root, path)) throw new Error(`Sandbox ${path} is outside the worktree root.`);
+	const parent = dirname(path);
+	await mkdir(parent, { recursive: true });
+	if (!(await isRealContainedPath(root, parent)))
+		throw new Error(`Sandbox parent ${parent} is outside the worktree root.`);
+}
+
+async function createSandbox(
+	input: Readonly<{ projectPath: string; baseCommit: string }>,
+	branch: string,
+	path: string,
+	operation: OperationContext | undefined,
+): Promise<void> {
+	await execFileAsync(
+		"git",
+		["worktree", "add", "-b", branch, path, input.baseCommit],
+		commandOptions(input.projectPath, sanitizedEnvironment(), operation?.signal),
+	);
+}
+
+async function validateExistingSandbox(
+	root: string,
+	input: Readonly<{ projectPath: string; baseCommit: string }>,
+	branch: string,
+	path: string,
+	existing: Awaited<ReturnType<typeof lstat>>,
+	operation: OperationContext | undefined,
+): Promise<void> {
+	validateSandboxDirectory(path, existing);
+	if (!(await isRealContainedPath(root, path))) throw new Error(`Sandbox ${path} is outside the worktree root.`);
+	if (!(await isRegisteredWorktree(input.projectPath, path, operation?.signal)))
+		throw new Error(`Sandbox ${path} is not registered by the project repository.`);
+	await validateSandboxBranch(path, branch, input.baseCommit, operation);
+}
+
+function validateSandboxDirectory(path: string, existing: Awaited<ReturnType<typeof lstat>>): void {
+	if (existing.isSymbolicLink() || !existing.isDirectory())
+		throw new Error(`Sandbox ${path} is not a directory owned by Khala.`);
+}
+
+async function validateSandboxBranch(
+	path: string,
+	branch: string,
+	baseCommit: string,
+	operation: OperationContext | undefined,
+): Promise<void> {
+	const existingBranch = await git(path, ["branch", "--show-current"], operation?.signal);
+	assertSandboxBranch(path, branch, existingBranch);
+	const existingHead = await git(path, ["rev-parse", "HEAD"], operation?.signal);
+	assertSandboxBase(path, baseCommit, existingHead);
+}
+
+async function runValidationCommands(
+	input: Readonly<{ path: string; commands: readonly string[] }>,
+	environment: NodeJS.ProcessEnv,
+	operation: OperationContext | undefined,
+): Promise<readonly ValidationResult[]> {
+	const results: ValidationResult[] = [];
+	for (const command of input.commands)
+		results.push(await runValidationResult(command, input.path, environment, operation));
+	return results;
+}
+
+async function runValidationResult(
+	command: string,
+	path: string,
+	environment: NodeJS.ProcessEnv,
+	operation: OperationContext | undefined,
+): Promise<ValidationResult> {
+	const result = await runValidationCommand(command, path, environment, operation?.signal);
+	throwIfValidationCancelled(operation);
+	return { command, ...result };
+}
+
+function throwIfValidationCancelled(operation: OperationContext | undefined): void {
+	if (operation?.signal?.aborted === true) throw new Error("Validation was cancelled.");
+}
+
+function assertSandboxBranch(path: string, expected: string, actual: string): void {
+	if (actual !== expected) throw new Error(`Sandbox ${path} is attached to branch ${actual}, not ${expected}.`);
+}
+
+function assertSandboxBase(path: string, expected: string, actual: string): void {
+	if (actual !== expected) throw new Error(`Sandbox ${path} has unexpected base ${actual}.`);
+}
+
+function validateSandboxPath(root: string, path: string): void {
+	if (!isContainedPath(root, path)) throw new Error(`Sandbox ${path} is outside the worktree root.`);
+}
+
+async function removeExistingSandbox(
+	root: string,
+	projectPath: string,
+	sandbox: Execution["sandbox"],
+	operation: OperationContext | undefined,
+): Promise<void> {
+	const existing = await lstat(sandbox.path).catch(() => undefined);
+	if (existing === undefined) return;
+	await validateRemovableSandbox(root, projectPath, sandbox.path, existing, operation);
+	await execFileAsync(
+		"git",
+		["worktree", "remove", "--force", sandbox.path],
+		commandOptions(projectPath, sanitizedEnvironment(), operation?.signal),
+	);
+}
+
+async function removeSandboxBranch(
+	projectPath: string,
+	branch: string,
+	operation: OperationContext | undefined,
+): Promise<void> {
+	const signal = operationSignal(operation);
+	try {
+		await git(projectPath, ["branch", "-D", branch], signal);
+	} catch (error) {
+		if (!(error instanceof Error)) throw error;
+		if (isMissingBranchError(error)) return;
+		throw error;
+	}
+}
+
+async function validateRemovableSandbox(
+	root: string,
+	projectPath: string,
+	path: string,
+	existing: Awaited<ReturnType<typeof lstat>>,
+	operation: OperationContext | undefined,
+): Promise<void> {
+	validateSandboxDirectory(path, existing);
+	if (!(await isRealContainedPath(root, path))) throw new Error(`Sandbox ${path} is outside the worktree root.`);
+	if (!(await isRegisteredWorktree(projectPath, path, operation?.signal)))
+		throw new Error(`Sandbox ${path} is not registered by the project repository.`);
+}
+
+function isMissingBranchError(error: Error): boolean {
+	return /branch .* not found/i.test(error.message);
+}
+
+function operationSignal(operation: OperationContext | undefined): AbortSignal | undefined {
+	return operation?.signal;
+}
+
 function runValidationCommand(
 	command: string,
 	cwd: string,
 	environment: NodeJS.ProcessEnv,
+	signal?: AbortSignal,
 ): Promise<Readonly<{ passed: boolean; output: string }>> {
 	return new Promise((resolve) => {
 		execFile(
 			validationShell(),
 			validationShellArguments(command),
-			commandOptions(cwd, environment),
+			commandOptions(cwd, environment, signal),
 			(error, stdout, stderr) => {
 				if (error === null) {
 					resolve({ passed: true, output: stdout.slice(-4_000) });
@@ -541,9 +709,9 @@ function boundedValidationOutput(value: string): string {
 	return value.slice(-1_200);
 }
 
-async function run(command: string, args: readonly string[], cwd: string): Promise<string> {
+async function run(command: string, args: readonly string[], cwd: string, signal?: AbortSignal): Promise<string> {
 	try {
-		return (await execFileAsync(command, [...args], commandOptions(cwd))).stdout;
+		return (await execFileAsync(command, [...args], commandOptions(cwd, undefined, signal))).stdout;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`${command} failed: ${message}`);
@@ -565,6 +733,79 @@ function parseJsonArray(value: string): readonly Record<string, JsonValue>[] {
 
 function isJsonObject(value: JsonValue | undefined): value is Record<string, JsonValue> {
 	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
+}
+
+function requireProviderRow(data: string, message: string): Record<string, JsonValue> {
+	const row = parseJsonArray(`[${data}]`)[0];
+	if (row === undefined) throw new Error(message);
+	return row;
+}
+
+function githubCiObservation(
+	data: string,
+	row: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+	repository: string,
+	details: GithubProviderDetails,
+): ProviderObservation {
+	return {
+		...observation("ci-status", reviewRequest.providerId, data),
+		status: githubCheckStatus(githubPollStatus(row, reviewRequest.status), details),
+		repository,
+		sourceBranch: readOptionalTextValue(row, "headRefName"),
+		targetBranch: readOptionalTextValue(row, "baseRefName"),
+		baseCommit: readOptionalTextValue(row, "baseRefOid"),
+		headCommit: readOptionalTextValue(row, "headRefOid"),
+		details,
+	};
+}
+
+function gitlabCiObservation(
+	data: string,
+	row: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+): ProviderObservation {
+	return {
+		...observation("ci-status", reviewRequest.providerId, data),
+		status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
+		repository: readRepository(row),
+		sourceBranch: readOptionalTextValue(row, "source_branch"),
+		targetBranch: readOptionalTextValue(row, "target_branch"),
+		baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
+		headCommit: readOptionalTextValue(row, "sha"),
+	};
+}
+
+function isMergedGithubOutcome(row: Record<string, JsonValue>): boolean {
+	if (readValue(row, "state").toLowerCase() !== "merged") return false;
+	return row["mergedAt"] !== null;
+}
+
+function githubOutcomeObservation(row: Record<string, JsonValue>, reviewRequest: ReviewRequest): ProviderObservation {
+	return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
+		repository: reviewRequest.repository,
+		sourceBranch: readTextValue(row, "headRefName"),
+		targetBranch: readTextValue(row, "baseRefName"),
+		baseCommit: readOptionalTextValue(row, "baseRefOid"),
+		headCommit: readTextValue(row, "headRefOid"),
+		mergeCommit: readMergeCommit(row),
+	});
+}
+
+function gitlabOutcomeObservation(
+	row: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+): ProviderObservation | undefined {
+	const mergeCommit = readOptionalTextValue(row, "merge_commit_sha") ?? readOptionalTextValue(row, "squash_commit_sha");
+	if (mergeCommit === undefined) return undefined;
+	return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
+		repository: readRepository(row),
+		sourceBranch: readTextValue(row, "source_branch"),
+		targetBranch: readTextValue(row, "target_branch"),
+		baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
+		headCommit: readTextValue(row, "sha"),
+		mergeCommit,
+	});
 }
 
 function githubReview(
@@ -599,21 +840,31 @@ function githubStatus(state: string, isDraft: boolean): ReviewRequest["status"] 
 	}
 	return "closed";
 }
-
-// oxlint-disable-next-line complexity
 function readRepository(row: Record<string, JsonValue>): string {
+	const repository = [readRepositoryName(row), readRepositoryReference(row), readRepositoryUrl(row)].find(isTextValue);
+	if (repository === undefined) throw new Error("Code-host response is missing repository identity.");
+	return repository;
+}
+
+function readRepositoryName(row: Record<string, JsonValue>): string | undefined {
 	const value = row["repository"];
-	if (isJsonObject(value) && value["nameWithOwner"] !== undefined) return readTextValue(value, "nameWithOwner");
+	if (!isJsonObject(value) || value["nameWithOwner"] === undefined) return undefined;
+	return readTextValue(value, "nameWithOwner");
+}
+
+function readRepositoryReference(row: Record<string, JsonValue>): string | undefined {
 	const references = row["references"];
 	if (isJsonObject(references) && references["full"] !== undefined)
 		return readTextValue(references, "full").replace(/![^!]+$/, "");
-	if (references !== undefined && references === String(references)) return String(references).replace(/![^!]+$/, "");
+	if (isTextValue(references)) return references.replace(/![^!]+$/, "");
+	return undefined;
+}
+
+function readRepositoryUrl(row: Record<string, JsonValue>): string | undefined {
 	const webUrl = row["web_url"];
-	if (webUrl !== undefined && webUrl === String(webUrl)) {
-		const parsed = new URL(String(webUrl));
-		return parsed.pathname.replace(/\/-\/merge_requests\/[^/]+$/, "").replace(/^\//, "");
-	}
-	throw new Error("Code-host response is missing repository identity.");
+	if (!isTextValue(webUrl)) return undefined;
+	const parsed = new URL(webUrl);
+	return parsed.pathname.replace(/\/-\/merge_requests\/[^/]+$/, "").replace(/^\//, "");
 }
 
 function readMergeCommit(row: Record<string, JsonValue>): string {
@@ -673,21 +924,20 @@ function readTextValue(row: Record<string, JsonValue>, key: string): string {
 	}
 	return String(value);
 }
-
-// oxlint-disable-next-line complexity
 function readValue(row: Record<string, JsonValue>, key: string): string {
 	const value = row[key];
-	if (value === undefined || value === null) {
-		throw new Error(`Code-host response is missing ${key}.`);
-	}
-	if (value === String(value)) {
-		if (String(value).trim().length === 0) throw new Error(`Code-host response is missing ${key}.`);
-		return String(value);
-	}
+	if (value === undefined || value === null) throw new Error(`Code-host response is missing ${key}.`);
+	return value === String(value) ? readStringValue(String(value), key) : readNumberValue(value, key);
+}
+
+function readStringValue(value: string, key: string): string {
+	if (value.trim().length === 0) throw new Error(`Code-host response is missing ${key}.`);
+	return value;
+}
+
+function readNumberValue(value: JsonValue, key: string): string {
 	const number = Number(value);
-	if (value !== number || !Number.isFinite(number)) {
-		throw new Error(`Code-host response is missing ${key}.`);
-	}
+	if (value !== number || !Number.isFinite(number)) throw new Error(`Code-host response is missing ${key}.`);
 	return String(value);
 }
 
@@ -709,117 +959,157 @@ function observation(
 		...evidence,
 	};
 }
+type GithubProviderDetails = NonNullable<ProviderObservation["details"]>;
 
-// oxlint-disable-next-line complexity
+type GithubCommentSource = Readonly<{
+	source: "issue-comment" | "review" | "inline";
+	entries: JsonValue | readonly Record<string, JsonValue>[] | undefined;
+}>;
+
 function githubProviderDetails(
 	row: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
 	inlineComments: readonly Record<string, JsonValue>[],
-): NonNullable<ProviderObservation["details"]> {
-	const sources = [
-		{ source: "issue-comment" as const, entries: row["comments"] },
-		{ source: "review" as const, entries: row["reviews"] },
-		{ source: "inline" as const, entries: inlineComments },
-	];
-	const comments = sources
-		.flatMap(({ source, entries }) => {
-			if (!Array.isArray(entries)) return [];
-			// oxlint-disable-next-line complexity
-			return entries.filter(isJsonObject).flatMap((entry) => {
-				const id = entry["id"];
-				const body = isTextValue(entry["body"]) ? entry["body"].trim() : "";
-				if ((id !== String(id) && id !== Number(id)) || body.length === 0) return [];
-				const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
-				const line = entry["line"] === undefined ? undefined : String(entry["line"]);
-				return [
-					{
-						id: boundedText(String(id), MAX_PROVIDER_FIELD),
-						author: boundedOptional(githubAuthor(entry), MAX_PROVIDER_FIELD),
-						authorAssociation: boundedOptional(githubAssociation(entry), MAX_PROVIDER_FIELD),
-						body: boundedText(body, MAX_PROVIDER_COMMENT_BODY),
-						createdAt: boundedOptional(githubTimestamp(entry), MAX_PROVIDER_FIELD),
-						url: boundedOptional(githubCommentUrl(entry), MAX_PROVIDER_FIELD),
-						state: boundedOptional(
-							isTextValue(entry["state"]) ? entry["state"].toUpperCase() : undefined,
-							MAX_PROVIDER_FIELD,
-						),
-						source,
-						location:
-							path === undefined
-								? undefined
-								: boundedText(`${path}${line === undefined ? "" : `:${line}`}`, MAX_PROVIDER_FIELD),
-						minimized: entry["isMinimized"] === true,
-					},
-				];
-			});
-		})
-		.sort(compareProviderComments)
-		.slice(0, MAX_PROVIDER_COMMENTS);
-	const checks: ProviderCheck[] = (Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"] : [])
-		.filter(isJsonObject)
-		// oxlint-disable-next-line complexity
-		.flatMap((entry): readonly ProviderCheck[] => {
-			const checkRunName = entry["name"];
-			const checkRunStatus = entry["status"];
-			if (isTextValue(checkRunName) && isTextValue(checkRunStatus)) {
-				return [
-					{
-						kind: "check-run" as const,
-						name: boundedText(checkRunName, MAX_PROVIDER_FIELD),
-						status: boundedText(checkRunStatus, MAX_PROVIDER_FIELD),
-						conclusion: boundedOptional(
-							isTextValue(entry["conclusion"]) ? entry["conclusion"] : undefined,
-							MAX_PROVIDER_FIELD,
-						),
-						workflowName: boundedOptional(
-							isTextValue(entry["workflowName"]) ? entry["workflowName"] : undefined,
-							MAX_PROVIDER_FIELD,
-						),
-						detailsUrl: boundedOptional(
-							isTextValue(entry["detailsUrl"]) ? entry["detailsUrl"] : undefined,
-							MAX_PROVIDER_FIELD,
-						),
-						startedAt: boundedOptional(
-							isTextValue(entry["startedAt"]) ? entry["startedAt"] : undefined,
-							MAX_PROVIDER_FIELD,
-						),
-						completedAt: boundedOptional(
-							isTextValue(entry["completedAt"]) ? entry["completedAt"] : undefined,
-							MAX_PROVIDER_FIELD,
-						),
-					},
-				];
-			}
-			const context = entry["context"];
-			const state = entry["state"];
-			if (!isTextValue(context) || !isTextValue(state)) return [];
-			return [
-				{
-					kind: "status-context" as const,
-					name: boundedText(context, MAX_PROVIDER_FIELD),
-					status: boundedText(state, MAX_PROVIDER_FIELD),
-					detailsUrl: boundedOptional(
-						isTextValue(entry["targetUrl"]) ? entry["targetUrl"] : undefined,
-						MAX_PROVIDER_FIELD,
-					),
-				},
-			];
-		})
-		.slice(0, MAX_PROVIDER_CHECKS);
+): GithubProviderDetails {
 	return {
-		pullRequest: {
-			url: boundedText(reviewRequest.url, MAX_PROVIDER_FIELD),
-			status: githubPollStatus(row, reviewRequest.status),
-			state: boundedText(isTextValue(row["state"]) ? row["state"].toLowerCase() : "unknown", MAX_PROVIDER_FIELD),
-			reviewDecision: boundedText(isTextValue(row["reviewDecision"]) ? row["reviewDecision"] : "", MAX_PROVIDER_FIELD),
-			mergedAt:
-				row["mergedAt"] === null
-					? null
-					: (boundedOptional(isTextValue(row["mergedAt"]) ? row["mergedAt"] : undefined, MAX_PROVIDER_FIELD) ?? null),
-		},
-		comments,
-		checks,
+		pullRequest: githubPullRequestDetails(row, reviewRequest),
+		comments: githubProviderComments(row, inlineComments),
+		checks: githubProviderChecks(row),
 	};
+}
+
+function githubProviderComments(
+	row: Record<string, JsonValue>,
+	inlineComments: readonly Record<string, JsonValue>[],
+): readonly ProviderReviewComment[] {
+	const sources: readonly GithubCommentSource[] = [
+		{ source: "issue-comment", entries: row["comments"] },
+		{ source: "review", entries: row["reviews"] },
+		{ source: "inline", entries: inlineComments },
+	];
+	return sources.flatMap(githubSourceComments).sort(compareProviderComments).slice(0, MAX_PROVIDER_COMMENTS);
+}
+
+function githubSourceComments(source: GithubCommentSource): readonly ProviderReviewComment[] {
+	if (!Array.isArray(source.entries)) return [];
+	return source.entries
+		.filter(isJsonObject)
+		.map((entry) => githubProviderComment(source.source, entry))
+		.filter(isDefined);
+}
+
+function githubProviderComment(
+	source: GithubCommentSource["source"],
+	entry: Record<string, JsonValue>,
+): ProviderReviewComment | undefined {
+	const identity = githubCommentIdentity(entry);
+	if (identity === undefined) return undefined;
+	const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
+	const line = entry["line"] === undefined ? undefined : String(entry["line"]);
+	return {
+		id: boundedText(identity.id, MAX_PROVIDER_FIELD),
+		author: boundedOptional(githubAuthor(entry), MAX_PROVIDER_FIELD),
+		authorAssociation: boundedOptional(githubAssociation(entry), MAX_PROVIDER_FIELD),
+		body: boundedText(identity.body, MAX_PROVIDER_COMMENT_BODY),
+		createdAt: boundedOptional(githubTimestamp(entry), MAX_PROVIDER_FIELD),
+		url: boundedOptional(githubCommentUrl(entry), MAX_PROVIDER_FIELD),
+		state: boundedOptional(githubCommentState(entry), MAX_PROVIDER_FIELD),
+		source,
+		location: githubCommentLocation(path, line),
+		minimized: entry["isMinimized"] === true,
+	};
+}
+
+function githubCommentIdentity(entry: Record<string, JsonValue>): { id: string; body: string } | undefined {
+	const id = entry["id"];
+	if (!isProviderId(id)) return undefined;
+	const body = isTextValue(entry["body"]) ? entry["body"].trim() : "";
+	if (body.length === 0) return undefined;
+	return { id: String(id), body };
+}
+
+function isProviderId(value: JsonValue | undefined): boolean {
+	return isTextValue(value) || isFiniteProviderNumber(value);
+}
+
+function isFiniteProviderNumber(value: JsonValue | undefined): boolean {
+	return value === Number(value) && Number.isFinite(Number(value));
+}
+
+function githubCommentState(entry: Record<string, JsonValue>): string | undefined {
+	return isTextValue(entry["state"]) ? entry["state"].toUpperCase() : undefined;
+}
+
+function githubCommentLocation(path: string | undefined, line: string | undefined): string | undefined {
+	if (path === undefined) return undefined;
+	return boundedText(`${path}${line === undefined ? "" : `:${line}`}`, MAX_PROVIDER_FIELD);
+}
+
+function githubProviderChecks(row: Record<string, JsonValue>): readonly ProviderCheck[] {
+	const entries = Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"].filter(isJsonObject) : [];
+	return entries.map(githubProviderCheck).filter(isDefined).slice(0, MAX_PROVIDER_CHECKS);
+}
+
+function githubProviderCheck(entry: Record<string, JsonValue>): ProviderCheck | undefined {
+	const checkRun = githubCheckRun(entry);
+	return checkRun ?? githubStatusContext(entry);
+}
+
+function githubCheckRun(entry: Record<string, JsonValue>): ProviderCheck | undefined {
+	const name = entry["name"];
+	const status = entry["status"];
+	if (!isTextValue(name) || !isTextValue(status)) return undefined;
+	return {
+		kind: "check-run",
+		name: boundedText(name, MAX_PROVIDER_FIELD),
+		status: boundedText(status, MAX_PROVIDER_FIELD),
+		conclusion: boundedOptional(textField(entry, "conclusion"), MAX_PROVIDER_FIELD),
+		workflowName: boundedOptional(textField(entry, "workflowName"), MAX_PROVIDER_FIELD),
+		detailsUrl: boundedOptional(textField(entry, "detailsUrl"), MAX_PROVIDER_FIELD),
+		startedAt: boundedOptional(textField(entry, "startedAt"), MAX_PROVIDER_FIELD),
+		completedAt: boundedOptional(textField(entry, "completedAt"), MAX_PROVIDER_FIELD),
+	};
+}
+
+function githubStatusContext(entry: Record<string, JsonValue>): ProviderCheck | undefined {
+	const context = entry["context"];
+	const state = entry["state"];
+	if (!isTextValue(context) || !isTextValue(state)) return undefined;
+	return {
+		kind: "status-context",
+		name: boundedText(context, MAX_PROVIDER_FIELD),
+		status: boundedText(state, MAX_PROVIDER_FIELD),
+		detailsUrl: boundedOptional(textField(entry, "targetUrl"), MAX_PROVIDER_FIELD),
+	};
+}
+
+function textField(entry: Record<string, JsonValue>, key: string): string | undefined {
+	return isTextValue(entry[key]) ? entry[key] : undefined;
+}
+
+function githubPullRequestDetails(
+	row: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+): GithubProviderDetails["pullRequest"] {
+	return {
+		url: boundedText(reviewRequest.url, MAX_PROVIDER_FIELD),
+		status: githubPollStatus(row, reviewRequest.status),
+		state: boundedText(githubState(row), MAX_PROVIDER_FIELD),
+		reviewDecision: boundedText(textField(row, "reviewDecision") ?? "", MAX_PROVIDER_FIELD),
+		mergedAt: githubMergedAt(row),
+	};
+}
+
+function githubState(row: Record<string, JsonValue>): string {
+	return textField(row, "state")?.toLowerCase() ?? "unknown";
+}
+
+function githubMergedAt(row: Record<string, JsonValue>): string | null {
+	return boundedOptional(textField(row, "mergedAt"), MAX_PROVIDER_FIELD) ?? null;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+	return value !== undefined;
 }
 
 function compareProviderComments(left: ProviderReviewComment, right: ProviderReviewComment): number {
@@ -872,65 +1162,113 @@ function githubFeedback(
 		.flatMap(({ prefix, entry }) => githubFeedbackEntry(prefix, entry, reviewRequest))
 		.slice(0, MAX_PROVIDER_COMMENTS);
 }
+type GithubFeedback = Readonly<{
+	body: string;
+	id: string;
+	state: string;
+	author: string | undefined;
+	authorAssociation: string | undefined;
+}>;
 
-// oxlint-disable-next-line complexity
 function githubFeedbackEntry(
 	prefix: string,
 	entry: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
 ): readonly ProviderObservation[] {
-	const body = entry["body"];
-	const id = entry["id"];
-	const state = isTextValue(entry["state"]) ? entry["state"].toUpperCase() : "";
-	const author = githubAuthor(entry);
-	const authorAssociation = githubAssociation(entry);
-	if (
-		!isTextValue(body) ||
-		body.trim().length === 0 ||
-		(id !== String(id) && id !== Number(id)) ||
-		(prefix === "review" && ["APPROVED", "DISMISSED"].includes(state))
-	)
-		return [];
-	const commentId = String(id);
-	const path = isTextValue(entry["path"]) ? entry["path"] : undefined;
-	const line = entry["line"] === undefined ? undefined : String(entry["line"]);
-	const location = path === undefined ? "" : ` (${path}${line === undefined ? "" : `:${line}`})`;
-	const headCommit = githubCommentCommit(entry) ?? reviewRequest.headCommit;
-	const feedback = `${body.trim()}${location}`.slice(0, 2_000);
-	const version = createHash("sha256").update(`${body}\u0000${headCommit}\u0000${state}`).digest("hex").slice(0, 16);
-	const observationId =
-		prefix === "comment"
-			? `review-comment:${reviewRequest.providerId}:${commentId}:${version}`
-			: `review-comment:${reviewRequest.providerId}:${prefix}:${commentId}:${version}`;
-	return [
-		observation(
-			"review-comment",
-			reviewRequest.providerId,
-			feedback,
-			state === "CHANGES_REQUESTED" ? "changes-requested" : "commented",
-			{
-				observationId,
-				feedback: [feedback],
-				repository: reviewRequest.repository,
-				sourceBranch: reviewRequest.sourceBranch,
-				targetBranch: reviewRequest.targetBranch,
-				headCommit,
-				author,
-				authorAssociation,
-				reviewState: state || undefined,
-				actionable: githubFeedbackIsActionable(prefix, state, authorAssociation),
-			},
-		),
-	];
+	const feedback = readGithubFeedback(prefix, entry);
+	if (feedback === undefined) return [];
+	return [createGithubFeedbackObservation(prefix, feedback, entry, reviewRequest)];
 }
 
-// oxlint-disable-next-line complexity
+function readGithubFeedback(prefix: string, entry: Record<string, JsonValue>): GithubFeedback | undefined {
+	const body = readFeedbackBody(entry);
+	if (body === undefined) return undefined;
+	const id = readFeedbackId(entry);
+	if (id === undefined) return undefined;
+	const state = readFeedbackState(entry);
+	if (isIgnoredGithubReview(prefix, state)) return undefined;
+	return { body, id, state, author: githubAuthor(entry), authorAssociation: githubAssociation(entry) };
+}
+
+function readFeedbackBody(entry: Record<string, JsonValue>): string | undefined {
+	const body = textField(entry, "body")?.trim();
+	return body === undefined || body.length === 0 ? undefined : body;
+}
+
+function readFeedbackId(entry: Record<string, JsonValue>): string | undefined {
+	const id = entry["id"];
+	return isProviderId(id) ? String(id) : undefined;
+}
+
+function readFeedbackState(entry: Record<string, JsonValue>): string {
+	return githubCommentState(entry) ?? "";
+}
+
+function isIgnoredGithubReview(prefix: string, state: string): boolean {
+	return prefix === "review" && ["APPROVED", "DISMISSED"].includes(state);
+}
+
+function createGithubFeedbackObservation(
+	prefix: string,
+	feedback: GithubFeedback,
+	entry: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+): ProviderObservation {
+	const location = githubFeedbackLocation(entry);
+	const headCommit = githubCommentCommit(entry) ?? reviewRequest.headCommit;
+	const output = `${feedback.body}${location}`.slice(0, 2_000);
+	const version = createHash("sha256")
+		.update(`${feedback.body}\u0000${headCommit}\u0000${feedback.state}`)
+		.digest("hex")
+		.slice(0, 16);
+	return observation("review-comment", reviewRequest.providerId, output, githubFeedbackStatus(feedback.state), {
+		observationId: githubFeedbackId(prefix, reviewRequest.providerId, feedback.id, version),
+		feedback: [output],
+		repository: reviewRequest.repository,
+		sourceBranch: reviewRequest.sourceBranch,
+		targetBranch: reviewRequest.targetBranch,
+		headCommit,
+		author: feedback.author,
+		authorAssociation: feedback.authorAssociation,
+		reviewState: feedback.state || undefined,
+		actionable: githubFeedbackIsActionable(prefix, feedback.state, feedback.authorAssociation),
+	});
+}
+
+function githubFeedbackLocation(entry: Record<string, JsonValue>): string {
+	const path = textField(entry, "path");
+	if (path === undefined) return "";
+	const line = entry["line"] === undefined ? undefined : String(entry["line"]);
+	return ` (${path}${line === undefined ? "" : `:${line}`})`;
+}
+
+function githubFeedbackStatus(state: string): string {
+	return state === "CHANGES_REQUESTED" ? "changes-requested" : "commented";
+}
+
+function githubFeedbackId(prefix: string, providerId: string, commentId: string, version: string): string {
+	return prefix === "comment"
+		? `review-comment:${providerId}:${commentId}:${version}`
+		: `review-comment:${providerId}:${prefix}:${commentId}:${version}`;
+}
 function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest["status"]): ReviewRequest["status"] {
 	if (isTextValue(row["mergedAt"])) return "merged";
-	const state = isTextValue(row["state"]) ? row["state"].toUpperCase() : "";
+	return githubOpenStatus(row, current);
+}
+
+function githubOpenStatus(row: Record<string, JsonValue>, current: ReviewRequest["status"]): ReviewRequest["status"] {
+	const state = githubStateValue(row);
 	if (state === "CLOSED") return "closed";
 	if (row["isDraft"] === true) return "draft";
 	if (row["isDraft"] === false) return "open";
+	return githubDefaultStatus(current);
+}
+
+function githubStateValue(row: Record<string, JsonValue>): string {
+	return textField(row, "state")?.toUpperCase() ?? "";
+}
+
+function githubDefaultStatus(current: ReviewRequest["status"]): ReviewRequest["status"] {
 	return current === "draft" ? "draft" : "open";
 }
 
@@ -965,8 +1303,6 @@ function githubAssociation(entry: Record<string, JsonValue>): string | undefined
 	const value = entry["authorAssociation"] ?? entry["author_association"];
 	return isTextValue(value) ? value.toUpperCase() : undefined;
 }
-
-// oxlint-disable-next-line complexity
 function githubFeedbackIsActionable(prefix: string, state: string, association: string | undefined): boolean {
 	if (!["COLLABORATOR", "MEMBER", "OWNER"].includes(association ?? "")) return false;
 	return prefix !== "review" || ["CHANGES_REQUESTED", "COMMENTED"].includes(state);
@@ -986,31 +1322,47 @@ function parseJsonPages(value: string): readonly Record<string, JsonValue>[] {
 function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
 }
-
-// oxlint-disable-next-line complexity
 export async function readPullRequestTemplate(projectPath: string): Promise<string | undefined> {
 	const root = await realpath(projectPath).catch(() => undefined);
-	if (root === undefined) return;
-	const paths = [
+	if (root === undefined) return undefined;
+	return readTemplateSources(root);
+}
+
+async function readTemplateSources(root: string): Promise<string | undefined> {
+	const known = await readFirstTemplate(root, [
 		"pull_request_template.md",
 		"docs/pull_request_template.md",
 		".github/pull_request_template.md",
 		".github/PULL_REQUEST_TEMPLATE.md",
-	];
+	]);
+	if (known !== undefined) return known;
+	const templateDirectory = await safeTemplateDirectory(root);
+	if (templateDirectory === undefined) return undefined;
+	return readTemplateDirectory(root, templateDirectory);
+}
+
+async function readFirstTemplate(root: string, paths: readonly string[]): Promise<string | undefined> {
 	for (const relativePath of paths) {
 		const content = await readSafeTemplateFile(root, relativePath);
-		if (content !== undefined && content.trim().length > 0) return content;
-	}
-	const templateDirectory = await safeTemplateDirectory(root);
-	if (templateDirectory === undefined) return;
-	const entries = await readdir(templateDirectory, { withFileTypes: true }).catch(() => []);
-	for (const entry of entries
-		.filter((candidate) => candidate.isFile())
-		.sort((left, right) => left.name.localeCompare(right.name))) {
-		const content = await readSafeTemplateFile(root, join(".github", "PULL_REQUEST_TEMPLATE", entry.name));
-		if (content !== undefined && content.trim().length > 0) return content;
+		if (hasTemplateContent(content)) return content;
 	}
 	return undefined;
+}
+
+async function readTemplateDirectory(root: string, directory: string): Promise<string | undefined> {
+	const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+	const files = entries
+		.filter((candidate) => candidate.isFile())
+		.sort((left, right) => left.name.localeCompare(right.name));
+	for (const entry of files) {
+		const content = await readSafeTemplateFile(root, join(".github", "PULL_REQUEST_TEMPLATE", entry.name));
+		if (hasTemplateContent(content)) return content;
+	}
+	return undefined;
+}
+
+function hasTemplateContent(content: string | undefined): content is string {
+	return content !== undefined && content.trim().length > 0;
 }
 
 async function readSafeTemplateFile(root: string, relativePath: string): Promise<string | undefined> {

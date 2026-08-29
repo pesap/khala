@@ -49,6 +49,8 @@ export type ArchiveAppendResult = Readonly<{
 	duplicate: boolean;
 }>;
 
+type InsertedArchiveRecord = Readonly<{ recordId: string; sequence: number; now: string }>;
+
 export type PendingArchiveEffect = Readonly<{
 	effectId: string;
 	kind: string;
@@ -75,6 +77,46 @@ export interface ArchivePort {
 	) => ProviderObservation | undefined;
 	listProjects: () => readonly WorkView[];
 	close: () => void;
+}
+
+function commandFingerprint(input: ArchiveAppend): string | null {
+	return input.commandFingerprint ?? null;
+}
+
+function missionId(input: ArchiveAppend): string | null {
+	return input.missionId ?? null;
+}
+
+function executionId(input: ArchiveAppend): string | null {
+	return input.executionId ?? null;
+}
+
+function evidenceReferences(input: ArchiveAppend): string {
+	return JSON.stringify((input.evidenceRefs ?? []).slice(0, 20).map((entry) => boundText(entry, 500)));
+}
+
+function assertEffectCompatible(
+	existing: SqlRow,
+	effect: ArchiveEffect,
+	effectKind: string,
+	effectPayload: string,
+): void {
+	if (readString(existing, "kind") !== effectKind || readString(existing, "payload_json") !== effectPayload)
+		throw new Error(`Archive effect ${effect.effectId} conflicts with an existing effect.`);
+}
+
+function validateAppendSizes(input: ArchiveAppend): void {
+	const payload = JSON.stringify(input.payload);
+	if (payload === undefined) throw new Error("Archive payload must be a JSON value.");
+	if (payload.length > 64_000) throw new Error("Archive payload exceeds the 64 KB limit.");
+	if (JSON.stringify(input.projection).length > 128_000)
+		throw new Error("Archive projection exceeds the 128 KB limit.");
+}
+
+function assertCurrentRevision(current: SqlRow | undefined, input: ArchiveAppend): void {
+	const currentRevision = current === undefined ? 0 : readInteger(current, "revision");
+	if (currentRevision !== input.expectedWorkRevision)
+		throw new RevisionConflict(input.workId, input.expectedWorkRevision, currentRevision);
 }
 
 type Cursor = Readonly<{
@@ -210,22 +252,9 @@ export class SQLiteArchive implements ArchivePort {
 			throw error;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	private migrateLegacyWorkStates(): void {
-		this.database.exec("BEGIN IMMEDIATE");
-		try {
-			const rows = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
-			const migrations: Array<Readonly<{ workId: string; view: JsonObject }>> = [];
-			for (const row of rows) {
-				const view = parseJson(readString(row, "view_json"));
-				if (!isJsonObject(view)) throw new Error("Archive Work projection is invalid.");
-				const stopReason = legacyWorkStopReason(view["state"]);
-				if (stopReason === undefined) continue;
-				const migrated = { ...view, state: "stopped", stopReason };
-				if (!isWorkViewProjection(migrated)) throw new Error("Archive Work projection migration is invalid.");
-				migrations.push({ workId: readString(row, "work_id"), view: migrated });
-			}
+		this.transaction(() => {
+			const migrations = this.readLegacyWorkStateMigrations();
 			const updateProjection = this.database.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?");
 			const updateRecords = this.database.prepare(
 				"UPDATE archive_records SET state = 'stopped' WHERE work_id = ? AND state IN ('failed', 'cancelled')",
@@ -234,218 +263,192 @@ export class SQLiteArchive implements ArchivePort {
 				updateProjection.run(JSON.stringify(migration.view), migration.workId);
 				updateRecords.run(migration.workId);
 			}
-			this.database.exec("COMMIT");
-		} catch (error) {
-			this.database.exec("ROLLBACK");
-			throw error;
-		}
+		});
 	}
 
-	// oxlint-disable-next-line complexity
+	private readLegacyWorkStateMigrations(): Array<Readonly<{ workId: string; view: JsonObject }>> {
+		return this.database
+			.prepare("SELECT work_id, view_json FROM work_projection")
+			.all()
+			.map((row) => readLegacyWorkStateMigration(row))
+			.filter(isDefined);
+	}
+
 	private migrateRecordNumbers(): void {
-		this.database.exec("BEGIN IMMEDIATE");
-		try {
+		this.transaction(() => {
 			const records = this.database
 				.prepare("SELECT record_id, mission_id FROM archive_records ORDER BY sequence")
 				.all();
 			const numbered = this.database
 				.prepare("SELECT record_id, record_number, mission_id, mission_record_number FROM archive_record_numbers")
 				.all();
-			if (numbered.length > records.length) {
-				throw new Error("Archive record numbering has orphaned rows.");
-			}
-			const numberedRecordIds = new Set(numbered.map((row) => readString(row, "record_id")));
-			const missing = records.filter((record) => !numberedRecordIds.has(readString(record, "record_id")));
-			if (missing.length > 0) {
-				const usedRecordNumbers = new Set(numbered.map((row) => readInteger(row, "record_number")));
-				const usedMissionNumbers = new Map<string, Set<number>>();
-				for (const row of numbered) {
-					const missionId = readOptionalString(row, "mission_id");
-					const missionRecordNumber = readOptionalInteger(row, "mission_record_number");
-					if (missionId === undefined || missionRecordNumber === undefined) continue;
-					const numbers = usedMissionNumbers.get(missionId) ?? new Set<number>();
-					numbers.add(missionRecordNumber);
-					usedMissionNumbers.set(missionId, numbers);
-				}
-				const insert = this.database.prepare(
-					"INSERT INTO archive_record_numbers(record_id, record_number, mission_id, mission_record_number) VALUES (?, ?, ?, ?)",
-				);
-				for (const record of missing) {
-					let recordNumber = 1;
-					while (usedRecordNumbers.has(recordNumber)) recordNumber += 1;
-					usedRecordNumbers.add(recordNumber);
-					const missionId = readOptionalString(record, "mission_id");
-					let missionRecordNumber: number | null = null;
-					if (missionId !== undefined) {
-						const numbers = usedMissionNumbers.get(missionId) ?? new Set<number>();
-						missionRecordNumber = 1;
-						while (numbers.has(missionRecordNumber)) missionRecordNumber += 1;
-						numbers.add(missionRecordNumber);
-						usedMissionNumbers.set(missionId, numbers);
-					}
-					insert.run(readString(record, "record_id"), recordNumber, missionId ?? null, missionRecordNumber);
-				}
-			}
+			if (numbered.length > records.length) throw new Error("Archive record numbering has orphaned rows.");
+			const missing = missingRecordNumbers(records, numbered);
+			if (missing.length === 0) return;
+			this.insertMissingRecordNumbers(numbered, missing);
+		});
+	}
+
+	private insertMissingRecordNumbers(numbered: readonly SqlRow[], missing: readonly SqlRow[]): void {
+		const usedRecordNumbers = new Set(numbered.map((row) => readInteger(row, "record_number")));
+		const usedMissionNumbers = missionRecordNumbers(numbered);
+		const insert = this.database.prepare(
+			"INSERT INTO archive_record_numbers(record_id, record_number, mission_id, mission_record_number) VALUES (?, ?, ?, ?)",
+		);
+		for (const record of missing) {
+			const recordNumber = nextAvailableNumber(usedRecordNumbers);
+			const missionId = readOptionalString(record, "mission_id");
+			const missionRecordNumber = nextMissionNumber(usedMissionNumbers, missionId);
+			insert.run(readString(record, "record_id"), recordNumber, missionId ?? null, missionRecordNumber);
+		}
+	}
+
+	private transaction<T>(action: () => T): T {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const result = action();
 			this.database.exec("COMMIT");
+			return result;
 		} catch (error) {
 			this.database.exec("ROLLBACK");
 			throw error;
 		}
 	}
-
-	// oxlint-disable-next-line complexity
 	append(input: ArchiveAppend): ArchiveAppendResult {
 		validateArchiveAppendInput(input);
 		assertPositiveInteger(input.expectedWorkRevision + 1, "expectedWorkRevision");
-		const duplicate = this.database
+		const duplicate = this.findDuplicateRow(input.commandId);
+		if (duplicate !== undefined) return this.duplicateResult(duplicate, input.workId, input.commandFingerprint);
+		validateProjection(input.projection, input.workId, input.expectedWorkRevision + 1);
+		validateAppendSizes(input);
+		return this.transaction(() => this.appendNewRecord(input));
+	}
+
+	private findDuplicateRow(commandId: string): SqlRow | undefined {
+		return this.database
 			.prepare(
 				"SELECT sequence, work_id, command_fingerprint, projection_json FROM archive_records WHERE command_id = ?",
 			)
-			.get(input.commandId);
-		if (duplicate !== undefined) return this.duplicateResult(duplicate, input.workId, input.commandFingerprint);
+			.get(commandId);
+	}
 
-		validateProjection(input.projection, input.workId, input.expectedWorkRevision + 1);
-		const serializedPayload = JSON.stringify(input.payload);
-		if (serializedPayload === undefined) {
-			throw new Error("Archive payload must be a JSON value.");
-		}
-		if (serializedPayload.length > 64_000) {
-			throw new Error("Archive payload exceeds the 64 KB limit.");
-		}
-		if (JSON.stringify(input.projection).length > 128_000) {
-			throw new Error("Archive projection exceeds the 128 KB limit.");
-		}
-		this.database.exec("BEGIN IMMEDIATE");
-		try {
-			const concurrentDuplicate = this.database
-				.prepare(
-					"SELECT sequence, work_id, command_fingerprint, projection_json FROM archive_records WHERE command_id = ?",
-				)
-				.get(input.commandId);
-			if (concurrentDuplicate !== undefined) {
-				const result = this.duplicateResult(concurrentDuplicate, input.workId, input.commandFingerprint);
-				this.database.exec("COMMIT");
-				return result;
-			}
-			const current = this.database.prepare("SELECT revision FROM work_projection WHERE work_id = ?").get(input.workId);
-			const currentRevision = current === undefined ? 0 : readInteger(current, "revision");
-			if (currentRevision !== input.expectedWorkRevision) {
-				throw new RevisionConflict(input.workId, input.expectedWorkRevision, currentRevision);
-			}
-			if (input.executionGuard !== undefined && input.projection.execution?.state === "queued") {
-				this.assertExecutionAdmission(input.workId, input.executionGuard);
-			}
-			const now = new Date().toISOString();
-			const recordId = randomUUID();
-			const evidenceRefs = JSON.stringify(
-				(input.evidenceRefs ?? []).slice(0, 20).map((entry) => boundText(entry, 500)),
+	private appendNewRecord(input: ArchiveAppend): ArchiveAppendResult {
+		const concurrentDuplicate = this.findDuplicateRow(input.commandId);
+		if (concurrentDuplicate !== undefined)
+			return this.duplicateResult(concurrentDuplicate, input.workId, input.commandFingerprint);
+		const current = this.database.prepare("SELECT revision FROM work_projection WHERE work_id = ?").get(input.workId);
+		assertCurrentRevision(current, input);
+		this.assertAppendAdmission(input);
+		const inserted = this.insertArchiveRecord(input);
+		this.allocateRecordNumbers(input, inserted.recordId);
+		const projection = this.persistProjection(input, inserted.sequence);
+		this.insertEffects(input.effects ?? [], inserted.now);
+		return { record: this.readRecord(inserted.sequence), projection, duplicate: false };
+	}
+
+	private assertAppendAdmission(input: ArchiveAppend): void {
+		if (input.executionGuard === undefined || input.projection.execution?.state !== "queued") return;
+		this.assertExecutionAdmission(input.workId, input.executionGuard);
+	}
+
+	private insertArchiveRecord(input: ArchiveAppend): InsertedArchiveRecord {
+		const recordId = randomUUID();
+		const now = new Date().toISOString();
+		const inserted = this.database
+			.prepare(`INSERT INTO archive_records
+			(record_id, command_id, command_fingerprint, kind, actor, work_id, mission_id, execution_id,
+			 payload_version, projection_json, state, summary, evidence_refs_json, payload_json, recorded_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.run(
+				recordId,
+				input.commandId,
+				commandFingerprint(input),
+				input.kind,
+				input.actor,
+				input.workId,
+				missionId(input),
+				executionId(input),
+				input.payloadVersion,
+				null,
+				input.projection.state,
+				boundText(input.summary, 500),
+				evidenceReferences(input),
+				JSON.stringify(input.payload),
+				now,
 			);
-			const payload = JSON.stringify(input.payload);
-			const inserted = this.database
-				.prepare(
-					`INSERT INTO archive_records
-					(record_id, command_id, command_fingerprint, kind, actor, work_id, mission_id, execution_id,
-					 payload_version, projection_json, state, summary, evidence_refs_json, payload_json, recorded_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
-					recordId,
-					input.commandId,
-					input.commandFingerprint ?? null,
-					input.kind,
-					input.actor,
-					input.workId,
-					input.missionId ?? null,
-					input.executionId ?? null,
-					input.payloadVersion,
-					null,
-					input.projection.state,
-					boundText(input.summary, 500),
-					evidenceRefs,
-					payload,
-					now,
-				);
-			const sequence = Number(inserted.lastInsertRowid);
-			const recordNumberRow = this.database
-				.prepare("SELECT COALESCE(MAX(record_number), 0) + 1 AS record_number FROM archive_record_numbers")
-				.get();
-			if (recordNumberRow === undefined) throw new Error("Archive record number could not be allocated.");
-			const recordNumber = readInteger(recordNumberRow, "record_number");
-			let missionRecordNumber: number | null = null;
-			if (input.missionId !== undefined) {
-				const missionRecordNumberRow = this.database
-					.prepare(
-						"SELECT COALESCE(MAX(mission_record_number), 0) + 1 AS mission_record_number FROM archive_record_numbers WHERE mission_id = ?",
-					)
-					.get(input.missionId);
-				if (missionRecordNumberRow === undefined) throw new Error("Mission record number could not be allocated.");
-				missionRecordNumber = readInteger(missionRecordNumberRow, "mission_record_number");
-			}
-			this.database
-				.prepare(
-					"INSERT INTO archive_record_numbers(record_id, record_number, mission_id, mission_record_number) VALUES (?, ?, ?, ?)",
-				)
-				.run(recordId, recordNumber, input.missionId ?? null, missionRecordNumber);
-			const projection =
-				input.projection.queuedSequence === 0 ? { ...input.projection, queuedSequence: sequence } : input.projection;
-			this.database
-				.prepare("UPDATE archive_records SET projection_json = ? WHERE sequence = ?")
-				.run(JSON.stringify(projection), sequence);
-			this.database
-				.prepare(
-					`INSERT INTO work_projection(work_id, revision, queued_sequence, view_json) VALUES (?, ?, ?, ?)
-					 ON CONFLICT(work_id) DO UPDATE SET revision = excluded.revision,
-					 queued_sequence = excluded.queued_sequence, view_json = excluded.view_json`,
-				)
-				.run(input.workId, projection.revision, projection.queuedSequence, JSON.stringify(projection));
-			for (const effect of input.effects ?? []) {
-				const effectPayload = JSON.stringify(effect.payload);
-				if (effectPayload.length > 16_000)
-					throw new Error(`Archive effect ${effect.effectId} exceeds the 16 KB limit.`);
-				const effectKind = boundText(effect.kind, 200);
-				const existingEffect = this.database
-					.prepare("SELECT kind, payload_json FROM outbox WHERE effect_id = ?")
-					.get(effect.effectId);
-				if (existingEffect !== undefined) {
-					if (
-						readString(existingEffect, "kind") !== effectKind ||
-						readString(existingEffect, "payload_json") !== effectPayload
-					)
-						throw new Error(`Archive effect ${effect.effectId} conflicts with an existing effect.`);
-					continue;
-				}
-				this.database
-					.prepare("INSERT INTO outbox(effect_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)")
-					.run(effect.effectId, effectKind, effectPayload, now);
-			}
-			this.database.exec("COMMIT");
-			return { record: this.readRecord(sequence), projection, duplicate: false };
-		} catch (error) {
-			this.database.exec("ROLLBACK");
-			throw error;
+		return { recordId, sequence: Number(inserted.lastInsertRowid), now } satisfies InsertedArchiveRecord;
+	}
+
+	private allocateRecordNumbers(input: ArchiveAppend, recordId: string): void {
+		const recordNumberRow = this.database
+			.prepare("SELECT COALESCE(MAX(record_number), 0) + 1 AS record_number FROM archive_record_numbers")
+			.get();
+		if (recordNumberRow === undefined) throw new Error("Archive record number could not be allocated.");
+		const recordNumber = readInteger(recordNumberRow, "record_number");
+		const missionRecordNumber = this.allocateMissionRecordNumber(input.missionId);
+		this.database
+			.prepare(
+				"INSERT INTO archive_record_numbers(record_id, record_number, mission_id, mission_record_number) VALUES (?, ?, ?, ?)",
+			)
+			.run(recordId, recordNumber, input.missionId ?? null, missionRecordNumber);
+	}
+
+	private allocateMissionRecordNumber(missionId: string | undefined): number | null {
+		if (missionId === undefined) return null;
+		const row = this.database
+			.prepare(
+				"SELECT COALESCE(MAX(mission_record_number), 0) + 1 AS mission_record_number FROM archive_record_numbers WHERE mission_id = ?",
+			)
+			.get(missionId);
+		if (row === undefined) throw new Error("Mission record number could not be allocated.");
+		return readInteger(row, "mission_record_number");
+	}
+
+	private persistProjection(input: ArchiveAppend, sequence: number): WorkView {
+		const projection =
+			input.projection.queuedSequence === 0 ? { ...input.projection, queuedSequence: sequence } : input.projection;
+		this.database
+			.prepare("UPDATE archive_records SET projection_json = ? WHERE sequence = ?")
+			.run(JSON.stringify(projection), sequence);
+		this.database
+			.prepare(`INSERT INTO work_projection(work_id, revision, queued_sequence, view_json) VALUES (?, ?, ?, ?)
+			ON CONFLICT(work_id) DO UPDATE SET revision = excluded.revision, queued_sequence = excluded.queued_sequence, view_json = excluded.view_json`)
+			.run(input.workId, projection.revision, projection.queuedSequence, JSON.stringify(projection));
+		return projection;
+	}
+
+	private insertEffects(effects: readonly ArchiveEffect[], now: string): void {
+		for (const effect of effects) this.insertEffect(effect, now);
+	}
+
+	private insertEffect(effect: ArchiveEffect, now: string): void {
+		const effectPayload = JSON.stringify(effect.payload);
+		if (effectPayload.length > 16_000) throw new Error(`Archive effect ${effect.effectId} exceeds the 16 KB limit.`);
+		const effectKind = boundText(effect.kind, 200);
+		const existing = this.database
+			.prepare("SELECT kind, payload_json FROM outbox WHERE effect_id = ?")
+			.get(effect.effectId);
+		if (existing !== undefined) {
+			assertEffectCompatible(existing, effect, effectKind, effectPayload);
+			return;
 		}
+		this.database
+			.prepare("INSERT INTO outbox(effect_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)")
+			.run(effect.effectId, effectKind, effectPayload, now);
 	}
 
 	// The projection snapshot is replay metadata; updating it does not alter the append-only record.
-	// oxlint-disable-next-line complexity
 	updateCommandProjection(commandId: string, projection: WorkView): void {
 		validateProjection(projection, projection.workId, projection.revision);
 		const serialized = JSON.stringify(projection);
 		if (serialized.length > 128_000) throw new Error("Archive projection exceeds the 128 KB limit.");
-		this.database.exec("BEGIN IMMEDIATE");
-		try {
+		this.transaction(() => {
 			const existing = this.database.prepare("SELECT work_id FROM archive_records WHERE command_id = ?").get(commandId);
-			if (existing === undefined) throw new Error(`Archive command ${commandId} was not found.`);
-			if (readString(existing, "work_id") !== projection.workId)
-				throw new Error(`Archive command ${commandId} belongs to another Work.`);
+			assertCommandProjectionOwnership(existing, commandId, projection.workId);
 			this.database
 				.prepare("UPDATE archive_records SET projection_json = ? WHERE command_id = ?")
 				.run(serialized, commandId);
-			this.database.exec("COMMIT");
-		} catch (error) {
-			this.database.exec("ROLLBACK");
-			throw error;
-		}
+		});
 	}
 
 	pendingEffects(owner = "archive-reader"): readonly PendingArchiveEffect[] {
@@ -555,65 +558,12 @@ export class SQLiteArchive implements ArchivePort {
 		if (projection === undefined) throw new Error(`Archive command ${commandId} has no projection.`);
 		return { record: this.readRecord(readInteger(row, "sequence")), projection, duplicate: true };
 	}
-
-	// oxlint-disable-next-line complexity
 	query(query: RecordQuery = {}, cursor?: string): Page<RecordView> {
-		const parsedCursor = cursor === undefined ? undefined : decodeCursor(cursor);
-		const effectiveQuery = parsedCursor?.query ?? normalizeQuery(query);
-		const asOfSequence = parsedCursor?.asOfSequence ?? this.latestSequence();
-		const lastSequence = parsedCursor?.lastSequence ?? 0;
-		if (parsedCursor !== undefined && JSON.stringify(normalizeQuery(query)) !== JSON.stringify(effectiveQuery)) {
-			throw new Error("Archive cursor does not match the requested filters.");
-		}
-		const clauses = ["archive_records.sequence <= ?", "archive_records.sequence > ?"];
-		const parameters: Array<string | number> = [asOfSequence, lastSequence];
-		if (effectiveQuery.workId !== undefined) {
-			clauses.push("archive_records.work_id = ?");
-			parameters.push(effectiveQuery.workId);
-		}
-		if (effectiveQuery.missionId !== undefined) {
-			clauses.push("archive_records.mission_id = ?");
-			parameters.push(effectiveQuery.missionId);
-		}
-		if (effectiveQuery.executionId !== undefined) {
-			clauses.push("archive_records.execution_id = ?");
-			parameters.push(effectiveQuery.executionId);
-		}
-		if (effectiveQuery.kinds !== undefined && effectiveQuery.kinds.length > 0) {
-			clauses.push(`kind IN (${effectiveQuery.kinds.map(() => "?").join(",")})`);
-			parameters.push(...effectiveQuery.kinds);
-		}
-		if (effectiveQuery.states !== undefined && effectiveQuery.states.length > 0) {
-			clauses.push(`state IN (${effectiveQuery.states.map(() => "?").join(",")})`);
-			parameters.push(...effectiveQuery.states);
-		}
-		if (effectiveQuery.from !== undefined) {
-			clauses.push("archive_records.recorded_at >= ?");
-			parameters.push(effectiveQuery.from);
-		}
-		if (effectiveQuery.to !== undefined) {
-			clauses.push("archive_records.recorded_at <= ?");
-			parameters.push(effectiveQuery.to);
-		}
-		const rows = this.database
-			.prepare(
-				`SELECT archive_records.sequence, archive_records.record_id, archive_records.kind, archive_records.actor,
-				 archive_records.work_id, archive_records.mission_id, archive_records.execution_id,
-				 archive_records.payload_version, archive_records.summary, archive_records.evidence_refs_json,
-				 archive_records.payload_json, archive_records.recorded_at,
-				 archive_record_numbers.record_number, archive_record_numbers.mission_record_number
-				 FROM archive_records
-				 LEFT JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
-				 WHERE ${clauses.join(" AND ")} ORDER BY archive_records.sequence LIMIT 100`,
-			)
-			.all(...parameters);
+		const state = resolveQueryState(query, cursor, () => this.latestSequence());
+		const filters = queryFilters(state.query, state.asOfSequence, state.lastSequence);
+		const rows = this.database.prepare(archiveQuerySql(filters.clauses)).all(...filters.parameters);
 		const items = rows.map((row) => this.recordFromRow(row));
-		const last = items.at(-1)?.sequence;
-		const nextCursor =
-			last === undefined || items.length < 100
-				? undefined
-				: encodeCursor({ version: 1, query: effectiveQuery, asOfSequence, lastSequence: last });
-		return { items, asOfSequence, nextCursor };
+		return archivePage(items, state);
 	}
 
 	project(workId: string): WorkView | undefined {
@@ -636,8 +586,6 @@ export class SQLiteArchive implements ArchivePort {
 		}
 		return;
 	}
-
-	// oxlint-disable-next-line complexity
 	findLatestObservation(
 		workId: string,
 		kind: ProviderObservation["kind"],
@@ -651,13 +599,7 @@ export class SQLiteArchive implements ArchivePort {
 			.all(workId);
 		for (const row of rows) {
 			const payload = parseJson(readString(row, "payload_json"));
-			if (
-				isObservation(payload) &&
-				payload.kind === kind &&
-				payload.providerId === providerId &&
-				(observationId === undefined || payload.observationId === observationId)
-			)
-				return payload;
+			if (isLatestObservation(payload, kind, providerId, observationId)) return payload;
 		}
 		return;
 	}
@@ -670,31 +612,17 @@ export class SQLiteArchive implements ArchivePort {
 	close(): void {
 		this.database.close();
 	}
-
-	// oxlint-disable-next-line complexity
 	private assertExecutionAdmission(
 		workId: string,
 		guard: Readonly<{ maxConcurrentExecutions: number; enforceFifo?: boolean }>,
 	): void {
 		assertPositiveInteger(guard.maxConcurrentExecutions, "maxConcurrentExecutions");
-		const projects = this.database.prepare("SELECT work_id, view_json FROM work_projection").all();
-		const views = projects.map((row) => parseWorkView(readString(row, "view_json")));
-		const active = views.filter(
-			(view) => view.execution?.state === "queued" || view.execution?.state === "running",
-		).length;
-		if (active >= guard.maxConcurrentExecutions) {
-			throw new ExecutionAdmissionConflict(
-				`Project execution limit ${guard.maxConcurrentExecutions} is already reserved.`,
-			);
-		}
-		if (guard.enforceFifo === true) {
-			const first = views
-				.filter((view) => view.state === "queued")
-				.sort((left, right) => left.queuedSequence - right.queuedSequence)[0];
-			if (first !== undefined && first.workId !== workId) {
-				throw new ExecutionAdmissionConflict(`Work ${first.workId} is ahead of Work ${workId} in the FIFO queue.`);
-			}
-		}
+		const views = this.database
+			.prepare("SELECT work_id, view_json FROM work_projection")
+			.all()
+			.map((row) => parseWorkView(readString(row, "view_json")));
+		assertExecutionCapacity(views, guard.maxConcurrentExecutions);
+		assertFifoAdmission(views, workId, guard.enforceFifo);
 	}
 
 	private latestSequence(): number {
@@ -882,6 +810,172 @@ function deleteClaim(database: SqlDatabase, effectId: string, owner: string, cla
 	database.prepare("DELETE FROM outbox_claim WHERE effect_id = ? AND owner = ?").run(effectId, owner);
 }
 
+type QueryState = Readonly<{
+	query: RecordQuery;
+	asOfSequence: number;
+	lastSequence: number;
+}>;
+
+type QueryFilters = Readonly<{ clauses: readonly string[]; parameters: readonly (string | number)[] }>;
+
+function resolveQueryState(query: RecordQuery, cursor: string | undefined, latestSequence: () => number): QueryState {
+	if (cursor === undefined) return { query: normalizeQuery(query), asOfSequence: latestSequence(), lastSequence: 0 };
+	const parsed = decodeCursor(cursor);
+	if (JSON.stringify(normalizeQuery(query)) !== JSON.stringify(parsed.query))
+		throw new Error("Archive cursor does not match the requested filters.");
+	return parsed;
+}
+
+function queryFilters(query: RecordQuery, asOfSequence: number, lastSequence: number): QueryFilters {
+	const clauses = ["archive_records.sequence <= ?", "archive_records.sequence > ?"];
+	const parameters: Array<string | number> = [asOfSequence, lastSequence];
+	addQueryTextFilters(clauses, parameters, query);
+	addQueryListFilter(clauses, parameters, "kind", query.kinds);
+	addQueryListFilter(clauses, parameters, "state", query.states);
+	addQueryDateFilter(clauses, parameters, "archive_records.recorded_at >= ?", query.from);
+	addQueryDateFilter(clauses, parameters, "archive_records.recorded_at <= ?", query.to);
+	return { clauses, parameters };
+}
+
+function addQueryTextFilters(clauses: string[], parameters: Array<string | number>, query: RecordQuery): void {
+	addQueryTextFilter(clauses, parameters, "archive_records.work_id = ?", query.workId);
+	addQueryTextFilter(clauses, parameters, "archive_records.mission_id = ?", query.missionId);
+	addQueryTextFilter(clauses, parameters, "archive_records.execution_id = ?", query.executionId);
+}
+
+function addQueryTextFilter(
+	clauses: string[],
+	parameters: Array<string | number>,
+	clause: string,
+	value: string | undefined,
+): void {
+	if (value === undefined) return;
+	clauses.push(clause);
+	parameters.push(value);
+}
+
+function addQueryListFilter(
+	clauses: string[],
+	parameters: Array<string | number>,
+	column: string,
+	values: readonly string[] | readonly RecordKind[] | undefined,
+): void {
+	if (values === undefined || values.length === 0) return;
+	clauses.push(`${column} IN (${values.map(() => "?").join(",")})`);
+	parameters.push(...values);
+}
+
+function addQueryDateFilter(
+	clauses: string[],
+	parameters: Array<string | number>,
+	clause: string,
+	value: string | undefined,
+): void {
+	addQueryTextFilter(clauses, parameters, clause, value);
+}
+
+function archiveQuerySql(clauses: readonly string[]): string {
+	return `SELECT archive_records.sequence, archive_records.record_id, archive_records.kind, archive_records.actor,
+		archive_records.work_id, archive_records.mission_id, archive_records.execution_id,
+		archive_records.payload_version, archive_records.summary, archive_records.evidence_refs_json,
+		archive_records.payload_json, archive_records.recorded_at,
+		archive_record_numbers.record_number, archive_record_numbers.mission_record_number
+		FROM archive_records
+		LEFT JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
+		WHERE ${clauses.join(" AND ")} ORDER BY archive_records.sequence LIMIT 100`;
+}
+
+function archivePage(items: readonly RecordView[], state: QueryState): Page<RecordView> {
+	const last = items.at(-1)?.sequence;
+	return {
+		items,
+		asOfSequence: state.asOfSequence,
+		nextCursor:
+			last === undefined || items.length < 100
+				? undefined
+				: encodeCursor({ version: 1, query: state.query, asOfSequence: state.asOfSequence, lastSequence: last }),
+	};
+}
+
+function assertCommandProjectionOwnership(existing: SqlRow | undefined, commandId: string, workId: string): void {
+	if (existing === undefined) throw new Error(`Archive command ${commandId} was not found.`);
+	if (readString(existing, "work_id") !== workId)
+		throw new Error(`Archive command ${commandId} belongs to another Work.`);
+}
+
+function isLatestObservation(
+	value: JsonValue,
+	kind: ProviderObservation["kind"],
+	providerId: string,
+	observationId: string | undefined,
+): value is ProviderObservation {
+	if (!isObservation(value)) return false;
+	return [
+		value.kind === kind,
+		value.providerId === providerId,
+		observationId === undefined || value.observationId === observationId,
+	].every(Boolean);
+}
+
+function assertExecutionCapacity(views: readonly WorkView[], limit: number): void {
+	const active = views.filter((view) => ["queued", "running"].includes(view.execution?.state ?? "")).length;
+	if (active >= limit) throw new ExecutionAdmissionConflict(`Project execution limit ${limit} is already reserved.`);
+}
+
+function assertFifoAdmission(views: readonly WorkView[], workId: string, enforceFifo: boolean | undefined): void {
+	if (enforceFifo !== true) return;
+	const first = views
+		.filter((view) => view.state === "queued")
+		.sort((left, right) => left.queuedSequence - right.queuedSequence)[0];
+	if (first !== undefined && first.workId !== workId)
+		throw new ExecutionAdmissionConflict(`Work ${first.workId} is ahead of Work ${workId} in the FIFO queue.`);
+}
+
+function readLegacyWorkStateMigration(row: SqlRow): Readonly<{ workId: string; view: JsonObject }> | undefined {
+	const view = parseJson(readString(row, "view_json"));
+	if (!isJsonObject(view)) throw new Error("Archive Work projection is invalid.");
+	const stopReason = legacyWorkStopReason(view["state"]);
+	if (stopReason === undefined) return undefined;
+	const migrated = { ...view, state: "stopped", stopReason };
+	if (!isWorkViewProjection(migrated)) throw new Error("Archive Work projection migration is invalid.");
+	return { workId: readString(row, "work_id"), view: migrated };
+}
+
+function missingRecordNumbers(records: readonly SqlRow[], numbered: readonly SqlRow[]): readonly SqlRow[] {
+	const numberedRecordIds = new Set(numbered.map((row) => readString(row, "record_id")));
+	return records.filter((record) => !numberedRecordIds.has(readString(record, "record_id")));
+}
+
+function missionRecordNumbers(numbered: readonly SqlRow[]): Map<string, Set<number>> {
+	const result = new Map<string, Set<number>>();
+	for (const row of numbered) addMissionRecordNumber(result, row);
+	return result;
+}
+
+function addMissionRecordNumber(numbers: Map<string, Set<number>>, row: SqlRow): void {
+	const missionId = readOptionalString(row, "mission_id");
+	const missionRecordNumber = readOptionalInteger(row, "mission_record_number");
+	if (missionId === undefined || missionRecordNumber === undefined) return;
+	const missionNumbers = numbers.get(missionId) ?? new Set<number>();
+	missionNumbers.add(missionRecordNumber);
+	numbers.set(missionId, missionNumbers);
+}
+
+function nextAvailableNumber(used: Set<number>): number {
+	let next = 1;
+	while (used.has(next)) next += 1;
+	used.add(next);
+	return next;
+}
+
+function nextMissionNumber(numbers: Map<string, Set<number>>, missionId: string | undefined): number | null {
+	if (missionId === undefined) return null;
+	const missionNumbers = numbers.get(missionId) ?? new Set<number>();
+	const next = nextAvailableNumber(missionNumbers);
+	numbers.set(missionId, missionNumbers);
+	return next;
+}
+
 function normalizeQuery(query: RecordQuery): RecordQuery {
 	return {
 		workId: query.workId,
@@ -897,31 +991,28 @@ function normalizeQuery(query: RecordQuery): RecordQuery {
 function encodeCursor(cursor: Cursor): string {
 	return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
-
-// oxlint-disable-next-line complexity
 function decodeCursor(value: string): Cursor {
-	let parsed: JsonValue;
+	const parsed = readCursorJson(value);
+	if (!isJsonObject(parsed)) throw new Error("Invalid Archive cursor payload.");
+	return cursorFromObject(parsed);
+}
+
+function readCursorJson(value: string): JsonValue {
 	try {
-		parsed = parseJson(Buffer.from(value, "base64url").toString("utf8"));
+		return parseJson(Buffer.from(value, "base64url").toString("utf8"));
 	} catch (error) {
 		throw new Error(`Invalid Archive cursor: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	if (!isJsonObject(parsed)) {
-		throw new Error("Invalid Archive cursor payload.");
-	}
-	const object = parsed;
-	const version = object["version"];
-	const asOfSequence = object["asOfSequence"];
-	const lastSequence = object["lastSequence"];
+}
+
+function cursorFromObject(object: JsonObject): Cursor {
 	const query = object["query"];
-	if (version !== 1 || !isJsonObject(query)) {
-		throw new Error("Invalid Archive cursor fields.");
-	}
+	if (object["version"] !== 1 || !isJsonObject(query)) throw new Error("Invalid Archive cursor fields.");
 	return {
 		version: 1,
 		query: queryFromJson(query),
-		asOfSequence: readJsonInteger(asOfSequence, "asOfSequence"),
-		lastSequence: readJsonInteger(lastSequence, "lastSequence"),
+		asOfSequence: readJsonInteger(object["asOfSequence"], "asOfSequence"),
+		lastSequence: readJsonInteger(object["lastSequence"], "lastSequence"),
 	};
 }
 
@@ -969,23 +1060,29 @@ function parseJson(value: string): JsonValue {
 	}
 	return parsed;
 }
-
-// oxlint-disable-next-line complexity
 function isJsonValue(value: JsonValue): boolean {
-	if (value === null || value === true || value === false) {
-		return true;
-	}
-	if (value === String(value) || (value === Number(value) && Number.isFinite(Number(value)))) {
-		return true;
-	}
-	if (Array.isArray(value)) {
-		return value.every((entry) => entry !== undefined && isJsonValue(entry));
-	}
+	if (isJsonPrimitive(value)) return true;
+	if (Array.isArray(value)) return value.every(isJsonValue);
+	if (!isJsonObject(value)) return false;
 	return Object.values(value).every((entry) => entry === undefined || isJsonValue(entry));
+}
+
+function isJsonPrimitive(value: JsonValue): boolean {
+	return [value === null, value === true, value === false, value === String(value), isFiniteNumber(value)].some(
+		Boolean,
+	);
+}
+
+function isFiniteNumber(value: JsonValue): boolean {
+	return value === Number(value) && Number.isFinite(Number(value));
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
 	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
+}
+
+function hasTextFields(value: JsonObject, keys: readonly string[]): boolean {
+	return keys.every((key) => isText(value[key]));
 }
 
 function parseWorkView(value: string): WorkView {
@@ -995,28 +1092,55 @@ function parseWorkView(value: string): WorkView {
 	}
 	return parsed;
 }
-
-// oxlint-disable-next-line complexity
 function validateProjection(projection: WorkView, workId: string, revision: number): void {
-	if (projection.workId !== workId || projection.revision !== revision || !isWorkViewProjection(projection)) {
+	assertProjectionIdentity(projection, workId, revision);
+	assertProjectionValues(projection, workId);
+}
+
+function assertProjectionIdentity(projection: WorkView, workId: string, revision: number): void {
+	if (projection.workId !== workId || projection.revision !== revision || !isWorkViewProjection(projection))
 		throw new Error("Archive projection does not match the expected Work revision.");
-	}
-	if (
-		projection.terms.maxTokens <= 0 ||
-		projection.budget.maxTokens <= 0 ||
-		projection.budget.reservedTokens < 0 ||
-		projection.budget.consumedTokens < 0 ||
-		projection.budget.reservedTokens + projection.budget.consumedTokens > projection.budget.maxTokens ||
-		projection.budget.maxTokens !== projection.terms.maxTokens ||
-		projection.queuedSequence < 0 ||
-		(projection.state === "stopped" && projection.stopReason === undefined) ||
-		(projection.state !== "stopped" && projection.stopReason !== undefined) ||
-		(projection.mission !== undefined && projection.mission.workId !== workId) ||
-		(projection.execution !== undefined &&
-			(projection.execution.workId !== workId || projection.mission?.missionId !== projection.execution.missionId))
-	) {
+}
+
+function assertProjectionValues(projection: WorkView, workId: string): void {
+	if (invalidProjectionBudget(projection) || invalidProjectionRelationships(projection, workId))
 		throw new Error("Archive Work projection contains invalid budget or queue values.");
-	}
+}
+
+function invalidProjectionBudget(projection: WorkView): boolean {
+	return [
+		projection.terms.maxTokens <= 0,
+		projection.budget.maxTokens <= 0,
+		projection.budget.reservedTokens < 0,
+		projection.budget.consumedTokens < 0,
+		projection.budget.reservedTokens + projection.budget.consumedTokens > projection.budget.maxTokens,
+		projection.budget.maxTokens !== projection.terms.maxTokens,
+		projection.queuedSequence < 0,
+	].some(Boolean);
+}
+
+function invalidProjectionRelationships(projection: WorkView, workId: string): boolean {
+	return [
+		invalidStopReasonRelationship(projection),
+		invalidMissionRelationship(projection, workId),
+		invalidExecutionRelationship(projection, workId),
+	].some(Boolean);
+}
+
+function invalidStopReasonRelationship(projection: WorkView): boolean {
+	return (
+		(projection.state === "stopped" && projection.stopReason === undefined) ||
+		(projection.state !== "stopped" && projection.stopReason !== undefined)
+	);
+}
+
+function invalidMissionRelationship(projection: WorkView, workId: string): boolean {
+	return projection.mission !== undefined && projection.mission.workId !== workId;
+}
+
+function invalidExecutionRelationship(projection: WorkView, workId: string): boolean {
+	if (projection.execution === undefined) return false;
+	return projection.execution.workId !== workId || projection.mission?.missionId !== projection.execution.missionId;
 }
 
 function isWorkViewProjection(value: JsonValue): value is WorkView {
@@ -1066,39 +1190,37 @@ function isBudget(value: JsonValue | undefined): boolean {
 		isNonNegativeInteger(value["consumedTokens"])
 	);
 }
-
-// oxlint-disable-next-line complexity
 function isMission(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
-	return (
-		["missionId", "workId", "createdAt"].every((key) => isText(value[key])) &&
-		isTerms(value["assignment"]) &&
-		optional(value["specificity"], isMissionSpecificity) &&
-		isInteger(value["mandateRevision"])
-	);
+	return [
+		hasTextFields(value, ["missionId", "workId", "createdAt"]),
+		isTerms(value["assignment"]),
+		optional(value["specificity"], isMissionSpecificity),
+		isInteger(value["mandateRevision"]),
+	].every(Boolean);
 }
 
 function isMissionSpecificity(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return ["explicit", "defaults-used"].includes(String(value["status"])) && isTextList(value["missing"]);
 }
-
-// oxlint-disable-next-line complexity
 function isExecution(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
-	const sandbox = value["sandbox"];
-	const prompt = value["promptIdentity"];
-	return (
-		["executionId", "workId", "missionId", "model", "thinking"].every((key) => isText(value[key])) &&
-		isExecutionState(value["state"]) &&
-		isInteger(value["tokenAllowance"]) &&
-		optional(value["blockReason"], (entry) => entry === "signal" || entry === "budget-exhausted") &&
-		optional(value["runtimeState"], isExecutionRuntimeState) &&
-		optional(value["usage"], isTokenUsage) &&
-		isPromptIdentity(prompt) &&
-		isSandbox(sandbox) &&
-		optional(value["pi"], isPiBinding)
-	);
+	return [
+		hasTextFields(value, ["executionId", "workId", "missionId", "model", "thinking"]),
+		isExecutionState(value["state"]),
+		isInteger(value["tokenAllowance"]),
+		optional(value["blockReason"], isBlockReason),
+		optional(value["runtimeState"], isExecutionRuntimeState),
+		optional(value["usage"], isTokenUsage),
+		isPromptIdentity(value["promptIdentity"]),
+		isSandbox(value["sandbox"]),
+		optional(value["pi"], isPiBinding),
+	].every(Boolean);
+}
+
+function isBlockReason(value: JsonValue | undefined): boolean {
+	return ["signal", "budget-exhausted"].includes(String(value));
 }
 
 function isPromptIdentity(value: JsonValue | undefined): boolean {
@@ -1130,25 +1252,23 @@ function isTokenUsage(value: JsonValue | undefined): boolean {
 function isExecutionRuntimeState(value: JsonValue | undefined): boolean {
 	return ["working", "idle", "pending", "unreachable", "unknown"].includes(String(value));
 }
-
-// oxlint-disable-next-line complexity
 function isPiBinding(value: JsonValue | undefined): boolean {
-	if (!isJsonObject(value) || !isText(value["sessionId"]) || !isText(value["sessionPath"])) return false;
-	return (
-		optional(value["promptIdentity"], isPromptIdentity) &&
-		optional(value["processGroupId"], (entry) => isPositiveInteger(entry)) &&
-		optional(value["processStartTime"], isText) &&
-		optional(value["capabilityNonce"], isText) &&
-		optional(value["processMarker"], isText)
-	);
+	if (!isJsonObject(value)) return false;
+	return [
+		isText(value["sessionId"]),
+		isText(value["sessionPath"]),
+		optional(value["promptIdentity"], isPromptIdentity),
+		optional(value["processGroupId"], isPositiveInteger),
+		optional(value["processStartTime"], isText),
+		optional(value["capabilityNonce"], isText),
+		optional(value["processMarker"], isText),
+	].every(Boolean);
 }
-
-// oxlint-disable-next-line complexity
 function isReviewRequest(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
-	return (
-		isOneOf(value["provider"], ["github", "gitlab"]) &&
-		[
+	return [
+		isOneOf(value["provider"], ["github", "gitlab"]),
+		hasTextFields(value, [
 			"principalId",
 			"providerId",
 			"url",
@@ -1157,80 +1277,77 @@ function isReviewRequest(value: JsonValue | undefined): boolean {
 			"targetBranch",
 			"headCommit",
 			"diffSummary",
-		].every((key) => isText(value[key])) &&
-		isOneOf(value["status"], ["draft", "open", "merged", "closed"]) &&
-		optional(value["baseCommit"], isText) &&
-		isTextList(value["validation"])
-	);
+		]),
+		isOneOf(value["status"], ["draft", "open", "merged", "closed"]),
+		optional(value["baseCommit"], isText),
+		isTextList(value["validation"]),
+	].every(Boolean);
 }
-
-// oxlint-disable-next-line complexity
 function isValidationRun(value: JsonValue | undefined): boolean {
-	if (!isJsonObject(value) || !isText(value["executionId"]) || !isText(value["headCommit"])) return false;
-	const results = value["results"];
-	return (
-		Array.isArray(results) &&
-		results.every(
-			(entry) =>
-				isJsonObject(entry) && isText(entry["command"]) && isBoolean(entry["passed"]) && isText(entry["output"]),
-		)
+	if (!isJsonObject(value)) return false;
+	return [isText(value["executionId"]), isText(value["headCommit"]), isValidationResults(value["results"])].every(
+		Boolean,
 	);
 }
 
-// oxlint-disable-next-line complexity
+function isValidationResults(value: JsonValue | undefined): boolean {
+	return Array.isArray(value) && value.every(isValidationResult);
+}
+
+function isValidationResult(value: JsonValue): boolean {
+	if (!isJsonObject(value)) return false;
+	return hasTextFields(value, ["command", "output"]) && isBoolean(value["passed"]);
+}
 function isSignal(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
-		isText(value["signalId"]) &&
-		isText(value["executionId"]) &&
-		isText(value["kind"]) &&
-		isText(value["summary"]) &&
-		isTextList(value["evidence"]) &&
-		isText(value["observedAt"])
+		["signalId", "executionId", "kind", "summary", "observedAt"].every((key) => isText(value[key])) &&
+		isTextList(value["evidence"])
 	);
 }
-
-// oxlint-disable-next-line complexity
 function isObservation(value: JsonValue | undefined): value is ProviderObservation {
 	if (!isJsonObject(value)) return false;
-	const required = ["observationId", "kind", "providerId", "status", "summary", "observedAt"].every((key) =>
-		isText(value[key]),
-	);
-	const textFields = [
-		"author",
-		"authorAssociation",
-		"reviewState",
-		"repository",
-		"sourceBranch",
-		"targetBranch",
-		"baseCommit",
-		"headCommit",
-		"mergeCommit",
-	];
-	return (
-		required &&
-		isBoolean(value["changed"]) &&
-		optional(value["feedback"], isTextList) &&
-		textFields.every((key) => optional(value[key], isText)) &&
-		optional(value["actionable"], isBoolean) &&
-		optional(value["details"], isProviderObservationDetails)
-	);
+	return [
+		hasTextFields(value, ["observationId", "kind", "providerId", "status", "summary", "observedAt"]),
+		isBoolean(value["changed"]),
+		optional(value["feedback"], isTextList),
+		optionalTextFields(value, [
+			"author",
+			"authorAssociation",
+			"reviewState",
+			"repository",
+			"sourceBranch",
+			"targetBranch",
+			"baseCommit",
+			"headCommit",
+			"mergeCommit",
+		]),
+		optional(value["actionable"], isBoolean),
+		optional(value["details"], isProviderObservationDetails),
+	].every(Boolean);
 }
 
-// oxlint-disable-next-line complexity
+function optionalTextFields(value: JsonObject, keys: readonly string[]): boolean {
+	return keys.every((key) => optional(value[key], isText));
+}
 function isProviderObservationDetails(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
-	const pullRequest = value["pullRequest"];
-	if (!isJsonObject(pullRequest)) return false;
-	return (
-		isText(pullRequest["url"]) &&
-		isOneOf(pullRequest["status"], ["draft", "open", "merged", "closed"]) &&
-		isText(pullRequest["state"]) &&
-		isText(pullRequest["reviewDecision"]) &&
-		(pullRequest["mergedAt"] === null || isText(pullRequest["mergedAt"])) &&
-		isProviderReviewComments(value["comments"]) &&
-		isProviderChecks(value["checks"])
-	);
+	return [
+		isProviderPullRequest(value["pullRequest"]),
+		isProviderReviewComments(value["comments"]),
+		isProviderChecks(value["checks"]),
+	].every(Boolean);
+}
+
+function isProviderPullRequest(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return [
+		isText(value["url"]),
+		isOneOf(value["status"], ["draft", "open", "merged", "closed"]),
+		isText(value["state"]),
+		isText(value["reviewDecision"]),
+		value["mergedAt"] === null || isText(value["mergedAt"]),
+	].every(Boolean);
 }
 
 function isOneOf(value: JsonValue | undefined, choices: readonly string[]): boolean {
@@ -1240,41 +1357,37 @@ function isOneOf(value: JsonValue | undefined, choices: readonly string[]): bool
 function isProviderReviewComments(value: JsonValue | undefined): boolean {
 	return Array.isArray(value) && value.every(isProviderReviewComment);
 }
-
-// oxlint-disable-next-line complexity
 function isProviderReviewComment(entry: JsonValue): boolean {
-	if (!isJsonObject(entry) || !isText(entry["id"]) || !isText(entry["body"])) return false;
-	const textFields = ["author", "authorAssociation", "createdAt", "url", "state", "location"];
-	return (
-		textFields.every((key) => optional(entry[key], isText)) &&
-		optional(entry["source"], (source) => isOneOf(source, ["issue-comment", "review", "inline"])) &&
-		optional(entry["minimized"], isBoolean)
-	);
+	if (!isJsonObject(entry)) return false;
+	return [
+		isText(entry["id"]),
+		isText(entry["body"]),
+		optionalTextFields(entry, ["author", "authorAssociation", "createdAt", "url", "state", "location"]),
+		optional(entry["source"], isProviderCommentSource),
+		optional(entry["minimized"], isBoolean),
+	].every(Boolean);
+}
+
+function isProviderCommentSource(value: JsonValue | undefined): boolean {
+	return isOneOf(value, ["issue-comment", "review", "inline"]);
 }
 
 function isProviderChecks(value: JsonValue | undefined): boolean {
 	return Array.isArray(value) && value.every(isProviderCheck);
 }
-
-// oxlint-disable-next-line complexity
 function isProviderCheck(entry: JsonValue): boolean {
-	if (
-		!isJsonObject(entry) ||
-		!isOneOf(entry["kind"], ["check-run", "status-context"]) ||
-		!isText(entry["name"]) ||
-		!isText(entry["status"])
-	)
-		return false;
-	return ["conclusion", "workflowName", "detailsUrl", "startedAt", "completedAt"].every((key) =>
-		optional(entry[key], isText),
-	);
+	if (!isJsonObject(entry)) return false;
+	return [
+		isOneOf(entry["kind"], ["check-run", "status-context"]),
+		isText(entry["name"]),
+		isText(entry["status"]),
+		optionalTextFields(entry, ["conclusion", "workflowName", "detailsUrl", "startedAt", "completedAt"]),
+	].every(Boolean);
 }
-
-// oxlint-disable-next-line complexity
 function isErrorEnvelope(value: JsonValue | undefined): value is ErrorEnvelope {
 	if (!isJsonObject(value)) return false;
-	return (
-		[
+	return [
+		isOneOf(value["code"], [
 			"invalid-input",
 			"not-found",
 			"forbidden",
@@ -1283,13 +1396,13 @@ function isErrorEnvelope(value: JsonValue | undefined): value is ErrorEnvelope {
 			"budget-exhausted",
 			"external-failure",
 			"integrity-failure",
-		].includes(String(value["code"])) &&
-		isText(value["summary"]) &&
-		isBoolean(value["retryable"]) &&
-		isText(value["remediation"]) &&
-		isTextList(value["evidenceRefs"]) &&
-		(value["learning"] === undefined || isLearning(value["learning"]))
-	);
+		]),
+		isText(value["summary"]),
+		isBoolean(value["retryable"]),
+		isText(value["remediation"]),
+		isTextList(value["evidenceRefs"]),
+		optional(value["learning"], isLearning),
+	].every(Boolean);
 }
 
 function isLearning(value: JsonValue | undefined): boolean {
@@ -1359,24 +1472,22 @@ function readOptionalInteger(row: SqlRow, key: string): number | undefined {
 	}
 	return readInteger(row, key);
 }
-
-// oxlint-disable-next-line complexity
 function readJsonInteger(value: JsonValue | undefined, key: string): number {
+	return readIntegerValue(value, `Archive cursor field ${key}`);
+}
+
+function readInteger(row: SqlRow, key: string): number {
+	return readIntegerValue(row[key], `Archive column ${key}`);
+}
+
+function readIntegerValue(value: JsonValue | undefined | SqlOutputValue, field: string): number {
 	const number = Number(value);
-	if (value === null || value === undefined || number !== value || !Number.isSafeInteger(number)) {
-		throw new Error(`Archive cursor field ${key} is not an integer.`);
-	}
+	if (!isIntegerValue(value, number)) throw new Error(`${field} is not an integer.`);
 	return number;
 }
 
-// oxlint-disable-next-line complexity
-function readInteger(row: SqlRow, key: string): number {
-	const value = row[key];
-	const number = Number(value);
-	if (value === null || value === undefined || number !== value || !Number.isSafeInteger(number)) {
-		throw new Error(`Archive column ${key} is not an integer.`);
-	}
-	return number;
+function isIntegerValue(value: JsonValue | undefined | SqlOutputValue, number: number): boolean {
+	return [value !== null, value !== undefined, number === value, Number.isSafeInteger(number)].every(Boolean);
 }
 
 function readRecordKinds(values: readonly string[]): readonly RecordKind[] {

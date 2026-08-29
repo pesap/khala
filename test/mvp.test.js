@@ -40,14 +40,12 @@ function makePorts(overrides = {}) {
 		...controlOverrides,
 	};
 	const runtime = {
-		// oxlint-disable-next-line complexity
 		async ensureSession(input) {
 			const binding = { sessionId: `${input.role}-${controls.sessions.length + 1}`, sessionPath: `/tmp/${input.role}-${controls.sessions.length + 1}.jsonl`, capabilityNonce: input.tools.length === 0 ? undefined : TEST_CAPABILITY_NONCE };
 			controls.sessions.push({ input, binding });
 			if (input.role === "executor" && controls.recoverExecutor && controls.runtimeState === "unreachable") controls.runtimeState = "idle";
 			return binding;
 		},
-		// oxlint-disable-next-line complexity
 		async send(binding, message) {
 			controls.prompts.push({ binding, message });
 			if (binding.sessionId.startsWith("conclave-") && controls.onConclaveWake !== undefined) {
@@ -347,8 +345,6 @@ test("Executors commit and validate through governed workspace actions", async (
 	assert.equal("error" in ready, false);
 	await service.close();
 });
-
-// oxlint-disable-next-line complexity
 test("Failed validation retains stdout and stderr diagnostics", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-validation-output-"));
 	const workspace = new GitWorkspace(directory, "khala/");
@@ -567,8 +563,6 @@ test("generated Mission and Execution IDs use Nano ID format", async () => {
 	assert.match(running.execution.executionId, /^[A-Za-z0-9_-]{21}$/);
 	await service.close();
 });
-
-// oxlint-disable-next-line complexity
 test("Pending effect processing is serialized across callers and Works", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-effect-serialization-"));
 	let activeWakes = 0;
@@ -646,8 +640,6 @@ test("Cleanup attention clears after a retry succeeds", async () => {
 	assert.equal(cleaned.nextAction, "Work cancelled by the User.");
 	await service.close();
 });
-
-// oxlint-disable-next-line complexity
 test("Conclave wake failures preserve provider detail and remediation", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-conclave-wake-failure-"));
 	const { service } = makeService(join(directory, "archive.sqlite"), {
@@ -1167,8 +1159,6 @@ test("a Work reaches success through branch publication, handoff, polling, and o
 	assert.equal(controls.stopped.some((binding) => binding.sessionId.startsWith("executor-")), true);
 	await service.close();
 });
-
-// oxlint-disable-next-line complexity
 test("Provider merge evidence wakes the Conclave and repairs an unsettled Work after restart", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-provider-outcome-wake-"));
 	const path = join(directory, "archive.sqlite");
@@ -1716,7 +1706,6 @@ test("GitHub review feedback wakes the Conclave and resumes the same Execution w
 		changed: true,
 		observedAt: new Date().toISOString(),
 	}));
-	// oxlint-disable-next-line complexity
 	controls.onConclaveWake = async (message) => {
 		if (!message.includes("provider observation") && !message.includes("provider feedback")) return;
 		const observationId = message.match(/observation (review-comment:42:\d+)/)?.[1];
@@ -1808,8 +1797,6 @@ test("Verdicts resume blocked Executors and prevent rejected Missions from resta
 	assert.equal(restart.error.code, "invalid-state");
 	await service.close();
 });
-
-// oxlint-disable-next-line complexity
 test("replaying a replacement Verdict returns the resulting replacement Execution", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-verdict-replay-"));
 	const { service } = makeService(join(directory, "archive.sqlite"));
@@ -1832,8 +1819,6 @@ test("replaying a replacement Verdict returns the resulting replacement Executio
 	assert.equal(replay.value.execution.state, replacement.value.execution.state);
 	await service.close();
 });
-
-// oxlint-disable-next-line complexity
 test("child role sessions resolve the parent project Archive instead of their sandbox Archive", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-shared-archive-"));
 	const project = await mkdtemp(join(directory, "project-"));
@@ -2255,7 +2240,7 @@ test("a real RPC child is bounded and removed after an agent turn timeout", asyn
 test("a real RPC child waits for each prompt completion", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-turns-"));
 	const script = join(directory, "rpc-stub.mjs");
-	await writeFile(script, `import readline from "node:readline";\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\nlet turns = 0;\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") { turns += 1; process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); if (turns === 1) process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first output" }], usage: { input: 11, output: 7, cacheRead: 13, cacheWrite: 5 } } }) + "\\n"); setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n"), turns === 2 ? 50 : 0); } });\n`);
+	await writeFile(script, `import readline from "node:readline";\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\nlet turns = 0;\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") { turns += 1; process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); if (turns === 1) process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first output" }], usage: { input: 11, output: 7, cacheRead: 13, cacheWrite: 5 } } }) + "\\n"); setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n"), turns === 2 ? 50 : 0); } });\n`);
 	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 });
 	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
 	assert.deepEqual(await runtime.send(binding, "first"), {
@@ -2274,8 +2259,6 @@ test("a real RPC child waits for each prompt completion", async () => {
 	assert.equal(await runtime.getState(binding), "idle");
 	await runtime.close();
 });
-
-// oxlint-disable-next-line complexity
 test("GitHub publication uses the sandbox branch and current head", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-code-host-"));
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));

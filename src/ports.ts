@@ -8,6 +8,11 @@ import type {
 	WorkTerms,
 } from "./model.js";
 
+export type OperationContext = Readonly<{
+	signal?: AbortSignal | undefined;
+	onUpdate?: ((message: string) => void) | undefined;
+}>;
+
 export type WorkspacePreflight = Readonly<{
 	projectPath: string;
 	origin: string;
@@ -16,7 +21,7 @@ export type WorkspacePreflight = Readonly<{
 }>;
 
 export interface WorkspacePort {
-	preflight: (projectPath: string, targetBranch: string) => Promise<WorkspacePreflight>;
+	preflight: (projectPath: string, targetBranch: string, operation?: OperationContext) => Promise<WorkspacePreflight>;
 	ensureSandbox: (
 		input: Readonly<{
 			workId: string;
@@ -25,17 +30,23 @@ export interface WorkspacePort {
 			projectPath: string;
 			baseCommit: string;
 		}>,
+		operation?: OperationContext,
 	) => Promise<Execution["sandbox"]>;
-	inspectHead: (path: string) => Promise<string>;
-	inspectChanges?: (input: Readonly<{ path: string; baseCommit: string }>) => Promise<readonly string[]>;
+	inspectHead: (path: string, operation?: OperationContext) => Promise<string>;
+	inspectChanges?: (
+		input: Readonly<{ path: string; baseCommit: string }>,
+		operation?: OperationContext,
+	) => Promise<readonly string[]>;
 	commitSandbox?: (
 		input: Readonly<{ sandbox: Execution["sandbox"]; allowedPaths: readonly string[]; message: string }>,
+		operation?: OperationContext,
 	) => Promise<string>;
 	runValidation?: (
 		input: Readonly<{ path: string; commands: readonly string[] }>,
+		operation?: OperationContext,
 	) => Promise<readonly ValidationResult[]>;
-	publishSandbox: (sandbox: Execution["sandbox"]) => Promise<string>;
-	removeSandbox: (sandbox: Execution["sandbox"]) => Promise<void>;
+	publishSandbox: (sandbox: Execution["sandbox"], operation?: OperationContext) => Promise<string>;
+	removeSandbox: (sandbox: Execution["sandbox"], operation?: OperationContext) => Promise<void>;
 }
 
 export type ReviewRequestInput = Readonly<{
@@ -50,11 +61,16 @@ export type ReviewRequestInput = Readonly<{
 }>;
 
 export interface CodeHostPort {
-	capabilities: () => Promise<Readonly<{ supportsDraft: boolean; supportsMergeObservation: boolean }>>;
-	identity: () => Promise<Readonly<{ principalId: string; verified: boolean }>>;
-	ensureReviewRequest: (input: ReviewRequestInput) => Promise<ReviewRequest>;
-	poll: (reviewRequest: ReviewRequest) => Promise<readonly ProviderObservation[]>;
-	inspectOutcome: (reviewRequest: ReviewRequest) => Promise<ProviderObservation | undefined>;
+	capabilities: (
+		operation?: OperationContext,
+	) => Promise<Readonly<{ supportsDraft: boolean; supportsMergeObservation: boolean }>>;
+	identity: (operation?: OperationContext) => Promise<Readonly<{ principalId: string; verified: boolean }>>;
+	ensureReviewRequest: (input: ReviewRequestInput, operation?: OperationContext) => Promise<ReviewRequest>;
+	poll: (reviewRequest: ReviewRequest, operation?: OperationContext) => Promise<readonly ProviderObservation[]>;
+	inspectOutcome: (
+		reviewRequest: ReviewRequest,
+		operation?: OperationContext,
+	) => Promise<ProviderObservation | undefined>;
 }
 
 export type RuntimeState = "working" | "pending" | "idle" | "unreachable" | "unknown";
@@ -89,9 +105,10 @@ export interface AgentRuntimePort {
 			}>;
 			sessionPath?: string | undefined;
 		}>,
+		operation?: OperationContext,
 	) => Promise<RuntimeBinding>;
-	send: (binding: RuntimeBinding, message: string) => Promise<RuntimeTurn>;
-	getState: (binding: RuntimeBinding) => Promise<RuntimeState>;
+	send: (binding: RuntimeBinding, message: string, operation?: OperationContext) => Promise<RuntimeTurn>;
+	getState: (binding: RuntimeBinding, operation?: OperationContext) => Promise<RuntimeState>;
 	requestStop: (binding: RuntimeBinding) => Promise<void>;
 	close: () => Promise<void>;
 }
@@ -124,7 +141,12 @@ export type OracleResult = Readonly<{
 }>;
 
 export interface OraclePort {
-	review: (packet: OraclePacket, model: string, thinking: string) => Promise<OracleResult>;
+	review: (
+		packet: OraclePacket,
+		model: string,
+		thinking: string,
+		operation?: OperationContext,
+	) => Promise<OracleResult>;
 }
 
 export type ServicePorts = Readonly<{
