@@ -8,10 +8,10 @@ import { type ApplicationRuntime, createApplication } from "./factory.js";
 import {
 	type Actor,
 	type CommandMeta,
-	isRecordKind as isModelRecordKind,
 	type JsonObject,
 	type JsonValue,
 	type MutableRecordQuery,
+	parseRecordKind,
 	type RecordKind,
 } from "./model.js";
 import { ApplicationError } from "./service.js";
@@ -715,14 +715,7 @@ function boundWorkId(actor: Actor): string | undefined {
 }
 
 function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
-	return values.map((value) => {
-		if (!isRecordKind(value)) throw new Error(`Archive record kind ${value} is invalid.`);
-		return value;
-	});
-}
-
-function isRecordKind(value: string): value is RecordKind {
-	return isModelRecordKind(value);
+	return values.map(parseRecordKind);
 }
 
 function toolResult(value: JsonValue, isError: boolean): ToolResult {

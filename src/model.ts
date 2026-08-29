@@ -58,9 +58,10 @@ export type RecordKind = (typeof RECORD_KINDS)[number];
 export const ACTORS = ["user", "conclave", "observer", "executor", "oracle", "monitor", "system"] as const;
 export type Actor = (typeof ACTORS)[number];
 
-export function isRecordKind(value: string): value is RecordKind {
-	// SAFETY: the cast only adapts the broad input to the literal-union argument required by includes.
-	return RECORD_KINDS.includes(value as RecordKind);
+export function parseRecordKind(value: string): RecordKind {
+	const kind = RECORD_KINDS.find((candidate) => candidate === value);
+	if (kind === undefined) throw new Error(`Record kind ${value} is invalid.`);
+	return kind;
 }
 
 export function isActor(value: string): value is Actor {

@@ -7,11 +7,11 @@ import {
 	assertPositiveInteger,
 	type ErrorEnvelope,
 	isActor,
-	isRecordKind,
 	type JsonObject,
 	type JsonValue,
 	type Page,
 	type ProviderObservation,
+	parseRecordKind,
 	type RecordKind,
 	type RecordQuery,
 	type RecordView,
@@ -866,7 +866,7 @@ function validateOptionalText(value: string | undefined, field: string): void {
 }
 
 function validateRecordKind(value: RecordKind): void {
-	if (!isRecordKind(String(value))) throw new Error(`Archive record kind ${String(value)} is invalid.`);
+	parseRecordKind(String(value));
 }
 
 function validateActor(value: Actor): void {
@@ -1380,16 +1380,11 @@ function readInteger(row: SqlRow, key: string): number {
 }
 
 function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
-	return values.map((value) => {
-		if (!isRecordKind(value)) throw new Error(`Archive record kind ${value} is invalid.`);
-		return value;
-	});
+	return values.map(parseRecordKind);
 }
 
 function readRecordKind(row: SqlRow, key: string): RecordKind {
-	const value = readString(row, key);
-	if (!isRecordKind(value)) throw new Error(`Archive record kind ${value} is invalid.`);
-	return value;
+	return parseRecordKind(readString(row, key));
 }
 
 function readActor(row: SqlRow, key: string): Actor {
