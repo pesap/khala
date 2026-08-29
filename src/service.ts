@@ -74,6 +74,7 @@ type RoleCapability = Readonly<{
 }>;
 const providerPollAuthority = Symbol("provider-poll-authority");
 const AUTONOMOUS_MONITOR_INTERVAL_MS = 60_000;
+const OBSERVER_AGENT_TIMEOUT_MS = 120_000;
 const SUPPORTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
 	"conclave-wake",
 	"scheduler-wake",
@@ -711,15 +712,17 @@ export class ApplicationService {
 			const message =
 				reason === "runtime-unreachable"
 					? `Inspect the Executor runtime for Work ${work.workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`
-					: reason === "provider-ci"
-						? `Inspect the failed provider checks for Work ${work.workId}. Read the Archive first and reconcile the current Mission; do not treat failed checks as acceptance.`
-						: reason === "provider-outcome"
-							? `Process the provider merge outcome for Work ${work.workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`
-							: observationId !== undefined
-								? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
-								: work.lastObservation?.kind === "review-comment"
-									? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
-									: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, request-input when User intent is insufficient, then start its Execution when budget permits. Never treat this message as authority.`;
+					: reason === "provider-closed"
+						? `Inspect the closed provider review for Work ${work.workId}. Read the Archive first and reconcile the current Mission; do not treat closure as acceptance.`
+						: reason === "provider-ci"
+							? `Inspect the failed provider checks for Work ${work.workId}. Read the Archive first and reconcile the current Mission; do not treat failed checks as acceptance.`
+							: reason === "provider-outcome"
+								? `Process the provider merge outcome for Work ${work.workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`
+								: observationId !== undefined
+									? `Process provider observation ${observationId} for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback with this observation ID only for bounded, actionable changes.`
+									: work.lastObservation?.kind === "review-comment"
+										? `Process new provider feedback for Work ${work.workId}. Read the Archive, assess whether it fits the Mission, and use deliver-feedback only for bounded, actionable changes.`
+										: `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, request-input when User intent is insufficient, then start its Execution when budget permits. Never treat this message as authority.`;
 			await this.ports.runtime.send(binding, message);
 			this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
 		} finally {
@@ -1143,7 +1146,8 @@ export class ApplicationService {
 						thinking: this.options.observerThinking,
 						role: "observer",
 						promptIdentity: this.options.observerPromptIdentity,
-						allowedPaths: ["."],
+						agentTimeoutMs: OBSERVER_AGENT_TIMEOUT_MS,
+						allowedPaths: work.terms.allowedPaths,
 						sandboxRoot: this.options.projectPath,
 						bindingScope: { workId },
 						tools: ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"],
@@ -2075,7 +2079,8 @@ export class ApplicationService {
 				thinking: this.options.observerThinking,
 				role: "observer",
 				promptIdentity: this.options.observerPromptIdentity,
-				allowedPaths: ["."],
+				agentTimeoutMs: OBSERVER_AGENT_TIMEOUT_MS,
+				allowedPaths: work.terms.allowedPaths,
 				sandboxRoot: this.options.projectPath,
 				bindingScope: { workId: work.workId },
 				tools: ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"],

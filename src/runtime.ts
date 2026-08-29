@@ -71,6 +71,7 @@ type MutableChild = {
 	process: ChildProcessWithoutNullStreams;
 	pending: Map<string, PendingResponse>;
 	binding: RuntimeBinding;
+	agentTimeoutMs: number | undefined;
 	buffer: string;
 	lastOutput: string;
 	turnUsage: TokenUsage | undefined;
@@ -215,6 +216,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 				processMarker,
 				promptIdentity: input.promptIdentity,
 			},
+			agentTimeoutMs: input.agentTimeoutMs,
 			buffer: "",
 			lastOutput: "",
 			turnUsage: undefined,
@@ -297,7 +299,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		child.turnUsage = undefined;
 		child.lastOutput = "";
 		child.sending = true;
-		const completion = waitForAgentEnd(child, this.options.agentTimeoutMs ?? 1_800_000);
+		const completion = waitForAgentEnd(child, child.agentTimeoutMs ?? this.options.agentTimeoutMs ?? 1_800_000);
 		void completion.catch(() => undefined);
 		try {
 			let response: RpcResponse | undefined;

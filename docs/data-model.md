@@ -16,8 +16,9 @@ The database uses WAL mode and contains:
 Every append supplies an expected Work revision and command ID.
 A repeated command ID returns its earlier record and projection.
 A revision mismatch rolls back the transaction and returns a revision conflict.
-Opening an Archive migrates legacy Work states and missing path scopes before reading projections.
-That migration is the supported exception to historical Record immutability.
+The first Archive creation writes an initialization marker beside the SQLite file so a missing database cannot be silently replaced.
+Opening an older Archive may add missing command/projection columns, migrate legacy Work states and missing path scopes, and allocate missing record numbers before reading projections.
+These startup migrations are the supported mutations of historical storage.
 The Archive never interprets runtime reachability or provider text as lifecycle authority.
 
 ## Durable primitives

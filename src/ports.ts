@@ -78,6 +78,7 @@ export interface AgentRuntimePort {
 			thinking: string;
 			role: "conclave" | "observer" | "executor" | "oracle";
 			promptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
+			agentTimeoutMs?: number | undefined;
 			tools: readonly string[];
 			allowedPaths?: readonly string[] | undefined;
 			sandboxRoot?: string | undefined;

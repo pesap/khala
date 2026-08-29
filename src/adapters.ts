@@ -150,20 +150,8 @@ export class GitWorkspace implements WorkspacePort {
 		const results: ValidationResult[] = [];
 		const environment = validationEnvironment();
 		for (const command of input.commands) {
-			try {
-				const result = await execFileAsync(
-					validationShell(),
-					validationShellArguments(command),
-					commandOptions(input.path, environment),
-				);
-				results.push({ command, passed: true, output: result.stdout.slice(-4_000) });
-			} catch (error) {
-				results.push({
-					command,
-					passed: false,
-					output: error instanceof Error ? error.message.slice(-4_000) : String(error),
-				});
-			}
+			const result = await runValidationCommand(command, input.path, environment);
+			results.push({ command, ...result });
 		}
 		return results;
 	}
@@ -518,6 +506,39 @@ function sanitizedEnvironment(): NodeJS.ProcessEnv {
 		if (SENSITIVE_ENVIRONMENT_KEY.test(key)) delete environment[key];
 	}
 	return environment;
+}
+
+function runValidationCommand(
+	command: string,
+	cwd: string,
+	environment: NodeJS.ProcessEnv,
+): Promise<Readonly<{ passed: boolean; output: string }>> {
+	return new Promise((resolve) => {
+		execFile(
+			validationShell(),
+			validationShellArguments(command),
+			commandOptions(cwd, environment),
+			(error, stdout, stderr) => {
+				if (error === null) {
+					resolve({ passed: true, output: stdout.slice(-4_000) });
+					return;
+				}
+				resolve({ passed: false, output: failedCommandOutput(stdout, stderr, error.message) });
+			},
+		);
+	});
+}
+
+function failedCommandOutput(stdout: string, stderr: string, message: string): string {
+	return [
+		`stdout:\n${boundedValidationOutput(stdout)}`,
+		`stderr:\n${boundedValidationOutput(stderr)}`,
+		`error:\n${boundedValidationOutput(message)}`,
+	].join("\n");
+}
+
+function boundedValidationOutput(value: string): string {
+	return value.slice(-1_200);
 }
 
 async function run(command: string, args: readonly string[], cwd: string): Promise<string> {
@@ -947,7 +968,7 @@ function githubAssociation(entry: Record<string, JsonValue>): string | undefined
 
 // oxlint-disable-next-line complexity
 function githubFeedbackIsActionable(prefix: string, state: string, association: string | undefined): boolean {
-	if (!["COLLABORATOR", "CONTRIBUTOR", "MEMBER", "OWNER"].includes(association ?? "")) return false;
+	if (!["COLLABORATOR", "MEMBER", "OWNER"].includes(association ?? "")) return false;
 	return prefix !== "review" || ["CHANGES_REQUESTED", "COMMENTED"].includes(state);
 }
 

@@ -28,7 +28,9 @@ Khala has four durable primitives.
 - Record is one immutable Archive fact containing actor, bindings, payload version, summary, and evidence references.
 
 User, Conclave, Observer, Executor, and Oracle are roles rather than durable primitives.
-An implementation plan and newly discovered evidence belong to an Execution and do not change Mission identity.
+An Executor's implementation plan is transient child output.
+Executor Signals and validation records bind to an Execution.
+Observer assessments and provider observations are Work-level evidence and do not change Mission identity.
 A Mission has at most one active Execution.
 Historical Executions remain available through Archive records.
 
@@ -53,7 +55,9 @@ A Conclave can place submitted Work in `needs-input` with `request-input` when t
 The request stores a reason and optional missing-field list as Archive evidence.
 The User can answer through `amend-terms` while the Mission is not admitted.
 Admission is available only after the Work returns to `submitted`.
-Missing repository facts may launch one low-cost, read-only Observer.
+Missing repository facts may launch one read-only Observer.
+The Observer is not charged against the Work token budget and is bounded by a 120-second child-turn timeout.
+Before admission it reads the submitted `allowedPaths`; the default is the entire repository.
 The Observer records one bounded, evidence-backed `assessment` and stops.
 It may discover facts, but it cannot invent objective, acceptance criteria, scope boundaries, constraints, or authorization.
 
@@ -159,7 +163,7 @@ Replay cannot redeliver a completed Delivery.
 Failed delivery remains pending or becomes attention evidence and does not automatically end the Execution or Mission.
 
 After `ready` and before `handoff`, the Conclave may call `khala_run_oracle`.
-The packet contains the Mission, diff, validation, and provider evidence.
+The packet contains the Mission, review diff, declared validation commands, and the latest bounded provider observation summary when one exists.
 It excludes the Executor prompt, transcript, and conclusion.
 The no-tools Oracle returns advisory findings only.
 The Oracle Record stores its prompt identity and parsed result.
@@ -209,7 +213,7 @@ submitWork(input, meta)                         -> WorkView
 listWork()                                      -> readonly WorkSummary[]
 inspectWork(workId)                             -> WorkView
 inspectRuntime(workId, meta?)                   -> Promise<WorkView>
-availableActions(workId, actor, revision?, state?) -> readonly Action[]
+availableActions(workId, actor, revision?, runtimeState?)   -> readonly Action[]
 perform(command)                                -> Promise<ServiceResult<WorkView>>
 readRecords(query, meta, cursor?)               -> Page<RecordView>
 pollProvider(workId, meta)                      -> Promise<WorkView>
@@ -238,12 +242,13 @@ The service revalidates actor and role scope on every page rather than embedding
 The service uses narrow ports for Archive, runtime, workspace, code host, models, and Oracle behavior.
 
 ```text
-ArchivePort       append, findCommand, pendingEffects, completeEffect,
-                  releaseEffect, renewEffect, query, project,
-                  findObservation, findLatestObservation, listProjects, close
+ArchivePort       append, updateCommandProjection, findCommand,
+                  pendingEffects, completeEffect, releaseEffect, renewEffect,
+                  query, project, findObservation, findLatestObservation,
+                  listProjects, close
 AgentRuntimePort  ensureSession, send, getState, requestStop, close
 WorkspacePort     preflight, ensureSandbox, inspectHead, inspectChanges,
-                  publishSandbox, removeSandbox
+                  commitSandbox?, runValidation?, publishSandbox, removeSandbox
 CodeHostPort      capabilities, identity, ensureReviewRequest, poll,
                   inspectOutcome
 ModelCatalogPort  listScoped, resolve
@@ -273,12 +278,14 @@ Khala may retry idempotent transport calls.
 It never silently retries semantic decisions, substitutes a model, increases an allowance, merges code, changes scope, or redelivers completed feedback.
 Failed feedback remains durable evidence and requires an explicit retry after reconciliation.
 
-Archive deletion, replacement, or integrity failure fails closed because Khala has no in-process restore mechanism.
+The first Archive creation writes an initialization marker beside the SQLite file.
+If that marker remains while the SQLite file is missing, Khala fails closed instead of creating a replacement Archive.
+Archive integrity failure also fails closed because Khala has no in-process restore mechanism.
 The SQLite Archive uses WAL mode and short `BEGIN IMMEDIATE` transactions.
 Each append checks the expected Work revision, writes the Record, updates the projection, and enqueues external effects atomically.
-Record numbering migration may update legacy projection metadata when opening an older Archive.
-That migration exception is the only supported mutation of historical storage.
-Archive backup and restore are operator responsibilities.
+Opening an older Archive may add missing command/projection columns, migrate repository-wide path scopes, normalize legacy terminal Work states, and allocate missing record numbers.
+These startup migrations are the supported mutations of historical storage.
+Archive backup and restore are operator responsibilities; preserve the SQLite database and initialization marker, and do not copy database or WAL files independently during active writes.
 
 ## MVP exclusions
 

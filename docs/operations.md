@@ -42,7 +42,7 @@ Oracle packets and outputs are bounded to 16,000 characters per text field.
 
 Git and provider commands use a 120-second timeout.
 Pi RPC requests use a 10-second timeout by default.
-Pi agent turns use a 30-minute timeout by default.
+Pi agent turns use a 30-minute timeout by default; Observer turns use a 120-second timeout.
 The autonomous monitor runs once per minute.
 Outbox claims expire after two minutes and are renewed while an effect is running.
 A transient Conclave startup failure receives one retry in the runtime and one retry in the outbox worker.
@@ -92,6 +92,7 @@ Khala does not automatically close or delete remote review objects.
 
 The Archive is an SQLite database in WAL mode with full synchronous durability.
 Back it up after closing the hosting Pi session, or use SQLite's backup API while the service remains quiesced.
+Preserve the adjacent `.initialized` marker with the Archive backup.
 Do not copy the main `.sqlite` file and WAL independently while writes are active.
 Restore only from a trusted copy and verify the project path before reopening it.
 Khala fails closed on malformed projections or unsupported Archive integrity failures.

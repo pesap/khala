@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
 	type Actor,
@@ -135,11 +135,16 @@ CREATE INDEX IF NOT EXISTS archive_records_kind_sequence ON archive_records(kind
 `;
 
 const EFFECT_LEASE_MS = 120_000;
+const ARCHIVE_MARKER_SUFFIX = ".initialized";
 
 export class SQLiteArchive implements ArchivePort {
 	private readonly database: SqlDatabase;
 
 	constructor(path: string) {
+		const existed = existsSync(path);
+		const markerPath = archiveMarkerPath(path);
+		if (!existed && existsSync(markerPath))
+			throw new Error(`Archive database ${path} is missing; refusing to create a replacement Archive.`);
 		mkdirSync(dirname(path), { recursive: true });
 		this.database = openSqlite(path);
 		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
@@ -149,6 +154,7 @@ export class SQLiteArchive implements ArchivePort {
 		this.migrateLegacyWorkStates();
 		this.migrateRecordNumbers();
 		this.validateIntegrity();
+		ensureArchiveMarker(markerPath);
 	}
 
 	private validateIntegrity(): void {
@@ -1397,6 +1403,23 @@ function readStringValue(value: JsonValue | undefined | SqlOutputValue, field: s
 		throw new Error(`${field} is not text.`);
 	}
 	return String(value);
+}
+
+function archiveMarkerPath(path: string): string {
+	return `${path}${ARCHIVE_MARKER_SUFFIX}`;
+}
+
+function ensureArchiveMarker(path: string): void {
+	try {
+		writeFileSync(path, "Khala Archive initialized.\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
+	} catch (error) {
+		if (error instanceof Error && isExistsError(error)) return;
+		throw error;
+	}
+}
+
+function isExistsError(error: Error): boolean {
+	return "code" in error && error.code === "EEXIST";
 }
 
 function boundText(value: string, maxLength: number): string {
