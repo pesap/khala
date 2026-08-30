@@ -140,7 +140,7 @@ Provider capabilities are checked before publication.
 The built-in GitHub and GitLab adapters support draft review requests and merge observation.
 GitHub polling records normalized checks, issue comments, submitted reviews, inline comments, and provider outcomes.
 Failed checks wake the Conclave for reconciliation, and provider base/head drift blocks ready handoff.
-GitLab polling currently records review-request status and provider outcomes but does not normalize comments or checks.
+GitLab polling records normalized CI/review status and provider outcomes but does not normalize comments or checks.
 Feedback delivery is therefore GitHub-only in the MVP.
 
 Monitoring emits observations rather than Signals or Verdicts.
@@ -195,7 +195,7 @@ A Conclave child cannot kill the Executor during its own shutdown.
 The supervisor exists only for the lifetime of the hosting User Pi session.
 Closing that session waits for monitor, effect, and runtime operations before closing the Archive.
 A new User Pi session opens the same project Archive.
-`khala-recover` drains pending effects and reconciles persisted runtime bindings.
+The Pi command `/khala-recover` drains pending effects and reconciles persisted runtime bindings.
 The autonomous monitor performs the same reconciliation on its next cycle.
 
 Runtime liveness is an observation rather than lifecycle state.

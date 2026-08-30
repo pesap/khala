@@ -74,7 +74,7 @@ Failed delivery remains evidence and can be explicitly retried after the Executo
 
 The parent supervisor owns Executor launches and consumes durable outbox effects.
 The supervisor is not a standalone daemon and ends with the hosting User Pi session.
-Run `khala-recover` after reopening a project to drain pending effects and reconcile persisted bindings.
+Run the Pi command `/khala-recover` after reopening a project to drain pending effects and reconcile persisted bindings.
 The User recovery action can rebind an unreachable Executor through the parent supervisor.
 The autonomous monitor performs the same work on its next cycle.
 Child role sessions cannot invoke User recovery tools or impersonate the parent.

@@ -17,7 +17,7 @@ Install:
 From the Khala checkout:
 
 ```sh
-npm install
+npm ci --ignore-scripts
 npm run check
 pi -e ./src/index.ts
 ```
@@ -96,6 +96,9 @@ See [TUI navigation](tui-navigation.md) for keys and terminal states.
 - Merged provider request with active Work: wait for provider-outcome
   reconciliation and the explicit Conclave Outcome; a merge observation alone
   is insufficient.
+- Interrupted project session: run the Pi command `/khala-recover` after
+  reopening the project to drain pending effects and reconcile persisted runtime
+  bindings.
 
 Khala does not silently change Mission terms, increase token allowance, merge
 provider requests, or retry semantic decisions.

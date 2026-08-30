@@ -1,8 +1,7 @@
 # UI and code-quality review
 
-This review records the current UI and implementation quality baseline before launching Khala.
-Four parallel read-only Luna reviewers examined lifecycle/archive behavior, runtime/provider boundaries, TUI/extensions, and cross-cutting code quality.
-Findings were verified against the source and behavioral tests before implementation.
+This review records the current UI and implementation quality baseline for Khala.
+It summarizes the implemented lifecycle, runtime, provider, TUI, and extension safeguards, plus the bounded follow-up work that remains.
 
 ## Implemented fixes
 
@@ -73,11 +72,12 @@ Findings were verified against the source and behavioral tests before implementa
 
 ## Verification
 
-The relevant checks pass after these changes.
+Run the repository checks after changes to lifecycle, runtime, provider, TUI, or extension behavior.
 
-- `prek run`
+- `prek run --all-files`
 - `npm run check`
-- `./node_modules/.bin/tsc`
-- `node --test test/*.js`
+- `npm run test`
+- `npm run check:markdown`
+- `npm pack --dry-run`
 
 The test suite covers governed commit and validation actions, symlink rejection, credential filtering, late RPC behavior, command replay, provider reviewer identity, provider comment retention, lifecycle recovery, and picker refresh/history/help.

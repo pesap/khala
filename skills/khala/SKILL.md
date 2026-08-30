@@ -62,23 +62,25 @@ Filter by `workId`, `missionId`, `executionId`, `kinds`, `states`, or time range
 Text output is capped at 48 KB and 1,800 lines; use `nextCursor` or narrower filters to continue.
 Read the current Work before any decision.
 Child sessions receive only the records allowed by their binding.
+The returned page includes `asOfSequence` so follow-up pages remain anchored to a stable Archive view.
 
 ### `khala_poll_provider`
 
 User-session tool for polling the current GitHub Pull Request or GitLab Merge
 Request.
-It records changed provider observations and confirmed merge evidence,
-then schedules applicable Conclave effects.
+It requires `workId` and `expectedWorkRevision`.
+It records changed provider observations and confirmed merge evidence, then
+schedules applicable Conclave effects.
 It does not merge or accept Work.
 The root service also polls active review requests autonomously.
 
 ### `khala_inspect_runtime`
 
 Read-only runtime inspection for a Work.
-It can refresh the displayed runtime
-state without writing an Archive record.
-`idle` can mean that an active
-Execution is between turns; `unreachable` requires Conclave-authorized recovery.
+It requires `workId` and `expectedWorkRevision`.
+It can refresh the displayed runtime state without writing an Archive record.
+`idle` can mean that an active Execution is between turns;
+`unreachable` requires Conclave-authorized recovery.
 
 ### `khala_perform_action`
 

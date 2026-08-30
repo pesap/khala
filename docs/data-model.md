@@ -68,7 +68,7 @@ The service revalidates authorization on every page.
 GitHub and GitLab review requests are reconciled by deterministic Work markers.
 Khala stores provider-native IDs, URLs, branch and head information, validation, review status, and bounded observations.
 GitHub conversation details retain at most eight comments and eight checks with bounded fields.
-GitLab polling currently stores status and merge observations without normalized comments or checks.
+GitLab polling stores normalized CI/review status and merge observations but does not normalize comments or checks.
 Review comments retain stable observation IDs and bounded feedback lists so replay cannot redeliver them.
 Provider text is untrusted evidence.
 `ProviderObservation` is a discriminated union keyed by its `kind`.

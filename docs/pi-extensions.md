@@ -5,7 +5,7 @@ extensions.
 
 ## `pi-review`
 
-`/review` opens the familiar Pi selector interaction from `pi-review` and supports:
+`/review` opens the Pi review selector and supports:
 
 - uncommitted changes;
 - a base branch;

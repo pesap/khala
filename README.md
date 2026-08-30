@@ -3,7 +3,7 @@
 <img src="assets/khala-sigil.svg" alt="forge" align="left" width="192px" height="192px"/>
 <img align="left" width="0" height="192px" hspace="10"/>
 
-### khala
+# khala
 > Govern coding work with a Conclave, execute it in isolated sandboxes, and keep the evidence.
 >
 > [![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
@@ -31,9 +31,10 @@ User conversation quiet while a Conclave admits Work, schedules a bounded
 Executor in a Git worktree, records evidence, and waits for a
 provider-confirmed review outcome.
 
-The [Archive](docs/data-model.md) is authoritative.
-Runtime state, Git,
-providers, model output, and TUI views are evidence or projections only.
+The [Archive](docs/data-model.md) is authoritative for Work, Mission,
+Execution, and Record state.
+Runtime state, Git, provider responses, model output, and TUI views are
+evidence or projections only.
 
 > [!IMPORTANT]
 > Review-request workflows require Node.js 22.19 or newer, Pi, Git, and an
@@ -44,19 +45,22 @@ authenticated `gh` or `glab` session.
 From a checkout:
 
 ```sh
-npm install
+npm ci --ignore-scripts
 npm run check
 pi -e ./src/index.ts
 ```
 
 In Pi:
 
-1. Open `/khala` and configure Conclave, Executor, Observer, and Oracle models
-   in Role settings.
+1. Open `/khala` and configure Conclave, Executor, and Oracle models in Role
+   settings.
+   Configure an Observer model when repository context gathering is needed.
 2. Submit complete intent with `khala_submit_work`.
-3. Reopen `/khala` to inspect Work through Actions, Evidence, Peer-Review,
-   and Archive.
+3. Reopen `/khala` to inspect Work through Actions, Evidence, Peer-Review, and
+   Archive.
 
+Use the Pi command `/khala-recover` after reopening a project when a child
+session may have been interrupted.
 See [Getting started](docs/getting-started.md) for the complete first-Work
 workflow and verification steps.
 
@@ -78,6 +82,20 @@ acceptance.
 Only an explicit Conclave Outcome backed by verified merge evidence
 succeeds Work.
 See the [lifecycle reference](docs/lifecycle.md).
+
+## Commands and tools
+
+- `/khala` opens the on-demand Work view and Role settings.
+- `/khala-recover` rereads the Archive and reconciles persisted runtime
+  bindings.
+- `khala_submit_work` records User intent without waiting for admission.
+- `khala_poll_provider` records changed GitHub or GitLab observations and
+  confirmed merge evidence.
+- `khala_read_archive`, `khala_inspect_runtime`, and the role-scoped action
+  tools expose bounded evidence and governed decisions.
+
+See the packaged [tool-usage skill](skills/khala/SKILL.md) for the complete
+contract and action reference.
 
 ## Explore the repository
 
@@ -121,20 +139,25 @@ See the [lifecycle reference](docs/lifecycle.md).
   cancellation, and eligible recovery decisions.
 - The Conclave admits Missions, schedules Executions, issues Verdicts, handles
   bounded provider feedback, and records Outcomes.
-- The Executor changes only its immutable Mission in its isolated sandbox and
-  reports evidence-bearing Signals.
+- The Executor changes files only in its isolated sandbox and under the
+  Mission's permitted paths; the Mission itself remains immutable and the
+  Executor reports evidence-bearing Signals.
 - The Observer is read-only and records at most one bounded assessment when
   repository context is missing.
 - The Oracle is advisory and has no tools.
+- Child sessions are deny-by-default and receive only their role-scoped Pi and
+  Khala tools; Executors have no arbitrary shell tool.
 - Provider polling and runtime monitoring record evidence; they do not merge or
   accept Work automatically.
+- GitHub and GitLab review requests support status and merge observation.
+  GitHub feedback delivery is supported; GitLab feedback normalization is not.
 
 ## Bundled extensions
 
-- [`pi-review`](extensions/pi-review/review.ts) provides `/review` and
+- [`pi-review`](extensions/pi-review/README.md) provides `/review` and
   `/end-review` for reviewing uncommitted changes, branches, commits, pull
   requests, and snapshots.
-- [`pi-clarify`](extensions/pi-clarify/clarify.ts) provides `/clarify` and the
+- [`pi-clarify`](extensions/pi-clarify/README.md) provides `/clarify` and the
   `-clarify` marker.
   It places a rewritten prompt in the editor for User review;
   it does not send the prompt.

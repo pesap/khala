@@ -2,20 +2,21 @@
 
 ## Local validation
 
-Install dependencies and run the same primary checks used by CI:
+Install dependencies and run the local validation and packaging checks:
 
 ```sh
 npm ci --ignore-scripts
 npm run check
-npm test
+npm run test
+npm run check:markdown
+npm pack --dry-run
 ```
 
 `npm run check` runs Oxlint, Biome, and TypeScript validation.
 `npm run check:markdown` checks paragraph sentence boundaries and bullet length.
-`npm test` builds
-`dist` and runs every Node test in `test/`.
-Tests use local port adapters and do
-not require provider credentials.
+`npm run test` builds `dist` and runs every Node test in `test/`.
+Tests use local port adapters and do not require provider credentials.
+`npm pack --dry-run` verifies the package contents without publishing.
 
 For a focused test run after building:
 
@@ -24,7 +25,7 @@ npx tsc
 node --test test/mvp.test.js
 ```
 
-The GitHub Actions workflow runs these checks and validates the package with
+The GitHub Actions workflow runs linting, the build-backed test suite, and
 `npm pack --dry-run`: [CI workflow](../.github/workflows/ci.yaml).
 
 ## Repository layout

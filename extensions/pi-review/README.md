@@ -20,7 +20,4 @@ Review mode is persisted in the session branch and follows `/tree` navigation.
 It does not edit files, commit, push, or turn review prose into a Khala Verdict.
 The commands require a UI-capable Pi session, such as interactive or RPC mode.
 
-The extension is currently a standalone Pi workflow.
-Its review lifecycle can be adapted to submit Khala Work and consume evidence-bearing Signals in a later change.
-
 The fork retains the upstream MIT license in `LICENSE`.

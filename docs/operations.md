@@ -19,11 +19,12 @@ Project values override global values.
 | `targetBranch` | `main` | Review request target branch |
 | `maxConcurrentExecutions` | `2` | Project-level Execution limit |
 | `defaultWorkTokens` | `20000` | Default Work budget |
-| `piCommand` | `pi` | Command used for child sessions |
+| `piCommand` | `["pi"]` | Argument list used to launch child sessions |
 
 Role models and thinking levels are persisted as `conclaveModel`, `executorModel`, `observerModel`, `oracleModel`, and their matching `*Thinking` settings.
+The Observer model is only needed when repository context gathering is requested.
+The TUI bindings are configurable with `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`h`).
 Conclave, Executor, and Oracle models are required for normal governed Work.
-The Observer model is required only when repository context gathering is requested.
 Role settings apply to future launches.
 Existing Executions retain their persisted model, thinking level, and prompt identity.
 
@@ -59,7 +60,7 @@ The hosting User Pi session owns the parent Khala service.
 The parent service is not a standalone daemon.
 Closing the User session waits for active monitor, effect, and runtime operations before closing the Archive.
 
-Run `khala-recover` after reopening a project when a child may have been interrupted.
+Run the Pi command `/khala-recover` after reopening a project when a child may have been interrupted.
 The command drains pending effects and reconciles persisted runtime bindings.
 The User recovery action can rebind an unreachable Executor through the parent supervisor.
 The autonomous monitor performs the same work on its next cycle.
@@ -74,7 +75,7 @@ Do not delete a worktree or session file while Khala may still own its process b
 | Provider | Review request | Status and merge observation | Feedback delivery |
 | --- | --- | --- | --- |
 | GitHub | Draft Pull Request | Supported | Supported for trusted authenticated review principals |
-| GitLab | Draft Merge Request | Supported | Not normalized in the MVP |
+| GitLab | Draft Merge Request | Supported | Status and merge observation supported; feedback not normalized in the MVP |
 
 Khala discovers the provider from the repository origin.
 Only `github.com` and `gitlab.com` origins are supported.

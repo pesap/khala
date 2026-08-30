@@ -47,7 +47,7 @@ injected automatically into matching child sessions.
 
    ```sh
    npm run check
-   npm test
+   npm run test
    ```
 
 A running child keeps the prompt it received for that session.

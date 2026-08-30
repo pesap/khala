@@ -14,7 +14,7 @@ They call the application service and never read SQLite or interpret lifecycle r
 ## Conclave
 
 - `khala_read_archive` reads authoritative records for its bound Work.
-- `khala_inspect_runtime` performs a read-only liveness inspection for the bound Work.
+- `khala_inspect_runtime` performs a read-only liveness inspection for an authorized Work.
 - `khala_perform_action` can request User input, admit Work, amend an inactive Mission, launch an Observer, start or replace an Execution, recover an Executor, commit sandbox changes, run declared validation, issue a Verdict, deliver bounded provider feedback, and record a Work Outcome.
 - `khala_run_oracle` runs the bounded no-tools Oracle review.
 
@@ -49,7 +49,7 @@ CommandMeta {
 The service revalidates actor, action, current state, input, and revision.
 Validation, authorization, revision, and provider failures are surfaced as Pi tool errors rather than successful result objects.
 Active tool filtering is only a convenience; every handler also enforces its session role.
-A repeated command ID returns its current Work projection and the original record for the same Work.
+A repeated command ID returns the projection captured by the original command and its original record for the same Work.
 A revision conflict requires a reread and never performs an implicit semantic retry.
 `khala_read_archive` output is capped at 48 KB and 1,800 lines; use its cursor or narrower filters for more records.
 
@@ -62,7 +62,7 @@ A changed provider head or base is surfaced as reconciliation evidence before re
 It never merges or accepts Work automatically.
 
 GitHub polling normalizes checks, issue comments, submitted reviews, inline comments, and provider outcomes.
-GitLab polling currently normalizes review-request status and provider outcomes only.
+GitLab polling normalizes CI/review status and provider outcomes but does not normalize comments or checks.
 GitHub feedback can be delivered after Conclave Mission-fit assessment.
 Provider feedback is untrusted evidence and is quoted before it reaches an Executor.
 GitLab feedback delivery is not part of the MVP.
