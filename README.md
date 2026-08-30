@@ -3,420 +3,161 @@
 <img src="assets/khala-sigil.svg" alt="forge" align="left" width="192px" height="192px"/>
 <img align="left" width="0" height="192px" hspace="10"/>
 
-### khala
+# khala
 > Govern coding work with a Conclave, execute it in isolated sandboxes, and keep the evidence.
 >
 > [![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
 > [![CI](https://github.com/pesap/khala/actions/workflows/ci.yaml/badge.svg)](https://github.com/pesap/khala/actions/workflows/ci.yaml)
 > [![Release](https://img.shields.io/github/v/release/pesap/khala)](https://github.com/pesap/khala/releases)
 > [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT.txt)
-> [![Latest commit](https://img.shields.io/github/last-commit/pesap/khala?style=flat-square)](https://github.com/pesap/khala/commits/main)
+> [![Latest commit](https://img.shields.io/github/last-commit/pesap/khala?style=flat-square)](https://github.com/pesap/khala/commits)
 <br/>
 <br/>
 <br/>
 
 <p align="center">
-  <a href="#why-khala">Why Khala</a> ·
-  <a href="#features">Features</a> ·
-  <a href="#pi-tools">Pi Tools</a> ·
+  <a href="#khala">Why Khala</a> ·
+  <a href="#core-boundaries">Features</a> ·
+  <a href="src/index.ts">Pi Tools</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#documentation">Documentation</a> ·
-  <a href="#development">Development</a>
+  <a href="#explore-the-repository">Documentation</a> ·
+  <a href="docs/development.md">Development</a>
 </p>
 
-Khala is a [Pi coding-agent](https://github.com/earendil-works/pi) extension for
-coordinating serious repository work across specialized agent roles.
 
-A user queues Work. A project-scoped Conclave validates it and admits it
-under a Mandate when it is ready to execute. An isolated Executor performs the
-mission in a Git worktree and reports evidence-bearing Signals. The Conclave
-reviews the evidence and records a Verdict. When context is missing, a
-read-only Observer gathers it first. Every durable transition is written to an
-append-only Archive.
+khala is a Pi-native governance extension for isolated coding work.
+It keeps the
+User conversation quiet while a Conclave admits Work, schedules a bounded
+Executor in a Git worktree, records evidence, and waits for a
+provider-confirmed review outcome.
 
-> The principle: agents may act, but only evidence changes the record.
+The [Archive](docs/data-model.md) is authoritative for Work, Mission,
+Execution, and Record state.
+Runtime state, Git, provider responses, model output, and TUI views are
+evidence or projections only.
 
-Khala is intentionally narrow. It does not replace your VCS, terminal
-multiplexer, model provider, or project database. It composes those boundaries
-and makes the lifecycle visible and recoverable.
-
-## Why Khala
-
-- Bounded roles. Users, the Conclave, Observers, and Executors have
-  different authority and different tools.
-- Isolated execution. Executors work in Git worktrees instead of the caller's
-  checkout.
-- Evidence before judgment. Signals carry summaries and concrete evidence;
-  Verdicts must reference a Signal from the same execution.
-- Durable coordination. The project Archive survives sessions, panes, and
-  launcher failures.
-- Recoverable lifecycle. Failed launches can return to the queue, and Retry
-  creates a successor execution rather than rewriting history.
-- Observable by default. `/khala` or `Alt+K` shows a Work-first attention view
-  with safe recovery actions, while hiding raw Executor and runtime internals.
-
-## How it works
-
-The user-facing lifecycle is short. The Archive keeps the detailed history
-behind it; see the [detailed lifecycle](docs/lifecycle.md). Every Khala Work
-publishes its Executor branch and creates a draft Pull Request before the
-Executor can hand the implementation off for User review.
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant C as Conclave
-    participant O as Observer
-    participant E as Executor
-    participant H as User
-    participant A as Archive
-
-    U->>C: Submit Work
-    C->>A: Register Work Submission
-
-    opt Context is missing
-        C->>O: Gather context
-        O->>A: Save Learning
-        A-->>C: Learning is available
-    end
-
-    C->>A: Save Mandate
-    C->>A: Save immutable Mission
-    C->>E: Launch Execution
-
-    loop Mission execution
-        E->>A: Save Signal
-        A-->>C: Signal is available
-
-        alt Continue
-            C-->>E: Continue current Mission
-        else Retry
-            C->>A: Save successor Mission
-            C->>E: Launch successor Mission
-        else Finish handoff
-            C-->>E: Hand off implementation for review
-            E->>H: Reviewable PR is ready
-        end
-    end
-
-    alt Changes requested
-        H->>C: Review feedback
-        C->>A: Save successor Mission
-        C->>E: Launch successor Execution
-    else PR merged
-        H->>C: Merged PR
-        C->>A: Save accepted Work Outcome
-    end
-```
-
-The normal path is `Work Submission → Mandate → Mission → Execution →
-Reviewable PR → Merged PR → Work Outcome`. Observer Learning, Preserver
-Counsel, Continue, and Retry are side paths used when context, guidance, or
-recovery requires them. A merged PR is acceptance; a merely closed PR is not.
-
-The Archive is append-only. Current state is a projection of the latest record
-for an entity; the complete history remains available for review and recovery.
-
-## Features
-
-- `/khala-work` loads the structured Work template.
-- `/git-review [scope]` performs a read-only, history-first repository inspection and produces an evidence-backed code-reading plan.
-- `/khala-triage` (also `/triage`) turns an issue into a WorkPacket, resolves uncertainty interactively, and sends approved Work to the Project Conclave.
-- A dedicated, persisted project Conclave reviews and admits submitted Work under Mandate revision one.
-- `/khala-demo` launches a three-lane lifecycle demonstration.
-- `/khala` or `Alt+K` shows the Work-first attention view. Select a Work to
-  review its Pull Request, retry or stop its worker, continue its current Mission
-  with a new worker, inspect attempts, or dismiss the current condition.
-- The bundled `pi-review` extension adds `/review` and `/end-review` for scoped code reviews.
-- The bundled `pi-clarify` extension rewrites rough prompts with `/clarify` or the `-clarify` message marker using the configured Conclave model.
-- Observers record repository Learning before an Executor starts when context is
-  incomplete.
-- Zellij, tmux, and Herdr launchers are supported.
-- Git worktrees provide Executor isolation and link the primary project's
-  existing `node_modules` directory when available, so sandbox hooks can use
-  local tools without installing or copying dependencies.
-- The Archive is stored as inspectable JSONL rather than hidden in a service.
-
-## Pi tools
-
-`khala_oracle` runs a bounded fresh-context read-only review. Callers pass a short
-required `subject` and the self-contained review packet. Its findings are advisory and
-do not mutate Khala state. While it runs, Pi shows a four-phase progress path — Prepare
-context, Read packet, Review evidence, Deliver verdict — as a two-line status with the
-active phase ordinal, elapsed time, last completed checkpoint, and the configured cancel
-key; compact results start with a `Verdict:` label (Pass, Needs revision, Blocked,
-Incomplete) followed by finding and validation-gap counts, real duration, and the
-expand hint. The expanded result surfaces the verdict label, then the review output,
-then model and duration, then the coarse lifecycle trace, then the literal packet,
-without exposing private chain-of-thought.
-
-Khala registers these custom Pi tools but activates only the allowlist for the
-current role, intersected with Pi's current tool inventory so explicit tool
-exclusions remain effective. Runtime authorization remains a defense-in-depth
-check. A normal session without an explicit role marker is treated as a User
-session.
-
-| Tool | Purpose | Authorized role |
-| --- | --- | --- |
-| `khala_oracle` | Run a bounded fresh-context read-only review of a named subject; results are advisory. | Any Session |
-| `khala_submit_work` | Persist and queue a complete Work for project Conclave review; an active WorkPacket is optional. | User |
-| `khala_read_archive` | Read authoritative Archive records visible to the current role. | Role-filtered |
-| `khala_admit_work` | Admit a Work Submission and create Mandate revision one. | Conclave |
-| `khala_launch_observer` | Launch a read-only Observer to gather missing Work context. | Conclave |
-| `khala_record_learning` | Record evidence-backed repository learning. | Observer |
-| `khala_launch_execution` | Materialize an admitted Mission with `mode: "materialize"`, or launch its headless Executor with `mode: "launch"` (or omitted). | Conclave |
-| `khala_signal` | Submit evidence-bearing progress, blocked, or finished execution evidence. | Executor |
-| `khala_verdict` | Record a Continue, Retry, Finish, or Reject decision for a Signal. | Conclave |
-| `khala_steer_execution` | Send one bounded Mission-grounded correction or mandatory stop. | Conclave |
-| `khala_coordinate_work` | Record Conclave autonomous dependency or peer-conflict decisions. | Conclave |
-| `khala_apply_user_priority` | Append the Coordination override for a pending User Priority. | Conclave |
-| `khala_dispose_user_priority` | Record the ignored disposition of a stale pending User Priority. | Conclave |
-| `khala_record_intervention_outcome` | Close one issued Intervention with observed evidence. | Conclave |
-| `khala_counsel` | Record source-backed advisory Counsel. | Preserver |
-| `khala_record_pull_request_review` | Record User review, merge, or closure evidence for a Pull Request. | User |
-| `khala_prioritize_work` | Record that selected Work proceeds before related Work in an active peer-conflict Coordination. | User |
-| `khala_record_work_outcome` | Record the durable acceptance statement after a verified Pull Request merge. | Conclave |
-
-## Install
-
-Khala requires Node.js 22.19.0 or newer and is validated on Node.js 26.7.0 with
-npm 11.19.0. On that toolchain a clean install completes with no install-script
-warnings and a clean `npm audit --audit-level=high` for both the production and
-the complete dependency tree.
-
-### From GitHub
-
-```sh
-pi install git:github.com/pesap/khala
-```
-
-Run `npx --yes --silent github:pesap/khala` once to open the setup
-questionnaire for the launcher, worktree, Pi commands, and Archive paths. The
-wizard writes global settings to `~/.pi/agent/khala.json`; use
-`npx --yes --silent github:pesap/khala --project` for a project override. Use
-`npx --yes --silent github:pesap/khala --dry-run` to preview the resulting
-configuration. The explicit `setup` command is equivalent. `--silent` hides npm
-installation diagnostics while preserving Khala output. GitHub `npx` installs
-run the TypeScript source directly and do not compile Khala during installation
-and install only Khala's runtime dependencies, so they never install the
-upstream packages that carry lifecycle scripts.
-
-### From a checkout
-
-```sh
-git clone https://github.com/pesap/khala.git
-cd khala
-npm install
-npm run build
-pi -e .
-```
-
-Khala is a Pi package. The package manifest registers the extension, prompts,
-themes, and the Khala-owned role skills (`khala` and `khala-executor`).
-Pi provides Khala's extension APIs as host peers, so a Git install installs only
-Khala's own runtime dependencies rather than another Pi runtime.
-
-### Dependency policy
-
-The `allowScripts` field in `package.json` narrowly approves the only two
-lifecycle scripts that appear in the resolved dependency tree, after review:
-
-- `@google/genai@1.52.0` — its `preinstall` is `echo 'preinstall: no-op'`; the
-  published tarball ships prebuilt `dist/` and no `scripts/` directory.
-- `protobufjs@7.6.5` — its `postinstall` runs `node scripts/postinstall`, a
-  compatibility check that only warns when the *root* project pins a direct
-  protobufjs dependency with a mismatched version scheme. Khala installs
-  protobufjs transitively, so the script exits without doing anything; the
-  tarball ships prebuilt `dist/`.
-
-Both scripts are covered by exact-version entries, so a fresh `npm install` from
-a checkout completes without an npm `install-scripts` warning. New dependencies
-that ship lifecycle scripts must be reviewed and either added here as an
-exact-version entry or denied explicitly; the package regression test fails when
-an install-script package is not covered by the policy.
-
-`node-domexception@1.0.0` remains in the dev-only dependency tree and npm prints
-its upstream deprecation warning (`Use your platform's native DOMException
-instead`). It is an upstream limitation, not a Khala defect: the chain
-`@earendil-works/pi-ai` -> `@google/genai` (pi-ai 0.83.x and 0.84.x both pin
-exactly `1.52.0`) -> `google-auth-library` `^10.3.0` (latest 10.x and 11.x both
-depend on `gaxios` `^7`) -> `gaxios` (latest `7.3.1`) -> `node-fetch` `^3.3.2`
-(latest 3.x) -> `formdata-polyfill` `^4.0.10` (latest) -> `node-domexception`
-`^1.0.0` (the only published version, marked deprecated upstream). Every package
-in the chain is at its newest compatible version, and `node-domexception` is a
-hard runtime requirement of `formdata-polyfill`, so removing it would require an
-unsafe override. Khala runs on Node.js 22.19.0+, where native `DOMException` is
-available and the polyfill path is unused.
-
-Direct dependencies and devDependencies are exact-pinned and `package-lock.json`
-matches `package.json`. The `brace-expansion` override pins the fixed `5.0.9`
-release to close the advisory range GHSA-rgw5-rvv9-x895. `npm audit
---audit-level=high` reports zero vulnerabilities for both
-`npm audit --omit=dev` and the complete tree.
+> [!IMPORTANT]
+> Review-request workflows require Node.js 22.19 or newer, Pi, Git, and an
+authenticated `gh` or `glab` session.
 
 ## Quick start
 
-1. Install Khala and open a project in Pi.
-2. Run `/khala-triage <github-issue>` or `/khala-work`.
-3. For triage, answer blocking questions and confirm the generated WorkPacket. Use
-   `/khala-triage --approve <github-issue>` for independent submission.
-4. For a manual Work, fill in the template, or ask the LLM to call `khala_submit_work` directly.
-   `Objective`, `Scope`, `Acceptance criteria`, `Plan`, and `Validation` are required.
-5. The Work is persisted and queued for independent Project Conclave review. The acknowledgement does not imply admission or launch.
-6. Run `/khala` (or `Alt+K`) to see the Work-first attention view. Actions are
-   Archive-backed and idempotent; model recovery starts the same Mission directly
-   and does not require `/khala-recover`. When no action is needed, Khala says
-   so explicitly.
-7. Inspect the Archive when you need the authoritative lifecycle history.
-
-For a deterministic walkthrough, run `/khala-demo`. It creates three dummy Work
-lanes: direct success, retry then success, and retry then rejection. The demo
-does not modify application source.
-
-## Roles
-
-| Role          | Authority                                   | Responsibility                                             |
-| ------------- | ------------------------------------------- | ---------------------------------------------------------- |
-| User          | Submit Work and review evidence             | Defines intent, communicates feedback, and provides acceptance evidence. |
-| Conclave      | Launch Observer/Executor and issue Verdicts | Governs the project Work lifecycle.                        |
-| Observer      | Record Learning only                        | Gathers missing repository context in a read-only sandbox. |
-| Executor      | Record Signals only                         | Performs one exact mission in an isolated sandbox.         |
-| Preserver     | Record Counsel only                         | Provides bounded, source-backed repository advice.         |
-
-The role system prompts live in `system-prompts/` and are injected into clean
-role sessions. They are not user-invoked slash prompts.
-
-## Configuration
-
-Global defaults live in `~/.pi/agent/khala.json`. A trusted project can override
-individual values in `.pi/khala.json`.
-
-```json
-{
-  "worktreeRoot": "~/worktrees",
-  "worktreeBranchPrefix": "khala/",
-  "launcher": "zellij",
-  "piCommand": ["pi", "--extension", "/path/to/khala"],
-  "conclaveModel": "provider/model",
-  "conclaveThinking": "medium",
-  "conclaveMaxCostUsdPerTurn": 0.25,
-  "executorModel": "provider/model",
-  "executorThinking": "high",
-  "executorMaxCostUsdPerTurn": 1.0,
-  "oracleModel": "provider/model",
-  "oracleThinking": "high",
-  "observerModel": "provider/model",
-  "observerThinking": "medium",
-  "pullRequestTargetBranch": "main",
-  "commitConvention": "project",
-  "archiveRoot": "~/.pi/agent/khala/conclaves"
-}
-```
-
-`launcher` is `zellij`, `tmux`, or `herdr` and defaults to `zellij`. These
-launchers retain pane creation and focus behavior for read-only Observers; a
-Mission Executor is always a headless RPC child and has no pane target. Herdr
-requires `HERDR_ENV=1` and keeps the caller focused. `piCommand` remains an
-argument array and is used for Executor, Observer, and Oracle child processes;
-Herdr quotes it for its `pane run` shell command. Oracle retains only safe shared
-process flags such as `--offline` and strips configured session, resource,
-prompt, model, and thinking arguments before applying its isolated role flags.
-Khala accepts only Pi child commands because each role receives Pi-specific
-capability and runtime flags.
-
-Run the setup wizard to choose explicit models. The four supervision model/cost
-fields are required: `conclaveModel`, `conclaveMaxCostUsdPerTurn`,
-`executorModel`, and `executorMaxCostUsdPerTurn`. `oracleModel` is also required
-for Oracle. There is no model inference or silent fallback to Pi settings,
-another role's model, or the first discovered model. A configured Executor
-model is passed explicitly to headless RPC. `observerModel` may be empty only
-when `piCommand` supplies its own model. Setup groups each role's model and
-thinking selection, including the Oracle's thinking level.
-
-Trusted project precedence is typed and explicit: global `khala.json` is the
-base, and a trusted project's `.pi/khala.json` stores only values that differ
-from the global configuration. Matching project fields override the global
-base; unchanged fields continue to inherit later global updates. An untrusted
-project uses only global configuration. Typed `Work.costBudget`
-values override the corresponding merged Conclave or Executor cost field;
-unset Work values use that explicit configuration field. No fallback changes
-these precedence rules. Thinking levels are independent per role, including
-Oracle, and may be empty only to request Pi's explicit thinking default. Missing supervision
-settings fail with setup guidance.
-
-`khala_submit_work` returns after the queued submission is durable and Conclave
-processing has been scheduled independently. This acknowledgement is not
-admission, Mission materialization, or Executor launch. If the later wake fails,
-Khala records a failed `conclave-wake` event and leaves the Work available for
-inspection and recovery under the same ID. When wake evidence cannot be
-appended, the persisted Conclave session retains the diagnostic. Run
-`npx --yes --silent github:pesap/khala setup` first when configuration is
-missing, then run `/khala-recover`. For a runtime outage with valid
-configuration, run `/khala-recover` directly. Do not launch an unsupervised
-replacement agent.
-
-Every Work enables Git push and the Executor-managed draft Pull Request
-workflow. The Executor must publish a reviewable Pull Request before Finish
-handoff. Model, RPC, Conclave, poll, and publication supervision failures are
-retried within Khala's bounded recovery policy; Khala blocks dependent launches
-when required and records a blocked/failure Signal rather than claiming
-success. Retryable and raw Execution failures stay hidden from the attention
-summary, which surfaces only durable Work-level evidence: a reviewable Pull
-Request, a rejected Work or current Mission, an exhausted Conclave submission
-recovery, or a failed Conclave wake. Use `/khala-recover` to recover a project
-Conclave after a runtime outage. Inspect the Archive for exact causal evidence.
-
-The package ships named Khala prompts and role system prompts. Generic packaged
-placeholder prompts are intentionally not included. The Conclave's supervision
-controls are tool-only and restricted to the exact allowlist in
-`system-prompts/conclave.md`; it supervises multiple asynchronous Executors but
-never implements their code. Users stay in their ordinary session; a pending
-User Priority (`khala_prioritize_work`) lets the User prioritize selected Work
-over related Work in an active peer-conflict Coordination, and the Conclave
-applies or disposes it. Users never write inside the dedicated Conclave session.
-
-## Documentation
-
-- [Glossary](docs/glossary.md) — Canonical Khala domain terms, roles, and
-  record authorship.
-- [Lifecycle](docs/lifecycle.md) — Detailed Work, Mission, Execution, review,
-  Retry, and acceptance flow.
-- [Data model](docs/data-model.md) — Archive envelope, records, lifecycle
-  statuses, validation, and append-only state.
-- [Supervision tools](docs/supervision-tools.md) — bounded controls, action IDs,
-  User overrides, and failure semantics.
-- [Attention summary](docs/attention-summary.md) — the read-only `/khala`
-  surface, its actionable categories, and the working condition.
-- [Work template](templates/khala-work.md) — the structured request format.
-- [Pull Request template](templates/pull-request.md) — the bundled Executor PR description format.
-- [System prompts](system-prompts/) — role behavior and constraints.
-- [Bundled Pi extensions](docs/pi-extensions.md) — extensions shipped with Khala, including `pi-review` and `pi-clarify`.
-
-## Development
+From a checkout:
 
 ```sh
-npm install
+npm ci --ignore-scripts
 npm run check
-npm run build
-npm test
+pi -e ./src/index.ts
 ```
 
-`npm run check` runs Biome and TypeScript validation. `npm test` discovers all
-tracked `test/*.js` non-e2e tests; they use local stubs and do not require
-provider credentials or paid model calls. CI uses `npm ci --ignore-scripts`,
-`npm run check`, and this safe test command.
+In Pi:
 
-The most important architectural seam is `src/khala-model.ts`: it is the single
-source of truth for durable record shapes, discriminants, statuses, and guards.
-Behavior modules import from it rather than defining their own persistence
-models.
+1. Open `/khala` and configure Conclave, Executor, and Oracle models in Role
+   settings.
+   Configure an Observer model when repository context gathering is needed.
+2. Submit complete intent with `khala_submit_work`.
+3. Reopen `/khala` to inspect Work through Actions, Evidence, Peer-Review, and
+   Archive.
 
-## Contributing
+Use the Pi command `/khala-recover` after reopening a project when a child
+session may have been interrupted.
+See [Getting started](docs/getting-started.md) for the complete first-Work
+workflow and verification steps.
 
-Keep changes focused and preserve the authority boundaries between Users, the Conclave, Observers, Executors, and the Archive. Add regressions to the
-existing test suite, run `npm run check`, and run the relevant tests before
-opening a pull request.
+## How a Work reaches completion
 
-## License
+```mermaid
+flowchart LR
+    U[User submits Work] --> C[Conclave admits Mission]
+    C --> E[Executor works in Git worktree]
+    E --> R[Draft PR or MR and ready Signal]
+    R --> V[User reviews provider request]
+    V --> M[Provider merge evidence]
+    M --> O[Conclave records Outcome]
+    O --> S[Succeeded Work]
+```
 
-MIT
+A `ready` Signal, review handoff, provider approval, or provider merge is not
+acceptance.
+Only an explicit Conclave Outcome backed by verified merge evidence
+succeeds Work.
+See the [lifecycle reference](docs/lifecycle.md).
+
+## Commands and tools
+
+- `/khala` opens the on-demand Work view and Role settings.
+- `/khala-recover` rereads the Archive and reconciles persisted runtime
+  bindings.
+- `khala_submit_work` records User intent without waiting for admission.
+- `khala_poll_provider` records changed GitHub or GitLab observations and
+  confirmed merge evidence.
+- `khala_read_archive`, `khala_inspect_runtime`, and the role-scoped action
+  tools expose bounded evidence and governed decisions.
+
+See the packaged [tool-usage skill](skills/khala/SKILL.md) for the complete
+contract and action reference.
+
+## Explore the repository
+
+| Goal | Start here |
+| --- | --- |
+| Complete a first Work | [Getting started](docs/getting-started.md) |
+| Understand states and recovery | [Lifecycle](docs/lifecycle.md) |
+| Understand provider polling and effects | [Supervision tools](docs/supervision-tools.md) |
+| Inspect records and runtime bindings | [Data model](docs/data-model.md) |
+| Navigate the TUI | [TUI navigation](docs/tui-navigation.md) |
+| Understand the design and limits | [MVP design](docs/mvp-design.md) and [glossary](docs/glossary.md) |
+| Configure and recover Work | [Operations](docs/operations.md) |
+| Develop or validate changes | [Development](docs/development.md) |
+| Tune role behavior | [Role prompts](docs/role-prompts.md) |
+| Extend Pi integration | [Pi extensions](docs/pi-extensions.md) |
+
+<details>
+<summary>Source map</summary>
+
+- [`src/model.ts`](src/model.ts) — domain contracts and state discriminants.
+- [`src/archive.ts`](src/archive.ts) — SQLite WAL Archive, projections,
+  cursors, idempotency, and transactional outbox.
+- [`src/service.ts`](src/service.ts) — lifecycle decisions, actor
+  authorization, scheduling, governed commit/validation actions, effects, and supervision.
+- [`src/runtime.ts`](src/runtime.ts) — isolated Pi JSON-RPC child sessions,
+  bounded timeouts, process ownership, and transcript permissions.
+- [`src/adapters.ts`](src/adapters.ts) — Git worktrees and GitHub/GitLab
+  provider adapters.
+- [`src/tui.ts`](src/tui.ts) — on-demand Work-first terminal interface.
+- [`src/index.ts`](src/index.ts) — Pi tools, commands, role boundaries, and
+  runtime wiring.
+- [`system-prompts/`](system-prompts/) — role instructions for Conclave,
+  Executor, Observer, and Oracle.
+- [`skills/`](skills/) — tool-usage guidance packaged with Khala.
+
+</details>
+
+## Core boundaries
+
+- The User submits intent and makes explicit review, rename, budget, failure,
+  cancellation, and eligible recovery decisions.
+- The Conclave admits Missions, schedules Executions, issues Verdicts, handles
+  bounded provider feedback, and records Outcomes.
+- The Executor changes files only in its isolated sandbox and under the
+  Mission's permitted paths; the Mission itself remains immutable and the
+  Executor reports evidence-bearing Signals.
+- The Observer is read-only and records at most one bounded assessment when
+  repository context is missing.
+- The Oracle is advisory and has no tools.
+- Child sessions are deny-by-default and receive only their role-scoped Pi and
+  Khala tools; Executors have no arbitrary shell tool.
+- Provider polling and runtime monitoring record evidence; they do not merge or
+  accept Work automatically.
+- GitHub and GitLab review requests support status and merge observation.
+  GitHub feedback delivery is supported; GitLab feedback normalization is not.
+
+## Bundled extensions
+
+- [`pi-review`](extensions/pi-review/README.md) provides `/review` and
+  `/end-review` for reviewing uncommitted changes, branches, commits, pull
+  requests, and snapshots.
+- [`pi-clarify`](extensions/pi-clarify/README.md) provides `/clarify` and the
+  `-clarify` marker.
+  It places a rewritten prompt in the editor for User review;
+  it does not send the prompt.

@@ -1,3 +1,0 @@
-const KHALA_TOGGLE_SHORTCUT = "alt+k";
-
-export { KHALA_TOGGLE_SHORTCUT };

@@ -1,11 +1,12 @@
-# Bundled Pi extensions
+# Bundled extensions
 
-Khala-specific or bundled Pi extensions live here. The package manifest registers
-compiled extensions alongside the main Khala extension.
+This package ships two Pi extensions alongside Khala:
 
-## Extensions
+- `pi-review`: selector-driven scoped code review with `/review` and
+  `/end-review`.
+- `pi-clarify`: explicit-model prompt rewriting with `/clarify` and
+  `-clarify`.
 
-- [`pi-review`](pi-review/) — forked scoped code-review workflow with `/review`
-  and `/end-review`.
-- [`pi-clarify`](pi-clarify/) — forked prompt-rewriting workflow with `/clarify`
-  and the `-clarify` message marker.
+Both extensions are independent of the Archive lifecycle.
+They use Pi's native commands, editor, widgets, and interactive selectors.
+See [`pi-review/README.md`](pi-review/README.md) and [`pi-clarify/README.md`](pi-clarify/README.md) for command syntax, supported modes, and behavior.

@@ -9,14 +9,14 @@
  * The rewrite uses the configured Khala Conclave model for the current project.
  */
 
+import { type Api, type AssistantMessage, type ModelsApiStreamOptions, type UserMessage } from "@earendil-works/pi-ai";
 import {
-	type AssistantMessage,
-	completeSimple,
-	type SimpleStreamOptions,
-	type UserMessage,
-} from "@earendil-works/pi-ai/compat";
-import { BorderedLoader, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { KHALA_SETUP_COMMAND, loadKhalaConfig } from "../../src/khala-config.js";
+	BorderedLoader,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type InputEvent,
+} from "@earendil-works/pi-coding-agent";
+import { loadConfig } from "../../src/config.js";
 import { hasClarifyMarker, stripClarifyMarker } from "./marker.js";
 
 const USAGE = "Usage: /clarify <idea> | /clarify | add -clarify anywhere in the message";
@@ -44,14 +44,10 @@ Rules:
 9. Do not answer the request. Only rewrite the prompt.
 10. Output only the rewritten prompt text.`;
 
-type ClarifyUi = {
-	hasUI: boolean;
-	mode: string;
-	modelRegistry: ExtensionContext["modelRegistry"];
-	ui: ExtensionContext["ui"];
-	cwd: string;
-	isProjectTrusted: () => boolean;
-};
+type ClarifyContext = Pick<
+	ExtensionContext,
+	"hasUI" | "mode" | "modelRegistry" | "ui" | "cwd" | "isProjectTrusted" | "signal"
+>;
 
 // The rewrite flow reports one explicit outcome; UI text is derived only in applyClarifyOutcome.
 type ClarifyOutcome =
@@ -63,219 +59,165 @@ type ClarifyOutcome =
 
 type RewriteModel = NonNullable<ReturnType<ExtensionContext["modelRegistry"]["find"]>>;
 
-function resolveRewriteModel(ctx: ClarifyUi): { model: RewriteModel } | { reason: string } {
-	let config;
+function resolveRewriteModel(ctx: ClarifyContext): { model: RewriteModel } | { reason: string } {
+	const config = readClarifyConfig(ctx);
+	if ("reason" in config) return config;
+	const reference = splitModelReference(config.conclaveModel);
+	if (reference === undefined)
+		return { reason: "No valid Conclave model is configured. Open /khala and choose Role settings." };
+	const model = ctx.modelRegistry.find(reference.provider, reference.modelId);
+	if (model === undefined) return { reason: `Configured Conclave model is unavailable: ${config.conclaveModel}` };
+	return { model };
+}
+
+function readClarifyConfig(ctx: ClarifyContext): ReturnType<typeof loadConfig> | { reason: string } {
 	try {
-		config = loadKhalaConfig(ctx.cwd, ctx.isProjectTrusted());
+		return loadConfig(ctx.cwd, ctx.isProjectTrusted(), false);
 	} catch (error) {
 		return { reason: error instanceof Error ? error.message : String(error) };
 	}
-
-	const modelReference = config.conclaveModel.trim();
-	const separator = modelReference.indexOf("/");
-	if (separator <= 0 || separator === modelReference.length - 1) {
-		return {
-			reason: `No valid Conclave model is configured. Run \`${KHALA_SETUP_COMMAND}\` to configure Khala.`,
-		};
-	}
-
-	const provider = modelReference.slice(0, separator);
-	const modelId = modelReference.slice(separator + 1);
-	const model = ctx.modelRegistry.find(provider, modelId);
-	if (model) return { model: model as RewriteModel };
-
-	return { reason: `Configured Conclave model is unavailable: ${modelReference}` };
 }
 
+function splitModelReference(value: string): { provider: string; modelId: string } | undefined {
+	const reference = value.trim();
+	const separator = reference.indexOf("/");
+	if (separator <= 0 || separator === reference.length - 1) return undefined;
+	return { provider: reference.slice(0, separator), modelId: reference.slice(separator + 1) };
+}
 async function callModel(
 	text: string,
 	model: RewriteModel,
-	ctx: ClarifyUi,
+	ctx: ClarifyContext,
 	signal?: AbortSignal,
 ): Promise<string | null> {
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok || !auth.apiKey) {
-		throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
-	}
-
-	const userMessage: UserMessage = {
-		role: "user",
-		content: [{ type: "text", text }],
-		timestamp: Date.now(),
-	};
-
-	const options: SimpleStreamOptions = {
-		apiKey: auth.apiKey,
-		cacheRetention: "none",
-	};
-	if (auth.headers !== undefined) options.headers = auth.headers;
-	if (auth.env !== undefined) options.env = auth.env;
+	const userMessage: UserMessage = { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+	const options: ModelsApiStreamOptions<Api> = { cacheRetention: "none" };
 	if (signal !== undefined) options.signal = signal;
-
-	const response = await completeSimple(model, { systemPrompt: SYSTEM_PROMPT, messages: [userMessage] }, options);
-
-	if (response.stopReason === "aborted") {
-		return null;
-	}
-
-	return extractClarifyText(response);
+	const response = await ctx.modelRegistry.complete(
+		model,
+		{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
+		options,
+	);
+	return response.stopReason === "aborted" ? null : extractClarifyText(response);
 }
 
 export function extractClarifyText(
 	response: Pick<AssistantMessage, "content" | "stopReason" | "errorMessage">,
 ): string {
-	if (response.stopReason === "error") {
+	if (response.stopReason === "error")
 		throw new Error(`Clarify model failed: ${response.errorMessage ?? "the provider returned an error"}`);
-	}
-
 	const rewritten = response.content
 		.filter((content): content is { type: "text"; text: string } => content.type === "text")
 		.map((content) => content.text)
 		.join("\n")
 		.trim();
-
-	if (!rewritten) {
-		const contentTypes = response.content.map((content) => content.type).join(", ") || "none";
-		throw new Error(`Clarify returned no text (stop reason: ${response.stopReason}; content blocks: ${contentTypes}).`);
-	}
-
-	return rewritten;
+	if (rewritten.length > 0) return rewritten;
+	throw new Error(
+		`Clarify returned no text (stop reason: ${response.stopReason}; content blocks: ${contentTypes(response)}).`,
+	);
 }
 
-async function rewritePrompt(raw: string, ctx: ClarifyUi): Promise<ClarifyOutcome> {
+function contentTypes(response: Pick<AssistantMessage, "content">): string {
+	return response.content.map((content) => content.type).join(", ") || "none";
+}
+async function rewritePrompt(raw: string, ctx: ClarifyContext): Promise<ClarifyOutcome> {
 	const text = raw.trim();
-	if (!text) {
-		return { result: "invalid", reason: USAGE };
-	}
-
+	if (text.length === 0) return { result: "invalid", reason: USAGE };
 	const resolved = resolveRewriteModel(ctx);
-	if ("reason" in resolved) {
-		return { result: "unavailable", reason: resolved.reason };
-	}
-	const model = resolved.model;
+	if ("reason" in resolved) return { result: "unavailable", reason: resolved.reason };
+	return rewriteResolvedPrompt(text, resolved.model, ctx);
+}
 
-	// Interactive TUI can show a loader. Other hosts fall through to a plain call.
-	if (ctx.mode === "tui" && ctx.hasUI) {
-		const loaded = await ctx.ui.custom<ClarifyOutcome | null>((tui, theme, _kb, done) => {
-			const loader = new BorderedLoader(tui, theme, `Clarifying with ${model.provider}/${model.id}...`);
-			loader.onAbort = () => done({ result: "cancelled" });
+function rewriteResolvedPrompt(text: string, model: RewriteModel, ctx: ClarifyContext): Promise<ClarifyOutcome> {
+	if (ctx.mode === "tui" && ctx.hasUI) return rewriteWithLoader(text, model, ctx);
+	return rewriteDirect(text, model, ctx);
+}
 
-			const run = async () => {
-				try {
-					const result = await callModel(text, model, ctx, loader.signal);
-					if (result === null) {
-						done({ result: "cancelled" });
-						return;
-					}
-					done({ result: "ready", text: result });
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					done({ result: "failure", reason: message });
-				}
-			};
+async function rewriteWithLoader(text: string, model: RewriteModel, ctx: ClarifyContext): Promise<ClarifyOutcome> {
+	const loaded = await ctx.ui.custom<ClarifyOutcome | null>((tui, theme, _kb, done) => {
+		const loader = new BorderedLoader(tui, theme, `Clarifying with ${model.provider}/${model.id}...`);
+		loader.onAbort = () => done({ result: "cancelled" });
+		void callModel(text, model, ctx, loader.signal)
+			.then((result) => done(result === null ? { result: "cancelled" } : { result: "ready", text: result }))
+			.catch((error) => done({ result: "failure", reason: error instanceof Error ? error.message : String(error) }));
+		return loader;
+	});
+	return loaded ?? { result: "cancelled" };
+}
 
-			void run();
-			return loader;
-		});
-		if (loaded !== undefined && loaded !== null) {
-			return loaded;
-		}
-		return { result: "cancelled" };
-	}
-
+async function rewriteDirect(text: string, model: RewriteModel, ctx: ClarifyContext): Promise<ClarifyOutcome> {
 	try {
-		const rewritten = await callModel(text, model, ctx);
-		if (rewritten === null) {
-			return { result: "cancelled" };
-		}
-		return { result: "ready", text: rewritten };
+		const rewritten = await callModel(text, model, ctx, ctx.signal);
+		return rewritten === null ? { result: "cancelled" } : { result: "ready", text: rewritten };
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return { result: "failure", reason: message };
+		return { result: "failure", reason: error instanceof Error ? error.message : String(error) };
 	}
 }
 
 // One boundary maps every clarify outcome to UI text.
-function applyClarifyOutcome(outcome: ClarifyOutcome, ctx: ClarifyUi): void {
+function applyClarifyOutcome(outcome: ClarifyOutcome, ctx: ClarifyContext): void {
 	if (outcome.result === "ready") {
-		if (ctx.hasUI && typeof ctx.ui.setEditorText === "function") {
-			ctx.ui.setEditorText(outcome.text);
-			ctx.ui.notify("Rewrite ready. Edit if needed, then send.", "info");
-			return;
-		}
-		ctx.ui.notify(outcome.text, "info");
+		applyReadyOutcome(outcome.text, ctx);
 		return;
 	}
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI) return;
+	ctx.ui.notify(outcome.result === "cancelled" ? "Cancelled" : outcome.reason, clarifyOutcomeLevel(outcome));
+}
+
+function clarifyOutcomeLevel(outcome: Exclude<ClarifyOutcome, { result: "ready" }>): "info" | "warning" | "error" {
+	if (outcome.result === "invalid") return "warning";
+	return outcome.result === "failure" ? "error" : "info";
+}
+
+function applyReadyOutcome(text: string, ctx: ClarifyContext): void {
+	if (!ctx.hasUI) return;
+	ctx.ui.setEditorText(text);
+	ctx.ui.notify("Rewrite ready. Edit if needed, then send.", "info");
+}
+
+function clarifyCommandSource(args: string | undefined, ui: ClarifyContext): string {
+	const fromArgs = args?.trim() ?? "";
+	return fromArgs.length > 0 ? fromArgs : clarifyEditorText(ui);
+}
+
+function clarifyEditorText(ui: ClarifyContext): string {
+	return ui.hasUI ? ui.ui.getEditorText().trim() : "";
+}
+
+async function handleClarifyCommand(args: string | undefined, ctx: ClarifyContext): Promise<void> {
+	if (!ctx.hasUI) throw new Error("The /clarify command requires a UI-capable Pi session.");
+	const source = clarifyCommandSource(args, ctx);
+	if (!source) {
+		ctx.ui.notify(USAGE, "warning");
 		return;
 	}
-	if (outcome.result === "cancelled") {
-		ctx.ui.notify("Cancelled", "info");
-		return;
+	await applyClarifyOutcome(await rewritePrompt(source, ctx), ctx);
+}
+
+function shouldClarifyInput(event: Pick<InputEvent, "source" | "text">, ctx: ClarifyContext): boolean {
+	return ctx.hasUI && event.source !== "extension" && hasClarifyMarker(event.text);
+}
+
+async function handleClarifyInput(
+	event: Pick<InputEvent, "source" | "text">,
+	ctx: ClarifyContext,
+): Promise<{ action: "continue" | "handled" }> {
+	if (!shouldClarifyInput(event, ctx)) return { action: "continue" };
+	const rough = stripClarifyMarker(event.text);
+	if (!rough) {
+		ctx.ui.notify(USAGE, "warning");
+		return { action: "handled" };
 	}
-	if (outcome.result === "invalid") {
-		ctx.ui.notify(outcome.reason, "warning");
-		return;
-	}
-	ctx.ui.notify(outcome.reason, "error");
+	await applyClarifyOutcome(await rewritePrompt(rough, ctx), ctx);
+	return { action: "handled" };
 }
 
 export type { ClarifyOutcome };
 export { applyClarifyOutcome, USAGE };
-// biome-ignore lint/performance/noBarrelFile: The default export remains the extension entry; named helpers stay beside it.
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("clarify", {
 		description: "Rewrite a rough idea into a precise technical prompt (result goes in the editor)",
-		handler: async (args, ctx) => {
-			const rawArgs = (args ?? "").trim();
-			const ui: ClarifyUi = {
-				hasUI: ctx.hasUI,
-				mode: ctx.mode,
-				modelRegistry: ctx.modelRegistry,
-				ui: ctx.ui,
-				cwd: ctx.cwd,
-				isProjectTrusted: ctx.isProjectTrusted,
-			};
-
-			const fromArgs = rawArgs;
-			const fromEditor = ctx.hasUI && typeof ctx.ui.getEditorText === "function" ? ctx.ui.getEditorText().trim() : "";
-			const source = fromArgs || fromEditor;
-
-			if (!source) {
-				ctx.ui.notify(USAGE, "warning");
-				return;
-			}
-
-			await applyClarifyOutcome(await rewritePrompt(source, ui), ui);
-		},
+		handler: async (args, ctx) => handleClarifyCommand(args, ctx),
 	});
-
-	pi.on("input", async (event, ctx) => {
-		if (event.source === "extension") {
-			return { action: "continue" };
-		}
-
-		const text = event.text;
-		if (!hasClarifyMarker(text)) {
-			return { action: "continue" };
-		}
-
-		const rough = stripClarifyMarker(text);
-		if (!rough) {
-			if (ctx.hasUI) ctx.ui.notify(USAGE, "warning");
-			return { action: "handled" };
-		}
-
-		const ui: ClarifyUi = {
-			hasUI: ctx.hasUI,
-			mode: ctx.mode,
-			modelRegistry: ctx.modelRegistry,
-			ui: ctx.ui,
-			cwd: ctx.cwd,
-			isProjectTrusted: ctx.isProjectTrusted,
-		};
-
-		await applyClarifyOutcome(await rewritePrompt(rough, ui), ui);
-		return { action: "handled" };
-	});
+	pi.on("input", async (event, ctx) => handleClarifyInput(event, ctx));
 }

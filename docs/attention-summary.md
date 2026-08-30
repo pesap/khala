@@ -1,83 +1,78 @@
-# Attention summary
+# `/khala` view
 
-`/khala` and `Alt+K` show a compact, project-level attention view. The view is
-read-only with respect to the User's session: it does not switch sessions, show
-raw Executor rows, expose a writable Conclave session path, or display internal
-runtime labels.
+`/khala` is quiet and on demand.
+It does not open automatically or print child
+traffic.
+Its Role settings view changes Khala's persisted role configuration,
+not the User's active Pi model or settings.
 
-The view derives durable Work conditions from the authoritative Archive and
-uses the local runtime registry only to corroborate live process liveness. It
-shows one top-level option per actionable Work. Each option shows the Pull
-Request reference when available, the Work name, and a dim lowercase status tag
-such as `[stalled]`, `[failed]`, `[review]`, `[idle]`, or `[unreachable]`.
-Khala does not render a live-process badge as a running or activity indicator;
-orphaned or idle runtimes keep their probe-derived presentation. Type to
-fuzzy-filter the mission list. Up and Down wrap around the filtered missions,
-and Enter opens the selected Work. Selecting
-a Work opens a focused detail menu with its Mission ID, Pull Request, current
-explanation, and available actions:
+The first view lists Work titles.
+Each row is a Work, not a Mission.
+Work is the
+User's stable goal; after admission, its Mission is the bounded plan Khala
+runs, and its Execution is one attempt under that Mission.
+The picker hides succeeded and cancelled Work by default, keeps failed Work visible with a clear failure marker, and provides a history toggle for completed Work.
+It uses the same minimalist fuzzy filtering pattern as Pi's model selector.
+Work names are bounded before rendering and presented in aligned
+Work, ID, state, and Execution columns.
+Text labels and semantic colors together
+communicate status.
+The user-session footer shows a branded status such as
+`khala: idle` or `khala: ◈ 2`.
+The status view shows `Next`
+for the immediate action required or performed by Khala, reports Work as
+`stopped` with a cancellation or failure reason, and avoids repeating active
+state labels.
+It does not repeat revision, budget, or token metadata.
+Evidence explicitly distinguishes active lifecycle state from
+recorded activity.
+It then provides three core sections and a conditional peer-review section:
 
-Before presenting the action menu, Khala re-checks the selected Work’s current
-attention and runtime activity so stale idle or unreachable actions are not
-shown after a state change. Process liveness only gates an already-projected
-`Recover Conclave` action; it does not hide idle or stop actions.
+1. Actions — actor-authorized actions that are currently available.
+2. Evidence — Current Execution status, bounded Signals, review request, provider observations, and explicit missing evidence.
+3. Peer-Review — provider comments from the current review request, when available.
+4. Archive — append-ordered Archive records with selectable details.
 
-- **Review** — shows the current reviewable Pull Request URL. The Pull Request
-  must belong to the current, finished Mission and the Work must not already
-  have an accepted Outcome.
-- **Try current worker again** — sends one identified continuation to a current
-  idle worker. Khala checks the persisted Pi entry before recording the action
-  as applied.
-- **Continue with a new worker** — starts one new Executor for the same current
-  immutable Mission after the previous Execution is durably failed. It does not
-  create a successor Mission.
-- **Ask worker to stop** — aborts the current worker and permits one bounded
-  stop handoff. The worker must persist exactly one current blocked Signal with
-  non-empty evidence.
-- **Select another model** — lists authenticated Executor models other than the
-  unavailable model. The model selector supports the same fuzzy filtering and
-  wrapping Up/Down navigation as the mission selector. The selected model is
-  recorded as a one-time override for this Mission recovery and does not change
-  global configuration.
-- **Try the same model again** — appears only while the failed model is
-  currently available. It starts a new Executor for the same Mission without
-  changing global configuration.
-- **View attempts** — opens the current Mission's recorded Executor attempts. The selector uses compact, aligned attempt numbers, Executor names, and dim status tags. Up and Down wrap through the attempts; selecting one opens its Execution ID, failure details, model, launcher, timestamps, paths, session, recovery, prompt, and upstream metadata. Backspace returns to the Work actions.
-- **Held Mission** — identifies the upstream Work for a dependency hold, or
-  the conflicting Work for a peer conflict. Recovery actions stay hidden until
-  the Conclave resolves the Coordination.
-- **Dismiss** — records an append-only dismissal for the current condition. A
-  changed Archive condition receives a new identity and can appear again.
+Blocked Executions add a blocking-signal section.
 
-Every worker action persists an idempotent request before delivery and one
-outcome after delivery. Reopening the same condition does not send a duplicate
-request after a durable outcome or an uncertain prior attempt.
+A complete evidence walkthrough reads:
 
-Pressing Backspace in a Work or project action menu returns to the top-level
-attention list; the menus do not need a separate return row. Pressing Backspace
-in an attempt detail returns to the attempt list, and pressing it in the attempt
-list returns to the Work actions. Escape still cancels the current selector.
-Project-level recovery conditions remain separate from Work actions:
+```text
+Run a complete Khala evidence walkthrough
+Work active
+Mission in progress
+Execution running
+Runtime unreachable
+PR: #43
+Next: Executor runtime is unreachable. Recover it from Actions.
+→ Actions → Evidence → Peer-Review → Archive
+```
 
-- A failed Conclave wake offers setup guidance when configuration is missing.
-- Other failed Conclave wakes offer `/khala-recover`.
-- Selecting a model from `/khala` starts the same-Mission recovery directly; no
-  `/khala-recover` command is required afterward.
+Provider review comments appear in the dedicated Peer-Review section.
+After
+polling, the Conclave can authorize a delivery without reopening the User
+session; the delivery and any recovery failure remain visible in Archive.
 
-The view also reports stopped Work when a Submission or Mission was rejected,
-or when automatic Conclave submission recovery was exhausted. Archive-backed
-recovery conditions can offer `Recover Conclave`; the live-process gate only
-hides that action while the current runtime is live. A Work Outcome always
-suppresses stopped and review attention for that Work.
+Selection is pinned by Work ID.
+The configured refresh key rereads the Work list while preserving the selected Work and filter.
+The help panel lists refresh, history, settings, and navigation controls.
+Navigation never writes.
+Raw Executor output and
+provider text are hidden until the User explicitly reads bounded evidence.
+Evidence details use wrapped sections with clear headings, and provider
+summaries are presented as clean text for scanning or copying.
 
-The view does not infer user action from session transcripts. Retryable or raw
-Execution failures without a current actionable condition, unknown runtime
-state, supervision internals, participant identities, and raw Executor rows
-stay hidden. Running Observers with a focusable pane appear only as a secondary
-read-only option after Work and project options.
-
-When no actionable condition exists, `/khala` reports the number of active Work
-submissions and explicitly says that no user action is required. In
-non-interactive modes it reports the same projection as a notification instead
-of opening selectors. Project recovery and read-only Observer options use the
-same short tagged selector rows.
+Default interactions follow Pi selector conventions: type filters, Up/Down
+move, Enter opens or confirms, and Backspace or Escape goes back or cancels.
+Long detail pages support Up/Down, Page Up/Page Down, Home, and End scrolling.
+`r` opens Role settings when the filter is empty.
+`h` toggles history and `ctrl+r` refreshes the picker by default.
+When provider comments are available, `c` opens
+Peer-Review from the Work overview.
+An unreachable Executor exposes runtime
+recovery in Actions, and the Conclave can inspect and recover it without
+opening the User session.
+Role settings change the model and thinking level
+for future role launches.
+The Role settings and comments keys can be changed in
+`khala.json`.

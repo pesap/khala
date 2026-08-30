@@ -1,28 +1,30 @@
 # Bundled Pi extensions
 
-Khala registers its bundled Pi extensions in `package.json` alongside the main
-Khala extension. Pi loads them when the Khala package is installed.
+The package registers the main Khala extension and two complementary Pi
+extensions.
 
-## pi-clarify
+## `pi-review`
 
-`pi-clarify` rewrites rough prompts into precise technical prompts before they
-are sent to the agent.
+`/review` opens the Pi review selector and supports:
 
-- `/clarify <idea>` rewrites the supplied idea.
-- `/clarify` rewrites the current editor text.
-- `-clarify` anywhere in a message rewrites that message and places the result
-  in the editor instead of sending it.
-The rewrite uses Khala's configured Conclave model for the current project.
-There are no separate `/clarify model` commands.
+- uncommitted changes;
+- a base branch;
+- a commit;
+- a GitHub pull request reference;
+- file or folder snapshots.
 
-The rewrite preserves concrete details and does not send the prompt until the
-user reviews and submits the resulting editor text.
+Pass `/review <target>` to bypass the selector and send a literal target to the reviewer.
+The command waits for current agent activity to settle before starting.
+Review mode is persisted in the session branch and follows session tree navigation.
+The review is a separate session workflow.
+It does not mutate Khala lifecycle state or turn review prose into a Verdict.
+`/end-review` ends the local review mode and leaves findings in the session for the User to act on.
+The commands require a UI-capable Pi session, such as interactive or RPC mode.
 
-## pi-review
+## `pi-clarify`
 
-`pi-review` provides `/review` and `/end-review` for scoped code reviews of
-uncommitted changes, branches, commits, GitHub pull requests, and file or folder
-snapshots. Its review lifecycle remains a standalone workflow.
-
-See the extension-specific READMEs in [`extensions/`](../extensions/) for
-upstream attribution and license details.
+`/clarify <idea>` and `/clarify` rewrite a rough prompt using the configured Conclave model.
+A `-clarify` marker intercepts the input, places the rewrite in the editor, and waits for User review.
+The marker is a whole token, so it does not match words such as `pre-clarify` or `-clarify-now`.
+The extension never silently sends the rewritten prompt and never changes global Pi settings.
+The command and marker require a UI-capable Pi session, such as interactive or RPC mode.
