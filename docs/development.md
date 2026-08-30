@@ -1,5 +1,16 @@
 # Development
 
+## Try uncommitted changes
+
+To test the current checkout without installing it into Pi, run:
+
+```sh
+npm ci --ignore-scripts
+pi -e .
+```
+
+`pi -e .` loads the local package for the current Pi run only.
+
 ## Local validation
 
 Install dependencies and run the local validation and packaging checks:

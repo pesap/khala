@@ -14,16 +14,21 @@ Install:
 
 ## Install and configure
 
-From the Khala checkout:
+Install the latest Khala release from its Git tag:
 
 ```sh
-npm ci --ignore-scripts
-npm run check
-pi -e ./src/index.ts
+pi install git:github.com/pesap/khala@v1.1.0
 ```
 
-Open `/khala` in Pi, choose Role settings, and configure models and thinking
-levels for Conclave, Executor, Observer, and Oracle.
+Pi installs packages globally by default.
+To install Khala only for the current project, add `-l`:
+
+```sh
+pi install git:github.com/pesap/khala@v1.1.0 -l
+```
+
+Start Pi, open `/khala`, choose Role settings, and configure models and
+thinking levels for Conclave, Executor, Observer, and Oracle.
 Settings are stored in
 `~/.pi/agent/khala.json` and apply to future launches.
 An existing Execution

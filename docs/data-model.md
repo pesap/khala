@@ -21,6 +21,188 @@ Opening an older Archive may add missing command/projection columns, migrate leg
 These startup migrations are the supported mutations of historical storage.
 The Archive never interprets runtime reachability or provider text as lifecycle authority.
 
+## Domain model
+
+```mermaid
+classDiagram
+    class Archive {
+        +table archiveRecords
+        +table workProjection
+        +table outbox
+    }
+
+    class Work {
+        +string workId
+        +number revision
+        +WorkState state
+        +WorkStopReason stopReason
+        +WorkTerms terms
+        +WorkBudget budget
+    }
+
+    class WorkTerms {
+        +string title
+        +string objective
+        +string context
+        +string scope
+        +List~string~ acceptanceCriteria
+        +List~string~ constraints
+        +List~string~ validation
+        +List~string~ allowedPaths
+        +number maxTokens
+    }
+
+    class WorkBudget {
+        +number maxTokens
+        +number reservedTokens
+        +number consumedTokens
+    }
+
+    class Mission {
+        +string missionId
+        +string workId
+        +WorkTerms assignment
+        +number mandateRevision
+        +string predecessorMissionId
+    }
+
+    class Execution {
+        +string executionId
+        +ExecutionState state
+        +ExecutionRuntimeState runtimeState
+        +string model
+        +string thinking
+        +number tokenAllowance
+        +TokenUsage usage
+    }
+
+    class TokenUsage {
+        +number inputTokens
+        +number outputTokens
+        +number cacheHitTokens
+        +number cacheMissTokens
+    }
+
+    class Sandbox {
+        +string path
+        +string baseCommit
+        +string branch
+    }
+
+    class PiBinding {
+        +string sessionId
+        +string sessionPath
+        +PromptIdentity promptIdentity
+    }
+
+    class PromptIdentity {
+        +string packageVersion
+        +string promptSha256
+    }
+
+    class ReviewRequest {
+        +string provider
+        +string providerId
+        +ReviewRequestStatus status
+        +string sourceBranch
+        +string targetBranch
+        +string headCommit
+    }
+
+    class ValidationRun {
+        +string executionId
+        +string headCommit
+        +List~ValidationResult~ results
+    }
+
+    class ValidationResult {
+        +string command
+        +boolean passed
+        +string output
+    }
+
+    class Signal {
+        +string signalId
+        +string executionId
+        +string kind
+        +string summary
+    }
+
+    class Record {
+        +number sequence
+        +string id
+        +RecordKind kind
+        +Actor actor
+        +string workId
+        +string missionId
+        +string executionId
+        +string summary
+    }
+
+    class ProviderObservation {
+        <<Interface>>
+        +string observationId
+        +string kind
+        +boolean changed
+        +string summary
+    }
+
+    class ProviderCiObservation {
+        +ProviderCiStatus status
+    }
+
+    class ProviderReviewCommentObservation {
+        +ProviderReviewCommentStatus status
+    }
+
+    class ProviderFeedbackDeliveryObservation {
+        +ProviderFeedbackDeliveryStatus status
+    }
+
+    class ProviderMonitorFailureObservation {
+        +ProviderMonitorStatus status
+    }
+
+    class ProviderOutcomeObservation {
+        +string repository
+        +string sourceBranch
+        +string targetBranch
+        +string headCommit
+        +string mergeCommit
+    }
+
+    Archive "1" o-- "*" Record : stores
+    Archive "1" o-- "*" Work : projects
+    Work "1" *-- "1" WorkTerms : has
+    Work "1" *-- "1" WorkBudget : has
+    Work "1" o-- "0..*" Mission : owns history
+    Mission "0..1" --> "1" Mission : predecessor
+    Mission "1" o-- "0..*" Execution : attempts
+    Execution "1" *-- "1" Sandbox : uses
+    Execution "1" o-- "0..1" PiBinding : binds
+    PiBinding "1" *-- "1" PromptIdentity : identifies
+    Execution "1" o-- "0..1" TokenUsage : measures
+    Execution "1" o-- "0..*" ValidationRun : records
+    ValidationRun "1" o-- "0..*" ValidationResult : contains
+    Execution "1" o-- "0..*" Signal : emits
+    Work "1" o-- "0..1" ReviewRequest : current request
+    Work "1" o-- "0..*" ProviderObservation : receives
+    ProviderObservation <|.. ProviderCiObservation
+    ProviderObservation <|.. ProviderReviewCommentObservation
+    ProviderObservation <|.. ProviderFeedbackDeliveryObservation
+    ProviderObservation <|.. ProviderMonitorFailureObservation
+    ProviderObservation <|.. ProviderOutcomeObservation
+    Record ..> Work : binds
+    Record ..> Mission : binds
+    Record ..> Execution : binds
+```
+
+`Work` owns the stable User goal, while each admitted `Mission` preserves one
+immutable contract and can point to a predecessor when terms change.
+A Mission can have historical Executions, but at most one Execution is active.
+Records and provider observations preserve evidence without becoming lifecycle
+authority.
+
 ## Durable primitives
 
 ### Work

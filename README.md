@@ -43,13 +43,40 @@ evidence or projections only.
 
 ## Quick start
 
-From a checkout:
+### Try Khala first
+
+> [!TIP]
+> Try the latest tagged release in a temporary Pi session before installing it.
+> Pi loads the package for that run without adding it to your global or
+> project settings.
 
 ```sh
-npm ci --ignore-scripts
-npm run check
-pi -e ./src/index.ts
+pi -e git:github.com/pesap/khala@v1.1.0
 ```
+
+### Install Khala for regular use
+
+Install the latest Khala release from its Git tag:
+
+```sh
+pi install git:github.com/pesap/khala@v1.1.0
+```
+
+Pi installs packages globally by default.
+To install Khala only for the current project, add `-l`:
+
+```sh
+pi install git:github.com/pesap/khala@v1.1.0 -l
+```
+
+For another GitHub repository, use the same form with its owner, repository,
+and release tag:
+
+```sh
+pi install git:github.com/<user>/<repo>@<tag>
+```
+
+Then start Pi normally.
 
 In Pi:
 
@@ -68,16 +95,26 @@ workflow and verification steps.
 ## How Khala governs Work
 
 ```mermaid
-flowchart LR
-    U[User submits Work] --> C[Conclave admits Mission]
-    C --> E[Executor works in sandbox]
-    E --> R[Review request and ready Signal]
-    R --> V[Review request is available]
-    V -->|Feedback requested| F[Conclave authorizes bounded feedback]
-    F --> E
-    V -->|Provider merges| M[Provider merge evidence]
-    M --> O[Conclave records Outcome]
-    O --> S[Succeeded Work]
+sequenceDiagram
+    participant U as User
+    participant C as Conclave
+    participant E as Executor
+    participant P as Provider
+
+    U->>C: Submit Work
+    C->>E: Admit Mission and start Execution
+    loop Until provider confirms merge
+        E->>E: Work in isolated sandbox
+        E->>P: Publish review request and ready Signal
+        alt Feedback requested
+            P-->>C: Provider review feedback
+            C->>E: Deliver bounded authorized feedback
+        else Provider merges
+            P-->>C: Merge evidence
+        end
+    end
+    C->>C: Verify merge and record Outcome
+    C-->>U: Succeeded Work
 ```
 
 The loop returns authorized provider feedback to the Executor until the

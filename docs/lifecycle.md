@@ -6,53 +6,105 @@ The Archive is authoritative for lifecycle state.
 ## Lifecycle loop
 
 ```mermaid
-flowchart TD
-    submit[User submits Work] --> submitted[Work: submitted]
+sequenceDiagram
+    participant U as User Pi
+    participant S as Application service
+    participant A as Archive
+    participant C as Conclave
+    participant O as Observer
+    participant E as Executor
+    participant P as Provider
+    participant M as Monitor
+    participant R as Oracle
 
-    subgraph admission[Admission]
-        submitted -->|Intent is incomplete| needsInput[Work: needs-input]
-        needsInput -->|User amends terms| submitted
-        submitted -->|Repository facts are missing| observer[Observer records one assessment]
-        observer --> submitted
-        submitted -->|Conclave admits| mission[Mission: admitted]
+    Note over S,A: Archive is authoritative for lifecycle state
+    U->>S: Submit Work
+    S->>A: Append submission
+    S->>C: Wake with submitted Work
+
+    loop Until Mission terms are complete
+        alt Intent is incomplete
+            C->>S: request-input
+            S->>A: Record request
+            S-->>U: Work needs input
+            U->>S: amend-terms
+            S->>A: Append amended terms
+        else Repository facts are missing
+            C->>O: Launch bounded read-only assessment
+            O->>S: record assessment
+            S->>A: Append assessment
+        else Terms are complete
+            C->>S: admit Work
+            S->>A: Append immutable Mission
+        end
     end
 
-    mission --> queued[Execution: queued]
+    S->>A: Reserve budget and queue Execution
+    S->>E: Launch isolated Executor
 
-    subgraph execution[Execution and review]
-        queued --> running[Execution: running]
-        running -->|Commit, publish, validate| ready[Review request and ready Signal]
-        ready --> awaiting[Execution: awaiting-review]
-        awaiting -->|Conclave continues| running
-        awaiting -->|Authorized feedback| delivery[One bounded feedback Delivery]
-        delivery --> running
-        awaiting -->|Conclave replaces| queued
-        awaiting -->|Conclave rejects Mission| rejected[Mission: rejected]
+    loop Until Work succeeds or stops
+        par Executor work
+            E->>S: Report progress
+            E->>S: Commit, validate, and publish sandbox
+        and Provider monitoring
+            M->>P: Poll active review request
+            P-->>M: Status, feedback, or merge evidence
+            M->>S: Record changed observations
+            S->>A: Append provider evidence
+        end
+
+        alt Runtime is unreachable
+            M->>S: Report runtime observation
+            C->>S: Authorize recovery
+            alt Runtime can be rebound
+                S->>E: Rebind same Execution
+            else Recovery requires replacement
+                S->>E: End Execution
+                S->>A: Queue replacement Execution
+            else Work must stop
+                S->>A: Record failed or cancelled Work
+            end
+        else Provider merge is observed
+            M->>C: Wake Conclave for merge settlement
+            C->>S: Verify head and merge commit
+            C->>S: Record explicit Outcome
+            S->>A: Append Outcome
+        else Executor sends ready Signal
+            E->>S: ready with review and validation evidence
+            S->>P: Ensure draft review request
+            opt Conclave requests advisory Oracle review
+                C->>R: Review diff and validation packet
+                R-->>C: Advisory findings
+            end
+            C->>S: Issue Verdict
+            alt Continue
+                S->>E: Resume Execution
+            else Replace
+                S->>E: End Execution
+                S->>A: Queue replacement Execution
+            else Handoff
+                S-->>U: Awaiting provider review
+                alt Authorized feedback is requested
+                    P-->>S: Actionable provider feedback
+                    C->>S: Assess Mission fit and authorize Delivery
+                    S->>E: Deliver bounded feedback
+                else Review remains open
+                    Note over U,P: The next monitor cycle checks for feedback or merge
+                end
+            else Reject Mission
+                C->>S: Reject current Mission
+                S->>A: Record Verdict
+            end
+        else Execution is blocked or fails
+            E->>S: blocked or failed Signal
+            C->>S: Replace Execution or stop Work
+        end
     end
-
-    subgraph supervision[Polling and recovery]
-        awaiting --> poll[Provider poll or monitor cycle]
-        poll --> observations[Changed provider observations]
-        observations --> awaiting
-        running -->|Runtime is unreachable| recover[Conclave-authorized recovery]
-        recover -->|Rebind same Execution| running
-        recover -->|Replace or explicitly stop| decision[Conclave decision]
-    end
-
-    awaiting -->|Handoff| userReview[User reviews provider request]
-    userReview -->|Feedback requested| delivery
-    userReview -->|Provider confirms merge| merged[Verified merge evidence]
-    merged --> outcome[Conclave records explicit Outcome]
-    outcome --> succeeded[Work: succeeded]
-
-    decision -->|Replace| queued
-    decision -->|Fail or cancel| stopped[Work: stopped]
-    running -->|Execution fails or stops| decision
-    awaiting -->|Conclave explicitly fails or cancels Work| stopped
 ```
 
-The diagram shows the durable lifecycle states and the evidence-driven loops
-around execution, provider review, feedback delivery, and runtime recovery.
+The diagram shows the durable lifecycle interactions and the loops around
+admission, execution, provider review, feedback delivery, polling, and runtime
+recovery.
 Polling records observations and can wake the Conclave, but it never merges or
 accepts Work by itself.
 Only verified provider merge evidence combined with an explicit Conclave
