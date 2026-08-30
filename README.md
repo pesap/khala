@@ -3,7 +3,9 @@
 <img src="assets/khala-sigil.svg" alt="forge" align="left" width="192px" height="192px"/>
 <img align="left" width="0" height="192px" hspace="10"/>
 
-# khala
+</div>
+
+### khala
 > Govern coding work with a Conclave, execute it in isolated sandboxes, and keep the evidence.
 >
 > [![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
@@ -37,8 +39,7 @@ Runtime state, Git, provider responses, model output, and TUI views are
 evidence or projections only.
 
 > [!IMPORTANT]
-> Review-request workflows require Node.js 22.19 or newer, Pi, Git, and an
-authenticated `gh` or `glab` session.
+> Review-request workflows require Node.js 22.19 or newer, Pi, Git, and an authenticated `gh` or `glab` session.
 
 ## Quick start
 
@@ -64,24 +65,28 @@ session may have been interrupted.
 See [Getting started](docs/getting-started.md) for the complete first-Work
 workflow and verification steps.
 
-## How a Work reaches completion
+## How Khala governs Work
 
 ```mermaid
 flowchart LR
     U[User submits Work] --> C[Conclave admits Mission]
-    C --> E[Executor works in Git worktree]
-    E --> R[Draft PR or MR and ready Signal]
-    R --> V[User reviews provider request]
-    V --> M[Provider merge evidence]
+    C --> E[Executor works in sandbox]
+    E --> R[Review request and ready Signal]
+    R --> V[Review request is available]
+    V -->|Feedback requested| F[Conclave authorizes bounded feedback]
+    F --> E
+    V -->|Provider merges| M[Provider merge evidence]
     M --> O[Conclave records Outcome]
     O --> S[Succeeded Work]
 ```
 
+The loop returns authorized provider feedback to the Executor until the
+provider confirms a merge.
 A `ready` Signal, review handoff, provider approval, or provider merge is not
 acceptance.
-Only an explicit Conclave Outcome backed by verified merge evidence
-succeeds Work.
-See the [lifecycle reference](docs/lifecycle.md).
+Only an explicit Conclave Outcome backed by verified merge evidence succeeds
+Work.
+See the [full lifecycle loop](docs/lifecycle.md#lifecycle-loop).
 
 ## Commands and tools
 
