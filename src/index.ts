@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	type AgentToolUpdateCallback,
 	type ExtensionAPI,
@@ -18,8 +19,10 @@ import {
 	type JsonValue,
 	type MutableRecordQuery,
 	parseRecordKind,
+	RECORD_KINDS,
 	type RecordKind,
 	type ServiceResult,
+	WORK_STATES,
 	type WorkView,
 } from "./model.js";
 import type { OperationContext } from "./ports.js";
@@ -28,6 +31,24 @@ import { showKhala } from "./tui.js";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const ROLE_FLAG = "khala-role";
+type SessionRole = "user" | "conclave" | "observer" | "executor" | "oracle";
+type RestrictedSessionRole = Exclude<SessionRole, "user">;
+const RESTRICTED_ROLE_TOOLS = {
+	conclave: new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle", "khala_inspect_runtime"]),
+	executor: new Set([
+		"read",
+		"edit",
+		"write",
+		"grep",
+		"find",
+		"ls",
+		"khala_read_archive",
+		"khala_record_signal",
+		"khala_perform_action",
+	]),
+	observer: new Set(["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"]),
+	oracle: new Set(),
+} satisfies Record<RestrictedSessionRole, ReadonlySet<string>>;
 const rolePromptFiles = {
 	conclave: "conclave.md",
 	observer: "observer.md",
@@ -44,11 +65,11 @@ const SESSION_ROLES = new Map<string, "conclave" | "observer" | "executor" | "or
 
 const submitSchema = Type.Object({
 	workId: Type.Optional(Type.String()),
-	title: Type.String(),
-	objective: Type.String(),
+	title: Type.String({ minLength: 1 }),
+	objective: Type.String({ minLength: 1 }),
 	context: Type.Optional(Type.String()),
 	scope: Type.Optional(Type.String()),
-	acceptanceCriteria: Type.Array(Type.String()),
+	acceptanceCriteria: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
 	constraints: Type.Optional(Type.Array(Type.String())),
 	validation: Type.Optional(Type.Array(Type.String())),
 	allowedPaths: Type.Optional(Type.Array(Type.String())),
@@ -57,82 +78,82 @@ const submitSchema = Type.Object({
 type SubmitParams = Static<typeof submitSchema>;
 
 const readArchiveSchema = Type.Object({
-	workId: Type.Optional(Type.String()),
-	missionId: Type.Optional(Type.String()),
-	executionId: Type.Optional(Type.String()),
-	kinds: Type.Optional(Type.Array(Type.String())),
-	states: Type.Optional(Type.Array(Type.String())),
+	workId: Type.Optional(Type.String({ minLength: 1 })),
+	missionId: Type.Optional(Type.String({ minLength: 1 })),
+	executionId: Type.Optional(Type.String({ minLength: 1 })),
+	kinds: Type.Optional(Type.Array(StringEnum(RECORD_KINDS))),
+	states: Type.Optional(Type.Array(StringEnum(WORK_STATES))),
 	from: Type.Optional(Type.String()),
 	to: Type.Optional(Type.String()),
-	cursor: Type.Optional(Type.String()),
+	cursor: Type.Optional(Type.String({ minLength: 1 })),
 });
 type ReadArchiveParams = Static<typeof readArchiveSchema>;
 
-const inspectRuntimeSchema = Type.Object({ workId: Type.String(), expectedWorkRevision: Type.Integer({ minimum: 0 }) });
+const inspectRuntimeSchema = Type.Object({
+	workId: Type.String({ minLength: 1 }),
+	expectedWorkRevision: Type.Integer({ minimum: 0 }),
+});
 type InspectRuntimeParams = Static<typeof inspectRuntimeSchema>;
 
 const actionInputSchema = Type.Object({
-	kind: Type.Optional(Type.String()),
-	summary: Type.Optional(Type.String()),
-	evidence: Type.Optional(Type.Array(Type.String())),
-	decision: Type.Optional(Type.String()),
-	reason: Type.Optional(Type.String()),
-	signalId: Type.Optional(Type.String()),
-	status: Type.Optional(Type.String()),
-	feedback: Type.Optional(Type.Array(Type.String())),
-	title: Type.Optional(Type.String()),
-	objective: Type.Optional(Type.String()),
+	kind: Type.Optional(StringEnum(["progress", "blocked", "ready"] as const)),
+	summary: Type.Optional(Type.String({ minLength: 1 })),
+	evidence: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	decision: Type.Optional(StringEnum(["continue", "replace", "handoff", "reject"] as const)),
+	reason: Type.Optional(Type.String({ minLength: 1 })),
+	signalId: Type.Optional(Type.String({ minLength: 1 })),
+	status: Type.Optional(StringEnum(["changes-requested", "merged", "closed"] as const)),
+	feedback: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	title: Type.Optional(Type.String({ minLength: 1 })),
+	objective: Type.Optional(Type.String({ minLength: 1 })),
 	context: Type.Optional(Type.String()),
-	scope: Type.Optional(Type.String()),
-	acceptanceCriteria: Type.Optional(Type.Array(Type.String())),
-	constraints: Type.Optional(Type.Array(Type.String())),
-	validation: Type.Optional(Type.Array(Type.String())),
-	allowedPaths: Type.Optional(Type.Array(Type.String())),
-	missing: Type.Optional(Type.Array(Type.String())),
-	observationId: Type.Optional(Type.String()),
-	subject: Type.Optional(Type.String()),
+	scope: Type.Optional(Type.String({ minLength: 1 })),
+	acceptanceCriteria: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+	constraints: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	validation: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+	allowedPaths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+	missing: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+	observationId: Type.Optional(Type.String({ minLength: 1 })),
+	subject: Type.Optional(Type.String({ minLength: 1 })),
 	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 const performSchema = Type.Object({
-	action: Type.Union([
-		Type.Literal("admit"),
-		Type.Literal("request-input"),
-		Type.Literal("amend-terms"),
-		Type.Literal("amend-mission"),
-		Type.Literal("launch-observer"),
-		Type.Literal("record-assessment"),
-		Type.Literal("start-execution"),
-		Type.Literal("record-signal"),
-		Type.Literal("commit-sandbox"),
-		Type.Literal("run-validation"),
-		Type.Literal("create-review-request"),
-		Type.Literal("run-oracle"),
-		Type.Literal("verdict"),
-		Type.Literal("deliver-feedback"),
-		Type.Literal("record-review"),
-		Type.Literal("record-outcome"),
-		Type.Literal("cancel"),
-		Type.Literal("recover"),
-		Type.Literal("rename-work"),
-		Type.Literal("amend-budget"),
-		Type.Literal("fail-work"),
-	]),
-	workId: Type.String(),
+	action: StringEnum([
+		"admit",
+		"request-input",
+		"amend-terms",
+		"amend-mission",
+		"launch-observer",
+		"record-assessment",
+		"start-execution",
+		"record-signal",
+		"commit-sandbox",
+		"run-validation",
+		"create-review-request",
+		"run-oracle",
+		"verdict",
+		"deliver-feedback",
+		"record-review",
+		"record-outcome",
+		"cancel",
+		"recover",
+		"rename-work",
+		"amend-budget",
+		"fail-work",
+	] as const),
+	workId: Type.String({ minLength: 1 }),
 	input: Type.Optional(actionInputSchema),
 	expectedWorkRevision: Type.Integer({ minimum: 0 }),
 });
 type PerformParams = Static<typeof performSchema>;
 
 type RuntimeState = Readonly<{ runtime: ApplicationRuntime; projectPath: string; trusted: boolean }>;
-type ToolResult = { content: [{ type: "text"; text: string }]; details: JsonValue; isError: boolean };
-type ToolErrorResult = { content: [{ type: "text"; text: string }]; details: JsonObject; isError: true };
+type ToolResult = { content: [{ type: "text"; text: string }]; details: JsonValue };
 
 export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerFlag(ROLE_FLAG, { description: "Khala role for an isolated child session", type: "string" });
 	pi.on("tool_call", (event) => {
-		const role = sessionRole(pi);
-		if (role !== "executor" && role !== "observer") return;
-		const violation = executorToolViolation(event);
+		const violation = restrictedToolViolation(pi, event);
 		return violation === undefined ? undefined : { block: true, reason: violation };
 	});
 	let runtime: RuntimeState | undefined;
@@ -164,7 +185,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	const canUseRuntime = (context: ExtensionContext, trusted: boolean): boolean =>
 		runtimeMatches(runtime, context.cwd, trusted) && runtimeTransition === undefined;
 	const getRuntime = async (context: ExtensionContext): Promise<ApplicationRuntime> => {
-		const trusted = isTrustedProject(context);
+		const trusted = context.isProjectTrusted?.() === true;
 		if (canUseRuntime(context, trusted)) return requireRuntime(runtime);
 		await awaitRuntimeTransition(context, trusted);
 		return requireRuntime(runtime);
@@ -174,15 +195,17 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_submit_work",
 		label: "Submit Work",
 		description: "Submit complete User intent to the project Conclave without waiting for admission.",
+		promptSnippet: "Submit complete User intent for Conclave admission",
 		parameters: submitSchema,
 		async execute(toolCallId, params: SubmitParams, signal, _onUpdate, context) {
 			try {
 				throwIfAborted(signal);
 				requireSessionRole(pi, "user");
 				const service = (await getRuntime(context)).service;
+				throwIfAborted(signal);
 				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
 				schedulePendingEffects(service);
-				return toolResult(work, false);
+				return toolResult(work);
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) {
@@ -197,18 +220,17 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_read_archive",
 		label: "Read Khala Archive",
 		description: "Read bounded, append-ordered Archive record projections through the application service.",
+		promptSnippet: "Read authoritative bounded Archive records before making decisions",
 		parameters: readArchiveSchema,
 		async execute(toolCallId, params: ReadArchiveParams, signal, _onUpdate, context) {
 			try {
 				throwIfAborted(signal);
-				const actor = sessionActor(pi);
+				const actor = sessionRole(pi);
 				const query = readArchiveQuery(params, actor);
-				const page = (await getRuntime(context)).service.readRecords(
-					query,
-					meta(actor, `tool:archive:${toolCallId}`, 0),
-					params.cursor,
-				);
-				return toolResult(page, false);
+				const service = (await getRuntime(context)).service;
+				throwIfAborted(signal);
+				const page = service.readRecords(query, meta(actor, `tool:archive:${toolCallId}`, 0), params.cursor);
+				return toolResult(page);
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) {
@@ -223,19 +245,23 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_poll_provider",
 		label: "Poll Provider",
 		description: "Poll the current review provider for changed observations and merge evidence.",
-		parameters: Type.Object({ workId: Type.String(), expectedWorkRevision: Type.Integer({ minimum: 0 }) }),
+		promptSnippet: "Poll the review provider and record observations or merge evidence",
+		parameters: Type.Object({
+			workId: Type.String({ minLength: 1 }),
+			expectedWorkRevision: Type.Integer({ minimum: 0 }),
+		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
 				requireSessionRole(pi, "user");
 				const service = (await getRuntime(context)).service;
+				throwIfAborted(signal);
 				const work = await service.pollProvider(
 					params.workId,
 					meta("user", `tool:poll:${toolCallId}`, params.expectedWorkRevision),
 					toolOperation(signal, onUpdate),
 				);
-				throwIfAborted(signal);
 				schedulePendingEffects(service);
-				return toolResult(work, false);
+				return toolResult(work);
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) return toolError(error.envelope);
@@ -248,17 +274,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_inspect_runtime",
 		label: "Inspect Khala Runtime",
 		description: "Inspect bounded Pi runtime liveness without writing the Archive.",
+		promptSnippet: "Inspect bound Pi runtime liveness without changing Archive state",
 		parameters: inspectRuntimeSchema,
 		async execute(toolCallId, params: InspectRuntimeParams, signal, onUpdate, context) {
 			try {
-				const actor = sessionActor(pi);
-				const work = await (await getRuntime(context)).service.inspectRuntime(
+				const actor = sessionRole(pi);
+				const service = (await getRuntime(context)).service;
+				throwIfAborted(signal);
+				const work = await service.inspectRuntime(
 					params.workId,
 					meta(actor, `tool:inspect-runtime:${toolCallId}`, params.expectedWorkRevision),
 					toolOperation(signal, onUpdate),
 				);
 				throwIfAborted(signal);
-				return toolResult(work, false);
+				return toolResult(work);
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) return toolError(error.envelope);
@@ -272,6 +301,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		label: "Perform Khala Action",
 		description:
 			"Perform one actor-authorized, revision-checked Khala application action. User actions include review, recovery, cancellation, renaming, budget, and failure decisions; Executor and Conclave actions run only in their bound child sessions. Provider comments enter through khala_poll_provider.",
+		promptSnippet: "Perform one actor-authorized, revision-checked Khala lifecycle action",
 		parameters: performSchema,
 		async execute(toolCallId, params: PerformParams, signal, onUpdate, context) {
 			return executeActionTool(pi, getRuntime, toolCallId, params, signal, onUpdate, context);
@@ -282,11 +312,12 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_record_signal",
 		label: "Record Executor Signal",
 		description: "Record progress, blocked, or ready evidence for the current Executor Execution.",
+		promptSnippet: "Record evidence-bearing Executor progress, blocked, or ready state",
 		parameters: Type.Object({
-			workId: Type.String(),
-			kind: Type.Union([Type.Literal("progress"), Type.Literal("blocked"), Type.Literal("ready")]),
-			summary: Type.String(),
-			evidence: Type.Array(Type.String()),
+			workId: Type.String({ minLength: 1 }),
+			kind: StringEnum(["progress", "blocked", "ready"] as const),
+			summary: Type.String({ minLength: 1 }),
+			evidence: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
@@ -301,8 +332,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 					},
 					toolOperation(signal, onUpdate),
 				);
-				throwIfAborted(signal);
-				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+				if ("error" in result) throw new ApplicationError(result.error);
+				return toolResult(result.value);
 			} catch (error) {
 				throwIfAborted(signal);
 				return error instanceof Error
@@ -316,10 +347,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_record_assessment",
 		label: "Record Observer Assessment",
 		description: "Record exactly one bounded, evidence-backed read-only assessment for a Work Submission.",
+		promptSnippet: "Record one bounded read-only Observer assessment with evidence",
 		parameters: Type.Object({
-			workId: Type.String(),
-			summary: Type.String(),
-			evidence: Type.Array(Type.String()),
+			workId: Type.String({ minLength: 1 }),
+			summary: Type.String({ minLength: 1 }),
+			evidence: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
@@ -334,8 +366,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 					},
 					toolOperation(signal, onUpdate),
 				);
-				throwIfAborted(signal);
-				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+				if ("error" in result) throw new ApplicationError(result.error);
+				return toolResult(result.value);
 			} catch (error) {
 				throwIfAborted(signal);
 				return error instanceof Error
@@ -349,9 +381,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_run_oracle",
 		label: "Run Khala Oracle",
 		description: "Ask the no-tools Oracle for advisory findings on a bounded Mission handoff packet.",
+		promptSnippet: "Run a bounded advisory Oracle review of the Mission handoff",
 		parameters: Type.Object({
-			workId: Type.String(),
-			subject: Type.String(),
+			workId: Type.String({ minLength: 1 }),
+			subject: Type.String({ minLength: 1 }),
 			expectedWorkRevision: Type.Integer({ minimum: 0 }),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
@@ -366,8 +399,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 					},
 					toolOperation(signal, onUpdate),
 				);
-				throwIfAborted(signal);
-				return "error" in result ? toolResult(result.error, true) : toolResult(result.value, false);
+				if ("error" in result) throw new ApplicationError(result.error);
+				return toolResult(result.value);
 			} catch (error) {
 				throwIfAborted(signal);
 				return error instanceof Error
@@ -382,7 +415,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		handler: async (_args, context) => {
 			try {
 				const application = await getRuntime(context);
-				await showKhala(application.service, context, sessionActor(pi), application.config.keybindings, {
+				await showKhala(application.service, context, sessionRole(pi), application.config.keybindings, {
 					get: () => application.service.getRoleSettings(),
 					set: (role, setting, value) => {
 						persistRoleSetting(role, setting, value);
@@ -405,6 +438,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				await service.processPendingEffects();
 				const work = service.listWork();
 				await recoverUserWork(service, work);
+				await service.processPendingEffects();
 				updateExecutorStatus(service, context);
 				notifyRecoveryComplete(context, work.length);
 			} catch (error) {
@@ -462,10 +496,6 @@ function runtimeMatches(runtime: RuntimeState | undefined, projectPath: string, 
 	return runtime !== undefined && runtime.projectPath === projectPath && runtime.trusted === trusted;
 }
 
-function isTrustedProject(context: ExtensionContext): boolean {
-	return context.isProjectTrusted?.() === true;
-}
-
 function requireRuntime(runtime: RuntimeState | undefined): ApplicationRuntime {
 	if (runtime === undefined) throw new Error("Khala runtime could not be initialized.");
 	return runtime.runtime;
@@ -509,9 +539,9 @@ async function executeActionTool(
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<JsonValue> | undefined,
 	context: ExtensionContext,
-): Promise<ToolResult | ToolErrorResult> {
+): Promise<ToolResult> {
 	try {
-		const actor = sessionActor(pi);
+		const actor = sessionRole(pi);
 		const service = (await getRuntime(context)).service;
 		const result = await service.perform(
 			{
@@ -522,7 +552,6 @@ async function executeActionTool(
 			},
 			toolOperation(signal, onUpdate),
 		);
-		throwIfAborted(signal);
 		return actionToolResult(result, actor, service);
 	} catch (error) {
 		throwIfAborted(signal);
@@ -535,13 +564,13 @@ function actionToolResult(
 	result: ServiceResult<WorkView>,
 	actor: Actor,
 	service: ApplicationRuntime["service"],
-): ToolResult | ToolErrorResult {
-	if ("error" in result) return toolResult(result.error, true);
+): ToolResult {
+	if ("error" in result) throw new ApplicationError(result.error);
 	if (actor === "user") schedulePendingEffects(service);
-	return toolResult(result.value, false);
+	return toolResult(result.value);
 }
 
-function actionToolError(error: Error): ToolErrorResult {
+function actionToolError(error: Error): never {
 	if (error instanceof ApplicationError) return toolError(error.envelope);
 	return toolErrorText(error.message || "Khala action failed.");
 }
@@ -562,17 +591,25 @@ function updateExecutorStatus(service: ApplicationRuntime["service"], context: E
 	context.ui.setStatus("khala-executors", context.ui.theme.fg("dim", status));
 }
 
-function sessionRole(pi: ExtensionAPI): "user" | "conclave" | "observer" | "executor" | "oracle" {
+function sessionRole(pi: ExtensionAPI): SessionRole {
 	const value = pi.getFlag(ROLE_FLAG);
 	return isSessionRole(value) ? value : "user";
 }
 
-function isSessionRole(value: string | boolean | undefined): value is "conclave" | "observer" | "executor" | "oracle" {
-	return value !== undefined && SESSION_ROLES.get(String(value)) === value;
+function restrictedToolViolation(pi: ExtensionAPI, event: ToolCallEvent): string | undefined {
+	const role = sessionRole(pi);
+	const allowed = roleToolNames(role);
+	if (allowed === undefined) return;
+	if (!allowed.has(event.toolName)) return `The ${role} session cannot use the ${event.toolName} tool.`;
+	return restrictedPathViolation(role, event);
 }
 
-function sessionActor(pi: ExtensionAPI): Actor {
-	return sessionRole(pi);
+function restrictedPathViolation(role: SessionRole, event: ToolCallEvent): string | undefined {
+	return role === "executor" || role === "observer" ? executorToolViolation(event) : undefined;
+}
+
+function isSessionRole(value: string | boolean | undefined): value is "conclave" | "observer" | "executor" | "oracle" {
+	return value !== undefined && SESSION_ROLES.get(String(value)) === value;
 }
 
 function requireSessionRole(pi: ExtensionAPI, expected: Exclude<Actor, "monitor" | "system">): void {
@@ -588,31 +625,19 @@ function requireSessionRole(pi: ExtensionAPI, expected: Exclude<Actor, "monitor"
 }
 
 function setRoleTools(pi: ExtensionAPI): void {
-	const allowed = roleTools(sessionRole(pi));
-	pi.setActiveTools(pi.getActiveTools().filter((name) => !name.startsWith("khala_") || allowed.has(name)));
+	const allowed = roleToolNames(sessionRole(pi));
+	if (allowed === undefined) return;
+	pi.setActiveTools(pi.getActiveTools().filter((name) => allowed.has(name)));
 }
 
-function roleTools(role: ReturnType<typeof sessionRole>): ReadonlySet<string> {
-	const tools = {
-		user: [
-			"khala_submit_work",
-			"khala_read_archive",
-			"khala_perform_action",
-			"khala_poll_provider",
-			"khala_inspect_runtime",
-		],
-		conclave: ["khala_read_archive", "khala_perform_action", "khala_run_oracle", "khala_inspect_runtime"],
-		executor: ["khala_read_archive", "khala_record_signal", "khala_perform_action"],
-		observer: ["khala_read_archive", "khala_record_assessment"],
-		oracle: ["khala_read_archive"],
-	} satisfies Record<ReturnType<typeof sessionRole>, readonly string[]>;
-	return new Set(tools[role]);
+function roleToolNames(role: SessionRole): ReadonlySet<string> | undefined {
+	return role === "user" ? undefined : RESTRICTED_ROLE_TOOLS[role];
 }
 
 function executorToolViolation(event: ToolCallEvent): string | undefined {
 	const path = executorToolPath(event);
 	if (path === null) return `The ${event.toolName} tool requires a path.`;
-	return path === undefined ? undefined : pathViolation(path, isWriteTool(event.toolName));
+	return path === undefined ? undefined : pathViolation(path, event.toolName === "write" || event.toolName === "edit");
 }
 
 function pathViolation(path: string, write: boolean): string | undefined {
@@ -648,10 +673,6 @@ function searchToolPath(event: ToolCallEvent): string | undefined {
 
 function isSearchTool(event: ToolCallEvent): event is SearchToolCallEvent {
 	return event.toolName === "grep" || event.toolName === "find" || event.toolName === "ls";
-}
-
-function isWriteTool(toolName: string): boolean {
-	return toolName === "write" || toolName === "edit";
 }
 
 function textValue(value: JsonValue | undefined): string | undefined {
@@ -743,10 +764,18 @@ function readRoleToken(): string | undefined {
 	if (path === undefined) return;
 	try {
 		const token = readFileSync(path, "utf8").trim();
-		unlinkSync(path);
+		removeRoleTokenFile(path);
 		return token.length === 0 ? undefined : token;
 	} catch {
 		return;
+	}
+}
+
+function removeRoleTokenFile(path: string): void {
+	try {
+		unlinkSync(path);
+	} catch {
+		// The runtime removes the capability file during child startup cleanup.
 	}
 }
 
@@ -764,8 +793,10 @@ function meta(actor: Actor, commandId: string, expectedWorkRevision: number): Co
 }
 
 function readArchiveQuery(params: ReadArchiveParams, actor: Actor): MutableRecordQuery {
+	const scopedWorkId = boundWorkId(actor);
+	assertArchiveWorkScope(params.workId, scopedWorkId);
 	return {
-		workId: params.workId ?? boundWorkId(actor),
+		workId: scopedWorkId ?? params.workId,
 		missionId: params.missionId,
 		executionId: params.executionId,
 		kinds: params.kinds === undefined ? undefined : readRecordKinds(params.kinds),
@@ -775,28 +806,47 @@ function readArchiveQuery(params: ReadArchiveParams, actor: Actor): MutableRecor
 	};
 }
 
+function assertArchiveWorkScope(workId: string | undefined, bound: string | undefined): void {
+	if (bound === undefined) return;
+	if (workId === undefined) return;
+	if (workId === bound) return;
+	throw new ApplicationError({
+		code: "forbidden",
+		summary: "A bound role may only read its assigned Work.",
+		retryable: false,
+		remediation: "Omit workId or use the Work ID from the role binding.",
+		evidenceRefs: [],
+	});
+}
+
 function boundWorkId(actor: Actor): string | undefined {
 	return actor === "observer" || actor === "executor" ? process.env["KHALA_BOUND_WORK_ID"] : undefined;
 }
 
 function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
-	return values.map(parseRecordKind);
+	try {
+		return values.map(parseRecordKind);
+	} catch (error) {
+		throw new ApplicationError({
+			code: "invalid-input",
+			summary: error instanceof Error ? error.message : "Archive record kind is invalid.",
+			retryable: false,
+			remediation: "Use one of the supported Archive record kinds.",
+			evidenceRefs: [],
+		});
+	}
 }
 
-function toolResult(value: JsonValue, isError: boolean): ToolResult {
+function toolResult(value: JsonValue): ToolResult {
 	return {
 		content: [{ type: "text", text: boundedToolText(summarizeToolValue(value), value) }],
 		details: value,
-		isError,
 	};
 }
 
-function toolError(error: JsonObject): ToolErrorResult {
-	return {
-		content: [{ type: "text", text: boundedToolText(summarizeToolError(error), error) }],
-		details: error,
-		isError: true,
-	};
+// Pi marks an execute() failure only when the tool throws; an isError field on a returned value is ignored.
+function toolError(error: JsonObject): never {
+	throw new Error(boundedToolText(summarizeToolError(error), error));
 }
 
 function toolOperation(
@@ -839,7 +889,7 @@ function formatCommandError(error: Error): string {
 	return `Code: ${envelope.code}\n${envelope.summary}\nNext: ${envelope.remediation}${evidence}`;
 }
 
-function toolErrorText(message: string): ToolErrorResult {
+function toolErrorText(message: string): never {
 	return toolError({
 		code: "external-failure",
 		summary: message,
@@ -849,7 +899,7 @@ function toolErrorText(message: string): ToolErrorResult {
 	});
 }
 
-function toolErrorFromError(error: Error, fallback: string): ToolErrorResult {
+function toolErrorFromError(error: Error, fallback: string): never {
 	return error instanceof ApplicationError ? toolError(error.envelope) : toolErrorText(error.message || fallback);
 }
 function summarizeToolValue(value: JsonValue): string {

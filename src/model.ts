@@ -172,13 +172,16 @@ export type Execution = Readonly<{
 	endedAt?: string | undefined;
 }>;
 
+export const REVIEW_REQUEST_STATUSES = ["draft", "open", "merged", "closed"] as const;
+export type ReviewRequestStatus = (typeof REVIEW_REQUEST_STATUSES)[number];
+
 export type ReviewRequest = Readonly<{
 	provider: "github" | "gitlab";
 	principalId: string;
 	providerId: string;
 	url: string;
 	repository: string;
-	status: "draft" | "open" | "merged" | "closed";
+	status: ReviewRequestStatus;
 	sourceBranch: string;
 	targetBranch: string;
 	baseCommit?: string | undefined;
@@ -244,11 +247,18 @@ export type ProviderObservationDetails = Readonly<{
 	checks: readonly ProviderCheck[];
 }>;
 
-export type ProviderObservation = Readonly<{
+export const PROVIDER_CI_STATUSES = [...REVIEW_REQUEST_STATUSES, "checks-failed"] as const;
+export type ProviderCiStatus = (typeof PROVIDER_CI_STATUSES)[number];
+export const PROVIDER_REVIEW_COMMENT_STATUSES = ["changes-requested", "commented"] as const;
+export type ProviderReviewCommentStatus = (typeof PROVIDER_REVIEW_COMMENT_STATUSES)[number];
+export const PROVIDER_FEEDBACK_DELIVERY_STATUSES = ["pending", "delivered", "failed"] as const;
+export type ProviderFeedbackDeliveryStatus = (typeof PROVIDER_FEEDBACK_DELIVERY_STATUSES)[number];
+export const PROVIDER_MONITOR_STATUSES = ["recovered"] as const;
+export type ProviderMonitorStatus = (typeof PROVIDER_MONITOR_STATUSES)[number];
+
+export type ProviderObservationBase = Readonly<{
 	observationId: string;
-	kind: "ci-status" | "review-comment" | "feedback-delivery" | "monitor-failure" | "provider-outcome";
 	providerId: string;
-	status: string;
 	summary: string;
 	changed: boolean;
 	observedAt: string;
@@ -266,6 +276,48 @@ export type ProviderObservation = Readonly<{
 	details?: ProviderObservationDetails | undefined;
 }>;
 
+export type ProviderCiObservation = ProviderObservationBase &
+	Readonly<{
+		kind: "ci-status";
+		status: ProviderCiStatus;
+	}>;
+
+export type ProviderReviewCommentObservation = ProviderObservationBase &
+	Readonly<{
+		kind: "review-comment";
+		status: ProviderReviewCommentStatus;
+	}>;
+
+export type ProviderFeedbackDeliveryObservation = ProviderObservationBase &
+	Readonly<{
+		kind: "feedback-delivery";
+		status: ProviderFeedbackDeliveryStatus;
+	}>;
+
+export type ProviderMonitorFailureObservation = ProviderObservationBase &
+	Readonly<{
+		kind: "monitor-failure";
+		status: ProviderMonitorStatus;
+	}>;
+
+export type ProviderOutcomeObservation = ProviderObservationBase &
+	Readonly<{
+		kind: "provider-outcome";
+		status: "merged";
+		repository: string;
+		sourceBranch: string;
+		targetBranch: string;
+		headCommit: string;
+		mergeCommit: string;
+	}>;
+
+export type ProviderObservation =
+	| ProviderCiObservation
+	| ProviderReviewCommentObservation
+	| ProviderFeedbackDeliveryObservation
+	| ProviderMonitorFailureObservation
+	| ProviderOutcomeObservation;
+
 export type WorkView = Readonly<{
 	workId: string;
 	revision: number;
@@ -282,7 +334,7 @@ export type WorkView = Readonly<{
 	reviewRequest?: ReviewRequest | undefined;
 	lastSignal?: Signal | undefined;
 	lastObservation?: ProviderObservation | undefined;
-	providerOutcome?: ProviderObservation | undefined;
+	providerOutcome?: ProviderOutcomeObservation | undefined;
 	lastValidation?: ValidationRun | undefined;
 	lastError?: ErrorEnvelope | undefined;
 	nextAction: string;

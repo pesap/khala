@@ -2,6 +2,7 @@ import type {
 	Execution,
 	Mission,
 	ProviderObservation,
+	ProviderOutcomeObservation,
 	ReviewRequest,
 	TokenUsage,
 	ValidationResult,
@@ -70,7 +71,7 @@ export interface CodeHostPort {
 	inspectOutcome: (
 		reviewRequest: ReviewRequest,
 		operation?: OperationContext,
-	) => Promise<ProviderObservation | undefined>;
+	) => Promise<ProviderOutcomeObservation | undefined>;
 }
 
 export type RuntimeState = "working" | "pending" | "idle" | "unreachable" | "unknown";

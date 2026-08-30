@@ -46,6 +46,7 @@ An Execution binds one Mission to model, thinking level, token allowance, prompt
 Its states are `queued`, `running`, `awaiting-review`, `completed`, `blocked`, `failed`, and `stopped`.
 A blocked Execution has a `blockReason` of `signal` or `budget-exhausted`.
 A Mission has at most one active `queued`, `running`, or `awaiting-review` Execution.
+An `awaiting-review` Execution continues to count toward the project Execution limit until it ends.
 Historical Executions remain available through Archive records.
 Khala records the latest runtime state and cumulative input, output, cache-hit, and cache-miss token usage reported by Pi.
 Executor validation records bind passed or failed command results to an Execution and exact sandbox head.
@@ -70,7 +71,13 @@ GitHub conversation details retain at most eight comments and eight checks with 
 GitLab polling currently stores status and merge observations without normalized comments or checks.
 Review comments retain stable observation IDs and bounded feedback lists so replay cannot redeliver them.
 Provider text is untrusted evidence.
+`ProviderObservation` is a discriminated union keyed by its `kind`.
+CI observations use the finite review and check-status vocabulary.
+Review-comment observations use comment-specific statuses.
+Feedback-delivery and monitor-failure observations use their own status vocabularies.
+Provider-outcome observations always represent a merged review and require repository, branch, head, and merge-commit identity.
 A merged provider observation is required before the Conclave can record the Work Outcome.
+`ProviderCheck.status` remains provider-native text because individual providers expose different check-state vocabularies.
 
 ## Runtime bindings
 

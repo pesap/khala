@@ -8,5 +8,5 @@ This package ships two Pi extensions alongside Khala:
   `-clarify`.
 
 Both extensions are independent of the Archive lifecycle.
-They use Pi's native
-commands, editor, widgets, and interactive selectors.
+They use Pi's native commands, editor, widgets, and interactive selectors.
+See [`pi-review/README.md`](pi-review/README.md) and [`pi-clarify/README.md`](pi-clarify/README.md) for command syntax, supported modes, and behavior.

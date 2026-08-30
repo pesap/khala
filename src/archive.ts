@@ -10,8 +10,14 @@ import {
 	type JsonObject,
 	type JsonValue,
 	type Page,
+	PROVIDER_CI_STATUSES,
+	PROVIDER_FEEDBACK_DELIVERY_STATUSES,
+	PROVIDER_MONITOR_STATUSES,
+	PROVIDER_REVIEW_COMMENT_STATUSES,
 	type ProviderObservation,
+	type ProviderOutcomeObservation,
 	parseRecordKind,
+	REVIEW_REQUEST_STATUSES,
 	type RecordKind,
 	type RecordQuery,
 	type RecordView,
@@ -918,7 +924,9 @@ function isLatestObservation(
 }
 
 function assertExecutionCapacity(views: readonly WorkView[], limit: number): void {
-	const active = views.filter((view) => ["queued", "running"].includes(view.execution?.state ?? "")).length;
+	const active = views.filter((view) =>
+		["queued", "running", "awaiting-review"].includes(view.execution?.state ?? ""),
+	).length;
 	if (active >= limit) throw new ExecutionAdmissionConflict(`Project execution limit ${limit} is already reserved.`);
 }
 
@@ -1085,6 +1093,10 @@ function hasTextFields(value: JsonObject, keys: readonly string[]): boolean {
 	return keys.every((key) => isText(value[key]));
 }
 
+function hasNonBlankTextFields(value: JsonObject, keys: readonly string[]): boolean {
+	return keys.every((key) => isNonBlankText(value[key]));
+}
+
 function parseWorkView(value: string): WorkView {
 	const parsed = parseJson(value);
 	if (!isWorkViewProjection(parsed)) {
@@ -1163,7 +1175,7 @@ function isWorkViewProjection(value: JsonValue): value is WorkView {
 		optional(value["reviewRequest"], isReviewRequest),
 		optional(value["lastSignal"], isSignal),
 		optional(value["lastObservation"], isObservation),
-		optional(value["providerOutcome"], isObservation),
+		optional(value["providerOutcome"], isProviderOutcomeObservation),
 		optional(value["lastValidation"], isValidationRun),
 		optional(value["lastError"], isErrorEnvelope),
 	].every(Boolean);
@@ -1278,7 +1290,7 @@ function isReviewRequest(value: JsonValue | undefined): boolean {
 			"headCommit",
 			"diffSummary",
 		]),
-		isOneOf(value["status"], ["draft", "open", "merged", "closed"]),
+		isOneOf(value["status"], REVIEW_REQUEST_STATUSES),
 		optional(value["baseCommit"], isText),
 		isTextList(value["validation"]),
 	].every(Boolean);
@@ -1305,10 +1317,28 @@ function isSignal(value: JsonValue | undefined): boolean {
 		isTextList(value["evidence"])
 	);
 }
+const PROVIDER_OBSERVATION_VALIDATORS: ReadonlyMap<string, (value: JsonObject) => boolean> = new Map([
+	["ci-status", (value) => isOneOf(value["status"], PROVIDER_CI_STATUSES)],
+	["review-comment", (value) => isOneOf(value["status"], PROVIDER_REVIEW_COMMENT_STATUSES)],
+	["feedback-delivery", (value) => isOneOf(value["status"], PROVIDER_FEEDBACK_DELIVERY_STATUSES)],
+	["monitor-failure", (value) => isOneOf(value["status"], PROVIDER_MONITOR_STATUSES)],
+	[
+		"provider-outcome",
+		(value) =>
+			value["status"] === "merged" &&
+			hasNonBlankTextFields(value, ["repository", "sourceBranch", "targetBranch", "headCommit", "mergeCommit"]),
+	],
+]);
+
 function isObservation(value: JsonValue | undefined): value is ProviderObservation {
 	if (!isJsonObject(value)) return false;
+	const validator = PROVIDER_OBSERVATION_VALIDATORS.get(String(value["kind"]));
+	return validator !== undefined && isObservationBase(value) && validator(value);
+}
+
+function isObservationBase(value: JsonObject): boolean {
 	return [
-		hasTextFields(value, ["observationId", "kind", "providerId", "status", "summary", "observedAt"]),
+		hasNonBlankTextFields(value, ["observationId", "providerId", "summary", "observedAt"]),
 		isBoolean(value["changed"]),
 		optional(value["feedback"], isTextList),
 		optionalTextFields(value, [
@@ -1327,6 +1357,10 @@ function isObservation(value: JsonValue | undefined): value is ProviderObservati
 	].every(Boolean);
 }
 
+function isProviderOutcomeObservation(value: JsonValue | undefined): value is ProviderOutcomeObservation {
+	return isObservation(value) && value.kind === "provider-outcome";
+}
+
 function optionalTextFields(value: JsonObject, keys: readonly string[]): boolean {
 	return keys.every((key) => optional(value[key], isText));
 }
@@ -1343,7 +1377,7 @@ function isProviderPullRequest(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return [
 		isText(value["url"]),
-		isOneOf(value["status"], ["draft", "open", "merged", "closed"]),
+		isOneOf(value["status"], REVIEW_REQUEST_STATUSES),
 		isText(value["state"]),
 		isText(value["reviewDecision"]),
 		value["mergedAt"] === null || isText(value["mergedAt"]),
@@ -1416,6 +1450,10 @@ function isLearning(value: JsonValue | undefined): boolean {
 
 function isText(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
+}
+
+function isNonBlankText(value: JsonValue | undefined): boolean {
+	return isText(value) && value.trim().length > 0;
 }
 
 function isInteger(value: JsonValue | undefined): value is number {

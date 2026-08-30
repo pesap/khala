@@ -16,6 +16,72 @@ const authority = generateKeyPairSync("ed25519");
 const ROLE_PUBLIC_KEY = authority.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
 const TEST_CAPABILITY_NONCE = "test-capability-nonce";
 
+function mockBinding(input, controls) {
+	const sessionNumber = controls.sessions.length + 1;
+	return {
+		sessionId: `${input.role}-${sessionNumber}`,
+		sessionPath: `/tmp/${input.role}-${sessionNumber}.jsonl`,
+		capabilityNonce: input.tools.length === 0 ? undefined : TEST_CAPABILITY_NONCE,
+	};
+}
+
+function recoverMockExecutor(input, controls) {
+	if (input.role === "executor" && controls.recoverExecutor && controls.runtimeState === "unreachable")
+		controls.runtimeState = "idle";
+}
+
+async function mockEnsureSession(input, controls) {
+	const binding = mockBinding(input, controls);
+	controls.sessions.push({ input, binding });
+	recoverMockExecutor(input, controls);
+	return binding;
+}
+
+function isMockSession(binding, role) {
+	return binding.sessionId.startsWith(`${role}-`);
+}
+
+async function wakeMockConclave(binding, message, controls) {
+	if (isMockSession(binding, "conclave") && controls.onConclaveWake !== undefined)
+		await controls.onConclaveWake(message);
+}
+
+function holdMockObserver(binding, controls) {
+	if (!controls.observerHold || !isMockSession(binding, "observer")) return undefined;
+	return new Promise((resolve) => {
+		controls.releaseObserver = resolve;
+	});
+}
+
+function holdMockExecutor(binding, controls) {
+	if (!controls.executorHold || !isMockSession(binding, "executor")) return undefined;
+	return new Promise((resolve) => {
+		controls.releaseExecutor = () => resolve({ output: "" });
+	});
+}
+
+function mockFeedbackFailureRequested(message, controls) {
+	if (!controls.failFeedbackOnce || !message.includes("Review feedback delivery")) return false;
+	controls.failFeedbackOnce = false;
+	return true;
+}
+
+function mockTurn(binding, controls) {
+	return {
+		output: "",
+		usage: isMockSession(binding, "executor") ? controls.turnUsage : undefined,
+	};
+}
+
+async function mockSend(binding, message, controls) {
+	controls.prompts.push({ binding, message });
+	await wakeMockConclave(binding, message, controls);
+	const held = holdMockObserver(binding, controls) ?? holdMockExecutor(binding, controls);
+	if (held !== undefined) return held;
+	if (mockFeedbackFailureRequested(message, controls)) throw new Error("simulated feedback delivery failure");
+	return mockTurn(binding, controls);
+}
+
 function makePorts(overrides = {}) {
 	const { ports: portOverrides = {}, maxConcurrentExecutions: _maxConcurrentExecutions, ...controlOverrides } = overrides;
 	const controls = {
@@ -40,33 +106,11 @@ function makePorts(overrides = {}) {
 		...controlOverrides,
 	};
 	const runtime = {
-		async ensureSession(input) {
-			const binding = { sessionId: `${input.role}-${controls.sessions.length + 1}`, sessionPath: `/tmp/${input.role}-${controls.sessions.length + 1}.jsonl`, capabilityNonce: input.tools.length === 0 ? undefined : TEST_CAPABILITY_NONCE };
-			controls.sessions.push({ input, binding });
-			if (input.role === "executor" && controls.recoverExecutor && controls.runtimeState === "unreachable") controls.runtimeState = "idle";
-			return binding;
+		ensureSession(input) {
+			return mockEnsureSession(input, controls);
 		},
-		async send(binding, message) {
-			controls.prompts.push({ binding, message });
-			if (binding.sessionId.startsWith("conclave-") && controls.onConclaveWake !== undefined) {
-				await controls.onConclaveWake(message);
-			}
-			if (controls.observerHold && binding.sessionId.startsWith("observer-"))
-				return new Promise((resolve) => {
-					controls.releaseObserver = resolve;
-				});
-			if (controls.executorHold && binding.sessionId.startsWith("executor-"))
-				return new Promise((resolve) => {
-					controls.releaseExecutor = () => resolve({ output: "" });
-				});
-			if (controls.failFeedbackOnce && message.includes("Review feedback delivery")) {
-				controls.failFeedbackOnce = false;
-				throw new Error("simulated feedback delivery failure");
-			}
-			return {
-				output: "",
-				usage: binding.sessionId.startsWith("executor-") ? controls.turnUsage : undefined,
-			};
+		send(binding, message) {
+			return mockSend(binding, message, controls);
 		},
 		async getState() {
 			return controls.runtimeState;
@@ -354,9 +398,9 @@ test("Failed validation retains stdout and stderr diagnostics", async () => {
 			"printf '%3000s' '' | tr ' ' s; printf 'stdout detail\\n'; printf '%3000s' '' | tr ' ' e >&2; printf 'stderr detail\\n' >&2; exit 1",
 		],
 	});
-	assert.equal(result?.passed, false);
-	assert.match(result?.output ?? "", /stdout detail/);
-	assert.match(result?.output ?? "", /stderr detail/);
+	assert.equal(result.passed, false);
+	assert.match(result.output, /stdout detail/);
+	assert.match(result.output, /stderr detail/);
 });
 
 test("Conclave can request missing intent and the User can amend terms before admission", async () => {
@@ -660,14 +704,14 @@ test("Conclave wake failures preserve provider detail and remediation", async ()
 	);
 	await service.processPendingEffects();
 	const failed = service.inspectWork(submitted.workId);
-	assert.equal(failed.lastError?.summary, "Conclave admission failed: OpenAI API error (429): quota exceeded");
-	assert.match(failed.lastError?.remediation ?? "", /\/khala/);
+	assert.equal(failed.lastError.summary, "Conclave admission failed: OpenAI API error (429): quota exceeded");
+	assert.match(failed.lastError.remediation, /\/khala/);
 	assert.equal(failed.nextAction, "Resolve the Conclave admission error, then retry admission.");
 	const records = service.readRecords(
 		{ workId: submitted.workId, kinds: ["error"] },
 		meta("user", "wake-failure:read", failed.revision, submitted.workId),
 	);
-	assert.equal(records.items[0]?.payload.summary, failed.lastError?.summary);
+	assert.equal(records.items[0].payload.summary, failed.lastError.summary);
 	await service.close();
 });
 
@@ -1148,7 +1192,7 @@ test("a Work reaches success through branch publication, handoff, polling, and o
 	const observed = await service.pollProvider(running.workId, meta("user", "success:poll", merged.value.revision));
 	assert.equal(observed.lastObservation.status, "merged");
 	controls.outcome = false;
-	controls.pollObservations = [{ observationId: "ci:42", kind: "ci-status", providerId: "42", status: "observed", summary: "Checks passed", changed: true, observedAt: new Date().toISOString() }];
+	controls.pollObservations = [{ observationId: "ci:42", kind: "ci-status", providerId: "42", status: "open", summary: "Checks passed", changed: true, observedAt: new Date().toISOString() }];
 	const refreshed = await service.pollProvider(running.workId, meta("user", "success:poll-ci", observed.revision));
 	assert.equal(refreshed.lastObservation.kind, "ci-status");
 	const outcome = await service.perform({ action: "record-outcome", workId: running.workId, input: {}, meta: meta("conclave", "success:outcome", refreshed.revision, running.workId) });
@@ -1159,6 +1203,28 @@ test("a Work reaches success through branch publication, handoff, polling, and o
 	assert.equal(controls.stopped.some((binding) => binding.sessionId.startsWith("executor-")), true);
 	await service.close();
 });
+async function drainMockEffects(archive, owner) {
+	for (;;) {
+		const effects = archive.pendingEffects(owner);
+		if (effects.length === 0) return;
+		for (const effect of effects) assert.equal(archive.completeEffect(effect.effectId, owner), true);
+	}
+}
+
+function providerOutcomeWakeHandler(service, workId) {
+	return async (message) => {
+		if (!message.includes("provider merge outcome")) return;
+		const current = service.inspectWork(workId);
+		const outcome = await service.perform({
+			action: "record-outcome",
+			workId,
+			input: {},
+			meta: meta("conclave", "provider-outcome-wake:outcome", current.revision, workId),
+		});
+		assert.equal("error" in outcome, false);
+	};
+}
+
 test("Provider merge evidence wakes the Conclave and repairs an unsettled Work after restart", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-provider-outcome-wake-"));
 	const path = join(directory, "archive.sqlite");
@@ -1194,30 +1260,14 @@ test("Provider merge evidence wakes the Conclave and repairs an unsettled Work a
 	await first.service.processPendingEffects();
 	assert.equal(observed.reviewRequest.status, "merged");
 	assert.equal(first.controls.prompts.some((entry) => entry.message.includes("provider merge outcome")), true);
-	assert.match(first.service.inspectWork(running.workId).lastError?.summary ?? "", /outcome settlement failed/);
-	for (;;) {
-		const effects = first.archive.pendingEffects("provider-outcome-test");
-		if (effects.length === 0) break;
-		for (const effect of effects) {
-			assert.equal(first.archive.completeEffect(effect.effectId, "provider-outcome-test"), true);
-		}
-	}
+	assert.match(first.service.inspectWork(running.workId).lastError.summary, /outcome settlement failed/);
+	await drainMockEffects(first.archive, "provider-outcome-test");
 	await first.service.close();
 
 	const second = makeService(path);
 	second.controls.pollObservations = [];
 	second.controls.outcomeObservation = merge;
-	second.controls.onConclaveWake = async (message) => {
-		if (!message.includes("provider merge outcome")) return;
-		const current = second.service.inspectWork(running.workId);
-		const outcome = await second.service.perform({
-			action: "record-outcome",
-			workId: running.workId,
-			input: {},
-			meta: meta("conclave", "provider-outcome-wake:outcome", current.revision, running.workId),
-		});
-		assert.equal("error" in outcome, false);
-	};
+	second.controls.onConclaveWake = providerOutcomeWakeHandler(second.service, running.workId);
 	await second.service.runAutonomousCycle();
 	const succeeded = second.service.inspectWork(running.workId);
 	assert.equal(succeeded.state, "succeeded");
@@ -1232,7 +1282,7 @@ test("Provider polling remains idempotent across restart and requeues unsettled 
 	const first = makeService(path);
 	const running = await admitAndStart(first.service, "observations");
 	const review = await first.service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "observations:review", running.revision, running.workId, running.execution.executionId) });
-	const ci = { observationId: "ci:42", kind: "ci-status", providerId: "42", status: "passed", summary: "Checks passed", changed: true, observedAt: new Date().toISOString() };
+	const ci = { observationId: "ci:42", kind: "ci-status", providerId: "42", status: "open", summary: "Checks passed", changed: true, observedAt: new Date().toISOString() };
 	const merge = { observationId: "merge:42", kind: "provider-outcome", providerId: "42", status: "merged", repository: review.value.reviewRequest.repository, summary: "Merged", sourceBranch: review.value.reviewRequest.sourceBranch, targetBranch: review.value.reviewRequest.targetBranch, headCommit: review.value.reviewRequest.headCommit, mergeCommit: "merge-commit", changed: true, observedAt: new Date().toISOString() };
 	first.controls.pollObservations = [ci];
 	first.controls.outcomeObservation = merge;
@@ -1669,6 +1719,28 @@ test("Feedback waits for an active Executor turn instead of being dropped", asyn
 	await service.close();
 });
 
+function isFeedbackWakeMessage(message) {
+	return message.includes("provider observation") || message.includes("provider feedback");
+}
+
+function feedbackObservationId(message) {
+	return message.match(/observation (review-comment:42:\d+)/)?.[1];
+}
+
+async function deliverFeedbackOnWake(message, service, workId) {
+	if (!isFeedbackWakeMessage(message)) return;
+	const observationId = feedbackObservationId(message);
+	if (observationId === undefined) return;
+	const current = service.inspectWork(workId);
+	const delivered = await service.perform({
+		action: "deliver-feedback",
+		workId,
+		input: { observationId },
+		meta: meta("conclave", `github-feedback:deliver:${observationId}`, current.revision, workId),
+	});
+	assert.equal("error" in delivered, false);
+}
+
 test("GitHub review feedback wakes the Conclave and resumes the same Execution without User action", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-github-feedback-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
@@ -1706,19 +1778,7 @@ test("GitHub review feedback wakes the Conclave and resumes the same Execution w
 		changed: true,
 		observedAt: new Date().toISOString(),
 	}));
-	controls.onConclaveWake = async (message) => {
-		if (!message.includes("provider observation") && !message.includes("provider feedback")) return;
-		const observationId = message.match(/observation (review-comment:42:\d+)/)?.[1];
-		if (observationId === undefined) return;
-		const current = service.inspectWork(running.workId);
-		const delivered = await service.perform({
-			action: "deliver-feedback",
-			workId: running.workId,
-			input: { observationId },
-			meta: meta("conclave", `github-feedback:deliver:${observationId}`, current.revision, running.workId),
-		});
-		assert.equal("error" in delivered, false);
-	};
+	controls.onConclaveWake = (message) => deliverFeedbackOnWake(message, service, running.workId);
 	controls.failFeedbackOnce = true;
 	await service.runAutonomousCycle();
 	await service.runAutonomousCycle();
@@ -1819,6 +1879,19 @@ test("replaying a replacement Verdict returns the resulting replacement Executio
 	assert.equal(replay.value.execution.state, replacement.value.execution.state);
 	await service.close();
 });
+async function restoreEnvironment(saved) {
+	for (const [name, value] of saved) {
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	}
+}
+
+async function closeSharedArchive(parent, child, saved) {
+	if (child !== undefined) await child.service.close();
+	if (parent !== undefined) await parent.service.close();
+	await restoreEnvironment(saved);
+}
+
 test("child role sessions resolve the parent project Archive instead of their sandbox Archive", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-shared-archive-"));
 	const project = await mkdtemp(join(directory, "project-"));
@@ -1841,12 +1914,7 @@ test("child role sessions resolve the parent project Archive instead of their sa
 		child = createApplication(sandbox, false, process.cwd(), { requireModels: false });
 		assert.equal(child.service.inspectWork(submitted.workId).workId, submitted.workId);
 	} finally {
-		if (child !== undefined) await child.service.close();
-		if (parent !== undefined) await parent.service.close();
-		for (const [name, value] of saved) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
+		await closeSharedArchive(parent, child, saved);
 	}
 });
 
@@ -2259,6 +2327,70 @@ test("a real RPC child waits for each prompt completion", async () => {
 	assert.equal(await runtime.getState(binding), "idle");
 	await runtime.close();
 });
+function hasGithubFeedback(observations, expected, actionable) {
+	const comments = observations.filter((item) => item.kind === "review-comment");
+	return comments.some((item) => item.feedback?.[0] === expected && item.actionable === actionable);
+}
+
+function hasGithubFeedbackContaining(observations, expected) {
+	const comments = observations.filter((item) => item.kind === "review-comment");
+	return comments.some((item) => item.feedback?.[0]?.includes(expected));
+}
+
+function hasActionableGithubFeedbackContaining(observations, expected) {
+	const comments = observations.filter((item) => item.kind === "review-comment");
+	return comments.some((item) => item.feedback?.[0]?.includes(expected) && item.actionable === true);
+}
+
+function hasStaleGithubFeedback(observations) {
+	const comments = observations.filter((item) => item.kind === "review-comment");
+	return comments.some((item) => item.feedback?.[0] === "Stale review note." && item.headCommit === "old-head");
+}
+
+function assertGithubFeedback(observations) {
+	assert.equal(hasGithubFeedback(observations, "Please add a regression test.", true), true);
+	assert.equal(hasActionableGithubFeedbackContaining(observations, "review-level note"), true);
+	assert.equal(hasGithubFeedback(observations, "Public contributor note.", false), true);
+	assert.equal(hasStaleGithubFeedback(observations), true);
+	assert.equal(hasGithubFeedbackContaining(observations, "Inline review note (src/index.ts:3)"), true);
+}
+
+function assertGithubChecks(observations) {
+	const ciObservation = observations.find((item) => item.kind === "ci-status");
+	assert.ok(ciObservation);
+	assert.ok(ciObservation.details);
+	assert.ok(ciObservation.details.pullRequest);
+	assert.ok(Array.isArray(ciObservation.details.comments));
+	assert.ok(ciObservation.details.comments.length >= 4);
+	assert.ok(Array.isArray(ciObservation.details.checks));
+	assert.ok(ciObservation.details.checks.length >= 2);
+	assert.equal(ciObservation.status, "merged");
+	assert.equal(ciObservation.details.pullRequest.status, "merged");
+	assert.equal(ciObservation.details.comments.length <= 8, true);
+	assert.equal(ciObservation.details.comments.some((comment) => comment.body === ""), false);
+	assert.equal(ciObservation.details.comments[3].body.length <= 500, true);
+	assert.equal(JSON.stringify(ciObservation).length <= 64_000, true);
+	assert.equal(ciObservation.details.comments.some((comment) => comment.createdAt === "2026-08-25T21:12:06Z"), true);
+	assert.equal(ciObservation.details.comments.some((comment) => comment.location === "src/index.ts:3"), true);
+	assert.deepEqual(ciObservation.details.checks.map((check) => check.kind), ["check-run", "status-context"]);
+	assert.equal(ciObservation.details.checks[1].name, "coverage");
+	assert.equal(ciObservation.details.checks[1].detailsUrl, "https://github.com/example/project/checks/coverage");
+}
+
+function assertGithubCommands(commands) {
+	const create = commands.find((args) => args[1] === "create");
+	assert.ok(create);
+	assert.equal(create.includes("--head"), true);
+	assert.equal(create[create.indexOf("--head") + 1], "khala/branch");
+	const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid"));
+	assert.ok(pollingView);
+}
+
+function restorePath(value) {
+	if (value === undefined) delete process.env.PATH;
+	else process.env.PATH = value;
+}
+
 test("GitHub publication uses the sandbox branch and current head", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-code-host-"));
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
@@ -2282,56 +2414,12 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		});
 		assert.equal(request.sourceBranch, "khala/branch");
 		const observations = await host.poll(request);
-		assert.equal(observations.find((item) => item.kind === "ci-status")?.status, "merged");
-		assert.equal(
-			observations.some(
-				(item) =>
-					item.kind === "review-comment" &&
-					item.feedback?.[0] === "Please add a regression test." &&
-					item.actionable === true,
-			),
-			true,
-		);
-		assert.equal(
-			observations.some(
-				(item) => item.feedback?.[0]?.includes("review-level note") && item.actionable === true,
-			),
-			true,
-		);
-		assert.equal(
-			observations.some(
-				(item) => item.feedback?.[0] === "Public contributor note." && item.actionable === false,
-			),
-			true,
-		);
-		assert.equal(observations.some((item) => item.feedback?.[0] === "Stale review note." && item.headCommit === "old-head"), true);
-		assert.equal(observations.some((item) => item.feedback?.[0]?.includes("Inline review note (src/index.ts:3)")), true);
-		const ciObservation = observations.find((item) => item.kind === "ci-status");
-		assert.equal(ciObservation?.details?.pullRequest.status, "merged");
-		assert.equal(ciObservation?.details?.comments.length <= 8, true);
-		assert.equal(ciObservation?.details?.comments.some((comment) => comment.body === ""), false);
-		assert.equal((ciObservation?.details?.comments[3]?.body.length ?? 0) <= 500, true);
-		assert.equal(JSON.stringify(ciObservation).length <= 64_000, true);
-		assert.equal(
-			ciObservation?.details?.comments.some((comment) => comment.createdAt === "2026-08-25T21:12:06Z"),
-			true,
-		);
-		assert.equal(
-			ciObservation?.details?.comments.some((comment) => comment.location === "src/index.ts:3"),
-			true,
-		);
-		assert.deepEqual(ciObservation?.details?.checks.map((check) => check.kind), ["check-run", "status-context"]);
-		assert.equal(ciObservation?.details?.checks[1]?.name, "coverage");
-		assert.equal(ciObservation?.details?.checks[1]?.detailsUrl, "https://github.com/example/project/checks/coverage");
+		assertGithubFeedback(observations);
+		assertGithubChecks(observations);
 		const commands = (await readFile(log, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-		const create = commands.find((args) => args[1] === "create");
-		assert.equal(create.includes("--head"), true);
-		assert.equal(create[create.indexOf("--head") + 1], "khala/branch");
-		const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid"));
-		assert.ok(pollingView);
+		assertGithubCommands(commands);
 	} finally {
-		if (previousPath === undefined) delete process.env.PATH;
-		else process.env.PATH = previousPath;
+		restorePath(previousPath);
 	}
 });
 

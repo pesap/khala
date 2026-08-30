@@ -27,6 +27,9 @@ They call the application service and never read SQLite or interpret lifecycle r
 
 Oracle sessions have no Khala tools.
 The Oracle receives only the bounded review packet.
+Restricted child sessions are deny-by-default for Pi tools.
+Conclave receives only its Khala governance tools, Observer receives read-only repository tools plus its assessment tool, and Executor receives read/write repository tools plus its signal and action tools.
+The extension rejects unapproved tool calls even if another extension or runtime configuration exposes them.
 
 Every lifecycle mutation requires:
 
@@ -44,9 +47,11 @@ CommandMeta {
 ```
 
 The service revalidates actor, action, current state, input, and revision.
+Validation, authorization, revision, and provider failures are surfaced as Pi tool errors rather than successful result objects.
 Active tool filtering is only a convenience; every handler also enforces its session role.
 A repeated command ID returns its current Work projection and the original record for the same Work.
 A revision conflict requires a reread and never performs an implicit semantic retry.
+`khala_read_archive` output is capped at 48 KB and 1,800 lines; use its cursor or narrower filters for more records.
 
 ## Provider polling
 

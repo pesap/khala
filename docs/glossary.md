@@ -13,6 +13,8 @@
   exactly one assessment.
 - Oracle — a separately configured no-tools reviewer whose findings are
   advisory and never issue a Verdict.
+- Provider observation — bounded, untrusted evidence from a code-host review request.
+  Its `kind` determines the allowed status vocabulary and required identity fields.
 - Record — one immutable Archive fact with actor, bindings, payload version,
   summary, and evidence references.
 - Signal — Executor evidence describing progress, blockage, or review

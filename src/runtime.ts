@@ -1456,11 +1456,7 @@ function readTokenUsage(value: RpcUsage | undefined): TokenUsage | undefined {
 }
 
 function allTokenCounts(value: readonly (number | undefined)[]): value is readonly [number, number, number, number] {
-	return value.length === 4 && value.every(isDefinedNumber);
-}
-
-function isDefinedNumber(value: number | undefined): value is number {
-	return value !== undefined;
+	return value.length === 4 && value.every((entry): entry is number => entry !== undefined);
 }
 
 function readTokenCount(value: number | undefined): number | undefined {

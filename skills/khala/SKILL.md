@@ -57,11 +57,11 @@ accept the Work.
 ### `khala_read_archive`
 
 Reads bounded, append-ordered Archive records.
-Filter by `workId`, `missionId`,
-`executionId`, `kinds`, `states`, or time range; use `cursor` for another page.
+Filter by `workId`, `missionId`, `executionId`, `kinds`, `states`, or time range; use `cursor` for another page.
+`kinds` accepts the documented Archive record kinds and `states` accepts Work states.
+Text output is capped at 48 KB and 1,800 lines; use `nextCursor` or narrower filters to continue.
 Read the current Work before any decision.
-Child sessions receive only the
-records allowed by their binding.
+Child sessions receive only the records allowed by their binding.
 
 ### `khala_poll_provider`
 
@@ -83,10 +83,9 @@ Execution is between turns; `unreachable` requires Conclave-authorized recovery.
 ### `khala_perform_action`
 
 Actor-authorized application actions.
-It requires `action`, `workId`, and
-`expectedWorkRevision`; action-specific values go in `input`.
-Use the action
-names in [Action reference](#action-reference), not prose or prompt output.
+It requires `action`, `workId`, and `expectedWorkRevision`; action-specific values go in `input`.
+The action and action-choice fields use finite values from the schema; do not substitute prose or prompt output.
+Use the action names in [Action reference](#action-reference), not prose or prompt output.
 
 ### `khala_record_signal`
 

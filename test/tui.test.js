@@ -816,8 +816,8 @@ test("Work picker stays minimal, shows active Work, and marks failures", async (
 	const activeRow = rows.find((line) => line.includes("active-wor"));
 	const failedRow = rows.find((line) => line.includes("failed-wor"));
 	assert.equal(
-		visibleWidth(activeRow?.slice(0, activeRow.indexOf("active-wor")) ?? ""),
-		visibleWidth(failedRow?.slice(0, failedRow.indexOf("failed-wor")) ?? ""),
+		visibleWidth(activeRow.slice(0, activeRow.indexOf("active-wor"))),
+		visibleWidth(failedRow.slice(0, failedRow.indexOf("failed-wor"))),
 	);
 	const narrow = screens[0].render(80).join("\n");
 	assert.match(narrow, /EXECUTION/);

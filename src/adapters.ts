@@ -9,8 +9,14 @@ import type {
 	JsonValue,
 	Mission,
 	ProviderCheck,
+	ProviderCiObservation,
+	ProviderCiStatus,
 	ProviderObservation,
+	ProviderObservationBase,
+	ProviderOutcomeObservation,
 	ProviderReviewComment,
+	ProviderReviewCommentObservation,
+	ProviderReviewCommentStatus,
 	ReviewRequest,
 	ValidationResult,
 } from "./model.js";
@@ -396,7 +402,7 @@ export class CommandCodeHost implements CodeHostPort {
 	async inspectOutcome(
 		reviewRequest: ReviewRequest,
 		operation?: OperationContext,
-	): Promise<ProviderObservation | undefined> {
+	): Promise<ProviderOutcomeObservation | undefined> {
 		return this.provider === "github"
 			? this.inspectGithubOutcome(reviewRequest, operation)
 			: this.inspectGitlabOutcome(reviewRequest, operation);
@@ -405,7 +411,7 @@ export class CommandCodeHost implements CodeHostPort {
 	private async inspectGithubOutcome(
 		reviewRequest: ReviewRequest,
 		operation: OperationContext | undefined,
-	): Promise<ProviderObservation | undefined> {
+	): Promise<ProviderOutcomeObservation | undefined> {
 		const data = await run(
 			"gh",
 			[
@@ -426,7 +432,7 @@ export class CommandCodeHost implements CodeHostPort {
 	private async inspectGitlabOutcome(
 		reviewRequest: ReviewRequest,
 		operation: OperationContext | undefined,
-	): Promise<ProviderObservation | undefined> {
+	): Promise<ProviderOutcomeObservation | undefined> {
 		const data = await run(
 			"glab",
 			["mr", "view", reviewRequest.providerId, "--output", "json"],
@@ -747,9 +753,10 @@ function githubCiObservation(
 	reviewRequest: ReviewRequest,
 	repository: string,
 	details: GithubProviderDetails,
-): ProviderObservation {
+): ProviderCiObservation {
 	return {
-		...observation("ci-status", reviewRequest.providerId, data),
+		...providerObservationBase("ci-status", reviewRequest.providerId, data),
+		kind: "ci-status",
 		status: githubCheckStatus(githubPollStatus(row, reviewRequest.status), details),
 		repository,
 		sourceBranch: readOptionalTextValue(row, "headRefName"),
@@ -764,9 +771,10 @@ function gitlabCiObservation(
 	data: string,
 	row: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
-): ProviderObservation {
+): ProviderCiObservation {
 	return {
-		...observation("ci-status", reviewRequest.providerId, data),
+		...providerObservationBase("ci-status", reviewRequest.providerId, data),
+		kind: "ci-status",
 		status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
 		repository: readRepository(row),
 		sourceBranch: readOptionalTextValue(row, "source_branch"),
@@ -781,31 +789,40 @@ function isMergedGithubOutcome(row: Record<string, JsonValue>): boolean {
 	return row["mergedAt"] !== null;
 }
 
-function githubOutcomeObservation(row: Record<string, JsonValue>, reviewRequest: ReviewRequest): ProviderObservation {
-	return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
+function githubOutcomeObservation(
+	row: Record<string, JsonValue>,
+	reviewRequest: ReviewRequest,
+): ProviderOutcomeObservation {
+	return {
+		...providerObservationBase("provider-outcome", reviewRequest.providerId, JSON.stringify(row)),
+		kind: "provider-outcome",
+		status: "merged",
 		repository: reviewRequest.repository,
 		sourceBranch: readTextValue(row, "headRefName"),
 		targetBranch: readTextValue(row, "baseRefName"),
 		baseCommit: readOptionalTextValue(row, "baseRefOid"),
 		headCommit: readTextValue(row, "headRefOid"),
 		mergeCommit: readMergeCommit(row),
-	});
+	};
 }
 
 function gitlabOutcomeObservation(
 	row: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
-): ProviderObservation | undefined {
+): ProviderOutcomeObservation | undefined {
 	const mergeCommit = readOptionalTextValue(row, "merge_commit_sha") ?? readOptionalTextValue(row, "squash_commit_sha");
 	if (mergeCommit === undefined) return undefined;
-	return observation("provider-outcome", reviewRequest.providerId, JSON.stringify(row), "merged", {
+	return {
+		...providerObservationBase("provider-outcome", reviewRequest.providerId, JSON.stringify(row)),
+		kind: "provider-outcome",
+		status: "merged",
 		repository: readRepository(row),
 		sourceBranch: readTextValue(row, "source_branch"),
 		targetBranch: readTextValue(row, "target_branch"),
 		baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
 		headCommit: readTextValue(row, "sha"),
 		mergeCommit,
-	});
+	};
 }
 
 function githubReview(
@@ -941,22 +958,17 @@ function readNumberValue(value: JsonValue, key: string): string {
 	return String(value);
 }
 
-function observation(
+function providerObservationBase(
 	kind: ProviderObservation["kind"],
 	providerId: string,
 	summary: string,
-	status = "observed",
-	evidence: Readonly<Partial<ProviderObservation>> = {},
-): ProviderObservation {
+): ProviderObservationBase {
 	return {
 		observationId: `${kind}:${providerId}`,
-		kind,
 		providerId,
-		status,
 		summary: summary.slice(0, 2000),
 		changed: true,
 		observedAt: new Date().toISOString(),
-		...evidence,
 	};
 }
 type GithubProviderDetails = NonNullable<ProviderObservation["details"]>;
@@ -1029,11 +1041,7 @@ function githubCommentIdentity(entry: Record<string, JsonValue>): { id: string; 
 }
 
 function isProviderId(value: JsonValue | undefined): boolean {
-	return isTextValue(value) || isFiniteProviderNumber(value);
-}
-
-function isFiniteProviderNumber(value: JsonValue | undefined): boolean {
-	return value === Number(value) && Number.isFinite(Number(value));
+	return isTextValue(value) || (value === Number(value) && Number.isFinite(Number(value)));
 }
 
 function githubCommentState(entry: Record<string, JsonValue>): string | undefined {
@@ -1213,7 +1221,7 @@ function createGithubFeedbackObservation(
 	feedback: GithubFeedback,
 	entry: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
-): ProviderObservation {
+): ProviderReviewCommentObservation {
 	const location = githubFeedbackLocation(entry);
 	const headCommit = githubCommentCommit(entry) ?? reviewRequest.headCommit;
 	const output = `${feedback.body}${location}`.slice(0, 2_000);
@@ -1221,8 +1229,11 @@ function createGithubFeedbackObservation(
 		.update(`${feedback.body}\u0000${headCommit}\u0000${feedback.state}`)
 		.digest("hex")
 		.slice(0, 16);
-	return observation("review-comment", reviewRequest.providerId, output, githubFeedbackStatus(feedback.state), {
+	return {
+		...providerObservationBase("review-comment", reviewRequest.providerId, output),
 		observationId: githubFeedbackId(prefix, reviewRequest.providerId, feedback.id, version),
+		kind: "review-comment",
+		status: githubFeedbackStatus(feedback.state),
 		feedback: [output],
 		repository: reviewRequest.repository,
 		sourceBranch: reviewRequest.sourceBranch,
@@ -1232,7 +1243,7 @@ function createGithubFeedbackObservation(
 		authorAssociation: feedback.authorAssociation,
 		reviewState: feedback.state || undefined,
 		actionable: githubFeedbackIsActionable(prefix, feedback.state, feedback.authorAssociation),
-	});
+	};
 }
 
 function githubFeedbackLocation(entry: Record<string, JsonValue>): string {
@@ -1242,7 +1253,7 @@ function githubFeedbackLocation(entry: Record<string, JsonValue>): string {
 	return ` (${path}${line === undefined ? "" : `:${line}`})`;
 }
 
-function githubFeedbackStatus(state: string): string {
+function githubFeedbackStatus(state: string): ProviderReviewCommentStatus {
 	return state === "CHANGES_REQUESTED" ? "changes-requested" : "commented";
 }
 
@@ -1275,7 +1286,7 @@ function githubDefaultStatus(current: ReviewRequest["status"]): ReviewRequest["s
 function githubCheckStatus(
 	reviewStatus: ReviewRequest["status"],
 	details: NonNullable<ProviderObservation["details"]>,
-): string {
+): ProviderCiStatus {
 	if (reviewStatus === "merged" || reviewStatus === "closed") return reviewStatus;
 	return details.checks.some(providerCheckFailed) ? "checks-failed" : reviewStatus;
 }
