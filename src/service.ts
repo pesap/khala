@@ -6391,7 +6391,7 @@ function validProviderOutcomeObservation(
 		observation.sourceBranch === reviewRequest.sourceBranch,
 		observation.targetBranch === reviewRequest.targetBranch,
 		observation.headCommit === reviewRequest.headCommit,
-		observation.mergeCommit.trim().length > 0,
+		isTextValue(observation.mergeCommit) && observation.mergeCommit.trim().length > 0,
 	].every(Boolean);
 }
 
