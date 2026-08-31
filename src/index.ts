@@ -30,6 +30,12 @@ import { ApplicationError } from "./service.js";
 import { showKhala } from "./tui.js";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const MODEL_VISIBLE_SIGNAL_KINDS = ["progress", "blocked", "ready"] as const;
+const MISSING_EXECUTABLE_MARKERS = [
+	"command not found",
+	"is not recognized as an internal or external command",
+	"cannot find the path specified",
+] as const;
 const ROLE_FLAG = "khala-role";
 type SessionRole = "user" | "conclave" | "observer" | "executor" | "oracle";
 type RestrictedSessionRole = Exclude<SessionRole, "user">;
@@ -931,6 +937,7 @@ function summarizeWorkValue(value: JsonValue): string | undefined {
 		`State: ${value["state"]}`,
 		`Next action: ${presentToolText(String(value["nextAction"]))}`,
 		`Revision: ${value["revision"] ?? "unknown"}`,
+		...modelVisibleWorkEvidence(value),
 	].join("\n");
 }
 
@@ -972,6 +979,7 @@ function archiveWorkProjection(work: WorkView): string {
 		`Terms constraints: ${boundedProjectionList(terms.constraints)}`,
 		`Terms validation: ${boundedProjectionList(terms.validation)}`,
 		`Terms allowed paths: ${boundedProjectionList(terms.allowedPaths)}`,
+		...modelVisibleWorkEvidence(work),
 	].join("\n");
 }
 
@@ -990,6 +998,40 @@ function boundedProjectionText(value: string): string {
 
 function boundedProjectionList(values: readonly string[]): string {
 	return values.slice(0, 20).map(boundedProjectionText).join(" | ").slice(0, 4_000) || "(none)";
+}
+
+function modelVisibleWorkEvidence(value: JsonObject): readonly string[] {
+	return [...modelVisibleSignal(value["lastSignal"]), ...modelVisibleValidation(value["lastValidation"])];
+}
+
+function modelVisibleSignal(value: JsonValue | undefined): readonly string[] {
+	if (!isJsonObject(value)) return [];
+	const kind = MODEL_VISIBLE_SIGNAL_KINDS.find((candidate) => candidate === value["kind"]);
+	if (kind === undefined) return [];
+	const signalId = value["signalId"];
+	if (!isTextValue(signalId)) return [];
+	return [`Current Signal: ${kind}; signal ID: ${signalId}; evidence count: ${signalEvidenceCount(value["evidence"])}`];
+}
+
+function signalEvidenceCount(value: JsonValue | undefined): number {
+	return Array.isArray(value) ? value.length : 0;
+}
+
+function modelVisibleValidation(value: JsonValue | undefined): readonly string[] {
+	if (!isJsonObject(value) || !Array.isArray(value["results"])) return [];
+	const failures = value["results"].filter(isJsonObject).filter((result) => result["passed"] === false);
+	if (failures.length === 0) return [];
+	const categories = [...new Set(failures.map(validationFailureCategory))];
+	return [`Validation status: failed; failed count: ${failures.length}; categories: ${categories.join(", ")}`];
+}
+
+function validationFailureCategory(
+	result: JsonObject,
+): "required executable unavailable" | "declared validation command failed" {
+	const output = result["output"];
+	const missingExecutable =
+		isTextValue(output) && MISSING_EXECUTABLE_MARKERS.some((marker) => output.toLowerCase().includes(marker));
+	return missingExecutable ? "required executable unavailable" : "declared validation command failed";
 }
 
 function isWorkSummary(value: JsonValue): value is JsonObject {

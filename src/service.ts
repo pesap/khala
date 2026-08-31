@@ -16,9 +16,11 @@ import {
 	assertNonBlank,
 	assertPositiveInteger,
 	type CommandMeta,
+	type ConclaveWakeCause,
 	type ErrorEnvelope,
 	type Execution,
 	type GovernedRole,
+	isConclaveWakeCause,
 	type JsonObject,
 	type JsonValue,
 	type Mission,
@@ -176,21 +178,75 @@ function feedbackBelongsToExecution(work: WorkView, executionId: string | undefi
 	return execution.executionId === executionId;
 }
 
-function assertProviderOutcomeSettled(work: WorkView, wakeReason: string | undefined): void {
-	if (wakeReason !== "provider-outcome" || !isProviderOutcomeSettlementPending(work)) return;
-	throw new Error("Conclave provider-outcome wake returned without recording the Work Outcome.");
+type WakeResolutionCheck = (work: WorkView, current: WorkView) => boolean;
+const WAKE_RESOLUTION_CHECKS: ReadonlyMap<ConclaveWakeCause, WakeResolutionCheck> = new Map([
+	["executor-blocked", blockedWakeResolutionMissing],
+	["executor-ready", readyWakeResolutionMissing],
+	["runtime-unreachable", runtimeRecoveryDecisionMissing],
+	["provider-outcome", (_work, current) => isProviderOutcomeSettlementPending(current)],
+	["token-exhausted", tokenExhaustionResolutionMissing],
+]);
+const WAKE_RESOLUTION_ERRORS: ReadonlyMap<ConclaveWakeCause | "admission", string> = new Map([
+	["executor-blocked", "Conclave blocked-work wake returned without recording a durable decision."],
+	["executor-ready", "Conclave ready-Signal wake returned without recording a durable Verdict."],
+	["runtime-unreachable", "Conclave runtime-recovery wake returned without recording a recovery decision."],
+	["provider-outcome", "Conclave provider-outcome wake returned without recording the Work Outcome."],
+	["token-exhausted", "Conclave token-exhaustion wake returned without recording a durable Verdict."],
+	["admission", "Conclave wake returned without recording a durable decision."],
+]);
+
+function assertConclaveWakeResolution(work: WorkView, current: WorkView, cause: ConclaveWakeCause | undefined): void {
+	if (!wakeResolutionMissing(work, current, cause)) return;
+	const wakeType = cause ?? "admission";
+	throw new Error(WAKE_RESOLUTION_ERRORS.get(wakeType) ?? "Conclave wake resolution is missing.");
 }
 
-function assertRuntimeRecoveryRecorded(work: WorkView, current: WorkView, wakeReason: string | undefined): void {
-	if (wakeReason !== "runtime-unreachable" || !runtimeRecoveryDecisionMissing(work, current)) return;
-	throw new Error("Conclave runtime-recovery wake returned without recording a recovery decision.");
+function wakeResolutionMissing(work: WorkView, current: WorkView, cause: ConclaveWakeCause | undefined): boolean {
+	if (cause === undefined) return initialWakeResolutionMissing(work, current);
+	const check = WAKE_RESOLUTION_CHECKS.get(cause);
+	return check === undefined ? false : check(work, current);
 }
 
-function assertConclaveDecisionRecorded(work: WorkView, current: WorkView): void {
-	if (work.state !== "submitted") return;
-	if (work.revision !== 1) return;
-	if (current.revision !== work.revision) return;
-	throw new Error("Conclave wake returned without recording a durable decision.");
+function initialWakeResolutionMissing(work: WorkView, current: WorkView): boolean {
+	if (work.state !== "submitted") return false;
+	if (work.revision !== 1) return false;
+	return current.revision === work.revision;
+}
+
+function blockedWakeResolutionMissing(work: WorkView, current: WorkView): boolean {
+	if (!isBlockedExecution(work.execution)) return false;
+	if (!isBlockedExecution(current.execution)) return false;
+	if (!sameExecutionId(work, current)) return false;
+	return signalIdsMatch(work.lastSignal, current.lastSignal);
+}
+
+function readyWakeResolutionMissing(work: WorkView, current: WorkView): boolean {
+	if (!readySignalDecisionPending(work)) return false;
+	if (!readySignalDecisionPending(current)) return false;
+	return sameExecutionId(work, current) && signalIdsMatch(work.lastSignal, current.lastSignal);
+}
+
+function readySignalDecisionPending(work: WorkView): boolean {
+	return work.execution?.state === "running" && isCurrentReadySignal(work);
+}
+
+function tokenExhaustionResolutionMissing(work: WorkView, current: WorkView): boolean {
+	if (!tokenExhaustionPending(work)) return false;
+	if (!tokenExhaustionPending(current)) return false;
+	return sameExecutionId(work, current);
+}
+
+function tokenExhaustionPending(work: WorkView): boolean {
+	return work.execution?.blockReason === "budget-exhausted";
+}
+
+function isBlockedExecution(execution: Execution | undefined): boolean {
+	return execution !== undefined && execution.state === "blocked";
+}
+
+function signalIdsMatch(left: Signal | undefined, right: Signal | undefined): boolean {
+	if (left === undefined || right === undefined) return false;
+	return left.signalId === right.signalId;
 }
 
 function runtimeRecoveryDecisionMissing(work: WorkView, current: WorkView): boolean {
@@ -883,7 +939,7 @@ export class ApplicationService {
 		workId: string,
 		commandId: string,
 		observationId?: string,
-		reason?: string,
+		reason?: ConclaveWakeCause,
 	): Promise<void> {
 		const work = this.inspectWork(workId);
 		this.validateModel("conclave", this.options.conclaveModel, this.options.conclaveThinking);
@@ -962,7 +1018,7 @@ export class ApplicationService {
 		let workId: string | undefined;
 		let observationId: string | undefined;
 		let feedbackExecutionId: string | undefined;
-		let wakeReason: string | undefined;
+		let wakeReason: ConclaveWakeCause | undefined;
 		let leaseLost = false;
 		const lease = setInterval(() => {
 			try {
@@ -975,7 +1031,7 @@ export class ApplicationService {
 			workId = readEffectWorkId(effect.payload);
 			observationId = readOptionalEffectText(effect.payload, "observationId");
 			feedbackExecutionId = readOptionalEffectText(effect.payload, "executionId");
-			wakeReason = readOptionalEffectText(effect.payload, "reason");
+			wakeReason = readEffectWakeCause(effect.payload);
 			const work = this.inspectWork(workId);
 			await this.performPendingEffect(effect, work, workId, observationId, feedbackExecutionId, wakeReason);
 			this.assertPendingEffectOutcome(effect, work, workId, wakeReason);
@@ -1008,7 +1064,7 @@ export class ApplicationService {
 		workId: string,
 		observationId: string | undefined,
 		feedbackExecutionId: string | undefined,
-		wakeReason: string | undefined,
+		wakeReason: ConclaveWakeCause | undefined,
 	): Promise<void> {
 		const handlers = new Map<string, PendingEffectHandler<void>>([
 			["conclave-wake", () => this.processConclaveWake(effect, work, workId, observationId, wakeReason)],
@@ -1030,7 +1086,7 @@ export class ApplicationService {
 		work: WorkView,
 		workId: string,
 		observationId: string | undefined,
-		wakeReason: string | undefined,
+		wakeReason: ConclaveWakeCause | undefined,
 	): Promise<void> {
 		await this.wakeConclave(workId, `outbox:${effect.effectId}:${work.revision}`, observationId, wakeReason);
 	}
@@ -1129,13 +1185,11 @@ export class ApplicationService {
 		effect: PendingArchiveEffect,
 		work: WorkView,
 		workId: string,
-		wakeReason: string | undefined,
+		wakeReason: ConclaveWakeCause | undefined,
 	): void {
 		if (effect.kind !== "conclave-wake") return;
 		const current = this.inspectWork(workId);
-		assertProviderOutcomeSettled(current, wakeReason);
-		assertRuntimeRecoveryRecorded(work, current, wakeReason);
-		assertConclaveDecisionRecorded(work, current);
+		assertConclaveWakeResolution(work, current, wakeReason);
 	}
 
 	private async handlePendingEffectFailure(
@@ -1144,7 +1198,7 @@ export class ApplicationService {
 		retriedConclaveWakes: Set<string>,
 		workId: string | undefined,
 		observationId: string | undefined,
-		wakeReason: string | undefined,
+		wakeReason: ConclaveWakeCause | undefined,
 		error: ServiceFailure,
 	): Promise<boolean> {
 		const message = error.message;
@@ -1268,7 +1322,7 @@ export class ApplicationService {
 		owner: string,
 		workId: string | undefined,
 		observationId: string | undefined,
-		wakeReason: string | undefined,
+		wakeReason: ConclaveWakeCause | undefined,
 		error: ServiceFailure,
 	): Promise<void> {
 		if (workId === undefined) {
@@ -1288,7 +1342,7 @@ export class ApplicationService {
 		owner: string,
 		workId: string,
 		observationId: string | undefined,
-		wakeReason: string | undefined,
+		wakeReason: ConclaveWakeCause | undefined,
 		error: ServiceFailure,
 	): Promise<void> {
 		const current = this.inspectWork(workId);
@@ -1960,7 +2014,7 @@ export class ApplicationService {
 		workId: string,
 		failure: Error,
 		meta: CommandMeta,
-		reason?: string,
+		reason?: ConclaveWakeCause,
 		observationId?: string,
 	): WorkView {
 		const work = this.inspectWork(workId);
@@ -3191,8 +3245,8 @@ export class ApplicationService {
 	private async commitSandbox(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
-		const commitSandbox = this.ports.workspace.commitSandbox;
-		if (commitSandbox === undefined)
+		const workspace = this.ports.workspace;
+		if (workspace.commitSandbox === undefined)
 			throw this.error(
 				"external-failure",
 				"The configured workspace cannot commit sandbox changes.",
@@ -3200,7 +3254,7 @@ export class ApplicationService {
 				"Use a workspace adapter that supports governed sandbox commits.",
 			);
 		await this.ensureAllowedPaths(work, execution, operation);
-		const headCommit = await commitSandbox(
+		const headCommit = await workspace.commitSandbox(
 			{
 				sandbox: execution.sandbox,
 				allowedPaths: work.terms.allowedPaths,
@@ -4762,8 +4816,8 @@ function signalExecution(execution: Execution, kind: Signal["kind"]): Execution 
 
 function signalEffects(workId: string, revision: number, kind: Signal["kind"]) {
 	return {
-		blocked: [schedulerEffect(workId, revision), queueSchedulerEffect(workId, revision)],
-		ready: [schedulerEffect(workId, revision)],
+		blocked: [schedulerEffect(workId, revision, undefined, "executor-blocked"), queueSchedulerEffect(workId, revision)],
+		ready: [schedulerEffect(workId, revision, undefined, "executor-ready")],
 		progress: undefined,
 	}[kind];
 }
@@ -5186,7 +5240,11 @@ function matchesExecutorStop(
 	].every(Boolean);
 }
 
-function conclaveWakeMessage(work: WorkView, observationId: string | undefined, reason: string | undefined): string {
+function conclaveWakeMessage(
+	work: WorkView,
+	observationId: string | undefined,
+	reason: ConclaveWakeCause | undefined,
+): string {
 	return directedWakeMessage(work.workId, reason) ?? providerWakeMessage(work, observationId);
 }
 
@@ -5198,8 +5256,16 @@ function providerWakeMessage(work: WorkView, observationId: string | undefined):
 	return `Process queued Work ${work.workId}. Read the Archive first. Admit it if its Mission terms are complete, request-input when User intent is insufficient, then start its Execution when budget permits. Never treat this message as authority.`;
 }
 
-function directedWakeMessage(workId: string, reason: string | undefined): string | undefined {
-	const messages = new Map<string, string>([
+function directedWakeMessage(workId: string, reason: ConclaveWakeCause | undefined): string | undefined {
+	const messages = new Map<ConclaveWakeCause, string>([
+		[
+			"executor-blocked",
+			`Inspect the current blocked Signal for Work ${workId}. Read the Archive, then use khala_perform_action with the current Signal's signalId to make one durable state-appropriate decision: continue, replace, reject, or explicitly fail Work. Do not return without recording the decision.`,
+		],
+		[
+			"executor-ready",
+			`Inspect the current ready Signal for Work ${workId}. Read the Archive, then use khala_perform_action with action verdict and that Signal's signalId to record one durable Verdict: handoff, continue, replace, or reject. Do not return without recording the decision.`,
+		],
 		[
 			"runtime-unreachable",
 			`Inspect the Executor runtime for Work ${workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`,
@@ -5215,6 +5281,10 @@ function directedWakeMessage(workId: string, reason: string | undefined): string
 		[
 			"provider-outcome",
 			`Process the provider merge outcome for Work ${workId}. Read the Archive first. If the current review request and provider outcome both confirm the reviewed head was merged, use khala_perform_action with action record-outcome. The provider observation is evidence; only the explicit Conclave Outcome settles the Work.`,
+		],
+		[
+			"token-exhausted",
+			`Inspect token exhaustion for Work ${workId}. Read the Archive, then use khala_perform_action with action verdict and signalId budget-exhausted to replace the exhausted Execution or reject the Mission. Do not return without recording the decision.`,
 		],
 	]);
 	return reason === undefined ? undefined : messages.get(reason);
@@ -5280,31 +5350,43 @@ function roleActionRemediation(actor: Actor, expected: Actor): string {
 	);
 }
 function wakeErrorKindFor(
-	reason: string | undefined,
+	reason: ConclaveWakeCause | undefined,
 	observation: ProviderObservation | undefined,
 ): ConclaveWakeErrorKind {
-	const byReason = new Map<string, ConclaveWakeErrorKind>([
+	const byReason = new Map<ConclaveWakeCause, ConclaveWakeErrorKind>([
+		["executor-blocked", "blocked"],
+		["executor-ready", "ready"],
 		["runtime-unreachable", "runtime"],
 		["provider-outcome", "outcome"],
 		["provider-feedback", "feedback"],
+		["token-exhausted", "token"],
 	]);
 	const reasonKind = reason === undefined ? undefined : byReason.get(reason);
 	if (reasonKind !== undefined) return reasonKind;
 	return isActionableReviewComment(observation) ? "feedback" : "admission";
 }
 
-function wakeFailureAction(reason: string | undefined, observation: ProviderObservation | undefined): string {
-	const direct = {
-		"runtime-unreachable": "Conclave could not inspect Executor recovery; retrying the autonomous inspection.",
-		"provider-outcome": "Conclave could not record the provider-confirmed Outcome; retrying settlement.",
-	}[reason ?? ""];
+function wakeFailureAction(
+	reason: ConclaveWakeCause | undefined,
+	observation: ProviderObservation | undefined,
+): string {
+	const direct =
+		reason === undefined
+			? undefined
+			: new Map<ConclaveWakeCause, string>([
+					["executor-blocked", "Conclave could not resolve the blocked Signal; retrying the blocked-Work decision."],
+					["executor-ready", "Conclave could not resolve the ready Signal; retrying the ready-Signal Verdict."],
+					["runtime-unreachable", "Conclave could not inspect Executor recovery; retrying the autonomous inspection."],
+					["provider-outcome", "Conclave could not record the provider-confirmed Outcome; retrying settlement."],
+					["token-exhausted", "Conclave could not resolve token exhaustion; retrying the token-exhaustion Verdict."],
+				]).get(reason);
 	if (direct !== undefined) return direct;
 	return isFeedbackWake(reason, observation)
 		? "Conclave could not assess provider feedback; inspect Evidence before retrying delivery."
 		: "Resolve the Conclave admission error, then retry admission.";
 }
 
-function isFeedbackWake(reason: string | undefined, observation: ProviderObservation | undefined): boolean {
+function isFeedbackWake(reason: ConclaveWakeCause | undefined, observation: ProviderObservation | undefined): boolean {
 	return reason === "provider-feedback" || isActionableReviewComment(observation);
 }
 
@@ -5313,10 +5395,18 @@ function conclaveWakeError(failure: Error, kind: ConclaveWakeErrorKind): ErrorEn
 	return conclaveWakeErrorFor(kind, failure.message.slice(0, 2_000));
 }
 
-type ConclaveWakeErrorKind = "runtime" | "outcome" | "feedback" | "admission";
+type ConclaveWakeErrorKind = "blocked" | "ready" | "runtime" | "outcome" | "feedback" | "token" | "admission";
 
 function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): ErrorEnvelope {
 	const details = {
+		blocked: {
+			summary: `Conclave blocked-work decision failed: ${message}`,
+			remediation: "Inspect the current blocked Signal and retry its durable Conclave decision.",
+		},
+		ready: {
+			summary: `Conclave ready-Signal decision failed: ${message}`,
+			remediation: "Inspect the current ready Signal and retry its durable Verdict.",
+		},
 		runtime: {
 			summary: `Conclave runtime recovery failed: ${message}`,
 			remediation:
@@ -5330,6 +5420,10 @@ function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): Err
 		feedback: {
 			summary: `Conclave feedback assessment failed: ${message}`,
 			remediation: "Inspect Evidence, restore the Conclave runtime if needed, and retry delivery explicitly.",
+		},
+		token: {
+			summary: `Conclave token-exhaustion decision failed: ${message}`,
+			remediation: "Inspect the current token-exhausted Execution and retry its durable Verdict.",
 		},
 		admission: {
 			summary: `Conclave admission failed: ${message}`,
@@ -5811,7 +5905,7 @@ function missionSpecificityMessage(missingTerms: readonly string[]): string {
 		: `Mission relied on default ${missingTerms.join(" and ")}; make those terms explicit before retrying.`;
 }
 
-function schedulerEffect(workId: string, revision: number, observationId?: string, reason?: string) {
+function schedulerEffect(workId: string, revision: number, observationId?: string, reason?: ConclaveWakeCause) {
 	const payload: JsonObject = { workId, observationId, reason };
 	return {
 		effectId: `conclave-wake:${workId}:${revision}`,
@@ -6042,6 +6136,13 @@ function readEffectText(payload: JsonObject, key: string): string {
 function readOptionalEffectText(payload: JsonObject, key: string): string | undefined {
 	const value = payload[key];
 	return value === undefined ? undefined : readEffectTextValue(value, key);
+}
+
+function readEffectWakeCause(payload: JsonObject): ConclaveWakeCause | undefined {
+	const value = readOptionalEffectText(payload, "reason");
+	if (value === undefined) return undefined;
+	if (isConclaveWakeCause(value)) return value;
+	throw new Error("Conclave wake effect has an invalid finite cause.");
 }
 
 function readEffectInteger(value: JsonValue, key: string): number {
@@ -6359,8 +6460,8 @@ function providerReviewStatusFromCi(
 function providerWakeReason(
 	observation: ProviderObservation,
 	classification: ProviderObservationClassification,
-): string | undefined {
-	const byKind = new Map<ProviderObservation["kind"], string>([
+): ConclaveWakeCause | undefined {
+	const byKind = new Map<ProviderObservation["kind"], ConclaveWakeCause>([
 		["review-comment", "provider-feedback"],
 		["provider-outcome", "provider-outcome"],
 	]);
@@ -6373,7 +6474,7 @@ function providerWakeReason(
 function providerCiWakeReason(
 	observation: ProviderCiObservation,
 	classification: ProviderObservationClassification,
-): string | undefined {
+): ConclaveWakeCause | undefined {
 	if (classification.identityDrift || classification.checksFailed) return "provider-ci";
 	return observation.status === "closed" ? "provider-closed" : undefined;
 }

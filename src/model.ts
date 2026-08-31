@@ -35,6 +35,23 @@ export type ExecutionState = (typeof EXECUTION_STATES)[number];
 export const EXECUTION_RUNTIME_STATES = ["working", "idle", "pending", "unreachable", "unknown"] as const;
 export type ExecutionRuntimeState = (typeof EXECUTION_RUNTIME_STATES)[number];
 
+export const CONCLAVE_WAKE_CAUSES = [
+	"executor-blocked",
+	"executor-ready",
+	"runtime-unreachable",
+	"provider-closed",
+	"provider-ci",
+	"provider-outcome",
+	"provider-feedback",
+	"token-exhausted",
+] as const;
+export type ConclaveWakeCause = (typeof CONCLAVE_WAKE_CAUSES)[number];
+
+export function isConclaveWakeCause(value: string): value is ConclaveWakeCause {
+	// SAFETY: the value is checked against the closed cause list before narrowing it for includes.
+	return CONCLAVE_WAKE_CAUSES.includes(value as ConclaveWakeCause);
+}
+
 export const RECORD_KINDS = [
 	"submission",
 	"assessment",

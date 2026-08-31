@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import type {
@@ -52,11 +52,20 @@ function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: A
 	return options;
 }
 
-function validationEnvironment(): NodeJS.ProcessEnv {
-	const environment = { ...process.env };
+function validationEnvironment(projectPath: string | undefined): NodeJS.ProcessEnv {
+	const environment = sanitizedEnvironment();
+	const inheritedPath = Object.entries(environment)
+		.filter(([key]) => key.toLowerCase() === "path")
+		.map(([, value]) => value)
+		.filter((value): value is string => value !== undefined)
+		.join(delimiter);
 	for (const key of Object.keys(environment)) {
-		if (SENSITIVE_ENVIRONMENT_KEY.test(key)) delete environment[key];
+		if (key.toLowerCase() === "path") delete environment[key];
 	}
+	const parentNodeBin = projectPath === undefined ? undefined : join(projectPath, "node_modules", ".bin");
+	environment["PATH"] = [parentNodeBin, inheritedPath]
+		.filter((value): value is string => value !== undefined && value !== "")
+		.join(delimiter);
 	return environment;
 }
 
@@ -143,7 +152,7 @@ export class GitWorkspace implements WorkspacePort {
 		input: { path: string; commands: readonly string[] },
 		operation?: OperationContext,
 	): Promise<readonly ValidationResult[]> {
-		const environment = validationEnvironment();
+		const environment = validationEnvironment(this.projectPath);
 		return runValidationCommands(input, environment, operation);
 	}
 
