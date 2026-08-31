@@ -32,24 +32,6 @@ test("read-only Khala archive display includes history without lifecycle actions
 	const archive = {
 		listWork: () => [summary],
 		inspectWork: () => work,
-		readRecords: () => ({
-			items: [
-				{
-					sequence: 1,
-					recordNumber: 1,
-					id: "record-1",
-					kind: "submission",
-					actor: "user",
-					workId: work.workId,
-					payloadVersion: 1,
-					summary: "Completed demo Work submitted",
-					evidenceRefs: [],
-					recordedAt: "2026-01-01T00:00:00.000Z",
-					payload: {},
-				},
-			],
-			asOfSequence: 1,
-		}),
 		close() {},
 	};
 	const context = {
@@ -64,7 +46,7 @@ test("read-only Khala archive display includes history without lifecycle actions
 		},
 	};
 
-	const result = showKhalaArchive(archive, context, { includeHistory: true });
+	const result = showKhalaArchive(archive, context);
 	await nextTurn();
 	const picker = screens[0].render(100).join("\n");
 	assert.match(picker, /Completed demo Work/);
@@ -73,8 +55,7 @@ test("read-only Khala archive display includes history without lifecycle actions
 	await nextTurn();
 	const overview = screens[1].render(100).join("\n");
 	assert.match(overview, /Completed demo Work/);
-	assert.match(overview, /Archive/);
-	assert.match(overview, /Evidence/);
+	assert.match(overview, /Execution/);
 	assert.doesNotMatch(overview, /Actions/);
 	screens[1].handleInput("\u001b");
 	await nextTurn();

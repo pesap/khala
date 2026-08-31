@@ -5,6 +5,7 @@ It includes history by default so completed and stopped Work is visible immediat
 
 The demo database is separate from the live Archive.
 The command does not submit Work, modify either database, start Pi sessions, or call models.
+Because it is never copied into the live Archive, there are no demo entries to opt out of or clear.
 Each invocation reopens the unchanged fixture after the previous view closes.
 A concurrent invocation reports that the demo is already open.
 

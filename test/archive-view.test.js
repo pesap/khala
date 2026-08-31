@@ -68,7 +68,7 @@ async function createArchive() {
 	return { directory, path };
 }
 
-test("read-only Khala archive views expose projections and records without writes", async () => {
+test("read-only Khala archive views expose projections without writes", async () => {
 	const { directory, path } = await createArchive();
 	try {
 		const before = await readFile(path);
@@ -89,7 +89,6 @@ test("read-only Khala archive views expose projections and records without write
 			},
 		]);
 		assert.equal(view.inspectWork("work-1").workId, "work-1");
-		assert.equal(view.readRecords({ workId: "work-1" }).items.length, 1);
 		assert.equal("append" in view, false);
 		view.close();
 		assert.deepEqual(await readFile(path), before);

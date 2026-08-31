@@ -23,7 +23,7 @@ async function runDemo(context: ExtensionContext): Promise<void> {
 	let archive: KhalaArchiveView | undefined;
 	try {
 		archive = openKhalaArchive(DEMO_ARCHIVE);
-		await showKhalaArchive(archive, context, { includeHistory: true });
+		await showKhalaArchive(archive, context);
 	} catch (error) {
 		context.ui.notify(
 			`Could not open the Khala demo: ${error instanceof Error ? error.message : String(error)}`,

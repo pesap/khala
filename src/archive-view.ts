@@ -1,11 +1,10 @@
 import { existsSync } from "node:fs";
 import { SQLiteArchive } from "./archive.js";
-import type { Page, RecordQuery, RecordView, WorkSummary, WorkView } from "./model.js";
+import type { WorkSummary, WorkView } from "./model.js";
 
 export interface KhalaArchiveView {
 	listWork: () => readonly WorkSummary[];
 	inspectWork: (workId: string) => WorkView;
-	readRecords: (query?: RecordQuery, cursor?: string) => Page<RecordView>;
 	close: () => void;
 }
 
@@ -15,7 +14,6 @@ export function openKhalaArchive(path: string): KhalaArchiveView {
 	return {
 		listWork: () => listWork(archive.listProjects()),
 		inspectWork: (workId) => inspectWork(archive.listProjects(), workId),
-		readRecords: (query, cursor) => archive.query(query ?? {}, cursor),
 		close: () => archive.close(),
 	};
 }

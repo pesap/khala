@@ -186,32 +186,22 @@ export async function showKhala(
 	await runKhalaPicker(service, context, actor, keybindings, roleSettings);
 }
 
-export type KhalaArchiveDisplayOptions = Readonly<{ includeHistory?: boolean | undefined }>;
-
-export async function showKhalaArchive(
-	archive: KhalaArchiveView,
-	context: ExtensionContext,
-	options: KhalaArchiveDisplayOptions = {},
-): Promise<void> {
+export async function showKhalaArchive(archive: KhalaArchiveView, context: ExtensionContext): Promise<void> {
 	if (!isTuiContext(context)) {
 		context.ui.notify(renderDashboard(archive.listWork()), "info");
 		return;
 	}
-	await runKhalaArchivePicker(archive, context, options.includeHistory === true);
+	await runKhalaArchivePicker(archive, context);
 }
 
 function isTuiContext(context: ExtensionContext): boolean {
 	return context.hasUI && context.mode === "tui";
 }
 
-async function runKhalaArchivePicker(
-	archive: KhalaArchiveView,
-	context: ExtensionContext,
-	includeHistory: boolean,
-): Promise<void> {
-	const pickerState: WorkPickerState = { showHistory: includeHistory };
+async function runKhalaArchivePicker(archive: KhalaArchiveView, context: ExtensionContext): Promise<void> {
+	const pickerState: WorkPickerState = { showHistory: true };
 	const keybindings = normalizeKeybindings({
-		roleSettings: "",
+		roleSettings: "r",
 		comments: "c",
 		refresh: "ctrl+r",
 		help: "?",
@@ -235,7 +225,7 @@ async function handleArchivePickerResult(
 		return true;
 	}
 	if (result === "settings") return true;
-	await showArchiveWork(archive, context, result, keybindings);
+	await showArchiveWork(archive, context, result);
 	return true;
 }
 
@@ -779,36 +769,9 @@ async function showWork(
 	}
 }
 
-async function showArchiveWork(
-	archive: KhalaArchiveView,
-	context: ExtensionContext,
-	workId: string,
-	keybindings: KhalaConfig["keybindings"],
-): Promise<void> {
+async function showArchiveWork(archive: KhalaArchiveView, context: ExtensionContext, workId: string): Promise<void> {
 	const work = archive.inspectWork(workId);
-	for (;;) {
-		const navigation = readArchiveRecordsForView(archive, work);
-		const section = await pickSection(work, navigation.records, navigation.error, context, keybindings, false);
-		if (section === null || section === "back") return;
-		await showArchiveWorkSection(section, context, work, navigation.records);
-	}
-}
-
-async function showArchiveWorkSection(
-	section: WorkSection,
-	context: ExtensionContext,
-	work: WorkView,
-	records: readonly RecordView[],
-): Promise<void> {
-	const handlers = {
-		evidence: () =>
-			browseRecordPages(selectRelevantEvidence(work, records), context, "evidence", formatEvidenceSupplement(work)),
-		archive: () => browseRecordPages([...records].reverse(), context, "archive"),
-		"peer-review": () => showPeerReview(providerReviewComments(records), context),
-		"blocking-signal": () => showBlockingSignal(work, context),
-	} satisfies Partial<Record<WorkSection, () => Promise<void>>>;
-	if (section === "actions") return;
-	await handlers[section]?.();
+	await showTextPage(context, truncateWorkName(work.terms.title), formatFieldRows(workSectionRows(work, undefined)));
 }
 
 async function showWorkSection(
@@ -829,48 +792,21 @@ async function showWorkSection(
 	await handlers[section]();
 }
 
-function workSectionItems(work: WorkView, hasReviewComments: boolean, includeActions: boolean): SelectItem[] {
-	return [
-		...(includeActions ? [{ value: "actions", label: "Actions" }] : []),
-		{ value: "evidence", label: "Evidence" },
-		...(hasReviewComments ? [{ value: "peer-review", label: "Peer-Review" }] : []),
-		{ value: "archive", label: "Archive" },
-		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
-	];
-}
-
-function workSectionFooter(
-	hasReviewComments: boolean,
-	includeActions: boolean,
-	keybindings: KhalaConfig["keybindings"],
-): string {
-	return hasReviewComments && includeActions
-		? `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`
-		: NAVIGATION_FOOTER;
-}
-
-function reviewCommentShortcut(
-	data: string,
-	hasReviewComments: boolean,
-	includeActions: boolean,
-	keybindings: KhalaConfig["keybindings"],
-	done: (value: WorkSection | "back" | null) => void,
-): boolean {
-	if (!hasReviewComments || !includeActions || parseKey(data) !== keybindings.comments) return false;
-	done("peer-review");
-	return true;
-}
-
 async function pickSection(
 	work: WorkView,
 	records: readonly RecordView[],
 	archiveError: string | undefined,
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
-	includeActions = true,
 ): Promise<WorkSection | "back" | null> {
 	const reviewComments = providerReviewComments(records);
-	const items = workSectionItems(work, reviewComments.length > 0, includeActions);
+	const items: SelectItem[] = [
+		{ value: "actions", label: "Actions" },
+		{ value: "evidence", label: "Evidence" },
+		...(reviewComments.length === 0 ? [] : [{ value: "peer-review", label: "Peer-Review" }]),
+		{ value: "archive", label: "Archive" },
+		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
+	];
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
 		const rows = workSectionRows(work, archiveError);
 		const list = new SelectList(items, items.length, selectorTheme(theme));
@@ -883,13 +819,19 @@ async function pickSection(
 		container.addChild(new Spacer(1));
 		container.addChild(list);
 		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, workSectionFooter(reviewComments.length > 0, includeActions, keybindings));
+		const footer =
+			reviewComments.length === 0 ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
+		addPanelKeybindings(container, theme, footer);
 		return selectableComponent(
 			container,
 			list,
 			tui,
 			() => done("back"),
-			(data) => reviewCommentShortcut(data, reviewComments.length > 0, includeActions, keybindings, done),
+			(data) => {
+				if (reviewComments.length === 0 || parseKey(data) !== keybindings.comments) return false;
+				done("peer-review");
+				return true;
+			},
 		);
 	});
 }
@@ -2433,14 +2375,6 @@ function readArchiveRecordsForNavigation(service: ApplicationService, work: Work
 	}
 }
 
-function readArchiveRecordsForView(archive: KhalaArchiveView, work: WorkView): NavigationRecords {
-	try {
-		return { records: readAllArchiveRecordsFromView(archive, work) };
-	} catch (error) {
-		return { records: [], error: error instanceof Error ? error.message : String(error) };
-	}
-}
-
 function readAllArchiveRecords(service: ApplicationService, work: WorkView, actor: Actor): readonly RecordView[] {
 	const records: RecordView[] = [];
 	let cursor: string | undefined;
@@ -2450,17 +2384,6 @@ function readAllArchiveRecords(service: ApplicationService, work: WorkView, acto
 			{ actor, commandId: `tui:archive:${work.workId}:${work.revision}`, schemaVersion: 1 },
 			cursor,
 		);
-		records.push(...page.items);
-		cursor = page.nextCursor;
-	} while (cursor !== undefined);
-	return records;
-}
-
-function readAllArchiveRecordsFromView(archive: KhalaArchiveView, work: WorkView): readonly RecordView[] {
-	const records: RecordView[] = [];
-	let cursor: string | undefined;
-	do {
-		const page = archive.readRecords({ workId: work.workId }, cursor);
 		records.push(...page.items);
 		cursor = page.nextCursor;
 	} while (cursor !== undefined);

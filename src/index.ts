@@ -1024,8 +1024,6 @@ export type {
 	Execution,
 	GovernedRole,
 	Mission,
-	Page,
-	RecordQuery,
 	RecordView,
 	RoleSetting,
 	RoleSettings,
@@ -1037,5 +1035,4 @@ export type {
 	WorkView,
 } from "./model.js";
 export { ApplicationError, ApplicationService } from "./service.js";
-export type { KhalaArchiveDisplayOptions } from "./tui.js";
 export { showKhalaArchive } from "./tui.js";
