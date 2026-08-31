@@ -36,7 +36,7 @@ input.on("line", (line) => {
 `,
 	);
 	await chmod(script, 0o755);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 500 });
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 500 });
 	const binding = await runtime.ensureSession({
 		cwd: directory,
 		model: "model",
@@ -69,7 +69,7 @@ input.on("line", (line) => {
 `,
 	);
 	await chmod(script, 0o755);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 5000 });
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 100, agentTimeoutMs: 5000 });
 	const binding = await runtime.ensureSession({
 		cwd: directory,
 		model: "model",
@@ -86,7 +86,7 @@ input.on("line", (line) => {
 });
 
 test("runtime state inspection honors cancellation before binding lookup", async () => {
-	const runtime = new PiRpcRuntime({ command: [process.execPath, "missing-pi-command.mjs"] });
+	const runtime = new PiRpcRuntime({ projectPath: process.cwd(), command: [process.execPath, "missing-pi-command.mjs"] });
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(
@@ -118,6 +118,7 @@ input.on("line", (line) => {
 	);
 	await chmod(script, 0o755);
 	const runtime = new PiRpcRuntime({
+		projectPath: directory,
 		command: [process.execPath, script],
 		baseEnvironment: { OPENAI_API_KEY: "must-not-leak" },
 		rpcTimeoutMs: 100,

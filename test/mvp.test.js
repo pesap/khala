@@ -10,7 +10,9 @@ import { openSqlite } from "../dist/src/sqlite.js";
 import { PiOracle } from "../dist/src/oracle.js";
 import { createApplication } from "../dist/src/factory.js";
 import { PiRpcRuntime } from "../dist/src/runtime.js";
+import { createRuntimeStorage } from "../dist/src/runtime-storage.js";
 import { ApplicationService } from "../dist/src/service.js";
+import { summarizeArchiveToolValue } from "../dist/src/index.js";
 
 const authority = generateKeyPairSync("ed25519");
 const ROLE_PUBLIC_KEY = authority.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
@@ -830,6 +832,48 @@ test("Permitted paths reject out-of-scope sandbox changes before publication", a
 	assert.equal(result.error.code, "invalid-state");
 	assert.match(result.error.summary, /outside the permitted paths/);
 	await service.close();
+});
+
+test("narrow Executor path scopes keep session artifacts out of the sandbox", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-executor-runtime-storage-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"));
+	const submitted = service.submitWork(
+		{ title: "Scoped runtime", objective: "Keep runtime files private", acceptanceCriteria: ["The sandbox stays clean"], allowedPaths: ["src"] },
+		meta("user", "runtime-storage:submit", 0),
+	);
+	const admitted = await service.perform({ action: "admit", workId: submitted.workId, input: {}, meta: meta("conclave", "runtime-storage:admit", submitted.revision, submitted.workId) });
+	await service.perform({ action: "start-execution", workId: submitted.workId, input: {}, meta: meta("conclave", "runtime-storage:start", admitted.value.revision, submitted.workId) });
+	await service.processPendingEffects();
+	const executor = controls.sessions.find((session) => session.input.role === "executor");
+	assert.ok(executor);
+	assert.equal(executor.input.sessionPath.startsWith(executor.input.sandboxRoot), false);
+	assert.equal(executor.input.sessionPath.includes(".khala-executor-session"), false);
+	await service.close();
+});
+
+test("Archive text exposes current terms when a Work needs input", () => {
+	const terms = {
+		title: "Complete terms",
+		objective: "Use the submitted objective",
+		context: "private context omitted",
+		scope: "src only",
+		acceptanceCriteria: ["The objective is visible"],
+		constraints: ["Do not broaden scope"],
+		validation: ["npm run check"],
+		allowedPaths: ["src"],
+		maxTokens: 100,
+	};
+	const content = summarizeArchiveToolValue(
+		{ items: [{ sequence: 1, kind: "submission", summary: "Work submitted" }], asOfSequence: 1 },
+		[{ workId: "work-1", revision: 2, state: "needs-input", terms, budget: { maxTokens: 100, reservedTokens: 0, consumedTokens: 0 }, nextAction: "Input is required", queuedSequence: 1 }],
+	);
+	assert.match(content, /Use the submitted objective/);
+	assert.match(content, /src only/);
+	assert.match(content, /The objective is visible/);
+	assert.match(content, /Do not broaden scope/);
+	assert.match(content, /npm run check/);
+	assert.match(content, /allowed paths: src/);
+	assert.doesNotMatch(content, /maxTokens|private context omitted|sessionPath|capability/);
 });
 
 function disconnectedRuntime() {
@@ -2261,7 +2305,7 @@ test("a real RPC startup retries one transient child exit", async () => {
 	);
 	await writeFile(marker, "0");
 	await chmod(script, 0o755);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 100 });
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 100 });
 	const binding = await runtime.ensureSession({
 		cwd: directory,
 		model: "model",
@@ -2278,11 +2322,13 @@ test("a real RPC startup retries one transient child exit", async () => {
 test("Persistent runtime sessions have one owner and private transcripts", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-ownership-"));
 	const script = join(directory, "rpc-stub.mjs");
-	const sessionPath = join(directory, "session.jsonl");
+	const storage = createRuntimeStorage(directory);
+	const sessionPath = storage.persistentSessionPath("executor", "ownership");
+	await mkdir(join(storage.root, "sessions"), { recursive: true });
 	await writeFile(sessionPath, "transcript", { mode: 0o644 });
 	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: ${JSON.stringify(sessionPath)}, isStreaming: false } }) + "\\n"); });\n`);
 	await chmod(script, 0o755);
-	const options = { command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 };
+	const options = { projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 };
 	const first = new PiRpcRuntime(options);
 	const input = { cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [], sessionPath };
 	await first.ensureSession(input);
@@ -2298,7 +2344,7 @@ test("a real RPC child is bounded and removed after an agent turn timeout", asyn
 	const script = join(directory, "rpc-stub.mjs");
 	await writeFile(script, `import readline from "node:readline";\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); });\n`);
 	await chmod(script, 0o755);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 30 });
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 30 });
 	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
 	await assert.rejects(runtime.send(binding, "never completes"), /timed out/);
 	assert.equal(await runtime.getState(binding), "unreachable");
@@ -2309,7 +2355,7 @@ test("a real RPC child waits for each prompt completion", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-turns-"));
 	const script = join(directory, "rpc-stub.mjs");
 	await writeFile(script, `import readline from "node:readline";\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\nlet turns = 0;\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") { turns += 1; process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n"); if (turns === 1) process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "first output" }], usage: { input: 11, output: 7, cacheRead: 13, cacheWrite: 5 } } }) + "\\n"); setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n"), turns === 2 ? 50 : 0); } });\n`);
-	const runtime = new PiRpcRuntime({ command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 });
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 });
 	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
 	assert.deepEqual(await runtime.send(binding, "first"), {
 		output: "first output",

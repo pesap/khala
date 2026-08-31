@@ -103,6 +103,7 @@ function createRuntime(
 	authorityPrivateKey: KeyObject | undefined,
 ): PiRpcRuntime {
 	return new PiRpcRuntime({
+		projectPath: context.projectPath,
 		command: config.piCommand,
 		extensionPath: join(packageRoot, "src", "index.ts"),
 		authorityPrivateKey,
