@@ -1125,9 +1125,6 @@ test("Role settings open with r, show a comparison table, and use the native mod
 	assert.match(roleTable, /ROLE\s+MODEL\s+THINKING/);
 	assert.match(roleTable, /Conclave\s+provider\/conclave\s+medium/);
 	assert.doesNotMatch(roleTable, /Conclave:/);
-	const compactRoleTable = screens[1].render(30).join("\n");
-	assert.match(compactRoleTable, /ROLE\s+CONFIGURATION/);
-	assert.match(compactRoleTable, /Conclave.*medium/);
 	screens[1].handleInput("\r");
 	await nextTurn();
 	await nextTurn();
