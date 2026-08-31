@@ -39,6 +39,9 @@ Record summaries are bounded to 500 characters.
 Evidence references are limited to 20 entries of 500 characters each.
 Provider conversations retain at most eight comments and eight checks.
 Provider comment bodies are bounded to 500 characters in conversation details and 2,000 characters in feedback delivery.
+Role-visible Work content includes only structured facts from the current Signal kind, opaque Signal ID, and evidence count, plus failed validation status and fixed failure categories.
+It never includes Signal summary or evidence text or ValidationResult output.
+Raw validation output remains in Archive details for the User-facing Archive.
 Oracle packets and outputs are bounded to 16,000 characters per text field.
 
 Git and provider commands use a 120-second timeout.
@@ -52,6 +55,10 @@ Semantic decisions are never retried automatically.
 Work reserves half of its configured token cap for each new Execution, with a minimum allowance of one token.
 Khala charges observed input and output tokens as each Executor turn completes.
 A budget-exhausted Execution is blocked and requires replacement or a Work budget amendment.
+A blocked or ready Executor Signal queues a Conclave wake with an explicit finite cause.
+Token exhaustion queues a separate finite Conclave wake for a Verdict.
+Each Executor-lifecycle wake identifies the current state and requires a durable state-appropriate decision with the applicable Signal ID.
+If Conclave returns without resolving that state, the outbox effect remains retryable and a durable failure is recorded.
 Pi does not provide a per-session output-limit option through the RPC interface, so a single turn can exceed the allowance before Khala records the usage.
 
 ## Recovery
@@ -103,6 +110,7 @@ Pi session, lease, lock, and capability files live in a project-specific directo
 Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
 Review request bodies include the Work objective, acceptance criteria, and validation commands.
 Executors commit sandbox changes and run declared validation through governed workspace actions rather than arbitrary shell tools.
+Validation may prepend the parent project's existing `node_modules/.bin` directory to `PATH` without changing the governed sandbox.
 Do not submit secrets or sensitive data as Work context or provider feedback.
 
 ## Verification checklist
