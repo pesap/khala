@@ -230,7 +230,14 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				const service = (await getRuntime(context)).service;
 				throwIfAborted(signal);
 				const page = service.readRecords(query, meta(actor, `tool:archive:${toolCallId}`, 0), params.cursor);
-				const projects = archiveWorkIds(query, page).map((workId) => service.inspectWork(workId));
+				const projects = archiveWorkIds(query, page).flatMap((workId) => {
+					try {
+						return [service.inspectWork(workId)];
+					} catch (error) {
+						if (error instanceof ApplicationError && error.envelope.code === "not-found") return [];
+						throw error;
+					}
+				});
 				return archiveToolResult(page, projects);
 			} catch (error) {
 				throwIfAborted(signal);

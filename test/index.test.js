@@ -32,9 +32,10 @@ test("user sessions show a branded Executor status in the footer", async () => {
 		const handlers = new Map();
 		const statuses = [];
 		const notices = [];
+		const tools = new Map();
 		const pi = {
 			registerFlag() {},
-			registerTool() {},
+			registerTool: (tool) => tools.set(tool.name, tool),
 			registerCommand() {},
 			on(event, handler) {
 				handlers.set(event, handler);
@@ -61,6 +62,8 @@ test("user sessions show a branded Executor status in the footer", async () => {
 		await handlers.get("session_start")({}, context);
 		assert.deepEqual(notices, []);
 		assert.deepEqual(statuses.at(-1), { key: "khala-executors", text: "khala: idle" });
+		const archiveResult = await tools.get("khala_read_archive").execute("unknown-work", { workId: "unknown-work" }, new AbortController().signal, undefined, context);
+		assert.deepEqual(archiveResult.details.items, []);
 		await handlers.get("session_shutdown")({});
 		assert.deepEqual(statuses.at(-1), { key: "khala-executors", text: undefined });
 	} finally {

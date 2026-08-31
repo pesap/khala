@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:c
 import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
@@ -206,7 +206,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		try {
 			const state = await request(child, "get_state", {}, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
 			const sessionId = startupSessionId(state, launch.sessionPath);
-			await protectSessionFile(launch.sessionPath);
+			await launch.storage.prepareSessionFile(launch.sessionPath);
 			assertChildRunning(child);
 			await removeSessionCapability(launch);
 			child.binding = { ...child.binding, sessionId, promptIdentity: input.promptIdentity };
@@ -566,14 +566,15 @@ async function prepareSessionLaunch(input: SessionInput, launch: SessionLaunch):
 }
 
 async function prepareSessionPath(input: SessionInput, launch: SessionLaunch): Promise<void> {
-	if (input.sessionPath === undefined) await mkdir(dirname(launch.sessionPath), { recursive: true });
+	await launch.storage.prepare();
+	await launch.storage.prepareSessionFile(launch.sessionPath);
 	if (input.sessionPath !== undefined)
 		await reserveLaunch(launch.sessionPath, launch.capabilityFile, launch.processMarker, launch.storage);
 }
 
 async function writeSessionCapability(launch: SessionLaunch): Promise<void> {
 	if (launch.capabilityFile !== undefined && launch.capabilityToken !== undefined)
-		await writeCapabilityFile(launch.capabilityFile, launch.capabilityToken);
+		await writeCapabilityFile(launch.capabilityFile, launch.capabilityToken, launch.storage);
 }
 
 async function removeSessionCapability(launch: SessionLaunch): Promise<void> {
@@ -672,8 +673,8 @@ function createStartingChild(
 	};
 }
 
-async function writeCapabilityFile(path: string, token: string): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+async function writeCapabilityFile(path: string, token: string, storage: RuntimeStorage): Promise<void> {
+	await storage.prepareSessionFile(path, false);
 	await writeFile(path, token, { encoding: "utf8", mode: 0o600, flag: "wx" });
 }
 async function reserveLaunch(
@@ -684,8 +685,9 @@ async function reserveLaunch(
 ): Promise<void> {
 	await withLaunchLock(sessionPath, storage, async () => {
 		const path = storage.launchLeasePath(sessionPath);
+		await storage.prepareSessionFile(path, false);
 		const text = await readFile(path, "utf8").catch(() => undefined);
-		if (text !== undefined) await replaceExistingLaunch(path, sessionPath, text);
+		if (text !== undefined) await replaceExistingLaunch(path, sessionPath, text, storage);
 		await writeLaunchIntentSafely(sessionPath, capabilityFile, processMarker, storage);
 	});
 }
@@ -705,13 +707,23 @@ async function writeLaunchIntentSafely(
 	}
 }
 
-async function replaceExistingLaunch(path: string, sessionPath: string, text: string): Promise<void> {
+async function replaceExistingLaunch(
+	path: string,
+	sessionPath: string,
+	text: string,
+	storage: RuntimeStorage,
+): Promise<void> {
 	const lease = parseLaunchLease(text);
+	validateLeaseCapability(lease, storage);
 	await assertLaunchAvailable(path, sessionPath, lease);
 	const displacedPath = `${path}.stale-${randomUUID()}`;
 	await renameStaleLaunch(path, displacedPath, sessionPath);
 	if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
 	await unlink(displacedPath).catch(() => undefined);
+}
+
+function validateLeaseCapability(lease: LaunchLease | undefined, storage: RuntimeStorage): void {
+	if (lease?.capabilityFile !== undefined) storage.assertOwned(lease.capabilityFile);
 }
 
 async function assertLaunchAvailable(path: string, sessionPath: string, lease: LaunchLease | undefined): Promise<void> {
@@ -777,8 +789,7 @@ async function withLaunchLock<T>(
 	operation: () => Promise<T>,
 ): Promise<T> {
 	const lockPath = storage.launchLockPath(sessionPath);
-	await mkdir(dirname(lockPath), { recursive: true });
-	await acquireLaunchLock(lockPath, sessionPath);
+	await acquireLaunchLock(lockPath, sessionPath, storage);
 	try {
 		return await operation();
 	} finally {
@@ -786,32 +797,33 @@ async function withLaunchLock<T>(
 	}
 }
 
-async function acquireLaunchLock(lockPath: string, sessionPath: string): Promise<void> {
+async function acquireLaunchLock(lockPath: string, sessionPath: string, storage: RuntimeStorage): Promise<void> {
+	storage.assertOwned(lockPath);
 	try {
-		await mkdir(lockPath);
+		await mkdir(lockPath, { mode: 0o700 });
 	} catch (error) {
 		if (!(error instanceof Error)) throw error;
-		await replaceStaleLaunchLock(lockPath, sessionPath, error);
+		await replaceStaleLaunchLock(lockPath, sessionPath, error, storage);
 	}
 }
 
-async function replaceStaleLaunchLock(lockPath: string, sessionPath: string, error: Error): Promise<void> {
+async function replaceStaleLaunchLock(
+	lockPath: string,
+	sessionPath: string,
+	error: Error,
+	storage: RuntimeStorage,
+): Promise<void> {
 	if (!isExistsError(error)) throw error;
+	await chmod(lockPath, 0o700);
 	const createdAt = await stat(lockPath)
 		.then((entry) => entry.mtimeMs)
 		.catch(() => Date.now());
 	if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
 		throw new Error(`Runtime session ${sessionPath} is already launching.`);
+	await chmod(lockPath, 0o700);
 	await rmdir(lockPath).catch(() => undefined);
-	await mkdir(lockPath);
-}
-
-async function protectSessionFile(sessionPath: string): Promise<void> {
-	try {
-		await chmod(sessionPath, 0o600);
-	} catch (error) {
-		if (!(error instanceof Error) || !isMissingFileError(error)) throw error;
-	}
+	storage.assertOwned(lockPath);
+	await mkdir(lockPath, { mode: 0o700 });
 }
 
 function isMissingFileError(error: Error): boolean {
@@ -837,7 +849,6 @@ async function writeLaunchIntent(
 	processMarker: string,
 	storage: RuntimeStorage,
 ): Promise<void> {
-	await mkdir(dirname(sessionPath), { recursive: true, mode: 0o700 });
 	await writeFile(
 		storage.launchLeasePath(sessionPath),
 		JSON.stringify({ capabilityFile, processMarker, ownerProcessId: process.pid, createdAt: Date.now() }),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { codeHostForOrigin, CommandCodeHost, GitWorkspace, readPullRequestTemplate } from "../dist/src/adapters.js";
 import { SQLiteArchive } from "../dist/src/archive.js";
@@ -213,7 +213,7 @@ function makeService(path, overrides = {}) {
 	const fake = makePorts(overrides);
 	const archive = new SQLiteArchive(path);
 	const service = new ApplicationService(archive, fake.ports, {
-		projectPath: "/project",
+		projectPath: dirname(path),
 		targetBranch: "main",
 		maxConcurrentExecutions: overrides.maxConcurrentExecutions ?? 2,
 		defaultWorkTokens: 100,
@@ -2326,17 +2326,34 @@ test("Persistent runtime sessions have one owner and private transcripts", async
 	const sessionPath = storage.persistentSessionPath("executor", "ownership");
 	await mkdir(join(storage.root, "sessions"), { recursive: true });
 	await writeFile(sessionPath, "transcript", { mode: 0o644 });
-	await writeFile(script, `import readline from "node:readline";\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: ${JSON.stringify(sessionPath)}, isStreaming: false } }) + "\\n"); });\n`);
+	await writeFile(script, `import { statSync } from "node:fs"; import readline from "node:readline"; const sessionPath = ${JSON.stringify(sessionPath)}; const input = readline.createInterface({ input: process.stdin }); input.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") { if ((statSync(sessionPath).mode & 0o777) !== 0o600 || (statSync(process.env.KHALA_ROLE_TOKEN_FILE).mode & 0o777) !== 0o600) process.exit(2); process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); } });\n`);
 	await chmod(script, 0o755);
-	const options = { projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 1_000, agentTimeoutMs: 500 };
+	const options = { projectPath: directory, command: [process.execPath, script], authorityPrivateKey: authority.privateKey, rpcTimeoutMs: 1_000, agentTimeoutMs: 500 };
 	const first = new PiRpcRuntime(options);
-	const input = { cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [], sessionPath };
+	const input = { cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: ["read"], sessionPath };
 	await first.ensureSession(input);
 	assert.equal((await stat(sessionPath)).mode & 0o777, 0o600);
 	const second = new PiRpcRuntime(options);
 	await assert.rejects(second.ensureSession(input), /already owned/);
 	await first.close();
 	await second.close();
+});
+
+test("Runtime storage canonicalizes projects and rejects symlinked paths", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-storage-"));
+	const alias = join(directory, "alias");
+	const outside = join(directory, "outside");
+	await mkdir(outside);
+	await symlink(directory, alias, "dir");
+	const direct = createRuntimeStorage(directory);
+	const linked = createRuntimeStorage(alias);
+	assert.equal(direct.root, linked.root);
+	assert.equal(direct.persistentSessionPath("executor", "same"), linked.persistentSessionPath("executor", "same"));
+	await direct.prepare();
+	await rm(join(direct.root, "sessions"), { recursive: true });
+	await symlink(outside, join(direct.root, "sessions"), "dir");
+	assert.throws(() => direct.ephemeralSessionPath(), /symlinks/);
+	await rm(direct.root, { recursive: true, force: true });
 });
 
 test("a real RPC child is bounded and removed after an agent turn timeout", async () => {
