@@ -12,6 +12,8 @@ Stopped Work with `stopReason: failed` remains visible and is marked for attenti
 Use the history key to include completed and cancelled Work.
 Use the
 configured Role settings key to open model settings.
+Role settings presents each role's current model and thinking level in a comparison table.
+Enter opens the selected role's settings.
 
 Default controls:
 

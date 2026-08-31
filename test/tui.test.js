@@ -1072,17 +1072,10 @@ test("Work overview hides runtime state for terminal Executions", async () => {
 	await result;
 });
 
-test("Role settings open with r and use the native model selector", async () => {
+test("Role settings open with r, show a comparison table, and use the native model selector", async () => {
 	initTheme();
 	const screens = [];
-	const selections = [
-		"Conclave: provider/conclave (medium)",
-		"Model: provider/conclave",
-		"Conclave: provider/fallback (medium)",
-		"Thinking: medium",
-		"low",
-		undefined,
-	];
+	const selections = ["Model: provider/conclave", "Thinking: medium", "low"];
 	const settings = {
 		conclave: { model: "provider/conclave", thinking: "medium" },
 		executor: { model: "provider/executor", thinking: "high" },
@@ -1128,14 +1121,24 @@ test("Role settings open with r and use the native model selector", async () => 
 	assert.doesNotMatch(screens[0].render(100).join("\n"), /→ Role settings/);
 	screens[0].handleInput("r");
 	await nextTurn();
-	await nextTurn();
-	assert.match(screens[1].render(100).join("\n"), /Model Name: Conclave model/);
-	screens[1].handleInput("f");
-	assert.match(screens[1].render(100).join("\n"), /Model Name: Fallback model/);
+	const roleTable = screens[1].render(100).join("\n");
+	assert.match(roleTable, /ROLE\s+MODEL\s+THINKING/);
+	assert.match(roleTable, /Conclave\s+provider\/conclave\s+medium/);
+	assert.doesNotMatch(roleTable, /Conclave:/);
 	screens[1].handleInput("\r");
 	await nextTurn();
 	await nextTurn();
-	screens[2].handleInput("\u001b");
+	assert.match(screens[2].render(100).join("\n"), /Model Name: Conclave model/);
+	screens[2].handleInput("f");
+	screens[2].handleInput("\r");
+	await nextTurn();
+	await nextTurn();
+	screens[3].handleInput("\r");
+	await nextTurn();
+	await nextTurn();
+	screens[4].handleInput("\u001b");
+	await nextTurn();
+	screens[5].handleInput("\u001b");
 	await result;
 	assert.deepEqual(updates, [
 		{ role: "conclave", setting: "model", value: "provider/fallback" },
@@ -1145,8 +1148,6 @@ test("Role settings open with r and use the native model selector", async () => 
 
 test("Backspace from Role settings returns to the Work picker", async () => {
 	const screens = [];
-	let terminalInput;
-	let resolveRoleSelection;
 	const controller = {
 		get: () => ({
 			conclave: { model: "provider/conclave", thinking: "medium" },
@@ -1161,15 +1162,6 @@ test("Backspace from Role settings returns to the Work picker", async () => {
 		hasUI: true,
 		mode: "tui",
 		ui: {
-			onTerminalInput: (handler) => {
-				terminalInput = handler;
-				return () => {};
-			},
-			select: async (_title, _options, options) =>
-				new Promise((resolve) => {
-					resolveRoleSelection = resolve;
-					options.signal.addEventListener("abort", () => resolve(undefined), { once: true });
-				}),
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
@@ -1181,13 +1173,11 @@ test("Backspace from Role settings returns to the Work picker", async () => {
 	await nextTurn();
 	screens[0].handleInput("r");
 	await nextTurn();
-	assert.ok(terminalInput);
-	terminalInput("\u007f");
-	resolveRoleSelection?.(undefined);
+	screens[1].handleInput("\u007f");
 	await nextTurn();
-	assert.equal(screens.length, 2);
-	assert.match(screens[1].render(100).join("\n"), /No active Work/);
-	screens[1].handleInput("\u001b");
+	assert.equal(screens.length, 3);
+	assert.match(screens[2].render(100).join("\n"), /No active Work/);
+	screens[2].handleInput("\u001b");
 	await result;
 });
 
