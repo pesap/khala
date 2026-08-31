@@ -3139,6 +3139,7 @@ export class ApplicationService {
 	): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
+		this.requireNoPendingReadySignal(work);
 		const kind = readSignalKind(input);
 		const summary = requiredNonBlank(requiredText(input?.summary, "summary"), "summary");
 		const evidence = readTextList(input, "evidence");
@@ -3199,6 +3200,16 @@ export class ApplicationService {
 				false,
 				"Reconcile the review request and rerun validation.",
 			);
+	}
+
+	private requireNoPendingReadySignal(work: WorkView): void {
+		if (!isCurrentReadySignal(work)) return;
+		throw this.error(
+			"invalid-state",
+			"A ready Signal is awaiting a Conclave Verdict.",
+			false,
+			"Wait for the Conclave to record a Verdict before sending another Signal.",
+		);
 	}
 
 	private requireReadySignalEvidence(evidence: readonly string[]): void {

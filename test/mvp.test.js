@@ -886,6 +886,13 @@ test("A ready Signal wake records retryable failure when Conclave takes no actio
 		meta: meta("executor", "ready-wake-no-action:signal", review.value.revision, running.workId, running.execution.executionId),
 	});
 	assert.equal("error" in ready, false);
+	const progressAfterReady = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "progress", summary: "Progress after ready", evidence: ["head"] },
+		meta: meta("executor", "ready-wake-no-action:progress-after-ready", ready.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(progressAfterReady.error.code, "invalid-state");
 	await service.processPendingEffects();
 	const current = service.inspectWork(running.workId);
 	assert.equal(current.execution.state, "running");
