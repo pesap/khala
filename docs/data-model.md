@@ -272,5 +272,9 @@ Ephemeral sessions use runtime-owned paths and reject child-reported paths outsi
 Transcript files are restricted to the Khala process owner.
 Prompt identity is persisted for Executor bindings, Observer bindings, and Oracle records.
 Khala never copies child transcripts into the Archive.
-The model-visible `khala_read_archive` text contains only bounded Work and Mission terms plus record summaries.
-Its structured `details` value remains the complete Archive page for non-model consumers.
+The model-visible `khala_read_archive` text contains bounded Work and Mission terms plus the ten most recent record summaries.
+The query uses a connection-local SQLite temporary view.
+Its structured `details` value contains only the same payload-free summary page.
+The collapsed Pi TUI result shows only the summary count and Archive sequence.
+Pi's configured tool-expansion key reveals the same bounded terms and summaries.
+Expansion changes presentation for the user, not the model-visible content.

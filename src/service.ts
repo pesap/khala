@@ -32,6 +32,7 @@ import {
 	type ProviderOutcomeObservation,
 	type ProviderReviewCommentObservation,
 	type RecordQuery,
+	type RecordSummaryView,
 	type RecordView,
 	type RecoveryUpdate,
 	type RoleSetting,
@@ -666,6 +667,17 @@ export class ApplicationService {
 		const normalized = this.normalizeRecordQuery(query, meta.actor, capability?.workId, capability?.executionId);
 		const page = this.archive.query(normalized, cursor);
 		return this.readRecordsForCapability(page, normalized, capability);
+	}
+
+	readRecordSummaries(query: RecordQuery | undefined, meta: CommandMeta): Page<RecordSummaryView> {
+		const capability = this.readArchiveCapability(meta);
+		const normalized = this.normalizeRecordQuery(query, meta.actor, capability?.workId, capability?.executionId);
+		return this.archive.querySummaries(normalized, this.summaryVisibleExecutionId(capability));
+	}
+
+	private summaryVisibleExecutionId(capability: RoleCapability | undefined): string | undefined {
+		if (capability?.role !== "executor") return undefined;
+		return this.executorRecordExecutionId(capability.executionId);
 	}
 
 	private readArchiveCapability(meta: CommandMeta): RoleCapability | undefined {

@@ -6,9 +6,12 @@ import {
 	type AgentToolUpdateCallback,
 	type ExtensionAPI,
 	type ExtensionContext,
+	keyHint,
+	type Theme,
 	type ToolCallEvent,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { type Component, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { persistRoleSetting } from "./config.js";
 import { type ApplicationModelRegistry, type ApplicationRuntime, createApplication } from "./factory.js";
@@ -91,7 +94,6 @@ const readArchiveSchema = Type.Object({
 	states: Type.Optional(Type.Array(StringEnum(WORK_STATES))),
 	from: Type.Optional(Type.String()),
 	to: Type.Optional(Type.String()),
-	cursor: Type.Optional(Type.String({ minLength: 1 })),
 });
 type ReadArchiveParams = Static<typeof readArchiveSchema>;
 
@@ -225,8 +227,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "khala_read_archive",
 		label: "Read Khala Archive",
-		description: "Read bounded, append-ordered Archive record projections through the application service.",
-		promptSnippet: "Read authoritative bounded Archive records before making decisions",
+		description: "Read current Work and Mission terms plus the ten most recent bounded Archive record summaries.",
+		promptSnippet: "Read authoritative current Work facts and recent Archive summaries before making decisions",
 		parameters: readArchiveSchema,
 		async execute(toolCallId, params: ReadArchiveParams, signal, _onUpdate, context) {
 			try {
@@ -235,7 +237,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				const query = readArchiveQuery(params, actor);
 				const service = (await getRuntime(context)).service;
 				throwIfAborted(signal);
-				const page = service.readRecords(query, meta(actor, `tool:archive:${toolCallId}`, 0), params.cursor);
+				const page = service.readRecordSummaries(query, meta(actor, `tool:archive:${toolCallId}`, 0));
 				const projects = archiveWorkIds(query, page).flatMap((workId) => {
 					try {
 						return [service.inspectWork(workId)];
@@ -252,6 +254,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				}
 				return toolErrorText(error instanceof Error ? error.message : "Archive read failed.");
 			}
+		},
+		renderResult(result, options, theme) {
+			return renderArchiveToolResult(result, options.expanded, options.isPartial, theme);
 		},
 	});
 
@@ -865,6 +870,39 @@ function archiveToolResult(value: JsonValue, projects: readonly WorkView[]): Too
 	};
 }
 
+function renderArchiveToolResult(
+	result: ArchiveRenderResult,
+	expanded: boolean,
+	isPartial: boolean,
+	theme: Theme,
+): Component {
+	if (isPartial) return new Text(theme.fg("warning", "Reading Archive..."), 0, 0);
+	// SAFETY: Pi passes the JSON-serializable details returned by archiveToolResult.
+	const details = result.details as JsonValue | undefined;
+	const headline = archiveToolHeadline(details);
+	return expanded ? expandedArchiveToolResult(result, headline, theme) : collapsedArchiveToolResult(headline, theme);
+}
+
+type ArchiveRenderResult = Readonly<{
+	content: readonly Readonly<{ type: string; text?: string }>[];
+	details?: unknown;
+}>;
+
+function collapsedArchiveToolResult(headline: string, theme: Theme): Component {
+	return new Text(theme.fg("success", `${headline} ${keyHint("app.tools.expand", "to expand")}`), 0, 0);
+}
+
+function expandedArchiveToolResult(result: ArchiveRenderResult, headline: string, theme: Theme): Component {
+	const content = result.content[0];
+	const text = content?.type === "text" ? (content.text ?? headline) : headline;
+	return new Text(theme.fg("toolOutput", text), 0, 0);
+}
+
+function archiveToolHeadline(value: JsonValue | undefined): string {
+	if (!isArchiveSummary(value)) return "Archive read complete.";
+	return `Archive: ${value["items"].length} recent summaries through sequence ${value["asOfSequence"]}.`;
+}
+
 // Pi marks an execute() failure only when the tool throws; an isError field on a returned value is ignored.
 function toolError(error: JsonObject): never {
 	throw new Error(boundedToolText(summarizeToolError(error), error));
@@ -975,10 +1013,14 @@ function archiveWorkProjection(work: WorkView): string {
 		`Terms title: ${boundedProjectionText(terms.title)}`,
 		`Terms objective: ${boundedProjectionText(terms.objective)}`,
 		`Terms scope: ${boundedProjectionText(terms.scope)}`,
-		`Terms acceptance criteria: ${boundedProjectionList(terms.acceptanceCriteria)}`,
-		`Terms constraints: ${boundedProjectionList(terms.constraints)}`,
-		`Terms validation: ${boundedProjectionList(terms.validation)}`,
-		`Terms allowed paths: ${boundedProjectionList(terms.allowedPaths)}`,
+		`Terms acceptance criteria:`,
+		...boundedProjectionList(terms.acceptanceCriteria),
+		`Terms constraints:`,
+		...boundedProjectionList(terms.constraints),
+		`Terms validation:`,
+		...boundedProjectionList(terms.validation),
+		`Terms allowed paths:`,
+		...boundedProjectionList(terms.allowedPaths),
 		...modelVisibleWorkEvidence(work),
 	].join("\n");
 }
@@ -996,8 +1038,14 @@ function boundedProjectionText(value: string): string {
 	return value.replace(/\s+/g, " ").trim().slice(0, 2_000);
 }
 
-function boundedProjectionList(values: readonly string[]): string {
-	return values.slice(0, 20).map(boundedProjectionText).join(" | ").slice(0, 4_000) || "(none)";
+function boundedProjectionList(values: readonly string[]): readonly string[] {
+	const text = values
+		.slice(0, 20)
+		.map(boundedProjectionText)
+		.filter((value) => value.length > 0)
+		.join("\n  - ")
+		.slice(0, 3_996);
+	return text.length === 0 ? ["  (none)"] : [`  - ${text}`];
 }
 
 function modelVisibleWorkEvidence(value: JsonObject): readonly string[] {
@@ -1040,7 +1088,7 @@ function isWorkSummary(value: JsonValue): value is JsonObject {
 }
 
 function isArchiveSummary(
-	value: JsonValue,
+	value: JsonValue | undefined,
 ): value is JsonObject & { items: readonly JsonObject[]; asOfSequence: number } {
 	if (!isJsonObject(value)) return false;
 	return Array.isArray(value["items"]) && isIntegerValue(value["asOfSequence"]);
@@ -1127,6 +1175,7 @@ export type {
 	Execution,
 	GovernedRole,
 	Mission,
+	RecordSummaryView,
 	RecordView,
 	RoleSetting,
 	RoleSettings,
