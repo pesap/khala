@@ -59,6 +59,8 @@ accept the Work.
 Reads current Work and Mission terms plus at most ten recent bounded Archive record summaries.
 Filter by `workId`, `missionId`, `executionId`, `kinds`, `states`, or time range.
 The Pi result does not include record payloads or a continuation cursor; use the TUI Archive view for complete authorized history.
+In the Pi TUI, the collapsed result shows only the summary count and Archive sequence; the configured tool-expansion key reveals the same bounded terms and summaries.
+Expansion changes presentation for the user, not the model-visible content.
 Text output is capped at 48 KB and 1,800 lines.
 Read the current Work before any decision.
 Child sessions receive only the records allowed by their binding.

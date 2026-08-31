@@ -3,6 +3,7 @@ import { copyFile, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 
 const theme = { fg: (_color, text) => text };
 
@@ -21,6 +22,7 @@ test("user sessions show a branded Executor status in the footer", async () => {
 			await copyFile(join(process.cwd(), "system-prompts", prompt), join(process.cwd(), "dist", "system-prompts", prompt));
 		}
 		const { default: khalaExtension, summarizeToolError } = await import("../dist/src/index.js");
+		initTheme();
 		assert.equal(
 			summarizeToolError({
 				summary: "Runtime failed; the child exited.",
@@ -62,8 +64,25 @@ test("user sessions show a branded Executor status in the footer", async () => {
 		await handlers.get("session_start")({}, context);
 		assert.deepEqual(notices, []);
 		assert.deepEqual(statuses.at(-1), { key: "khala-executors", text: "khala: idle" });
-		const archiveResult = await tools.get("khala_read_archive").execute("unknown-work", { workId: "unknown-work" }, new AbortController().signal, undefined, context);
+		const archiveTool = tools.get("khala_read_archive");
+		const archiveResult = await archiveTool.execute("unknown-work", { workId: "unknown-work" }, new AbortController().signal, undefined, context);
 		assert.deepEqual(archiveResult.details.items, []);
+		const collapsed = archiveTool.renderResult(archiveResult, { expanded: false, isPartial: false }, theme, {});
+		assert.match(collapsed.render(120).join("\n"), /0 recent summaries through sequence 0/);
+		const expanded = archiveTool.renderResult(archiveResult, { expanded: true, isPartial: false }, theme, {});
+		assert.match(expanded.render(120).join("\n"), /Archive records: 0/);
+		const populatedResult = {
+			content: [{ type: "text", text: "Archive records: 1\n#1 signal: Completed" }],
+			details: {
+				items: [{ sequence: 1, kind: "signal", summary: "Completed", payload: { secret: "hidden" } }],
+				asOfSequence: 1,
+			},
+		};
+		const populatedCollapsed = archiveTool.renderResult(populatedResult, { expanded: false, isPartial: false }, theme, {});
+		assert.doesNotMatch(populatedCollapsed.render(120).join("\n"), /Completed/);
+		const populatedExpanded = archiveTool.renderResult(populatedResult, { expanded: true, isPartial: false }, theme, {});
+		assert.match(populatedExpanded.render(120).join("\n"), /Completed/);
+		assert.doesNotMatch(populatedExpanded.render(120).join("\n"), /hidden/);
 		await handlers.get("session_shutdown")({});
 		assert.deepEqual(statuses.at(-1), { key: "khala-executors", text: undefined });
 	} finally {

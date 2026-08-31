@@ -6,9 +6,12 @@ import {
 	type AgentToolUpdateCallback,
 	type ExtensionAPI,
 	type ExtensionContext,
+	keyHint,
+	type Theme,
 	type ToolCallEvent,
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { type Component, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { persistRoleSetting } from "./config.js";
 import { type ApplicationModelRegistry, type ApplicationRuntime, createApplication } from "./factory.js";
@@ -245,6 +248,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				}
 				return toolErrorText(error instanceof Error ? error.message : "Archive read failed.");
 			}
+		},
+		renderResult(result, options, theme) {
+			return renderArchiveToolResult(result, options.expanded, options.isPartial, theme);
 		},
 	});
 
@@ -858,6 +864,39 @@ function archiveToolResult(value: JsonValue, projects: readonly WorkView[]): Too
 	};
 }
 
+function renderArchiveToolResult(
+	result: ArchiveRenderResult,
+	expanded: boolean,
+	isPartial: boolean,
+	theme: Theme,
+): Component {
+	if (isPartial) return new Text(theme.fg("warning", "Reading Archive..."), 0, 0);
+	// SAFETY: Pi passes the JSON-serializable details returned by archiveToolResult.
+	const details = result.details as JsonValue | undefined;
+	const headline = archiveToolHeadline(details);
+	return expanded ? expandedArchiveToolResult(result, headline, theme) : collapsedArchiveToolResult(headline, theme);
+}
+
+type ArchiveRenderResult = Readonly<{
+	content: readonly Readonly<{ type: string; text?: string }>[];
+	details?: unknown;
+}>;
+
+function collapsedArchiveToolResult(headline: string, theme: Theme): Component {
+	return new Text(theme.fg("success", `${headline} ${keyHint("app.tools.expand", "to expand")}`), 0, 0);
+}
+
+function expandedArchiveToolResult(result: ArchiveRenderResult, headline: string, theme: Theme): Component {
+	const content = result.content[0];
+	const text = content?.type === "text" ? (content.text ?? headline) : headline;
+	return new Text(theme.fg("toolOutput", text), 0, 0);
+}
+
+function archiveToolHeadline(value: JsonValue | undefined): string {
+	if (!isArchiveSummary(value)) return "Archive read complete.";
+	return `Archive: ${value["items"].length} recent summaries through sequence ${value["asOfSequence"]}.`;
+}
+
 // Pi marks an execute() failure only when the tool throws; an isError field on a returned value is ignored.
 function toolError(error: JsonObject): never {
 	throw new Error(boundedToolText(summarizeToolError(error), error));
@@ -1007,7 +1046,7 @@ function isWorkSummary(value: JsonValue): value is JsonObject {
 }
 
 function isArchiveSummary(
-	value: JsonValue,
+	value: JsonValue | undefined,
 ): value is JsonObject & { items: readonly JsonObject[]; asOfSequence: number } {
 	if (!isJsonObject(value)) return false;
 	return Array.isArray(value["items"]) && isIntegerValue(value["asOfSequence"]);

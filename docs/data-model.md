@@ -275,3 +275,6 @@ Khala never copies child transcripts into the Archive.
 The model-visible `khala_read_archive` text contains bounded Work and Mission terms plus the ten most recent record summaries.
 The query uses a connection-local SQLite temporary view.
 Its structured `details` value contains only the same payload-free summary page.
+The collapsed Pi TUI result shows only the summary count and Archive sequence.
+Pi's configured tool-expansion key reveals the same bounded terms and summaries.
+Expansion changes presentation for the user, not the model-visible content.
