@@ -73,7 +73,8 @@ See [Lifecycle](lifecycle.md) for state transitions and
 
 ## Inspect evidence
 
-Use `khala_read_archive` for bounded, append-ordered records.
+Use `khala_read_archive` for current Work facts and the ten most recent bounded record summaries.
+Use the `/khala` Archive view for complete append-ordered record history.
 Use
 `khala_inspect_runtime` for a read-only runtime check.
 An unreachable Executor

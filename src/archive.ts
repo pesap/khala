@@ -20,6 +20,7 @@ import {
 	REVIEW_REQUEST_STATUSES,
 	type RecordKind,
 	type RecordQuery,
+	type RecordSummaryView,
 	type RecordView,
 	type WorkView,
 } from "./model.js";
@@ -73,6 +74,7 @@ export interface ArchivePort {
 	releaseEffect: (effectId: string, owner?: string) => void;
 	renewEffect: (effectId: string, owner?: string) => boolean;
 	query: (query?: RecordQuery, cursor?: string) => Page<RecordView>;
+	querySummaries: (query?: RecordQuery, visibleExecutionId?: string) => Page<RecordSummaryView>;
 	project: (workId: string) => WorkView | undefined;
 	findObservation: (workId: string, observationId: string) => ProviderObservation | undefined;
 	findLatestObservation: (
@@ -183,6 +185,7 @@ CREATE INDEX IF NOT EXISTS archive_records_kind_sequence ON archive_records(kind
 `;
 
 const EFFECT_LEASE_MS = 120_000;
+const SUMMARY_PAGE_LIMIT = 10;
 const ARCHIVE_MARKER_SUFFIX = ".initialized";
 const REQUIRED_ARCHIVE_TABLES = [
 	"work_projection",
@@ -191,6 +194,16 @@ const REQUIRED_ARCHIVE_TABLES = [
 	"outbox",
 	"outbox_claim",
 ] as const;
+
+const ARCHIVE_READ_VIEWS = `
+CREATE TEMP VIEW IF NOT EXISTS khala_archive_record_summaries AS
+SELECT archive_records.sequence, archive_records.record_id, archive_records.kind, archive_records.actor,
+	archive_records.work_id, archive_records.mission_id, archive_records.execution_id,
+	archive_records.state, archive_records.summary, archive_records.recorded_at,
+	archive_record_numbers.record_number, archive_record_numbers.mission_record_number
+	FROM archive_records
+	LEFT JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id;
+`;
 
 export type SQLiteArchiveOptions = Readonly<{ readOnly?: boolean | undefined }>;
 
@@ -219,9 +232,11 @@ export class SQLiteArchive implements ArchivePort {
 		this.database = openArchiveDatabase(path, options);
 		if (options.readOnly === true) {
 			this.initializeReadOnly();
+			this.initializeReadViews();
 			return;
 		}
 		this.initializeWritable(path);
+		this.initializeReadViews();
 	}
 
 	private initializeReadOnly(): void {
@@ -232,6 +247,10 @@ export class SQLiteArchive implements ArchivePort {
 			this.database.close();
 			throw error;
 		}
+	}
+
+	private initializeReadViews(): void {
+		this.database.exec(ARCHIVE_READ_VIEWS);
 	}
 
 	private initializeWritable(path: string): void {
@@ -617,10 +636,24 @@ export class SQLiteArchive implements ArchivePort {
 	}
 	query(query: RecordQuery = {}, cursor?: string): Page<RecordView> {
 		const state = resolveQueryState(query, cursor, () => this.latestSequence());
-		const filters = queryFilters(state.query, state.asOfSequence, state.lastSequence);
+		const filters = queryFilters(state.query, state.asOfSequence, state.lastSequence, "archive_records");
 		const rows = this.database.prepare(archiveQuerySql(filters.clauses)).all(...filters.parameters);
 		const items = rows.map((row) => this.recordFromRow(row));
 		return archivePage(items, state);
+	}
+
+	querySummaries(query: RecordQuery = {}, visibleExecutionId?: string): Page<RecordSummaryView> {
+		const state = resolveQueryState(query, undefined, () => this.latestSequence());
+		const filters = queryFilters(
+			state.query,
+			state.asOfSequence,
+			state.lastSequence,
+			"khala_archive_record_summaries",
+			visibleExecutionId,
+		);
+		const rows = this.database.prepare(archiveSummaryQuerySql(filters.clauses)).all(...filters.parameters);
+		const items = rows.map((row) => this.recordSummaryFromRow(row));
+		return archiveSummaryPage(items, state);
 	}
 
 	project(workId: string): WorkView | undefined {
@@ -704,6 +737,22 @@ export class SQLiteArchive implements ArchivePort {
 			throw new Error(`Archive record at sequence ${sequence} was not found.`);
 		}
 		return this.recordFromRow(row);
+	}
+
+	private recordSummaryFromRow(row: SqlRow): RecordSummaryView {
+		return {
+			sequence: readInteger(row, "sequence"),
+			recordNumber: readInteger(row, "record_number"),
+			missionRecordNumber: readOptionalInteger(row, "mission_record_number"),
+			id: readString(row, "record_id"),
+			kind: readRecordKind(row, "kind"),
+			actor: readActor(row, "actor"),
+			workId: readString(row, "work_id"),
+			missionId: readOptionalString(row, "mission_id"),
+			executionId: readOptionalString(row, "execution_id"),
+			summary: boundText(readString(row, "summary"), 500),
+			recordedAt: readString(row, "recorded_at"),
+		};
 	}
 
 	private recordFromRow(row: SqlRow): RecordView {
@@ -883,21 +932,36 @@ function resolveQueryState(query: RecordQuery, cursor: string | undefined, lates
 	return parsed;
 }
 
-function queryFilters(query: RecordQuery, asOfSequence: number, lastSequence: number): QueryFilters {
-	const clauses = ["archive_records.sequence <= ?", "archive_records.sequence > ?"];
+function queryFilters(
+	query: RecordQuery,
+	asOfSequence: number,
+	lastSequence: number,
+	source: "archive_records" | "khala_archive_record_summaries",
+	visibleExecutionId?: string,
+): QueryFilters {
+	const clauses = [`${source}.sequence <= ?`, `${source}.sequence > ?`];
 	const parameters: Array<string | number> = [asOfSequence, lastSequence];
-	addQueryTextFilters(clauses, parameters, query);
-	addQueryListFilter(clauses, parameters, "kind", query.kinds);
-	addQueryListFilter(clauses, parameters, "state", query.states);
-	addQueryDateFilter(clauses, parameters, "archive_records.recorded_at >= ?", query.from);
-	addQueryDateFilter(clauses, parameters, "archive_records.recorded_at <= ?", query.to);
+	addQueryTextFilters(clauses, parameters, query, source);
+	if (visibleExecutionId !== undefined) {
+		clauses.push(`(${source}.execution_id IS NULL OR ${source}.execution_id = ?)`);
+		parameters.push(visibleExecutionId);
+	}
+	addQueryListFilter(clauses, parameters, `${source}.kind`, query.kinds);
+	addQueryListFilter(clauses, parameters, `${source}.state`, query.states);
+	addQueryDateFilter(clauses, parameters, `${source}.recorded_at >= ?`, query.from);
+	addQueryDateFilter(clauses, parameters, `${source}.recorded_at <= ?`, query.to);
 	return { clauses, parameters };
 }
 
-function addQueryTextFilters(clauses: string[], parameters: Array<string | number>, query: RecordQuery): void {
-	addQueryTextFilter(clauses, parameters, "archive_records.work_id = ?", query.workId);
-	addQueryTextFilter(clauses, parameters, "archive_records.mission_id = ?", query.missionId);
-	addQueryTextFilter(clauses, parameters, "archive_records.execution_id = ?", query.executionId);
+function addQueryTextFilters(
+	clauses: string[],
+	parameters: Array<string | number>,
+	query: RecordQuery,
+	source: "archive_records" | "khala_archive_record_summaries",
+): void {
+	addQueryTextFilter(clauses, parameters, `${source}.work_id = ?`, query.workId);
+	addQueryTextFilter(clauses, parameters, `${source}.mission_id = ?`, query.missionId);
+	addQueryTextFilter(clauses, parameters, `${source}.execution_id = ?`, query.executionId);
 }
 
 function addQueryTextFilter(
@@ -942,13 +1006,33 @@ function archiveQuerySql(clauses: readonly string[]): string {
 		WHERE ${clauses.join(" AND ")} ORDER BY archive_records.sequence LIMIT 100`;
 }
 
+function archiveSummaryQuerySql(clauses: readonly string[]): string {
+	return `SELECT sequence, record_id, kind, actor, work_id, mission_id, execution_id,
+		summary, recorded_at, record_number, mission_record_number
+		FROM khala_archive_record_summaries
+		WHERE ${clauses.join(" AND ")}
+		ORDER BY sequence DESC LIMIT ${SUMMARY_PAGE_LIMIT}`;
+}
+
 function archivePage(items: readonly RecordView[], state: QueryState): Page<RecordView> {
+	return archivePageWithLimit(items, state, 100);
+}
+
+function archiveSummaryPage(items: readonly RecordSummaryView[], state: QueryState): Page<RecordSummaryView> {
+	return { items, asOfSequence: state.asOfSequence };
+}
+
+function archivePageWithLimit<T extends { sequence: number }>(
+	items: readonly T[],
+	state: QueryState,
+	limit: number,
+): Page<T> {
 	const last = items.at(-1)?.sequence;
 	return {
 		items,
 		asOfSequence: state.asOfSequence,
 		nextCursor:
-			last === undefined || items.length < 100
+			last === undefined || items.length < limit
 				? undefined
 				: encodeCursor({ version: 1, query: state.query, asOfSequence: state.asOfSequence, lastSequence: last }),
 	};

@@ -51,7 +51,12 @@ Validation, authorization, revision, and provider failures are surfaced as Pi to
 Active tool filtering is only a convenience; every handler also enforces its session role.
 A repeated command ID returns the projection captured by the original command and its original record for the same Work.
 A revision conflict requires a reread and never performs an implicit semantic retry.
-`khala_read_archive` output is capped at 48 KB and 1,800 lines; use its cursor or narrower filters for more records.
+`khala_read_archive` uses a connection-local SQLite temporary view and returns at most the ten most recent bounded record summaries.
+Record payloads are not included in the Pi tool result; use the TUI Archive view for full authorized record details.
+In the Pi TUI, the collapsed result shows only the summary count and Archive sequence.
+Pi's configured tool-expansion key reveals the same bounded terms and summaries.
+Expansion changes presentation for the user, not the model-visible content.
+The model-visible output is capped at 48 KB and 1,800 lines.
 
 ## Provider polling
 
