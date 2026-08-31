@@ -216,6 +216,7 @@ inspectRuntime(workId, meta?)                   -> Promise<WorkView>
 availableActions(workId, actor, revision?, runtimeState?)   -> readonly Action[]
 perform(command)                                -> Promise<ServiceResult<WorkView>>
 readRecords(query, meta, cursor?)               -> Page<RecordView>
+readRecordSummaries(query, meta)                 -> Page<RecordSummaryView>
 pollProvider(workId, meta)                      -> Promise<WorkView>
 ```
 
@@ -244,7 +245,7 @@ The service uses narrow ports for Archive, runtime, workspace, code host, models
 ```text
 ArchivePort       append, updateCommandProjection, findCommand,
                   pendingEffects, completeEffect, releaseEffect, renewEffect,
-                  query, project, findObservation, findLatestObservation,
+                  query, querySummaries, project, findObservation, findLatestObservation,
                   listProjects, close
 AgentRuntimePort  ensureSession, send, getState, requestStop, close
 WorkspacePort     preflight, ensureSandbox, inspectHead, inspectChanges,

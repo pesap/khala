@@ -851,6 +851,76 @@ test("narrow Executor path scopes keep session artifacts out of the sandbox", as
 	await service.close();
 });
 
+test("Archive summary reads use an ephemeral view and omit payloads", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-summary-view-"));
+	const path = join(directory, "archive.sqlite");
+	const { service, archive } = makeService(path);
+	for (let index = 0; index < 11; index += 1) {
+		service.submitWork(
+			{
+				workId: `summary-work-${index}`,
+				title: `Summary ${index}`,
+				objective: "Keep Archive reads small",
+				acceptanceCriteria: ["No payload is returned"],
+			},
+			meta("user", `summary-view:submit:${index}`, 0),
+		);
+	}
+	const page = archive.querySummaries();
+	assert.equal(page.items.length, 10);
+	assert.deepEqual(
+		page.items.map((record) => record.sequence),
+		[11, 10, 9, 8, 7, 6, 5, 4, 3, 2],
+	);
+	assert.equal(Object.hasOwn(page.items[0], "payload"), false);
+	assert.equal(page.nextCursor, undefined);
+	await service.close();
+
+	const database = openSqlite(path);
+	assert.equal(
+		database.prepare("SELECT name FROM sqlite_master WHERE type = 'view' AND name = ?").get("khala_archive_record_summaries"),
+		undefined,
+	);
+	database.close();
+
+	const reopened = new SQLiteArchive(path, { readOnly: true });
+	assert.equal(reopened.querySummaries({ workId: "summary-work-10" }).items.length, 1);
+	reopened.close();
+});
+
+test("Archive summary visibility is applied before the result limit", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-summary-scope-"));
+	const path = join(directory, "archive.sqlite");
+	const { service, archive } = makeService(path);
+	const submitted = service.submitWork(
+		{ workId: "summary-scope-work", title: "Summary scope", objective: "Keep scoped reads useful", acceptanceCriteria: ["Visible records remain visible"] },
+		meta("user", "summary-scope:submit", 0),
+	);
+	let projection = submitted;
+	for (let index = 0; index < 13; index += 1) {
+		const nextProjection = { ...projection, revision: projection.revision + 1 };
+		archive.append({
+			commandId: `summary-scope:record:${index}`,
+			expectedWorkRevision: projection.revision,
+			kind: "signal",
+			actor: "executor",
+			workId: submitted.workId,
+			executionId: index < 2 ? "visible-execution" : "hidden-execution",
+			payloadVersion: 1,
+			summary: `Record ${index}`,
+			payload: {},
+			projection: nextProjection,
+		});
+		projection = nextProjection;
+	}
+	const page = archive.querySummaries({ workId: submitted.workId }, "visible-execution");
+	assert.deepEqual(
+		page.items.map((record) => record.summary),
+		["Record 1", "Record 0", "Work submitted: Summary scope"],
+	);
+	await service.close();
+});
+
 test("Archive text exposes current terms when a Work needs input", () => {
 	const terms = {
 		title: "Complete terms",
@@ -874,7 +944,7 @@ test("Archive text exposes current terms when a Work needs input", () => {
 	assert.match(content, /The objective is visible/);
 	assert.match(content, /Do not broaden scope/);
 	assert.match(content, /npm run check/);
-	assert.match(content, /allowed paths: src/);
+	assert.match(content, /allowed paths:\n  - src/);
 	assert.doesNotMatch(content, /maxTokens|private context omitted|sessionPath|capability/);
 });
 

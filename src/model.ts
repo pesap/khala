@@ -384,6 +384,23 @@ export type RecordView = Readonly<{
 	payload: JsonValue;
 }>;
 
+export type RecordSummaryView = Readonly<
+	Pick<
+		RecordView,
+		| "sequence"
+		| "recordNumber"
+		| "missionRecordNumber"
+		| "id"
+		| "kind"
+		| "actor"
+		| "workId"
+		| "missionId"
+		| "executionId"
+		| "summary"
+		| "recordedAt"
+	>
+>;
+
 export type Page<T> = Readonly<{
 	items: readonly T[];
 	nextCursor?: string | undefined;

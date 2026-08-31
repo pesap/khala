@@ -56,13 +56,13 @@ accept the Work.
 
 ### `khala_read_archive`
 
-Reads bounded, append-ordered Archive records.
-Filter by `workId`, `missionId`, `executionId`, `kinds`, `states`, or time range; use `cursor` for another page.
-`kinds` accepts the documented Archive record kinds and `states` accepts Work states.
-Text output is capped at 48 KB and 1,800 lines; use `nextCursor` or narrower filters to continue.
+Reads current Work and Mission terms plus at most ten recent bounded Archive record summaries.
+Filter by `workId`, `missionId`, `executionId`, `kinds`, `states`, or time range.
+The Pi result does not include record payloads or a continuation cursor; use the TUI Archive view for complete authorized history.
+Text output is capped at 48 KB and 1,800 lines.
 Read the current Work before any decision.
 Child sessions receive only the records allowed by their binding.
-The returned page includes `asOfSequence` so follow-up pages remain anchored to a stable Archive view.
+The returned page includes `asOfSequence` for the summary snapshot.
 
 ### `khala_poll_provider`
 

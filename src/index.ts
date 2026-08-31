@@ -85,7 +85,6 @@ const readArchiveSchema = Type.Object({
 	states: Type.Optional(Type.Array(StringEnum(WORK_STATES))),
 	from: Type.Optional(Type.String()),
 	to: Type.Optional(Type.String()),
-	cursor: Type.Optional(Type.String({ minLength: 1 })),
 });
 type ReadArchiveParams = Static<typeof readArchiveSchema>;
 
@@ -219,8 +218,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "khala_read_archive",
 		label: "Read Khala Archive",
-		description: "Read bounded, append-ordered Archive record projections through the application service.",
-		promptSnippet: "Read authoritative bounded Archive records before making decisions",
+		description: "Read current Work and Mission terms plus the ten most recent bounded Archive record summaries.",
+		promptSnippet: "Read authoritative current Work facts and recent Archive summaries before making decisions",
 		parameters: readArchiveSchema,
 		async execute(toolCallId, params: ReadArchiveParams, signal, _onUpdate, context) {
 			try {
@@ -229,7 +228,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				const query = readArchiveQuery(params, actor);
 				const service = (await getRuntime(context)).service;
 				throwIfAborted(signal);
-				const page = service.readRecords(query, meta(actor, `tool:archive:${toolCallId}`, 0), params.cursor);
+				const page = service.readRecordSummaries(query, meta(actor, `tool:archive:${toolCallId}`, 0));
 				const projects = archiveWorkIds(query, page).flatMap((workId) => {
 					try {
 						return [service.inspectWork(workId)];
@@ -968,10 +967,14 @@ function archiveWorkProjection(work: WorkView): string {
 		`Terms title: ${boundedProjectionText(terms.title)}`,
 		`Terms objective: ${boundedProjectionText(terms.objective)}`,
 		`Terms scope: ${boundedProjectionText(terms.scope)}`,
-		`Terms acceptance criteria: ${boundedProjectionList(terms.acceptanceCriteria)}`,
-		`Terms constraints: ${boundedProjectionList(terms.constraints)}`,
-		`Terms validation: ${boundedProjectionList(terms.validation)}`,
-		`Terms allowed paths: ${boundedProjectionList(terms.allowedPaths)}`,
+		`Terms acceptance criteria:`,
+		...boundedProjectionList(terms.acceptanceCriteria),
+		`Terms constraints:`,
+		...boundedProjectionList(terms.constraints),
+		`Terms validation:`,
+		...boundedProjectionList(terms.validation),
+		`Terms allowed paths:`,
+		...boundedProjectionList(terms.allowedPaths),
 	].join("\n");
 }
 
@@ -988,8 +991,14 @@ function boundedProjectionText(value: string): string {
 	return value.replace(/\s+/g, " ").trim().slice(0, 2_000);
 }
 
-function boundedProjectionList(values: readonly string[]): string {
-	return values.slice(0, 20).map(boundedProjectionText).join(" | ").slice(0, 4_000) || "(none)";
+function boundedProjectionList(values: readonly string[]): readonly string[] {
+	const text = values
+		.slice(0, 20)
+		.map(boundedProjectionText)
+		.filter((value) => value.length > 0)
+		.join("\n  - ")
+		.slice(0, 3_996);
+	return text.length === 0 ? ["  (none)"] : [`  - ${text}`];
 }
 
 function isWorkSummary(value: JsonValue): value is JsonObject {
@@ -1085,6 +1094,7 @@ export type {
 	Execution,
 	GovernedRole,
 	Mission,
+	RecordSummaryView,
 	RecordView,
 	RoleSetting,
 	RoleSettings,
