@@ -854,7 +854,7 @@ test("narrow Executor path scopes keep session artifacts out of the sandbox", as
 test("Archive text exposes current terms when a Work needs input", () => {
 	const terms = {
 		title: "Complete terms",
-		objective: "Use the submitted objective",
+		objective: "Use the submitted\nobjective",
 		context: "private context omitted",
 		scope: "src only",
 		acceptanceCriteria: ["The objective is visible"],
@@ -867,7 +867,9 @@ test("Archive text exposes current terms when a Work needs input", () => {
 		{ items: [{ sequence: 1, kind: "submission", summary: "Work submitted" }], asOfSequence: 1 },
 		[{ workId: "work-1", revision: 2, state: "needs-input", terms, budget: { maxTokens: 100, reservedTokens: 0, consumedTokens: 0 }, nextAction: "Input is required", queuedSequence: 1 }],
 	);
+	assert.match(content, /Complete terms/);
 	assert.match(content, /Use the submitted objective/);
+	assert.doesNotMatch(content, /submitted\nobjective/);
 	assert.match(content, /src only/);
 	assert.match(content, /The objective is visible/);
 	assert.match(content, /Do not broaden scope/);
@@ -2353,6 +2355,13 @@ test("Runtime storage canonicalizes projects and rejects symlinked paths", async
 	await rm(join(direct.root, "sessions"), { recursive: true });
 	await symlink(outside, join(direct.root, "sessions"), "dir");
 	assert.throws(() => direct.ephemeralSessionPath(), /symlinks/);
+	await rm(join(direct.root, "sessions"), { recursive: true });
+	await mkdir(join(direct.root, "sessions"));
+	await symlink(outside, join(direct.root, "sessions", "nested"), "dir");
+	assert.throws(
+		() => direct.ownedPath(`${direct.root}/sessions/nested/../victim`),
+		/symlinks/,
+	);
 	await rm(direct.root, { recursive: true, force: true });
 });
 

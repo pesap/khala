@@ -2,7 +2,6 @@ import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:c
 import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
@@ -205,7 +204,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		attachOutput(child, () => this.removeChild(child));
 		try {
 			const state = await request(child, "get_state", {}, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
-			const sessionId = startupSessionId(state, launch.sessionPath);
+			const sessionId = startupSessionId(state, launch.sessionPath, launch.storage);
 			await launch.storage.prepareSessionFile(launch.sessionPath);
 			assertChildRunning(child);
 			await removeSessionCapability(launch);
@@ -610,11 +609,11 @@ async function spawnSessionSafely(
 	}
 }
 
-function startupSessionId(state: RpcResponse, sessionPath: string): string {
+function startupSessionId(state: RpcResponse, sessionPath: string, storage: RuntimeStorage): string {
 	if (!state.success) throw new Error(state.error ?? "Pi did not return its session state.");
 	const sessionId = readSessionText(state.data, "sessionId");
-	const reportedSessionPath = readSessionText(state.data, "sessionFile");
-	if (resolve(reportedSessionPath) !== resolve(sessionPath))
+	const reportedSessionPath = storage.ownedPath(readSessionText(state.data, "sessionFile"));
+	if (reportedSessionPath !== sessionPath)
 		throw new Error("Pi returned a session file outside the runtime-owned session path.");
 	return sessionId;
 }

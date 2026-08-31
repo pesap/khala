@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, realpathSync, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export type RuntimeRole = "conclave" | "executor" | "observer" | "oracle";
 
@@ -10,67 +10,71 @@ export class RuntimeStorage {
 	readonly root: string;
 
 	constructor(projectPath: string) {
-		const canonicalProjectPath = realpathSync(resolve(projectPath));
-		const projectKey = createHash("sha256").update(canonicalProjectPath).digest("hex").slice(0, 24);
+		const project = realpathSync(resolve(projectPath));
+		const projectKey = createHash("sha256").update(project).digest("hex").slice(0, 24);
 		this.root = join(realpathSync(tmpdir()), "khala-runtime", projectKey);
 	}
 
 	persistentSessionPath(role: RuntimeRole, identity: string): string {
 		const identityKey = createHash("sha256").update(`${role}:${identity}`).digest("hex").slice(0, 24);
-		return this.runtimePath(join(this.root, "sessions", `khala-${role}-${identityKey}-session.jsonl`));
+		return this.ownedPath(join(this.root, "sessions", `khala-${role}-${identityKey}-session.jsonl`));
 	}
 
 	ephemeralSessionPath(): string {
-		return this.runtimePath(join(this.root, "sessions", `khala-ephemeral-${randomUUID()}.jsonl`));
+		return this.ownedPath(join(this.root, "sessions", `khala-ephemeral-${randomUUID()}.jsonl`));
 	}
 
 	capabilityFilePath(): string {
-		return this.runtimePath(join(this.root, "capabilities", `khala-capability-${randomUUID()}`));
+		return this.ownedPath(join(this.root, "capabilities", `khala-capability-${randomUUID()}`));
 	}
 
 	launchLeasePath(sessionPath: string): string {
-		this.assertOwned(sessionPath);
-		return this.runtimePath(`${sessionPath}.khala-process`);
+		return this.ownedPath(`${this.ownedPath(sessionPath)}.khala-process`);
 	}
 
 	launchLockPath(sessionPath: string): string {
-		return this.runtimePath(`${this.launchLeasePath(sessionPath)}.lock`);
+		return this.ownedPath(`${this.launchLeasePath(sessionPath)}.lock`);
 	}
 
 	launchTemporaryPath(sessionPath: string): string {
-		return this.runtimePath(`${this.launchLeasePath(sessionPath)}.${randomUUID()}.tmp`);
+		return this.ownedPath(`${this.launchLeasePath(sessionPath)}.${randomUUID()}.tmp`);
 	}
 
 	async prepare(): Promise<void> {
-		for (const path of [join(this.root, ".."), this.root, join(this.root, "sessions"), join(this.root, "capabilities")])
+		for (const path of [dirname(this.root), this.root, join(this.root, "sessions"), join(this.root, "capabilities")])
 			await this.ensurePrivateDirectory(path);
 	}
 
 	async prepareSessionFile(path: string, create = true): Promise<void> {
-		this.assertOwned(path);
-		await this.ensurePrivateDirectoryTree(resolve(path, ".."));
-		await this.ensurePrivateFile(path, create);
+		const owned = this.ownedPath(path);
+		await this.ensurePrivateDirectoryTree(dirname(owned));
+		await this.ensurePrivateFile(owned, create);
+	}
+
+	ownedPath(path: string): string {
+		assertOwnedLocation(path, this.root);
+		let current = this.root;
+		this.assertNotSymlink(current);
+		for (const component of pathComponents(path, this.root)) {
+			current = nextPath(current, component);
+			this.assertNotSymlink(current);
+			assertInsideRoot(current, this.root);
+		}
+		if (current === this.root) throw new Error(`Runtime-owned path must be under ${this.root}.`);
+		return current;
 	}
 
 	assertOwned(path: string): void {
-		const resolvedPath = resolve(path);
-		const rootRelative = relative(this.root, resolvedPath);
-		if (rootRelative.length === 0 || rootRelative.startsWith("..") || isAbsolute(rootRelative))
-			throw new Error(`Runtime-owned path must be under ${this.root}.`);
-		this.assertNoSymlinkComponents(resolvedPath);
+		this.ownedPath(path);
 	}
 
-	private runtimePath(path: string): string {
-		this.assertOwned(path);
-		return path;
-	}
-
-	private assertNoSymlinkComponents(path: string): void {
+	private async ensurePrivateDirectoryTree(path: string): Promise<void> {
+		const owned = this.ownedPath(path);
+		const rootRelative = relative(this.root, owned);
 		let current = this.root;
-		this.assertNotSymlink(current);
-		for (const component of relative(this.root, path).split(sep)) {
+		for (const component of rootRelative.split(sep)) {
 			current = join(current, component);
-			this.assertNotSymlink(current);
+			await this.ensurePrivateDirectory(current);
 		}
 	}
 
@@ -89,22 +93,6 @@ export class RuntimeStorage {
 			throw new Error(`Runtime-owned path cannot contain symlinks: ${path}.`);
 	}
 
-	private async ensurePrivateDirectoryTree(path: string): Promise<void> {
-		const rootRelative = relative(this.root, resolve(path));
-		if (rootRelative.length === 0) return;
-		this.assertUnderRoot(rootRelative);
-		let current = this.root;
-		for (const component of rootRelative.split(sep)) {
-			current = join(current, component);
-			await this.ensurePrivateDirectory(current);
-		}
-	}
-
-	private assertUnderRoot(rootRelative: string): void {
-		if (rootRelative.startsWith("..") || isAbsolute(rootRelative))
-			throw new Error(`Runtime-owned path must be under ${this.root}.`);
-	}
-
 	private async ensurePrivateDirectory(path: string): Promise<void> {
 		const existing = await this.existingEntry(path);
 		if (existing !== undefined && !existing.isDirectory())
@@ -121,6 +109,35 @@ export class RuntimeStorage {
 			throw error;
 		}
 	}
+}
+
+function assertOwnedLocation(path: string, root: string): void {
+	if (!isAbsolute(path) || (path !== root && !path.startsWith(`${root}${sep}`)))
+		throw new Error(`Runtime-owned path must be under ${root}.`);
+}
+
+function pathComponents(path: string, root: string): readonly string[] {
+	return path
+		.slice(root.length)
+		.split(sep)
+		.filter((component) => component.length > 0 && component !== ".");
+}
+
+function nextPath(current: string, component: string): string {
+	return component === ".." ? dirname(current) : join(current, component);
+}
+
+function assertInsideRoot(path: string, root: string): void {
+	const rootRelative = relative(root, path);
+	if (
+		[
+			rootRelative.length === 0,
+			rootRelative === "..",
+			rootRelative.startsWith(`..${sep}`),
+			isAbsolute(rootRelative),
+		].some(Boolean)
+	)
+		throw new Error(`Runtime-owned path must be under ${root}.`);
 }
 
 function isMissingFileError(error: Error): boolean {

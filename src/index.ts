@@ -979,6 +979,7 @@ function archiveMissionIdentity(work: WorkView): readonly string[] {
 
 function archiveTermsProjection(label: string, terms: WorkView["terms"]): readonly string[] {
 	return [
+		`${label} title: ${boundedProjectionText(terms.title)}`,
 		`${label} objective: ${boundedProjectionText(terms.objective)}`,
 		`${label} scope: ${boundedProjectionText(terms.scope)}`,
 		`${label} acceptance criteria: ${boundedProjectionList(terms.acceptanceCriteria)}`,
@@ -989,7 +990,7 @@ function archiveTermsProjection(label: string, terms: WorkView["terms"]): readon
 }
 
 function boundedProjectionText(value: string): string {
-	return value.replace(/\\s+/g, " ").trim().slice(0, 2_000);
+	return value.replace(/\s+/g, " ").trim().slice(0, 2_000);
 }
 
 function boundedProjectionList(values: readonly string[]): string {
