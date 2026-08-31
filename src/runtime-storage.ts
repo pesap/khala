@@ -90,11 +90,15 @@ export class RuntimeStorage {
 	}
 
 	private async ensurePrivateDirectory(path: string): Promise<void> {
-		const existing = await this.existingEntry(path);
-		if (existing !== undefined && !existing.isDirectory())
-			throw new Error(`Runtime-owned path must be a directory: ${path}.`);
-		if (existing === undefined) await mkdir(path, { mode: 0o700 });
+		if ((await this.existingEntry(path)) === undefined) await mkdir(path, { mode: 0o700, recursive: true });
+		await this.assertPrivateDirectory(path);
 		await chmod(path, 0o700);
+	}
+
+	private async assertPrivateDirectory(path: string): Promise<void> {
+		const current = await this.existingEntry(path);
+		if (current === undefined || !current.isDirectory())
+			throw new Error(`Runtime-owned path must be a directory: ${path}.`);
 	}
 
 	private async existingEntry(path: string): Promise<Stats | undefined> {

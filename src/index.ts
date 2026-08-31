@@ -960,11 +960,18 @@ function archiveWorkIds(query: MutableRecordQuery, page: JsonObject): readonly s
 }
 
 function archiveWorkProjection(work: WorkView): string {
+	const terms = work.mission?.assignment ?? work.terms;
 	return [
 		`Work ${work.workId}: revision ${work.revision}; state ${work.state}`,
 		...archiveMissionState(work),
 		...archiveMissionIdentity(work),
-		...archiveTermsProjection("Terms", work.mission?.assignment ?? work.terms),
+		`Terms title: ${boundedProjectionText(terms.title)}`,
+		`Terms objective: ${boundedProjectionText(terms.objective)}`,
+		`Terms scope: ${boundedProjectionText(terms.scope)}`,
+		`Terms acceptance criteria: ${boundedProjectionList(terms.acceptanceCriteria)}`,
+		`Terms constraints: ${boundedProjectionList(terms.constraints)}`,
+		`Terms validation: ${boundedProjectionList(terms.validation)}`,
+		`Terms allowed paths: ${boundedProjectionList(terms.allowedPaths)}`,
 	].join("\n");
 }
 
@@ -975,18 +982,6 @@ function archiveMissionState(work: WorkView): readonly string[] {
 function archiveMissionIdentity(work: WorkView): readonly string[] {
 	const mission = work.mission;
 	return mission === undefined ? [] : [`Mission ${mission.missionId}: mandate revision ${mission.mandateRevision}`];
-}
-
-function archiveTermsProjection(label: string, terms: WorkView["terms"]): readonly string[] {
-	return [
-		`${label} title: ${boundedProjectionText(terms.title)}`,
-		`${label} objective: ${boundedProjectionText(terms.objective)}`,
-		`${label} scope: ${boundedProjectionText(terms.scope)}`,
-		`${label} acceptance criteria: ${boundedProjectionList(terms.acceptanceCriteria)}`,
-		`${label} constraints: ${boundedProjectionList(terms.constraints)}`,
-		`${label} validation: ${boundedProjectionList(terms.validation)}`,
-		`${label} allowed paths: ${boundedProjectionList(terms.allowedPaths)}`,
-	];
 }
 
 function boundedProjectionText(value: string): string {

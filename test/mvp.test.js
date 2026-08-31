@@ -2349,6 +2349,7 @@ test("Runtime storage canonicalizes projects and rejects symlinked paths", async
 	await symlink(directory, alias, "dir");
 	const direct = createRuntimeStorage(directory);
 	const linked = createRuntimeStorage(alias);
+	await Promise.all(Array.from({ length: 8 }, () => direct.prepare()));
 	assert.equal(direct.root, linked.root);
 	assert.equal(direct.persistentSessionPath("executor", "same"), linked.persistentSessionPath("executor", "same"));
 	await direct.prepare();
