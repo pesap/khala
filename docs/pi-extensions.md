@@ -1,6 +1,6 @@
 # Bundled Pi extensions
 
-The package registers the main Khala extension and two complementary Pi
+The package registers the main Khala extension and three complementary Pi
 extensions.
 
 ## `pi-review`
@@ -28,3 +28,14 @@ A `-clarify` marker intercepts the input, places the rewrite in the editor, and 
 The marker is a whole token, so it does not match words such as `pre-clarify` or `-clarify-now`.
 The extension never silently sends the rewritten prompt and never changes global Pi settings.
 The command and marker require a UI-capable Pi session, such as interactive or RPC mode.
+
+## `khala-demo`
+
+`/khala-demo` opens the packaged read-only demo Archive with all Work history visible.
+The fixture is separate from the live Archive and does not submit Work, start child sessions, or call models.
+Because it is never copied into the live Archive, there are no demo entries to opt out of or clear.
+Each invocation reopens the unchanged fixture after the previous view closes.
+Concurrent invocations are rejected.
+In non-TUI modes it displays the fixture dashboard as a notification.
+
+The extension uses the public `openKhalaArchive` and `showKhalaArchive` APIs.

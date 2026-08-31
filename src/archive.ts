@@ -184,17 +184,57 @@ CREATE INDEX IF NOT EXISTS archive_records_kind_sequence ON archive_records(kind
 
 const EFFECT_LEASE_MS = 120_000;
 const ARCHIVE_MARKER_SUFFIX = ".initialized";
+const REQUIRED_ARCHIVE_TABLES = [
+	"work_projection",
+	"archive_records",
+	"archive_record_numbers",
+	"outbox",
+	"outbox_claim",
+] as const;
+
+export type SQLiteArchiveOptions = Readonly<{ readOnly?: boolean | undefined }>;
+
+function openArchiveDatabase(path: string, options: SQLiteArchiveOptions): SqlDatabase {
+	if (options.readOnly === true) return openReadOnlyDatabase(path);
+	assertWritableArchivePath(path);
+	mkdirSync(dirname(path), { recursive: true });
+	return openSqlite(path, { readOnly: false });
+}
+
+function openReadOnlyDatabase(path: string): SqlDatabase {
+	if (!existsSync(path)) throw new Error(`Archive database ${path} does not exist.`);
+	return openSqlite(path, { readOnly: true });
+}
+
+function assertWritableArchivePath(path: string): void {
+	const existed = existsSync(path);
+	if (!existed && existsSync(archiveMarkerPath(path)))
+		throw new Error(`Archive database ${path} is missing; refusing to create a replacement Archive.`);
+}
 
 export class SQLiteArchive implements ArchivePort {
 	private readonly database: SqlDatabase;
 
-	constructor(path: string) {
-		const existed = existsSync(path);
-		const markerPath = archiveMarkerPath(path);
-		if (!existed && existsSync(markerPath))
-			throw new Error(`Archive database ${path} is missing; refusing to create a replacement Archive.`);
-		mkdirSync(dirname(path), { recursive: true });
-		this.database = openSqlite(path);
+	constructor(path: string, options: SQLiteArchiveOptions = {}) {
+		this.database = openArchiveDatabase(path, options);
+		if (options.readOnly === true) {
+			this.initializeReadOnly();
+			return;
+		}
+		this.initializeWritable(path);
+	}
+
+	private initializeReadOnly(): void {
+		try {
+			this.validateReadOnlySchema();
+			this.validateIntegrity();
+		} catch (error) {
+			this.database.close();
+			throw error;
+		}
+	}
+
+	private initializeWritable(path: string): void {
 		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
 		this.database.exec(SCHEMA);
 		this.migrateCommandColumns();
@@ -202,7 +242,18 @@ export class SQLiteArchive implements ArchivePort {
 		this.migrateLegacyWorkStates();
 		this.migrateRecordNumbers();
 		this.validateIntegrity();
-		ensureArchiveMarker(markerPath);
+		ensureArchiveMarker(archiveMarkerPath(path));
+	}
+
+	private validateReadOnlySchema(): void {
+		const tables = new Set(
+			this.database
+				.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+				.all()
+				.map((row) => readString(row, "name")),
+		);
+		const missing = REQUIRED_ARCHIVE_TABLES.filter((table) => !tables.has(table));
+		if (missing.length > 0) throw new Error(`Archive schema is missing required tables: ${missing.join(", ")}.`);
 	}
 
 	private validateIntegrity(): void {

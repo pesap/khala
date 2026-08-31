@@ -130,6 +130,8 @@ See the [full lifecycle loop](docs/lifecycle.md#lifecycle-loop).
 - `/khala` opens the on-demand Work view and Role settings.
 - `/khala-recover` rereads the Archive and reconciles persisted runtime
   bindings.
+- `/khala-demo` opens a packaged read-only Archive containing representative
+  Work and Execution states.
 - `khala_submit_work` records User intent without waiting for admission.
 - `khala_poll_provider` records changed GitHub or GitLab observations and
   confirmed merge evidence.
@@ -203,3 +205,6 @@ contract and action reference.
   `-clarify` marker.
   It places a rewritten prompt in the editor for User review;
   it does not send the prompt.
+- [`khala-demo`](extensions/khala-demo/README.md) provides `/khala-demo` for
+  browsing a packaged read-only Archive without changing the live Archive or
+  calling models.

@@ -1012,6 +1012,8 @@ function isIntegerValue(value: JsonValue | undefined): value is number {
 }
 
 export { SQLiteArchive } from "./archive.js";
+export type { KhalaArchiveView } from "./archive-view.js";
+export { openKhalaArchive } from "./archive-view.js";
 export type { ApplicationRuntime } from "./factory.js";
 export { createApplication } from "./factory.js";
 export type {
@@ -1029,6 +1031,8 @@ export type {
 	SubmitWorkInput,
 	ValidationResult,
 	ValidationRun,
+	WorkSummary,
 	WorkView,
 } from "./model.js";
 export { ApplicationError, ApplicationService } from "./service.js";
+export { showKhalaArchive } from "./tui.js";

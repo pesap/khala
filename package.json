@@ -15,7 +15,8 @@
     "extensions": [
       "./src/index.ts",
       "./extensions/pi-review/review.ts",
-      "./extensions/pi-clarify/clarify.ts"
+      "./extensions/pi-clarify/clarify.ts",
+      "./extensions/khala-demo/demo.ts"
     ],
     "themes": [
       "./themes"
@@ -32,6 +33,7 @@
   },
   "files": [
     "extensions",
+    "data/fixtures",
     "prompts",
     "system-prompts",
     "templates",

@@ -562,6 +562,9 @@ $RECYCLE.BIN/
 # Pi /export captures embed complete local session and tool transcripts.
 /pi-session-*.html
 
+# Packaged Khala demo fixture
+!data/fixtures/khala-demo.sqlite
+
 # Local audit and planning notes
 TODO.md
 PAPERCUTS.md
