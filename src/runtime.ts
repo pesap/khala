@@ -451,8 +451,7 @@ type LaunchLease = Readonly<{
 const LAUNCH_INTENT_STALE_MS = 60_000;
 
 function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions, storage: RuntimeStorage): SessionLaunch {
-	const sessionPath = input.sessionPath ?? storage.ephemeralSessionPath();
-	storage.assertOwned(sessionPath);
+	const sessionPath = storage.ownedPath(input.sessionPath ?? storage.ephemeralSessionPath());
 	const capabilityNonce = sessionCapabilityNonce(input);
 	const capabilityToken = createSessionCapability(input, options, capabilityNonce);
 	const capabilityFile = sessionCapabilityFile(capabilityToken, storage);
@@ -722,7 +721,7 @@ async function replaceExistingLaunch(
 }
 
 function validateLeaseCapability(lease: LaunchLease | undefined, storage: RuntimeStorage): void {
-	if (lease?.capabilityFile !== undefined) storage.assertOwned(lease.capabilityFile);
+	if (lease?.capabilityFile !== undefined) storage.ownedPath(lease.capabilityFile);
 }
 
 async function assertLaunchAvailable(path: string, sessionPath: string, lease: LaunchLease | undefined): Promise<void> {
@@ -797,7 +796,7 @@ async function withLaunchLock<T>(
 }
 
 async function acquireLaunchLock(lockPath: string, sessionPath: string, storage: RuntimeStorage): Promise<void> {
-	storage.assertOwned(lockPath);
+	storage.ownedPath(lockPath);
 	try {
 		await mkdir(lockPath, { mode: 0o700 });
 	} catch (error) {
@@ -821,7 +820,7 @@ async function replaceStaleLaunchLock(
 		throw new Error(`Runtime session ${sessionPath} is already launching.`);
 	await chmod(lockPath, 0o700);
 	await rmdir(lockPath).catch(() => undefined);
-	storage.assertOwned(lockPath);
+	storage.ownedPath(lockPath);
 	await mkdir(lockPath, { mode: 0o700 });
 }
 

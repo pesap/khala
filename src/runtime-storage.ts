@@ -56,16 +56,12 @@ export class RuntimeStorage {
 		let current = this.root;
 		this.assertNotSymlink(current);
 		for (const component of pathComponents(path, this.root)) {
-			current = nextPath(current, component);
+			current = component === ".." ? dirname(current) : join(current, component);
 			this.assertNotSymlink(current);
 			assertInsideRoot(current, this.root);
 		}
 		if (current === this.root) throw new Error(`Runtime-owned path must be under ${this.root}.`);
 		return current;
-	}
-
-	assertOwned(path: string): void {
-		this.ownedPath(path);
 	}
 
 	private async ensurePrivateDirectoryTree(path: string): Promise<void> {
@@ -121,10 +117,6 @@ function pathComponents(path: string, root: string): readonly string[] {
 		.slice(root.length)
 		.split(sep)
 		.filter((component) => component.length > 0 && component !== ".");
-}
-
-function nextPath(current: string, component: string): string {
-	return component === ".." ? dirname(current) : join(current, component);
 }
 
 function assertInsideRoot(path: string, root: string): void {
