@@ -1087,6 +1087,9 @@ const ROLE_LABELS = {
 	observer: "Observer",
 	oracle: "Oracle",
 } satisfies Readonly<Record<GovernedRole, string>>;
+const ROLE_TABLE_GAP = 2;
+const ROLE_TABLE_MIN_MODEL_WIDTH = 12;
+type RoleTableLayout = Readonly<{ role: number; model: number; thinking: number; compact: boolean }>;
 type PiModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
 type NativeModelRuntimeAdapter = {
 	getAvailableSnapshot: () => readonly PiModel[];
@@ -1178,14 +1181,93 @@ async function selectRoleOption(
 }
 type RoleSettingsSnapshot = Readonly<{ role: GovernedRole; current: RoleSettingsMap[GovernedRole] }>;
 
-function selectedRoleSnapshot(
+function roleFromSelection(value: string | undefined): GovernedRole | undefined {
+	return ROLE_ORDER.find((role) => role === value);
+}
+
+function roleTableLayout(width: number, settings: RoleSettingsMap): RoleTableLayout {
+	const available = Math.max(1, width - 2);
+	const role = Math.max(...ROLE_ORDER.map((item) => ROLE_LABELS[item].length));
+	const thinking = Math.max("THINKING".length, ...ROLE_ORDER.map((item) => settings[item].thinking.length));
+	const model = available - role - thinking - ROLE_TABLE_GAP * 2;
+	if (model >= ROLE_TABLE_MIN_MODEL_WIDTH) return { role, model, thinking, compact: false };
+	const compactRole = Math.min(role, Math.max(1, Math.floor((available - ROLE_TABLE_GAP) / 2)));
+	return {
+		role: compactRole,
+		model: Math.max(1, available - compactRole - ROLE_TABLE_GAP),
+		thinking: 0,
+		compact: true,
+	};
+}
+
+function roleTableHeader(theme: Theme, layout: RoleTableLayout): string {
+	const header = layout.compact
+		? `  ${tableCell("ROLE", layout.role)}${" ".repeat(ROLE_TABLE_GAP)}${tableCell("CONFIGURATION", layout.model)}`
+		: `  ${tableCell("ROLE", layout.role)}${" ".repeat(ROLE_TABLE_GAP)}${tableCell("MODEL", layout.model)}${" ".repeat(ROLE_TABLE_GAP)}${tableCell("THINKING", layout.thinking)}`;
+	return theme.fg("dim", header);
+}
+
+function compactRoleConfiguration(current: RoleSettingsMap[GovernedRole], width: number): string {
+	const model = current.model || "not configured";
+	const thinking = current.thinking;
+	const modelWidth = width - thinking.length - ROLE_TABLE_GAP;
+	if (modelWidth <= 0) return truncateToWidth(thinking, width, "");
+	return `${tableCell(model, modelWidth)}${" ".repeat(ROLE_TABLE_GAP)}${thinking}`;
+}
+
+function roleTableRow(
+	theme: Theme,
 	settings: RoleSettingsMap,
-	roleOptions: readonly string[],
-	selectedRole: string,
-): RoleSettingsSnapshot | undefined {
-	const roleIndex = roleOptions.indexOf(selectedRole);
-	const role = ROLE_ORDER[roleIndex];
-	return role === undefined ? undefined : { role, current: settings[role] };
+	role: GovernedRole,
+	selected: boolean,
+	layout: RoleTableLayout,
+): string {
+	const current = settings[role];
+	const row = layout.compact
+		? `${tableCell(ROLE_LABELS[role], layout.role)}${" ".repeat(ROLE_TABLE_GAP)}${tableCell(compactRoleConfiguration(current, layout.model), layout.model)}`
+		: `${tableCell(ROLE_LABELS[role], layout.role)}${" ".repeat(ROLE_TABLE_GAP)}${tableCell(current.model || "not configured", layout.model)}${" ".repeat(ROLE_TABLE_GAP)}${tableCell(current.thinking, layout.thinking)}`;
+	const indented = `${selectionMarker(selected)}${row}`;
+	return selected ? theme.fg("accent", theme.bold(indented)) : indented;
+}
+
+function roleTableComponent(
+	theme: Theme,
+	settings: RoleSettingsMap,
+	selectedRole: () => GovernedRole | undefined,
+): Component {
+	return {
+		render: (width: number) => {
+			const layout = roleTableLayout(width, settings);
+			return [
+				roleTableHeader(theme, layout),
+				...ROLE_ORDER.map((role) => roleTableRow(theme, settings, role, selectedRole() === role, layout)),
+			].map((line) => truncateToWidth(line, width, ""));
+		},
+		invalidate: () => {},
+	};
+}
+
+async function selectRoleTable(
+	context: ExtensionContext,
+	settings: RoleSettingsMap,
+): Promise<GovernedRole | undefined> {
+	return context.ui.custom<GovernedRole | undefined>((tui, theme, _keybindings, done) => {
+		const items: SelectItem[] = ROLE_ORDER.map((role) => ({ value: role, label: ROLE_LABELS[role] }));
+		const list = new SelectList(items, items.length, selectorTheme(theme));
+		list.onSelect = (item) => {
+			const role = roleFromSelection(item.value);
+			if (role !== undefined) done(role);
+		};
+		list.onCancel = () => done(undefined);
+		list.onSelectionChange = () => tui.requestRender();
+		const container = new Container();
+		addHeading(container, theme, "Role settings");
+		container.addChild(new Spacer(1));
+		container.addChild(roleTableComponent(theme, settings, () => roleFromSelection(list.getSelectedItem()?.value)));
+		container.addChild(new Spacer(1));
+		addPanelKeybindings(container, theme, "up/down move  enter edit  escape/ctrl+c/backspace back");
+		return selectableComponent(container, list, tui, () => done(undefined));
+	});
 }
 
 async function editRoleSetting(
@@ -1261,15 +1343,9 @@ async function saveRoleSetting(
 async function showRoleSettings(controller: RoleSettingsController, context: ExtensionContext): Promise<void> {
 	for (;;) {
 		const settings = controller.get();
-		const roleOptions = ROLE_ORDER.map((role) => {
-			const current = settings[role];
-			return `${ROLE_LABELS[role]}: ${current.model || "model not configured"} (${current.thinking})`;
-		});
-		const selectedRole = await selectRoleOption(context, "Role settings:", roleOptions);
-		if (selectedRole === undefined) return;
-		const snapshot = selectedRoleSnapshot(settings, roleOptions, selectedRole);
-		if (snapshot === undefined) return;
-		await editRoleSetting(controller, context, snapshot);
+		const role = await selectRoleTable(context, settings);
+		if (role === undefined) return;
+		await editRoleSetting(controller, context, { role, current: settings[role] });
 	}
 }
 
