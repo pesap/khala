@@ -2,14 +2,14 @@ import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:c
 import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
 import type { AgentRuntimePort, OperationContext, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
+import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 
 export type PiRuntimeOptions = Readonly<{
+	projectPath: string;
 	command: readonly string[];
 	extensionPath?: string | undefined;
 	baseEnvironment?: NodeJS.ProcessEnv | undefined;
@@ -83,6 +83,7 @@ type MutableChild = {
 	rejectAgentEnd: ((error: Error) => void) | undefined;
 	agentTimer: NodeJS.Timeout | undefined;
 	ephemeralSession: boolean;
+	storage: RuntimeStorage;
 };
 
 type RpcCommandData = Readonly<{ message?: string | undefined }>;
@@ -100,6 +101,7 @@ type SessionLaunch = Readonly<{
 	capabilityFile: string | undefined;
 	environment: NodeJS.ProcessEnv;
 	processMarker: string;
+	storage: RuntimeStorage;
 }>;
 type RpcEventType = "response" | "message_end" | "agent_settled";
 const RPC_EVENT_TYPES: ReadonlyMap<string, RpcEventType> = new Map([
@@ -113,10 +115,12 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	private readonly sessionLaunches = new Map<string, Promise<RuntimeBinding>>();
 	private readonly launches = new Set<Promise<RuntimeBinding>>();
 	private readonly options: PiRuntimeOptions;
+	private readonly storage: RuntimeStorage;
 	private closing = false;
 
 	constructor(options: PiRuntimeOptions) {
 		this.options = options;
+		this.storage = createRuntimeStorage(options.projectPath);
 	}
 
 	async ensureSession(
@@ -171,7 +175,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	): Promise<RuntimeBinding> {
 		if (this.closing) throw new Error("Pi runtime is closed.");
 		throwIfAborted(operation);
-		const launch = createSessionLaunch(input, this.options);
+		const launch = createSessionLaunch(input, this.options, this.storage);
 		await prepareSessionLaunch(input, launch);
 		const childProcess = await spawnSessionSafely(this.options.command[0] ?? "pi", launch, input);
 		const child = createStartingChild(childProcess, input, launch);
@@ -200,8 +204,8 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		attachOutput(child, () => this.removeChild(child));
 		try {
 			const state = await request(child, "get_state", {}, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
-			const sessionId = startupSessionId(state, launch.sessionPath);
-			await protectSessionFile(launch.sessionPath);
+			const sessionId = startupSessionId(state, launch.sessionPath, launch.storage);
+			await launch.storage.prepareSessionFile(launch.sessionPath);
 			assertChildRunning(child);
 			await removeSessionCapability(launch);
 			child.binding = { ...child.binding, sessionId, promptIdentity: input.promptIdentity };
@@ -212,7 +216,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			this.children.delete(key);
 			await removeSessionCapability(launch);
 			killChild(child);
-			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, this.storage);
 			removeEphemeralSession(child);
 			throw error;
 		}
@@ -271,7 +275,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	async requestStop(binding: RuntimeBinding): Promise<void> {
 		const child = this.children.get(binding.sessionId);
 		if (child === undefined) {
-			await stopUnattachedBinding(binding);
+			await stopUnattachedBinding(binding, this.storage);
 			return;
 		}
 		if (!sameBindingIdentity(binding, child.binding)) return;
@@ -302,7 +306,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	}
 
 	private removeChild(child: MutableChild): void {
-		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, this.storage);
 		removeEphemeralSession(child);
 		for (const [key, value] of this.children) {
 			if (value === child) {
@@ -446,19 +450,11 @@ type LaunchLease = Readonly<{
 
 const LAUNCH_INTENT_STALE_MS = 60_000;
 
-function ephemeralSessionPath(): string {
-	return join(tmpdir(), "khala-sessions", `khala-ephemeral-${randomUUID()}.jsonl`);
-}
-
-function capabilityFilePath(): string {
-	return join(tmpdir(), `khala-capability-${randomUUID()}`);
-}
-
-function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions): SessionLaunch {
-	const sessionPath = input.sessionPath ?? ephemeralSessionPath();
+function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions, storage: RuntimeStorage): SessionLaunch {
+	const sessionPath = storage.ownedPath(input.sessionPath ?? storage.ephemeralSessionPath());
 	const capabilityNonce = sessionCapabilityNonce(input);
 	const capabilityToken = createSessionCapability(input, options, capabilityNonce);
-	const capabilityFile = sessionCapabilityFile(capabilityToken);
+	const capabilityFile = sessionCapabilityFile(capabilityToken, storage);
 	const processMarker = randomUUID();
 	return {
 		sessionPath,
@@ -468,6 +464,7 @@ function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions): Se
 		capabilityFile,
 		environment: sessionEnvironment(input, options, capabilityFile, capabilityNonce, processMarker),
 		processMarker,
+		storage,
 	};
 }
 
@@ -501,8 +498,8 @@ function sessionCapabilityNonce(input: SessionInput): string | undefined {
 	return input.tools.length === 0 ? undefined : (input.bindingScope?.nonce ?? randomUUID());
 }
 
-function sessionCapabilityFile(token: string | undefined): string | undefined {
-	return token === undefined ? undefined : capabilityFilePath();
+function sessionCapabilityFile(token: string | undefined, storage: RuntimeStorage): string | undefined {
+	return token === undefined ? undefined : storage.capabilityFilePath();
 }
 
 function createSessionCapability(
@@ -567,14 +564,15 @@ async function prepareSessionLaunch(input: SessionInput, launch: SessionLaunch):
 }
 
 async function prepareSessionPath(input: SessionInput, launch: SessionLaunch): Promise<void> {
-	if (input.sessionPath === undefined) await mkdir(dirname(launch.sessionPath), { recursive: true });
+	await launch.storage.prepare();
+	await launch.storage.prepareSessionFile(launch.sessionPath);
 	if (input.sessionPath !== undefined)
-		await reserveLaunch(launch.sessionPath, launch.capabilityFile, launch.processMarker);
+		await reserveLaunch(launch.sessionPath, launch.capabilityFile, launch.processMarker, launch.storage);
 }
 
 async function writeSessionCapability(launch: SessionLaunch): Promise<void> {
 	if (launch.capabilityFile !== undefined && launch.capabilityToken !== undefined)
-		await writeCapabilityFile(launch.capabilityFile, launch.capabilityToken);
+		await writeCapabilityFile(launch.capabilityFile, launch.capabilityToken, launch.storage);
 }
 
 async function removeSessionCapability(launch: SessionLaunch): Promise<void> {
@@ -604,16 +602,17 @@ async function spawnSessionSafely(
 		return spawnSessionProcess(command, launch.args, input.cwd, launch.environment);
 	} catch (error) {
 		await removeSessionCapability(launch);
-		if (input.sessionPath !== undefined) removeLaunchLeaseSync(launch.sessionPath, launch.processMarker);
+		if (input.sessionPath !== undefined)
+			removeLaunchLeaseSync(launch.sessionPath, launch.processMarker, launch.storage);
 		throw error;
 	}
 }
 
-function startupSessionId(state: RpcResponse, sessionPath: string): string {
+function startupSessionId(state: RpcResponse, sessionPath: string, storage: RuntimeStorage): string {
 	if (!state.success) throw new Error(state.error ?? "Pi did not return its session state.");
 	const sessionId = readSessionText(state.data, "sessionId");
-	const reportedSessionPath = readSessionText(state.data, "sessionFile");
-	if (resolve(reportedSessionPath) !== resolve(sessionPath))
+	const reportedSessionPath = storage.ownedPath(readSessionText(state.data, "sessionFile"));
+	if (reportedSessionPath !== sessionPath)
 		throw new Error("Pi returned a session file outside the runtime-owned session path.");
 	return sessionId;
 }
@@ -628,13 +627,14 @@ async function writePersistentLaunchLease(
 	launch: SessionLaunch,
 	child: MutableChild,
 ): Promise<void> {
-	if (input.sessionPath !== undefined) await writeLaunchLease(launch.sessionPath, child.binding, launch.capabilityFile);
+	if (input.sessionPath !== undefined)
+		await writeLaunchLease(launch.sessionPath, child.binding, launch.capabilityFile, launch.storage);
 }
 
 async function cleanupStartingChild(launch: SessionLaunch, child: MutableChild): Promise<void> {
 	await removeSessionCapability(launch);
 	killChild(child);
-	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, launch.storage);
 }
 
 function createStartingChild(
@@ -667,22 +667,26 @@ function createStartingChild(
 		rejectAgentEnd: undefined,
 		agentTimer: undefined,
 		ephemeralSession: input.sessionPath === undefined,
+		storage: launch.storage,
 	};
 }
 
-async function writeCapabilityFile(path: string, token: string): Promise<void> {
+async function writeCapabilityFile(path: string, token: string, storage: RuntimeStorage): Promise<void> {
+	await storage.prepareSessionFile(path, false);
 	await writeFile(path, token, { encoding: "utf8", mode: 0o600, flag: "wx" });
 }
 async function reserveLaunch(
 	sessionPath: string,
 	capabilityFile: string | undefined,
 	processMarker: string,
+	storage: RuntimeStorage,
 ): Promise<void> {
-	await withLaunchLock(sessionPath, async () => {
-		const path = launchLeasePath(sessionPath);
+	await withLaunchLock(sessionPath, storage, async () => {
+		const path = storage.launchLeasePath(sessionPath);
+		await storage.prepareSessionFile(path, false);
 		const text = await readFile(path, "utf8").catch(() => undefined);
-		if (text !== undefined) await replaceExistingLaunch(path, sessionPath, text);
-		await writeLaunchIntentSafely(sessionPath, capabilityFile, processMarker);
+		if (text !== undefined) await replaceExistingLaunch(path, sessionPath, text, storage);
+		await writeLaunchIntentSafely(sessionPath, capabilityFile, processMarker, storage);
 	});
 }
 
@@ -690,9 +694,10 @@ async function writeLaunchIntentSafely(
 	sessionPath: string,
 	capabilityFile: string | undefined,
 	processMarker: string,
+	storage: RuntimeStorage,
 ): Promise<void> {
 	try {
-		await writeLaunchIntent(sessionPath, capabilityFile, processMarker);
+		await writeLaunchIntent(sessionPath, capabilityFile, processMarker, storage);
 	} catch (error) {
 		if (error instanceof Error && isExistsError(error))
 			throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
@@ -700,13 +705,23 @@ async function writeLaunchIntentSafely(
 	}
 }
 
-async function replaceExistingLaunch(path: string, sessionPath: string, text: string): Promise<void> {
+async function replaceExistingLaunch(
+	path: string,
+	sessionPath: string,
+	text: string,
+	storage: RuntimeStorage,
+): Promise<void> {
 	const lease = parseLaunchLease(text);
+	validateLeaseCapability(lease, storage);
 	await assertLaunchAvailable(path, sessionPath, lease);
 	const displacedPath = `${path}.stale-${randomUUID()}`;
 	await renameStaleLaunch(path, displacedPath, sessionPath);
 	if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
 	await unlink(displacedPath).catch(() => undefined);
+}
+
+function validateLeaseCapability(lease: LaunchLease | undefined, storage: RuntimeStorage): void {
+	if (lease?.capabilityFile !== undefined) storage.ownedPath(lease.capabilityFile);
 }
 
 async function assertLaunchAvailable(path: string, sessionPath: string, lease: LaunchLease | undefined): Promise<void> {
@@ -766,10 +781,13 @@ async function renameStaleLaunch(path: string, displacedPath: string, sessionPat
 	}
 }
 
-async function withLaunchLock<T>(sessionPath: string, operation: () => Promise<T>): Promise<T> {
-	const lockPath = `${launchLeasePath(sessionPath)}.lock`;
-	await mkdir(dirname(lockPath), { recursive: true });
-	await acquireLaunchLock(lockPath, sessionPath);
+async function withLaunchLock<T>(
+	sessionPath: string,
+	storage: RuntimeStorage,
+	operation: () => Promise<T>,
+): Promise<T> {
+	const lockPath = storage.launchLockPath(sessionPath);
+	await acquireLaunchLock(lockPath, sessionPath, storage);
 	try {
 		return await operation();
 	} finally {
@@ -777,32 +795,33 @@ async function withLaunchLock<T>(sessionPath: string, operation: () => Promise<T
 	}
 }
 
-async function acquireLaunchLock(lockPath: string, sessionPath: string): Promise<void> {
+async function acquireLaunchLock(lockPath: string, sessionPath: string, storage: RuntimeStorage): Promise<void> {
+	storage.ownedPath(lockPath);
 	try {
-		await mkdir(lockPath);
+		await mkdir(lockPath, { mode: 0o700 });
 	} catch (error) {
 		if (!(error instanceof Error)) throw error;
-		await replaceStaleLaunchLock(lockPath, sessionPath, error);
+		await replaceStaleLaunchLock(lockPath, sessionPath, error, storage);
 	}
 }
 
-async function replaceStaleLaunchLock(lockPath: string, sessionPath: string, error: Error): Promise<void> {
+async function replaceStaleLaunchLock(
+	lockPath: string,
+	sessionPath: string,
+	error: Error,
+	storage: RuntimeStorage,
+): Promise<void> {
 	if (!isExistsError(error)) throw error;
+	await chmod(lockPath, 0o700);
 	const createdAt = await stat(lockPath)
 		.then((entry) => entry.mtimeMs)
 		.catch(() => Date.now());
 	if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
 		throw new Error(`Runtime session ${sessionPath} is already launching.`);
+	await chmod(lockPath, 0o700);
 	await rmdir(lockPath).catch(() => undefined);
-	await mkdir(lockPath);
-}
-
-async function protectSessionFile(sessionPath: string): Promise<void> {
-	try {
-		await chmod(sessionPath, 0o600);
-	} catch (error) {
-		if (!(error instanceof Error) || !isMissingFileError(error)) throw error;
-	}
+	storage.ownedPath(lockPath);
+	await mkdir(lockPath, { mode: 0o700 });
 }
 
 function isMissingFileError(error: Error): boolean {
@@ -826,10 +845,10 @@ async function writeLaunchIntent(
 	sessionPath: string,
 	capabilityFile: string | undefined,
 	processMarker: string,
+	storage: RuntimeStorage,
 ): Promise<void> {
-	await mkdir(dirname(sessionPath), { recursive: true });
 	await writeFile(
-		launchLeasePath(sessionPath),
+		storage.launchLeasePath(sessionPath),
 		JSON.stringify({ capabilityFile, processMarker, ownerProcessId: process.pid, createdAt: Date.now() }),
 		{
 			encoding: "utf8",
@@ -842,12 +861,13 @@ async function writeLaunchLease(
 	sessionPath: string,
 	binding: RuntimeBinding,
 	capabilityFile: string | undefined,
+	storage: RuntimeStorage,
 ): Promise<void> {
 	if (binding.processGroupId === undefined) return;
-	const existing = parseLaunchLease(readFileSync(launchLeasePath(sessionPath), "utf8"));
+	const existing = parseLaunchLease(readFileSync(storage.launchLeasePath(sessionPath), "utf8"));
 	if (existing?.processMarker !== binding.processMarker) throw new Error("Runtime launch ownership was lost.");
-	const leasePath = launchLeasePath(sessionPath);
-	const temporaryPath = `${leasePath}.${randomUUID()}.tmp`;
+	const leasePath = storage.launchLeasePath(sessionPath);
+	const temporaryPath = storage.launchTemporaryPath(sessionPath);
 	try {
 		await writeFile(temporaryPath, launchLeaseJson(binding, capabilityFile, existing), {
 			encoding: "utf8",
@@ -883,15 +903,13 @@ function launchLeaseJson(
 	});
 }
 
-function launchLeasePath(sessionPath: string): string {
-	return `${sessionPath}.khala-process`;
-}
-function removeLaunchLeaseSync(sessionPath: string, processMarker?: string): void {
+function removeLaunchLeaseSync(sessionPath: string, processMarker: string | undefined, storage: RuntimeStorage): void {
 	if (sessionPath.length === 0) return;
 	try {
-		const existing = parseLaunchLease(readFileSync(launchLeasePath(sessionPath), "utf8"));
+		const leasePath = storage.launchLeasePath(sessionPath);
+		const existing = parseLaunchLease(readFileSync(leasePath, "utf8"));
 		if (leaseBelongsToAnotherProcess(existing, processMarker)) return;
-		unlinkSync(launchLeasePath(sessionPath));
+		unlinkSync(leasePath);
 	} catch {
 		// The lease may already have been removed by normal completion.
 	}
@@ -1087,13 +1105,13 @@ function isTransientStartupFailure(message: string): boolean {
 	return message.includes("Pi child exited") || message.includes("Pi RPC get_state timed out");
 }
 
-async function stopUnattachedBinding(binding: RuntimeBinding): Promise<void> {
+async function stopUnattachedBinding(binding: RuntimeBinding, storage: RuntimeStorage): Promise<void> {
 	if (binding.processGroupId === undefined || !processExists(binding.processGroupId)) {
-		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
+		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker, storage);
 		return;
 	}
 	if (killProcessGroup(binding.processGroupId, binding.processStartTime))
-		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker);
+		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker, storage);
 }
 function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boolean {
 	return [
@@ -1111,7 +1129,7 @@ function killChild(child: MutableChild): void {
 		killProcessGroup(child.binding.processGroupId ?? child.process.pid, child.binding.processStartTime);
 	else killOwnedProcessGroup(child.process);
 	child.process.kill();
-	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker);
+	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, child.storage);
 }
 
 function killExitedProcessGroup(child: MutableChild): void {

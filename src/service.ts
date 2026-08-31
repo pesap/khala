@@ -1,6 +1,4 @@
-import { createHash, createPublicKey, type KeyObject, randomUUID, verify } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createPublicKey, type KeyObject, randomUUID, verify } from "node:crypto";
 import { nanoid } from "nanoid";
 import {
 	type ArchiveAppend,
@@ -54,6 +52,7 @@ import type {
 	RuntimeTurn,
 	ServicePorts,
 } from "./ports.js";
+import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 
 export type ServiceOptions = Readonly<{
 	projectPath: string;
@@ -356,6 +355,7 @@ export class ApplicationService {
 	private closing = false;
 	private readonly archive: ArchivePort;
 	private readonly ports: ServicePorts;
+	private readonly runtimeStorage: RuntimeStorage;
 	private options: ServiceOptions;
 	private readonly rolePublicKey: KeyObject;
 
@@ -363,6 +363,7 @@ export class ApplicationService {
 		this.archive = archive;
 		this.ports = ports;
 		this.options = options;
+		this.runtimeStorage = createRuntimeStorage(options.projectPath);
 		this.rolePublicKey = createPublicKey({
 			key: Buffer.from(options.rolePublicKey, "base64url"),
 			format: "der",
@@ -2486,7 +2487,7 @@ export class ApplicationService {
 				sandboxRoot: this.options.projectPath,
 				bindingScope: { workId: work.workId },
 				tools: ["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"],
-				sessionPath: roleSessionPath(this.options.projectPath, "observer", work.workId),
+				sessionPath: this.runtimeStorage.persistentSessionPath("observer", work.workId),
 			})),
 			promptIdentity: this.options.observerPromptIdentity,
 		};
@@ -2762,7 +2763,10 @@ export class ApplicationService {
 			workId: work.workId,
 			missionId: work.mission.missionId,
 			state: "queued",
-			pi: { sessionId: `pending:${executionId}`, sessionPath: join(sandbox.path, ".khala-executor-session.jsonl") },
+			pi: {
+				sessionId: `pending:${executionId}`,
+				sessionPath: this.runtimeStorage.persistentSessionPath("executor", `${work.workId}:${executionId}`),
+			},
 			model: this.options.executorModel,
 			thinking: this.options.executorThinking,
 			tokenAllowance: allowance,
@@ -5805,12 +5809,6 @@ function missionSpecificityMessage(missingTerms: readonly string[]): string {
 	return missingTerms.length === 0
 		? "Mission terms were explicit; inspect the runtime failure before changing scope."
 		: `Mission relied on default ${missingTerms.join(" and ")}; make those terms explicit before retrying.`;
-}
-
-function roleSessionPath(projectPath: string, role: "observer", workId: string): string {
-	const projectKey = createHash("sha256").update(projectPath).digest("hex").slice(0, 24);
-	const suffix = `${role}-${createHash("sha256").update(workId).digest("hex").slice(0, 24)}`;
-	return join(tmpdir(), "khala-sessions", projectKey, `khala-${suffix}-session.jsonl`);
 }
 
 function schedulerEffect(workId: string, revision: number, observationId?: string, reason?: string) {

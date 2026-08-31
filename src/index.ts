@@ -230,7 +230,15 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				const service = (await getRuntime(context)).service;
 				throwIfAborted(signal);
 				const page = service.readRecords(query, meta(actor, `tool:archive:${toolCallId}`, 0), params.cursor);
-				return toolResult(page);
+				const projects = archiveWorkIds(query, page).flatMap((workId) => {
+					try {
+						return [service.inspectWork(workId)];
+					} catch (error) {
+						if (error instanceof ApplicationError && error.envelope.code === "not-found") return [];
+						throw error;
+					}
+				});
+				return archiveToolResult(page, projects);
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) {
@@ -844,6 +852,13 @@ function toolResult(value: JsonValue): ToolResult {
 	};
 }
 
+function archiveToolResult(value: JsonValue, projects: readonly WorkView[]): ToolResult {
+	return {
+		content: [{ type: "text", text: boundedToolText(summarizeArchiveToolValue(value, projects), value) }],
+		details: value,
+	};
+}
+
 // Pi marks an execute() failure only when the tool throws; an isError field on a returned value is ignored.
 function toolError(error: JsonObject): never {
 	throw new Error(boundedToolText(summarizeToolError(error), error));
@@ -920,15 +935,61 @@ function summarizeWorkValue(value: JsonValue): string | undefined {
 }
 
 function summarizeArchiveValue(value: JsonValue): string | undefined {
-	if (!isArchiveSummary(value)) return undefined;
+	return isArchiveSummary(value) ? summarizeArchiveToolValue(value, []) : undefined;
+}
+
+export function summarizeArchiveToolValue(value: JsonValue, projects: readonly WorkView[]): string {
+	if (!isArchiveSummary(value)) return prettyJson(value);
 	const records = value["items"].filter(isJsonObject).map(archiveRecordSummary);
 	const nextCursor = archiveNextCursor(value);
 	return [
+		...projects.map(archiveWorkProjection),
 		`Archive records: ${records.length}`,
 		`As of sequence: ${value["asOfSequence"]}`,
 		...(nextCursor === undefined ? [] : [nextCursor]),
 		...records,
 	].join("\n");
+}
+
+function archiveWorkIds(query: MutableRecordQuery, page: JsonObject): readonly string[] {
+	const records = Array.isArray(page["items"])
+		? page["items"].filter(isJsonObject).map((record) => record["workId"])
+		: [];
+	const ids = [...(query.workId === undefined ? [] : [query.workId]), ...records.filter(isTextValue)];
+	return [...new Set(ids)];
+}
+
+function archiveWorkProjection(work: WorkView): string {
+	const terms = work.mission?.assignment ?? work.terms;
+	return [
+		`Work ${work.workId}: revision ${work.revision}; state ${work.state}`,
+		...archiveMissionState(work),
+		...archiveMissionIdentity(work),
+		`Terms title: ${boundedProjectionText(terms.title)}`,
+		`Terms objective: ${boundedProjectionText(terms.objective)}`,
+		`Terms scope: ${boundedProjectionText(terms.scope)}`,
+		`Terms acceptance criteria: ${boundedProjectionList(terms.acceptanceCriteria)}`,
+		`Terms constraints: ${boundedProjectionList(terms.constraints)}`,
+		`Terms validation: ${boundedProjectionList(terms.validation)}`,
+		`Terms allowed paths: ${boundedProjectionList(terms.allowedPaths)}`,
+	].join("\n");
+}
+
+function archiveMissionState(work: WorkView): readonly string[] {
+	return work.missionState === undefined ? [] : [`Mission state: ${work.missionState}`];
+}
+
+function archiveMissionIdentity(work: WorkView): readonly string[] {
+	const mission = work.mission;
+	return mission === undefined ? [] : [`Mission ${mission.missionId}: mandate revision ${mission.mandateRevision}`];
+}
+
+function boundedProjectionText(value: string): string {
+	return value.replace(/\s+/g, " ").trim().slice(0, 2_000);
+}
+
+function boundedProjectionList(values: readonly string[]): string {
+	return values.slice(0, 20).map(boundedProjectionText).join(" | ").slice(0, 4_000) || "(none)";
 }
 
 function isWorkSummary(value: JsonValue): value is JsonObject {

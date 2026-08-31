@@ -99,7 +99,7 @@ Restore only from a trusted copy and verify the project path before reopening it
 Khala fails closed on malformed projections or unsupported Archive integrity failures.
 
 Raw child transcripts are not copied into the Archive.
-Pi session files can remain in the sandbox or configured temporary session directory until normal cleanup.
+Pi session, lease, lock, and capability files live in a project-specific directory in the OS temporary directory until normal cleanup.
 Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
 Review request bodies include the Work objective, acceptance criteria, and validation commands.
 Executors commit sandbox changes and run declared validation through governed workspace actions rather than arbitrary shell tools.

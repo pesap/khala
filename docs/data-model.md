@@ -264,10 +264,13 @@ A merged provider observation is required before the Conclave can record the Wor
 ## Runtime bindings
 
 Pi child sessions use JSON-RPC over stdin and stdout.
+All child session, lease, lock, and capability files live under a project-specific directory in the OS temporary directory.
 Conclave and Oracle turns are ephemeral.
-Observer sessions may persist a session path.
+Observer and Executor sessions may persist a session path for recovery.
 Persistent sessions use an exclusive process-owned launch lease.
 Ephemeral sessions use runtime-owned paths and reject child-reported paths outside those paths.
 Transcript files are restricted to the Khala process owner.
 Prompt identity is persisted for Executor bindings, Observer bindings, and Oracle records.
 Khala never copies child transcripts into the Archive.
+The model-visible `khala_read_archive` text contains only bounded Work and Mission terms plus record summaries.
+Its structured `details` value remains the complete Archive page for non-model consumers.
