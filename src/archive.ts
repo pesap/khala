@@ -195,8 +195,21 @@ const REQUIRED_ARCHIVE_TABLES = [
 export type SQLiteArchiveOptions = Readonly<{ readOnly?: boolean | undefined }>;
 
 function openArchiveDatabase(path: string, options: SQLiteArchiveOptions): SqlDatabase {
-	if (options.readOnly === true && !existsSync(path)) throw new Error(`Archive database ${path} does not exist.`);
-	return openSqlite(path, { readOnly: options.readOnly });
+	if (options.readOnly === true) return openReadOnlyDatabase(path);
+	assertWritableArchivePath(path);
+	mkdirSync(dirname(path), { recursive: true });
+	return openSqlite(path, { readOnly: false });
+}
+
+function openReadOnlyDatabase(path: string): SqlDatabase {
+	if (!existsSync(path)) throw new Error(`Archive database ${path} does not exist.`);
+	return openSqlite(path, { readOnly: true });
+}
+
+function assertWritableArchivePath(path: string): void {
+	const existed = existsSync(path);
+	if (!existed && existsSync(archiveMarkerPath(path)))
+		throw new Error(`Archive database ${path} is missing; refusing to create a replacement Archive.`);
 }
 
 export class SQLiteArchive implements ArchivePort {
@@ -222,11 +235,6 @@ export class SQLiteArchive implements ArchivePort {
 	}
 
 	private initializeWritable(path: string): void {
-		const existed = existsSync(path);
-		const markerPath = archiveMarkerPath(path);
-		if (!existed && existsSync(markerPath))
-			throw new Error(`Archive database ${path} is missing; refusing to create a replacement Archive.`);
-		mkdirSync(dirname(path), { recursive: true });
 		this.database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
 		this.database.exec(SCHEMA);
 		this.migrateCommandColumns();
@@ -234,7 +242,7 @@ export class SQLiteArchive implements ArchivePort {
 		this.migrateLegacyWorkStates();
 		this.migrateRecordNumbers();
 		this.validateIntegrity();
-		ensureArchiveMarker(markerPath);
+		ensureArchiveMarker(archiveMarkerPath(path));
 	}
 
 	private validateReadOnlySchema(): void {
