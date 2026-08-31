@@ -29,30 +29,38 @@ export type SqlDatabase = Readonly<{
 }>;
 
 type BunSqlite = Readonly<{
-	Database: new (path: string) => RawSqlDatabase;
+	Database: new (path: string, options?: Readonly<{ readonly?: boolean | undefined }>) => RawSqlDatabase;
 }>;
 
 type NodeSqlite = Readonly<{
-	DatabaseSync: new (path: string, options: Readonly<{ timeout: number }>) => RawSqlDatabase;
+	DatabaseSync: new (
+		path: string,
+		options: Readonly<{ timeout: number; readOnly?: boolean | undefined }>,
+	) => RawSqlDatabase;
 }>;
 
 const require = createRequire(import.meta.url);
 
-export function openSqlite(path: string): SqlDatabase {
-	const database = process.versions["bun"] === undefined ? openNodeSqlite(path) : openBunSqlite(path);
+export type SqliteOpenOptions = Readonly<{ readOnly?: boolean | undefined }>;
+
+export function openSqlite(path: string, options: SqliteOpenOptions = {}): SqlDatabase {
+	const database = process.versions["bun"] === undefined ? openNodeSqlite(path, options) : openBunSqlite(path, options);
 	return normalizeSqlite(database);
 }
 
-function openBunSqlite(path: string): RawSqlDatabase {
+function openBunSqlite(path: string, options: SqliteOpenOptions): RawSqlDatabase {
 	// SAFETY: Pi runs on Bun, whose documented native SQLite module exposes the contract used above.
 	const sqlite = require("bun:sqlite") as BunSqlite;
-	return new sqlite.Database(path);
+	return new sqlite.Database(path, options.readOnly === true ? { readonly: true } : undefined);
 }
 
-function openNodeSqlite(path: string): RawSqlDatabase {
+function openNodeSqlite(path: string, options: SqliteOpenOptions): RawSqlDatabase {
 	// SAFETY: Node 22.5+ exposes node:sqlite; the structural contract is limited to APIs used by the archive.
 	const sqlite = require("node:sqlite") as NodeSqlite;
-	return new sqlite.DatabaseSync(path, { timeout: 5000 });
+	return new sqlite.DatabaseSync(
+		path,
+		options.readOnly === true ? { timeout: 5000, readOnly: true } : { timeout: 5000 },
+	);
 }
 
 function normalizeSqlite(database: RawSqlDatabase): SqlDatabase {

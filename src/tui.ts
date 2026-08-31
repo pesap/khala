@@ -24,6 +24,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import type { KhalaArchiveView } from "./archive-view.js";
 import type { KhalaConfig } from "./config.js";
 import type {
 	Action,
@@ -185,8 +186,57 @@ export async function showKhala(
 	await runKhalaPicker(service, context, actor, keybindings, roleSettings);
 }
 
+export type KhalaArchiveDisplayOptions = Readonly<{ includeHistory?: boolean | undefined }>;
+
+export async function showKhalaArchive(
+	archive: KhalaArchiveView,
+	context: ExtensionContext,
+	options: KhalaArchiveDisplayOptions = {},
+): Promise<void> {
+	if (!isTuiContext(context)) {
+		context.ui.notify(renderDashboard(archive.listWork()), "info");
+		return;
+	}
+	await runKhalaArchivePicker(archive, context, options.includeHistory === true);
+}
+
 function isTuiContext(context: ExtensionContext): boolean {
 	return context.hasUI && context.mode === "tui";
+}
+
+async function runKhalaArchivePicker(
+	archive: KhalaArchiveView,
+	context: ExtensionContext,
+	includeHistory: boolean,
+): Promise<void> {
+	const pickerState: WorkPickerState = { showHistory: includeHistory };
+	const keybindings = normalizeKeybindings({
+		roleSettings: "",
+		comments: "c",
+		refresh: "ctrl+r",
+		help: "?",
+		history: "h",
+	});
+	for (;;) {
+		const result = await pickWork(() => archive.listWork(), context, keybindings, pickerState, { showSettings: false });
+		if (!(await handleArchivePickerResult(result, archive, context, keybindings))) return;
+	}
+}
+
+async function handleArchivePickerResult(
+	result: WorkPickerResult,
+	archive: KhalaArchiveView,
+	context: ExtensionContext,
+	keybindings: KhalaConfig["keybindings"],
+): Promise<boolean> {
+	if (result === null) return false;
+	if (result === "help") {
+		await showTextPage(context, "Work picker help", workPickerHelp(keybindings, false));
+		return true;
+	}
+	if (result === "settings") return true;
+	await showArchiveWork(archive, context, result, keybindings);
+	return true;
 }
 
 async function runKhalaPicker(
@@ -199,7 +249,9 @@ async function runKhalaPicker(
 	const pickerState: WorkPickerState = {};
 	const effectiveKeybindings = normalizeKeybindings(keybindings);
 	for (;;) {
-		const result = await pickWork(() => service.listWork(), context, effectiveKeybindings, pickerState);
+		const result = await pickWork(() => service.listWork(), context, effectiveKeybindings, pickerState, {
+			showSettings: true,
+		});
 		if (result === null) return;
 		await handlePickerResult(result, service, context, actor, effectiveKeybindings, roleSettings);
 	}
@@ -315,9 +367,10 @@ function handlePickerInput(
 	data: string,
 	input: Input,
 	keybindings: KhalaConfig["keybindings"],
+	showSettings: boolean,
 	handlers: PickerInputHandlers,
 ): void {
-	const action = pickerInputAction(data, input, keybindings);
+	const action = pickerInputAction(data, input, keybindings, showSettings);
 	const actionHandlers = new Map<PickerInputAction, () => void>([
 		["settings", () => handlers.finish("settings")],
 		["help", () => handlers.finish("help")],
@@ -467,6 +520,7 @@ function workPickerComponent(
 	container: Container,
 	keybindings: KhalaConfig["keybindings"],
 	controller: WorkPickerController,
+	showSettings: boolean,
 ): FocusableComponent {
 	return {
 		get focused() {
@@ -478,7 +532,7 @@ function workPickerComponent(
 		render: (width: number) => container.render(width),
 		invalidate: () => container.invalidate(),
 		handleInput: (data: string) =>
-			handlePickerInput(data, filterInput, keybindings, {
+			handlePickerInput(data, filterInput, keybindings, showSettings, {
 				finish: (value) => controller.finish(value),
 				refresh: () => controller.refresh(filterInput),
 				toggleHistory: () => controller.toggleHistory(filterInput),
@@ -490,11 +544,14 @@ function workPickerComponent(
 	};
 }
 
+type WorkPickerOptions = Readonly<{ showSettings: boolean }>;
+
 async function pickWork(
 	getWork: () => readonly WorkSummary[],
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
 	pickerState: WorkPickerState,
+	options: WorkPickerOptions,
 ): Promise<WorkPickerResult> {
 	return context.ui.custom<WorkPickerResult>((tui, theme, _keybindings, done) => {
 		const filterInput = new Input();
@@ -516,13 +573,13 @@ async function pickWork(
 		const footer = addPanelKeybindings(
 			container,
 			theme,
-			workPickerKeybindings(keybindings, pickerState.showHistory === true),
+			workPickerKeybindings(keybindings, pickerState.showHistory === true, options.showSettings),
 		);
 		controller.setFooter((showHistory) =>
-			footer.setText(theme.fg("dim", workPickerKeybindings(keybindings, showHistory))),
+			footer.setText(theme.fg("dim", workPickerKeybindings(keybindings, showHistory, options.showSettings))),
 		);
 		controller.updateList();
-		return workPickerComponent(filterInput, container, keybindings, controller);
+		return workPickerComponent(filterInput, container, keybindings, controller, options.showSettings);
 	});
 }
 
@@ -545,11 +602,16 @@ const PICKER_NAVIGATION_ACTIONS: ReadonlyMap<string | undefined, PickerInputActi
 	["enter", "enter"],
 ]);
 
-function pickerInputAction(data: string, input: Input, keybindings: KhalaConfig["keybindings"]): PickerInputAction {
+function pickerInputAction(
+	data: string,
+	input: Input,
+	keybindings: KhalaConfig["keybindings"],
+	showSettings: boolean,
+): PickerInputAction {
 	const key = parseKey(data);
 	const filterEmpty = input.getValue().trim().length === 0;
 	if (filterEmpty) {
-		const shortcut = pickerShortcut(key, keybindings);
+		const shortcut = pickerShortcut(key, keybindings, showSettings);
 		if (shortcut !== undefined) return shortcut;
 	}
 	const navigation = pickerNavigationAction(key, filterEmpty, keybindings);
@@ -580,9 +642,10 @@ function pickerFallbackAction(key: string | undefined, filterEmpty: boolean): Pi
 function pickerShortcut(
 	key: string | undefined,
 	keybindings: KhalaConfig["keybindings"],
+	showSettings: boolean,
 ): PickerInputAction | undefined {
 	const shortcuts = [
-		[keybindings.roleSettings, "settings"],
+		...(showSettings ? [[keybindings.roleSettings, "settings"] as const] : []),
 		[keybindings.help, "help"],
 		[keybindings.refresh, "refresh"],
 		[keybindings.history, "history"],
@@ -623,8 +686,13 @@ const NAVIGATION_FOOTER = "up/down move  enter select  escape/ctrl+c/backspace b
 const RECORD_NAVIGATION_FOOTER = "up/down move  enter inspect  escape/ctrl+c/backspace back";
 const PANEL_BACK_FOOTER = "escape/ctrl+c/backspace back";
 
-function workPickerKeybindings(keybindings: KhalaConfig["keybindings"], showHistory: boolean): string {
-	return `type to filter  ${keybindings.refresh} refresh  ${keybindings.history} ${showHistory ? "active Work" : "history"} when filter is empty  home first  up/down move  enter open  ${keybindings.help} help when filter is empty  ${keybindings.roleSettings} settings when filter is empty  escape/ctrl+c/backspace back`;
+function workPickerKeybindings(
+	keybindings: KhalaConfig["keybindings"],
+	showHistory: boolean,
+	showSettings: boolean,
+): string {
+	const settings = showSettings ? `  ${keybindings.roleSettings} settings when filter is empty` : "";
+	return `type to filter  ${keybindings.refresh} refresh  ${keybindings.history} ${showHistory ? "active Work" : "history"} when filter is empty  home first  up/down move  enter open  ${keybindings.help} help when filter is empty${settings}  escape/ctrl+c/backspace back`;
 }
 
 function normalizeKeybindings(keybindings: KhalaConfig["keybindings"]): KhalaConfig["keybindings"] {
@@ -645,14 +713,14 @@ function pickerWork(work: readonly WorkSummary[], showHistory: boolean): readonl
 	return showHistory ? work : work.filter((item) => !isHiddenWork(item));
 }
 
-function workPickerHelp(keybindings: KhalaConfig["keybindings"]): readonly string[] {
+function workPickerHelp(keybindings: KhalaConfig["keybindings"], showSettings = true): readonly string[] {
 	return [
 		"Use the Work picker to inspect active or historical Work.",
 		"",
 		`${keybindings.refresh}  Refresh Work and preserve the current selection and filter.`,
 		`${keybindings.history}  Toggle completed and cancelled Work when the filter is empty.`,
 		`${keybindings.help}  Open this help when the filter is empty.`,
-		`${keybindings.roleSettings}  Open role settings when the filter is empty.`,
+		...(showSettings ? [`${keybindings.roleSettings}  Open role settings when the filter is empty.`] : []),
 		"Up/Down  Move selection; Home  select the first Work; Enter  open.",
 		"Backspace  Clear a nonempty filter; otherwise go back. Escape or Ctrl-C  Close the picker.",
 	];
@@ -711,6 +779,38 @@ async function showWork(
 	}
 }
 
+async function showArchiveWork(
+	archive: KhalaArchiveView,
+	context: ExtensionContext,
+	workId: string,
+	keybindings: KhalaConfig["keybindings"],
+): Promise<void> {
+	const work = archive.inspectWork(workId);
+	for (;;) {
+		const navigation = readArchiveRecordsForView(archive, work);
+		const section = await pickSection(work, navigation.records, navigation.error, context, keybindings, false);
+		if (section === null || section === "back") return;
+		await showArchiveWorkSection(section, context, work, navigation.records);
+	}
+}
+
+async function showArchiveWorkSection(
+	section: WorkSection,
+	context: ExtensionContext,
+	work: WorkView,
+	records: readonly RecordView[],
+): Promise<void> {
+	const handlers = {
+		evidence: () =>
+			browseRecordPages(selectRelevantEvidence(work, records), context, "evidence", formatEvidenceSupplement(work)),
+		archive: () => browseRecordPages([...records].reverse(), context, "archive"),
+		"peer-review": () => showPeerReview(providerReviewComments(records), context),
+		"blocking-signal": () => showBlockingSignal(work, context),
+	} satisfies Partial<Record<WorkSection, () => Promise<void>>>;
+	if (section === "actions") return;
+	await handlers[section]?.();
+}
+
 async function showWorkSection(
 	section: WorkSection,
 	service: ApplicationService,
@@ -729,21 +829,48 @@ async function showWorkSection(
 	await handlers[section]();
 }
 
+function workSectionItems(work: WorkView, hasReviewComments: boolean, includeActions: boolean): SelectItem[] {
+	return [
+		...(includeActions ? [{ value: "actions", label: "Actions" }] : []),
+		{ value: "evidence", label: "Evidence" },
+		...(hasReviewComments ? [{ value: "peer-review", label: "Peer-Review" }] : []),
+		{ value: "archive", label: "Archive" },
+		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
+	];
+}
+
+function workSectionFooter(
+	hasReviewComments: boolean,
+	includeActions: boolean,
+	keybindings: KhalaConfig["keybindings"],
+): string {
+	return hasReviewComments && includeActions
+		? `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`
+		: NAVIGATION_FOOTER;
+}
+
+function reviewCommentShortcut(
+	data: string,
+	hasReviewComments: boolean,
+	includeActions: boolean,
+	keybindings: KhalaConfig["keybindings"],
+	done: (value: WorkSection | "back" | null) => void,
+): boolean {
+	if (!hasReviewComments || !includeActions || parseKey(data) !== keybindings.comments) return false;
+	done("peer-review");
+	return true;
+}
+
 async function pickSection(
 	work: WorkView,
 	records: readonly RecordView[],
 	archiveError: string | undefined,
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
+	includeActions = true,
 ): Promise<WorkSection | "back" | null> {
 	const reviewComments = providerReviewComments(records);
-	const items: SelectItem[] = [
-		{ value: "actions", label: "Actions" },
-		{ value: "evidence", label: "Evidence" },
-		...(reviewComments.length === 0 ? [] : [{ value: "peer-review", label: "Peer-Review" }]),
-		{ value: "archive", label: "Archive" },
-		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
-	];
+	const items = workSectionItems(work, reviewComments.length > 0, includeActions);
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
 		const rows = workSectionRows(work, archiveError);
 		const list = new SelectList(items, items.length, selectorTheme(theme));
@@ -756,19 +883,13 @@ async function pickSection(
 		container.addChild(new Spacer(1));
 		container.addChild(list);
 		container.addChild(new Spacer(1));
-		const footer =
-			reviewComments.length === 0 ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
-		addPanelKeybindings(container, theme, footer);
+		addPanelKeybindings(container, theme, workSectionFooter(reviewComments.length > 0, includeActions, keybindings));
 		return selectableComponent(
 			container,
 			list,
 			tui,
 			() => done("back"),
-			(data) => {
-				if (reviewComments.length === 0 || parseKey(data) !== keybindings.comments) return false;
-				done("peer-review");
-				return true;
-			},
+			(data) => reviewCommentShortcut(data, reviewComments.length > 0, includeActions, keybindings, done),
 		);
 	});
 }
@@ -2312,6 +2433,14 @@ function readArchiveRecordsForNavigation(service: ApplicationService, work: Work
 	}
 }
 
+function readArchiveRecordsForView(archive: KhalaArchiveView, work: WorkView): NavigationRecords {
+	try {
+		return { records: readAllArchiveRecordsFromView(archive, work) };
+	} catch (error) {
+		return { records: [], error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
 function readAllArchiveRecords(service: ApplicationService, work: WorkView, actor: Actor): readonly RecordView[] {
 	const records: RecordView[] = [];
 	let cursor: string | undefined;
@@ -2326,6 +2455,18 @@ function readAllArchiveRecords(service: ApplicationService, work: WorkView, acto
 	} while (cursor !== undefined);
 	return records;
 }
+
+function readAllArchiveRecordsFromView(archive: KhalaArchiveView, work: WorkView): readonly RecordView[] {
+	const records: RecordView[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = archive.readRecords({ workId: work.workId }, cursor);
+		records.push(...page.items);
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return records;
+}
+
 async function showArchive(
 	service: ApplicationService,
 	context: ExtensionContext,
