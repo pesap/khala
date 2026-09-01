@@ -1139,16 +1139,18 @@ function disconnectedRuntime() {
 	};
 }
 
-test("a runtime failure during the first Executor turn is recorded as unreachable", async () => {
+test("a runtime failure during the first Executor turn wakes the Conclave", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-turn-failure-"));
-	const { service } = makeService(join(directory, "archive.sqlite"), { ports: { runtime: disconnectedRuntime() } });
+	const { service, archive } = makeService(join(directory, "archive.sqlite"), { ports: { runtime: disconnectedRuntime() } });
 	const failed = await admitAndStart(service, "runtime-turn-failure");
 	assert.equal(failed.state, "active");
 	assert.equal(failed.execution.state, "failed");
 	assert.equal(failed.execution.runtimeState, "unreachable");
-	assert.equal(failed.nextAction, "Executor runtime failed; Conclave may replace it.");
-	assert.equal(failed.lastError.learning.failure, "runtime disconnected");
-	assert.match(failed.lastError.learning.nextMissionGuidance, /missing intent/);
+	assert.equal(failed.nextAction, "Conclave could not resolve the failed Executor; retrying its replacement decision.");
+	assert.equal(
+		archive.pendingEffects("runtime-turn-failure-test").some((effect) => effect.payload.reason === "executor-failed"),
+		true,
+	);
 	assert.equal(
 		service.availableActions(failed.workId, "conclave", failed.revision).find((action) => action.kind === "start-execution").enabled,
 		true,

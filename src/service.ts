@@ -183,6 +183,7 @@ type WakeResolutionCheck = (work: WorkView, current: WorkView) => boolean;
 const WAKE_RESOLUTION_CHECKS: ReadonlyMap<ConclaveWakeCause, WakeResolutionCheck> = new Map([
 	["executor-blocked", blockedWakeResolutionMissing],
 	["executor-ready", readyWakeResolutionMissing],
+	["executor-failed", executorFailureDecisionMissing],
 	["runtime-unreachable", runtimeRecoveryDecisionMissing],
 	["provider-outcome", (_work, current) => isProviderOutcomeSettlementPending(current)],
 	["token-exhausted", tokenExhaustionResolutionMissing],
@@ -190,6 +191,7 @@ const WAKE_RESOLUTION_CHECKS: ReadonlyMap<ConclaveWakeCause, WakeResolutionCheck
 const WAKE_RESOLUTION_ERRORS: ReadonlyMap<ConclaveWakeCause | "admission", string> = new Map([
 	["executor-blocked", "Conclave blocked-work wake returned without recording a durable decision."],
 	["executor-ready", "Conclave ready-Signal wake returned without recording a durable Verdict."],
+	["executor-failed", "Conclave Executor-failure wake returned without recording a durable decision."],
 	["runtime-unreachable", "Conclave runtime-recovery wake returned without recording a recovery decision."],
 	["provider-outcome", "Conclave provider-outcome wake returned without recording the Work Outcome."],
 	["token-exhausted", "Conclave token-exhaustion wake returned without recording a durable Verdict."],
@@ -229,6 +231,14 @@ function readyWakeResolutionMissing(work: WorkView, current: WorkView): boolean 
 
 function readySignalDecisionPending(work: WorkView): boolean {
 	return work.execution?.state === "running" && isCurrentReadySignal(work);
+}
+
+function executorFailureDecisionMissing(work: WorkView, current: WorkView): boolean {
+	return [
+		work.execution?.state === "failed",
+		current.execution?.state === "failed",
+		sameExecutionId(work, current),
+	].every(Boolean);
 }
 
 function tokenExhaustionResolutionMissing(work: WorkView, current: WorkView): boolean {
@@ -1825,7 +1835,7 @@ export class ApplicationService {
 			payload: failure,
 			projection: next,
 			summary: `Execution ${execution.executionId} runtime could not be reconciled.`,
-			effects: lifecycleEffects(work.workId, next.revision, failed),
+			effects: lifecycleEffects(work.workId, next.revision, failed, undefined, true, "executor-failed"),
 		}).projection;
 	}
 	private recordObservation(
@@ -2997,7 +3007,7 @@ export class ApplicationService {
 			payload: failure,
 			projection: next,
 			summary: `Execution ${execution.executionId} failed to start.`,
-			effects: lifecycleEffects(work.workId, next.revision, next.execution),
+			effects: lifecycleEffects(work.workId, next.revision, next.execution, undefined, true, "executor-failed"),
 		});
 	}
 	private async driveExecutor(work: WorkView): Promise<void> {
@@ -3088,7 +3098,7 @@ export class ApplicationService {
 			payload: failed.lastError ?? { message: "Executor runtime failed." },
 			projection: failed,
 			summary: "Executor runtime failed after launch.",
-			effects: lifecycleEffects(work.workId, failed.revision, failed.execution),
+			effects: lifecycleEffects(work.workId, failed.revision, failed.execution, undefined, true, "executor-failed"),
 		});
 	}
 	private recordExecutorRuntimeState(work: WorkView, runtimeState: RuntimeState, wakeConclave = false): WorkView {
@@ -5290,6 +5300,10 @@ function directedWakeMessage(workId: string, reason: ConclaveWakeCause | undefin
 			`Inspect the current ready Signal for Work ${workId}. Read the Archive, then use khala_perform_action with action verdict and that Signal's signalId to record one durable Verdict: handoff, continue, replace, or reject. Do not return without recording the decision.`,
 		],
 		[
+			"executor-failed",
+			`Inspect the failed Executor Execution for Work ${workId}. Read the Archive, then use khala_perform_action with action start-execution to replace it under the unchanged Mission, or use fail-work if the Work cannot continue. Do not return without recording the decision.`,
+		],
+		[
 			"runtime-unreachable",
 			`Inspect the Executor runtime for Work ${workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`,
 		],
@@ -5379,6 +5393,7 @@ function wakeErrorKindFor(
 	const byReason = new Map<ConclaveWakeCause, ConclaveWakeErrorKind>([
 		["executor-blocked", "blocked"],
 		["executor-ready", "ready"],
+		["executor-failed", "execution"],
 		["runtime-unreachable", "runtime"],
 		["provider-outcome", "outcome"],
 		["provider-feedback", "feedback"],
@@ -5399,6 +5414,7 @@ function wakeFailureAction(
 			: new Map<ConclaveWakeCause, string>([
 					["executor-blocked", "Conclave could not resolve the blocked Signal; retrying the blocked-Work decision."],
 					["executor-ready", "Conclave could not resolve the ready Signal; retrying the ready-Signal Verdict."],
+					["executor-failed", "Conclave could not resolve the failed Executor; retrying its replacement decision."],
 					["runtime-unreachable", "Conclave could not inspect Executor recovery; retrying the autonomous inspection."],
 					["provider-outcome", "Conclave could not record the provider-confirmed Outcome; retrying settlement."],
 					["token-exhausted", "Conclave could not resolve token exhaustion; retrying the token-exhaustion Verdict."],
@@ -5418,7 +5434,15 @@ function conclaveWakeError(failure: Error, kind: ConclaveWakeErrorKind): ErrorEn
 	return conclaveWakeErrorFor(kind, failure.message.slice(0, 2_000));
 }
 
-type ConclaveWakeErrorKind = "blocked" | "ready" | "runtime" | "outcome" | "feedback" | "token" | "admission";
+type ConclaveWakeErrorKind =
+	| "blocked"
+	| "ready"
+	| "execution"
+	| "runtime"
+	| "outcome"
+	| "feedback"
+	| "token"
+	| "admission";
 
 function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): ErrorEnvelope {
 	const details = {
@@ -5429,6 +5453,10 @@ function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): Err
 		ready: {
 			summary: `Conclave ready-Signal decision failed: ${message}`,
 			remediation: "Inspect the current ready Signal and retry its durable Verdict.",
+		},
+		execution: {
+			summary: `Conclave Executor-failure decision failed: ${message}`,
+			remediation: "Inspect the failed Executor evidence and retry replacement or failure explicitly.",
 		},
 		runtime: {
 			summary: `Conclave runtime recovery failed: ${message}`,
@@ -6059,9 +6087,10 @@ function lifecycleEffects(
 	execution: Execution | undefined,
 	observer?: RuntimeBinding,
 	wakeConclave = true,
+	wakeReason?: ConclaveWakeCause,
 ) {
 	return [
-		...(wakeConclave ? [schedulerEffect(workId, revision)] : []),
+		...(wakeConclave ? [schedulerEffect(workId, revision, undefined, wakeReason)] : []),
 		...executionLifecycleEffects(workId, revision, execution),
 		...(observer === undefined ? [] : [observerCleanupEffect(workId, observer)]),
 	];
