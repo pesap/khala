@@ -139,6 +139,8 @@ Observed input and output tokens are charged as turns complete.
 When usage reaches the allowance, the Execution becomes `blocked` with `blockReason` `budget-exhausted`.
 The Conclave must replace it or amend the Work budget.
 A single Pi turn may overshoot because the RPC interface does not expose a per-session output limit.
+Each Executor change has a fixed hard cap of 500 added code lines across the aggregate sandbox diff, including multiple commits in one Execution.
+Commit, publication, and ready actions are rejected above the cap, and the sandbox changes remain available for reduction.
 
 Only the current Executor can send `progress`, `blocked`, or `ready` Signals.
 A ready Signal requires a reconciled review request for the current sandbox head, validation evidence, and a permitted-path check.

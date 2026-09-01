@@ -69,6 +69,8 @@ Direct `write` and `edit` calls outside those paths are blocked in the Executor 
 Executors do not receive arbitrary shell access.
 They commit through the governed workspace action and run only the declared validation commands through the workspace adapter.
 The service also rejects publication and ready evidence when the Git change set contains an outside path.
+Every Executor change is limited to 500 added code lines across the aggregate sandbox diff, including multiple commits in one Execution.
+The service rejects commit, publication, and ready actions above this fixed cap without discarding sandbox changes.
 
 Each Execution reserves half of the configured Work token cap, rounded down with a minimum of one token.
 The reservation is released when the Execution ends.

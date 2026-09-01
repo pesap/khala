@@ -60,6 +60,8 @@ Token exhaustion queues a separate finite Conclave wake for a Verdict.
 Each Executor-lifecycle wake identifies the current state and requires a durable state-appropriate decision with the applicable Signal ID.
 If Conclave returns without resolving that state, the outbox effect remains retryable and a durable failure is recorded.
 Pi does not provide a per-session output-limit option through the RPC interface, so a single turn can exceed the allowance before Khala records the usage.
+Each Executor change has a fixed hard cap of 500 added code lines across the aggregate sandbox diff, including multiple commits in one Execution.
+The service rejects commit, publication, and ready actions above that cap without discarding sandbox changes.
 
 ## Recovery
 

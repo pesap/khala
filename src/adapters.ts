@@ -134,6 +134,17 @@ export class GitWorkspace implements WorkspacePort {
 		];
 	}
 
+	async inspectAddedLines(
+		input: Readonly<{ path: string; baseCommit: string }>,
+		operation?: OperationContext,
+	): Promise<number> {
+		const tracked = await git(input.path, ["diff", "--numstat", input.baseCommit], operation?.signal);
+		const untracked = await git(input.path, ["ls-files", "--others", "--exclude-standard", "-z"], operation?.signal);
+		const trackedAddedLines = parseNumstatAddedLines(tracked);
+		const untrackedAddedLines = await countUntrackedAddedLines(input.path, untracked, operation?.signal);
+		return trackedAddedLines + untrackedAddedLines;
+	}
+
 	async commitSandbox(
 		input: {
 			sandbox: Execution["sandbox"];
@@ -516,6 +527,42 @@ function validationShellArguments(command: string): readonly string[] {
 
 async function git(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
 	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment(), signal))).stdout.trim();
+}
+
+function parseNumstatAddedLines(output: string): number {
+	return output
+		.split("\n")
+		.map(parseNumstatLine)
+		.reduce((total, count) => total + count, 0);
+}
+
+function parseNumstatLine(line: string): number {
+	const count = Number(line.split("\t")[0]);
+	return Number.isSafeInteger(count) && count > 0 ? count : 0;
+}
+
+async function countUntrackedAddedLines(root: string, output: string, signal?: AbortSignal): Promise<number> {
+	let total = 0;
+	for (const path of output.split("\0").filter(Boolean)) total += await countUntrackedFileLines(root, path, signal);
+	return total;
+}
+
+async function countUntrackedFileLines(root: string, path: string, signal?: AbortSignal): Promise<number> {
+	assertGitInspectionNotCancelled(signal);
+	const candidate = resolve(root, path);
+	if (!(await isRegularContainedFile(root, candidate))) return 0;
+	const content = await readFile(candidate);
+	if (content.includes(0)) return 0;
+	return countTextLines(content);
+}
+
+function countTextLines(content: Buffer): number {
+	if (content.length === 0) return 0;
+	return content.toString("utf8").split("\n").length - Number(content.at(-1) === 10);
+}
+
+function assertGitInspectionNotCancelled(signal: AbortSignal | undefined): void {
+	if (signal?.aborted === true) throw new Error("Git change inspection was cancelled.");
 }
 
 async function isRegisteredWorktree(projectPath: string, sandboxPath: string, signal?: AbortSignal): Promise<boolean> {

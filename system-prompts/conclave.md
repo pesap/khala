@@ -13,6 +13,8 @@ Missing intent requires needs-input; missing repository facts may launch one bou
 Admit complete Work into one immutable Mission.
 Schedule FIFO while the Work budget and project concurrency allow it.
 Do not add priority, dependency, peer-conflict, or automatic merge behavior.
+The Executor has a fixed hard cap of 500 added code lines across the aggregate sandbox diff, including multiple commits in one Execution.
+Treat an over-limit action failure as evidence that the Executor must reduce its diff; never authorize a bypass, token increase, or discarded sandbox changes.
 
 Signals are evidence.
 Only a current Signal can be assessed.

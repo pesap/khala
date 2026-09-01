@@ -93,6 +93,7 @@ function makePorts(overrides = {}) {
 		outcomeObservation: undefined,
 		pollObservations: [],
 		turnUsage: undefined,
+		addedLines: 0,
 		runtimeState: "idle",
 		recoverExecutor: false,
 		observerHold: false,
@@ -132,6 +133,9 @@ function makePorts(overrides = {}) {
 		},
 		async inspectHead() {
 			return controls.head;
+		},
+		async inspectAddedLines() {
+			return controls.addedLines;
 		},
 		async publishSandbox(sandbox) {
 			controls.published.push(sandbox);
@@ -396,6 +400,131 @@ test("Executors commit and validate through governed workspace actions", async (
 	assert.equal("error" in ready, false);
 	await service.close();
 });
+
+test("Executor changes at the 500-line boundary complete handoff", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-change-limit-boundary-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			workspace: {
+				async commitSandbox() {
+					return "head";
+				},
+				async runValidation(input) {
+					return input.commands.map((command) => ({ command, passed: true, output: "ok" }));
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "change-limit-boundary");
+	controls.addedLines = 500;
+	const commit = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-boundary:commit", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in commit, false);
+	const validation = await service.perform({
+		action: "run-validation",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-boundary:validate", commit.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in validation, false);
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-boundary:review", validation.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in review, false);
+	const ready = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["500 added lines", "validation passed"] },
+		meta: meta("executor", "change-limit-boundary:ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in ready, false);
+	await service.close();
+});
+
+test("Executor changes above 500 lines are rejected before commit, publication, and readiness", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-change-limit-over-"));
+	let commitCalls = 0;
+	let publishCalls = 0;
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			workspace: {
+				async commitSandbox() {
+					commitCalls += 1;
+					return "head";
+				},
+				async runValidation(input) {
+					return input.commands.map((command) => ({ command, passed: true, output: "ok" }));
+				},
+				async publishSandbox() {
+					publishCalls += 1;
+					return "head";
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "change-limit-over");
+	controls.addedLines = 501;
+	const rejectedCommit = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-over:commit-rejected", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(rejectedCommit.error.code, "invalid-state");
+	assert.match(rejectedCommit.error.summary, /501.*500-line Executor change limit/);
+	assert.equal(commitCalls, 0);
+	controls.addedLines = 500;
+	const committed = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-over:commit", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in committed, false);
+	controls.addedLines = 501;
+	const rejectedReview = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-over:review-rejected", committed.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(rejectedReview.error.code, "invalid-state");
+	assert.equal(publishCalls, 0);
+	controls.addedLines = 500;
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-over:review", service.inspectWork(running.workId).revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in review, false);
+	assert.equal(publishCalls, 1);
+	const validation = await service.perform({
+		action: "run-validation",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "change-limit-over:validate", review.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in validation, false);
+	controls.addedLines = 501;
+	const rejectedReady = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["change limit"] },
+		meta: meta("executor", "change-limit-over:ready-rejected", validation.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(rejectedReady.error.code, "invalid-state");
+	assert.equal(publishCalls, 1);
+	await service.close();
+});
+
 test("GitWorkspace commits with its receiver and returns the committed head", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-git-commit-"));
 	const repository = join(directory, "repository");
