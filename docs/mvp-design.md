@@ -68,7 +68,9 @@ Permitted paths are stored as normalized repository-relative paths.
 Direct `write` and `edit` calls outside those paths are blocked in the Executor session, including symlink escapes.
 Executors do not receive arbitrary shell access.
 They commit through the governed workspace action and run only the declared validation commands through the workspace adapter.
-The service also rejects publication and ready evidence when the Git change set contains an outside path.
+Each Execution has a fixed hard limit of 500 added code lines in its aggregate diff from the sandbox base, including earlier commits.
+The service rejects commit, publication, and ready evidence when the limit is exceeded or the Git change set contains an outside path.
+The rejected operation leaves the sandbox changes intact.
 
 Each Execution reserves half of the configured Work token cap, rounded down with a minimum of one token.
 The reservation is released when the Execution ends.
@@ -100,6 +102,7 @@ Execution: queued -> running <-> awaiting-review -> completed | blocked | failed
 ```
 
 A `ready` Signal requires nonempty evidence and current successful validation evidence when the workspace adapter supports governed validation.
+The fixed 500 added-code-line limit is checked before commit, publication, and ready evidence.
 A `ready` Signal and `handoff` Verdict are review handoff evidence rather than acceptance.
 Only provider-confirmed merge evidence plus an explicit Conclave Outcome creates `succeeded`.
 A provider may merge while Work is active or awaiting review.
@@ -249,7 +252,7 @@ ArchivePort       append, updateCommandProjection, findCommand,
                   listProjects, close
 AgentRuntimePort  ensureSession, send, getState, requestStop, close
 WorkspacePort     preflight, ensureSandbox, inspectHead, inspectChanges,
-                  commitSandbox?, runValidation?, publishSandbox, removeSandbox
+                  inspectAddedLines?, commitSandbox?, runValidation?, publishSandbox, removeSandbox
 CodeHostPort      capabilities, identity, ensureReviewRequest, poll,
                   inspectOutcome
 ModelCatalogPort  listScoped, resolve

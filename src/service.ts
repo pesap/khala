@@ -137,6 +137,7 @@ const SUPPORTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
 ]);
 const DEFAULT_SCOPE = "Repository changes required by the objective.";
 const DEFAULT_VALIDATION = "npm run check";
+const MAX_EXECUTOR_ADDED_LINES = 500;
 type FeedbackWakeDisposition = "superseded" | "resume" | "unavailable";
 
 function systemEffectMeta(effect: PendingArchiveEffect, work: WorkView): CommandMeta {
@@ -3193,6 +3194,7 @@ export class ApplicationService {
 	): Promise<void> {
 		this.requireReadySignalEvidence(evidence);
 		await this.ensureAllowedPaths(work, execution, operation);
+		await this.ensureAddedLineLimit(execution, operation);
 		const request = this.requireReadyReviewRequest(work, execution);
 		const head = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
 		throwIfOperationAborted(operation);
@@ -3265,6 +3267,40 @@ export class ApplicationService {
 				"Revert changes outside the Mission paths before publishing or sending ready evidence.",
 			);
 	}
+
+	private async ensureAddedLineLimit(execution: Execution, operation?: OperationContext): Promise<void> {
+		const inspectAddedLines = this.ports.workspace.inspectAddedLines;
+		if (inspectAddedLines === undefined)
+			throw this.error(
+				"external-failure",
+				"The configured workspace cannot inspect added lines for the Executor change limit.",
+				false,
+				"Use a workspace adapter that supports aggregate diff inspection.",
+			);
+		const addedLines = await inspectAddedLines(
+			{ path: execution.sandbox.path, baseCommit: execution.sandbox.baseCommit },
+			operation,
+		);
+		this.assertAddedLineLimit(addedLines);
+	}
+
+	private assertAddedLineLimit(addedLines: number): void {
+		if (!Number.isSafeInteger(addedLines) || addedLines < 0)
+			throw this.error(
+				"external-failure",
+				"The workspace returned an invalid added-line count.",
+				false,
+				"Use a workspace adapter that returns a nonnegative integer count.",
+			);
+		if (addedLines <= MAX_EXECUTOR_ADDED_LINES) return;
+		throw this.error(
+			"invalid-state",
+			`The Executor change adds ${addedLines} lines, exceeding the hard limit of ${MAX_EXECUTOR_ADDED_LINES} added lines.`,
+			false,
+			"Reduce the aggregate sandbox diff to 500 or fewer added lines; existing sandbox changes were preserved.",
+		);
+	}
+
 	private async commitSandbox(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
@@ -3277,6 +3313,7 @@ export class ApplicationService {
 				"Use a workspace adapter that supports governed sandbox commits.",
 			);
 		await this.ensureAllowedPaths(work, execution, operation);
+		await this.ensureAddedLineLimit(execution, operation);
 		const headCommit = await workspace.commitSandbox(
 			{
 				sandbox: execution.sandbox,
@@ -3341,6 +3378,7 @@ export class ApplicationService {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
 		await this.ensureAllowedPaths(work, execution, operation);
+		await this.ensureAddedLineLimit(execution, operation);
 		const mission = this.requireReviewMission(work);
 		await this.requireDraftReviewSupport(operation);
 		const headCommit = await this.reviewHead(execution, operation);

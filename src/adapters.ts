@@ -24,6 +24,7 @@ import type { CodeHostPort, OperationContext, ReviewRequestInput, WorkspacePort,
 
 const execFileAsync = promisify(execFile);
 const COMMAND_TIMEOUT_MS = 120_000;
+type GitCommandFailure = Readonly<{ code?: number; stdout?: string }>;
 const MAX_COMMAND_BUFFER = 8_000_000;
 const SENSITIVE_ENVIRONMENT_KEY = /(API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)/i;
 const MAX_PROVIDER_COMMENTS = 8;
@@ -132,6 +133,15 @@ export class GitWorkspace implements WorkspacePort {
 				),
 			),
 		];
+	}
+
+	async inspectAddedLines(
+		input: Readonly<{ path: string; baseCommit: string }>,
+		operation?: OperationContext,
+	): Promise<number> {
+		const tracked = await git(input.path, ["diff", "--numstat", input.baseCommit], operation?.signal);
+		const untracked = await git(input.path, ["ls-files", "--others", "--exclude-standard"], operation?.signal);
+		return addedLinesFromNumstat(tracked) + (await untrackedAddedLines(input.path, untracked, operation?.signal));
 	}
 
 	async commitSandbox(
@@ -516,6 +526,41 @@ function validationShellArguments(command: string): readonly string[] {
 
 async function git(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
 	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment(), signal))).stdout.trim();
+}
+
+async function gitDiffNumstat(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
+	return execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment(), signal))
+		.then(({ stdout }) => stdout.trim())
+		.catch((error) => {
+			// SAFETY: execFile reports a numeric exit code and captured stdout for a failed no-index diff.
+			const failure = error as GitCommandFailure;
+			if (failure.code === 1) return failure.stdout?.trim() ?? "";
+			throw error;
+		});
+}
+
+async function untrackedAddedLines(cwd: string, listing: string, signal?: AbortSignal): Promise<number> {
+	let total = 0;
+	for (const file of listing
+		.split("\n")
+		.map((value) => value.trim())
+		.filter(Boolean))
+		total += await untrackedFileAddedLines(cwd, file, signal);
+	return total;
+}
+
+async function untrackedFileAddedLines(cwd: string, file: string, signal?: AbortSignal): Promise<number> {
+	const absolute = resolve(cwd, file);
+	if (!isContainedPath(cwd, absolute)) throw new Error(`Untracked path ${file} escapes the sandbox.`);
+	const diff = await gitDiffNumstat(cwd, ["diff", "--no-index", "--numstat", "/dev/null", "--", file], signal);
+	return addedLinesFromNumstat(diff);
+}
+
+function addedLinesFromNumstat(output: string): number {
+	return output.split("\n").reduce((total, line) => {
+		const added = Number(line.split("\t", 1)[0]);
+		return Number.isSafeInteger(added) && added > 0 ? total + added : total;
+	}, 0);
 }
 
 async function isRegisteredWorktree(projectPath: string, sandboxPath: string, signal?: AbortSignal): Promise<boolean> {

@@ -14,6 +14,10 @@ Admit complete Work into one immutable Mission.
 Schedule FIFO while the Work budget and project concurrency allow it.
 Do not add priority, dependency, peer-conflict, or automatic merge behavior.
 
+Every Executor change has a fixed hard cap of 500 added code lines across the aggregate Execution diff.
+The service rejects over-limit commit, publication, and ready actions without discarding sandbox changes.
+If an Executor reports that the cap was reached, inspect the evidence and make a durable state-appropriate decision; do not expand the limit or treat over-limit work as ready.
+
 Signals are evidence.
 Only a current Signal can be assessed.
 A Verdict is one of continue, replace, handoff, or reject.

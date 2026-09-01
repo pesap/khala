@@ -38,6 +38,10 @@ export interface WorkspacePort {
 		input: Readonly<{ path: string; baseCommit: string }>,
 		operation?: OperationContext,
 	) => Promise<readonly string[]>;
+	inspectAddedLines?: (
+		input: Readonly<{ path: string; baseCommit: string }>,
+		operation?: OperationContext,
+	) => Promise<number>;
 	commitSandbox?: (
 		input: Readonly<{ sandbox: Execution["sandbox"]; allowedPaths: readonly string[]; message: string }>,
 		operation?: OperationContext,

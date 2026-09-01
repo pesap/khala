@@ -110,6 +110,9 @@ Pi session, lease, lock, and capability files live in a project-specific directo
 Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
 Review request bodies include the Work objective, acceptance criteria, and validation commands.
 Executors commit sandbox changes and run declared validation through governed workspace actions rather than arbitrary shell tools.
+Each Execution is limited to 500 added code lines in the aggregate diff from its sandbox base, including earlier commits.
+Khala checks this limit before commit, publication, and ready evidence.
+An over-limit operation fails clearly and leaves the sandbox changes intact.
 Validation may prepend the parent project's existing `node_modules/.bin` directory to `PATH` without changing the governed sandbox.
 Do not submit secrets or sensitive data as Work context or provider feedback.
 

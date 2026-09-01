@@ -89,6 +89,7 @@ function makePorts(overrides = {}) {
 	const { ports: portOverrides = {}, maxConcurrentExecutions: _maxConcurrentExecutions, ...controlOverrides } = overrides;
 	const controls = {
 		head: "head",
+		addedLines: 0,
 		outcome: false,
 		outcomeObservation: undefined,
 		pollObservations: [],
@@ -132,6 +133,9 @@ function makePorts(overrides = {}) {
 		},
 		async inspectHead() {
 			return controls.head;
+		},
+		async inspectAddedLines() {
+			return controls.addedLines;
 		},
 		async publishSandbox(sandbox) {
 			controls.published.push(sandbox);
@@ -298,6 +302,82 @@ test("generated Work IDs use Nano ID format", async () => {
 			),
 		/invalid path/,
 	);
+	await service.close();
+});
+
+test("Executor changes at the 500-line boundary are allowed and larger changes are rejected before commit, publication, or ready", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-added-line-limit-"));
+	let commitCalls = 0;
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			workspace: {
+				async commitSandbox() {
+					commitCalls += 1;
+					return "head";
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "added-line-limit");
+	controls.addedLines = 501;
+	const overCommit = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:over-commit", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(overCommit.error.code, "invalid-state");
+	assert.match(overCommit.error.summary, /501 lines.*hard limit of 500/);
+	assert.equal(commitCalls, 0);
+
+	controls.addedLines = 500;
+	const boundaryCommit = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:boundary-commit", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in boundaryCommit, false);
+	assert.equal(commitCalls, 1);
+
+	controls.addedLines = 501;
+	const overPublication = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:over-publication", boundaryCommit.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(overPublication.error.code, "invalid-state");
+	assert.equal(controls.published.length, 0);
+
+	controls.addedLines = 500;
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:boundary-publication", boundaryCommit.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in review, false);
+	assert.equal(controls.published.length, 1);
+
+	controls.addedLines = 501;
+	const overReady = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["validation"] },
+		meta: meta("executor", "added-line-limit:over-ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(overReady.error.code, "invalid-state");
+	assert.match(overReady.error.remediation, /500 or fewer/);
+
+	controls.addedLines = 500;
+	const boundaryReady = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["validation"] },
+		meta: meta("executor", "added-line-limit:boundary-ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in boundaryReady, false);
 	await service.close();
 });
 
