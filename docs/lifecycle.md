@@ -136,6 +136,8 @@ Model, thinking level, token allowance, sandbox, permitted paths, and prompt ide
 
 Each Execution reserves half of the configured Work token cap with a minimum allowance of one token.
 Observed input and output tokens are charged as turns complete.
+Each Execution also has a fixed hard limit of 500 added code lines across the aggregate diff from its sandbox base, including multiple commits.
+Commit, publication, and ready-Signal actions reject changes above that limit without discarding sandbox changes.
 When usage reaches the allowance, the Execution becomes `blocked` with `blockReason` `budget-exhausted`.
 The Conclave must replace it or amend the Work budget.
 A single Pi turn may overshoot because the RPC interface does not expose a per-session output limit.

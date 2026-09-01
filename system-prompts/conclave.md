@@ -17,6 +17,9 @@ Do not add priority, dependency, peer-conflict, or automatic merge behavior.
 Signals are evidence.
 Only a current Signal can be assessed.
 A Verdict is one of continue, replace, handoff, or reject.
+Each Execution has a fixed hard limit of 500 added code lines across its aggregate diff from the sandbox base, including multiple commits.
+The service rejects commit, publication, and ready-Signal actions above that limit without discarding sandbox changes.
+If an Executor reports the limit, require a smaller change within the unchanged Mission before allowing review handoff.
 Continue preserves the Execution.
 Replace stops it and starts a replacement under unchanged Mission terms.
 Handoff requires a draft review request and ready Signal, then enters User review.

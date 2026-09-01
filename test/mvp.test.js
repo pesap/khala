@@ -93,6 +93,7 @@ function makePorts(overrides = {}) {
 		outcomeObservation: undefined,
 		pollObservations: [],
 		turnUsage: undefined,
+		addedLines: 0,
 		runtimeState: "idle",
 		recoverExecutor: false,
 		observerHold: false,
@@ -132,6 +133,9 @@ function makePorts(overrides = {}) {
 		},
 		async inspectHead() {
 			return controls.head;
+		},
+		async inspectAddedLines() {
+			return controls.addedLines;
 		},
 		async publishSandbox(sandbox) {
 			controls.published.push(sandbox);
@@ -396,6 +400,72 @@ test("Executors commit and validate through governed workspace actions", async (
 	assert.equal("error" in ready, false);
 	await service.close();
 });
+
+test("Executor change limit allows 500 additions and rejects larger commit, publication, and ready actions", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-added-line-limit-"));
+	let commitCount = 0;
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			workspace: {
+				async commitSandbox() {
+					commitCount += 1;
+					return "head";
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "added-line-limit");
+	controls.addedLines = 500;
+	const committed = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:commit", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in committed, false);
+	assert.equal(commitCount, 1);
+
+	controls.addedLines = 501;
+	const overLimitCommit = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:over-commit", committed.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(overLimitCommit.error.code, "invalid-state");
+	assert.match(overLimitCommit.error.summary, /fixed 500-line limit/);
+	assert.match(overLimitCommit.error.remediation, /sandbox changes were preserved/);
+	assert.equal(commitCount, 1);
+
+	const overLimitReview = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:over-review", committed.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(overLimitReview.error.code, "invalid-state");
+	assert.equal(controls.published.length, 0);
+
+	controls.addedLines = 500;
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "added-line-limit:review", committed.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in review, false);
+	controls.addedLines = 501;
+	const overLimitReady = await service.perform({
+		action: "record-signal",
+		workId: running.workId,
+		input: { kind: "ready", summary: "Ready", evidence: ["validation passed"] },
+		meta: meta("executor", "added-line-limit:over-ready", review.value.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal(overLimitReady.error.code, "invalid-state");
+	assert.equal(service.inspectWork(running.workId).lastSignal, undefined);
+	await service.close();
+});
+
 test("GitWorkspace commits with its receiver and returns the committed head", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-git-commit-"));
 	const repository = join(directory, "repository");
@@ -417,6 +487,26 @@ test("GitWorkspace commits with its receiver and returns the committed head", as
 	const actualHead = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 	assert.equal(committedHead, actualHead);
 	assert.notEqual(committedHead, baseCommit);
+});
+
+test("GitWorkspace counts aggregate tracked and untracked additions from the sandbox base", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-git-lines-"));
+	const repository = join(directory, "repository");
+	await mkdir(repository);
+	execFileSync("git", ["init", repository]);
+	execFileSync("git", ["-C", repository, "config", "user.email", "khala@example.test"]);
+	execFileSync("git", ["-C", repository, "config", "user.name", "Khala Test"]);
+	await writeFile(join(repository, "file.txt"), "before\n");
+	execFileSync("git", ["-C", repository, "add", "."]);
+	execFileSync("git", ["-C", repository, "commit", "-m", "initial"]);
+	const baseCommit = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+	await writeFile(join(repository, "file.txt"), "before\nfirst\n");
+	execFileSync("git", ["-C", repository, "add", "."]);
+	execFileSync("git", ["-C", repository, "commit", "-m", "first change"]);
+	await writeFile(join(repository, "file.txt"), "before\nfirst\nsecond\n");
+	await writeFile(join(repository, "new.txt"), "one\ntwo\nthree\n");
+	const workspace = new GitWorkspace(directory, "khala/", repository);
+	assert.equal(await workspace.inspectAddedLines({ path: repository, baseCommit }), 5);
 });
 
 test("Validation reuses the parent project's Node bin without changing the sandbox", async () => {

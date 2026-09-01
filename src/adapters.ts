@@ -115,6 +115,15 @@ export class GitWorkspace implements WorkspacePort {
 		return git(path, ["rev-parse", "HEAD"], operation?.signal);
 	}
 
+	async inspectAddedLines(
+		input: Readonly<{ path: string; baseCommit: string }>,
+		operation?: OperationContext,
+	): Promise<number> {
+		const tracked = await git(input.path, ["diff", "--numstat", "-z", input.baseCommit, "--"], operation?.signal);
+		const untracked = await git(input.path, ["ls-files", "--others", "--exclude-standard", "-z"], operation?.signal);
+		return countNumstatAddedLines(tracked) + (await countUntrackedAddedLines(input.path, untracked));
+	}
+
 	async inspectChanges(
 		input: Readonly<{ path: string; baseCommit: string }>,
 		operation?: OperationContext,
@@ -516,6 +525,54 @@ function validationShellArguments(command: string): readonly string[] {
 
 async function git(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
 	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment(), signal))).stdout.trim();
+}
+
+function countNumstatAddedLines(output: string): number {
+	let total = 0;
+	for (const entry of output.split("\0")) total += numstatEntryAddedLines(entry);
+	return total;
+}
+
+function numstatEntryAddedLines(entry: string): number {
+	if (entry.length === 0) return 0;
+	if (!entry.includes("\t")) return 0;
+	const added = entry.slice(0, entry.indexOf("\t"));
+	return parseNumstatCount(added);
+}
+
+function parseNumstatCount(added: string): number {
+	if (added === "-") return 0;
+	const count = Number(added);
+	if (!Number.isSafeInteger(count)) throw new Error("Git returned an invalid added-line count.");
+	if (count < 0) throw new Error("Git returned an invalid added-line count.");
+	return count;
+}
+
+async function countUntrackedAddedLines(root: string, output: string): Promise<number> {
+	let total = 0;
+	for (const path of output.split("\0")) total += await countUntrackedFileLines(root, path);
+	return total;
+}
+
+async function countUntrackedFileLines(root: string, path: string): Promise<number> {
+	if (path.length === 0) return 0;
+	const candidate = resolve(root, path);
+	if (!isContainedPath(root, candidate)) throw new Error(`Git reported an untracked path outside ${root}.`);
+	const information = await lstat(candidate);
+	if (!information.isFile()) return 0;
+	return countTextLines((await readFile(candidate)).toString("utf8"));
+}
+
+function countTextLines(contents: string): number {
+	if (contents.includes("\0")) return 0;
+	const lines = contents.split("\n").length - 1;
+	return lines + countTrailingTextLine(contents);
+}
+
+function countTrailingTextLine(contents: string): number {
+	if (contents.length === 0) return 0;
+	if (contents.endsWith("\n")) return 0;
+	return 1;
 }
 
 async function isRegisteredWorktree(projectPath: string, sandboxPath: string, signal?: AbortSignal): Promise<boolean> {

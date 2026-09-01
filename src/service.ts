@@ -137,6 +137,7 @@ const SUPPORTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
 ]);
 const DEFAULT_SCOPE = "Repository changes required by the objective.";
 const DEFAULT_VALIDATION = "npm run check";
+const MAX_ADDED_LINES = 500;
 type FeedbackWakeDisposition = "superseded" | "resume" | "unavailable";
 
 function systemEffectMeta(effect: PendingArchiveEffect, work: WorkView): CommandMeta {
@@ -3193,6 +3194,7 @@ export class ApplicationService {
 	): Promise<void> {
 		this.requireReadySignalEvidence(evidence);
 		await this.ensureAllowedPaths(work, execution, operation);
+		await this.ensureAddedLineLimit(execution, operation);
 		const request = this.requireReadyReviewRequest(work, execution);
 		const head = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
 		throwIfOperationAborted(operation);
@@ -3265,6 +3267,20 @@ export class ApplicationService {
 				"Revert changes outside the Mission paths before publishing or sending ready evidence.",
 			);
 	}
+	private async ensureAddedLineLimit(execution: Execution, operation?: OperationContext): Promise<void> {
+		const addedLines = await this.ports.workspace.inspectAddedLines(
+			{ path: execution.sandbox.path, baseCommit: execution.sandbox.baseCommit },
+			operation,
+		);
+		throwIfOperationAborted(operation);
+		if (addedLines <= MAX_ADDED_LINES) return;
+		throw this.error(
+			"invalid-state",
+			`The sandbox change adds ${addedLines} lines, exceeding the fixed ${MAX_ADDED_LINES}-line limit.`,
+			false,
+			`Reduce the aggregate change to ${MAX_ADDED_LINES} or fewer added lines; sandbox changes were preserved.`,
+		);
+	}
 	private async commitSandbox(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
@@ -3277,6 +3293,7 @@ export class ApplicationService {
 				"Use a workspace adapter that supports governed sandbox commits.",
 			);
 		await this.ensureAllowedPaths(work, execution, operation);
+		await this.ensureAddedLineLimit(execution, operation);
 		const headCommit = await workspace.commitSandbox(
 			{
 				sandbox: execution.sandbox,
@@ -3341,6 +3358,7 @@ export class ApplicationService {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
 		await this.ensureAllowedPaths(work, execution, operation);
+		await this.ensureAddedLineLimit(execution, operation);
 		const mission = this.requireReviewMission(work);
 		await this.requireDraftReviewSupport(operation);
 		const headCommit = await this.reviewHead(execution, operation);

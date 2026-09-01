@@ -34,6 +34,10 @@ export interface WorkspacePort {
 		operation?: OperationContext,
 	) => Promise<Execution["sandbox"]>;
 	inspectHead: (path: string, operation?: OperationContext) => Promise<string>;
+	inspectAddedLines: (
+		input: Readonly<{ path: string; baseCommit: string }>,
+		operation?: OperationContext,
+	) => Promise<number>;
 	inspectChanges?: (
 		input: Readonly<{ path: string; baseCommit: string }>,
 		operation?: OperationContext,

@@ -73,6 +73,8 @@ The service also rejects publication and ready evidence when the Git change set 
 Each Execution reserves half of the configured Work token cap, rounded down with a minimum of one token.
 The reservation is released when the Execution ends.
 Observed input and output tokens are charged against the reservation as turns complete.
+Each Execution has a fixed hard limit of 500 added code lines across the aggregate diff from its sandbox base, including multiple commits.
+Commit, publication, and ready-Signal actions reject changes above that limit without discarding sandbox changes.
 Cache counters remain usage metadata and are not added a second time to the budget total.
 A turn that reaches its allowance puts the Execution in `blocked` with `blockReason` `budget-exhausted`.
 The Conclave must replace that Execution or amend the Work budget.
@@ -248,8 +250,9 @@ ArchivePort       append, updateCommandProjection, findCommand,
                   query, querySummaries, project, findObservation, findLatestObservation,
                   listProjects, close
 AgentRuntimePort  ensureSession, send, getState, requestStop, close
-WorkspacePort     preflight, ensureSandbox, inspectHead, inspectChanges,
-                  commitSandbox?, runValidation?, publishSandbox, removeSandbox
+WorkspacePort     preflight, ensureSandbox, inspectHead, inspectAddedLines,
+                  inspectChanges, commitSandbox?, runValidation?, publishSandbox,
+                  removeSandbox
 CodeHostPort      capabilities, identity, ensureReviewRequest, poll,
                   inspectOutcome
 ModelCatalogPort  listScoped, resolve

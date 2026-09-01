@@ -54,6 +54,8 @@ Semantic decisions are never retried automatically.
 
 Work reserves half of its configured token cap for each new Execution, with a minimum allowance of one token.
 Khala charges observed input and output tokens as each Executor turn completes.
+Each Execution also has a fixed hard limit of 500 added code lines across the aggregate diff from its sandbox base, including multiple commits.
+Commit, publication, and ready-Signal actions reject changes above that limit without discarding sandbox changes.
 A budget-exhausted Execution is blocked and requires replacement or a Work budget amendment.
 A blocked or ready Executor Signal queues a Conclave wake with an explicit finite cause.
 Token exhaustion queues a separate finite Conclave wake for a Verdict.
