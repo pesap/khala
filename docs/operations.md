@@ -21,6 +21,7 @@ Project values override global values.
 | `defaultWorkTokens` | `20000` | Default Work budget |
 | `piCommand` | `["pi"]` | Argument list used to launch child sessions |
 
+Child Pi sessions prepend the parent Node executable directory to `PATH` before launching `piCommand`.
 Role models and thinking levels are persisted as `conclaveModel`, `executorModel`, `observerModel`, `oracleModel`, and their matching `*Thinking` settings.
 The Observer model is only needed when repository context gathering is requested.
 The TUI bindings are configurable with `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`h`).
@@ -53,9 +54,11 @@ A transient Conclave startup failure receives one retry in the runtime and one r
 Semantic decisions are never retried automatically.
 
 Work reserves half of its configured token cap for each new Execution, with a minimum allowance of one token.
+`maxTokens` is an LLM token budget and is unrelated to the Executor's source-line limit.
 Khala charges observed input and output tokens as each Executor turn completes.
 A budget-exhausted Execution is blocked and requires replacement or a Work budget amendment.
 A blocked or ready Executor Signal queues a Conclave wake with an explicit finite cause.
+Executor failure queues a separate finite Conclave wake for replacement or Work failure.
 Token exhaustion queues a separate finite Conclave wake for a Verdict.
 Each Executor-lifecycle wake identifies the current state and requires a durable state-appropriate decision with the applicable Signal ID.
 If Conclave returns without resolving that state, the outbox effect remains retryable and a durable failure is recorded.
@@ -65,7 +68,8 @@ Pi does not provide a per-session output-limit option through the RPC interface,
 
 The hosting User Pi session owns the parent Khala service.
 The parent service is not a standalone daemon.
-Closing the User session waits for active monitor, effect, and runtime operations before closing the Archive.
+At most one parent service supervises a canonical project at a time through the runtime controller lease.
+Closing the User session waits for active monitor, effect, and runtime operations before releasing that lease and closing the Archive.
 
 Run the Pi command `/khala-recover` after reopening a project when a child may have been interrupted.
 The command drains pending effects and reconciles persisted runtime bindings.
@@ -110,7 +114,8 @@ Pi session, lease, lock, and capability files live in a project-specific directo
 Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
 Review request bodies include the Work objective, acceptance criteria, and validation commands.
 Executors commit sandbox changes and run declared validation through governed workspace actions rather than arbitrary shell tools.
-Validation may prepend the parent project's existing `node_modules/.bin` directory to `PATH` without changing the governed sandbox.
+For Node projects with a `package-lock.json`, sandbox creation runs `npm ci --include=dev --ignore-scripts` before returning the sandbox.
+Commit hooks and declared validation therefore resolve tools from the sandbox's own `node_modules`.
 Do not submit secrets or sensitive data as Work context or provider feedback.
 
 ## Verification checklist

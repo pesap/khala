@@ -40,6 +40,7 @@ const MISSING_EXECUTABLE_MARKERS = [
 	"cannot find the path specified",
 ] as const;
 const ROLE_FLAG = "khala-role";
+const ACTIVITY_STATUS_REFRESH_MS = 250;
 type SessionRole = "user" | "conclave" | "observer" | "executor" | "oracle";
 type RestrictedSessionRole = Exclude<SessionRole, "user">;
 const RESTRICTED_ROLE_TOOLS = {
@@ -166,13 +167,13 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	});
 	let runtime: RuntimeState | undefined;
 	let runtimeTransition: Promise<void> | undefined;
-	let executorStatusTimer: ReturnType<typeof setInterval> | undefined;
+	let activityStatusTimer: ReturnType<typeof setInterval> | undefined;
 	let userContext: ExtensionContext | undefined;
 
 	const replaceRuntime = async (context: ExtensionContext, trusted: boolean): Promise<void> => {
 		if (runtimeMatches(runtime, context.cwd, trusted)) return;
-		if (executorStatusTimer !== undefined) clearInterval(executorStatusTimer);
-		executorStatusTimer = undefined;
+		if (activityStatusTimer !== undefined) clearInterval(activityStatusTimer);
+		activityStatusTimer = undefined;
 		const previous = runtime;
 		runtime = undefined;
 		if (previous !== undefined) await previous.runtime.service.close();
@@ -441,7 +442,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 						application.updateRoleSetting(role, setting, value);
 					},
 				});
-				updateExecutorStatus(application.service, context);
+				updateKhalaActivityStatus(application.service, context);
 			} catch (error) {
 				context.ui.notify(formatCommandError(error instanceof Error ? error : new Error(String(error))), "error");
 			}
@@ -458,7 +459,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				const work = service.listWork();
 				await recoverUserWork(service, work);
 				await service.processPendingEffects();
-				updateExecutorStatus(service, context);
+				updateKhalaActivityStatus(service, context);
 				notifyRecoveryComplete(context, work.length);
 			} catch (error) {
 				context.ui.notify(formatCommandError(error instanceof Error ? error : new Error(String(error))), "error");
@@ -471,10 +472,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			const application = await getRuntime(context);
 			schedulePendingEffects(application.service);
 			userContext = context;
-			updateExecutorStatus(application.service, context);
-			executorStatusTimer = setInterval(() => {
-				if (runtime?.runtime.service === application.service) updateExecutorStatus(application.service, context);
-			}, 5_000);
+			updateKhalaActivityStatus(application.service, context);
+			activityStatusTimer = setInterval(() => {
+				if (runtime?.runtime.service === application.service) updateKhalaActivityStatus(application.service, context);
+			}, ACTIVITY_STATUS_REFRESH_MS);
 		} catch (error) {
 			context.ui.notify(error instanceof Error ? error.message : String(error), "error");
 		}
@@ -493,10 +494,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		const prompt = readFileSync(join(packageRoot, "system-prompts", promptFile), "utf8");
 		return { systemPrompt: `${event.systemPrompt}\n\n${prompt}` };
 	});
-	const clearExecutorStatus = (): void => {
-		if (executorStatusTimer !== undefined) clearInterval(executorStatusTimer);
-		executorStatusTimer = undefined;
-		userContext?.ui.setStatus("khala-executors", undefined);
+	const clearKhalaActivityStatus = (): void => {
+		if (activityStatusTimer !== undefined) clearInterval(activityStatusTimer);
+		activityStatusTimer = undefined;
+		userContext?.ui.setStatus("khala-activity", undefined);
 		userContext = undefined;
 	};
 	const closeApplicationRuntime = async (): Promise<void> => {
@@ -506,7 +507,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		if (current !== undefined) await current.runtime.service.close();
 	};
 	pi.on("session_shutdown", async () => {
-		clearExecutorStatus();
+		clearKhalaActivityStatus();
 		await closeApplicationRuntime();
 	});
 }
@@ -602,12 +603,10 @@ function schedulePendingEffects(service: ApplicationRuntime["service"]): void {
 	});
 }
 
-function updateExecutorStatus(service: ApplicationRuntime["service"], context: ExtensionContext): void {
-	const running = service
-		.listWork()
-		.filter((item) => item.state === "active" && item.executionState === "running").length;
-	const status = running === 0 ? "khala: idle" : `khala: ◈ ${running}`;
-	context.ui.setStatus("khala-executors", context.ui.theme.fg("dim", status));
+function updateKhalaActivityStatus(service: ApplicationRuntime["service"], context: ExtensionContext): void {
+	const active = service.hasLiveActivity();
+	const status = active ? "khala: ◈" : "khala: ◇";
+	context.ui.setStatus("khala-activity", context.ui.theme.fg(active ? "accent" : "dim", status));
 }
 
 function sessionRole(pi: ExtensionAPI): SessionRole {

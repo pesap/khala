@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -104,6 +104,7 @@ function makePorts(overrides = {}) {
 		sessions: [],
 		prompts: [],
 		onConclaveWake: undefined,
+		onEnsureReviewRequest: undefined,
 		stopped: [],
 		cleaned: [],
 		...controlOverrides,
@@ -149,6 +150,7 @@ function makePorts(overrides = {}) {
 			return { principalId: "user-1", verified: true };
 		},
 		async ensureReviewRequest(input) {
+			if (controls.onEnsureReviewRequest !== undefined) await controls.onEnsureReviewRequest(input);
 			return {
 				provider: "github",
 				principalId: "user-1",
@@ -343,6 +345,7 @@ test("Executors commit and validate through governed workspace actions", async (
 	const directory = await mkdtemp(join(tmpdir(), "khala-governed-tools-"));
 	let committed = false;
 	let validated = false;
+	let validationReceiverPreserved = false;
 	let commitReceiverPreserved = false;
 	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
 		ports: {
@@ -355,6 +358,7 @@ test("Executors commit and validate through governed workspace actions", async (
 				},
 				async runValidation(input) {
 					validated = input.commands.length > 0;
+					validationReceiverPreserved = this.receiverMarker === "governed-workspace";
 					return input.commands.map((command) => ({ command, passed: true, output: "ok" }));
 				},
 			},
@@ -380,6 +384,7 @@ test("Executors commit and validate through governed workspace actions", async (
 	});
 	assert.equal("error" in validation, false);
 	assert.equal(validated, true);
+	assert.equal(validationReceiverPreserved, true);
 	const review = await service.perform({
 		action: "create-review-request",
 		workId: running.workId,
@@ -419,19 +424,18 @@ test("GitWorkspace commits with its receiver and returns the committed head", as
 	assert.notEqual(committedHead, baseCommit);
 });
 
-test("Validation reuses the parent project's Node bin without changing the sandbox", async () => {
+test("Validation uses the sandbox project's Node bin", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-validation-toolchain-"));
-	const parent = join(directory, "parent");
+	const project = join(directory, "project");
 	const sandbox = join(directory, "sandbox");
-	const bin = join(parent, "node_modules", ".bin");
+	const bin = join(sandbox, "node_modules", ".bin");
 	const inheritedBin = join(directory, "inherited-bin");
 	await mkdir(bin, { recursive: true });
 	await mkdir(inheritedBin);
-	await mkdir(sandbox);
 	const executableSuffix = process.platform === "win32" ? ".cmd" : "";
-	const tool = join(bin, `parent-validation-tool${executableSuffix}`);
+	const tool = join(bin, `sandbox-validation-tool${executableSuffix}`);
 	const inheritedTool = join(inheritedBin, `inherited-validation-tool${executableSuffix}`);
-	await writeFile(tool, validationToolSource("parent-bin"));
+	await writeFile(tool, validationToolSource("sandbox-bin"));
 	await writeFile(inheritedTool, validationToolSource("inherited-bin"));
 	await chmod(tool, 0o755);
 	await chmod(inheritedTool, 0o755);
@@ -440,15 +444,15 @@ test("Validation reuses the parent project's Node bin without changing the sandb
 	delete process.env.PATH;
 	process.env.Path = `${inheritedBin}${delimiter}${previousPath ?? ""}`;
 	try {
-		const workspace = new GitWorkspace(join(directory, "worktrees"), "khala/", parent);
+		const workspace = new GitWorkspace(join(directory, "worktrees"), "khala/", project);
 		const results = await workspace.runValidation({
 			path: sandbox,
-			commands: ["parent-validation-tool", "inherited-validation-tool"],
+			commands: ["sandbox-validation-tool", "inherited-validation-tool"],
 		});
 		assert.deepEqual(
 			results.map((result) => ({ passed: result.passed, output: result.output })),
 			[
-				{ passed: true, output: "parent-bin" },
+				{ passed: true, output: "sandbox-bin" },
 				{ passed: true, output: "inherited-bin" },
 			],
 		);
@@ -457,7 +461,63 @@ test("Validation reuses the parent project's Node bin without changing the sandb
 		if (previousPathAlias === undefined) delete process.env.Path;
 		else process.env.Path = previousPathAlias;
 	}
-	await assert.rejects(stat(join(sandbox, "node_modules")));
+	assert.equal((await stat(join(sandbox, "node_modules"))).isDirectory(), true);
+});
+
+test("Sandbox setup installs locked development dependencies before returning", { skip: process.platform === "win32" }, async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-sandbox-dependencies-"));
+	const repository = join(directory, "repository");
+	const commandDirectory = join(directory, "bin");
+	const log = join(directory, "npm.json");
+	await mkdir(repository);
+	await mkdir(commandDirectory);
+	execFileSync("git", ["init", repository]);
+	execFileSync("git", ["-C", repository, "config", "user.email", "khala@example.test"]);
+	execFileSync("git", ["-C", repository, "config", "user.name", "Khala Test"]);
+	await writeFile(join(repository, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }));
+	await writeFile(
+		join(repository, "package-lock.json"),
+		JSON.stringify({
+			name: "fixture",
+			version: "1.0.0",
+			lockfileVersion: 3,
+			requires: true,
+			packages: { "": { name: "fixture", version: "1.0.0" } },
+		}),
+	);
+	execFileSync("git", ["-C", repository, "add", "."]);
+	execFileSync("git", ["-C", repository, "commit", "-m", "initial"]);
+	const baseCommit = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+	const npm = join(commandDirectory, "npm");
+	await writeFile(
+		npm,
+		`#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(process.env.KHALA_NPM_LOG, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + "\\n");\n`,
+	);
+	await chmod(npm, 0o755);
+	const previousPath = process.env.PATH;
+	const previousLog = process.env.KHALA_NPM_LOG;
+	const gitDirectory = dirname(execFileSync("which", ["git"], { encoding: "utf8" }).trim());
+	process.env.PATH = `${commandDirectory}${delimiter}${gitDirectory}${delimiter}/bin`;
+	process.env.KHALA_NPM_LOG = log;
+	const worktreeRoot = join(await realpath(directory), "worktrees");
+	const workspace = new GitWorkspace(worktreeRoot, "khala/", repository);
+	let sandbox;
+	try {
+		sandbox = await workspace.ensureSandbox({
+			workId: "sandbox-dependencies",
+			executionId: "execution-1",
+			projectPath: repository,
+			baseCommit,
+		});
+		const invocation = JSON.parse((await readFile(log, "utf8")).trim());
+		assert.deepEqual(invocation.args, ["ci", "--include=dev", "--ignore-scripts"]);
+		assert.equal(invocation.cwd, sandbox.path);
+	} finally {
+		restorePath(previousPath);
+		if (previousLog === undefined) delete process.env.KHALA_NPM_LOG;
+		else process.env.KHALA_NPM_LOG = previousLog;
+		if (sandbox !== undefined) await workspace.removeSandbox(sandbox);
+	}
 });
 
 test("Failed validation retains stdout and stderr diagnostics", async () => {
@@ -716,7 +776,9 @@ test("Closing waits for an in-flight effect before closing its runtime", async (
 	});
 	service.submitWork({ title: "Close", objective: "Wait for the effect", acceptanceCriteria: ["The runtime closes last"] }, meta("user", "effect-close:submit", 0));
 	const processing = service.processPendingEffects();
-	await new Promise((resolve) => setImmediate(resolve));
+	for (let attempts = 0; attempts < 100 && releaseWake === undefined; attempts += 1)
+		await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(releaseWake);
 	const closing = service.close();
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(runtimeClosed, false);
@@ -909,6 +971,138 @@ test("A ready Signal wake records retryable failure when Conclave takes no actio
 	);
 	const pendingWake = archive.pendingEffects("ready-wake-test").find((effect) => effect.kind === "conclave-wake");
 	assert.equal(pendingWake?.payload.reason, "executor-ready");
+	await service.close();
+});
+
+test("An Executor failure wake directs the Conclave to replace or fail the Work", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-executor-failure-wake-"));
+	let failExecutorOnce = true;
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			runtime: {
+				async send(binding, message) {
+					controls.prompts.push({ binding, message });
+					if (binding.sessionId.startsWith("executor-") && failExecutorOnce) {
+						failExecutorOnce = false;
+						throw new Error("simulated Executor failure");
+					}
+					await wakeMockConclave(binding, message, controls);
+					return mockTurn(binding, controls);
+				},
+			},
+		},
+	});
+	const submitted = service.submitWork(
+		{ title: "Executor failure wake", objective: "Replace a failed Executor", acceptanceCriteria: ["The Work is resolved"] },
+		meta("user", "executor-failure-wake:submit", 0),
+	);
+	const admitted = await service.perform({
+		action: "admit",
+		workId: submitted.workId,
+		input: {},
+		meta: meta("conclave", "executor-failure-wake:admit", submitted.revision, submitted.workId),
+	});
+	const queued = service.inspectWork(submitted.workId);
+	await service.perform({
+		action: "start-execution",
+		workId: submitted.workId,
+		input: {},
+		meta: meta("conclave", "executor-failure-wake:start", queued.revision, submitted.workId),
+	});
+	controls.onConclaveWake = async (message) => {
+		if (!message.includes("failed Executor Execution")) return;
+		const current = service.inspectWork(submitted.workId);
+		const result = await service.perform({
+			action: "fail-work",
+			workId: submitted.workId,
+			input: { reason: "The failed Executor cannot continue." },
+			meta: meta("conclave", "executor-failure-wake:fail", current.revision, submitted.workId, current.execution?.executionId),
+		});
+		assert.equal("error" in result, false);
+	};
+	await service.processPendingEffects();
+	const current = service.inspectWork(submitted.workId);
+	assert.equal(current.state, "stopped");
+	assert.equal(current.stopReason, "failed");
+	assert.equal(controls.prompts.some((entry) => entry.message.includes("failed Executor Execution") && entry.message.includes("start-execution")), true);
+	assert.equal(admitted.value.state, "queued");
+	await service.close();
+});
+
+test("Review publication reconciles a PR created before a revision conflict", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-review-publication-race-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "review-publication-race");
+	controls.onEnsureReviewRequest = async () => {
+		const current = service.inspectWork(running.workId);
+		archive.append({
+			commandId: "review-publication-race:concurrent",
+			expectedWorkRevision: current.revision,
+			kind: "execution",
+			actor: "system",
+			workId: running.workId,
+			missionId: current.mission?.missionId,
+			executionId: current.execution?.executionId,
+			payloadVersion: 1,
+			summary: "Concurrent runtime evidence was recorded.",
+			payload: current.execution,
+			projection: { ...current, revision: current.revision + 1 },
+		});
+	};
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "review-publication-race:review", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in review, false);
+	assert.equal(review.value.reviewRequest.providerId, "42");
+	assert.equal(service.inspectWork(running.workId).reviewRequest.providerId, "42");
+	await service.close();
+});
+
+test("A provider feedback wake records retryable failure when Conclave takes no action", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-feedback-wake-no-action-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "feedback-wake-no-action");
+	const review = await service.perform({
+		action: "create-review-request",
+		workId: running.workId,
+		input: {},
+		meta: meta("executor", "feedback-wake-no-action:review", running.revision, running.workId, running.execution.executionId),
+	});
+	const feedback = "Simplify this to a prompt change.";
+	controls.pollObservations = [
+		{
+			observationId: "review-comment:42:feedback-wake-no-action",
+			kind: "review-comment",
+			providerId: review.value.reviewRequest.providerId,
+			status: "commented",
+			summary: feedback,
+			feedback: [feedback],
+			actionable: true,
+			repository: review.value.reviewRequest.repository,
+			sourceBranch: review.value.reviewRequest.sourceBranch,
+			targetBranch: review.value.reviewRequest.targetBranch,
+			headCommit: review.value.reviewRequest.headCommit,
+			changed: true,
+			observedAt: new Date().toISOString(),
+		},
+	];
+	const observed = await service.pollProvider(
+		running.workId,
+		meta("user", "feedback-wake-no-action:poll", review.value.revision),
+	);
+	await service.processPendingEffects();
+	const current = service.inspectWork(running.workId);
+	assert.match(current.lastError.summary, /feedback assessment failed: Conclave provider-feedback wake returned without recording/);
+	assert.match(current.nextAction, /inspect Evidence before retrying delivery/);
+	const wakeMessage = controls.prompts[controls.prompts.length - 1].message;
+	assert.match(wakeMessage, new RegExp(observed.lastObservation.observationId));
+	assert.match(wakeMessage, /deliver-feedback/);
+	const pendingWake = archive.pendingEffects("feedback-wake-no-action-test")[0];
+	assert.equal(pendingWake?.payload.reason, "provider-feedback");
+	assert.equal(pendingWake?.payload.observationId, observed.lastObservation.observationId);
 	await service.close();
 });
 
@@ -1146,9 +1340,8 @@ test("a runtime failure during the first Executor turn is recorded as unreachabl
 	assert.equal(failed.state, "active");
 	assert.equal(failed.execution.state, "failed");
 	assert.equal(failed.execution.runtimeState, "unreachable");
-	assert.equal(failed.nextAction, "Executor runtime failed; Conclave may replace it.");
-	assert.equal(failed.lastError.learning.failure, "runtime disconnected");
-	assert.match(failed.lastError.learning.nextMissionGuidance, /missing intent/);
+	assert.equal(failed.nextAction, "Conclave could not resolve the failed Executor; retrying its replacement decision.");
+	assert.match(failed.lastError.summary, /Executor-failure decision failed/);
 	assert.equal(
 		service.availableActions(failed.workId, "conclave", failed.revision).find((action) => action.kind === "start-execution").enabled,
 		true,
@@ -1156,7 +1349,65 @@ test("a runtime failure during the first Executor turn is recorded as unreachabl
 	await service.close();
 });
 
-test("recovery starts a new Executor turn while the old turn is still in flight", async () => {
+test("A stale runtime-recovery wake yields to an Executor failure wake", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-stale-runtime-wake-"));
+	const { service, archive } = makeService(join(directory, "archive.sqlite"));
+	const running = await admitAndStart(service, "stale-runtime-wake");
+	const failure = {
+		code: "external-failure",
+		summary: "The Executor failed after the runtime became unavailable.",
+		retryable: true,
+		remediation: "Inspect the failed Execution.",
+		evidenceRefs: [running.execution.executionId],
+	};
+	const failedExecution = {
+		...running.execution,
+		state: "failed",
+		runtimeState: "unreachable",
+		endedAt: new Date().toISOString(),
+	};
+	const failed = {
+		...running,
+		revision: running.revision + 1,
+		execution: failedExecution,
+		lastError: failure,
+		nextAction: "Executor runtime failed; Conclave may replace it.",
+	};
+	archive.append({
+		commandId: "stale-runtime-wake:failure",
+		expectedWorkRevision: running.revision,
+		kind: "error",
+		actor: "system",
+		workId: running.workId,
+		missionId: running.mission.missionId,
+		executionId: running.execution.executionId,
+		payloadVersion: 1,
+		summary: failure.summary,
+		evidenceRefs: failure.evidenceRefs,
+		payload: failure,
+		projection: failed,
+		effects: [
+			{
+				effectId: `conclave-wake:${running.workId}:${failed.revision}`,
+				kind: "conclave-wake",
+				payload: { workId: running.workId, reason: "runtime-unreachable" },
+			},
+			{
+				effectId: `conclave-wake:${running.workId}:${failed.revision + 1}`,
+				kind: "conclave-wake",
+				payload: { workId: running.workId, reason: "executor-failed" },
+			},
+		],
+	});
+	await service.processPendingEffects();
+	const current = service.inspectWork(running.workId);
+	assert.match(current.lastError.summary, /Executor-failure decision failed/);
+	const pendingWake = archive.pendingEffects("stale-runtime-wake-test").find((effect) => effect.kind === "conclave-wake");
+	assert.equal(pendingWake?.payload.reason, "executor-failed");
+	await service.close();
+});
+
+test("recovery waits for an in-flight Executor turn before rebinding", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-rebind-"));
 	const runtimeProbe = { oldSession: undefined };
 	const recoveryUpdates = [];
@@ -1179,26 +1430,72 @@ test("recovery starts a new Executor turn while the old turn is still in flight"
 	const promptsBeforeRecovery = controls.prompts.length;
 	controls.executorHold = false;
 	const observed = await service.inspectRuntime(running.workId);
-	const result = await service.perform({
+	let recoverySettled = false;
+	const recovery = service.perform({
 		action: "recover",
 		workId: running.workId,
 		input: {},
 		meta: meta("user", "runtime-rebind:recover", observed.revision, running.workId),
 		onRecoveryUpdate: (update) => recoveryUpdates.push(update),
+	}).then((value) => {
+		recoverySettled = true;
+		return value;
 	});
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(recoverySettled, false);
+	assert.equal(controls.prompts.length, promptsBeforeRecovery);
+	releaseOldTurn();
+	const result = await recovery;
 	assert.equal("error" in result, false);
 	assert.deepEqual(
 		new Set(recoveryUpdates.map((update) => update.stage)),
 		new Set(["checking", "stopping", "restoring", "confirming", "finishing"]),
 	);
 	assert.equal(recoveryUpdates.at(-1).stage, "finishing");
-	releaseOldTurn();
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(controls.prompts.length, promptsBeforeRecovery + 1);
 	const recovered = service.inspectWork(running.workId);
 	assert.equal(recovered.execution.executionId, running.execution.executionId);
 	assert.equal(recovered.execution.runtimeState, "idle");
 	await service.close();
+});
+
+test("autonomous monitoring defers while an Executor turn is active", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-monitor-executor-turn-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { executorHold: true });
+	const running = await admitAndStart(service, "monitor-executor-turn");
+	const before = service.inspectWork(running.workId);
+	await service.runAutonomousCycle();
+	assert.equal(service.inspectWork(running.workId).revision, before.revision);
+	controls.executorHold = false;
+	controls.releaseExecutor();
+	await new Promise((resolve) => setImmediate(resolve));
+	await service.close();
+});
+
+test("Only one parent service monitors a project's Work", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-monitor-controller-"));
+	const path = join(directory, "archive.sqlite");
+	const first = makeService(path, { executorHold: true });
+	const second = makeService(path, { ports: { runtime: { async getState() { return "unreachable"; } } } });
+	const running = await admitAndStart(first.service, "monitor-controller");
+	const before = second.service.inspectWork(running.workId);
+	await first.service.runAutonomousCycle();
+	await second.service.runAutonomousCycle();
+	const recovery = await second.service.perform({
+		action: "recover",
+		workId: running.workId,
+		input: {},
+		meta: meta("user", "monitor-controller:recover", before.revision, running.workId),
+	});
+	assert.equal("error" in recovery, true);
+	assert.match(recovery.error.summary, /Another Pi session currently supervises/);
+	assert.equal(second.service.inspectWork(running.workId).revision, before.revision);
+	assert.equal(second.service.inspectWork(running.workId).execution.runtimeState, before.execution.runtimeState);
+	first.controls.executorHold = false;
+	first.controls.releaseExecutor();
+	await new Promise((resolve) => setImmediate(resolve));
+	await Promise.all([first.service.close(), second.service.close()]);
 });
 
 test("runtime inspection refreshes active Work without writing the Archive", async () => {
@@ -1313,13 +1610,43 @@ test("Conclave can inspect and recover an unreachable Executor without User inte
 	await service.close();
 });
 
-test("Conclave recovery verifies an unreachable runtime without a persisted probe", async () => {
+test("Conclave recovery uses persisted unreachable runtime evidence", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-direct-recovery-"));
-	const { service, controls } = makeService(join(directory, "archive.sqlite"), { recoverExecutor: true });
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"), { recoverExecutor: true });
 	const running = await admitAndStart(service, "direct-recovery");
 	controls.runtimeState = "unreachable";
-	const inspected = await service.inspectRuntime(running.workId);
+	const unavailable = {
+		...running,
+		revision: running.revision + 1,
+		execution: { ...running.execution, runtimeState: "unreachable" },
+		nextAction: "Executor runtime is unreachable. Conclave is inspecting recovery.",
+	};
+	archive.append({
+		commandId: "direct-recovery:unreachable",
+		expectedWorkRevision: running.revision,
+		kind: "execution",
+		actor: "system",
+		workId: running.workId,
+		missionId: running.mission.missionId,
+		executionId: running.execution.executionId,
+		payloadVersion: 1,
+		summary: "Executor runtime is unreachable.",
+		payload: unavailable.execution,
+		projection: unavailable,
+		effects: [{
+			effectId: `conclave-wake:${running.workId}:${unavailable.revision}`,
+			kind: "conclave-wake",
+			payload: { workId: running.workId, reason: "runtime-unreachable" },
+		}],
+	});
+	const inspected = service.inspectWork(running.workId);
 	assert.equal(inspected.execution.runtimeState, "unreachable");
+	controls.runtimeState = "idle";
+	const conclaveView = await service.inspectRuntime(
+		running.workId,
+		meta("conclave", "direct-recovery:inspect", inspected.revision, running.workId, running.execution.executionId),
+	);
+	assert.equal(conclaveView.execution.runtimeState, "unreachable");
 	const recovered = await service.perform({
 		action: "recover",
 		workId: running.workId,
@@ -2572,6 +2899,49 @@ test("a real RPC startup retries one transient child exit", async () => {
 	});
 	assert.equal(binding.sessionId, "stub-session");
 	assert.equal((await readFile(marker, "utf8")).trim(), "2");
+	await runtime.close();
+});
+
+test("Runtime storage gives one parent controller ownership at a time", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-controller-"));
+	const first = createRuntimeStorage(directory);
+	const second = createRuntimeStorage(directory);
+	assert.equal(await first.acquireController(), true);
+	assert.equal(await second.acquireController(), false);
+	await first.releaseController();
+	assert.equal(await second.acquireController(), true);
+	await second.releaseController();
+	await rm(first.root, { recursive: true, force: true });
+});
+
+test("RPC child launches can resolve the parent Node runtime", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-node-path-"));
+	const script = join(directory, "rpc-node-path.mjs");
+	const wrapper = join(directory, "rpc-node-path.sh");
+	await writeFile(
+		script,
+		`import readline from "node:readline";\nconst sessionPath = process.argv[process.argv.indexOf("--session") + 1];\nconst input = readline.createInterface({ input: process.stdin });\ninput.on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); });\n`,
+	);
+	await writeFile(
+		wrapper,
+		`#!/bin/sh\nif ! command -v node >/dev/null 2>&1; then exit 1; fi\nexec node ${JSON.stringify(script)} "$@"\n`,
+	);
+	await chmod(wrapper, 0o755);
+	const runtime = new PiRpcRuntime({
+		projectPath: directory,
+		command: [wrapper],
+		baseEnvironment: { PATH: "/usr/bin:/bin" },
+		rpcTimeoutMs: 1_000,
+	});
+	const binding = await runtime.ensureSession({
+		cwd: directory,
+		model: "model",
+		thinking: "medium",
+		role: "executor",
+		promptIdentity: { packageVersion: "1", promptSha256: "hash" },
+		tools: [],
+	});
+	assert.equal(binding.sessionId, "stub-session");
 	await runtime.close();
 });
 

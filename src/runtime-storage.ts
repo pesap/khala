@@ -1,13 +1,25 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, realpathSync, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import process from "node:process";
 
 export type RuntimeRole = "conclave" | "executor" | "observer" | "oracle";
 
+type ControllerLeaseRecord = Readonly<{
+	pid: number;
+	processStartTime: string | undefined;
+	marker: string;
+}>;
+
+const CONTROLLER_LOCK_TIMEOUT_MS = 10_000;
+const CONTROLLER_LOCK_STALE_MS = 60_000;
+
 export class RuntimeStorage {
 	readonly root: string;
+	private controllerMarker: string | undefined;
 
 	constructor(projectPath: string) {
 		const project = realpathSync(resolve(projectPath));
@@ -43,6 +55,44 @@ export class RuntimeStorage {
 	async prepare(): Promise<void> {
 		for (const path of [dirname(this.root), this.root, join(this.root, "sessions"), join(this.root, "capabilities")])
 			await this.ensurePrivateDirectory(path);
+	}
+
+	async acquireController(): Promise<boolean> {
+		if (this.controllerMarker !== undefined) return true;
+		await this.prepare();
+		const marker = randomUUID();
+		const lease = {
+			pid: process.pid,
+			processStartTime: processStartTime(process.pid),
+			marker,
+		} satisfies ControllerLeaseRecord;
+		return withControllerLock(this, async () => {
+			const path = this.controllerLeasePath();
+			const existing = await readControllerLease(path);
+			if (existing !== undefined && controllerLeaseIsLive(existing)) return false;
+			await removeControllerLease(path);
+			await writeFile(path, controllerLeaseText(lease), { encoding: "utf8", mode: 0o600, flag: "wx" });
+			this.controllerMarker = marker;
+			return true;
+		});
+	}
+
+	async releaseController(): Promise<void> {
+		const marker = this.controllerMarker;
+		if (marker === undefined) return;
+		this.controllerMarker = undefined;
+		await withControllerLock(this, async () => {
+			const current = await readControllerLease(this.controllerLeasePath());
+			if (current?.marker === marker) await removeControllerLease(this.controllerLeasePath());
+		});
+	}
+
+	controllerLeasePath(): string {
+		return this.ownedPath(join(this.root, "controller.lease"));
+	}
+
+	controllerLockPath(): string {
+		return this.ownedPath(join(this.root, "controller.lock"));
 	}
 
 	async prepareSessionFile(path: string, create = true): Promise<void> {
@@ -138,6 +188,120 @@ function assertInsideRoot(path: string, root: string): void {
 
 function isMissingFileError(error: Error): boolean {
 	return "code" in error && error.code === "ENOENT";
+}
+
+async function removeControllerLease(path: string): Promise<void> {
+	try {
+		await unlink(path);
+	} catch (error) {
+		if (!(error instanceof Error) || !isMissingFileError(error)) throw error;
+	}
+}
+
+async function withControllerLock<T>(storage: RuntimeStorage, operation: () => Promise<T>): Promise<T> {
+	await acquireControllerLock(storage.controllerLockPath());
+	try {
+		return await operation();
+	} finally {
+		await rmdir(storage.controllerLockPath()).catch(() => undefined);
+	}
+}
+
+async function acquireControllerLock(path: string): Promise<void> {
+	const deadline = Date.now() + CONTROLLER_LOCK_TIMEOUT_MS;
+	for (;;) {
+		if (await tryCreateControllerLock(path)) return;
+		if (Date.now() >= deadline) throw new Error(`Could not acquire the Khala controller lock at ${path}.`);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+async function tryCreateControllerLock(path: string): Promise<boolean> {
+	try {
+		await mkdir(path, { mode: 0o700 });
+		return true;
+	} catch (error) {
+		if (!(error instanceof Error)) throw error;
+		assertControllerLockContention(error);
+		if (await controllerLockIsStale(path)) await rmdir(path).catch(() => undefined);
+		return false;
+	}
+}
+
+function assertControllerLockContention(error: Error): void {
+	if (isExistsError(error)) return;
+	throw error;
+}
+
+async function controllerLockIsStale(path: string): Promise<boolean> {
+	const createdAt = await stat(path)
+		.then((entry) => entry.mtimeMs)
+		.catch(() => Date.now());
+	return Date.now() - createdAt >= CONTROLLER_LOCK_STALE_MS;
+}
+
+async function readControllerLease(path: string): Promise<ControllerLeaseRecord | undefined> {
+	let text: string;
+	try {
+		text = await readFile(path, "utf8");
+	} catch (error) {
+		if (error instanceof Error && isMissingFileError(error)) return;
+		throw error;
+	}
+	return parseControllerLease(text);
+}
+
+function parseControllerLease(text: string): ControllerLeaseRecord | undefined {
+	const lines = text.trimEnd().split("\n");
+	if (lines.length !== 3) return;
+	// SAFETY: the exact length check establishes that all three lease lines exist.
+	const [pidText, startText, marker] = lines as [string, string, string];
+	if (!validControllerLeaseFields(pidText, marker)) return;
+	return { pid: Number(pidText), processStartTime: startText.length === 0 ? undefined : startText, marker };
+}
+
+function validControllerLeaseFields(pidText: string, marker: string): boolean {
+	return isPositiveIntegerText(pidText) && marker.length > 0;
+}
+
+function isPositiveIntegerText(value: string): boolean {
+	return /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value));
+}
+
+function controllerLeaseText(lease: ControllerLeaseRecord): string {
+	return `${lease.pid}\n${lease.processStartTime ?? ""}\n${lease.marker}\n`;
+}
+
+function controllerLeaseIsLive(lease: ControllerLeaseRecord): boolean {
+	const currentStartTime = processStartTime(lease.pid);
+	if (lease.processStartTime === undefined) return processExists(lease.pid);
+	return currentStartTime === lease.processStartTime || (currentStartTime === undefined && processExists(lease.pid));
+}
+
+function processExists(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+	}
+}
+
+function processStartTime(pid: number): string | undefined {
+	if (process.platform === "win32") return;
+	try {
+		const value = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return value.length === 0 ? undefined : value;
+	} catch {
+		return;
+	}
+}
+
+function isExistsError(error: Error): boolean {
+	return "code" in error && error.code === "EEXIST";
 }
 
 export function createRuntimeStorage(projectPath: string): RuntimeStorage {

@@ -17,8 +17,8 @@ Work names are bounded before rendering and presented in aligned
 Work, ID, state, and Execution columns.
 Text labels and semantic colors together
 communicate status.
-The user-session footer shows a branded status such as
-`khala: idle` or `khala: ◈ 2`.
+The user-session footer shows `khala: ◇` when no Executor turn or Khala effect is live.
+It shows `khala: ◈` while either is live.
 The status view shows `Next`
 for the immediate action required or performed by Khala, reports Work as
 `stopped` with a cancellation or failure reason, and avoids repeating active

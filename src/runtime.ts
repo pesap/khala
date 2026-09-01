@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:c
 import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { delimiter, dirname } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
@@ -1036,7 +1037,24 @@ function childEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	for (const key of Object.keys(environment)) {
 		if (SENSITIVE_ENVIRONMENT_KEY.test(key)) delete environment[key];
 	}
+	const inheritedPath = environmentPath(environment);
+	removePathEntries(environment);
+	environment["PATH"] = [inheritedPath, dirname(process.execPath)].filter((value) => value.length > 0).join(delimiter);
 	return environment;
+}
+
+function environmentPath(environment: NodeJS.ProcessEnv): string {
+	return Object.entries(environment)
+		.filter(([key]) => key.toLowerCase() === "path")
+		.map(([, value]) => value)
+		.filter((value): value is string => value !== undefined)
+		.join(delimiter);
+}
+
+function removePathEntries(environment: NodeJS.ProcessEnv): void {
+	for (const key of Object.keys(environment)) {
+		if (key.toLowerCase() === "path") delete environment[key];
+	}
 }
 function readProcessStartTime(processId: number | undefined): string | undefined {
 	if (processId === undefined || process.platform === "win32") return undefined;

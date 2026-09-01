@@ -183,6 +183,7 @@ type WakeResolutionCheck = (work: WorkView, current: WorkView) => boolean;
 const WAKE_RESOLUTION_CHECKS: ReadonlyMap<ConclaveWakeCause, WakeResolutionCheck> = new Map([
 	["executor-blocked", blockedWakeResolutionMissing],
 	["executor-ready", readyWakeResolutionMissing],
+	["executor-failed", executorFailureDecisionMissing],
 	["runtime-unreachable", runtimeRecoveryDecisionMissing],
 	["provider-outcome", (_work, current) => isProviderOutcomeSettlementPending(current)],
 	["token-exhausted", tokenExhaustionResolutionMissing],
@@ -190,8 +191,10 @@ const WAKE_RESOLUTION_CHECKS: ReadonlyMap<ConclaveWakeCause, WakeResolutionCheck
 const WAKE_RESOLUTION_ERRORS: ReadonlyMap<ConclaveWakeCause | "admission", string> = new Map([
 	["executor-blocked", "Conclave blocked-work wake returned without recording a durable decision."],
 	["executor-ready", "Conclave ready-Signal wake returned without recording a durable Verdict."],
+	["executor-failed", "Conclave Executor-failure wake returned without recording a durable decision."],
 	["runtime-unreachable", "Conclave runtime-recovery wake returned without recording a recovery decision."],
 	["provider-outcome", "Conclave provider-outcome wake returned without recording the Work Outcome."],
+	["provider-feedback", "Conclave provider-feedback wake returned without recording a durable feedback delivery."],
 	["token-exhausted", "Conclave token-exhaustion wake returned without recording a durable Verdict."],
 	["admission", "Conclave wake returned without recording a durable decision."],
 ]);
@@ -231,6 +234,14 @@ function readySignalDecisionPending(work: WorkView): boolean {
 	return work.execution?.state === "running" && isCurrentReadySignal(work);
 }
 
+function executorFailureDecisionMissing(work: WorkView, current: WorkView): boolean {
+	return [
+		work.execution?.state === "failed",
+		current.execution?.state === "failed",
+		sameExecutionId(work, current),
+	].every(Boolean);
+}
+
 function tokenExhaustionResolutionMissing(work: WorkView, current: WorkView): boolean {
 	if (!tokenExhaustionPending(work)) return false;
 	if (!tokenExhaustionPending(current)) return false;
@@ -251,9 +262,12 @@ function signalIdsMatch(left: Signal | undefined, right: Signal | undefined): bo
 }
 
 function runtimeRecoveryDecisionMissing(work: WorkView, current: WorkView): boolean {
-	if (!sameExecutionId(work, current)) return false;
-	if (!isRuntimeUnavailable(current.execution?.runtimeState)) return false;
-	return !isTerminalWork(current);
+	return [
+		sameExecutionId(work, current),
+		isRuntimeUnavailable(current.execution?.runtimeState),
+		!isTerminalWork(current),
+		current.execution?.state !== "failed",
+	].every(Boolean);
 }
 
 function sameExecutionId(left: WorkView, right: WorkView): boolean {
@@ -413,6 +427,8 @@ export class ApplicationService {
 	private readonly archive: ArchivePort;
 	private readonly ports: ServicePorts;
 	private readonly runtimeStorage: RuntimeStorage;
+	private controllerAcquisition: Promise<boolean> | undefined;
+	private controllerOwned = false;
 	private options: ServiceOptions;
 	private readonly rolePublicKey: KeyObject;
 
@@ -548,6 +564,11 @@ export class ApplicationService {
 		return projects.map((work) => workSummary(work, queuePositions));
 	}
 
+	// This is transient runtime evidence for the footer, not an Archive lifecycle state.
+	hasLiveActivity(): boolean {
+		return this.pendingEffectsRun !== undefined || this.activeExecutorTurns.size > 0;
+	}
+
 	inspectWork(workId: string): WorkView {
 		const work = this.archive.project(workId);
 		if (work === undefined) {
@@ -563,7 +584,7 @@ export class ApplicationService {
 	async inspectRuntime(workId: string, meta?: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		const work = this.inspectWork(workId);
 		this.authorizeRuntimeInspection(work, meta);
-		if (!runtimeNeedsInspection(work)) return work;
+		if (!runtimeInspectionNeedsProbe(work, meta)) return work;
 		operation?.onUpdate?.("Inspecting the bound Pi runtime.");
 		const runtimeState = await this.ports.runtime.getState(runtimeBinding(work), operation);
 		throwIfOperationAborted(operation);
@@ -577,10 +598,29 @@ export class ApplicationService {
 		if (meta.actor !== "user") this.requireRoleBinding(meta, work);
 	}
 
+	private async ensureController(): Promise<boolean> {
+		if (this.options.autonomousMonitor === false || this.controllerOwned) return true;
+		return this.acquireController();
+	}
+
+	private acquireController(): Promise<boolean> {
+		const current = this.controllerAcquisition;
+		if (current !== undefined) return current;
+		const acquisition = this.runtimeStorage.acquireController().then((owned) => {
+			this.controllerOwned = owned;
+			return owned;
+		});
+		const tracked = acquisition.finally(() => {
+			if (this.controllerAcquisition === tracked) this.controllerAcquisition = undefined;
+		});
+		this.controllerAcquisition = tracked;
+		return tracked;
+	}
+
 	async runAutonomousCycle(): Promise<void> {
 		if (this.closing) return;
 		if (this.autonomousCycleRun !== undefined) return this.autonomousCycleRun;
-		const run = this.runAutonomousCycleOnce();
+		const run = this.runAutonomousCycleIfController();
 		this.autonomousCycleRun = run;
 		try {
 			await run;
@@ -588,6 +628,11 @@ export class ApplicationService {
 			if (this.autonomousCycleRun === run) this.autonomousCycleRun = undefined;
 		}
 	}
+	private async runAutonomousCycleIfController(): Promise<void> {
+		if (!(await this.ensureController())) return;
+		await this.runAutonomousCycleOnce();
+	}
+
 	private async runAutonomousCycleOnce(): Promise<void> {
 		const bucket = Math.floor(Date.now() / AUTONOMOUS_MONITOR_INTERVAL_MS);
 		for (const item of this.archive.listProjects()) await this.monitorAutonomousWork(item.workId, bucket);
@@ -595,9 +640,16 @@ export class ApplicationService {
 	}
 
 	private async monitorAutonomousWork(workId: string, bucket: number): Promise<void> {
+		const work = this.inspectWork(workId);
+		if (this.executorTurnIsActive(work)) return;
 		await this.monitorProvider(workId, bucket);
 		await this.monitorProviderOutcome(workId);
 		await this.monitorExecutor(workId);
+	}
+
+	private executorTurnIsActive(work: WorkView): boolean {
+		const executionId = work.execution?.executionId;
+		return executionId !== undefined && this.activeExecutorTurns.has(executorTurnKey(work.workId, executionId));
 	}
 
 	private async monitorProvider(workId: string, bucket: number): Promise<void> {
@@ -979,13 +1031,18 @@ export class ApplicationService {
 			this.pendingEffectsRequested = true;
 			return this.pendingEffectsRun;
 		}
-		const run = this.drainPendingEffectsUntilIdle();
+		const run = this.processPendingEffectsIfController();
 		this.pendingEffectsRun = run;
 		try {
 			await run;
 		} finally {
 			if (this.pendingEffectsRun === run) this.pendingEffectsRun = undefined;
 		}
+	}
+
+	private async processPendingEffectsIfController(): Promise<void> {
+		if (!(await this.ensureController())) return;
+		await this.drainPendingEffectsUntilIdle();
 	}
 
 	private async drainPendingEffectsUntilIdle(): Promise<void> {
@@ -1046,7 +1103,7 @@ export class ApplicationService {
 			wakeReason = readEffectWakeCause(effect.payload);
 			const work = this.inspectWork(workId);
 			await this.performPendingEffect(effect, work, workId, observationId, feedbackExecutionId, wakeReason);
-			this.assertPendingEffectOutcome(effect, work, workId, wakeReason);
+			this.assertPendingEffectOutcome(effect, work, workId, observationId, wakeReason);
 			this.completePendingEffect(effect, owner, leaseLost);
 			clearInterval(lease);
 			return false;
@@ -1197,11 +1254,31 @@ export class ApplicationService {
 		effect: PendingArchiveEffect,
 		work: WorkView,
 		workId: string,
+		observationId: string | undefined,
 		wakeReason: ConclaveWakeCause | undefined,
 	): void {
 		if (effect.kind !== "conclave-wake") return;
 		const current = this.inspectWork(workId);
+		if (wakeReason === "provider-feedback") {
+			if (!this.providerFeedbackWakeResolutionMissing(work, current, observationId)) return;
+			throw new Error(WAKE_RESOLUTION_ERRORS.get("provider-feedback"));
+		}
 		assertConclaveWakeResolution(work, current, wakeReason);
+	}
+
+	private providerFeedbackWakeResolutionMissing(
+		work: WorkView,
+		current: WorkView,
+		observationId: string | undefined,
+	): boolean {
+		if (observationId === undefined) return false;
+		const observation = this.archive.findObservation(current.workId, observationId);
+		if (!isCurrentReviewFeedback(current, observation)) return false;
+		return [
+			!this.hasFeedbackDelivery(current.workId, observationId, true),
+			!this.hasFeedbackDelivery(current.workId, observationId, false),
+			sameExecutionId(work, current),
+		].every(Boolean);
 	}
 
 	private async handlePendingEffectFailure(
@@ -1444,14 +1521,10 @@ export class ApplicationService {
 			? this.recordProviderPollRecovery(work, observations[0], `${meta.commandId}:recovered`)
 			: work;
 	}
-	private async authorizeExecutorRecovery(
-		work: WorkView,
-		meta: CommandMeta,
-		operation?: OperationContext,
-	): Promise<WorkView> {
+	private async authorizeExecutorRecovery(work: WorkView, meta: CommandMeta): Promise<WorkView> {
 		this.requireActor(meta, "conclave");
 		const execution = this.recoverableExecution(work);
-		await this.requireUnavailableRuntime(execution.pi, operation);
+		this.requireUnavailableRuntime(execution);
 		return this.appendAuthorizedRecovery(work, meta, execution).projection;
 	}
 
@@ -1467,8 +1540,8 @@ export class ApplicationService {
 		return execution;
 	}
 
-	private async requireUnavailableRuntime(binding: RuntimeBinding, operation?: OperationContext): Promise<void> {
-		if (isRuntimeUnavailable(await this.ports.runtime.getState(binding, operation))) return;
+	private requireUnavailableRuntime(execution: Execution): void {
+		if (isRuntimeUnavailable(execution.runtimeState)) return;
 		throw this.error(
 			"invalid-state",
 			"The Executor runtime is currently reachable and does not need recovery.",
@@ -1532,7 +1605,7 @@ export class ApplicationService {
 	): Promise<WorkView> {
 		if (work.execution?.state === "queued") return this.recoverQueuedExecution(work);
 		return meta.actor === "conclave"
-			? this.authorizeExecutorRecovery(work, meta, operation)
+			? this.authorizeExecutorRecovery(work, meta)
 			: this.recoverExecutorRuntime(work, meta, onRecoveryUpdate, operation);
 	}
 
@@ -1645,12 +1718,30 @@ export class ApplicationService {
 		operation?: OperationContext,
 	): Promise<WorkView> {
 		if (!hasRecoverableWork(work)) return work;
-		if (work.execution.state === "queued") return this.recoverQueuedExecution(work);
-		if (!isRecoverableExecution(work.execution)) return work;
+		await this.waitForExecutorTurns(work.workId, work.execution.executionId);
+		return this.recoverCurrentExecutorRuntime(this.inspectWork(work.workId), meta, onRecoveryUpdate, operation);
+	}
+
+	private async recoverCurrentExecutorRuntime(
+		current: WorkView,
+		meta: CommandMeta,
+		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+		operation?: OperationContext,
+	): Promise<WorkView> {
+		if (!hasRecoverableWork(current)) return current;
+		if (current.execution.state === "queued") return this.recoverQueuedExecution(current);
+		if (!isRecoverableExecution(current.execution)) return current;
 		notifyRecoveryCheck(onRecoveryUpdate, operation, "Executor");
-		const executorState = await this.ports.runtime.getState(work.execution.pi, operation);
+		const executorState = await this.ports.runtime.getState(current.execution.pi, operation);
 		throwIfOperationAborted(operation);
-		return this.recoverExecutorByState(work, meta, work.execution, executorState, onRecoveryUpdate, operation);
+		return this.recoverExecutorByState(
+			current,
+			{ ...meta, expectedWorkRevision: current.revision },
+			current.execution,
+			executorState,
+			onRecoveryUpdate,
+			operation,
+		);
 	}
 
 	private async recoverQueuedExecution(work: WorkView): Promise<WorkView> {
@@ -1825,7 +1916,7 @@ export class ApplicationService {
 			payload: failure,
 			projection: next,
 			summary: `Execution ${execution.executionId} runtime could not be reconciled.`,
-			effects: lifecycleEffects(work.workId, next.revision, failed),
+			effects: lifecycleEffects(work.workId, next.revision, failed, undefined, true, "executor-failed"),
 		}).projection;
 	}
 	private recordObservation(
@@ -2105,10 +2196,23 @@ export class ApplicationService {
 	async close(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
-		if (this.monitorTimer !== undefined) clearInterval(this.monitorTimer);
+		this.stopMonitorTimer();
 		const operations = this.waitForOperations();
 		await closeRuntimeAfterDrain(this.ports.runtime, operations, this.options.shutdownGraceMs ?? 5_000);
-		this.archive.close();
+		await this.finishClose();
+	}
+
+	private stopMonitorTimer(): void {
+		if (this.monitorTimer !== undefined) clearInterval(this.monitorTimer);
+	}
+
+	private async finishClose(): Promise<void> {
+		await this.controllerAcquisition?.catch(() => undefined);
+		try {
+			await this.runtimeStorage.releaseController();
+		} finally {
+			this.archive.close();
+		}
 	}
 	private async waitForOperations(): Promise<void> {
 		while (hasPendingOperations(this.autonomousCycleRun, this.pendingEffectsRun, this.backgroundOperations))
@@ -2530,7 +2634,7 @@ export class ApplicationService {
 
 	private requireValidationRunner(): NonNullable<ServicePorts["workspace"]["runValidation"]> {
 		const runValidation = this.ports.workspace.runValidation;
-		if (runValidation !== undefined) return runValidation;
+		if (runValidation !== undefined) return runValidation.bind(this.ports.workspace);
 		throw this.error(
 			"external-failure",
 			"The configured workspace cannot run validation commands.",
@@ -2997,7 +3101,7 @@ export class ApplicationService {
 			payload: failure,
 			projection: next,
 			summary: `Execution ${execution.executionId} failed to start.`,
-			effects: lifecycleEffects(work.workId, next.revision, next.execution),
+			effects: lifecycleEffects(work.workId, next.revision, next.execution, undefined, true, "executor-failed"),
 		});
 	}
 	private async driveExecutor(work: WorkView): Promise<void> {
@@ -3088,7 +3192,7 @@ export class ApplicationService {
 			payload: failed.lastError ?? { message: "Executor runtime failed." },
 			projection: failed,
 			summary: "Executor runtime failed after launch.",
-			effects: lifecycleEffects(work.workId, failed.revision, failed.execution),
+			effects: lifecycleEffects(work.workId, failed.revision, failed.execution, undefined, true, "executor-failed"),
 		});
 	}
 	private recordExecutorRuntimeState(work: WorkView, runtimeState: RuntimeState, wakeConclave = false): WorkView {
@@ -3436,12 +3540,55 @@ export class ApplicationService {
 		request: NonNullable<WorkView["reviewRequest"]>,
 		headCommit: string,
 	): WorkView {
-		if (!publishedReviewMatches(request, execution, this.options.targetBranch, headCommit))
+		this.requirePublishedReviewMatch(request, execution, headCommit);
+		try {
+			return this.appendPublishedReview(work, meta, execution, request, headCommit);
+		} catch (error) {
+			const failure = normalizeCaughtError(error instanceof Error ? error : String(error));
+			if (!isRetryableReviewPublicationConflict(failure, 0)) throw error;
+			return this.appendPublishedReview(this.inspectWork(work.workId), meta, execution, request, headCommit);
+		}
+	}
+
+	private requirePublishedReviewMatch(
+		request: NonNullable<WorkView["reviewRequest"]>,
+		execution: Execution,
+		headCommit: string,
+	): void {
+		if (publishedReviewMatches(request, execution, this.options.targetBranch, headCommit)) return;
+		throw this.error(
+			"integrity-failure",
+			"The provider review request does not match the published sandbox.",
+			false,
+			"Reconcile the provider request before sending a ready Signal.",
+		);
+	}
+
+	private appendPublishedReview(
+		work: WorkView,
+		meta: CommandMeta,
+		execution: Execution,
+		request: NonNullable<WorkView["reviewRequest"]>,
+		headCommit: string,
+	): WorkView {
+		const current = work.reviewRequest;
+		return current === undefined
+			? this.appendNewPublishedReview(work, meta, execution, request)
+			: this.resolveExistingPublishedReview(work, meta, current, execution, request, headCommit);
+	}
+
+	private appendNewPublishedReview(
+		work: WorkView,
+		meta: CommandMeta,
+		execution: Execution,
+		request: NonNullable<WorkView["reviewRequest"]>,
+	): WorkView {
+		if (!reviewPublicationExecutionMatches(work, execution))
 			throw this.error(
-				"integrity-failure",
-				"The provider review request does not match the published sandbox.",
+				"invalid-state",
+				"Review publication completed after the Execution changed.",
 				false,
-				"Reconcile the provider request before sending a ready Signal.",
+				"Reconcile the provider request with the current Execution.",
 			);
 		const next: WorkView = {
 			...work,
@@ -3450,7 +3597,7 @@ export class ApplicationService {
 			nextAction: "Executor may send a ready Signal.",
 		};
 		return this.append({
-			meta,
+			meta: { ...meta, expectedWorkRevision: work.revision },
 			kind: "review-request",
 			workId: work.workId,
 			missionId: work.mission?.missionId,
@@ -3459,6 +3606,25 @@ export class ApplicationService {
 			projection: next,
 			summary: `Draft ${request.provider} review request ${request.providerId} is ready.`,
 		}).projection;
+	}
+
+	private resolveExistingPublishedReview(
+		work: WorkView,
+		meta: CommandMeta,
+		current: NonNullable<WorkView["reviewRequest"]>,
+		execution: Execution,
+		request: NonNullable<WorkView["reviewRequest"]>,
+		headCommit: string,
+	): WorkView {
+		if (publishedReviewMatches(current, execution, this.options.targetBranch, headCommit)) return work;
+		if (reviewRequestIdentityMatches(current, request))
+			return this.appendNewPublishedReview(work, meta, execution, request);
+		throw this.error(
+			"integrity-failure",
+			"A different review request was recorded for the current Execution.",
+			false,
+			"Reconcile the provider request before sending a ready Signal.",
+		);
 	}
 	private async runOracle(
 		work: WorkView,
@@ -4250,10 +4416,31 @@ export class ApplicationService {
 	): Promise<WorkView> {
 		this.requireAnyActor(meta, ["user", "conclave"]);
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking whether this Work can be recovered." });
+		if (meta.actor === "conclave") return this.recoverWork(work.workId, meta, onRecoveryUpdate, operation);
+		return this.recoverUserRuntime(work, meta, onRecoveryUpdate, operation);
+	}
+
+	private async recoverUserRuntime(
+		work: WorkView,
+		meta: CommandMeta,
+		onRecoveryUpdate?: (update: RecoveryUpdate) => void,
+		operation?: OperationContext,
+	): Promise<WorkView> {
+		await this.requireControllerForRecovery();
 		if (work.execution?.state === "queued") return this.recoverWork(work.workId, meta, onRecoveryUpdate, operation);
 		const execution = this.recoverableExecution(work);
 		await this.requireUnavailableRuntimeForRecovery(execution.pi, operation);
 		return this.recoverWork(work.workId, meta, onRecoveryUpdate, operation);
+	}
+
+	private async requireControllerForRecovery(): Promise<void> {
+		if (await this.ensureController()) return;
+		throw this.error(
+			"external-failure",
+			"Another Pi session currently supervises this project.",
+			true,
+			"Run recovery from the supervising Pi session or close it before retrying.",
+		);
 	}
 
 	private async requireUnavailableRuntimeForRecovery(
@@ -4870,6 +5057,23 @@ function reviewRequestFieldsMatch(
 	].every(Boolean);
 }
 
+function reviewPublicationExecutionMatches(work: WorkView, execution: Execution): boolean {
+	return [work.execution?.executionId === execution.executionId, work.execution?.state === "running"].every(Boolean);
+}
+
+function reviewRequestIdentityMatches(
+	left: NonNullable<WorkView["reviewRequest"]>,
+	right: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	return [
+		left.provider === right.provider,
+		left.providerId === right.providerId,
+		left.repository === right.repository,
+		left.sourceBranch === right.sourceBranch,
+		left.targetBranch === right.targetBranch,
+	].every(Boolean);
+}
+
 function publishedReviewMatches(
 	request: NonNullable<WorkView["reviewRequest"]>,
 	execution: Execution,
@@ -5290,6 +5494,10 @@ function directedWakeMessage(workId: string, reason: ConclaveWakeCause | undefin
 			`Inspect the current ready Signal for Work ${workId}. Read the Archive, then use khala_perform_action with action verdict and that Signal's signalId to record one durable Verdict: handoff, continue, replace, or reject. Do not return without recording the decision.`,
 		],
 		[
+			"executor-failed",
+			`Inspect the failed Executor Execution for Work ${workId}. Read the Archive, then use khala_perform_action with action start-execution to replace it under the unchanged Mission, or use fail-work if the Work cannot continue. Do not return without recording the decision.`,
+		],
+		[
 			"runtime-unreachable",
 			`Inspect the Executor runtime for Work ${workId}. If it is unreachable, use khala_perform_action with recover; keep the same Execution and do not ask the User to intervene.`,
 		],
@@ -5342,6 +5550,10 @@ function runtimeNeedsInspection(work: WorkView): boolean {
 	return execution?.pi !== undefined && ["running", "awaiting-review"].includes(execution.state);
 }
 
+function runtimeInspectionNeedsProbe(work: WorkView, meta: CommandMeta | undefined): boolean {
+	return runtimeNeedsInspection(work) && meta?.actor !== "conclave";
+}
+
 function runtimeBinding(work: WorkView): RuntimeBinding {
 	const binding = work.execution?.pi;
 	if (binding === undefined) throw new Error("The Work has no bound runtime.");
@@ -5379,6 +5591,7 @@ function wakeErrorKindFor(
 	const byReason = new Map<ConclaveWakeCause, ConclaveWakeErrorKind>([
 		["executor-blocked", "blocked"],
 		["executor-ready", "ready"],
+		["executor-failed", "execution"],
 		["runtime-unreachable", "runtime"],
 		["provider-outcome", "outcome"],
 		["provider-feedback", "feedback"],
@@ -5399,6 +5612,7 @@ function wakeFailureAction(
 			: new Map<ConclaveWakeCause, string>([
 					["executor-blocked", "Conclave could not resolve the blocked Signal; retrying the blocked-Work decision."],
 					["executor-ready", "Conclave could not resolve the ready Signal; retrying the ready-Signal Verdict."],
+					["executor-failed", "Conclave could not resolve the failed Executor; retrying its replacement decision."],
 					["runtime-unreachable", "Conclave could not inspect Executor recovery; retrying the autonomous inspection."],
 					["provider-outcome", "Conclave could not record the provider-confirmed Outcome; retrying settlement."],
 					["token-exhausted", "Conclave could not resolve token exhaustion; retrying the token-exhaustion Verdict."],
@@ -5418,7 +5632,15 @@ function conclaveWakeError(failure: Error, kind: ConclaveWakeErrorKind): ErrorEn
 	return conclaveWakeErrorFor(kind, failure.message.slice(0, 2_000));
 }
 
-type ConclaveWakeErrorKind = "blocked" | "ready" | "runtime" | "outcome" | "feedback" | "token" | "admission";
+type ConclaveWakeErrorKind =
+	| "blocked"
+	| "ready"
+	| "execution"
+	| "runtime"
+	| "outcome"
+	| "feedback"
+	| "token"
+	| "admission";
 
 function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): ErrorEnvelope {
 	const details = {
@@ -5429,6 +5651,10 @@ function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): Err
 		ready: {
 			summary: `Conclave ready-Signal decision failed: ${message}`,
 			remediation: "Inspect the current ready Signal and retry its durable Verdict.",
+		},
+		execution: {
+			summary: `Conclave Executor-failure decision failed: ${message}`,
+			remediation: "Inspect the failed Executor evidence and retry replacement or failure explicitly.",
 		},
 		runtime: {
 			summary: `Conclave runtime recovery failed: ${message}`,
@@ -6059,9 +6285,10 @@ function lifecycleEffects(
 	execution: Execution | undefined,
 	observer?: RuntimeBinding,
 	wakeConclave = true,
+	wakeReason?: ConclaveWakeCause,
 ) {
 	return [
-		...(wakeConclave ? [schedulerEffect(workId, revision)] : []),
+		...(wakeConclave ? [schedulerEffect(workId, revision, undefined, wakeReason)] : []),
 		...executionLifecycleEffects(workId, revision, execution),
 		...(observer === undefined ? [] : [observerCleanupEffect(workId, observer)]),
 	];
@@ -6534,6 +6761,10 @@ function monitorFailureEnvelope(work: WorkView, subject: string, message: string
 		remediation: "Khala will retry automatically; inspect Evidence if the failure persists.",
 		evidenceRefs: work.reviewRequest === undefined ? [] : [work.reviewRequest.providerId],
 	};
+}
+
+function isRetryableReviewPublicationConflict(error: Error, attempt: number): boolean {
+	return attempt === 0 && isRevisionConflictError(error);
 }
 
 function isRevisionConflictError(error: Error): boolean {

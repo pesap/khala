@@ -106,9 +106,19 @@ export class GitWorkspace implements WorkspacePort {
 		const path = resolve(this.worktreeRoot, workKey, input.executionId);
 		await prepareSandboxParent(this.worktreeRoot, path);
 		const existing = await lstat(path).catch(() => undefined);
-		if (existing === undefined) await createSandbox(input, branch, path, operation);
-		else await validateExistingSandbox(this.worktreeRoot, input, branch, path, existing, operation);
-		return { path, baseCommit: input.baseCommit, branch };
+		const sandbox = { path, baseCommit: input.baseCommit, branch };
+		let created = false;
+		try {
+			if (existing === undefined) {
+				await createSandbox(input, branch, path, operation);
+				created = true;
+			} else await validateExistingSandbox(this.worktreeRoot, input, branch, path, existing, operation);
+			await installSandboxDependencies(path, operation);
+			return sandbox;
+		} catch (error) {
+			if (created) await removeCreatedSandbox(this.worktreeRoot, input.projectPath, sandbox, operation);
+			throw error;
+		}
 	}
 
 	async inspectHead(path: string, operation?: OperationContext): Promise<string> {
@@ -152,7 +162,7 @@ export class GitWorkspace implements WorkspacePort {
 		input: { path: string; commands: readonly string[] },
 		operation?: OperationContext,
 	): Promise<readonly ValidationResult[]> {
-		const environment = validationEnvironment(this.projectPath);
+		const environment = validationEnvironment(input.path);
 		return runValidationCommands(input, environment, operation);
 	}
 
@@ -544,7 +554,24 @@ function sanitizedEnvironment(): NodeJS.ProcessEnv {
 	for (const key of Object.keys(environment)) {
 		if (SENSITIVE_ENVIRONMENT_KEY.test(key)) delete environment[key];
 	}
+	const inheritedPath = environmentPath(environment);
+	removePathEntries(environment);
+	environment["PATH"] = [inheritedPath, dirname(process.execPath)].filter((value) => value.length > 0).join(delimiter);
 	return environment;
+}
+
+function environmentPath(environment: NodeJS.ProcessEnv): string {
+	return Object.entries(environment)
+		.filter(([key]) => key.toLowerCase() === "path")
+		.map(([, value]) => value)
+		.filter((value): value is string => value !== undefined)
+		.join(delimiter);
+}
+
+function removePathEntries(environment: NodeJS.ProcessEnv): void {
+	for (const key of Object.keys(environment)) {
+		if (key.toLowerCase() === "path") delete environment[key];
+	}
 }
 
 async function prepareSandboxParent(root: string, path: string): Promise<void> {
@@ -553,6 +580,30 @@ async function prepareSandboxParent(root: string, path: string): Promise<void> {
 	await mkdir(parent, { recursive: true });
 	if (!(await isRealContainedPath(root, parent)))
 		throw new Error(`Sandbox parent ${parent} is outside the worktree root.`);
+}
+
+async function installSandboxDependencies(path: string, operation: OperationContext | undefined): Promise<void> {
+	const packageLock = await lstat(join(path, "package-lock.json")).catch(() => undefined);
+	if (packageLock === undefined) return;
+	try {
+		await execFileAsync(
+			"npm",
+			["ci", "--include=dev", "--ignore-scripts"],
+			commandOptions(path, sanitizedEnvironment(), operation?.signal),
+		);
+	} catch (error) {
+		throw new Error(`Sandbox dependency installation failed in ${path}: ${String(error)}`);
+	}
+}
+
+async function removeCreatedSandbox(
+	root: string,
+	projectPath: string,
+	sandbox: Execution["sandbox"],
+	operation: OperationContext | undefined,
+): Promise<void> {
+	await removeExistingSandbox(root, projectPath, sandbox, operation);
+	await removeSandboxBranch(projectPath, sandbox.branch, operation);
 }
 
 async function createSandbox(
