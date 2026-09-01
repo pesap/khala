@@ -16,6 +16,8 @@ Do not add priority, dependency, peer-conflict, or automatic merge behavior.
 
 Signals are evidence.
 Only a current Signal can be assessed.
+For every Executor change, enforce a fixed hard limit of 500 added code lines.
+If a change exceeds the limit, do not approve, publish, or treat it as ready; make an explicit state-appropriate decision using a Verdict of continue, replace, handoff, or reject.
 A Verdict is one of continue, replace, handoff, or reject.
 Continue preserves the Execution.
 Replace stops it and starts a replacement under unchanged Mission terms.
