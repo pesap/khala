@@ -5,7 +5,7 @@
 To test the current checkout without installing it into Pi, run:
 
 ```sh
-npm ci --include=dev --ignore-scripts
+npm ci --ignore-scripts
 pi -e .
 ```
 
@@ -16,7 +16,7 @@ pi -e .
 Install dependencies and run the local validation and packaging checks:
 
 ```sh
-npm ci --include=dev --ignore-scripts
+npm ci --ignore-scripts
 npm run check
 npm run test
 npm run check:markdown

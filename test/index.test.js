@@ -7,7 +7,7 @@ import { initTheme } from "@earendil-works/pi-coding-agent";
 
 const theme = { fg: (_color, text) => text };
 
-test("user sessions show a Khala activity status in the footer", async () => {
+test("user sessions show a branded Executor status in the footer", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-footer-status-"));
 	const previousDirectory = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = directory;
@@ -63,7 +63,7 @@ test("user sessions show a Khala activity status in the footer", async () => {
 		};
 		await handlers.get("session_start")({}, context);
 		assert.deepEqual(notices, []);
-		assert.deepEqual(statuses.at(-1), { key: "khala-activity", text: "khala: ◇" });
+		assert.deepEqual(statuses.at(-1), { key: "khala-executors", text: "khala: idle" });
 		const archiveTool = tools.get("khala_read_archive");
 		const archiveResult = await archiveTool.execute("unknown-work", { workId: "unknown-work" }, new AbortController().signal, undefined, context);
 		assert.deepEqual(archiveResult.details.items, []);
@@ -84,7 +84,7 @@ test("user sessions show a Khala activity status in the footer", async () => {
 		assert.match(populatedExpanded.render(120).join("\n"), /Completed/);
 		assert.doesNotMatch(populatedExpanded.render(120).join("\n"), /hidden/);
 		await handlers.get("session_shutdown")({});
-		assert.deepEqual(statuses.at(-1), { key: "khala-activity", text: undefined });
+		assert.deepEqual(statuses.at(-1), { key: "khala-executors", text: undefined });
 	} finally {
 		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDirectory;

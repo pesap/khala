@@ -38,7 +38,6 @@ export type ExecutionRuntimeState = (typeof EXECUTION_RUNTIME_STATES)[number];
 export const CONCLAVE_WAKE_CAUSES = [
 	"executor-blocked",
 	"executor-ready",
-	"executor-failed",
 	"runtime-unreachable",
 	"provider-closed",
 	"provider-ci",
