@@ -56,7 +56,8 @@ It summarizes the implemented lifecycle, runtime, provider, TUI, and extension s
 
 ## Intentionally bounded behavior
 
-- Validation is executed only from the User-declared validation list; Khala does not infer additional commands.
+- Validation is executed only from the User-declared validation list; Khala does not infer additional validation commands.
+- A sandbox with `package-lock.json` hydrates its own dependencies through `npm ci --ignore-scripts` before governed commits and validation.
 - GitLab status and merge observation are supported, but GitLab comment normalization is outside the current provider adapter.
 - The bundled runtime uses process groups for child cleanup; Windows orphan recovery remains platform-dependent because Windows has no equivalent process-group signal behavior.
 - Archive transition invariants remain enforced by the application service; the SQLite projection parser validates shape and budget/reference integrity.

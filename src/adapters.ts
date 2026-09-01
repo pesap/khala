@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import type {
@@ -30,6 +30,7 @@ const MAX_PROVIDER_COMMENTS = 8;
 const MAX_PROVIDER_CHECKS = 8;
 const MAX_PROVIDER_COMMENT_BODY = 500;
 const MAX_PROVIDER_FIELD = 200;
+const SANDBOX_DEPENDENCIES_PATHSPEC = ":(exclude)node_modules";
 
 type CommandOptions = {
 	cwd: string;
@@ -39,6 +40,11 @@ type CommandOptions = {
 	env?: NodeJS.ProcessEnv;
 	signal?: AbortSignal;
 };
+
+type GitToolchain = Readonly<{
+	gitExecutable: string;
+	environment: NodeJS.ProcessEnv;
+}>;
 
 function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: AbortSignal) {
 	const options: CommandOptions = {
@@ -52,22 +58,69 @@ function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: A
 	return options;
 }
 
-function projectEnvironment(projectPath: string | undefined): NodeJS.ProcessEnv {
+async function sandboxToolchain(sandboxPath: string): Promise<GitToolchain> {
+	const toolchain = await inheritedGitToolchain();
+	// Hooks need real Git first and sandbox-local tools ahead of inherited dependency bins.
+	toolchain.environment["PATH"] = [
+		dirname(toolchain.gitExecutable),
+		join(sandboxPath, "node_modules", ".bin"),
+		toolchain.environment["PATH"],
+	]
+		.filter((path): path is string => path !== undefined && path !== "")
+		.join(delimiter);
+	return toolchain;
+}
+
+async function inheritedGitToolchain(): Promise<GitToolchain> {
+	const environment = await filteredInheritedEnvironment();
+	return { gitExecutable: await inheritedExecutable("git", environment), environment };
+}
+
+async function filteredInheritedEnvironment(): Promise<NodeJS.ProcessEnv> {
 	const environment = sanitizedEnvironment();
-	const inheritedPath = Object.entries(environment)
+	const inheritedPaths = (await Promise.all(pathValues(environment).split(delimiter).map(normalizePathEntry))).filter(
+		(path) => path !== "" && !isNodeModulesBin(path),
+	);
+	removePathValues(environment);
+	environment["PATH"] = inheritedPaths.join(delimiter);
+	return environment;
+}
+
+function pathValues(environment: NodeJS.ProcessEnv): string {
+	return Object.entries(environment)
 		.filter(([key]) => key.toLowerCase() === "path")
 		.map(([, value]) => value)
 		.filter((value): value is string => value !== undefined)
 		.join(delimiter);
+}
+
+function removePathValues(environment: NodeJS.ProcessEnv): void {
 	for (const key of Object.keys(environment)) {
 		if (key.toLowerCase() === "path") delete environment[key];
 	}
-	const parentNodeBin = projectPath === undefined ? undefined : join(projectPath, "node_modules", ".bin");
-	// Keep inherited commands ahead of repository-owned tools.
-	environment["PATH"] = [inheritedPath, parentNodeBin]
-		.filter((value): value is string => value !== undefined && value !== "")
-		.join(delimiter);
-	return environment;
+}
+
+async function inheritedExecutable(command: "git" | "npm", environment: NodeJS.ProcessEnv): Promise<string> {
+	const [locator, args] =
+		process.platform === "win32" ? ["where.exe", [command]] : ["sh", ["-c", `command -v ${command}`]];
+	const output = (await execFileAsync(locator, args, commandOptions(process.cwd(), environment))).stdout;
+	const executable = output
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find(Boolean);
+	if (executable === undefined || !isAbsolute(executable))
+		throw new Error(`${command} executable was not found in inherited PATH.`);
+	return realpath(executable);
+}
+
+async function normalizePathEntry(path: string): Promise<string> {
+	const normalized = path.trim().replace(/^"|"$/g, "");
+	return realpath(normalized).catch(() => normalized);
+}
+
+function isNodeModulesBin(path: string): boolean {
+	const normalized = path.toLowerCase();
+	return basename(normalized) === ".bin" && basename(dirname(normalized)) === "node_modules";
 }
 
 export class GitWorkspace implements WorkspacePort {
@@ -143,28 +196,26 @@ export class GitWorkspace implements WorkspacePort {
 		},
 		operation?: OperationContext,
 	): Promise<string> {
-		if (input.allowedPaths.length === 0)
-			throw new Error("At least one permitted path is required to commit a sandbox.");
-		const environment = projectEnvironment(this.projectPath);
-		await git(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths], operation?.signal, environment);
-		await git(input.sandbox.path, ["commit", "-m", input.message], operation?.signal, environment);
-		return this.inspectHead(input.sandbox.path, operation);
+		const toolchain = await prepareSandboxCommit(
+			input.sandbox.path,
+			requireAllowedPaths(input.allowedPaths),
+			operation?.signal,
+		);
+		await git(input.sandbox.path, ["commit", "-m", input.message], operation?.signal, toolchain);
+		return git(input.sandbox.path, ["rev-parse", "HEAD"], operation?.signal, toolchain);
 	}
 	async runValidation(
 		input: { path: string; commands: readonly string[] },
 		operation?: OperationContext,
 	): Promise<readonly ValidationResult[]> {
-		return runValidationCommands(input, projectEnvironment(this.projectPath), operation);
+		await hydrateSandboxDependencies(input.path, operation?.signal);
+		return runValidationCommands(input, (await sandboxToolchain(input.path)).environment, operation);
 	}
 
 	async publishSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<string> {
-		await git(
-			sandbox.path,
-			["push", "--set-upstream", "origin", sandbox.branch],
-			operation?.signal,
-			projectEnvironment(this.projectPath),
-		);
-		return this.inspectHead(sandbox.path, operation);
+		const toolchain = await sandboxToolchain(sandbox.path);
+		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch], operation?.signal, toolchain);
+		return git(sandbox.path, ["rev-parse", "HEAD"], operation?.signal, toolchain);
 	}
 	async removeSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<void> {
 		const projectPath = this.projectPath;
@@ -524,14 +575,17 @@ async function git(
 	cwd: string,
 	args: readonly string[],
 	signal?: AbortSignal,
-	environment: NodeJS.ProcessEnv = sanitizedEnvironment(),
+	toolchain?: GitToolchain,
 ): Promise<string> {
-	return (await execFileAsync("git", [...args], commandOptions(cwd, environment, signal))).stdout.trim();
+	const command = toolchain ?? (await inheritedGitToolchain());
+	return (
+		await execFileAsync(command.gitExecutable, [...args], commandOptions(cwd, command.environment, signal))
+	).stdout.trim();
 }
 
 async function isRegisteredWorktree(projectPath: string, sandboxPath: string, signal?: AbortSignal): Promise<boolean> {
 	const listing = await git(projectPath, ["worktree", "list", "--porcelain"], signal);
-	const expected = `worktree ${resolve(sandboxPath)}`;
+	const expected = `worktree ${await realpath(sandboxPath)}`;
 	return listing.split("\n").some((line) => line.trim() === expected);
 }
 
@@ -572,10 +626,47 @@ async function createSandbox(
 	path: string,
 	operation: OperationContext | undefined,
 ): Promise<void> {
+	await git(input.projectPath, ["worktree", "add", "-b", branch, path, input.baseCommit], operation?.signal);
+}
+
+function requireAllowedPaths(allowedPaths: readonly string[]): readonly string[] {
+	if (allowedPaths.length === 0) throw new Error("At least one permitted path is required to commit a sandbox.");
+	return allowedPaths;
+}
+
+async function prepareSandboxCommit(
+	path: string,
+	allowedPaths: readonly string[],
+	signal?: AbortSignal,
+): Promise<GitToolchain> {
+	const toolchain = await sandboxToolchain(path);
+	await git(path, ["add", "--all", "--", ...allowedPaths, SANDBOX_DEPENDENCIES_PATHSPEC], signal, toolchain);
+	await git(path, ["reset", "--quiet", "HEAD", "--", "node_modules"], signal, toolchain);
+	await hydrateSandboxDependencies(path, signal);
+	return toolchain;
+}
+
+async function hydrateSandboxDependencies(path: string, signal?: AbortSignal): Promise<void> {
+	const lockfile = await lstat(join(path, "package-lock.json")).catch(() => undefined);
+	if (lockfile === undefined || !lockfile.isFile()) return;
+	const environment = await filteredInheritedEnvironment();
+	await runNpmCi(await inheritedExecutable("npm", environment), path, environment, signal);
+}
+
+async function runNpmCi(
+	npmExecutable: string,
+	path: string,
+	environment: NodeJS.ProcessEnv,
+	signal?: AbortSignal,
+): Promise<void> {
+	if (process.platform !== "win32") {
+		await execFileAsync(npmExecutable, ["ci", "--ignore-scripts"], commandOptions(path, environment, signal));
+		return;
+	}
 	await execFileAsync(
-		"git",
-		["worktree", "add", "-b", branch, path, input.baseCommit],
-		commandOptions(input.projectPath, sanitizedEnvironment(), operation?.signal),
+		environment["ComSpec"] ?? "cmd.exe",
+		["/d", "/c", `"${npmExecutable}" ci --ignore-scripts`],
+		commandOptions(path, environment, signal),
 	);
 }
 
@@ -658,11 +749,7 @@ async function removeExistingSandbox(
 	const existing = await lstat(sandbox.path).catch(() => undefined);
 	if (existing === undefined) return;
 	await validateRemovableSandbox(root, projectPath, sandbox.path, existing, operation);
-	await execFileAsync(
-		"git",
-		["worktree", "remove", "--force", sandbox.path],
-		commandOptions(projectPath, sanitizedEnvironment(), operation?.signal),
-	);
+	await git(projectPath, ["worktree", "remove", "--force", sandbox.path], operation?.signal);
 }
 
 async function removeSandboxBranch(
