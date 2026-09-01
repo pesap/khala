@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, relative } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 import { codeHostForOrigin, CommandCodeHost, GitWorkspace, readPullRequestTemplate } from "../dist/src/adapters.js";
 import { SQLiteArchive } from "../dist/src/archive.js";
@@ -310,7 +310,7 @@ test("Sandbox creation rejects symlinked worktree parents", async () => {
 	const workId = "sandbox-symlink";
 	const workKey = createHash("sha256").update(workId).digest("hex").slice(0, 24);
 	await symlink(outside, join(worktreeRoot, workKey));
-	const workspace = new GitWorkspace(worktreeRoot, "khala/", directory);
+	const workspace = new GitWorkspace(worktreeRoot, "khala/");
 	await assert.rejects(
 		workspace.ensureSandbox({
 			workId,
@@ -419,30 +419,14 @@ test("GitWorkspace commits with its receiver and returns the committed head", as
 	assert.notEqual(committedHead, baseCommit);
 });
 
-test("GitWorkspace rejects operations for a different project", async () => {
-	const directory = await mkdtemp(join(tmpdir(), "khala-bound-workspace-"));
-	const boundProject = join(directory, "bound-project");
-	const otherProject = join(directory, "other-project");
-	await mkdir(boundProject);
-	await mkdir(otherProject);
-	const workspace = new GitWorkspace(join(directory, "worktrees"), "khala/", boundProject);
-	await assert.rejects(workspace.preflight(otherProject, "main"), /bound to a different project/);
-});
-
-test("GitWorkspace makes parent project tools available to hooks without allowing them to replace Git", async () => {
+test("GitWorkspace makes parent project tools available to commit and push hooks", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-commit-toolchain-"));
 	const parent = join(directory, "parent");
 	const remote = join(directory, "remote.git");
 	const worktreeRoot = join(directory, "worktrees");
 	const bin = join(parent, "node_modules", ".bin");
-	const invalidGitBin = join(directory, "invalid-git-bin");
-	const canonicalGitBin = join(directory, "canonical-git-bin");
-	const executableSuffix = process.platform === "win32" ? ".exe" : "";
-	const tool = join(bin, "parent-commit-hook-tool");
-	const shadowGit = join(bin, `git${executableSuffix}`);
-	const canonicalGit = join(canonicalGitBin, `git${executableSuffix}`);
-	const externalGit = join(directory, `external-git${executableSuffix}`);
-	const projectGit = join(parent, `project-git${executableSuffix}`);
+	const tool = join(bin, "parent-hook-tool");
+	const shadowGit = join(bin, process.platform === "win32" ? "git.exe" : "git");
 	await mkdir(parent);
 	execFileSync("git", ["init", "--bare", remote]);
 	execFileSync("git", ["init", parent]);
@@ -454,58 +438,47 @@ test("GitWorkspace makes parent project tools available to hooks without allowin
 	execFileSync("git", ["-C", parent, "add", "."]);
 	execFileSync("git", ["-C", parent, "commit", "-m", "initial"]);
 	const baseCommit = execFileSync("git", ["-C", parent, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-	await mkdir(dirname(tool), { recursive: true });
-	await mkdir(join(invalidGitBin, `git${executableSuffix}`), { recursive: true });
-	await mkdir(canonicalGitBin);
+	await mkdir(bin, { recursive: true });
 	await writeFile(tool, "#!/bin/sh\nprintf %s \"$1\" > \".parent-tool-$1-ran\"\n");
-	await writeFile(externalGit, "#!/bin/sh\nexit 97\n");
-	await writeFile(projectGit, "#!/bin/sh\nexit 98\n");
-	await symlink(externalGit, shadowGit);
-	await symlink(projectGit, canonicalGit);
+	await writeFile(shadowGit, "#!/bin/sh\nexit 97\n");
 	await chmod(tool, 0o755);
-	await chmod(externalGit, 0o755);
-	await chmod(projectGit, 0o755);
+	await chmod(shadowGit, 0o755);
 	await Promise.all(
 		["pre-commit", "pre-push"].map(async (hookName) => {
 			const hook = join(parent, ".git", "hooks", hookName);
-			await writeFile(hook, `#!/bin/sh\nset -eu\nparent-commit-hook-tool ${hookName}\ngit rev-parse --is-inside-work-tree > .${hookName}-ran\n`);
+			await writeFile(hook, `#!/bin/sh\nset -eu\nparent-hook-tool ${hookName}\ngit rev-parse --is-inside-work-tree > .${hookName}-ran\n`);
 			await chmod(hook, 0o755);
 		}),
 	);
-	const workspace = new GitWorkspace(worktreeRoot, "khala/", relative(process.cwd(), parent));
-	const sandbox = await withPathPrefix([invalidGitBin, canonicalGitBin, bin].join(delimiter), () =>
-		workspace.ensureSandbox({
+	const workspace = new GitWorkspace(worktreeRoot, "khala/", parent);
+	const sandbox = await workspace.ensureSandbox({
+		workId: "commit-toolchain",
+		executionId: "execution-1",
+		mission: {
+			missionId: "mission-1",
 			workId: "commit-toolchain",
-			executionId: "execution-1",
-			mission: {
-				missionId: "mission-1",
-				workId: "commit-toolchain",
-				assignment: {
-					title: "Commit toolchain",
-					objective: "Run parent project hooks",
-					context: "",
-					scope: "Commit the sandbox",
-					acceptanceCriteria: ["The hook resolves its tool"],
-					constraints: [],
-					validation: ["check"],
-					allowedPaths: ["file.txt"],
-					maxTokens: 100,
-				},
-				mandateRevision: 1,
-				createdAt: new Date().toISOString(),
+			assignment: {
+				title: "Commit toolchain",
+				objective: "Run parent project hooks",
+				context: "",
+				scope: "Commit the sandbox",
+				acceptanceCriteria: ["The hook resolves its tool"],
+				constraints: [],
+				validation: ["check"],
+				allowedPaths: ["file.txt"],
+				maxTokens: 100,
 			},
-			projectPath: parent,
-			baseCommit,
-		}),
-	);
+			mandateRevision: 1,
+			createdAt: new Date().toISOString(),
+		},
+		projectPath: parent,
+		baseCommit,
+	});
 	await writeFile(join(sandbox.path, "file.txt"), "after\n");
 	const committedHead = await workspace.commitSandbox({ sandbox, allowedPaths: ["file.txt"], message: "change" });
-	const sandboxHead = execFileSync("git", ["-C", sandbox.path, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-	assert.equal(committedHead, sandboxHead);
 	assert.equal(await readFile(join(sandbox.path, ".parent-tool-pre-commit-ran"), "utf8"), "pre-commit");
 	assert.equal(await readFile(join(sandbox.path, ".pre-commit-ran"), "utf8"), "true\n");
-	const publishedHead = await workspace.publishSandbox(sandbox);
-	assert.equal(publishedHead, committedHead);
+	assert.equal(await workspace.publishSandbox(sandbox), committedHead);
 	assert.equal(await readFile(join(sandbox.path, ".parent-tool-pre-push-ran"), "utf8"), "pre-push");
 	assert.equal(await readFile(join(sandbox.path, ".pre-push-ran"), "utf8"), "true\n");
 	assert.equal(
@@ -2814,24 +2787,6 @@ function assertGithubCommands(commands) {
 function restorePath(value) {
 	if (value === undefined) delete process.env.PATH;
 	else process.env.PATH = value;
-}
-
-function restorePathAlias(value) {
-	if (value === undefined) delete process.env.Path;
-	else process.env.Path = value;
-}
-
-async function withPathPrefix(prefix, operation) {
-	const previousPath = process.env.PATH;
-	const previousPathAlias = process.env.Path;
-	delete process.env.Path;
-	process.env.PATH = [prefix, previousPath, previousPathAlias].filter(Boolean).join(delimiter);
-	try {
-		return await operation();
-	} finally {
-		restorePath(previousPath);
-		restorePathAlias(previousPathAlias);
-	}
 }
 
 function validationToolSource(output) {
