@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat, mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
@@ -40,6 +41,11 @@ type CommandOptions = {
 	signal?: AbortSignal;
 };
 
+type GitCommandContext = Readonly<{
+	executable: string;
+	environment: NodeJS.ProcessEnv;
+}>;
+
 function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: AbortSignal) {
 	const options: CommandOptions = {
 		cwd,
@@ -52,32 +58,134 @@ function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: A
 	return options;
 }
 
-function validationEnvironment(projectPath: string | undefined): NodeJS.ProcessEnv {
-	const environment = sanitizedEnvironment();
-	const inheritedPath = Object.entries(environment)
-		.filter(([key]) => key.toLowerCase() === "path")
+function environmentValues(environment: NodeJS.ProcessEnv, name: string): readonly string[] {
+	return Object.entries(environment)
+		.filter(([key]) => key.toLowerCase() === name.toLowerCase())
 		.map(([, value]) => value)
-		.filter((value): value is string => value !== undefined)
-		.join(delimiter);
+		.filter((value): value is string => value !== undefined);
+}
+
+function inheritedPath(environment: NodeJS.ProcessEnv): string {
+	return environmentValues(environment, "PATH").join(delimiter);
+}
+
+function removeEnvironmentValues(environment: NodeJS.ProcessEnv, name: string): void {
 	for (const key of Object.keys(environment)) {
-		if (key.toLowerCase() === "path") delete environment[key];
+		if (key.toLowerCase() === name.toLowerCase()) delete environment[key];
 	}
-	const parentNodeBin = projectPath === undefined ? undefined : join(projectPath, "node_modules", ".bin");
-	environment["PATH"] = [parentNodeBin, inheritedPath]
-		.filter((value): value is string => value !== undefined && value !== "")
-		.join(delimiter);
-	return environment;
+}
+
+async function projectToolchainContext(projectPath: string | undefined): Promise<GitCommandContext> {
+	const normalizedProjectPath = projectPath === undefined ? undefined : resolve(projectPath);
+	const environment = sanitizedEnvironment();
+	const path = inheritedPath(environment);
+	const projectRoots = normalizedProjectPath === undefined ? [] : await projectRootsFor(normalizedProjectPath);
+	// Resolve Git before exposing repository-owned tools in PATH.
+	const executable = await resolveGitExecutable(projectRoots, path, environment);
+	removeEnvironmentValues(environment, "PATH");
+	// Git hooks run in the worktree but use the parent checkout's package installation.
+	const projectToolchainBin =
+		normalizedProjectPath === undefined ? undefined : join(normalizedProjectPath, "node_modules", ".bin");
+	environment["PATH"] = [dirname(executable), projectToolchainBin, path].filter(Boolean).join(delimiter);
+	return { executable, environment };
+}
+
+async function projectRootsFor(projectPath: string): Promise<readonly string[]> {
+	return [...new Set([resolve(projectPath), await realpath(projectPath)])];
+}
+
+async function resolveGitExecutable(
+	projectRoots: readonly string[],
+	path: string,
+	environment: NodeJS.ProcessEnv,
+): Promise<string> {
+	for (const directory of path.split(delimiter).filter(isAbsolute)) {
+		const executable = await gitExecutableInDirectory(directory, projectRoots, environment);
+		if (executable !== undefined) return executable;
+	}
+	throw new Error("Git executable was not found in the inherited PATH.");
+}
+
+async function gitExecutableInDirectory(
+	directory: string,
+	projectRoots: readonly string[],
+	environment: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+	for (const name of gitExecutableNames(environment)) {
+		const executable = await executableAt(join(directory, name), projectRoots);
+		if (executable !== undefined) return executable;
+	}
+	return;
+}
+
+function gitExecutableNames(environment: NodeJS.ProcessEnv): readonly string[] {
+	if (process.platform !== "win32") return ["git"];
+	const nativeSuffixes = environmentValues(environment, "PATHEXT")
+		.flatMap((value) => value.split(";"))
+		.map((suffix) => (suffix.startsWith(".") ? suffix : `.${suffix}`).toLowerCase())
+		.filter((suffix) => suffix === ".com" || suffix === ".exe");
+	return [...new Set([...nativeSuffixes, ".exe", ".com"].map((suffix) => `git${suffix}`))];
+}
+
+function isProjectPath(path: string, projectRoots: readonly string[]): boolean {
+	return projectRoots.some((root) => isContainedPath(root, path));
+}
+
+async function executableAt(path: string, projectRoots: readonly string[]): Promise<string | undefined> {
+	if (isProjectPath(path, projectRoots)) return;
+	const executable = await realpath(path).catch(() => undefined);
+	if (executable === undefined || isProjectPath(executable, projectRoots)) return;
+	return executableFile(executable);
+}
+
+async function executableFile(path: string): Promise<string | undefined> {
+	const details = await stat(path).catch(() => undefined);
+	if (details === undefined || !details.isFile()) return;
+	const accessible = await access(path, constants.X_OK)
+		.then(() => true)
+		.catch(() => false);
+	if (!accessible) return;
+	return path;
 }
 
 export class GitWorkspace implements WorkspacePort {
 	private readonly worktreeRoot: string;
 	private readonly branchPrefix: string;
 	private projectPath: string | undefined;
+	private toolchainContext: Promise<GitCommandContext> | undefined;
 
 	constructor(worktreeRoot: string, branchPrefix: string, projectPath?: string) {
 		this.worktreeRoot = worktreeRoot;
 		this.branchPrefix = branchPrefix;
-		this.projectPath = projectPath;
+		this.projectPath = projectPath === undefined ? undefined : resolve(projectPath);
+	}
+
+	private bindProject(projectPath: string): string {
+		const normalized = resolve(projectPath);
+		if (this.projectPath === undefined) {
+			this.projectPath = normalized;
+			this.toolchainContext = undefined;
+			return normalized;
+		}
+		if (this.projectPath !== normalized) throw new Error("GitWorkspace is bound to a different project.");
+		return this.projectPath;
+	}
+
+	private async commandContext(): Promise<GitCommandContext> {
+		const existing = this.toolchainContext;
+		if (existing !== undefined) return existing;
+		const context = projectToolchainContext(this.projectPath);
+		this.toolchainContext = context;
+		try {
+			return await context;
+		} catch (error) {
+			if (this.toolchainContext === context) this.toolchainContext = undefined;
+			throw error;
+		}
+	}
+
+	private async runGit(cwd: string, args: readonly string[], operation?: OperationContext): Promise<string> {
+		return executeGit(await this.commandContext(), cwd, args, operation?.signal);
 	}
 
 	async preflight(
@@ -85,10 +193,10 @@ export class GitWorkspace implements WorkspacePort {
 		targetBranch: string,
 		operation?: OperationContext,
 	): Promise<WorkspacePreflight> {
-		this.projectPath = projectPath;
-		const origin = await git(projectPath, ["remote", "get-url", "origin"], operation?.signal);
-		await git(projectPath, ["fetch", "--no-tags", "origin", targetBranch], operation?.signal);
-		const headCommit = await git(projectPath, ["rev-parse", `refs/remotes/origin/${targetBranch}`], operation?.signal);
+		const boundProject = this.bindProject(projectPath);
+		const origin = await this.runGit(boundProject, ["remote", "get-url", "origin"], operation);
+		await this.runGit(boundProject, ["fetch", "--no-tags", "origin", targetBranch], operation);
+		const headCommit = await this.runGit(boundProject, ["rev-parse", `refs/remotes/origin/${targetBranch}`], operation);
 		return { projectPath, origin, targetBranch, headCommit };
 	}
 	async ensureSandbox(
@@ -101,27 +209,39 @@ export class GitWorkspace implements WorkspacePort {
 		}>,
 		operation?: OperationContext,
 	): Promise<Execution["sandbox"]> {
+		const boundProject = this.bindProject(input.projectPath);
+		const context = await this.commandContext();
 		const workKey = createHash("sha256").update(input.workId).digest("hex").slice(0, 24);
 		const branch = `${this.branchPrefix}${workKey}/${input.executionId.slice(0, 8)}`;
 		const path = resolve(this.worktreeRoot, workKey, input.executionId);
 		await prepareSandboxParent(this.worktreeRoot, path);
 		const existing = await lstat(path).catch(() => undefined);
-		if (existing === undefined) await createSandbox(input, branch, path, operation);
-		else await validateExistingSandbox(this.worktreeRoot, input, branch, path, existing, operation);
+		if (existing === undefined) await createSandbox(boundProject, input.baseCommit, branch, path, context, operation);
+		else
+			await validateExistingSandbox(
+				this.worktreeRoot,
+				boundProject,
+				input.baseCommit,
+				branch,
+				path,
+				existing,
+				context,
+				operation,
+			);
 		return { path, baseCommit: input.baseCommit, branch };
 	}
 
 	async inspectHead(path: string, operation?: OperationContext): Promise<string> {
-		return git(path, ["rev-parse", "HEAD"], operation?.signal);
+		return this.runGit(path, ["rev-parse", "HEAD"], operation);
 	}
 
 	async inspectChanges(
 		input: Readonly<{ path: string; baseCommit: string }>,
 		operation?: OperationContext,
 	): Promise<readonly string[]> {
-		const committed = await git(input.path, ["diff", "--name-only", `${input.baseCommit}...HEAD`], operation?.signal);
-		const working = await git(input.path, ["diff", "--name-only", input.baseCommit], operation?.signal);
-		const untracked = await git(input.path, ["ls-files", "--others", "--exclude-standard"], operation?.signal);
+		const committed = await this.runGit(input.path, ["diff", "--name-only", `${input.baseCommit}...HEAD`], operation);
+		const working = await this.runGit(input.path, ["diff", "--name-only", input.baseCommit], operation);
+		const untracked = await this.runGit(input.path, ["ls-files", "--others", "--exclude-standard"], operation);
 		return [
 			...new Set(
 				[committed, working, untracked].flatMap((value) =>
@@ -144,28 +264,28 @@ export class GitWorkspace implements WorkspacePort {
 	): Promise<string> {
 		if (input.allowedPaths.length === 0)
 			throw new Error("At least one permitted path is required to commit a sandbox.");
-		await git(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths], operation?.signal);
-		await git(input.sandbox.path, ["commit", "-m", input.message], operation?.signal);
+		await this.runGit(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths], operation);
+		await this.runGit(input.sandbox.path, ["commit", "-m", input.message], operation);
 		return this.inspectHead(input.sandbox.path, operation);
 	}
 	async runValidation(
 		input: { path: string; commands: readonly string[] },
 		operation?: OperationContext,
 	): Promise<readonly ValidationResult[]> {
-		const environment = validationEnvironment(this.projectPath);
-		return runValidationCommands(input, environment, operation);
+		return runValidationCommands(input, (await this.commandContext()).environment, operation);
 	}
 
 	async publishSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<string> {
-		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch], operation?.signal);
+		await this.runGit(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch], operation);
 		return this.inspectHead(sandbox.path, operation);
 	}
 	async removeSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<void> {
 		const projectPath = this.projectPath;
 		if (projectPath === undefined) throw new Error("Workspace project path is not initialized.");
+		const context = await this.commandContext();
 		validateSandboxPath(this.worktreeRoot, sandbox.path);
-		await removeExistingSandbox(this.worktreeRoot, projectPath, sandbox, operation);
-		await removeSandboxBranch(projectPath, sandbox.branch, operation);
+		await removeExistingSandbox(this.worktreeRoot, projectPath, sandbox, context, operation);
+		await removeSandboxBranch(projectPath, sandbox.branch, context, operation);
 	}
 }
 
@@ -514,13 +634,25 @@ function validationShellArguments(command: string): readonly string[] {
 	return process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
 }
 
-async function git(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
-	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment(), signal))).stdout.trim();
+async function executeGit(
+	context: GitCommandContext,
+	cwd: string,
+	args: readonly string[],
+	signal?: AbortSignal,
+): Promise<string> {
+	return (
+		await execFileAsync(context.executable, [...args], commandOptions(cwd, context.environment, signal))
+	).stdout.trim();
 }
 
-async function isRegisteredWorktree(projectPath: string, sandboxPath: string, signal?: AbortSignal): Promise<boolean> {
-	const listing = await git(projectPath, ["worktree", "list", "--porcelain"], signal);
-	const expected = `worktree ${resolve(sandboxPath)}`;
+async function isRegisteredWorktree(
+	projectPath: string,
+	sandboxPath: string,
+	context: GitCommandContext,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	const listing = await executeGit(context, projectPath, ["worktree", "list", "--porcelain"], signal);
+	const expected = `worktree ${await realpath(sandboxPath)}`;
 	return listing.split("\n").some((line) => line.trim() === expected);
 }
 
@@ -556,31 +688,31 @@ async function prepareSandboxParent(root: string, path: string): Promise<void> {
 }
 
 async function createSandbox(
-	input: Readonly<{ projectPath: string; baseCommit: string }>,
+	projectPath: string,
+	baseCommit: string,
 	branch: string,
 	path: string,
+	context: GitCommandContext,
 	operation: OperationContext | undefined,
 ): Promise<void> {
-	await execFileAsync(
-		"git",
-		["worktree", "add", "-b", branch, path, input.baseCommit],
-		commandOptions(input.projectPath, sanitizedEnvironment(), operation?.signal),
-	);
+	await executeGit(context, projectPath, ["worktree", "add", "-b", branch, path, baseCommit], operation?.signal);
 }
 
 async function validateExistingSandbox(
 	root: string,
-	input: Readonly<{ projectPath: string; baseCommit: string }>,
+	projectPath: string,
+	baseCommit: string,
 	branch: string,
 	path: string,
 	existing: Awaited<ReturnType<typeof lstat>>,
+	context: GitCommandContext,
 	operation: OperationContext | undefined,
 ): Promise<void> {
 	validateSandboxDirectory(path, existing);
 	if (!(await isRealContainedPath(root, path))) throw new Error(`Sandbox ${path} is outside the worktree root.`);
-	if (!(await isRegisteredWorktree(input.projectPath, path, operation?.signal)))
+	if (!(await isRegisteredWorktree(projectPath, path, context, operation?.signal)))
 		throw new Error(`Sandbox ${path} is not registered by the project repository.`);
-	await validateSandboxBranch(path, branch, input.baseCommit, operation);
+	await validateSandboxBranch(path, branch, baseCommit, context, operation);
 }
 
 function validateSandboxDirectory(path: string, existing: Awaited<ReturnType<typeof lstat>>): void {
@@ -592,11 +724,12 @@ async function validateSandboxBranch(
 	path: string,
 	branch: string,
 	baseCommit: string,
+	context: GitCommandContext,
 	operation: OperationContext | undefined,
 ): Promise<void> {
-	const existingBranch = await git(path, ["branch", "--show-current"], operation?.signal);
+	const existingBranch = await executeGit(context, path, ["branch", "--show-current"], operation?.signal);
 	assertSandboxBranch(path, branch, existingBranch);
-	const existingHead = await git(path, ["rev-parse", "HEAD"], operation?.signal);
+	const existingHead = await executeGit(context, path, ["rev-parse", "HEAD"], operation?.signal);
 	assertSandboxBase(path, baseCommit, existingHead);
 }
 
@@ -642,26 +775,24 @@ async function removeExistingSandbox(
 	root: string,
 	projectPath: string,
 	sandbox: Execution["sandbox"],
+	context: GitCommandContext,
 	operation: OperationContext | undefined,
 ): Promise<void> {
 	const existing = await lstat(sandbox.path).catch(() => undefined);
 	if (existing === undefined) return;
-	await validateRemovableSandbox(root, projectPath, sandbox.path, existing, operation);
-	await execFileAsync(
-		"git",
-		["worktree", "remove", "--force", sandbox.path],
-		commandOptions(projectPath, sanitizedEnvironment(), operation?.signal),
-	);
+	await validateRemovableSandbox(root, projectPath, sandbox.path, existing, context, operation);
+	await executeGit(context, projectPath, ["worktree", "remove", "--force", sandbox.path], operation?.signal);
 }
 
 async function removeSandboxBranch(
 	projectPath: string,
 	branch: string,
+	context: GitCommandContext,
 	operation: OperationContext | undefined,
 ): Promise<void> {
 	const signal = operationSignal(operation);
 	try {
-		await git(projectPath, ["branch", "-D", branch], signal);
+		await executeGit(context, projectPath, ["branch", "-D", branch], signal);
 	} catch (error) {
 		if (!(error instanceof Error)) throw error;
 		if (isMissingBranchError(error)) return;
@@ -674,11 +805,12 @@ async function validateRemovableSandbox(
 	projectPath: string,
 	path: string,
 	existing: Awaited<ReturnType<typeof lstat>>,
+	context: GitCommandContext,
 	operation: OperationContext | undefined,
 ): Promise<void> {
 	validateSandboxDirectory(path, existing);
 	if (!(await isRealContainedPath(root, path))) throw new Error(`Sandbox ${path} is outside the worktree root.`);
-	if (!(await isRegisteredWorktree(projectPath, path, operation?.signal)))
+	if (!(await isRegisteredWorktree(projectPath, path, context, operation?.signal)))
 		throw new Error(`Sandbox ${path} is not registered by the project repository.`);
 }
 
