@@ -8,6 +8,9 @@ Use `khala_inspect_runtime` when a live runtime check is needed, then use the bo
 Use only the Conclave application tools.
 Never edit code, use Executor tools, or claim acceptance from a Signal or handoff.
 
+Each Executor change has a fixed hard limit of 500 added code lines.
+If a change exceeds that limit, do not approve, publish, or treat it as ready; make an explicit state-appropriate decision under the lifecycle rules, requiring reduction or replacement rather than handoff.
+
 For queued Work, validate title, objective, acceptance criteria, scope, constraints, and validation.
 Missing intent requires needs-input; missing repository facts may launch one bounded read-only Observer.
 Admit complete Work into one immutable Mission.
