@@ -52,7 +52,7 @@ function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: A
 	return options;
 }
 
-function validationEnvironment(projectPath: string | undefined): NodeJS.ProcessEnv {
+function projectEnvironment(projectPath: string | undefined): NodeJS.ProcessEnv {
 	const environment = sanitizedEnvironment();
 	const inheritedPath = Object.entries(environment)
 		.filter(([key]) => key.toLowerCase() === "path")
@@ -63,7 +63,8 @@ function validationEnvironment(projectPath: string | undefined): NodeJS.ProcessE
 		if (key.toLowerCase() === "path") delete environment[key];
 	}
 	const parentNodeBin = projectPath === undefined ? undefined : join(projectPath, "node_modules", ".bin");
-	environment["PATH"] = [parentNodeBin, inheritedPath]
+	// Keep inherited commands ahead of repository-owned tools.
+	environment["PATH"] = [inheritedPath, parentNodeBin]
 		.filter((value): value is string => value !== undefined && value !== "")
 		.join(delimiter);
 	return environment;
@@ -144,20 +145,25 @@ export class GitWorkspace implements WorkspacePort {
 	): Promise<string> {
 		if (input.allowedPaths.length === 0)
 			throw new Error("At least one permitted path is required to commit a sandbox.");
-		await git(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths], operation?.signal);
-		await git(input.sandbox.path, ["commit", "-m", input.message], operation?.signal);
+		const environment = projectEnvironment(this.projectPath);
+		await git(input.sandbox.path, ["add", "--all", "--", ...input.allowedPaths], operation?.signal, environment);
+		await git(input.sandbox.path, ["commit", "-m", input.message], operation?.signal, environment);
 		return this.inspectHead(input.sandbox.path, operation);
 	}
 	async runValidation(
 		input: { path: string; commands: readonly string[] },
 		operation?: OperationContext,
 	): Promise<readonly ValidationResult[]> {
-		const environment = validationEnvironment(this.projectPath);
-		return runValidationCommands(input, environment, operation);
+		return runValidationCommands(input, projectEnvironment(this.projectPath), operation);
 	}
 
 	async publishSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<string> {
-		await git(sandbox.path, ["push", "--set-upstream", "origin", sandbox.branch], operation?.signal);
+		await git(
+			sandbox.path,
+			["push", "--set-upstream", "origin", sandbox.branch],
+			operation?.signal,
+			projectEnvironment(this.projectPath),
+		);
 		return this.inspectHead(sandbox.path, operation);
 	}
 	async removeSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<void> {
@@ -514,8 +520,13 @@ function validationShellArguments(command: string): readonly string[] {
 	return process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
 }
 
-async function git(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string> {
-	return (await execFileAsync("git", [...args], commandOptions(cwd, sanitizedEnvironment(), signal))).stdout.trim();
+async function git(
+	cwd: string,
+	args: readonly string[],
+	signal?: AbortSignal,
+	environment: NodeJS.ProcessEnv = sanitizedEnvironment(),
+): Promise<string> {
+	return (await execFileAsync("git", [...args], commandOptions(cwd, environment, signal))).stdout.trim();
 }
 
 async function isRegisteredWorktree(projectPath: string, sandboxPath: string, signal?: AbortSignal): Promise<boolean> {
