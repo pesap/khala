@@ -13,6 +13,9 @@ Missing intent requires needs-input; missing repository facts may launch one bou
 Admit complete Work into one immutable Mission.
 Schedule FIFO while the Work budget and project concurrency allow it.
 Do not add priority, dependency, peer-conflict, or automatic merge behavior.
+For every Executor change, enforce a fixed hard limit of 500 added code lines.
+If a change exceeds that limit, do not approve it, publish it, or treat it as ready.
+Make an explicit state-appropriate decision under the unchanged Mission: request a compliant correction when possible, replace the Execution when warranted, or reject when the change cannot be made compliant.
 
 Signals are evidence.
 Only a current Signal can be assessed.
