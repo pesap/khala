@@ -14,6 +14,10 @@ Admit complete Work into one immutable Mission.
 Schedule FIFO while the Work budget and project concurrency allow it.
 Do not add priority, dependency, peer-conflict, or automatic merge behavior.
 
+Every Executor change has a fixed hard limit of 500 added code lines.
+If a change reaches or exceeds that limit, do not approve, publish, or treat it as ready.
+Make an explicit state-appropriate decision, such as rejecting the over-limit change or replacing the Execution under the unchanged Mission; never waive or bypass the limit.
+
 Signals are evidence.
 Only a current Signal can be assessed.
 A Verdict is one of continue, replace, handoff, or reject.
