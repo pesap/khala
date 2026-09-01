@@ -3194,7 +3194,7 @@ export class ApplicationService {
 	): Promise<void> {
 		this.requireReadySignalEvidence(evidence);
 		await this.ensureAllowedPaths(work, execution, operation);
-		await this.ensureChangeLimit(work, execution, operation);
+		await this.ensureChangeLimit(execution, operation);
 		const request = this.requireReadyReviewRequest(work, execution);
 		const head = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
 		throwIfOperationAborted(operation);
@@ -3267,7 +3267,7 @@ export class ApplicationService {
 				"Revert changes outside the Mission paths before publishing or sending ready evidence.",
 			);
 	}
-	private async ensureChangeLimit(work: WorkView, execution: Execution, operation?: OperationContext): Promise<void> {
+	private async ensureChangeLimit(execution: Execution, operation?: OperationContext): Promise<void> {
 		const addedLines = await this.ports.workspace.inspectAddedLines(
 			{ path: execution.sandbox.path, baseCommit: execution.sandbox.baseCommit },
 			operation,
@@ -3292,7 +3292,7 @@ export class ApplicationService {
 				"Use a workspace adapter that supports governed sandbox commits.",
 			);
 		await this.ensureAllowedPaths(work, execution, operation);
-		await this.ensureChangeLimit(work, execution, operation);
+		await this.ensureChangeLimit(execution, operation);
 		const headCommit = await workspace.commitSandbox(
 			{
 				sandbox: execution.sandbox,
@@ -3357,7 +3357,7 @@ export class ApplicationService {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
 		await this.ensureAllowedPaths(work, execution, operation);
-		await this.ensureChangeLimit(work, execution, operation);
+		await this.ensureChangeLimit(execution, operation);
 		const mission = this.requireReviewMission(work);
 		await this.requireDraftReviewSupport(operation);
 		const headCommit = await this.reviewHead(execution, operation);
