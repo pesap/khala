@@ -110,7 +110,8 @@ Pi session, lease, lock, and capability files live in a project-specific directo
 Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
 Review request bodies include the Work objective, acceptance criteria, and validation commands.
 Executors commit sandbox changes and run declared validation through governed workspace actions rather than arbitrary shell tools.
-Validation may prepend the parent project's existing `node_modules/.bin` directory to `PATH` without changing the governed sandbox.
+Before each governed commit and validation, a sandbox with `package-lock.json` runs `npm ci --ignore-scripts`.
+Hooks and validation then use that sandbox's `node_modules/.bin` without running an implicit build.
 Do not submit secrets or sensitive data as Work context or provider feedback.
 
 ## Verification checklist

@@ -2539,8 +2539,8 @@ export class ApplicationService {
 	}
 
 	private requireValidationRunner(): NonNullable<ServicePorts["workspace"]["runValidation"]> {
-		const runValidation = this.ports.workspace.runValidation;
-		if (runValidation !== undefined) return runValidation;
+		const workspace = this.ports.workspace;
+		if (workspace.runValidation !== undefined) return workspace.runValidation.bind(workspace);
 		throw this.error(
 			"external-failure",
 			"The configured workspace cannot run validation commands.",

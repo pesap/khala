@@ -344,6 +344,7 @@ test("Executors commit and validate through governed workspace actions", async (
 	let committed = false;
 	let validated = false;
 	let commitReceiverPreserved = false;
+	let validationReceiverPreserved = false;
 	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
 		ports: {
 			workspace: {
@@ -355,6 +356,7 @@ test("Executors commit and validate through governed workspace actions", async (
 				},
 				async runValidation(input) {
 					validated = input.commands.length > 0;
+					validationReceiverPreserved = this.receiverMarker === "governed-workspace";
 					return input.commands.map((command) => ({ command, passed: true, output: "ok" }));
 				},
 			},
@@ -380,6 +382,7 @@ test("Executors commit and validate through governed workspace actions", async (
 	});
 	assert.equal("error" in validation, false);
 	assert.equal(validated, true);
+	assert.equal(validationReceiverPreserved, true);
 	const review = await service.perform({
 		action: "create-review-request",
 		workId: running.workId,
@@ -419,14 +422,14 @@ test("GitWorkspace commits with its receiver and returns the committed head", as
 	assert.notEqual(committedHead, baseCommit);
 });
 
-test("GitWorkspace makes parent project tools available to commit and push hooks", async () => {
+test("GitWorkspace hydrates sandbox dependencies for commit and validation", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-commit-toolchain-"));
 	const parent = join(directory, "parent");
 	const remote = join(directory, "remote.git");
 	const worktreeRoot = join(directory, "worktrees");
-	const bin = join(parent, "node_modules", ".bin");
-	const tool = join(bin, "parent-hook-tool");
-	const shadowGit = join(bin, process.platform === "win32" ? "git.exe" : "git");
+	const dependency = join(parent, "dependency");
+	const inheritedBin = join(directory, "inherited", "NODE_MODULES", ".BIN");
+	const inheritedBinAlias = join(directory, "inherited-bin");
 	await mkdir(parent);
 	execFileSync("git", ["init", "--bare", remote]);
 	execFileSync("git", ["init", parent]);
@@ -434,113 +437,129 @@ test("GitWorkspace makes parent project tools available to commit and push hooks
 	execFileSync("git", ["-C", parent, "config", "user.name", "Khala Test"]);
 	execFileSync("git", ["-C", parent, "remote", "add", "origin", remote]);
 	execFileSync("git", ["-C", parent, "config", "core.hooksPath", join(parent, ".git", "hooks")]);
+	await mkdir(dependency);
+	await writeFile(join(parent, "package.json"), '{"name":"parent","private":true,"type":"module","dependencies":{"parent-hook-dependency":"file:./dependency"}}\n');
+	await writeFile(join(dependency, "package.json"), '{"name":"parent-hook-dependency","version":"1.0.0","type":"module","exports":"./index.js","bin":{"parent-hook-tool":"./bin.mjs","git":"./git.mjs"}}\n');
+	await writeFile(join(dependency, "index.js"), "export const loaded = true;\n");
+	await writeFile(join(dependency, "bin.mjs"), '#!/usr/bin/env node\nimport { writeFile } from "node:fs/promises";\nawait writeFile(`.parent-tool-${process.argv[2]}-ran`, process.argv[2]);\n');
+	await writeFile(join(dependency, "git.mjs"), "#!/usr/bin/env node\nprocess.exit(97);\n");
 	await writeFile(join(parent, "file.txt"), "before\n");
+	await writeFile(join(parent, "hook-config.mjs"), 'import { loaded } from "parent-hook-dependency";\nif (!loaded) process.exit(1);\n');
+	execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts"], { cwd: parent });
 	execFileSync("git", ["-C", parent, "add", "."]);
 	execFileSync("git", ["-C", parent, "commit", "-m", "initial"]);
 	const baseCommit = execFileSync("git", ["-C", parent, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-	await mkdir(bin, { recursive: true });
-	await writeFile(tool, "#!/bin/sh\nprintf %s \"$1\" > \".parent-tool-$1-ran\"\n");
-	await writeFile(shadowGit, "#!/bin/sh\nexit 97\n");
-	await chmod(tool, 0o755);
-	await chmod(shadowGit, 0o755);
+	await mkdir(inheritedBin, { recursive: true });
+	await writeFile(join(inheritedBin, "parent-hook-tool"), "#!/bin/sh\nexit 98\n");
+	await writeFile(join(inheritedBin, "inherited-only-tool"), "#!/bin/sh\nexit 94\n");
+	await writeFile(join(inheritedBin, "git"), "#!/bin/sh\nexit 96\n");
+	await writeFile(join(inheritedBin, "npm"), "#!/bin/sh\nexit 95\n");
+	await chmod(join(inheritedBin, "parent-hook-tool"), 0o755);
+	await chmod(join(inheritedBin, "inherited-only-tool"), 0o755);
+	await chmod(join(inheritedBin, "git"), 0o755);
+	await chmod(join(inheritedBin, "npm"), 0o755);
+	await symlink(inheritedBin, inheritedBinAlias, process.platform === "win32" ? "junction" : "dir");
 	await Promise.all(
 		["pre-commit", "pre-push"].map(async (hookName) => {
 			const hook = join(parent, ".git", "hooks", hookName);
-			await writeFile(hook, `#!/bin/sh\nset -eu\nparent-hook-tool ${hookName}\ngit rev-parse --is-inside-work-tree > .${hookName}-ran\n`);
+			await writeFile(hook, `#!/bin/sh\nset -eu\nif command -v inherited-only-tool >/dev/null; then exit 94; fi\nparent-hook-tool ${hookName}\nnode hook-config.mjs\ngit rev-parse --is-inside-work-tree > .${hookName}-git-ran\n`);
 			await chmod(hook, 0o755);
 		}),
 	);
-	const workspace = new GitWorkspace(worktreeRoot, "khala/", parent);
-	const sandbox = await workspace.ensureSandbox({
-		workId: "commit-toolchain",
-		executionId: "execution-1",
-		mission: {
-			missionId: "mission-1",
-			workId: "commit-toolchain",
-			assignment: {
-				title: "Commit toolchain",
-				objective: "Run parent project hooks",
-				context: "",
-				scope: "Commit the sandbox",
-				acceptanceCriteria: ["The hook resolves its tool"],
-				constraints: [],
-				validation: ["check"],
-				allowedPaths: ["file.txt"],
-				maxTokens: 100,
-			},
-			mandateRevision: 1,
-			createdAt: new Date().toISOString(),
-		},
-		projectPath: parent,
-		baseCommit,
-	});
-	await writeFile(join(sandbox.path, "file.txt"), "after\n");
-	const committedHead = await workspace.commitSandbox({ sandbox, allowedPaths: ["file.txt"], message: "change" });
-	assert.equal(await readFile(join(sandbox.path, ".parent-tool-pre-commit-ran"), "utf8"), "pre-commit");
-	assert.equal(await readFile(join(sandbox.path, ".pre-commit-ran"), "utf8"), "true\n");
-	assert.equal(await workspace.publishSandbox(sandbox), committedHead);
-	assert.equal(await readFile(join(sandbox.path, ".parent-tool-pre-push-ran"), "utf8"), "pre-push");
-	assert.equal(await readFile(join(sandbox.path, ".pre-push-ran"), "utf8"), "true\n");
-	assert.equal(
-		execFileSync("git", ["-C", remote, "rev-parse", `refs/heads/${sandbox.branch}`], { encoding: "utf8" }).trim(),
-		committedHead,
-	);
-	await assert.rejects(stat(join(sandbox.path, "node_modules")));
-});
-
-test("Validation reuses the parent project's Node bin without changing the sandbox", async () => {
-	const directory = await mkdtemp(join(tmpdir(), "khala-validation-toolchain-"));
-	const parent = join(directory, "parent");
-	const sandbox = join(directory, "sandbox");
-	const bin = join(parent, "node_modules", ".bin");
-	const inheritedBin = join(directory, "inherited-bin");
-	await mkdir(bin, { recursive: true });
-	await mkdir(inheritedBin);
-	await mkdir(sandbox);
-	const executableSuffix = process.platform === "win32" ? ".cmd" : "";
-	const tool = join(bin, `parent-validation-tool${executableSuffix}`);
-	const inheritedTool = join(inheritedBin, `inherited-validation-tool${executableSuffix}`);
-	await writeFile(tool, validationToolSource("parent-bin"));
-	await writeFile(inheritedTool, validationToolSource("inherited-bin"));
-	await chmod(tool, 0o755);
-	await chmod(inheritedTool, 0o755);
 	const previousPath = process.env.PATH;
-	const previousPathAlias = process.env.Path;
-	delete process.env.PATH;
-	process.env.Path = `${inheritedBin}${delimiter}${previousPath ?? ""}`;
+	const inheritedPath = [`"${inheritedBinAlias}"`, previousPath].filter(Boolean).join(delimiter);
+	process.env.PATH = inheritedPath;
 	try {
-		const workspace = new GitWorkspace(join(directory, "worktrees"), "khala/", parent);
-		const results = await workspace.runValidation({
-			path: sandbox,
-			commands: ["parent-validation-tool", "inherited-validation-tool"],
-		});
-		assert.deepEqual(
-			results.map((result) => ({ passed: result.passed, output: result.output })),
-			[
-				{ passed: true, output: "parent-bin" },
-				{ passed: true, output: "inherited-bin" },
-			],
+		const workspace = new GitWorkspace(worktreeRoot, "khala/", parent);
+		const sandboxInput = {
+			workId: "commit-toolchain",
+			executionId: "execution-1",
+			mission: {
+				missionId: "mission-1",
+				workId: "commit-toolchain",
+				assignment: {
+					title: "Commit toolchain",
+					objective: "Run sandbox hooks",
+					context: "",
+					scope: "Commit the sandbox",
+					acceptanceCriteria: ["The hook resolves its package"],
+					constraints: [],
+					validation: ["check"],
+					allowedPaths: ["."],
+					maxTokens: 100,
+				},
+				mandateRevision: 1,
+				createdAt: new Date().toISOString(),
+			},
+			projectPath: parent,
+			baseCommit,
+		};
+		const sandbox = await workspace.ensureSandbox(sandboxInput);
+		assert.deepEqual(await workspace.ensureSandbox(sandboxInput), sandbox);
+		const packageManifest = await readFile(join(sandbox.path, "package.json"), "utf8");
+		const lockfile = await readFile(join(sandbox.path, "package-lock.json"), "utf8");
+		await writeFile(join(sandbox.path, "file.txt"), "after\n");
+		let committedHead = await workspace.commitSandbox({ sandbox, allowedPaths: ["."], message: "change" });
+		assert.equal(await readFile(join(sandbox.path, ".parent-tool-pre-commit-ran"), "utf8"), "pre-commit");
+		assert.equal(await readFile(join(sandbox.path, ".pre-commit-git-ran"), "utf8"), "true\n");
+		await rm(join(sandbox.path, ".parent-tool-pre-commit-ran"));
+		await rm(join(sandbox.path, ".pre-commit-git-ran"));
+		await writeFile(join(sandbox.path, "file.txt"), "later\n");
+		await writeFile(join(sandbox.path, "node_modules", "generated.js"), "generated\n");
+		restorePath(previousPath);
+		execFileSync("git", ["-C", sandbox.path, "add", "node_modules/generated.js"]);
+		process.env.PATH = inheritedPath;
+		committedHead = await workspace.commitSandbox({ sandbox, allowedPaths: ["."], message: "second change" });
+		restorePath(previousPath);
+		const committedPaths = execFileSync("git", ["-C", sandbox.path, "show", "--format=", "--name-only", committedHead], { encoding: "utf8" })
+			.split("\n")
+			.filter(Boolean);
+		assert.equal(committedPaths.some((path) => path.startsWith("node_modules/")), false);
+		process.env.PATH = inheritedPath;
+		await rm(join(sandbox.path, "node_modules"), { recursive: true });
+		const validation = await workspace.runValidation({ path: sandbox.path, commands: ["parent-hook-tool validation", "node hook-config.mjs"] });
+		assert.equal(validation.every((result) => result.passed), true);
+		assert.equal((await stat(join(sandbox.path, "node_modules", "parent-hook-dependency"))).isDirectory(), true);
+		assert.equal(await readFile(join(sandbox.path, ".parent-tool-validation-ran"), "utf8"), "validation");
+		assert.equal(await readFile(join(sandbox.path, "package.json"), "utf8"), packageManifest);
+		assert.equal(await readFile(join(sandbox.path, "package-lock.json"), "utf8"), lockfile);
+		assert.equal(await workspace.publishSandbox(sandbox), committedHead);
+		assert.equal(await readFile(join(sandbox.path, ".parent-tool-pre-push-ran"), "utf8"), "pre-push");
+		assert.equal(await readFile(join(sandbox.path, ".pre-push-git-ran"), "utf8"), "true\n");
+		await workspace.removeSandbox(sandbox);
+		await assert.rejects(stat(sandbox.path));
+		restorePath(previousPath);
+		assert.equal(
+			execFileSync("git", ["-C", remote, "rev-parse", `refs/heads/${sandbox.branch}`], { encoding: "utf8" }).trim(),
+			committedHead,
 		);
 	} finally {
 		restorePath(previousPath);
-		if (previousPathAlias === undefined) delete process.env.Path;
-		else process.env.Path = previousPathAlias;
 	}
-	await assert.rejects(stat(join(sandbox, "node_modules")));
 });
 
 test("Failed validation retains stdout and stderr diagnostics", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-validation-output-"));
-	const workspace = new GitWorkspace(directory, "khala/");
-	const [result] = await workspace.runValidation({
-		path: directory,
-		commands: [
-			"printf '%3000s' '' | tr ' ' s; printf 'stdout detail\\n'; printf '%3000s' '' | tr ' ' e >&2; printf 'stderr detail\\n' >&2; exit 1",
-		],
-	});
-	assert.equal(result.passed, false);
-	assert.match(result.output, /stdout detail/);
-	assert.match(result.output, /stderr detail/);
+	const fakeBin = join(directory, "bin");
+	await mkdir(fakeBin);
+	await writeFile(join(fakeBin, "npm"), "#!/bin/sh\nexit 95\n");
+	await chmod(join(fakeBin, "npm"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = [fakeBin, previousPath].filter(Boolean).join(delimiter);
+	try {
+		const workspace = new GitWorkspace(directory, "khala/");
+		const [result] = await workspace.runValidation({
+			path: directory,
+			commands: [
+				"printf '%3000s' '' | tr ' ' s; printf 'stdout detail\\n'; printf '%3000s' '' | tr ' ' e >&2; printf 'stderr detail\\n' >&2; exit 1",
+			],
+		});
+		assert.equal(result.passed, false);
+		assert.match(result.output, /stdout detail/);
+		assert.match(result.output, /stderr detail/);
+	} finally {
+		restorePath(previousPath);
+	}
 });
 
 test("Conclave can request missing intent and the User can amend terms before admission", async () => {
@@ -2787,12 +2806,6 @@ function assertGithubCommands(commands) {
 function restorePath(value) {
 	if (value === undefined) delete process.env.PATH;
 	else process.env.PATH = value;
-}
-
-function validationToolSource(output) {
-	return process.platform === "win32"
-		? `@echo off\r\nnode -e "process.stdout.write(process.argv[1])" ${output}\r\n`
-		: `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(output)});\n`;
 }
 
 test("GitHub publication uses the sandbox branch and current head", async () => {
