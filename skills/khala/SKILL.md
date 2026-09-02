@@ -41,6 +41,12 @@ Repeating
 a completed tool call returns its prior result when the same command identity is
 available; it does not make a second lifecycle decision.
 
+## Submission trigger
+
+Use `khala_submit_work` only when the user explicitly requests a Khala Work or an explicit resubmission.
+Do not submit Work for an ordinary coding request, a plan, an investigation, or intent inferred from context.
+If an explicit Work request lacks required terms, ask the user for them instead of inventing terms.
+
 ## Tools
 
 ### `khala_submit_work`
@@ -153,7 +159,7 @@ provider comment into a different Work.
 
 ## Normal workflow
 
-1. Submit complete intent with `khala_submit_work`.
+1. After an explicit user request, submit complete intent with `khala_submit_work`.
 2. Read the Work and Archive records with `khala_read_archive`.
 3. Let the Conclave admit the Mission and schedule an Execution.
 4. Let the Executor work in its isolated Git sandbox, commit through the
