@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -45,6 +45,15 @@ type GitToolchain = Readonly<{
 	gitExecutable: string;
 	environment: NodeJS.ProcessEnv;
 }>;
+type ValidationCommandResult = Readonly<{ passed: boolean; output: string }>;
+const GITHUB_TERMINAL_STATUSES = new Map<string, ReviewRequest["status"]>([
+	["MERGED", "merged"],
+	["CLOSED", "closed"],
+]);
+const GITLAB_TERMINAL_STATUSES = new Map<string, ReviewRequest["status"]>([
+	["MERGED", "merged"],
+	["CLOSED", "closed"],
+]);
 
 function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: AbortSignal) {
 	const options: CommandOptions = {
@@ -506,7 +515,10 @@ export class CommandCodeHost implements CodeHostPort {
 			operation?.signal,
 		);
 		const row = requireProviderRow(data, "GitLab did not return review request outcome data.");
-		if (readValue(row, "state").toLowerCase() !== "merged") return undefined;
+		const state = readValue(row, "state").trim().toLowerCase();
+		if (!["opened", "closed", "merged"].includes(state))
+			throw new Error(`Code-host response has an unknown GitLab state: ${state}.`);
+		if (state !== "merged") return undefined;
 		return gitlabOutcomeObservation(row, reviewRequest);
 	}
 }
@@ -795,19 +807,77 @@ function runValidationCommand(
 	signal?: AbortSignal,
 ): Promise<Readonly<{ passed: boolean; output: string }>> {
 	return new Promise((resolve) => {
-		execFile(
-			validationShell(),
-			validationShellArguments(command),
-			commandOptions(cwd, environment, signal),
-			(error, stdout, stderr) => {
-				if (error === null) {
-					resolve({ passed: true, output: stdout.slice(-4_000) });
-					return;
-				}
-				resolve({ passed: false, output: failedCommandOutput(stdout, stderr, error.message) });
-			},
-		);
+		const child = spawn(validationShell(), validationShellArguments(command), {
+			cwd,
+			env: environment,
+			detached: process.platform !== "win32",
+			windowsHide: true,
+		});
+		let stdout = "";
+		let stderr = "";
+		let failure: string | undefined;
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			killValidationProcess(child);
+		}, COMMAND_TIMEOUT_MS);
+		const abort = (): void => killValidationProcess(child);
+		signal?.addEventListener("abort", abort, { once: true });
+		child.stdout.on("data", (chunk: Buffer) => {
+			stdout = boundedCommandOutput(stdout, chunk.toString("utf8"));
+		});
+		child.stderr.on("data", (chunk: Buffer) => {
+			stderr = boundedCommandOutput(stderr, chunk.toString("utf8"));
+		});
+		child.on("error", (error) => {
+			failure = error.message;
+		});
+		child.on("close", (code, closeSignal) => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", abort);
+			killValidationProcess(child);
+			resolve(validationCommandResult(code, closeSignal, failure, timedOut, stdout, stderr));
+		});
 	});
+}
+
+function boundedCommandOutput(current: string, next: string): string {
+	return `${current}${next}`.slice(-MAX_COMMAND_BUFFER);
+}
+
+function killValidationProcess(child: ReturnType<typeof spawn>): void {
+	if (child.pid === undefined) return;
+	if (process.platform === "win32") {
+		child.kill("SIGKILL");
+		return;
+	}
+	try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch {
+		child.kill("SIGKILL");
+	}
+}
+
+function validationCommandResult(
+	code: number | null,
+	closeSignal: NodeJS.Signals | null,
+	failure: string | undefined,
+	timedOut: boolean,
+	stdout: string,
+	stderr: string,
+): ValidationCommandResult {
+	if (validationSucceeded(code, failure, timedOut)) return { passed: true, output: stdout.slice(-4_000) };
+	const message = failure ?? validationFailureMessage(closeSignal, timedOut);
+	return { passed: false, output: failedCommandOutput(stdout, stderr, message) };
+}
+
+function validationSucceeded(code: number | null, failure: string | undefined, timedOut: boolean): boolean {
+	return code === 0 && failure === undefined && !timedOut;
+}
+
+function validationFailureMessage(closeSignal: NodeJS.Signals | null, timedOut: boolean): string {
+	if (timedOut) return `Validation command timed out after ${COMMAND_TIMEOUT_MS}ms.`;
+	return closeSignal === null ? "Validation command failed." : `Validation command terminated by ${closeSignal}.`;
 }
 
 function failedCommandOutput(stdout: string, stderr: string, message: string): string {
@@ -892,8 +962,14 @@ function gitlabCiObservation(
 }
 
 function isMergedGithubOutcome(row: Record<string, JsonValue>): boolean {
-	if (readValue(row, "state").toLowerCase() !== "merged") return false;
-	return row["mergedAt"] !== null;
+	if (githubStateValue(row) !== "MERGED") return false;
+	return requireMergedAt(row);
+}
+
+function requireMergedAt(row: Record<string, JsonValue>): true {
+	if (readOptionalTextValue(row, "mergedAt") === undefined)
+		throw new Error("Code-host response marks the GitHub review as merged without mergedAt.");
+	return true;
 }
 
 function githubOutcomeObservation(
@@ -955,14 +1031,11 @@ function githubReview(
 }
 
 function githubStatus(state: string, isDraft: boolean): ReviewRequest["status"] {
-	const normalized = state.toLowerCase();
-	if (normalized === "merged") {
-		return "merged";
-	}
-	if (normalized === "open") {
-		return isDraft ? "draft" : "open";
-	}
-	return "closed";
+	const normalized = state.trim().toUpperCase();
+	if (normalized === "OPEN") return isDraft ? "draft" : "open";
+	const status = GITHUB_TERMINAL_STATUSES.get(normalized);
+	if (status !== undefined) return status;
+	throw new Error(`Code-host response has an unknown GitHub state: ${state}.`);
 }
 function readRepository(row: Record<string, JsonValue>): string {
 	const repository = [readRepositoryName(row), readRepositoryReference(row), readRepositoryUrl(row)].find(isTextValue);
@@ -1025,9 +1098,11 @@ function gitlabReview(row: Record<string, JsonValue>, input: ReviewRequestInput,
 }
 
 function gitlabStatus(state: string, draft: boolean): ReviewRequest["status"] {
-	if (state.toLowerCase() === "merged") return "merged";
-	if (state.toLowerCase() !== "opened") return "closed";
-	return draft ? "draft" : "open";
+	const normalized = state.trim().toUpperCase();
+	if (normalized === "OPENED") return draft ? "draft" : "open";
+	const status = GITLAB_TERMINAL_STATUSES.get(normalized);
+	if (status !== undefined) return status;
+	throw new Error(`Code-host response has an unknown GitLab state: ${state}.`);
 }
 
 function readOptionalTextValue(row: Record<string, JsonValue>, key: string): string | undefined {
@@ -1216,7 +1291,7 @@ function githubPullRequestDetails(
 }
 
 function githubState(row: Record<string, JsonValue>): string {
-	return textField(row, "state")?.toLowerCase() ?? "unknown";
+	return githubStateValue(row).toLowerCase();
 }
 
 function githubMergedAt(row: Record<string, JsonValue>): string | null {
@@ -1370,7 +1445,10 @@ function githubFeedbackId(prefix: string, providerId: string, commentId: string,
 		: `review-comment:${providerId}:${prefix}:${commentId}:${version}`;
 }
 function githubPollStatus(row: Record<string, JsonValue>, current: ReviewRequest["status"]): ReviewRequest["status"] {
-	if (isTextValue(row["mergedAt"])) return "merged";
+	if (githubStateValue(row) === "MERGED") {
+		requireMergedAt(row);
+		return "merged";
+	}
 	return githubOpenStatus(row, current);
 }
 
@@ -1383,7 +1461,11 @@ function githubOpenStatus(row: Record<string, JsonValue>, current: ReviewRequest
 }
 
 function githubStateValue(row: Record<string, JsonValue>): string {
-	return textField(row, "state")?.toUpperCase() ?? "";
+	const state = textField(row, "state")?.trim().toUpperCase();
+	if (state === undefined) throw new Error("Code-host response has a missing GitHub state.");
+	const knownState = ["OPEN", "CLOSED", "MERGED"].find((candidate) => candidate === state);
+	if (knownState === undefined) throw new Error(`Code-host response has an unknown GitHub state: ${state}.`);
+	return knownState;
 }
 
 function githubDefaultStatus(current: ReviewRequest["status"]): ReviewRequest["status"] {
@@ -1399,10 +1481,20 @@ function githubCheckStatus(
 }
 
 function providerCheckFailed(check: ProviderCheck): boolean {
-	const value = `${check.status} ${check.conclusion ?? ""}`.toLowerCase();
-	return ["failure", "failed", "error", "cancelled", "timed_out", "action_required"].some((term) =>
-		value.includes(term),
-	);
+	return check.kind === "status-context" ? statusContextFailed(check.status) : checkRunFailed(check);
+}
+
+function statusContextFailed(value: string): boolean {
+	const status = value.trim().toUpperCase();
+	if (["ERROR", "FAILURE"].includes(status)) return true;
+	return !["SUCCESS", "PENDING"].includes(status);
+}
+
+function checkRunFailed(check: ProviderCheck): boolean {
+	if (check.status.trim().toUpperCase() !== "COMPLETED") return false;
+	const conclusion = check.conclusion?.trim().toUpperCase();
+	if (conclusion === undefined) return true;
+	return !["SUCCESS", "NEUTRAL", "SKIPPED"].includes(conclusion);
 }
 
 function githubCommentCommit(entry: Record<string, JsonValue>): string | undefined {

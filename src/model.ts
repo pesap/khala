@@ -478,13 +478,13 @@ export type Action = Readonly<{
 }>;
 
 export type ActionInput = Readonly<{
-	kind?: string | undefined;
+	kind?: "progress" | "blocked" | "ready" | undefined;
 	summary?: string | undefined;
 	evidence?: readonly string[] | undefined;
-	decision?: string | undefined;
+	decision?: "continue" | "replace" | "handoff" | "reject" | undefined;
 	reason?: string | undefined;
 	signalId?: string | undefined;
-	status?: string | undefined;
+	status?: "changes-requested" | "merged" | "closed" | undefined;
 	feedback?: readonly string[] | undefined;
 	title?: string | undefined;
 	objective?: string | undefined;

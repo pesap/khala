@@ -1,7 +1,7 @@
 import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
 import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
@@ -337,6 +337,10 @@ function attachOutput(child: MutableChild, onExit: () => void): void {
 	const decoder = new StringDecoder("utf8");
 	child.process.stdout.on("data", (chunk: Buffer) => {
 		child.buffer += decoder.write(chunk);
+		if (Buffer.byteLength(child.buffer, "utf8") > MAX_RPC_BUFFER_BYTES) {
+			failOverlongRpcOutput(child);
+			return;
+		}
 		consumeLines(child);
 	});
 	child.process.stderr.on("data", (chunk: Buffer) => {
@@ -373,6 +377,15 @@ function attachOutput(child: MutableChild, onExit: () => void): void {
 		cleanupAfterExit();
 	});
 }
+function failOverlongRpcOutput(child: MutableChild): void {
+	const error = new Error(`Pi RPC output exceeded the ${MAX_RPC_BUFFER_BYTES}-byte limit.`);
+	child.lastError = error.message;
+	child.closed = true;
+	rejectPending(child, error);
+	rejectAgentEnd(child, error);
+	killChild(child);
+}
+
 function consumeLines(child: MutableChild): void {
 	let line = nextLine(child);
 	while (line !== undefined) {
@@ -449,6 +462,8 @@ type LaunchLease = Readonly<{
 }>;
 
 const LAUNCH_INTENT_STALE_MS = 60_000;
+const MAX_RPC_BUFFER_BYTES = 512_000;
+const MAX_ASSISTANT_OUTPUT_BYTES = 64_000;
 
 function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions, storage: RuntimeStorage): SessionLaunch {
 	const sessionPath = storage.ownedPath(input.sessionPath ?? storage.ephemeralSessionPath());
@@ -480,6 +495,7 @@ function sessionArguments(input: SessionInput, options: PiRuntimeOptions, sessio
 		"--session",
 		sessionPath,
 		...toolArguments(input.tools),
+		"--no-extensions",
 		...extensionArguments(options.extensionPath),
 		"--khala-role",
 		input.role,
@@ -791,14 +807,14 @@ async function withLaunchLock<T>(
 	try {
 		return await operation();
 	} finally {
-		await rmdir(lockPath).catch(() => undefined);
+		await unlink(lockPath).catch(() => undefined);
 	}
 }
 
 async function acquireLaunchLock(lockPath: string, sessionPath: string, storage: RuntimeStorage): Promise<void> {
 	storage.ownedPath(lockPath);
 	try {
-		await mkdir(lockPath, { mode: 0o700 });
+		await writeFile(lockPath, launchLockOwner(), { encoding: "utf8", mode: 0o600, flag: "wx" });
 	} catch (error) {
 		if (!(error instanceof Error)) throw error;
 		await replaceStaleLaunchLock(lockPath, sessionPath, error, storage);
@@ -812,16 +828,56 @@ async function replaceStaleLaunchLock(
 	storage: RuntimeStorage,
 ): Promise<void> {
 	if (!isExistsError(error)) throw error;
-	await chmod(lockPath, 0o700);
-	const createdAt = await stat(lockPath)
-		.then((entry) => entry.mtimeMs)
-		.catch(() => Date.now());
-	if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
+	const owner = await readFile(lockPath, "utf8").catch(() => undefined);
+	if (owner === undefined || liveLaunchLockOwner(owner))
 		throw new Error(`Runtime session ${sessionPath} is already launching.`);
-	await chmod(lockPath, 0o700);
-	await rmdir(lockPath).catch(() => undefined);
+	await unlink(lockPath).catch(() => undefined);
 	storage.ownedPath(lockPath);
-	await mkdir(lockPath, { mode: 0o700 });
+	await writeFile(lockPath, launchLockOwner(), { encoding: "utf8", mode: 0o600, flag: "wx" });
+}
+
+function launchLockOwner(): string {
+	return JSON.stringify({ processId: process.pid, processStartTime: readProcessStartTime(process.pid) });
+}
+
+type LaunchLockOwner = Readonly<{ processId?: number | undefined; processStartTime?: string | undefined }>;
+
+function liveLaunchLockOwner(text: string): boolean {
+	const owner = parseLaunchLockOwner(text);
+	if (owner === undefined || owner.processId === undefined) return true;
+	return liveProcessOwner(owner.processId, owner.processStartTime);
+}
+
+function parseLaunchLockOwner(text: string): LaunchLockOwner | undefined {
+	try {
+		// SAFETY: parsed JSON is checked as an object before its optional owner fields are read.
+		const parsed = JSON.parse(text) as JsonValue;
+		return isJsonObject(parsed) ? launchLockOwnerFromObject(parsed) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function launchLockOwnerFromObject(parsed: JsonObject): LaunchLockOwner | undefined {
+	const processId = optionalLockProcessId(parsed["processId"]);
+	const processStartTime = optionalLockProcessStartTime(parsed["processStartTime"]);
+	if (processId === null || processStartTime === null) return undefined;
+	return { processId, processStartTime };
+}
+
+function optionalLockProcessId(value: JsonValue | undefined): number | null | undefined {
+	if (value === undefined) return undefined;
+	return isInteger(value) ? value : null;
+}
+
+function optionalLockProcessStartTime(value: JsonValue | undefined): string | null | undefined {
+	if (value === undefined) return undefined;
+	return isText(value) ? value : null;
+}
+
+function liveProcessOwner(processId: number, processStartTime: string | undefined): boolean {
+	if (!processExists(processId)) return false;
+	return processStartTime === undefined || readProcessStartTime(processId) === processStartTime;
 }
 
 function isMissingFileError(error: Error): boolean {
@@ -1458,11 +1514,15 @@ function isAssistantMessage(
 }
 
 function assistantText(message: Readonly<{ content: readonly RpcBlock[] }>): string {
-	return message.content
+	const output = message.content
 		.filter((block) => block.type === "text" && block.text !== undefined)
 		.map((block) => block.text ?? "")
 		.join("\n")
 		.trim();
+	if (Buffer.byteLength(output, "utf8") <= MAX_ASSISTANT_OUTPUT_BYTES) return output;
+	const suffix = "\n[Pi assistant output truncated by Khala.]";
+	const available = Math.max(0, MAX_ASSISTANT_OUTPUT_BYTES - Buffer.byteLength(suffix, "utf8"));
+	return `${Buffer.from(output, "utf8").subarray(0, available).toString("utf8")}${suffix}`;
 }
 function readTokenUsage(value: RpcUsage | undefined): TokenUsage | undefined {
 	if (value === undefined) return;

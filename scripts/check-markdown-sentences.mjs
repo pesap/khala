@@ -1,11 +1,14 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { promisify } from "node:util";
 
+const execFileAsync = promisify(execFile);
 const sentenceBoundaryPattern = /[.!?](?:["'”’)]*)\s+(?=[A-Z0-9`[])/;
 const sentenceSplitPattern = /([.!?](?:["'”’)]*))\s+(?=[A-Z0-9`[])/g;
 const root = process.cwd();
 const fix = process.argv.includes("--fix");
-const markdownFiles = await collectMarkdownFiles(root);
+const markdownFiles = await trackedMarkdownFiles(root);
 const violations = [];
 
 for (const file of markdownFiles) {
@@ -39,26 +42,17 @@ if (violations.length > 0 && !fix) {
 	process.exitCode = 1;
 }
 
-async function collectMarkdownFiles(directory) {
-	const entries = await readdir(directory, { withFileTypes: true });
-	const files = [];
-	for (const entry of entries) files.push(...(await collectMarkdownEntry(directory, entry)));
-	return files.sort();
-}
-
-async function collectMarkdownEntry(directory, entry) {
-	if (shouldSkipEntry(entry.name)) return [];
-	const path = join(directory, entry.name);
-	if (entry.isDirectory()) return collectMarkdownFiles(path);
-	return isMarkdownFile(entry.name, entry.isFile()) ? [path] : [];
-}
-
-function shouldSkipEntry(name) {
-	return [".git", ".pi", "node_modules", "dist"].includes(name);
-}
-
-function isMarkdownFile(name, isFile) {
-	return isFile && name.endsWith(".md");
+async function trackedMarkdownFiles(directory) {
+	const { stdout } = await execFileAsync(
+		"git",
+		["ls-files", "--cached", "--others", "--exclude-standard", "--", "*.md"],
+		{ cwd: directory, encoding: "utf8" },
+	);
+	return stdout
+		.split(/\r?\n/)
+		.filter((path) => path.length > 0)
+		.map((path) => join(directory, path))
+		.sort();
 }
 
 function sentenceBoundary(line) {

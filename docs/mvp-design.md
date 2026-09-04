@@ -249,7 +249,7 @@ ArchivePort       append, updateCommandProjection, findCommand,
                   listProjects, close
 AgentRuntimePort  ensureSession, send, getState, requestStop, close
 WorkspacePort     preflight, ensureSandbox, inspectHead, inspectChanges,
-                  commitSandbox?, runValidation?, publishSandbox, removeSandbox
+                  commitSandbox, runValidation, publishSandbox, removeSandbox
 CodeHostPort      capabilities, identity, ensureReviewRequest, poll,
                   inspectOutcome
 ModelCatalogPort  listScoped, resolve

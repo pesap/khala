@@ -9,6 +9,14 @@ import {
 	RevisionConflict,
 } from "./archive.js";
 import {
+	failedOrStoppedExecution,
+	isActiveMission,
+	isCancelledWork,
+	isConcurrentExecution,
+	isTerminalWork,
+	runtimeNeedsInspection,
+} from "./lifecycle-policy.js";
+import {
 	type Action,
 	type ActionCommand,
 	type ActionInput,
@@ -56,6 +64,10 @@ import type {
 	ServicePorts,
 } from "./ports.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
+import { closeRuntimeAfterDrain, hasPendingOperations, pendingOperations } from "./runtime-supervision.js";
+import { workSummary } from "./work-summary.js";
+
+export type ServiceHealth = Readonly<{ monitorError?: ErrorEnvelope | undefined }>;
 
 export type ServiceOptions = Readonly<{
 	projectPath: string;
@@ -425,6 +437,7 @@ export class ApplicationService {
 	private readonly runtimeStorage: RuntimeStorage;
 	private options: ServiceOptions;
 	private readonly rolePublicKey: KeyObject;
+	private serviceMonitorError: ErrorEnvelope | undefined;
 
 	constructor(archive: ArchivePort, ports: ServicePorts, options: ServiceOptions) {
 		this.archive = archive;
@@ -438,15 +451,16 @@ export class ApplicationService {
 		});
 		if (options.autonomousMonitor !== false) {
 			const timer = setInterval(
-				() =>
-					void this.runAutonomousCycle().catch((error) =>
-						this.recordServiceMonitorFailure(error instanceof Error ? error : new Error(String(error))),
-					),
+				() => void this.runAutonomousCycle().catch(() => undefined),
 				AUTONOMOUS_MONITOR_INTERVAL_MS,
 			);
 			timer.unref();
 			this.monitorTimer = timer;
 		}
+	}
+
+	getServiceHealth(): ServiceHealth {
+		return { monitorError: this.serviceMonitorError };
 	}
 
 	getRoleSettings(): RoleSettingsMap {
@@ -590,18 +604,22 @@ export class ApplicationService {
 	async runAutonomousCycle(): Promise<void> {
 		if (this.closing) return;
 		if (this.autonomousCycleRun !== undefined) return this.autonomousCycleRun;
-		const run = this.runAutonomousCycleOnce();
+		const run = this.runAutonomousCycleOnce()
+			.catch((error) => {
+				this.recordServiceMonitorFailure(error instanceof Error ? error : new Error(String(error)));
+				throw error;
+			})
+			.finally(() => {
+				this.autonomousCycleRun = undefined;
+			});
 		this.autonomousCycleRun = run;
-		try {
-			await run;
-		} finally {
-			if (this.autonomousCycleRun === run) this.autonomousCycleRun = undefined;
-		}
+		await run;
 	}
 	private async runAutonomousCycleOnce(): Promise<void> {
 		const bucket = Math.floor(Date.now() / AUTONOMOUS_MONITOR_INTERVAL_MS);
-		for (const item of this.archive.listProjects()) await this.monitorAutonomousWork(item.workId, bucket);
+		await Promise.all(this.archive.listProjects().map((item) => this.monitorAutonomousWork(item.workId, bucket)));
 		await this.processPendingEffects();
+		this.serviceMonitorError = undefined;
 	}
 
 	private async monitorAutonomousWork(workId: string, bucket: number): Promise<void> {
@@ -1021,15 +1039,24 @@ export class ApplicationService {
 	): Promise<boolean> {
 		let unsupportedEffect = false;
 		for (const effect of effects) {
-			if (!SUPPORTED_EFFECT_KINDS.has(effect.kind)) {
-				this.archive.releaseEffect(effect.effectId, owner);
-				this.recordUnsupportedEffect(effect);
+			if (this.completeUnsupportedEffect(effect, owner)) {
 				unsupportedEffect = true;
 				continue;
 			}
 			if (await this.processPendingEffect(effect, owner, retriedConclaveWakes)) return true;
 		}
 		return unsupportedEffect;
+	}
+
+	private completeUnsupportedEffect(effect: PendingArchiveEffect, owner: string): boolean {
+		if (SUPPORTED_EFFECT_KINDS.has(effect.kind)) return false;
+		if (!this.recordUnsupportedEffect(effect)) {
+			this.archive.releaseEffect(effect.effectId, owner);
+			return true;
+		}
+		if (!this.archive.completeEffect(effect.effectId, owner))
+			throw new Error(`Archive lease was lost for effect ${effect.effectId}.`);
+		return true;
 	}
 
 	private async processPendingEffect(
@@ -2061,21 +2088,21 @@ export class ApplicationService {
 		}).projection;
 	}
 
-	private recordUnsupportedEffect(effect: Readonly<{ effectId: string; kind: string; payload: JsonObject }>): void {
+	private recordUnsupportedEffect(effect: Readonly<{ effectId: string; kind: string; payload: JsonObject }>): boolean {
 		const workId = effect.payload["workId"];
-		if (!isTextValue(workId)) return;
+		if (!isTextValue(workId)) return true;
 		const work = this.archive.project(workId);
-		if (work === undefined) return;
+		if (work === undefined) return true;
 		const marker = `unsupported-effect:${effect.effectId}`;
-		if (this.heartbeat.has(marker)) return;
-		this.appendUnsupportedEffect(work, effect, marker);
+		if (this.heartbeat.has(marker)) return true;
+		return this.appendUnsupportedEffect(work, effect, marker);
 	}
 
 	private appendUnsupportedEffect(
 		work: WorkView,
 		effect: Readonly<{ effectId: string; kind: string; payload: JsonObject }>,
 		marker: string,
-	): void {
+	): boolean {
 		const failure: ErrorEnvelope = {
 			code: "integrity-failure",
 			summary: `Unsupported Archive effect ${effect.kind} was retained for inspection.`,
@@ -2107,8 +2134,10 @@ export class ApplicationService {
 				summary: failure.summary,
 			});
 			this.heartbeat.set(marker, failure.summary);
+			return true;
 		} catch {
 			// Leave both the effect and the diagnostic available for the next pass.
+			return false;
 		}
 	}
 
@@ -2265,13 +2294,14 @@ export class ApplicationService {
 	}
 
 	private recordServiceMonitorFailure(failure: Error): void {
-		const work = this.archive.listProjects()[0];
-		if (work === undefined) return;
-		try {
-			this.recordMonitorFailure(work, "Autonomous monitor", failure);
-		} catch {
-			// No durable Work target remains for this monitor failure.
-		}
+		const message = failure.message.trim().slice(0, 2_000) || "The monitor returned no error detail.";
+		this.serviceMonitorError = {
+			code: "external-failure",
+			summary: `Autonomous monitor failed: ${message}`,
+			retryable: true,
+			remediation: "Khala will retry the autonomous monitor on its next cycle.",
+			evidenceRefs: [],
+		};
 	}
 
 	private providerEvidenceAllowsReady(work: WorkView, request: NonNullable<WorkView["reviewRequest"]>): boolean {
@@ -2535,17 +2565,6 @@ export class ApplicationService {
 			"No Observer model is configured.",
 			false,
 			"Configure observerModel or provide the child Pi model explicitly.",
-		);
-	}
-
-	private requireValidationRunner(): NonNullable<ServicePorts["workspace"]["runValidation"]> {
-		const workspace = this.ports.workspace;
-		if (workspace.runValidation !== undefined) return workspace.runValidation.bind(workspace);
-		throw this.error(
-			"external-failure",
-			"The configured workspace cannot run validation commands.",
-			false,
-			"Use a workspace adapter that supports governed validation.",
 		);
 	}
 
@@ -3206,16 +3225,7 @@ export class ApplicationService {
 		const request = this.requireReadyReviewRequest(work, execution);
 		const head = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
 		throwIfOperationAborted(operation);
-		if (
-			!readyReviewEvidence(
-				work,
-				execution,
-				request,
-				head,
-				this.providerEvidenceAllowsReady(work, request),
-				this.ports.workspace.runValidation,
-			)
-		)
+		if (!readyReviewEvidence(work, execution, request, head, this.providerEvidenceAllowsReady(work, request)))
 			throw this.error(
 				"invalid-state",
 				"The review request does not contain current head, diff, and validation evidence.",
@@ -3257,9 +3267,7 @@ export class ApplicationService {
 	}
 
 	private async ensureAllowedPaths(work: WorkView, execution: Execution, operation?: OperationContext): Promise<void> {
-		const inspectChanges = this.ports.workspace.inspectChanges;
-		if (inspectChanges === undefined) return;
-		const changedPaths = await inspectChanges(
+		const changedPaths = await this.ports.workspace.inspectChanges(
 			{
 				path: execution.sandbox.path,
 				baseCommit: execution.sandbox.baseCommit,
@@ -3279,13 +3287,6 @@ export class ApplicationService {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
 		const workspace = this.ports.workspace;
-		if (workspace.commitSandbox === undefined)
-			throw this.error(
-				"external-failure",
-				"The configured workspace cannot commit sandbox changes.",
-				false,
-				"Use a workspace adapter that supports governed sandbox commits.",
-			);
 		await this.ensureAllowedPaths(work, execution, operation);
 		const headCommit = await workspace.commitSandbox(
 			{
@@ -3316,10 +3317,12 @@ export class ApplicationService {
 	private async runValidation(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		this.requireActor(meta, "executor");
 		const execution = this.requireExecution(work, "running");
-		const runValidation = this.requireValidationRunner();
 		await this.ensureAllowedPaths(work, execution, operation);
 		const headCommit = await this.ports.workspace.inspectHead(execution.sandbox.path, operation);
-		const results = await runValidation({ path: execution.sandbox.path, commands: work.terms.validation }, operation);
+		const results = await this.ports.workspace.runValidation(
+			{ path: execution.sandbox.path, commands: work.terms.validation },
+			operation,
+		);
 		throwIfOperationAborted(operation);
 		const validation = { executionId: execution.executionId, headCommit, results };
 		const passed = validationResultsPassed(results, work.terms.validation);
@@ -4911,24 +4914,14 @@ function readyReviewEvidence(
 	request: NonNullable<WorkView["reviewRequest"]>,
 	head: string,
 	providerEvidenceValid: boolean,
-	runValidation: ServicePorts["workspace"]["runValidation"],
 ): boolean {
 	return [
 		request.headCommit === head,
 		providerEvidenceValid,
 		request.diffSummary.trim().length > 0,
 		request.validation.length > 0,
-		validationEvidenceIsCurrent(runValidation, work, execution, head),
+		isCurrentValidation(work, execution, head),
 	].every(Boolean);
-}
-
-function validationEvidenceIsCurrent(
-	runValidation: ServicePorts["workspace"]["runValidation"],
-	work: WorkView,
-	execution: Execution,
-	head: string,
-): boolean {
-	return runValidation === undefined || isCurrentValidation(work, execution, head);
 }
 
 function isObserverPreAdmissionState(state: WorkState): boolean {
@@ -4964,26 +4957,6 @@ function executorRuntimeEffects(workId: string, revision: number, wakeConclave: 
 
 function isAssessmentAuthorized(work: WorkView): boolean {
 	return (work.state === "submitted" || work.state === "needs-input") && work.observerInFlight === true;
-}
-
-function hasPendingOperations(
-	autonomousCycleRun: Promise<void> | undefined,
-	pendingEffectsRun: Promise<void> | undefined,
-	backgroundOperations: ReadonlySet<Promise<void>>,
-): boolean {
-	return autonomousCycleRun !== undefined || pendingEffectsRun !== undefined || backgroundOperations.size > 0;
-}
-
-function pendingOperations(
-	autonomousCycleRun: Promise<void> | undefined,
-	pendingEffectsRun: Promise<void> | undefined,
-	backgroundOperations: ReadonlySet<Promise<void>>,
-): readonly Promise<void>[] {
-	return [
-		...(autonomousCycleRun === undefined ? [] : [autonomousCycleRun]),
-		...(pendingEffectsRun === undefined ? [] : [pendingEffectsRun]),
-		...backgroundOperations,
-	];
 }
 
 function sameObservationIdentity(
@@ -5027,10 +5000,6 @@ function unavailableRuntime(work: WorkView, runtimeState: RuntimeState | undefin
 	return hasActiveExecutionBinding(work) && isRuntimeUnavailable(runtimeState ?? execution?.runtimeState);
 }
 
-function isCancelledWork(work: WorkView): boolean {
-	return work.state === "stopped" && work.stopReason === "cancelled";
-}
-
 function canAmendTerms(work: WorkView): boolean {
 	return work.mission === undefined && (work.state === "submitted" || work.state === "needs-input");
 }
@@ -5041,14 +5010,6 @@ function amendTermsReason(work: WorkView): string | undefined {
 
 function canAmendMission(work: WorkView): boolean {
 	return work.mission !== undefined && !isTerminalWork(work) && failedOrStoppedExecution(work);
-}
-
-function isTerminalWork(work: WorkView): boolean {
-	return ["succeeded", "stopped"].includes(work.state);
-}
-
-function failedOrStoppedExecution(work: WorkView): boolean {
-	return work.execution === undefined || ["failed", "stopped"].includes(work.execution.state);
 }
 
 function canRequestInput(work: WorkView): boolean {
@@ -5176,10 +5137,6 @@ function observerReason(work: WorkView): string | undefined {
 	return canLaunchObserver(work) ? undefined : "Work already contains context or an Observer is running.";
 }
 
-function isActiveMission(work: WorkView): boolean {
-	return work.missionState === "admitted" || work.missionState === "active";
-}
-
 function verdictReady(work: WorkView): boolean {
 	return (isCurrentSignal(work) || work.execution?.blockReason === "budget-exhausted") && isRunningOrBlocked(work);
 }
@@ -5211,26 +5168,6 @@ const ROLE_SETTING_CHANGES = {
 
 function roleSettingChange(role: GovernedRole, setting: RoleSetting, value: string): Partial<ServiceOptions> {
 	return ROLE_SETTING_CHANGES[role][setting](value);
-}
-
-function workSummary(work: WorkView, queuePositions: ReadonlyMap<string, number>): WorkSummary {
-	return {
-		workId: work.workId,
-		title: work.terms.title,
-		state: work.state,
-		stopReason: work.stopReason,
-		missionState: work.missionState,
-		executionState: work.execution?.state,
-		hasFailure: workHasFailure(work),
-		revision: work.revision,
-		queuePosition: queuePositions.get(work.workId),
-		budget: work.budget,
-		nextAction: work.nextAction,
-	};
-}
-
-function workHasFailure(work: WorkView): boolean {
-	return work.lastError !== undefined || hasFailedWorkStop(work) || hasFailedExecution(work);
 }
 
 function normalizeCaughtError(error: Error | string): Error {
@@ -5337,23 +5274,6 @@ function isUnscopedArchiveActor(actor: Actor): boolean {
 
 function hasRuntimeChange(work: WorkView, runtimeState: RuntimeState | undefined): runtimeState is RuntimeState {
 	return runtimeState !== undefined && runtimeState !== work.execution?.runtimeState;
-}
-
-function hasFailedWorkStop(work: WorkView): boolean {
-	return work.state === "stopped" && work.stopReason === "failed";
-}
-
-function hasFailedExecution(work: WorkView): boolean {
-	return work.execution?.state === "failed";
-}
-
-function isConcurrentExecution(state: Execution["state"] | undefined): boolean {
-	return state === "queued" || state === "running" || state === "awaiting-review";
-}
-
-function runtimeNeedsInspection(work: WorkView): boolean {
-	const execution = work.execution;
-	return execution?.pi !== undefined && ["running", "awaiting-review"].includes(execution.state);
 }
 
 function runtimeBinding(work: WorkView): RuntimeBinding {
@@ -6930,28 +6850,6 @@ function isLiveMissionWork(work: WorkView): boolean {
 		(work.state === "active" || work.state === "awaiting-review") &&
 		(work.missionState === "active" || work.missionState === "awaiting-review")
 	);
-}
-
-async function closeRuntimeAfterDrain(
-	runtime: Readonly<{ close: () => Promise<void> }>,
-	operations: Promise<void>,
-	timeoutMs: number,
-): Promise<void> {
-	const drained = await waitForDrain(operations, timeoutMs);
-	if (!drained) await runtime.close();
-	await operations;
-	if (drained) await runtime.close();
-}
-
-async function waitForDrain(operation: Promise<void>, timeoutMs: number): Promise<boolean> {
-	let timer: NodeJS.Timeout | undefined;
-	const timeout = new Promise<false>((resolve) => {
-		timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
-		timer.unref();
-	});
-	const drained = await Promise.race([operation.then(() => true), timeout]);
-	if (timer !== undefined) clearTimeout(timer);
-	return drained;
 }
 
 function cleanupLabel(kind: string): string {

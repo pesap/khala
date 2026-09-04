@@ -94,13 +94,14 @@ stages = [
 #
 # Runs only against TypeScript files covered by biome.json.
 #
-# `npm run lint:fix --` allows prek to append the filenames being checked.
+# The check-only command allows prek to append the filenames being checked
+# without modifying the working tree.
 # ---------------------------------------------------------------------------
 
 [[repos.hooks]]
 id = "biome"
 name = "biome"
-entry = "npm run lint:fix --"
+entry = "node_modules/.bin/biome check"
 language = "system"
 
 files = '''

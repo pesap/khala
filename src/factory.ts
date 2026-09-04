@@ -34,13 +34,30 @@ export function createApplication(
 	const context = applicationContext(projectPath, trusted);
 	const config = loadConfig(context.projectPath, context.trusted, options?.requireModels ?? true);
 	const archive = new SQLiteArchive(archivePath(config, context.projectPath));
-	const runtime = createRuntime(config, packageRoot, context, context.authorityPrivateKey);
-	const version = packageVersion(packageRoot);
-	const prompts = readPromptIdentities(packageRoot, version);
-	const models = new ConfiguredModels(config, options?.modelRegistry);
-	const ports = createPorts(config, context.projectPath, runtime, models, prompts.oracle);
-	const service = new ApplicationService(archive, ports, createServiceOptions(config, context, prompts));
-	return createApplicationRuntime(service, config, models);
+	return initializeApplication(config, context, packageRoot, options, archive);
+}
+
+function initializeApplication(
+	config: KhalaConfig,
+	context: ApplicationContext,
+	packageRoot: string,
+	options: Readonly<{ requireModels?: boolean; modelRegistry?: ApplicationModelRegistry }> | undefined,
+	archive: SQLiteArchive,
+): ApplicationRuntime {
+	let runtime: PiRpcRuntime | undefined;
+	try {
+		runtime = createRuntime(config, packageRoot, context, context.authorityPrivateKey);
+		const version = packageVersion(packageRoot);
+		const prompts = readPromptIdentities(packageRoot, version);
+		const models = new ConfiguredModels(config, options?.modelRegistry);
+		const ports = createPorts(config, context.projectPath, runtime, models, prompts.oracle);
+		const service = new ApplicationService(archive, ports, createServiceOptions(config, context, prompts));
+		return createApplicationRuntime(service, config, models);
+	} catch (error) {
+		void runtime?.close();
+		archive.close();
+		throw error;
+	}
 }
 
 type ApplicationContext = Readonly<{
@@ -53,7 +70,7 @@ type ApplicationContext = Readonly<{
 function applicationContext(projectPath: string, trusted: boolean): ApplicationContext {
 	return process.env["KHALA_BOUND_WORK_ID"] === undefined
 		? parentApplicationContext(projectPath, trusted)
-		: childApplicationContext(projectPath, trusted);
+		: childApplicationContext();
 }
 
 function parentApplicationContext(projectPath: string, trusted: boolean): ApplicationContext {
@@ -67,27 +84,29 @@ function parentApplicationContext(projectPath: string, trusted: boolean): Applic
 	};
 }
 
-function childApplicationContext(projectPath: string, trusted: boolean): ApplicationContext {
-	const configuredPublicKey = process.env["KHALA_ROLE_PUBLIC_KEY"];
-	const authority = childAuthority(configuredPublicKey);
+function childApplicationContext(): ApplicationContext {
+	const rolePublicKey = requiredChildEnvironment("KHALA_ROLE_PUBLIC_KEY");
+	const childProjectPath = requiredChildEnvironment("KHALA_PROJECT_PATH");
+	const childTrusted = requiredChildEnvironment("KHALA_PROJECT_TRUSTED");
 	return {
-		projectPath: process.env["KHALA_PROJECT_PATH"] ?? projectPath,
-		trusted: childTrust(trusted),
+		projectPath: childProjectPath,
+		trusted: childTrust(childTrusted),
 		child: true,
-		rolePublicKey: configuredPublicKey ?? exportPublicKey(authority),
-		authorityPrivateKey: authority?.privateKey,
+		rolePublicKey,
+		authorityPrivateKey: undefined,
 	};
 }
 
-function childAuthority(
-	configuredPublicKey: string | undefined,
-): { privateKey: KeyObject; publicKey: KeyObject } | undefined {
-	return configuredPublicKey === undefined ? generateKeyPairSync("ed25519") : undefined;
+function requiredChildEnvironment(name: string): string {
+	const value = process.env[name]?.trim();
+	if (value === undefined || value.length === 0) throw new Error(`Khala child startup requires ${name}.`);
+	return value;
 }
 
-function childTrust(fallback: boolean): boolean {
-	const trustedValue = process.env["KHALA_PROJECT_TRUSTED"];
-	return trustedValue === undefined ? fallback : trustedValue === "1";
+function childTrust(value: string): boolean {
+	if (value === "1") return true;
+	if (value === "0") return false;
+	throw new Error("KHALA_PROJECT_TRUSTED must be 0 or 1.");
 }
 
 function exportPublicKey(authority: Readonly<{ publicKey: KeyObject }> | undefined): string {

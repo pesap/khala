@@ -15,24 +15,31 @@ It summarizes the implemented lifecycle, runtime, provider, TUI, and extension s
 - Replacement Executions clear the current failure marker while retaining historical error records.
 - Command replays validate the actor and command fingerprint and return the projection captured by the original command, including a replacement Verdict's resulting Execution.
 - Submit command reuse conflicts are reported as invalid input rather than external failures.
-- Unsupported outbox effects are completed so one corrupt effect cannot starve the queue.
+- Unsupported outbox effects are completed so one corrupt effect cannot starve the queue, after durable diagnostic evidence is recorded.
 - Cleanup failures create durable error evidence and leave cleanup retryable; successful retries clear the cleanup attention state.
+- Autonomous monitoring runs Work inspections concurrently and exposes service-wide monitor failures without attaching them to an arbitrary Work.
 - Background effect drains attach rejection handlers.
 
 ### Runtime and workspace boundaries
 
 - Executors no longer receive arbitrary `bash` access.
 - Executors commit changes with `commit-sandbox` and run declared validation with `run-validation`.
-- Ready Signals require nonempty evidence and current successful validation when the workspace adapter supports it.
+- Ready Signals require nonempty evidence and current successful validation.
 - Direct file-tool path checks resolve existing symlink components before allowing a path, require file-tool paths, and fail closed when the Executor scope is incomplete.
 - Sandbox creation and reuse reject symlinked parents, symlinks, and unregistered Git worktrees.
 - Allowed paths reject traversal and Git pathspec syntax before governed commits.
 - Git workspace and validation commands remove credential-shaped environment variables before launch.
 - Child runtimes remove credential-shaped environment variables before launch.
+- Child runtimes disable ambient extension discovery and load only the explicitly supplied Khala extension.
 - Ephemeral sessions use runtime-owned paths and reject a child-reported session file outside that path.
 - Failed RPC turns kill the child rather than allowing late events to affect a later turn.
+- RPC buffers, assistant output, Oracle packets, and validation output have explicit limits.
+- Validation commands run in owned process groups so cancellation and timeout cleanup includes descendants.
 - macOS process ownership uses `ps` when `/proc` is unavailable.
 - Provider command buffering is raised enough for bounded parsing to handle large valid responses.
+- Provider state and check parsing rejects unknown or contradictory status data.
+- Runtime and configuration locks use atomic ownership and do not replace live owners based on age alone.
+- Child startup requires the parent-provided project, trust, and role authority instead of generating a new authority.
 - Target branches and branch prefixes receive Git-ref validation during configuration loading.
 
 ### Provider feedback
@@ -60,12 +67,11 @@ It summarizes the implemented lifecycle, runtime, provider, TUI, and extension s
 - A sandbox with `package-lock.json` hydrates its own dependencies through `npm ci --ignore-scripts` before governed commits and validation.
 - GitLab status and merge observation are supported, but GitLab comment normalization is outside the current provider adapter.
 - The bundled runtime uses process groups for child cleanup; Windows orphan recovery remains platform-dependent because Windows has no equivalent process-group signal behavior.
-- Archive transition invariants remain enforced by the application service; the SQLite projection parser validates shape and budget/reference integrity.
+- Archive transition invariants remain enforced by the application service; startup validates schema version, table columns, foreign keys, record metadata, record numbering, outbox rows, and full projection invariants.
 - The picker defaults to active Work to keep the primary view small; history is an explicit user choice.
 
 ## Remaining bounded follow-up
 
-- The workspace validation adapter applies a command timeout, but descendants created by a validation command are not tracked as a separate process tree.
 - Windows cannot use the Unix process-group signal path for an unattached child binding; cleanup fails closed by retaining the lease when termination cannot be confirmed.
 - Selectors use fixed item windows because the Pi custom-component contract does not expose terminal height to the picker factory; detail pages use the real ScrollView layout path.
 - Direct low-level Archive consumers still rely on the application service for lifecycle transition policy; the Archive itself validates projection shape, references, and budget invariants.
