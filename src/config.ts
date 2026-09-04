@@ -144,10 +144,35 @@ function isLockContention(error: Error): boolean {
 }
 
 function removeStaleConfigLock(path: string): void {
+	const owner = readConfigLockOwner(path);
+	if (owner === undefined || processExists(owner)) return;
+	if (configLockIsStale(path)) unlinkSync(path);
+}
+
+function readConfigLockOwner(path: string): number | undefined {
 	try {
-		if (Date.now() - statSync(path).mtimeMs > 30_000) unlinkSync(path);
+		const owner = Number(readFileSync(path, "utf8").trim());
+		return isPositiveInteger(owner) ? owner : undefined;
 	} catch {
-		// The lock was removed between inspection and cleanup.
+		// Preserve an unreadable lock so a live owner cannot be displaced by age alone.
+		return undefined;
+	}
+}
+
+function configLockIsStale(path: string): boolean {
+	try {
+		return Date.now() - statSync(path).mtimeMs > 30_000;
+	} catch {
+		return false;
+	}
+}
+
+function processExists(processId: number): boolean {
+	try {
+		process.kill(processId, 0);
+		return true;
+	} catch (error) {
+		return !(error instanceof Error && "code" in error && error.code === "ESRCH");
 	}
 }
 

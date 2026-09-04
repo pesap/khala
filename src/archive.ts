@@ -22,6 +22,7 @@ import {
 	type RecordQuery,
 	type RecordSummaryView,
 	type RecordView,
+	WORK_STATES,
 	type WorkView,
 } from "./model.js";
 import { openSqlite, type SqlDatabase, type SqlOutputValue, type SqlRow } from "./sqlite.js";
@@ -187,6 +188,7 @@ CREATE INDEX IF NOT EXISTS archive_records_kind_sequence ON archive_records(kind
 const EFFECT_LEASE_MS = 120_000;
 const SUMMARY_PAGE_LIMIT = 10;
 const ARCHIVE_MARKER_SUFFIX = ".initialized";
+const ARCHIVE_SCHEMA_VERSION = 1;
 const REQUIRED_ARCHIVE_TABLES = [
 	"work_projection",
 	"archive_records",
@@ -194,6 +196,30 @@ const REQUIRED_ARCHIVE_TABLES = [
 	"outbox",
 	"outbox_claim",
 ] as const;
+const REQUIRED_ARCHIVE_COLUMNS = {
+	work_projection: ["work_id", "revision", "queued_sequence", "view_json"],
+	archive_records: [
+		"sequence",
+		"record_id",
+		"command_id",
+		"command_fingerprint",
+		"kind",
+		"actor",
+		"work_id",
+		"mission_id",
+		"execution_id",
+		"payload_version",
+		"projection_json",
+		"state",
+		"summary",
+		"evidence_refs_json",
+		"payload_json",
+		"recorded_at",
+	],
+	archive_record_numbers: ["record_id", "record_number", "mission_id", "mission_record_number"],
+	outbox: ["effect_id", "kind", "payload_json", "created_at", "completed_at"],
+	outbox_claim: ["effect_id", "owner", "claimed_at"],
+} satisfies Readonly<Record<(typeof REQUIRED_ARCHIVE_TABLES)[number], readonly string[]>>;
 
 const ARCHIVE_READ_VIEWS = `
 CREATE TEMP VIEW IF NOT EXISTS khala_archive_record_summaries AS
@@ -230,23 +256,23 @@ export class SQLiteArchive implements ArchivePort {
 
 	constructor(path: string, options: SQLiteArchiveOptions = {}) {
 		this.database = openArchiveDatabase(path, options);
-		if (options.readOnly === true) {
-			this.initializeReadOnly();
-			this.initializeReadViews();
-			return;
-		}
-		this.initializeWritable(path);
-		this.initializeReadViews();
-	}
-
-	private initializeReadOnly(): void {
 		try {
-			this.validateReadOnlySchema();
-			this.validateIntegrity();
+			if (options.readOnly === true) {
+				this.initializeReadOnly();
+				this.initializeReadViews();
+				return;
+			}
+			this.initializeWritable(path);
+			this.initializeReadViews();
 		} catch (error) {
 			this.database.close();
 			throw error;
 		}
+	}
+
+	private initializeReadOnly(): void {
+		this.validateReadOnlySchema();
+		this.validateIntegrity();
 	}
 
 	private initializeReadViews(): void {
@@ -260,45 +286,105 @@ export class SQLiteArchive implements ArchivePort {
 		this.migrateLegacyWorkTerms();
 		this.migrateLegacyWorkStates();
 		this.migrateRecordNumbers();
+		this.validateSchemaColumns();
+		this.validateSchemaVersion(true);
+		this.database.exec(`PRAGMA user_version = ${ARCHIVE_SCHEMA_VERSION}`);
 		this.validateIntegrity();
 		ensureArchiveMarker(archiveMarkerPath(path));
 	}
 
 	private validateReadOnlySchema(): void {
+		this.validateSchemaColumns();
+		this.validateSchemaVersion(false);
+	}
+
+	private validateSchemaColumns(): void {
 		const tables = new Set(
 			this.database
 				.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
 				.all()
 				.map((row) => readString(row, "name")),
 		);
-		const missing = REQUIRED_ARCHIVE_TABLES.filter((table) => !tables.has(table));
-		if (missing.length > 0) throw new Error(`Archive schema is missing required tables: ${missing.join(", ")}.`);
+		const missingTables = REQUIRED_ARCHIVE_TABLES.filter((table) => !tables.has(table));
+		if (missingTables.length > 0)
+			throw new Error(`Archive schema is missing required tables: ${missingTables.join(", ")}.`);
+		const missingColumns = REQUIRED_ARCHIVE_TABLES.flatMap((table) => {
+			const columns = new Set(
+				this.database
+					.prepare(`PRAGMA table_info(${table})`)
+					.all()
+					.map((row) => readString(row, "name")),
+			);
+			return REQUIRED_ARCHIVE_COLUMNS[table]
+				.filter((column) => !columns.has(column))
+				.map((column) => `${table}.${column}`);
+		});
+		if (missingColumns.length > 0)
+			throw new Error(`Archive schema is missing required columns: ${missingColumns.join(", ")}.`);
+	}
+
+	private validateSchemaVersion(allowUninitialized: boolean): void {
+		const version = readSchemaVersion(this.database);
+		if (version === ARCHIVE_SCHEMA_VERSION || (allowUninitialized && version === 0)) return;
+		throw new Error(`Archive schema version ${version} is unsupported; expected ${ARCHIVE_SCHEMA_VERSION}.`);
 	}
 
 	private validateIntegrity(): void {
+		this.database.exec("PRAGMA foreign_keys = ON;");
 		const check = this.database.prepare("PRAGMA quick_check").get();
 		if (check === undefined || readString(check, "quick_check") !== "ok")
 			throw new Error("Archive SQLite integrity check failed.");
+		if (this.database.prepare("PRAGMA foreign_key_check").all().length > 0)
+			throw new Error("Archive foreign-key integrity check failed.");
 		this.validateWorkProjections();
 		this.validateRecordPayloads();
+		this.validateRecordNumbers();
 		this.validateOutboxPayloads();
 	}
 
 	private validateWorkProjections(): void {
-		for (const row of this.database.prepare("SELECT view_json FROM work_projection").all())
-			parseWorkView(readString(row, "view_json"));
+		for (const row of this.database
+			.prepare("SELECT work_id, revision, queued_sequence, view_json FROM work_projection")
+			.all())
+			validateWorkProjection(row);
 	}
 
 	private validateRecordPayloads(): void {
-		for (const row of this.database.prepare("SELECT payload_json FROM archive_records").all())
-			parseJson(readString(row, "payload_json"));
+		for (const row of this.database
+			.prepare(
+				"SELECT sequence, record_id, command_id, command_fingerprint, kind, actor, work_id, mission_id, execution_id, payload_version, projection_json, state, summary, evidence_refs_json, payload_json, recorded_at FROM archive_records",
+			)
+			.all())
+			validateArchiveRecord(row);
+	}
+
+	private validateRecordNumbers(): void {
+		const records = this.database.prepare("SELECT record_id, mission_id FROM archive_records").all();
+		const numbered = this.database
+			.prepare("SELECT record_id, record_number, mission_id, mission_record_number FROM archive_record_numbers")
+			.all();
+		if (records.length !== numbered.length) throw new Error("Archive record numbering is incomplete.");
+		const recordsById = new Map(records.map((row) => [readString(row, "record_id"), row]));
+		const recordNumbers = new Set<number>();
+		const missionNumbers = new Map<string, Set<number>>();
+		for (const row of numbered) validateRecordNumber(row, recordsById, recordNumbers, missionNumbers);
+		assertContiguousNumbers(recordNumbers, "global");
+		for (const [missionId, numbers] of missionNumbers) assertContiguousNumbers(numbers, `Mission ${missionId}`);
 	}
 
 	private validateOutboxPayloads(): void {
-		for (const row of this.database.prepare("SELECT payload_json FROM outbox").all()) {
-			const payload = parseJson(readString(row, "payload_json"));
-			if (!isJsonObject(payload)) throw new Error("Archive outbox payload is invalid.");
-		}
+		for (const row of this.database
+			.prepare("SELECT effect_id, kind, payload_json, created_at, completed_at FROM outbox")
+			.all())
+			validateOutboxRow(row);
+		const effectIds = new Set(
+			this.database
+				.prepare("SELECT effect_id FROM outbox")
+				.all()
+				.map((row) => readNonBlankString(row, "effect_id")),
+		);
+		for (const row of this.database.prepare("SELECT effect_id, owner, claimed_at FROM outbox_claim").all())
+			validateOutboxClaim(row, effectIds);
 	}
 
 	private migrateCommandColumns(): void {
@@ -532,30 +618,18 @@ export class SQLiteArchive implements ArchivePort {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			this.database.prepare("DELETE FROM outbox_claim WHERE claimed_at < ?").run(now - EFFECT_LEASE_MS);
-			const rows = this.database
+			const row = this.database
 				.prepare(
 					"SELECT effect_id, kind, payload_json, created_at FROM outbox WHERE completed_at IS NULL AND NOT EXISTS (SELECT 1 FROM outbox_claim WHERE outbox_claim.effect_id = outbox.effect_id) ORDER BY created_at, effect_id LIMIT 1",
 				)
-				.all();
-			for (const row of rows) {
-				this.database
-					.prepare("INSERT INTO outbox_claim(effect_id, owner, claimed_at) VALUES (?, ?, ?)")
-					.run(readString(row, "effect_id"), owner, now);
+				.get();
+			if (row === undefined) {
+				this.database.exec("COMMIT");
+				return [];
 			}
-			const effects = rows.map((row) => {
-				const payload = parseJson(readString(row, "payload_json"));
-				if (!isJsonObject(payload)) {
-					throw new Error(`Archive effect ${readString(row, "effect_id")} has an invalid payload.`);
-				}
-				return {
-					effectId: readString(row, "effect_id"),
-					kind: readString(row, "kind"),
-					payload,
-					createdAt: readString(row, "created_at"),
-				};
-			});
+			const effect = claimPendingEffect(this.database, row, owner, now);
 			this.database.exec("COMMIT");
-			return effects;
+			return pendingEffectResult(effect);
 		} catch (error) {
 			this.database.exec("ROLLBACK");
 			throw error;
@@ -783,6 +857,167 @@ export class SQLiteArchive implements ArchivePort {
 			payload: boundedPayload,
 		};
 	}
+}
+
+function readOutboxPayload(value: string): JsonObject | undefined {
+	try {
+		const parsed = parseJson(value);
+		return isJsonObject(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function quarantineOutboxEffect(database: SqlDatabase, row: SqlRow, completedAt: number): void {
+	database
+		.prepare("UPDATE outbox SET completed_at = ? WHERE effect_id = ? AND completed_at IS NULL")
+		.run(new Date(completedAt).toISOString(), readString(row, "effect_id"));
+}
+
+function pendingEffectResult(effect: PendingArchiveEffect | undefined): readonly PendingArchiveEffect[] {
+	return effect === undefined ? [] : [effect];
+}
+
+function claimPendingEffect(
+	database: SqlDatabase,
+	row: SqlRow,
+	owner: string,
+	now: number,
+): PendingArchiveEffect | undefined {
+	const payload = readOutboxPayload(readString(row, "payload_json"));
+	if (payload === undefined) {
+		quarantineOutboxEffect(database, row, now);
+		return undefined;
+	}
+	database
+		.prepare("INSERT INTO outbox_claim(effect_id, owner, claimed_at) VALUES (?, ?, ?)")
+		.run(readString(row, "effect_id"), owner, now);
+	return {
+		effectId: readString(row, "effect_id"),
+		kind: readString(row, "kind"),
+		payload,
+		createdAt: readString(row, "created_at"),
+	};
+}
+
+function readSchemaVersion(database: SqlDatabase): number {
+	const row = database.prepare("PRAGMA user_version").get();
+	return row === undefined ? -1 : readInteger(row, "user_version");
+}
+
+function validateWorkProjection(row: SqlRow): void {
+	const workId = readNonBlankString(row, "work_id");
+	const revision = readPositiveInteger(row, "revision");
+	const queuedSequence = readNonNegativeInteger(row, "queued_sequence");
+	const projection = parseWorkView(readString(row, "view_json"));
+	validateProjection(projection, workId, revision);
+	if (projection.queuedSequence !== queuedSequence)
+		throw new Error(`Archive Work ${workId} has an inconsistent queue sequence.`);
+}
+
+function validateArchiveRecord(row: SqlRow): void {
+	validateArchiveRecordMetadata(row);
+	validateEvidenceReferences(readString(row, "evidence_refs_json"));
+	parseJson(readString(row, "payload_json"));
+	validateRecordProjection(row);
+	validateTimestamp(readString(row, "recorded_at"), "recorded_at");
+}
+
+function validateArchiveRecordMetadata(row: SqlRow): void {
+	readPositiveInteger(row, "sequence");
+	readNonBlankString(row, "record_id");
+	readNonBlankString(row, "command_id");
+	readOptionalNonBlankString(row, "command_fingerprint");
+	readRecordKind(row, "kind");
+	readActor(row, "actor");
+	readNonBlankString(row, "work_id");
+	readOptionalNonBlankString(row, "mission_id");
+	readOptionalNonBlankString(row, "execution_id");
+	readPositiveInteger(row, "payload_version");
+	const state = readString(row, "state");
+	if (!isWorkState(state)) throw new Error(`Archive record state ${state} is invalid.`);
+	const summary = readString(row, "summary");
+	if (summary.length > 500) throw new Error("Archive record summary exceeds the 500 character limit.");
+}
+
+function validateRecordProjection(row: SqlRow): void {
+	const projection = readOptionalString(row, "projection_json");
+	if (projection === undefined) return;
+	if (parseWorkView(projection).workId !== readString(row, "work_id"))
+		throw new Error("Archive record projection belongs to another Work.");
+}
+
+function validateRecordNumber(
+	row: SqlRow,
+	recordsById: ReadonlyMap<string, SqlRow>,
+	recordNumbers: Set<number>,
+	missionNumbers: Map<string, Set<number>>,
+): void {
+	const recordId = readNonBlankString(row, "record_id");
+	const record = recordsById.get(recordId);
+	if (record === undefined) throw new Error(`Archive record number ${recordId} has no record.`);
+	const recordNumber = readPositiveInteger(row, "record_number");
+	if (recordNumbers.has(recordNumber)) throw new Error("Archive global record numbers are not unique.");
+	recordNumbers.add(recordNumber);
+	validateRecordNumberMission(row, record, recordId, missionNumbers);
+}
+
+function validateRecordNumberMission(
+	numberRow: SqlRow,
+	record: SqlRow,
+	recordId: string,
+	missionNumbers: Map<string, Set<number>>,
+): void {
+	const recordMissionId = readOptionalString(record, "mission_id");
+	const numberMissionId = readOptionalNonBlankString(numberRow, "mission_id");
+	if (recordMissionId !== numberMissionId)
+		throw new Error(`Archive record number ${recordId} has an inconsistent Mission ID.`);
+	const missionRecordNumber = readOptionalInteger(numberRow, "mission_record_number");
+	if (numberMissionId === undefined) {
+		assertNoMissionRecordNumber(missionRecordNumber);
+		return;
+	}
+	validateMissionRecordNumber(numberMissionId, missionRecordNumber, missionNumbers);
+}
+
+function assertNoMissionRecordNumber(value: number | undefined): void {
+	if (value !== undefined) throw new Error("Archive record has an orphaned Mission record number.");
+}
+
+function validateMissionRecordNumber(
+	missionId: string,
+	value: number | undefined,
+	missionNumbers: Map<string, Set<number>>,
+): void {
+	const number = assertPositiveMissionRecordNumber(value);
+	const numbers = missionNumbers.get(missionId) ?? new Set<number>();
+	if (numbers.has(number)) throw new Error("Archive Mission record numbers are not unique.");
+	numbers.add(number);
+	missionNumbers.set(missionId, numbers);
+}
+
+function assertPositiveMissionRecordNumber(value: number | undefined): number {
+	if (value === undefined || value <= 0) throw new Error("Archive Mission record number is invalid.");
+	return value;
+}
+
+function validateOutboxRow(row: SqlRow): void {
+	readNonBlankString(row, "effect_id");
+	readNonBlankString(row, "kind");
+	const payloadText = readString(row, "payload_json");
+	if (payloadText.length > 16_000) throw new Error("Archive outbox payload exceeds the 16 KB limit.");
+	const payload = parseJson(payloadText);
+	if (!isJsonObject(payload)) throw new Error("Archive outbox payload is invalid.");
+	validateTimestamp(readString(row, "created_at"), "created_at");
+	validateOptionalTimestamp(row, "completed_at");
+}
+
+function validateOutboxClaim(row: SqlRow, effectIds: ReadonlySet<string>): void {
+	const effectId = readNonBlankString(row, "effect_id");
+	if (!effectIds.has(effectId)) throw new Error(`Archive claim ${effectId} has no outbox effect.`);
+	if (readNonNegativeInteger(row, "claimed_at") > Date.now() + EFFECT_LEASE_MS)
+		throw new Error(`Archive claim ${effectId} has a future timestamp.`);
+	readNonBlankString(row, "owner");
 }
 
 export class CommandReuseConflict extends Error {
@@ -1356,7 +1591,7 @@ function isExecution(value: JsonValue | undefined): boolean {
 	return [
 		hasTextFields(value, ["executionId", "workId", "missionId", "model", "thinking"]),
 		isExecutionState(value["state"]),
-		isInteger(value["tokenAllowance"]),
+		isPositiveInteger(value["tokenAllowance"]),
 		optional(value["blockReason"], isBlockReason),
 		optional(value["runtimeState"], isExecutionRuntimeState),
 		optional(value["usage"], isTokenUsage),
@@ -1448,7 +1683,8 @@ function isValidationResult(value: JsonValue): boolean {
 function isSignal(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
 	return (
-		["signalId", "executionId", "kind", "summary", "observedAt"].every((key) => isText(value[key])) &&
+		["signalId", "executionId", "summary", "observedAt"].every((key) => isText(value[key])) &&
+		isOneOf(value["kind"], ["progress", "blocked", "ready"]) &&
 		isTextList(value["evidence"])
 	);
 }
@@ -1613,9 +1849,7 @@ function legacyWorkStopReason(value: JsonValue | undefined): "failed" | "cancell
 }
 
 function isWorkState(value: JsonValue | undefined): boolean {
-	return ["submitted", "needs-input", "queued", "active", "awaiting-review", "succeeded", "stopped"].includes(
-		String(value),
-	);
+	return WORK_STATES.some((state) => state === value);
 }
 
 function isWorkStopReason(value: JsonValue | undefined): boolean {
@@ -1628,6 +1862,30 @@ function isExecutionState(value: JsonValue | undefined): boolean {
 
 function readString(row: SqlRow, key: string): string {
 	return readStringValue(row[key], `Archive column ${key}`);
+}
+
+function readNonBlankString(row: SqlRow, key: string): string {
+	const value = readString(row, key);
+	if (value.trim().length === 0) throw new Error(`Archive column ${key} must not be blank.`);
+	return value;
+}
+
+function readOptionalNonBlankString(row: SqlRow, key: string): string | undefined {
+	const value = readOptionalString(row, key);
+	if (value !== undefined && value.trim().length === 0) throw new Error(`Archive column ${key} must not be blank.`);
+	return value;
+}
+
+function readPositiveInteger(row: SqlRow, key: string): number {
+	const value = readInteger(row, key);
+	if (value <= 0) throw new Error(`Archive column ${key} must be positive.`);
+	return value;
+}
+
+function readNonNegativeInteger(row: SqlRow, key: string): number {
+	const value = readInteger(row, key);
+	if (value < 0) throw new Error(`Archive column ${key} must not be negative.`);
+	return value;
 }
 
 function readOptionalString(row: SqlRow, key: string): string | undefined {
@@ -1647,6 +1905,32 @@ function readOptionalInteger(row: SqlRow, key: string): number | undefined {
 }
 function readJsonInteger(value: JsonValue | undefined, key: string): number {
 	return readIntegerValue(value, `Archive cursor field ${key}`);
+}
+
+function validateEvidenceReferences(value: string): void {
+	const parsed = parseJson(value);
+	if (
+		!Array.isArray(parsed) ||
+		parsed.length > 20 ||
+		parsed.some((entry) => !isText(entry) || entry.trim().length === 0 || entry.length > 500)
+	)
+		throw new Error("Archive evidence references are invalid.");
+}
+
+function validateTimestamp(value: string, field: string): void {
+	if (value.trim().length === 0 || Number.isNaN(Date.parse(value)))
+		throw new Error(`Archive ${field} is not a valid timestamp.`);
+}
+
+function validateOptionalTimestamp(row: SqlRow, key: string): void {
+	const value = readOptionalString(row, key);
+	if (value !== undefined) validateTimestamp(value, key);
+}
+
+function assertContiguousNumbers(numbers: ReadonlySet<number>, label: string): void {
+	for (let expected = 1; expected <= numbers.size; expected += 1) {
+		if (!numbers.has(expected)) throw new Error(`Archive ${label} record numbers are not contiguous.`);
+	}
 }
 
 function readInteger(row: SqlRow, key: string): number {

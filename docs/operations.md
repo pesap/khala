@@ -42,7 +42,7 @@ Provider comment bodies are bounded to 500 characters in conversation details an
 Role-visible Work content includes only structured facts from the current Signal kind, opaque Signal ID, and evidence count, plus failed validation status and fixed failure categories.
 It never includes Signal summary or evidence text or ValidationResult output.
 Raw validation output remains in Archive details for the User-facing Archive.
-Oracle packets and outputs are bounded to 16,000 characters per text field.
+Oracle packets are bounded to 64,000 UTF-8 bytes in total, and Oracle outputs are bounded to 16,000 characters.
 
 Git and provider commands use a 120-second timeout.
 Pi RPC requests use a 10-second timeout by default.
@@ -60,6 +60,7 @@ Token exhaustion queues a separate finite Conclave wake for a Verdict.
 Each Executor-lifecycle wake identifies the current state and requires a durable state-appropriate decision with the applicable Signal ID.
 If Conclave returns without resolving that state, the outbox effect remains retryable and a durable failure is recorded.
 Pi does not provide a per-session output-limit option through the RPC interface, so a single turn can exceed the allowance before Khala records the usage.
+RPC framing is rejected after 512,000 buffered UTF-8 bytes, and retained assistant output is capped at 64,000 UTF-8 bytes.
 
 ## Recovery
 
@@ -72,6 +73,8 @@ The command drains pending effects and reconciles persisted runtime bindings.
 The User recovery action can rebind an unreachable Executor through the parent supervisor.
 The autonomous monitor performs the same work on its next cycle.
 Child role sessions cannot invoke User recovery tools or impersonate the parent.
+Child Pi sessions disable extension discovery and load only the explicitly supplied Khala extension.
+This prevents parent Pi settings from loading a second copy of Khala and causing duplicate tool-registration failures.
 A reachable Executor is never replaced by a recovery probe.
 
 If recovery fails, inspect the Work's error and execution records before choosing replacement, Mission amendment, or explicit Work failure.
@@ -103,7 +106,7 @@ Back it up after closing the hosting Pi session, or use SQLite's backup API whil
 Preserve the adjacent `.initialized` marker with the Archive backup.
 Do not copy the main `.sqlite` file and WAL independently while writes are active.
 Restore only from a trusted copy and verify the project path before reopening it.
-Khala fails closed on malformed projections or unsupported Archive integrity failures.
+Khala fails closed on unsupported schema versions, malformed projections, broken record numbering, foreign-key violations, or other Archive integrity failures.
 
 Raw child transcripts are not copied into the Archive.
 Pi session, lease, lock, and capability files live in a project-specific directory in the OS temporary directory until normal cleanup.

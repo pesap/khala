@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -132,6 +132,15 @@ function makePorts(overrides = {}) {
 		},
 		async inspectHead() {
 			return controls.head;
+		},
+		async inspectChanges() {
+			return [];
+		},
+		async commitSandbox() {
+			return controls.head;
+		},
+		async runValidation(input) {
+			return input.commands.map((command) => ({ command, passed: true, output: "ok" }));
 		},
 		async publishSandbox(sandbox) {
 			controls.published.push(sandbox);
@@ -264,6 +273,17 @@ async function admitAndStart(service, idPrefix) {
 	await service.processPendingEffects();
 	await new Promise((resolve) => setImmediate(resolve));
 	return service.inspectWork(submitted.workId);
+}
+
+async function validateBeforeReady(service, work, idPrefix) {
+	const result = await service.perform({
+		action: "run-validation",
+		workId: work.workId,
+		input: {},
+		meta: meta("executor", `${idPrefix}:validation`, work.revision, work.workId, work.execution.executionId),
+	});
+	assert.equal("error" in result, false, JSON.stringify(result));
+	return result.value;
 }
 
 test("generated Work IDs use Nano ID format", async () => {
@@ -714,6 +734,33 @@ test("A missing initialized Archive is not replaced with a new empty Archive", a
 	assert.throws(() => new SQLiteArchive(path), /refusing to create a replacement Archive/);
 });
 
+test("Archive startup rejects inconsistent projections and record numbering", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-"));
+	const path = join(directory, "archive.sqlite");
+	const { service } = makeService(path);
+	const submitted = service.submitWork(
+		{ title: "Integrity", objective: "Reject corrupted projections", acceptanceCriteria: ["Startup fails closed"] },
+		meta("user", "archive-integrity:submit", 0),
+	);
+	await service.close();
+	const database = openSqlite(path);
+	database.prepare("UPDATE work_projection SET queued_sequence = ? WHERE work_id = ?").run(99, submitted.workId);
+	database.close();
+	assert.throws(() => new SQLiteArchive(path, { readOnly: true }), /inconsistent queue sequence/);
+
+	const repairDatabase = openSqlite(path);
+	const projectionRow = repairDatabase.prepare("SELECT view_json FROM work_projection WHERE work_id = ?").get(submitted.workId);
+	const projection = JSON.parse(String(projectionRow.view_json));
+	repairDatabase.prepare("UPDATE work_projection SET queued_sequence = ? WHERE work_id = ?").run(projection.queuedSequence, submitted.workId);
+	repairDatabase.close();
+	const repaired = new SQLiteArchive(path);
+	repaired.close();
+	const numberingDatabase = openSqlite(path);
+	numberingDatabase.prepare("DELETE FROM archive_record_numbers WHERE record_id = (SELECT record_id FROM archive_records LIMIT 1)").run();
+	numberingDatabase.close();
+	assert.throws(() => new SQLiteArchive(path, { readOnly: true }), /record numbering is incomplete/);
+});
+
 test("Archive migrates legacy failed and cancelled Work states", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-legacy-work-state-"));
 	const path = join(directory, "archive.sqlite");
@@ -766,6 +813,59 @@ test("generated Mission and Execution IDs use Nano ID format", async () => {
 	assert.match(running.execution.executionId, /^[A-Za-z0-9_-]{21}$/);
 	await service.close();
 });
+test("Unsupported outbox effects are completed before later effects are processed", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-unsupported-effect-"));
+	const path = join(directory, "archive.sqlite");
+	const { service, archive } = makeService(path);
+	const submitted = service.submitWork(
+		{ title: "Unsupported effect", objective: "Do not starve the outbox", acceptanceCriteria: ["Later effects remain processable"] },
+		meta("user", "unsupported-effect:submit", 0),
+	);
+	const current = service.inspectWork(submitted.workId);
+	archive.append({
+		commandId: "unsupported-effect:append",
+		expectedWorkRevision: current.revision,
+		kind: "error",
+		actor: "system",
+		workId: current.workId,
+		payloadVersion: 1,
+		summary: "Insert an unsupported effect before the submission wake.",
+		payload: { effect: "future" },
+		projection: { ...current, revision: current.revision + 1 },
+		effects: [{ effectId: "unsupported-effect:first", kind: "future-effect", payload: { workId: current.workId } }],
+	});
+	const database = openSqlite(path);
+	database.prepare("UPDATE outbox SET created_at = ? WHERE effect_id = ?").run("1970-01-01T00:00:00.000Z", "unsupported-effect:first");
+	database.close();
+	await service.processPendingEffects();
+	assert.equal(
+		archive.query({ workId: current.workId, kinds: ["error"] }).items.some((record) => record.payload.effectId === "unsupported-effect:first"),
+		true,
+	);
+	assert.equal(archive.pendingEffects("unsupported-effect-check").some((effect) => effect.effectId === "unsupported-effect:first"), false);
+	await service.close();
+});
+
+test("Malformed outbox payloads are terminally quarantined", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-malformed-effect-"));
+	const path = join(directory, "archive.sqlite");
+	const { service } = makeService(path);
+	const submitted = service.submitWork(
+		{ title: "Malformed effect", objective: "Quarantine invalid payloads", acceptanceCriteria: ["The effect becomes terminal"] },
+		meta("user", "malformed-effect:submit", 0),
+	);
+	const effectId = `conclave-wake:${submitted.workId}`;
+	const database = openSqlite(path);
+	database.prepare("UPDATE outbox SET payload_json = ? WHERE effect_id = ?").run("not-json", effectId);
+	database.close();
+	await service.processPendingEffects();
+	const resultDatabase = openSqlite(path);
+	const result = resultDatabase.prepare("SELECT completed_at FROM outbox WHERE effect_id = ?").get(effectId);
+	resultDatabase.close();
+	assert.ok(result?.completed_at);
+	await service.close();
+});
+
 test("Pending effect processing is serialized across callers and Works", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-effect-serialization-"));
 	let activeWakes = 0;
@@ -967,11 +1067,12 @@ test("A ready Signal wake records retryable failure when Conclave takes no actio
 		input: {},
 		meta: meta("executor", "ready-wake-no-action:review", running.revision, running.workId, running.execution.executionId),
 	});
+	const validated = await validateBeforeReady(service, review.value, "ready-wake-no-action");
 	const ready = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "ready", summary: "Ready for review", evidence: ["head", "diff", "validation"] },
-		meta: meta("executor", "ready-wake-no-action:signal", review.value.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "ready-wake-no-action:signal", validated.revision, running.workId, running.execution.executionId),
 	});
 	assert.equal("error" in ready, false);
 	const progressAfterReady = await service.perform({
@@ -1539,7 +1640,8 @@ test("A late Conclave wake failure cannot overwrite a settled Outcome", async ()
 	});
 	const running = await admitAndStart(service, "terminal-wake");
 	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "terminal-wake:review", running.revision, running.workId, running.execution.executionId) });
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head"] }, meta: meta("executor", "terminal-wake:ready", review.value.revision, running.workId, running.execution.executionId) });
+	const validated = await validateBeforeReady(service, review.value, "terminal-wake");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head"] }, meta: meta("executor", "terminal-wake:ready", validated.revision, running.workId, running.execution.executionId) });
 	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "Review", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "terminal-wake:handoff", ready.value.revision, running.workId) });
 	const merged = await service.perform({ action: "record-review", workId: running.workId, input: { status: "merged" }, meta: meta("user", "terminal-wake:merged", handoff.value.revision) });
 	controls.outcome = true;
@@ -1567,7 +1669,8 @@ test("a Work reaches success through branch publication, handoff, polling, and o
 	assert.equal(review.value.reviewRequest.sourceBranch, running.execution.sandbox.branch);
 	assert.equal(review.value.reviewRequest.headCommit, "head");
 	assert.equal(controls.published.length, 1);
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready for review", evidence: ["head", "diff", "validation"] }, meta: meta("executor", "success:ready", review.value.revision, running.workId, running.execution.executionId) });
+	const validated = await validateBeforeReady(service, review.value, "success");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready for review", evidence: ["head", "diff", "validation"] }, meta: meta("executor", "success:ready", validated.revision, running.workId, running.execution.executionId) });
 	const conclavesBeforeReadyWake = controls.sessions.filter((entry) => entry.input.role === "conclave").length;
 	await service.processPendingEffects();
 	assert.equal(controls.sessions.filter((entry) => entry.input.role === "conclave").length > conclavesBeforeReadyWake, true);
@@ -1843,7 +1946,8 @@ test("authorized review feedback resumes the same Execution instead of leaving i
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
 	const running = await admitAndStart(service, "feedback");
 	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "feedback:review", running.revision, running.workId, running.execution.executionId) });
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback:ready", review.value.revision, running.workId, running.execution.executionId) });
+	const validated = await validateBeforeReady(service, review.value, "feedback");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback:ready", validated.revision, running.workId, running.execution.executionId) });
 	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "Review it", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "feedback:handoff", ready.value.revision, running.workId) });
 	const reviewed = await service.perform({ action: "record-review", workId: running.workId, input: { status: "changes-requested", feedback: ["Add the missing regression test."] }, meta: meta("user", "feedback:changes", handoff.value.revision) });
 	assert.equal(reviewed.value.state, "active");
@@ -1860,7 +1964,8 @@ test("authorized review feedback resumes the same Execution instead of leaving i
 	controls.head = "feedback-head";
 	const republished = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "feedback:republish", resumed.revision, running.workId, running.execution.executionId) });
 	assert.equal(republished.value.reviewRequest.headCommit, "feedback-head");
-	const readyAgain = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Updated and validated", evidence: ["feedback-head", "validation"] }, meta: meta("executor", "feedback:ready-again", republished.value.revision, running.workId, running.execution.executionId) });
+	const validatedAgain = await validateBeforeReady(service, republished.value, "feedback-again");
+	const readyAgain = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Updated and validated", evidence: ["feedback-head", "validation"] }, meta: meta("executor", "feedback:ready-again", validatedAgain.revision, running.workId, running.execution.executionId) });
 	assert.equal(readyAgain.value.lastSignal.kind, "ready");
 	await service.close();
 });
@@ -2008,11 +2113,12 @@ test("A stale Executor stop effect does not stop a resumed Execution", async () 
 		input: {},
 		meta: meta("executor", "stale-stop:review", running.revision, running.workId, running.execution.executionId),
 	});
+	const validated = await validateBeforeReady(service, review.value, "stale-stop");
 	const ready = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
-		meta: meta("executor", "stale-stop:ready", review.value.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "stale-stop:ready", validated.revision, running.workId, running.execution.executionId),
 	});
 	const handoff = await service.perform({
 		action: "verdict",
@@ -2042,11 +2148,12 @@ test("Terminal cleanup waits for an active feedback turn", async () => {
 		input: {},
 		meta: meta("executor", "feedback-cleanup:review", running.revision, running.workId, running.execution.executionId),
 	});
+	const validated = await validateBeforeReady(service, review.value, "feedback-cleanup");
 	const ready = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
-		meta: meta("executor", "feedback-cleanup:ready", review.value.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "feedback-cleanup:ready", validated.revision, running.workId, running.execution.executionId),
 	});
 	const handoff = await service.perform({
 		action: "verdict",
@@ -2096,7 +2203,8 @@ test("Feedback waits for an active Executor turn instead of being dropped", asyn
 	await service.processPendingEffects();
 	const running = service.inspectWork(submitted.workId);
 	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "feedback-race:review", running.revision, running.workId, running.execution.executionId) });
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback-race:ready", review.value.revision, running.workId, running.execution.executionId) });
+	const validated = await validateBeforeReady(service, review.value, "feedback-race");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback-race:ready", validated.revision, running.workId, running.execution.executionId) });
 	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "Review it", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "feedback-race:handoff", ready.value.revision, running.workId) });
 	const changed = await service.perform({ action: "record-review", workId: running.workId, input: { status: "changes-requested", feedback: ["Fix the edge case."] }, meta: meta("user", "feedback-race:changes", handoff.value.revision) });
 	const processing = service.processPendingEffects();
@@ -2140,11 +2248,12 @@ test("GitHub review feedback wakes the Conclave and resumes the same Execution w
 		input: {},
 		meta: meta("executor", "github-feedback:review", running.revision, running.workId, running.execution.executionId),
 	});
+	const validated = await validateBeforeReady(service, review.value, "github-feedback");
 	const ready = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
-		meta: meta("executor", "github-feedback:ready", review.value.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "github-feedback:ready", validated.revision, running.workId, running.execution.executionId),
 	});
 	await service.perform({
 		action: "verdict",
@@ -2286,7 +2395,14 @@ test("child role sessions resolve the parent project Archive instead of their sa
 	const directory = await mkdtemp(join(tmpdir(), "khala-shared-archive-"));
 	const project = await mkdtemp(join(directory, "project-"));
 	const sandbox = await mkdtemp(join(directory, "sandbox-"));
-	const names = ["PI_CODING_AGENT_DIR", "KHALA_PROJECT_PATH", "KHALA_PROJECT_TRUSTED", "KHALA_BOUND_WORK_ID", "KHALA_ROLE_TOKEN"];
+	const names = [
+		"PI_CODING_AGENT_DIR",
+		"KHALA_PROJECT_PATH",
+		"KHALA_PROJECT_TRUSTED",
+		"KHALA_BOUND_WORK_ID",
+		"KHALA_ROLE_PUBLIC_KEY",
+		"KHALA_ROLE_TOKEN",
+	];
 	const saved = new Map(names.map((name) => [name, process.env[name]]));
 	let parent;
 	let child;
@@ -2300,11 +2416,33 @@ test("child role sessions resolve the parent project Archive instead of their sa
 		process.env.KHALA_PROJECT_PATH = project;
 		process.env.KHALA_PROJECT_TRUSTED = "0";
 		process.env.KHALA_BOUND_WORK_ID = submitted.workId;
+		process.env.KHALA_ROLE_PUBLIC_KEY = ROLE_PUBLIC_KEY;
 		process.env.KHALA_ROLE_TOKEN = "unused";
 		child = createApplication(sandbox, false, process.cwd(), { requireModels: false });
 		assert.equal(child.service.inspectWork(submitted.workId).workId, submitted.workId);
 	} finally {
 		await closeSharedArchive(parent, child, saved);
+	}
+});
+
+test("child startup fails closed without the parent role authority", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-child-authority-"));
+	const project = await mkdtemp(join(directory, "project-"));
+	const sandbox = await mkdtemp(join(directory, "sandbox-"));
+	const names = ["PI_CODING_AGENT_DIR", "KHALA_PROJECT_PATH", "KHALA_PROJECT_TRUSTED", "KHALA_BOUND_WORK_ID", "KHALA_ROLE_PUBLIC_KEY"];
+	const saved = new Map(names.map((name) => [name, process.env[name]]));
+	try {
+		process.env.PI_CODING_AGENT_DIR = directory;
+		process.env.KHALA_PROJECT_PATH = project;
+		process.env.KHALA_PROJECT_TRUSTED = "0";
+		process.env.KHALA_BOUND_WORK_ID = "work-1";
+		delete process.env.KHALA_ROLE_PUBLIC_KEY;
+		assert.throws(
+			() => createApplication(sandbox, false, process.cwd(), { requireModels: false }),
+			/child startup requires KHALA_ROLE_PUBLIC_KEY/,
+		);
+	} finally {
+		await restoreEnvironment(saved);
 	}
 });
 
@@ -2685,6 +2823,34 @@ test("Persistent runtime sessions have one owner and private transcripts", async
 	await second.close();
 });
 
+test("Live runtime launch locks are not replaced because they are old", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-live-lock-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(script, "setTimeout(() => undefined, 60_000);\n");
+	const storage = createRuntimeStorage(directory);
+	const sessionPath = storage.persistentSessionPath("executor", "live-lock");
+	await storage.prepare();
+	const lockPath = storage.launchLockPath(sessionPath);
+	const lockOwner = JSON.stringify({ processId: process.pid });
+	await writeFile(lockPath, lockOwner);
+	await utimes(lockPath, new Date(0), new Date(0));
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script] });
+	await assert.rejects(
+		runtime.ensureSession({
+			cwd: directory,
+			model: "model",
+			thinking: "medium",
+			role: "executor",
+			promptIdentity: { packageVersion: "1", promptSha256: "hash" },
+			tools: [],
+			sessionPath,
+		}),
+		/already launching/,
+	);
+	assert.equal(await readFile(lockPath, "utf8"), lockOwner);
+	await runtime.close();
+});
+
 test("Runtime storage canonicalizes projects and rejects symlinked paths", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-storage-"));
 	const alias = join(directory, "alias");
@@ -2840,6 +3006,42 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	}
 });
 
+test("GitHub merged state without mergedAt is rejected", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-github-malformed-merge-"));
+	const commandDirectory = await mkdtemp(join(directory, "bin-"));
+	const gh = join(commandDirectory, "gh");
+	await writeFile(
+		gh,
+		`#!/bin/sh
+printf '%s' '${JSON.stringify({ state: "MERGED", mergedAt: null, headRefName: "feature", baseRefName: "main", headRefOid: "head", baseRefOid: "base", mergeCommit: { oid: "merge" } })}'
+`,
+	);
+	await chmod(gh, 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;
+	try {
+		const host = new CommandCodeHost("github", directory);
+		await assert.rejects(
+			host.inspectOutcome({
+				provider: "github",
+				principalId: "principal",
+				providerId: "42",
+				url: "https://github.com/example/project/pull/42",
+				repository: "example/project",
+				status: "open",
+				sourceBranch: "feature",
+				targetBranch: "main",
+				headCommit: "head",
+				diffSummary: "diff",
+				validation: [],
+			}),
+			/merged without mergedAt/,
+		);
+	} finally {
+		restorePath(previousPath);
+	}
+});
+
 test("Provider closure wakes the Conclave with closure-specific guidance", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-provider-closed-wake-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
@@ -2885,11 +3087,13 @@ test("Pull request templates cannot read files through repository symlinks", asy
 });
 
 test("Oracle keeps advisory output bounded and origin matching rejects lookalike hosts", async () => {
+	let capturedPrompt;
 	const oracle = new PiOracle({
 		async ensureSession() {
 			return { sessionId: "oracle-session", sessionPath: "/tmp/oracle-session.jsonl" };
 		},
-		async send() {
+		async send(_binding, message) {
+			capturedPrompt = message;
 			return { output: "Verdict: Needs revision\n\nFindings:\n- [major] Missing test | Evidence: no test result\n\nValidation gaps:\n- integration test not run" };
 		},
 		async getState() {
@@ -2898,8 +3102,11 @@ test("Oracle keeps advisory output bounded and origin matching rejects lookalike
 		async requestStop() {},
 		async close() {},
 	}, "/project", { packageVersion: "1.1.0", promptSha256: "oracle" });
-	const result = await oracle.review({ subject: "Review", mission: { missionId: "m", workId: "w", assignment: { title: "T", objective: "O", context: "", scope: "S", acceptanceCriteria: ["A"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() }, diff: "diff", validation: ["check"], providerEvidence: [] }, "provider/oracle", "high");
+	const result = await oracle.review({ subject: "Review", mission: { missionId: "m", workId: "w", assignment: { title: "T", objective: "O", context: "", scope: "S", acceptanceCriteria: ["A"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() }, diff: "diff", validation: ["check"], providerEvidence: ["x".repeat(100_000)] }, "provider/oracle", "high");
 	assert.equal(result.verdict, "needs-revision");
+	assert.ok(capturedPrompt);
+	assert.equal(Buffer.byteLength(capturedPrompt, "utf8") <= 64_000, true);
+	assert.match(capturedPrompt, /Oracle packet truncated by Khala/);
 	assert.equal(result.findings[0].summary, "Missing test");
 	const incompleteOracle = new PiOracle({
 		async ensureSession() {

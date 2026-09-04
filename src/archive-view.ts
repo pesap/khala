@@ -13,7 +13,7 @@ export function openKhalaArchive(path: string): KhalaArchiveView {
 	const archive = new SQLiteArchive(path, { readOnly: true });
 	return {
 		listWork: () => listWork(archive.listProjects()),
-		inspectWork: (workId) => inspectWork(archive.listProjects(), workId),
+		inspectWork: (workId) => inspectWork(archive, workId),
 		close: () => archive.close(),
 	};
 }
@@ -38,8 +38,8 @@ function listWork(projects: readonly WorkView[]): readonly WorkSummary[] {
 	}));
 }
 
-function inspectWork(projects: readonly WorkView[], workId: string): WorkView {
-	const work = projects.find((candidate) => candidate.workId === workId);
+function inspectWork(archive: SQLiteArchive, workId: string): WorkView {
+	const work = archive.project(workId);
 	if (work === undefined) throw new Error(`Work ${workId} was not found in the Archive.`);
 	return work;
 }

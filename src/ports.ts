@@ -34,15 +34,15 @@ export interface WorkspacePort {
 		operation?: OperationContext,
 	) => Promise<Execution["sandbox"]>;
 	inspectHead: (path: string, operation?: OperationContext) => Promise<string>;
-	inspectChanges?: (
+	inspectChanges: (
 		input: Readonly<{ path: string; baseCommit: string }>,
 		operation?: OperationContext,
 	) => Promise<readonly string[]>;
-	commitSandbox?: (
+	commitSandbox: (
 		input: Readonly<{ sandbox: Execution["sandbox"]; allowedPaths: readonly string[]; message: string }>,
 		operation?: OperationContext,
 	) => Promise<string>;
-	runValidation?: (
+	runValidation: (
 		input: Readonly<{ path: string; commands: readonly string[] }>,
 		operation?: OperationContext,
 	) => Promise<readonly ValidationResult[]>;

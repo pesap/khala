@@ -606,7 +606,8 @@ function updateExecutorStatus(service: ApplicationRuntime["service"], context: E
 	const running = service
 		.listWork()
 		.filter((item) => item.state === "active" && item.executionState === "running").length;
-	const status = running === 0 ? "khala: idle" : `khala: ◈ ${running}`;
+	const monitorStatus = service.getServiceHealth().monitorError === undefined ? "" : " | monitor error";
+	const status = `${running === 0 ? "khala: idle" : `khala: ◈ ${running}`}${monitorStatus}`;
 	context.ui.setStatus("khala-executors", context.ui.theme.fg("dim", status));
 }
 
@@ -1186,5 +1187,5 @@ export type {
 	WorkSummary,
 	WorkView,
 } from "./model.js";
-export { ApplicationError, ApplicationService } from "./service.js";
+export { ApplicationError, ApplicationService, type ServiceHealth } from "./service.js";
 export { showKhalaArchive } from "./tui.js";

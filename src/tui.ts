@@ -753,6 +753,7 @@ function addKeyValueRows(container: Container, theme: Theme, rows: readonly (rea
 }
 
 type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal";
+type ArchiveNavigation = Readonly<{ reviewComments: readonly ProviderReviewComment[] }>;
 async function showWork(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -762,16 +763,16 @@ async function showWork(
 ): Promise<"back"> {
 	for (;;) {
 		const work = await service.inspectRuntime(workId);
-		const navigation = readArchiveRecordsForNavigation(service, work, actor);
-		const section = await pickSection(work, navigation.records, navigation.error, context, keybindings);
+		const navigation = readArchiveNavigation(work);
+		const section = await pickSection(work, navigation.reviewComments, context, keybindings);
 		if (section === null || section === "back") return "back";
-		await showWorkSection(section, service, context, work, actor, navigation.records);
+		await showWorkSection(section, service, context, work, actor, navigation.reviewComments);
 	}
 }
 
 async function showArchiveWork(archive: KhalaArchiveView, context: ExtensionContext, workId: string): Promise<void> {
 	const work = archive.inspectWork(workId);
-	await showTextPage(context, truncateWorkName(work.terms.title), formatFieldRows(workSectionRows(work, undefined)));
+	await showTextPage(context, truncateWorkName(work.terms.title), formatFieldRows(workSectionRows(work)));
 }
 
 async function showWorkSection(
@@ -780,13 +781,13 @@ async function showWorkSection(
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
-	records: readonly RecordView[],
+	reviewComments: readonly ProviderReviewComment[],
 ): Promise<void> {
 	const handlers = {
 		actions: () => chooseAction(service, context, work, actor),
 		evidence: () => showEvidence(service, work, context, actor),
 		archive: () => showArchive(service, context, work, actor),
-		"peer-review": () => showPeerReview(providerReviewComments(records), context),
+		"peer-review": () => showPeerReview(reviewComments, context),
 		"blocking-signal": () => showBlockingSignal(work, context),
 	} satisfies Record<WorkSection, () => Promise<void>>;
 	await handlers[section]();
@@ -794,12 +795,10 @@ async function showWorkSection(
 
 async function pickSection(
 	work: WorkView,
-	records: readonly RecordView[],
-	archiveError: string | undefined,
+	reviewComments: readonly ProviderReviewComment[],
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
 ): Promise<WorkSection | "back" | null> {
-	const reviewComments = providerReviewComments(records);
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
@@ -808,7 +807,7 @@ async function pickSection(
 		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
 	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
-		const rows = workSectionRows(work, archiveError);
+		const rows = workSectionRows(work);
 		const list = new SelectList(items, items.length, selectorTheme(theme));
 		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
 		list.onCancel = () => done("back");
@@ -836,11 +835,10 @@ async function pickSection(
 	});
 }
 
-function workSectionRows(work: WorkView, archiveError: string | undefined): readonly (readonly [string, string])[] {
+function workSectionRows(work: WorkView): readonly (readonly [string, string])[] {
 	return [
 		["Work", formatWorkState(work)],
 		...missionRow(work),
-		...archiveErrorRow(archiveError),
 		...executionRows(work.execution),
 		...reviewRequestRow(work),
 		...workErrorRow(work),
@@ -852,10 +850,6 @@ function missionRow(work: WorkView): readonly (readonly [string, string])[] {
 	return work.state !== "stopped" && work.mission !== undefined && work.missionState !== undefined
 		? [["Mission", formatMissionState(work.missionState)]]
 		: [];
-}
-
-function archiveErrorRow(error: string | undefined): readonly (readonly [string, string])[] {
-	return error === undefined ? [] : [["Archive", `unavailable: ${error}`]];
 }
 
 function executionRows(execution: WorkView["execution"]): readonly (readonly [string, string])[] {
@@ -1479,7 +1473,6 @@ function optionalPageSection(lines: readonly string[], heading?: string): readon
 }
 
 type RecordListMode = "evidence" | "archive";
-type NavigationRecords = Readonly<{ records: readonly RecordView[]; error?: string }>;
 type RecordListEntry = Readonly<{ kind: "record"; record: RecordView }>;
 type MutableJsonObject = { [key: string]: JsonValue | undefined };
 type MutableProviderReviewComment = {
@@ -1496,20 +1489,8 @@ type MutableProviderReviewComment = {
 };
 type ProviderReviewCommentExtras = Omit<MutableProviderReviewComment, "id" | "body">;
 
-function providerReviewComments(records: readonly RecordView[]): readonly ProviderReviewComment[] {
-	for (const record of [...records].reverse()) {
-		const comments = providerReviewCommentsFromRecord(record);
-		if (comments !== undefined) return comments;
-	}
-	return [];
-}
-
-function providerReviewCommentsFromRecord(record: RecordView): readonly ProviderReviewComment[] | undefined {
-	if (record.kind !== "observation") return undefined;
-	const payload =
-		readPayloadObject(readPayloadObjectValue(record.payload), "details") ??
-		readPayloadObject(readPayloadObjectValue(record.payload), "providerObservation");
-	return readProviderReviewComments(payload?.["comments"]);
+function providerReviewComments(observation: WorkView["lastObservation"]): readonly ProviderReviewComment[] {
+	return observation?.details === undefined ? [] : (readProviderReviewComments(observation.details.comments) ?? []);
 }
 
 function readProviderReviewComments(value: JsonValue | undefined): readonly ProviderReviewComment[] | undefined {
@@ -2424,12 +2405,8 @@ function presentEvidenceText(value: string): string {
 	return value.trim();
 }
 
-function readArchiveRecordsForNavigation(service: ApplicationService, work: WorkView, actor: Actor): NavigationRecords {
-	try {
-		return { records: readAllArchiveRecords(service, work, actor) };
-	} catch (error) {
-		return { records: [], error: error instanceof Error ? error.message : String(error) };
-	}
+function readArchiveNavigation(work: WorkView): ArchiveNavigation {
+	return { reviewComments: providerReviewComments(work.lastObservation) };
 }
 
 function readAllArchiveRecords(service: ApplicationService, work: WorkView, actor: Actor): readonly RecordView[] {
