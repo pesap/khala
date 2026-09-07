@@ -1,6 +1,8 @@
 # Getting started
 
-This guide takes one Work from submission to provider review.
+This guide follows the current tools from submission to provider review.
+It is not a walkthrough of the complete target design: local acceptance and independent background supervision remain requirements in [MVP design](mvp-design.md).
+See [Foundations](foundations.md) for the intent and guarantees.
 
 ## Prerequisites
 
@@ -8,6 +10,7 @@ Install:
 
 - Node.js 22.19 or newer.
 - Pi.
+- Linux.
 - Git.
 - An authenticated `gh` or `glab` session if the Work will publish a review
   request.
@@ -17,18 +20,20 @@ Install:
 Install the latest Khala release from its Git tag:
 
 ```sh
-pi install git:github.com/pesap/khala@v1.1.0
+pi install git:github.com/pesap/khala@v1.1.1
 ```
 
 Pi installs packages globally by default.
 To install Khala only for the current project, add `-l`:
 
 ```sh
-pi install git:github.com/pesap/khala@v1.1.0 -l
+pi install git:github.com/pesap/khala@v1.1.1 -l
 ```
 
-Start Pi, open `/khala`, choose Role settings, and configure models and
-thinking levels for Conclave, Executor, Observer, and Oracle.
+Start Pi in a trusted repository.
+Open `/khala`, choose Role settings, and configure models and thinking levels for Conclave, Executor, Observer, and Oracle.
+Keep the hosting Pi session open while relying on autonomous progress; the current extension closes its application service during session shutdown.
+See [Operations](operations.md#startup-and-recovery) for recovery and the target background-supervision boundary.
 Settings are stored in
 `~/.pi/agent/khala.json` and apply to future launches.
 An existing Execution
@@ -66,15 +71,15 @@ Use the history key to inspect completed and cancelled Work.
    confirmed provider merge wakes the Conclave, which must record the explicit
    Outcome before Work becomes `succeeded`.
 
-Provider polling records observations and merge evidence; it never merges or
-accepts Work.
-See [Lifecycle](lifecycle.md) for state transitions and
-[Supervision tools](supervision-tools.md) for effect and recovery behavior.
+Provider polling records observations and merge evidence; it never merges code or settles Work by itself.
+Provider delivery delegates acceptance to the repository's merge process, with a Conclave Outcome required for success.
+See [Lifecycle](lifecycle.md) for the target transitions, [Architecture](architecture.md) for effects, and [Application actions](supervision-tools.md) for current tool entry points.
 
 ## Inspect evidence
 
 Use `khala_read_archive` for current Work facts and the ten most recent bounded record summaries.
-Use the `/khala` Archive view for complete append-ordered record history.
+Use the `/khala` Archive view for complete record history, newest first in bounded pages.
+Select Older records to continue through the snapshot or Newest records to refresh from the head.
 Use
 `khala_inspect_runtime` for a read-only runtime check.
 An unreachable Executor
@@ -88,7 +93,7 @@ Use `/khala` to open:
 - Peer-Review for available provider comments.
 - Archive for complete record metadata and structured fields.
 
-See [TUI navigation](tui-navigation.md) for keys and terminal states.
+See [TUI navigation](tui-navigation.md#current-interface-reference) for the current interface and its distinction from the target interaction.
 
 ## Common recovery cases
 

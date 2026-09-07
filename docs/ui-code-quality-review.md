@@ -1,7 +1,9 @@
 # UI and code-quality review
 
-This review records the current UI and implementation quality baseline for Khala.
-It summarizes the implemented lifecycle, runtime, provider, TUI, and extension safeguards, plus the bounded follow-up work that remains.
+This is a recorded implementation review, not the target design or evidence that the target guarantees are complete.
+Its findings must be rechecked against the current source before being used as a validation baseline.
+The [MVP design](mvp-design.md) identifies the authoritative contracts; [TUI navigation](tui-navigation.md) and [Security](security.md) supersede any conflicting recommendations here.
+In particular, separate Actions and Peer-Review panels, capability-conditional validation, and process-group cleanup do not establish the target interaction or isolation guarantees.
 
 ## Implemented fixes
 
@@ -50,7 +52,12 @@ It summarizes the implemented lifecycle, runtime, provider, TUI, and extension s
 - Completed and cancelled Work can be inspected through the history toggle.
 - Failure summaries are textually visible in the Work overview rather than relying on color.
 - Detail pages support scrolling with Up/Down, Page Up/Page Down, Home, and End.
-- Recovery failures show the error code, summary, remediation, and evidence references.
+- Recovery failures show the summary, remediation, and evidence references; structured error codes remain available in Archive evidence.
+- Queued recovery is distinguished from confirmed recovery.
+- Opening Work reads saved state without probing runtime or loading history.
+- Explicit runtime refresh supports cancellation and preserves newer Work revisions.
+- Details retains full intent, budget, and Execution information outside the overview without exposing runtime ownership secrets.
+- Cancelling review feedback does not submit a review; successful routine actions return directly to the overview.
 - GitHub and GitLab requests are labelled PR and MR respectively.
 - Filter and model-selector wrappers forward focus to their nested controls.
 
@@ -59,13 +66,13 @@ It summarizes the implemented lifecycle, runtime, provider, TUI, and extension s
 - Validation is executed only from the User-declared validation list; Khala does not infer additional validation commands.
 - A sandbox with `package-lock.json` hydrates its own dependencies through `npm ci --ignore-scripts` before governed commits and validation.
 - GitLab status and merge observation are supported, but GitLab comment normalization is outside the current provider adapter.
-- The bundled runtime uses process groups for child cleanup; Windows orphan recovery remains platform-dependent because Windows has no equivalent process-group signal behavior.
+- The bundled runtime uses process groups for child and validation cleanup; Windows orphan recovery remains platform-dependent because Windows has no equivalent process-group signal behavior.
+- Validation commands run in an owned process group, and timeout or cancellation terminates the complete validation process tree.
 - Archive transition invariants remain enforced by the application service; the SQLite projection parser validates shape and budget/reference integrity.
 - The picker defaults to active Work to keep the primary view small; history is an explicit user choice.
 
 ## Remaining bounded follow-up
 
-- The workspace validation adapter applies a command timeout, but descendants created by a validation command are not tracked as a separate process tree.
 - Windows cannot use the Unix process-group signal path for an unattached child binding; cleanup fails closed by retaining the lease when termination cannot be confirmed.
 - Selectors use fixed item windows because the Pi custom-component contract does not expose terminal height to the picker factory; detail pages use the real ScrollView layout path.
 - Direct low-level Archive consumers still rely on the application service for lifecycle transition policy; the Archive itself validates projection shape, references, and budget invariants.

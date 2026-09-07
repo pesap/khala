@@ -27,11 +27,12 @@
 </p>
 
 
-khala is a Pi-native governance extension for isolated coding work.
-It keeps the
-User conversation quiet while a Conclave admits Work, schedules a bounded
-Executor in a Git worktree, records evidence, and waits for a
-provider-confirmed review outcome.
+Khala is a quiet forge for coding work in Pi.
+You give it a bounded assignment, it prepares reviewable changes in an isolated worktree, and it keeps the evidence needed to understand what happened.
+
+The [foundations](docs/foundations.md) explain the guarantees behind that intent.
+The [MVP design](docs/mvp-design.md) describes the goal, the first working loop, and where the detailed contracts live.
+The current tools use provider-review completion and a session-owned application runtime; local acceptance and independent background supervision remain target requirements.
 
 The [Archive](docs/data-model.md) is authoritative for Work, Mission,
 Execution, and Record state.
@@ -39,7 +40,8 @@ Runtime state, Git, provider responses, model output, and TUI views are
 evidence or projections only.
 
 > [!IMPORTANT]
-> Review-request workflows require Node.js 22.19 or newer, Pi, Git, and an authenticated `gh` or `glab` session.
+> The current review-request workflow requires Node.js 22.19 or newer, Pi, Git, and an authenticated `gh` or `glab` session.
+> Keep the hosting Pi session open while relying on autonomous progress; background continuation is part of the target design, not a current guarantee.
 
 ## Quick start
 
@@ -51,7 +53,7 @@ evidence or projections only.
 > project settings.
 
 ```sh
-pi -e git:github.com/pesap/khala@v1.1.0
+pi -e git:github.com/pesap/khala@v1.1.1
 ```
 
 ### Install Khala for regular use
@@ -59,14 +61,14 @@ pi -e git:github.com/pesap/khala@v1.1.0
 Install the latest Khala release from its Git tag:
 
 ```sh
-pi install git:github.com/pesap/khala@v1.1.0
+pi install git:github.com/pesap/khala@v1.1.1
 ```
 
 Pi installs packages globally by default.
 To install Khala only for the current project, add `-l`:
 
 ```sh
-pi install git:github.com/pesap/khala@v1.1.0 -l
+pi install git:github.com/pesap/khala@v1.1.1 -l
 ```
 
 For another GitHub repository, use the same form with its owner, repository,
@@ -80,19 +82,21 @@ Then start Pi normally.
 
 In Pi:
 
-1. Open `/khala` and configure Conclave, Executor, and Oracle models in Role
-   settings.
+1. Start Pi in the trusted repository.
+2. Open `/khala` and configure Conclave, Executor, and Oracle models in Role settings.
    Configure an Observer model when repository context gathering is needed.
-2. Submit complete intent with `khala_submit_work`.
-3. Reopen `/khala` to inspect Work through Actions, Evidence, Peer-Review, and
-   Archive.
+3. Submit complete intent with `khala_submit_work`.
+4. Reopen `/khala` to inspect Work through Actions, Evidence, Peer-Review, and Archive.
+
+The current extension closes its application service with the User Pi session.
+See [Operations](docs/operations.md#startup-and-recovery) for recovery and the distinction from target background supervision.
 
 Use the Pi command `/khala-recover` after reopening a project when a child
 session may have been interrupted.
 See [Getting started](docs/getting-started.md) for the complete first-Work
 workflow and verification steps.
 
-## How Khala governs Work
+## Current review workflow
 
 ```mermaid
 sequenceDiagram
@@ -119,10 +123,8 @@ sequenceDiagram
 
 The loop returns authorized provider feedback to the Executor until the
 provider confirms a merge.
-A `ready` Signal, review handoff, provider approval, or provider merge is not
-acceptance.
-Only an explicit Conclave Outcome backed by verified merge evidence succeeds
-Work.
+A `ready` Signal, review handoff, or provider approval alone does not complete Work.
+Provider delivery delegates acceptance to the repository's merge process; verified merge evidence must still be settled through a Conclave Outcome before Work becomes `succeeded`.
 See the [full lifecycle loop](docs/lifecycle.md#lifecycle-loop).
 
 ## Commands and tools
@@ -146,11 +148,15 @@ contract and action reference.
 | Goal | Start here |
 | --- | --- |
 | Complete a first Work | [Getting started](docs/getting-started.md) |
+| Understand the intent and guarantees | [Foundations](docs/foundations.md) |
+| Start with the goal and reading map | [MVP design](docs/mvp-design.md) |
 | Understand states and recovery | [Lifecycle](docs/lifecycle.md) |
-| Understand provider polling and effects | [Supervision tools](docs/supervision-tools.md) |
+| Understand supervision, polling, and effects | [Architecture](docs/architecture.md) |
+| Use current Pi tools | [Application actions](docs/supervision-tools.md) |
 | Inspect records and runtime bindings | [Data model](docs/data-model.md) |
 | Navigate the TUI | [TUI navigation](docs/tui-navigation.md) |
-| Understand the design and limits | [MVP design](docs/mvp-design.md) and [glossary](docs/glossary.md) |
+| Understand terminology | [Glossary](docs/glossary.md) |
+| Understand isolation and authority | [Security](docs/security.md) |
 | Configure and recover Work | [Operations](docs/operations.md) |
 | Develop or validate changes | [Development](docs/development.md) |
 | Tune role behavior | [Role prompts](docs/role-prompts.md) |
@@ -181,8 +187,8 @@ contract and action reference.
 
 - The User submits intent and makes explicit review, rename, budget, failure,
   cancellation, and eligible recovery decisions.
-- The Conclave admits Missions, schedules Executions, issues Verdicts, handles
-  bounded provider feedback, and records Outcomes.
+- The Conclave admits Missions, authorizes bounded attempts, issues Verdicts, handles provider feedback, and records Outcomes.
+  Application code owns scheduling and effect execution.
 - The Executor changes files only in its isolated sandbox and under the
   Mission's permitted paths; the Mission itself remains immutable and the
   Executor reports evidence-bearing Signals.

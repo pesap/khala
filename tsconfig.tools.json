@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./tools",
+    "lib": ["ES2022", "ES2022.Array"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["tools/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

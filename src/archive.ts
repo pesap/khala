@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { nanoid } from "nanoid";
 import {
 	type Actor,
 	assertNonBlank,
@@ -428,7 +428,7 @@ export class SQLiteArchive implements ArchivePort {
 	}
 
 	private insertArchiveRecord(input: ArchiveAppend): InsertedArchiveRecord {
-		const recordId = randomUUID();
+		const recordId = nanoid();
 		const now = new Date().toISOString();
 		const inserted = this.database
 			.prepare(`INSERT INTO archive_records

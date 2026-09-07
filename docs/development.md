@@ -23,9 +23,11 @@ npm run check:markdown
 npm pack --dry-run
 ```
 
-`npm run check` runs Oxlint, Biome, and TypeScript validation.
+`npm run check` runs Oxlint, Biome, and TypeScript validation for the application, extensions, and custom lint tooling.
+`tsconfig.tools.json` inherits the application’s strict compiler checks for `tools/**/*.ts`.
 `npm run check:markdown` checks paragraph sentence boundaries and bullet length.
 `npm run test` builds `dist` and runs every Node test in `test/`.
+`scripts/copy-runtime-assets.mjs` copies package metadata, role prompts, and the demo fixture beside compiled entry points.
 Tests use local port adapters and do not require provider credentials.
 `npm pack --dry-run` verifies the package contents without publishing.
 
@@ -51,8 +53,9 @@ The GitHub Actions workflow runs linting, the build-backed test suite, and
 - `docs/` — lifecycle, data model, supervision, design, operations, and
   navigation references.
 
-Start with [Architecture](architecture.md), then read the relevant source and
-behavioral tests together.
+Start with [Foundations](foundations.md) and the [MVP reading map](mvp-design.md#reading-map-and-ownership), then read the owning contract, relevant source, and behavioral tests together.
+Keep target requirements distinct from current implementation references and verify a requirement before describing it as implemented.
+Update the rule in its authoritative document and link to it elsewhere instead of maintaining duplicate contracts.
 Use [Operations](operations.md) for configuration, limits, and recovery.
 Keep tests focused on observable behavior rather
 than private implementation details.

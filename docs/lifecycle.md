@@ -1,195 +1,186 @@
-# MVP lifecycle
+# Lifecycle
 
-Khala separates User intent, Conclave decisions, Executor evidence, provider evidence, and Archive persistence.
-The Archive is authoritative for lifecycle state.
+Lifecycle sustains progress by giving each consequential transition an authorized owner and a visible result.
+This document defines the target lifecycle from the [MVP design](mvp-design.md), not a claim that the current tools implement every transition.
+[Data model](data-model.md) owns durable identities and evidence; [Architecture](architecture.md) owns effect execution; [Security](security.md) owns enforcement boundaries.
 
 ## Lifecycle loop
 
-```mermaid
-sequenceDiagram
-    participant U as User Pi
-    participant S as Application service
-    participant A as Archive
-    participant C as Conclave
-    participant O as Observer
-    participant E as Executor
-    participant P as Provider
-    participant M as Monitor
-    participant R as Oracle
-
-    Note over S,A: Archive is authoritative for lifecycle state
-    U->>S: Submit Work
-    S->>A: Append submission
-    S->>C: Wake with submitted Work
-
-    loop Until Mission terms are complete
-        alt Intent is incomplete
-            C->>S: request-input
-            S->>A: Record request
-            S-->>U: Work needs input
-            U->>S: amend-terms
-            S->>A: Append amended terms
-        else Repository facts are missing
-            C->>O: Launch bounded read-only assessment
-            O->>S: record assessment
-            S->>A: Append assessment
-        else Terms are complete
-            C->>S: admit Work
-            S->>A: Append immutable Mission
-        end
-    end
-
-    S->>A: Reserve budget and queue Execution
-    S->>E: Launch isolated Executor
-
-    loop Until Work succeeds or stops
-        par Executor work
-            E->>S: Report progress
-            E->>S: Commit, validate, and publish sandbox
-        and Provider monitoring
-            M->>P: Poll active review request
-            P-->>M: Status, feedback, or merge evidence
-            M->>S: Record changed observations
-            S->>A: Append provider evidence
-        end
-
-        alt Runtime is unreachable
-            M->>S: Report runtime observation
-            C->>S: Authorize recovery
-            alt Runtime can be rebound
-                S->>E: Rebind same Execution
-            else Recovery requires replacement
-                S->>E: End Execution
-                S->>A: Queue replacement Execution
-            else Work must stop
-                S->>A: Record failed or cancelled Work
-            end
-        else Provider merge is observed
-            M->>C: Wake Conclave for merge settlement
-            C->>S: Verify head and merge commit
-            C->>S: Record explicit Outcome
-            S->>A: Append Outcome
-        else Executor sends ready Signal
-            E->>S: ready with review and validation evidence
-            S->>P: Ensure draft review request
-            opt Conclave requests advisory Oracle review
-                C->>R: Review diff and validation packet
-                R-->>C: Advisory findings
-            end
-            C->>S: Issue Verdict
-            alt Continue
-                S->>E: Resume Execution
-            else Replace
-                S->>E: End Execution
-                S->>A: Queue replacement Execution
-            else Handoff
-                S-->>U: Awaiting provider review
-                alt Authorized feedback is requested
-                    P-->>S: Actionable provider feedback
-                    C->>S: Assess Mission fit and authorize Delivery
-                    S->>E: Deliver bounded feedback
-                else Review remains open
-                    Note over U,P: The next monitor cycle checks for feedback or merge
-                end
-            else Reject Mission
-                C->>S: Reject current Mission
-                S->>A: Record Verdict
-            end
-        else Execution is blocked or fails
-            E->>S: blocked or failed Signal
-            C->>S: Replace Execution or stop Work
-        end
-    end
+```text
+Submission -> clarification if needed -> immutable Mission -> queued Execution
+  -> validated commits -> ready Signal -> Conclave Verdict
+  -> handoff -> review -> bounded correction or acceptance
+  -> Conclave records succeeded Outcome
 ```
 
-The diagram shows the durable lifecycle interactions and the loops around
-admission, execution, provider review, feedback delivery, polling, and runtime
-recovery.
-Polling records observations and can wake the Conclave, but it never merges or
-accepts Work by itself.
-Only verified provider merge evidence combined with an explicit Conclave
-Outcome produces `succeeded` Work.
+```text
+Work:      submitted <-> needs-input; submitted -> queued -> active <-> awaiting-review
+           -> succeeded | stopped
+Mission:   admitted -> active <-> awaiting-review -> succeeded | rejected | superseded
+Execution: queued -> running <-> awaiting-review -> completed | blocked | failed | stopped
+```
 
-## Submission and admission
+These outlines describe the ordinary flow, not permission to take every transition from every state.
+The application service validates actor, input, current bindings, expected Work revision, and required evidence for each action.
+Runtime reachability and provider text are observations, not lifecycle decisions.
 
-`khala_submit_work` validates a title, objective, and acceptance criteria, then applies documented defaults and appends a `submission` Record.
-It returns without waiting for the Conclave child.
+## Submission and clarification
 
-The Conclave can request more intent with `request-input`.
-The Work becomes `needs-input` until the User amends its pre-admission terms with `amend-terms`.
-Admission is not available while Work is in `needs-input`.
-A missing repository fact may launch one read-only Observer.
-The Observer records exactly one bounded `assessment` and stops.
+A submission requires a title, objective, and at least one acceptance criterion.
+It may include context, scope, constraints, validation requirements, permitted paths, and a maximum token budget.
+The repository is captured from the invoking workspace or explicitly selected before admission; changing directories later cannot retarget Work.
 
-The Conclave admits complete terms into an immutable Mission.
-An inactive Mission can be amended only by the Conclave.
-That action creates a successor Mission and `mission-change` evidence with predecessor, reason, evidence, and disposition.
+The Conclave resolves bounded scope, permitted paths, and validation from User intent and trusted repository instructions.
+It asks when requirements or authorization are unclear and never assumes every repository uses `npm run check`.
+One structured clarification request serves both pre-admission and admitted Work, recording reason, optional missing fields, evidence reference, and permitted response.
 
-The scheduler orders admitted Work by Archive sequence.
-It starts a Work only when the project concurrency limit and its remaining token budget permit an Execution reservation.
-Work that cannot start remains queued with the relevant waiting message.
+Before admission, `request-input` places Work in `needs-input`.
+The User answers through `amend-terms`, returning Work to `submitted` before admission.
+After admission, clarification is an unresolved attention item on the existing Work, not a return to submission.
+An answer within existing terms permits bounded continuation; changed terms require approval of the exact successor agreement.
+An action depending on an unanswered request cannot proceed.
 
-## Execution
+Missing repository facts may launch one read-only Observer.
+It reads only resolved permitted context, records one bounded evidence-backed assessment, and stops.
+It cannot invent objective, acceptance criteria, scope, constraints, or authorization.
+Its allowance and timeout are specified in [Operations](operations.md#allowances-and-limits).
 
-The Executor receives one Mission in an isolated Git worktree and a separate Pi JSON-RPC session.
-Model, thinking level, token allowance, sandbox, permitted paths, and prompt identity are persisted before the child starts.
+## Admission and amendment
 
-Each Execution reserves half of the configured Work token cap with a minimum allowance of one token.
-Observed input and output tokens are charged as turns complete.
-When usage reaches the allowance, the Execution becomes `blocked` with `blockReason` `budget-exhausted`.
-The Conclave must replace it or amend the Work budget.
-A single Pi turn may overshoot because the RPC interface does not expose a per-session output limit.
+The Conclave admits only safe, bounded Work with complete Mission terms and a resolved Work budget cap.
+Before Execution reservation, the service verifies target branch, sandbox base, prompt binding, token allowance, validation contract, and required isolation.
+The scheduler then follows the [architecture contract](architecture.md#scheduling-and-child-runs).
 
-Only the current Executor can send `progress`, `blocked`, or `ready` Signals.
-A ready Signal requires a reconciled review request for the current sandbox head, validation evidence, and a permitted-path check.
-An Execution may remain `running` while its Pi runtime is `idle` between turns.
-Runtime observations are stored separately from lifecycle state.
+Corrections within unchanged Mission terms require Conclave authorization, not another User approval.
+Changed Mission terms require User approval of the exact successor terms, bound to the current Mission and expected Work revision.
+Different or stale proposed terms are rejected by the service.
 
-## Review and Verdict
+Approval of successor terms authorizes ending the current attempt without cancelling the Work.
+A running, blocked, queued, or awaiting-review Execution is stopped for amendment; its useful work and evidence remain available, and Work remains nonterminal.
+No continuation under the predecessor terms is authorized once that stop is requested.
+The Conclave may apply `amend-mission` only when the current Execution is absent, failed, or stopped.
+The amendment creates a successor Mission, marks the predecessor superseded, and records reason, User approval, evidence, and disposition.
+It clears current review and Execution bindings and returns Work to the FIFO queue.
+No successor Execution starts until the predecessor's process tree is confirmed stopped.
+Amendment does not reset consumed budget or correction allowance.
 
-The Executor commits and publishes the sandbox branch before creating or reconciling a draft review request.
-The target branch must still point to the Execution base commit when publication begins.
-GitHub Pull Requests and GitLab Merge Requests are supported.
-GitHub feedback delivery is supported.
-GitLab status and merge observation are supported, but GitLab feedback normalization is outside the MVP.
+## Execution and Signals
 
-Only the Conclave can issue a Verdict.
-`continue` keeps a non-exhausted Execution running.
-`replace` ends it and starts a replacement under the same Mission.
-`handoff` moves the Work to User review after a ready Signal.
-`reject` ends the current Mission without automatically failing or cancelling Work.
+Only the current Executor sends `progress`, `blocked`, or `ready` Signals.
+Progress describes a meaningful implementation, publication, validation, or remediation phase change.
+Blocked explains why the Execution cannot continue.
+Ready identifies the head, diff, successful declared validation, and permitted-path evidence, plus a current review request for provider delivery.
+An adapter unable to perform required validation blocks readiness rather than weakening the Mission.
 
-A ready Signal, provider approval, and handoff are evidence rather than acceptance.
-Only provider-confirmed merge evidence and an explicit Conclave Outcome set Work to `succeeded`.
-A provider may merge before handoff is settled.
-The Conclave verifies the reviewed head and merge commit before recording the Outcome.
+The Executor produces one coherent commit or a small justified series addressing the acceptance criteria, not arbitrary line-count targets.
+Handoff identifies base, reviewed head, commit sequence, change summary, check results, and remaining concerns through the [review snapshot](data-model.md#review-snapshots).
+New commits invalidate readiness and require fresh validation and a new snapshot.
+Executor runs exit before waiting for Conclave judgment, without discarding their recorded Execution or result.
 
-## Monitoring and feedback
+A blocked Execution does not end its Mission by itself.
+A budget-exhausted Execution cannot receive a `continue` Verdict.
+Failed or stopped Executions can be replaced under unchanged terms only while the current Mission remains authorized for execution.
+Replacement cannot bypass rejection, an approved amendment, cancellation, or recorded acceptance.
+Authorized review feedback can return an awaiting-review Execution to `running`.
+Runtime recovery rebinds the same Execution rather than silently creating a replacement.
 
-The root service polls active review requests once per minute while its hosting User Pi session is alive.
-Polling records changed observations, provider check failures, and provider merge evidence.
-A changed provider head or base is surfaced as reconciliation evidence before ready handoff.
-It never merges or accepts Work automatically.
+## Verdicts and review
 
-GitHub feedback is actionable when its author has a trusted association and the review record is submitted and actionable.
-The authenticated review principal identifies the review request owner; it does not exclude other trusted reviewers.
-The Conclave decides whether feedback fits the Mission before creating one Delivery.
-A completed Delivery cannot be replayed silently.
-Failed delivery remains evidence and can be explicitly retried after the Executor is reconciled.
+Only the Conclave creates Verdicts:
 
-## Recovery and closure
+| Verdict | Meaning |
+| --- | --- |
+| `continue` | Preserve a non-exhausted Execution for bounded continuation |
+| `replace` | End the current Execution and queue a replacement under the same Mission after confirmed termination |
+| `handoff` | Enter User review after ready evidence and the delivery evidence required by the Mission |
+| `reject` | End the current Mission and ask the User to approve successor terms or stop Work |
 
-The parent supervisor owns Executor launches and consumes durable outbox effects.
-The supervisor is not a standalone daemon and ends with the hosting User Pi session.
-Run the Pi command `/khala-recover` after reopening a project to drain pending effects and reconcile persisted bindings.
-The User recovery action can rebind an unreachable Executor through the parent supervisor.
-The autonomous monitor performs the same work on its next cycle.
-Child role sessions cannot invoke User recovery tools or impersonate the parent.
+Rejection marks the Mission rejected and stops its current Execution while retaining its useful work and evidence.
+Work remains nonterminal, awaiting approved successor terms or an explicit decision to stop Work.
+Rejection does not itself fail or cancel Work.
+A Conclave decision that produces no required durable result becomes attention evidence rather than indefinite silent progress.
+Closure, failed checks, and monitoring failures require reconciliation or an explicit decision.
 
-A runtime probe reports `working`, `pending`, `idle`, `unreachable`, or `unknown`.
-A PID alone does not prove that Work is active.
-An unreachable Executor remains an active lifecycle until Conclave-authorized recovery, replacement, or explicit Work failure.
+After ready and before handoff, the Conclave may request an Oracle review.
+The bounded packet contains the Mission, review diff, declared validation commands, and latest bounded provider observation summary when available.
+It excludes the Executor prompt, transcript, and conclusion.
+The no-tools Oracle returns advisory findings; its prompt identity and parsed result are retained, and the final Verdict records the Conclave's disposition.
 
-Replacing, failing, cancelling, or completing an Execution removes its local worktree and branch after active turns finish.
-Remote review requests and branches remain for audit.
-Khala does not automatically close or delete remote review objects.
+## Publication and base drift
+
+Local delivery commits through the governed workspace action without fetching, pushing, or contacting a code host.
+Provider delivery creates a draft review request through a reconciled service action before ready.
+The authorized sandbox branch and current head are passed to the provider adapter only after publication permission is verified.
+
+For provider delivery, Khala refreshes the stored target branch before Execution creation and publication.
+The target must still point to the Execution's base commit when publication begins.
+Base drift blocks publication and requires a User-approved successor Mission at the new base; there is no automatic rebase.
+The successor preserves previous work as evidence, carries forward authorized changes through a bounded implementation pass, and requires fresh validation.
+That pass consumes the Work's existing correction allowance.
+Provider base or head drift also blocks ready handoff.
+
+## Acceptance and settlement
+
+Ready and handoff are evidence that a result can be reviewed, not acceptance.
+For local delivery, explicit User acceptance of the exact reviewed snapshot plus a Conclave Outcome creates `succeeded` from awaiting review.
+Acceptance does not merge, cherry-pick, or modify the User's checkout.
+Previous acceptance cannot authorize a changed head.
+
+For provider delivery, the Mission's recorded delegation makes verified provider merge evidence acceptance.
+No second confirmation in Pi is required.
+The Conclave may settle from active or awaiting-review Work after verifying the reviewed snapshot and merge evidence.
+Evidence must connect the snapshot's source head to the merged result, including squash and rebase merges; commit IDs need not be equal.
+A merge without a matching reviewed snapshot requires attention rather than inferred success.
+
+Recorded acceptance closes correction intake for the accepted result, including while settlement is pending.
+Pending corrections cannot resume an Executor or alter that result; any active writer must stop, with its additional work preserved separately from the accepted snapshot.
+Later feedback remains evidence but does not reopen the accepted assignment; further changes require new Work.
+Both modes require a Conclave Outcome before Work becomes `succeeded`.
+If acceptance is recorded but settlement lacks budget, retain it and show “accepted, awaiting settlement”.
+A User budget increase is required before another child launches; this waiting reason is not another Work state.
+The design does not replace Conclave settlement with automatic application-code success.
+
+## Feedback and correction
+
+Explicit User feedback in Pi is supported for both delivery modes and binds to a review snapshot.
+The Conclave checks Mission fit before authorizing another bounded implementation pass.
+The initial pass is not a correction; subsequent passes after review or a blocker consume the finite allowance defined in [Operations](operations.md#allowances-and-limits).
+
+Provider comments are eligible only under the [security trust rules](security.md#provider-feedback).
+Eligible text is evidence, not a direct instruction.
+The Conclave creates one bounded Delivery for an observation, bound to the current review snapshot.
+Older-snapshot feedback requires reassessment; edited provider text is a new observation rather than rewritten delivery evidence.
+Completed Delivery is not replayed.
+Failed delivery remains pending or becomes attention evidence and requires explicit retry after reconciliation; it does not automatically end the Execution or Mission.
+
+Feedback need not become reusable guidance.
+The [data model](data-model.md#guidance-and-context) defines explicit promotion, applicability, pinning, and withdrawal.
+
+## Cancellation, recovery, and retention
+
+Explicit failure or cancellation stops Work and records `stopReason` as `failed` or `cancelled`.
+The service rejects further writer commands, invalidates pending launches and publication effects, and requests termination of the current process tree.
+A recorded stop is not proof that writes have ceased.
+Replacement, workspace release, and cleanup wait for confirmed process-tree termination; uncertain termination retains ownership and requests attention.
+Completed external effects are reconciled and preserved rather than undone by cancellation.
+Terminal Work is not reopened by a later merge observation; the external result remains visible evidence.
+
+Recovery rereads Archive state and reconciles runtime, workspace, model, and provider bindings.
+An unreachable runtime alone neither ends Work nor permits replacement.
+The [supervisor contract](architecture.md#supervision-and-recovery) defines exclusive ownership and restart reconciliation.
+
+Ending an Execution releases live process resources, not its unreviewed result.
+Local commits, branches, and worktrees remain until acceptance is recorded under the delivery mode or the User authorizes disposal, and retention policy permits cleanup.
+Cleanup verifies that commits remain reachable from a retained reference; local acceptance alone does not make an unmerged branch disposable.
+Failed, cancelled, and superseded attempts retain recoverable unreviewed work unless the User explicitly authorizes disposal.
+Only Khala-owned resources may be removed, never assigned User-owned worktrees.
+Remote branches and review requests remain for audit and are not automatically closed or deleted.
+
+## Checks before relying on the lifecycle
+
+Exercise pre- and post-admission clarification, exact-term amendment approval, rejected Missions, and exhausted correction allowance.
+Approve successor terms while an attempt is blocked or awaiting review, then verify it stops without cancelling Work or losing its result before the successor starts.
+Verify exact-head local acceptance and provider merge settlement, including stale snapshots and unavailable settlement budget.
+Record feedback and pending corrections around acceptance and verify they cannot change the accepted result or restart its writer.
+Interrupt validation and publication, cancel Work, and confirm that no replacement writer starts before termination is established.
+Verify that failed delivery, duplicate observations, base drift, and external merge races preserve evidence without expanding authority.

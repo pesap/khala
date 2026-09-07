@@ -1,28 +1,27 @@
 # Khala glossary
 
-- Archive — authoritative append-only SQLite event store. Runtime and views
-  do not mutate it directly.
-- Actor — a role-bound identity such as User, Conclave, Observer, Executor,
-  Oracle, or monitor.
-- Application service — the single versioned interface used by Pi tools and
-  layouts to validate actor, state, revision, and external effects.
-- Execution — one bounded attempt at a Mission, including model, thinking,
-  allowance, sandbox, prompt identity, and Pi binding.
-- Mission — one immutable contract copied from admitted Work terms.
-- Observer — a submission-scoped, read-only context gatherer that records
-  exactly one assessment.
-- Oracle — a separately configured no-tools reviewer whose findings are
-  advisory and never issue a Verdict.
-- Provider observation — bounded, untrusted evidence from a code-host review request.
-  Its `kind` determines the allowed status vocabulary and required identity fields.
-- Record — one immutable Archive fact with actor, bindings, payload version,
-  summary, and evidence references.
-- Signal — Executor evidence describing progress, blockage, or review
-  readiness.
-  It is not acceptance.
-- Verdict — a Conclave decision to continue, replace, hand off, or reject a
-  current Execution.
-- Work — the stable User goal with a budget and terminal `succeeded` or
-  `stopped` state; `stopReason` records a failure or cancellation.
-- Work Outcome — explicit acceptance evidence created only after provider
-  merge confirmation.
+These terms support the [foundations](foundations.md) and [MVP design](mvp-design.md).
+Detailed structure belongs in [Data model](data-model.md), and transitions belong in [Lifecycle](lifecycle.md).
+
+- Archive: the durable account of goals, agreements, attempts, evidence, and decisions.
+- Work: the User's stable goal, independent of any particular attempt or label.
+- Mission: one immutable agreement defining what an attempt may do and how its result is checked and reviewed.
+- Execution: one bounded attempt to carry out a Mission.
+- Record: one immutable fact in the Archive.
+- User: the person who assigns Work and controls its boundaries, feedback, allowances, and acceptance policy.
+- Conclave: the coordinating role responsible for admission, bounded correction, judgment, and Outcome settlement.
+- Executor: the role carrying out one bounded implementation attempt.
+- Observer: an optional read-only gatherer of missing repository facts.
+- Oracle: an optional independent reviewer whose findings are advisory.
+- Actor: the authenticated role-bound identity responsible for an action or recorded fact.
+- Application service: the boundary that enforces authorized actions and exposes saved facts.
+- Child run: one invocation of a role, distinct from the Mission or Execution it serves.
+- Signal: Executor evidence of meaningful progress, blockage, or readiness for review.
+- Verdict: a Conclave decision to continue, replace, hand off, or reject an attempt and its current Mission as applicable.
+- Review snapshot: the immutable identity and evidence of one result presented for review.
+- Provider observation: evidence obtained from a code-host review request, not permission to act.
+- Delivery: a bounded, authorized transfer of feedback to an attempt.
+- Acceptance: the User's approval of a reviewed result, directly for local work or delegated to the repository's merge process for provider delivery.
+- Outcome: the Conclave's recorded settlement of Work against the required evidence.
+- Guidance: User-confirmed, scoped advice explicitly retained for applicable assignments.
+- Attention: an unresolved request or operation, or an unacknowledged terminal failure, requiring a visible next action.

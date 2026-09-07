@@ -2580,6 +2580,7 @@ test("Archive appends validate projections and claim each external effect once",
 	assert.equal(duplicate.record.sequence, first.record.sequence);
 	assert.equal(first.record.recordNumber, 1);
 	assert.equal(first.record.missionRecordNumber, undefined);
+	assert.match(first.record.id, /^[A-Za-z0-9_-]{21}$/);
 	assert.equal(archive.project("w1").queuedSequence, first.record.sequence);
 	assert.equal(archive.query({ states: ["submitted"] }).items.length, 1);
 	assert.throws(() => archive.append({ ...input, workId: "w2" }), /already used for Work w1/);
@@ -2639,6 +2640,10 @@ test("Archive appends validate projections and claim each external effect once",
 	archive.completeEffect("effect-1", "owner-a");
 	assert.equal(archive.pendingEffects("owner-b").length, 0);
 	archive.close();
+
+	const reopened = new SQLiteArchive(join(directory, "archive.sqlite"));
+	assert.equal(reopened.query().items[0]?.id, first.record.id);
+	reopened.close();
 });
 
 test("a real RPC startup retries one transient child exit", async () => {
@@ -2693,6 +2698,10 @@ test("Runtime storage canonicalizes projects and rejects symlinked paths", async
 	await symlink(directory, alias, "dir");
 	const direct = createRuntimeStorage(directory);
 	const linked = createRuntimeStorage(alias);
+	const nanoId = "[A-Za-z0-9_-]{21}";
+	assert.match(direct.ephemeralSessionPath(), new RegExp(`khala-ephemeral-${nanoId}\\.jsonl$`));
+	assert.match(direct.capabilityFilePath(), new RegExp(`khala-capability-${nanoId}$`));
+	assert.match(direct.launchTemporaryPath(direct.persistentSessionPath("executor", "artifacts")), new RegExp(`\\.${nanoId}\\.tmp$`));
 	await Promise.all(Array.from({ length: 8 }, () => direct.prepare()));
 	assert.equal(direct.root, linked.root);
 	assert.equal(direct.persistentSessionPath("executor", "same"), linked.persistentSessionPath("executor", "same"));

@@ -1,5 +1,7 @@
 # Role prompts
 
+This page describes current prompt loading and maintenance, not the complete target role or lifecycle contract.
+The [MVP design](mvp-design.md) maps those contracts; [Security](security.md) owns role authority and isolation.
 Khala uses Pi system prompts to shape the behavior of its child roles.
 The
 shared [`khala` skill](../skills/khala/SKILL.md) explains the tool contracts;
@@ -79,8 +81,8 @@ in every role prompt; link to the shared skill instead.
 
 ### Conclave
 
-Tune admission criteria, scheduling decisions, Verdict handling, provider
-feedback assessment, runtime recovery, and Outcome verification.
+Tune admission criteria, bounded-attempt authorization, Verdict handling, provider feedback assessment, runtime recovery judgment, and Outcome verification.
+Scheduling and process mechanics belong to application code under [Architecture](architecture.md#scheduling-and-child-runs), not the prompt.
 Keep the
 Conclave read-only with respect to the repository and require Archive evidence
 before each decision.
@@ -108,7 +110,8 @@ actual Verdict.
 ## Prompt changes and traceability
 
 Khala computes a prompt identity when configuring a role runtime and persists it with Executions, Observer bindings, and Oracle records.
-Conclave wake prompts are transient and are not represented as a separate lifecycle object.
+The current implementation treats Conclave wake prompts as transient.
+The target [child-run contract](data-model.md#child-run-facts) requires durable invocation and prompt identity for every role, including Conclave; prompt storage must be updated when that contract is implemented.
 Treat prompt changes as behavior changes.
 Review the diff, run the checks, and verify the resulting Archive evidence.
 The service remains the final authority even when a prompt is

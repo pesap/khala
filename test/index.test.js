@@ -35,6 +35,7 @@ test("user sessions show a branded Executor status in the footer", async () => {
 		const statuses = [];
 		const notices = [];
 		const tools = new Map();
+		const activeTools = ["read", "write", "edit", "grep", "find", "ls", "bash", "khala_read_archive", "khala_perform_action", "khala_record_signal", "khala_record_assessment", "khala_run_oracle", "khala_inspect_runtime", "khala_submit_work", "khala_poll_provider"];
 		const pi = {
 			registerFlag() {},
 			registerTool: (tool) => tools.set(tool.name, tool),
@@ -46,9 +47,11 @@ test("user sessions show a branded Executor status in the footer", async () => {
 				return undefined;
 			},
 			getActiveTools() {
-				return [];
+				return [...activeTools];
 			},
-			setActiveTools() {},
+			setActiveTools(names) {
+				activeTools.splice(0, activeTools.length, ...names);
+			},
 		};
 		khalaExtension(pi);
 		assert.equal(await handlers.get("before_agent_start")({ systemPrompt: "base" }), undefined);
@@ -61,7 +64,9 @@ test("user sessions show a branded Executor status in the footer", async () => {
 				notify: (message) => notices.push(message),
 			},
 		};
+		const initialTools = [...activeTools];
 		await handlers.get("session_start")({}, context);
+		assert.deepEqual(activeTools, initialTools);
 		assert.deepEqual(notices, []);
 		assert.deepEqual(statuses.at(-1), { key: "khala-executors", text: "khala: idle" });
 		const archiveTool = tools.get("khala_read_archive");
@@ -91,6 +96,41 @@ test("user sessions show a branded Executor status in the footer", async () => {
 		await rm(join(process.cwd(), "dist", "package.json"), { force: true });
 		await rm(join(process.cwd(), "dist", "system-prompts"), { recursive: true, force: true });
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("role session starts install only its public tool contract", async () => {
+	const { default: khalaExtension } = await import("../dist/src/index.js");
+	const expectedExecutorTools = ["read", "write", "edit", "grep", "find", "ls", "khala_read_archive", "khala_perform_action", "khala_record_signal"];
+	for (const [role, expected] of [
+		["executor", expectedExecutorTools],
+		["oracle", []],
+	]) {
+		const handlers = new Map();
+		const activeTools = ["read", "write", "edit", "grep", "find", "ls", "bash", "khala_read_archive", "khala_perform_action", "khala_record_signal", "khala_record_assessment", "khala_run_oracle", "khala_inspect_runtime", "khala_submit_work", "khala_poll_provider"];
+		const pi = {
+			registerFlag() {},
+			registerTool() {},
+			registerCommand() {},
+			on(event, handler) {
+				handlers.set(event, handler);
+			},
+			getFlag() {
+				return role;
+			},
+			getActiveTools() {
+				return [...activeTools];
+			},
+			setActiveTools(names) {
+				activeTools.splice(0, activeTools.length, ...names);
+			},
+		};
+		khalaExtension(pi);
+		await handlers.get("session_start")({}, { cwd: process.cwd(), ui: { notify() {} } });
+		assert.deepEqual(activeTools, expected);
+		if (role === "executor") {
+			assert.equal(handlers.get("tool_call")({ toolName: "bash", input: {} }).block, true);
+		}
 	}
 });
 function restoreEnvironmentVariable(name, value) {
