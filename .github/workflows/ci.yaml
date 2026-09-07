@@ -16,6 +16,11 @@ jobs:
         with:
           node-version: 22.19.0
           cache: npm
+      - name: Install validation isolation runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+          bwrap --version
       - run: npm ci --ignore-scripts
       # Lint here; the test step's build (clean + tsc) is the authoritative type gate,
       # so a separate --noEmit typecheck pass would be redundant build work.
