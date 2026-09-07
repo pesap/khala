@@ -231,6 +231,7 @@ function makeService(path, overrides = {}) {
 		observerPromptIdentity: { packageVersion: "1.1.0", promptSha256: "observer" },
 		oraclePromptIdentity: { packageVersion: "1.1.0", promptSha256: "oracle" },
 		rolePublicKey: ROLE_PUBLIC_KEY,
+		supervision: overrides.supervision ?? "candidate",
 	});
 	return { service, controls: fake.controls, runtime: fake.ports.runtime, archive };
 }
@@ -265,6 +266,69 @@ async function admitAndStart(service, idPrefix) {
 	await new Promise((resolve) => setImmediate(resolve));
 	return service.inspectWork(submitted.workId);
 }
+
+test("a competing service cannot monitor or recover another supervisor's live Executor", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-competing-supervisor-"));
+	const path = join(directory, "archive.sqlite");
+	const owner = makeService(path, { executorHold: true, runtimeState: "working" });
+	const competitor = makeService(path, { runtimeState: "unreachable" });
+	try {
+		const running = await admitAndStart(owner.service, "exclusive-owner");
+		const revision = owner.service.inspectWork(running.workId).revision;
+		await competitor.service.runAutonomousCycle();
+		assert.equal(competitor.service.inspectWork(running.workId).revision, revision);
+		assert.equal(competitor.controls.sessions.length, 0);
+		assert.equal(competitor.controls.stopped.length, 0);
+		await assert.rejects(
+			competitor.service.recoverWork(running.workId, meta("user", "foreign-recovery", revision)),
+			/supervisor/i,
+		);
+		assert.equal(competitor.controls.stopped.length, 0);
+		owner.controls.releaseExecutor();
+		await owner.service.close();
+		await competitor.service.processPendingEffects();
+		assert.equal(competitor.archive.acquireSupervision(), true);
+	} finally {
+		owner.controls.releaseExecutor?.();
+		await owner.service.close();
+		await competitor.service.close();
+	}
+});
+
+test("supervision remains exclusive until runtime shutdown finishes", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-supervisor-shutdown-"));
+	const path = join(directory, "archive.sqlite");
+	const entered = Promise.withResolvers();
+	const release = Promise.withResolvers();
+	const owner = makeService(path, { ports: { runtime: { async close() { entered.resolve(); await release.promise; } } } });
+	const competitor = new SQLiteArchive(path);
+	try {
+		await owner.service.processPendingEffects();
+		const closing = owner.service.close();
+		await entered.promise;
+		assert.equal(competitor.acquireSupervision(), false);
+		release.resolve();
+		await closing;
+		assert.equal(competitor.acquireSupervision(), true);
+	} finally {
+		release.resolve();
+		await owner.service.close();
+		competitor.close();
+	}
+});
+
+test("a child service leaves runtime effects to the parent supervisor", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-child-supervisor-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { supervision: "client" });
+	try {
+		service.submitWork({ title: "Client submission", objective: "No child launches", acceptanceCriteria: ["Parent owns effects"] }, meta("user", "client-submit", 0));
+		await service.processPendingEffects();
+		await service.runAutonomousCycle();
+		assert.equal(controls.sessions.length, 0);
+	} finally {
+		await service.close();
+	}
+});
 
 test("generated Work IDs use Nano ID format", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-work-id-"));
@@ -2747,7 +2811,7 @@ test("a real RPC child waits for each prompt completion", async () => {
 	assert.equal(earlyResult, "pending");
 	assert.deepEqual(await second, { output: "" });
 	const staleBinding = { ...binding, processMarker: "stale-process" };
-	assert.equal(await runtime.getState(staleBinding), "unreachable");
+	assert.equal(await runtime.getState(staleBinding), "unknown");
 	await assert.rejects(runtime.send(staleBinding, "stale prompt"), /not attached/);
 	await runtime.requestStop(staleBinding);
 	assert.equal(await runtime.getState(binding), "idle");

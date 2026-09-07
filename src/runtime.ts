@@ -5,7 +5,14 @@ import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "
 import process from "node:process";
 import { nanoid } from "nanoid";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
-import type { AgentRuntimePort, OperationContext, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
+import {
+	type AgentRuntimePort,
+	type OperationContext,
+	type RuntimeBinding,
+	type RuntimeState,
+	type RuntimeTurn,
+	RuntimeTurnError,
+} from "./ports.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 
 export type PiRuntimeOptions = Readonly<{
@@ -264,9 +271,8 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			await sendPrompt(child, message, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
 			return await completedTurn(child, completion);
 		} catch (error) {
-			const failure = error instanceof Error ? error : new Error(String(error));
-			await failTurn(child, completion, failure);
-			throw failure;
+			const failure = new RuntimeTurnError(error instanceof Error ? error.message : String(error), child.turnUsage);
+			throw await failTurn(child, completion, failure);
 		} finally {
 			removeAbortHandler(operation, abortHandler);
 			child.sending = false;
@@ -275,7 +281,8 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	async getState(binding: RuntimeBinding, operation?: OperationContext): Promise<RuntimeState> {
 		throwIfAborted(operation);
 		const child = this.children.get(binding.sessionId);
-		if (child === undefined || !sameBindingIdentity(binding, child.binding)) return "unreachable";
+		if (child === undefined) return unattachedRuntimeState(binding);
+		if (!sameBindingIdentity(binding, child.binding)) return unattachedRuntimeState(child.binding);
 		if (child.sending) return "working";
 		return this.readChildState(child, operation);
 	}
@@ -1321,8 +1328,8 @@ async function waitForProcessGroupTermination(processGroupId: number): Promise<v
 	}
 }
 
-function processGroupExists(processGroupId: number): boolean {
-	if (processGroupId <= 0) return false;
+function processGroupExists(processGroupId: number | undefined): boolean {
+	if (processGroupId === undefined || processGroupId <= 0) return false;
 	return process.platform === "linux"
 		? linuxProcessGroupExists(processGroupId)
 		: posixProcessGroupExists(processGroupId);
@@ -1509,15 +1516,24 @@ async function completedTurn(child: MutableChild, completion: Promise<string>): 
 	return child.turnUsage === undefined ? { output } : { output, usage: child.turnUsage };
 }
 
-async function failTurn(child: MutableChild, completion: Promise<string>, failure: Error): Promise<void> {
+function unattachedRuntimeState(binding: RuntimeBinding): RuntimeState {
+	return processGroupExists(binding.processGroupId) ? "unknown" : "unreachable";
+}
+
+async function failTurn(
+	child: MutableChild,
+	completion: Promise<string>,
+	failure: RuntimeTurnError,
+): Promise<RuntimeTurnError> {
 	rejectAgentEnd(child, failure);
 	try {
 		await cleanupChild(child);
 	} catch (error) {
 		const cleanupFailure = error instanceof Error ? error.message : String(error);
-		throw new Error(`${failure.message} Cleanup failed: ${cleanupFailure}`);
+		return new RuntimeTurnError(`${failure.message} Cleanup failed: ${cleanupFailure}`, failure.usage);
 	}
 	await completion.catch(() => undefined);
+	return failure;
 }
 
 async function sendPrompt(

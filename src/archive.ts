@@ -25,6 +25,7 @@ import {
 	type WorkView,
 } from "./model.js";
 import { openSqlite, type SqlDatabase, type SqlOutputValue, type SqlRow } from "./sqlite.js";
+import { SQLiteSupervisionLock } from "./supervision.js";
 
 export type ArchiveEffect = Readonly<{
 	effectId: string;
@@ -84,6 +85,8 @@ export interface ArchivePort {
 		observationId?: string | undefined,
 	) => ProviderObservation | undefined;
 	listProjects: () => readonly WorkView[];
+	acquireSupervision: () => boolean;
+	releaseSupervision: () => void;
 	close: () => void;
 }
 
@@ -227,16 +230,19 @@ function assertWritableArchivePath(path: string): void {
 
 export class SQLiteArchive implements ArchivePort {
 	private readonly database: SqlDatabase;
+	private readonly supervision: SQLiteSupervisionLock | undefined;
 
 	constructor(path: string, options: SQLiteArchiveOptions = {}) {
 		this.database = openArchiveDatabase(path, options);
 		if (options.readOnly === true) {
+			this.supervision = undefined;
 			this.initializeReadOnly();
 			this.initializeReadViews();
 			return;
 		}
 		this.initializeWritable(path);
 		this.initializeReadViews();
+		this.supervision = new SQLiteSupervisionLock(path);
 	}
 
 	private initializeReadOnly(): void {
@@ -700,7 +706,16 @@ export class SQLiteArchive implements ArchivePort {
 		return rows.map((row) => parseWorkView(readString(row, "view_json")));
 	}
 
+	acquireSupervision(): boolean {
+		return this.supervision?.acquire() ?? false;
+	}
+
+	releaseSupervision(): void {
+		this.supervision?.release();
+	}
+
 	close(): void {
+		this.supervision?.release();
 		this.database.close();
 	}
 	private assertExecutionAdmission(

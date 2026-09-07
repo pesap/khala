@@ -72,6 +72,11 @@ A new Archive does not recover or terminate processes owned by another Archive.
 Result retention and permitted cleanup are owned by [Lifecycle](lifecycle.md#cancellation-recovery-and-retention).
 
 The current `/khala-recover` command rereads the project Archive, drains pending effects, and reconciles runtime bindings.
+User-initiated runtime recovery requires the session holding Archive supervision; competing User sessions must use that owning session or wait for its shutdown.
+Conclave-authorized Executor recovery is queued for the owning supervisor.
+The adjacent `.supervision.sqlite` file holds a process-lifetime SQLite lock, not a lease that expires during a long model turn.
+Do not delete it to force takeover.
+Reload all existing Khala Pi sessions after changing supervision code before retrying stopped Work; source edits do not replace already-loaded services.
 The current extension closes its application service when the User Pi session shuts down; independent background continuation remains a target requirement.
 There is no `/khala-stop` command in this checkout.
 Opening another project does not reconnect to the same shared Archive yet.
@@ -124,6 +129,8 @@ The [target navigation contract](tui-navigation.md) uses configured Pi editing a
 
 Current Archives are named from resolved project paths, and child session, lease, lock, and capability files use project-specific temporary directories.
 Current Execution reservations use half the Work cap rather than the target explicit reservation for every role run.
+Interrupted Executor implementation turns retain usage reported by completed assistant messages and charge that known usage even when the Work was cancelled before the turn failed.
+Interrupted feedback-delivery usage, unreported in-flight usage, and all-role reservation reconciliation remain implementation gaps; recorded usage is not a complete spending estimate after interruption.
 Current prompt recovery rejects persisted prompt identities that do not match the installed package.
 These implementation constraints do not authorize rewriting existing Work to fit the target.
 

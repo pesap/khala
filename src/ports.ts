@@ -75,6 +75,17 @@ export interface CodeHostPort {
 }
 
 export type RuntimeState = "working" | "pending" | "idle" | "unreachable" | "unknown";
+
+export class RuntimeTurnError extends Error {
+	readonly usage?: TokenUsage;
+
+	constructor(message: string, usage?: TokenUsage) {
+		super(message);
+		this.name = "RuntimeTurnError";
+		if (usage !== undefined) this.usage = usage;
+	}
+}
+
 export type RuntimeTurn = Readonly<{ output: string; usage?: TokenUsage | undefined }>;
 
 export type RuntimeBinding = Readonly<{

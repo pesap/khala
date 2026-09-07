@@ -193,6 +193,9 @@ sets Work to `succeeded`.
 - `budget-exhausted`: replace the Execution or amend the Work budget before continuing.
 - `unreachable` runtime: inspect it, then use Conclave-authorized `recover`; do
   not start a second Executor manually.
+- `unknown` runtime: a live child may belong to another Pi session; this is not proof of a dead Executor.
+- competing supervisor: perform runtime recovery in the owning Pi session or wait for its shutdown; never delete the supervision lock to force takeover.
+- supervision code update: reload existing Khala Pi sessions before retrying stopped Work; already-loaded services do not adopt source edits.
 - provider, monitor, or delivery error: inspect the error and evidence records;
   retry the explicit operation when appropriate.
 - revision conflict: reread and recompute the action from current state.

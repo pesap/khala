@@ -172,6 +172,7 @@ function createServiceOptions(
 		observerPromptIdentity: prompts.observer,
 		oraclePromptIdentity: prompts.oracle,
 		rolePublicKey: context.rolePublicKey,
+		supervision: context.child ? "client" : "candidate",
 		autonomousMonitor: !context.child,
 	};
 }

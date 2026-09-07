@@ -142,7 +142,7 @@ The current port methods likewise describe an implementation boundary, not addit
 ArchivePort       append, updateCommandProjection, findCommand,
                   pendingEffects, completeEffect, releaseEffect, renewEffect,
                   query, querySummaries, project, findObservation, findLatestObservation,
-                  listProjects, close
+                  listProjects, acquireSupervision, releaseSupervision, close
 AgentRuntimePort  ensureSession, send, getState, requestStop, close
 WorkspacePort     preflight, ensureSandbox, inspectHead, inspectChanges,
                   commitSandbox?, runValidation?, publishSandbox, removeSandbox
@@ -154,6 +154,10 @@ OraclePort        review
 Optional current workspace methods do not waive target validation requirements.
 Current actions do not populate input schemas or confirmation metadata; those remain required by the target reads above.
 The current extension owns its application runtime in the User Pi session and closes it on `session_shutdown`.
+One eligible User-session service holds an exclusive SQLite supervision lock beside its project Archive before monitoring or consuming effects.
+Competing services remain clients while that lock is held, and role-bound children cannot acquire supervision.
+The lock is released after service shutdown drains runtime operations, or by the operating system when its owner exits.
+A live process without an attached RPC connection is `unknown`, not evidence that the process has died.
 Project-scoped storage and those session-bound runtime bindings do not implement the target shared background supervisor.
 See [Operations](operations.md#current-configuration-reference) for current settings and [Application actions](supervision-tools.md) for tool entry points.
 
@@ -170,6 +174,7 @@ See [Operations](operations.md#current-configuration-reference) for current sett
 | [`src/index.ts`](../src/index.ts) | Pi tools, commands, role bindings, and wiring |
 | [`src/factory.ts`](../src/factory.ts) | Current application runtime construction |
 | [`src/runtime-storage.ts`](../src/runtime-storage.ts) | Runtime ownership and artifact storage |
+| [`src/supervision.ts`](../src/supervision.ts) | Exclusive project-Archive supervision ownership |
 | [`src/tui.ts`](../src/tui.ts) | On-demand interaction |
 | [`src/archive-view.ts`](../src/archive-view.ts) | Bounded Archive presentation |
 | [`system-prompts/`](../system-prompts/) | Child role instructions |

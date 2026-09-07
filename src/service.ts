@@ -47,13 +47,14 @@ import {
 	type WorkTerms,
 	type WorkView,
 } from "./model.js";
-import type {
-	OperationContext,
-	OracleResult,
-	RuntimeBinding,
-	RuntimeState,
-	RuntimeTurn,
-	ServicePorts,
+import {
+	type OperationContext,
+	type OracleResult,
+	type RuntimeBinding,
+	type RuntimeState,
+	type RuntimeTurn,
+	RuntimeTurnError,
+	type ServicePorts,
 } from "./ports.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 
@@ -75,6 +76,7 @@ export type ServiceOptions = Readonly<{
 	observerPromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	oraclePromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	rolePublicKey: string;
+	supervision: "candidate" | "client";
 	autonomousMonitor?: boolean | undefined;
 	shutdownGraceMs?: number | undefined;
 }>;
@@ -449,6 +451,21 @@ export class ApplicationService {
 		}
 	}
 
+	private acquireSupervision(): boolean {
+		if (this.closing) return false;
+		return this.options.supervision === "candidate" && this.archive.acquireSupervision();
+	}
+
+	private requireSupervision(): void {
+		if (this.acquireSupervision()) return;
+		throw this.error(
+			"invalid-state",
+			"Runtime recovery requires the owning Archive supervisor.",
+			false,
+			"Use the owning User Pi session, or wait for its shutdown before recovering this Work.",
+		);
+	}
+
 	getRoleSettings(): RoleSettingsMap {
 		return {
 			conclave: { model: this.options.conclaveModel, thinking: this.options.conclaveThinking },
@@ -588,7 +605,7 @@ export class ApplicationService {
 	}
 
 	async runAutonomousCycle(): Promise<void> {
-		if (this.closing) return;
+		if (!this.acquireSupervision()) return;
 		if (this.autonomousCycleRun !== undefined) return this.autonomousCycleRun;
 		const run = this.runAutonomousCycleOnce();
 		this.autonomousCycleRun = run;
@@ -984,7 +1001,7 @@ export class ApplicationService {
 	}
 
 	async processPendingEffects(): Promise<void> {
-		if (this.closing) return;
+		if (!this.acquireSupervision()) return;
 		if (this.pendingEffectsRun !== undefined) {
 			this.pendingEffectsRequested = true;
 			return this.pendingEffectsRun;
@@ -1515,6 +1532,7 @@ export class ApplicationService {
 		operation?: OperationContext,
 	): Promise<WorkView> {
 		this.requireAnyActor(meta, ["user", "conclave"]);
+		if (meta.actor === "user") this.requireSupervision();
 		throwIfOperationAborted(operation);
 		onRecoveryUpdate?.({ stage: "checking", message: "Checking the current Work state." });
 		const work = this.inspectWork(workId);
@@ -3023,16 +3041,10 @@ export class ApplicationService {
 		});
 		this.drivingExecutions.set(context.key, turn);
 		this.addActiveExecutorTurn(context.turnKey, turn);
-		let activeBinding: RuntimeBinding | undefined;
 		try {
-			activeBinding = await this.runExecutorTurn(work, context.execution);
+			await this.runExecutorTurn(work, context.execution);
 		} catch (error) {
-			await this.failExecutorTurn(
-				work,
-				context.execution,
-				activeBinding,
-				error instanceof Error ? error : new Error(String(error)),
-			);
+			await this.failExecutorTurn(work, context.execution, error instanceof Error ? error : new Error(String(error)));
 		} finally {
 			finish();
 			this.finishExecutorDrive(context, turn);
@@ -3059,19 +3071,49 @@ export class ApplicationService {
 		return binding;
 	}
 
-	private async failExecutorTurn(
-		work: WorkView,
-		execution: Execution,
-		activeBinding: RuntimeBinding | undefined,
-		error: ServiceFailure,
-	): Promise<void> {
-		const binding = activeBinding ?? execution.pi;
+	private async failExecutorTurn(work: WorkView, execution: Execution, error: ServiceFailure): Promise<void> {
+		const binding = execution.pi;
 		if (binding === undefined) return;
 		await this.ports.runtime.requestStop(binding).catch(() => undefined);
 		const current = this.archive.project(work.workId);
-		if (!currentExecutorTurnIsCurrent(current, execution)) return;
-		const failed = failedExecutorProjection(current, execution, error);
-		this.appendExecutorFailureSafely(current, execution, failed);
+		if (current === undefined) return;
+		const accounted = this.accountInterruptedTurn(current, work, execution, error);
+		if (!currentExecutorTurnIsCurrent(accounted, execution)) return;
+		this.appendExecutorFailureSafely(accounted, execution, failedExecutorProjection(accounted, execution, error));
+	}
+
+	private accountInterruptedTurn(
+		current: WorkView,
+		started: WorkView,
+		execution: Execution,
+		error: ServiceFailure,
+	): WorkView {
+		if (!sameExecutorAttempt(current, execution) || !(error instanceof RuntimeTurnError)) return current;
+		if (error.usage === undefined) return current;
+		return this.appendKnownExecutorUsage(
+			current,
+			error.usage,
+			`executor-usage:${execution.executionId}:${started.revision}`,
+		);
+	}
+
+	private appendKnownExecutorUsage(
+		work: WorkView & { execution: Execution },
+		usage: TokenUsage,
+		commandId: string,
+	): WorkView {
+		if (this.archive.findCommand(commandId) !== undefined) return work;
+		const next = accountKnownExecutorUsage(work, usage);
+		return this.append({
+			meta: { actor: "system", commandId, expectedWorkRevision: work.revision, schemaVersion: 1 },
+			kind: "execution",
+			workId: work.workId,
+			missionId: work.mission?.missionId,
+			executionId: work.execution.executionId,
+			payload: next.execution,
+			projection: next,
+			summary: `Execution ${work.execution.executionId} partial usage was recorded after runtime failure.`,
+		}).projection;
 	}
 
 	private appendExecutorFailureSafely(work: WorkView, execution: Execution, failed: WorkView): void {
@@ -5761,6 +5803,29 @@ function idleExecutorRuntimeAction(nextAction: string): string {
 function executorIsWorking(nextAction: string): boolean {
 	return ["Executor is working.", "Executor is resuming authorized review feedback."].includes(nextAction);
 }
+function sameExecutorAttempt(current: WorkView, expected: Execution): current is WorkView & { execution: Execution } {
+	const execution = current.execution;
+	return (
+		execution !== undefined &&
+		execution.executionId === expected.executionId &&
+		sameRuntimeBinding(execution.pi, expected.pi)
+	);
+}
+
+function accountKnownExecutorUsage(
+	work: WorkView & { execution: Execution },
+	usage: TokenUsage,
+): WorkView & { execution: Execution } {
+	const execution = work.execution;
+	const total = addTokenUsage(execution.usage, usage);
+	return {
+		...work,
+		revision: work.revision + 1,
+		execution: { ...execution, usage: total },
+		budget: applyKnownUsage(work.budget, execution.usage, total),
+	};
+}
+
 function currentExecutorTurnIsCurrent(
 	current: WorkView | undefined,
 	execution: Execution,
@@ -5772,6 +5837,7 @@ function currentExecutorTurnIsCurrent(
 function failedExecutorProjection(work: WorkView, execution: Execution, error: ServiceFailure): WorkView {
 	const failed: Execution = {
 		...execution,
+		usage: work.execution?.usage,
 		state: "failed",
 		runtimeState: "unreachable",
 		endedAt: new Date().toISOString(),
@@ -5780,7 +5846,7 @@ function failedExecutorProjection(work: WorkView, execution: Execution, error: S
 		...work,
 		revision: work.revision + 1,
 		execution: failed,
-		budget: releaseExecutionReservation(work.budget, execution),
+		budget: releaseExecutionReservation(work.budget, failed),
 		lastError: executionFailure(work, execution.executionId, error.message),
 		nextAction: "Executor runtime failed; Conclave may replace it.",
 	};
@@ -5889,6 +5955,16 @@ function applyUsage(budget: WorkBudget, previous: TokenUsage | undefined, curren
 	return {
 		...budget,
 		reservedTokens: budget.reservedTokens - consumed,
+		consumedTokens: budget.consumedTokens + consumed,
+	};
+}
+
+function applyKnownUsage(budget: WorkBudget, previous: TokenUsage | undefined, current: TokenUsage): WorkBudget {
+	const delta = Math.max(0, tokenUsageTotal(current) - tokenUsageTotal(previous ?? emptyTokenUsage()));
+	const consumed = Math.min(delta, budget.maxTokens - budget.consumedTokens);
+	return {
+		...budget,
+		reservedTokens: Math.max(0, budget.reservedTokens - consumed),
 		consumedTokens: budget.consumedTokens + consumed,
 	};
 }
