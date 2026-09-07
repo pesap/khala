@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,28 @@ async function listenPort() {
 	if (port === undefined) throw new Error("Test server did not bind.");
 	return { server, port };
 }
+
+test("missing bubblewrap fails closed with an actionable isolation diagnostic", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "khala-no-bwrap-"));
+	const bin = join(root, "bin");
+	await mkdir(bin);
+	for (const command of ["sh", "git", "npm"]) {
+		const path = execFileSync("/bin/sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).trim();
+		await symlink(path, join(bin, command));
+	}
+	const previousPath = process.env.PATH;
+	t.after(async () => {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		await rm(root, { recursive: true, force: true });
+	});
+	process.env.PATH = bin;
+	const workspace = new GitWorkspace(root, "test/");
+	const [result] = await workspace.runValidation({ path: root, commands: ["touch marker"] });
+	assert.equal(result.passed, false);
+	assert.match(result.output, /Validation isolation requires bubblewrap/);
+	await assert.rejects(access(join(root, "marker")), { code: "ENOENT" });
+});
 
 test("validation rejects outside paths and symlink escapes before executing commands", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-validation-root-"));
