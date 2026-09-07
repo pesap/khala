@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
+import { nanoid } from "nanoid";
 import type { GovernedRole, JsonObject, JsonValue, RoleSetting } from "./model.js";
 
 export type KhalaConfig = Readonly<{
@@ -99,7 +100,7 @@ export function persistRoleSetting(role: GovernedRole, setting: RoleSetting, val
 	try {
 		const current = readConfig(path) ?? {};
 		const next = { ...current, [roleConfigKey(role, setting)]: normalized };
-		const temporaryPath = `${path}.${randomUUID()}.tmp`;
+		const temporaryPath = `${path}.${nanoid()}.tmp`;
 		try {
 			writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
 				encoding: "utf8",

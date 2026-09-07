@@ -51,6 +51,7 @@ An Executor's transient implementation plan is not another immutable agreement.
 
 A Record is one immutable fact with actor, Work/Mission/Execution bindings when applicable, payload version, summary, evidence references, and timestamp.
 It exposes an opaque ID, Archive sequence, global record number, optional per-Mission record number, kind, and bounded payload.
+New Record IDs use Nano ID; persisted IDs are not rewritten.
 Signals and validation bind to an Execution.
 Observer assessments and provider observations are Work-level evidence but retain the result identities needed to assess applicability.
 They do not amend Mission identity.
@@ -82,6 +83,8 @@ The [operations contract](operations.md#allowances-and-limits) owns reservation 
 Runtime liveness is a separate observation using `working`, `pending`, `idle`, `unreachable`, or `unknown`.
 Bindings and a bounded RPC probe supply that observation; a PID alone does not establish activity.
 Raw transcripts are not Archive records.
+Runtime-owned ephemeral session, capability, and lease artifact suffixes use Nano IDs.
+Pi-native session IDs returned during startup remain authoritative and are never fabricated by Khala.
 
 ## Review snapshots
 

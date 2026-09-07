@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, type Stats } from "node:fs";
 import { chmod, lstat, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { nanoid } from "nanoid";
 
 export type RuntimeRole = "conclave" | "executor" | "observer" | "oracle";
 
@@ -21,11 +22,11 @@ export class RuntimeStorage {
 	}
 
 	ephemeralSessionPath(): string {
-		return this.ownedPath(join(this.root, "sessions", `khala-ephemeral-${randomUUID()}.jsonl`));
+		return this.ownedPath(join(this.root, "sessions", `khala-ephemeral-${nanoid()}.jsonl`));
 	}
 
 	capabilityFilePath(): string {
-		return this.ownedPath(join(this.root, "capabilities", `khala-capability-${randomUUID()}`));
+		return this.ownedPath(join(this.root, "capabilities", `khala-capability-${nanoid()}`));
 	}
 
 	launchLeasePath(sessionPath: string): string {
@@ -37,7 +38,7 @@ export class RuntimeStorage {
 	}
 
 	launchTemporaryPath(sessionPath: string): string {
-		return this.ownedPath(`${this.launchLeasePath(sessionPath)}.${randomUUID()}.tmp`);
+		return this.ownedPath(`${this.launchLeasePath(sessionPath)}.${nanoid()}.tmp`);
 	}
 
 	async prepare(): Promise<void> {

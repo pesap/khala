@@ -1,4 +1,4 @@
-import { createPublicKey, type KeyObject, randomUUID, verify } from "node:crypto";
+import { createPublicKey, type KeyObject, verify } from "node:crypto";
 import { nanoid } from "nanoid";
 import {
 	type ArchiveAppend,
@@ -1005,7 +1005,7 @@ export class ApplicationService {
 		} while (this.pendingEffectsRequested && !this.closing);
 	}
 	private async drainPendingEffects(): Promise<void> {
-		const owner = `khala-worker:${randomUUID()}`;
+		const owner = `khala-worker:${nanoid()}`;
 		const retriedConclaveWakes = new Set<string>();
 		while (!this.closing) {
 			const effects = this.archive.pendingEffects(owner);
@@ -3167,7 +3167,7 @@ export class ApplicationService {
 		const evidence = readTextList(input, "evidence");
 		if (kind === "ready") await this.validateReadySignal(work, execution, evidence, operation);
 		const signal: Signal = {
-			signalId: randomUUID(),
+			signalId: nanoid(),
 			executionId: execution.executionId,
 			kind,
 			summary,

@@ -1,8 +1,9 @@
 import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
-import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
+import { createHash, type KeyObject, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import process from "node:process";
+import { nanoid } from "nanoid";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
 import type { AgentRuntimePort, OperationContext, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
@@ -580,7 +581,7 @@ function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions, sto
 	const capabilityNonce = sessionCapabilityNonce(input);
 	const capabilityToken = createSessionCapability(input, options, capabilityNonce);
 	const capabilityFile = sessionCapabilityFile(capabilityToken, storage);
-	const processMarker = randomUUID();
+	const processMarker = nanoid();
 	return {
 		sessionPath,
 		args: sessionArguments(input, options, sessionPath),
@@ -620,7 +621,7 @@ function extensionArguments(extensionPath: string | undefined): readonly string[
 }
 
 function sessionCapabilityNonce(input: SessionInput): string | undefined {
-	return input.tools.length === 0 ? undefined : (input.bindingScope?.nonce ?? randomUUID());
+	return input.tools.length === 0 ? undefined : (input.bindingScope?.nonce ?? nanoid());
 }
 
 function sessionCapabilityFile(token: string | undefined, storage: RuntimeStorage): string | undefined {
@@ -841,7 +842,7 @@ async function replaceExistingLaunch(
 	const lease = parseLaunchLease(text);
 	validateLeaseCapability(lease, storage);
 	await assertLaunchAvailable(path, sessionPath, lease);
-	const displacedPath = `${path}.stale-${randomUUID()}`;
+	const displacedPath = `${path}.stale-${nanoid()}`;
 	await renameStaleLaunch(path, displacedPath, sessionPath);
 	if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
 	await unlink(displacedPath).catch(() => undefined);
