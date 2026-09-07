@@ -426,6 +426,7 @@ export type Page<T> = Readonly<{
 }>;
 
 export type RecordQuery = Readonly<{
+	order?: "asc" | "desc" | undefined;
 	workId?: string | undefined;
 	missionId?: string | undefined;
 	executionId?: string | undefined;
@@ -436,6 +437,7 @@ export type RecordQuery = Readonly<{
 }>;
 
 export type MutableRecordQuery = {
+	order?: "asc" | "desc" | undefined;
 	workId?: string | undefined;
 	missionId?: string | undefined;
 	executionId?: string | undefined;
