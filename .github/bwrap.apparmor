@@ -1,0 +1,9 @@
+# Allow the CI sandbox launcher to create namespaces without disabling
+# Ubuntu's global unprivileged-user-namespace restrictions.
+# Bubblewrap drops capabilities and disables nested user namespaces before exec.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile khala-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
