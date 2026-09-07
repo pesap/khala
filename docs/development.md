@@ -27,6 +27,7 @@ npm pack --dry-run
 `tsconfig.tools.json` inherits the application’s strict compiler checks for `tools/**/*.ts`.
 `npm run check:markdown` checks paragraph sentence boundaries and bullet length.
 `npm run test` builds `dist` and runs every Node test in `test/`.
+`scripts/copy-runtime-assets.mjs` copies package metadata, role prompts, and the demo fixture beside compiled entry points.
 Tests use local port adapters and do not require provider credentials.
 `npm pack --dry-run` verifies the package contents without publishing.
 
