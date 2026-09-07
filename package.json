@@ -1,6 +1,6 @@
 {
   "name": "@pesap/khala",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "publishConfig": {
     "access": "public"
   },
@@ -44,15 +44,16 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc",
+    "build": "npm run clean && tsc && node scripts/copy-runtime-assets.mjs",
     "lint": "oxlint --deny-warnings . && biome check .",
     "lint:oxlint": "oxlint --deny-warnings .",
     "lint:fix": "biome check --write",
     "typecheck": "tsc --noEmit",
-    "check": "npm run lint && npm run typecheck",
+    "typecheck:tools": "tsc --noEmit -p tsconfig.tools.json",
+    "check": "npm run lint && npm run typecheck && npm run typecheck:tools",
     "check:markdown": "node scripts/check-markdown-sentences.mjs",
     "dev": "tsc --watch",
-    "test": "npm run build && node --test test/*.js"
+    "test": "npm run build && node --test --test-concurrency=1 test/*.js"
   },
   "engines": {
     "node": ">=22.19.0"

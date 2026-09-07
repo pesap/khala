@@ -51,8 +51,9 @@ The GitHub Actions workflow runs linting, the build-backed test suite, and
 - `docs/` — lifecycle, data model, supervision, design, operations, and
   navigation references.
 
-Start with [Architecture](architecture.md), then read the relevant source and
-behavioral tests together.
+Start with [Foundations](foundations.md) and the [MVP reading map](mvp-design.md#reading-map-and-ownership), then read the owning contract, relevant source, and behavioral tests together.
+Keep target requirements distinct from current implementation references and verify a requirement before describing it as implemented.
+Update the rule in its authoritative document and link to it elsewhere instead of maintaining duplicate contracts.
 Use [Operations](operations.md) for configuration, limits, and recovery.
 Keep tests focused on observable behavior rather
 than private implementation details.

@@ -1,122 +1,150 @@
 # Operations
 
-This page describes the configuration and operating boundaries of the Khala MVP.
-Use [Getting started](getting-started.md) for the first Work workflow.
+Khala should remain understandable when the initiating Pi session is gone.
+This document owns target configuration, allowances, state locations, and operator recovery from the [MVP design](mvp-design.md).
+The current configuration reference below is explicitly separate from that target.
+Use [Getting started](getting-started.md) for the existing provider-review workflow.
 
-## Configuration
+## Configuration and state locations
 
-Khala reads global configuration from `~/.pi/agent/khala.json`.
-Set `PI_CODING_AGENT_DIR` to use another agent configuration directory.
-A trusted project may add `.pi/khala.json` for project-local overrides.
-Project-local configuration is ignored when the project is not trusted.
-Project values override global values.
+Global configuration is read from `~/.pi/agent/khala.json`, or the directory selected by `PI_CODING_AGENT_DIR`.
+A trusted repository may override it through `.pi/khala.json`; untrusted local configuration is ignored.
+Overrides apply only to Missions targeting that repository and cannot rewrite global defaults or unrelated Work.
 
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `archiveRoot` | `~/.pi/agent/khala` | Directory containing project Archives |
-| `worktreeRoot` | `~/worktrees/khala` | Root for Executor Git worktrees |
-| `worktreeBranchPrefix` | `khala/` | Prefix for sandbox branches |
-| `targetBranch` | `main` | Review request target branch |
-| `maxConcurrentExecutions` | `2` | Project-level Execution limit |
-| `defaultWorkTokens` | `20000` | Default Work budget |
-| `piCommand` | `["pi"]` | Argument list used to launch child sessions |
+The target has one shared Archive and explicit Khala-owned state locations for child artifacts and managed worktrees outside active User checkouts.
+Repository identity remains an access boundary even though storage is shared.
+The [data model](data-model.md#repository-and-workspace-identity) defines local and provider identities.
+No automatic migration, consolidation, or deletion of existing Archives is authorized by this design.
 
-Role models and thinking levels are persisted as `conclaveModel`, `executorModel`, `observerModel`, `oracleModel`, and their matching `*Thinking` settings.
-The Observer model is only needed when repository context gathering is requested.
-The TUI bindings are configurable with `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`h`).
-Conclave, Executor, and Oracle models are required for normal governed Work.
-Role settings apply to future launches.
-Existing Executions retain their persisted model, thinking level, and prompt identity.
+Role settings affect future launches and never change the User's active model or settings.
+Existing Executions retain their recorded model, thinking level, and prompt identity.
+Observer and Oracle configuration is needed only when their optional help is used.
+Starting Work does not install global tools or open unsolicited terminal panes.
 
-Each project path maps to an Archive filename derived from its resolved path.
-The Archive is not portable between paths unless it is deliberately copied and restored by an operator.
+## Allowances and limits
 
-## Limits and timing
+The default Work budget is 20,000 tokens across the complete workflow, including Conclave, Executor, Observer, and Oracle.
+Before autonomous launch, an explicit total concurrency limit and finite automatic correction allowance must be resolved from User settings or the submission.
+Repository overrides may lower the shared total child-run ceiling, not raise it.
+No separate machine-wide resource scheduler is required.
 
-The Archive rejects payloads larger than 64 KB and projections larger than 128 KB.
-Record payloads are bounded to 16,000 characters when read.
-Record summaries are bounded to 500 characters.
-Evidence references are limited to 20 entries of 500 characters each.
-Provider conversations retain at most eight comments and eight checks.
-Provider comment bodies are bounded to 500 characters in conversation details and 2,000 characters in feedback delivery.
-Role-visible Work content includes only structured facts from the current Signal kind, opaque Signal ID, and evidence count, plus failed validation status and fixed failure categories.
-It never includes Signal summary or evidence text or ValidationResult output.
-Raw validation output remains in Archive details for the User-facing Archive.
-Oracle packets and outputs are bounded to 16,000 characters per text field.
+Every child invocation reserves an explicit allowance from the remaining Work budget before launch.
+Reservation and usage updates are durable and idempotently bound to its run ID.
+Observed input and output tokens are charged as turns complete and inspectable by role and attempt.
+Cache counters remain metadata and are not added a second time.
+Unspent reservations are released when a run ends; replacement never restores consumed tokens.
 
-Git and provider commands use a 120-second timeout.
-Pi RPC requests use a 10-second timeout by default.
-Pi agent turns use a 30-minute timeout by default; Observer turns use a 120-second timeout.
-The autonomous monitor runs once per minute.
-Outbox claims expire after two minutes and are renewed while an effect is running.
-A transient Conclave startup failure receives one retry in the runtime and one retry in the outbox worker.
-Semantic decisions are never retried automatically.
+After a crash, outstanding reservations remain held until runtime and usage are reconciled.
+Unreported in-flight usage is uncertain, not newly spendable budget merely because a process disappeared.
+Release requires reconciled evidence or an explicit User decision.
+An Executor reaching its allowance becomes blocked with `budget-exhausted`.
+Another role exhausting its allowance records the failed decision or operation and exposes the next User action without launching an unbudgeted child.
+Only the User can increase the Work budget.
 
-Work reserves half of its configured token cap for each new Execution, with a minimum allowance of one token.
-Khala charges observed input and output tokens as each Executor turn completes.
-A budget-exhausted Execution is blocked and requires replacement or a Work budget amendment.
-A blocked or ready Executor Signal queues a Conclave wake with an explicit finite cause.
-Token exhaustion queues a separate finite Conclave wake for a Verdict.
-Each Executor-lifecycle wake identifies the current state and requires a durable state-appropriate decision with the applicable Signal ID.
-If Conclave returns without resolving that state, the outbox effect remains retryable and a durable failure is recorded.
-Pi does not provide a per-session output-limit option through the RPC interface, so a single turn can exceed the allowance before Khala records the usage.
+A correction attempt is one Conclave-authorized implementation pass after review or a blocker, whether it resumes or replaces an Execution.
+The initial pass does not consume a correction attempt.
+Replacement and Mission amendment do not reset consumed correction allowance.
+Increasing it requires explicit User authorization.
+Insufficient budget or correction allowance stops automatic progress and requests a User decision.
+[Lifecycle](lifecycle.md#acceptance-and-settlement) defines accepted-but-unsettled Work when Conclave settlement lacks budget.
 
-## Recovery
+A provider turn may overshoot its allowance before Khala can observe and stop it.
+The token allowance is an observed stopping limit, not a hard financial spending ceiling.
+Model price does not establish runtime memory efficiency.
+Measure the process tree, including validation and build subprocesses, separately from token accounting.
 
-The hosting User Pi session owns the parent Khala service.
-The parent service is not a standalone daemon.
-Closing the User session waits for active monitor, effect, and runtime operations before closing the Archive.
+Observer turns have a 120-second timeout and consume Work budget.
+The autonomous provider monitor runs once per minute while the background supervisor is alive.
+Monitoring polls only published Work and uses bounded transport retries, not unlimited model wakes.
+Logs, retained context, artifact reads, RPC traffic, and pending requests must remain bounded.
+Application resource bounds do not imply a hard aggregate operating-system memory limit.
 
-Run the Pi command `/khala-recover` after reopening a project when a child may have been interrupted.
-The command drains pending effects and reconciles persisted runtime bindings.
-The User recovery action can rebind an unreachable Executor through the parent supervisor.
-The autonomous monitor performs the same work on its next cycle.
-Child role sessions cannot invoke User recovery tools or impersonate the parent.
-A reachable Executor is never replaced by a recovery probe.
+## Startup and recovery
 
-If recovery fails, inspect the Work's error and execution records before choosing replacement, Mission amendment, or explicit Work failure.
-Do not delete a worktree or session file while Khala may still own its process binding.
+The [architecture contract](architecture.md#supervision-and-recovery) defines the single shared supervisor, exclusive lock, and restart reconciliation.
+Closing or switching the User Pi session disconnects its interface without stopping accepted Work.
+A new session reconnects to saved state; runtime probes remain distinct from lifecycle decisions.
 
-## Provider behavior
+An uncertain writer retains workspace ownership until termination of its process tree is confirmed.
+Inspect error and execution evidence before choosing recovery, replacement, amendment, or explicit failure.
+Never delete a worktree, binding, or session artifact while Khala may still own its writer.
+A new Archive does not recover or terminate processes owned by another Archive.
+Result retention and permitted cleanup are owned by [Lifecycle](lifecycle.md#cancellation-recovery-and-retention).
 
-| Provider | Review request | Status and merge observation | Feedback delivery |
-| --- | --- | --- | --- |
-| GitHub | Draft Pull Request | Supported | Supported for trusted authenticated review principals |
-| GitLab | Draft Merge Request | Supported | Status and merge observation supported; feedback not normalized in the MVP |
+The current `/khala-recover` command rereads the project Archive, drains pending effects, and reconciles runtime bindings.
+The current extension closes its application service when the User Pi session shuts down; independent background continuation remains a target requirement.
+There is no `/khala-stop` command in this checkout.
+Opening another project does not reconnect to the same shared Archive yet.
 
-Khala discovers the provider from the repository origin.
-Only `github.com` and `gitlab.com` origins are supported.
-The authenticated `gh` or `glab` session supplies provider identity.
-Khala stores provider IDs and URLs but does not store provider credentials.
+## Provider operation
 
-Khala refreshes the configured remote target branch before creating an Execution and before publishing a review request.
-The target branch must still point to the recorded Execution base commit when publication begins.
-Khala also records provider base and head commits during polling and blocks ready evidence when they drift.
-A changed target branch or provider review identity requires reconciling, rebasing, or replacing the Execution.
-Remote review requests and branches remain for audit after local cleanup.
-Khala does not automatically close or delete remote review objects.
+Local delivery requires no provider credentials, fetch, or publication.
+Provider delivery requires an authenticated `gh` or `glab` session available to the service, not the child.
+The current adapters support `github.com` and `gitlab.com` origins.
+The target stores the authorized provider repository and branch in the Mission instead of following later origin changes.
+
+GitHub supports draft requests, status, merge observation, and bounded eligible provider-comment feedback.
+GitLab supports draft requests, status, and merge observation without provider-comment normalization.
+Eligibility and credential boundaries are defined in [Security](security.md#provider-feedback), not inferred from publication ownership.
+Base drift requires the [approved successor path](lifecycle.md#publication-and-base-drift), not an implicit operator rebase.
 
 ## Archive backup and privacy
 
-The Archive is an SQLite database in WAL mode with full synchronous durability.
-Back it up after closing the hosting Pi session, or use SQLite's backup API while the service remains quiesced.
-Preserve the adjacent `.initialized` marker with the Archive backup.
-Do not copy the main `.sqlite` file and WAL independently while writes are active.
-Restore only from a trusted copy and verify the project path before reopening it.
-Khala fails closed on malformed projections or unsupported Archive integrity failures.
+The Archive uses SQLite WAL storage and an adjacent initialization marker.
+Back up after stopping its supervisor and confirming child processes have exited, or use SQLite's backup API under a controlled operating procedure.
+Preserve the initialization marker with the backup.
+Do not independently copy database and WAL files while writes are active.
+Restore only a trusted backup and verify Archive and repository identities before reopening.
+Integrity failure fails closed; there is no in-process restore, startup migration, or automatic repair.
 
 Raw child transcripts are not copied into the Archive.
-Pi session, lease, lock, and capability files live in a project-specific directory in the OS temporary directory until normal cleanup.
-Provider text is stored as bounded untrusted evidence and is quoted before it reaches an Executor.
-Review request bodies include the Work objective, acceptance criteria, and validation commands.
-Executors commit sandbox changes and run declared validation through governed workspace actions rather than arbitrary shell tools.
-Before each governed commit and validation, a sandbox with `package-lock.json` runs `npm ci --ignore-scripts`.
-Hooks and validation then use that sandbox's `node_modules/.bin` without running an implicit build.
-Do not submit secrets or sensitive data as Work context or provider feedback.
+Keep retained artifacts private and bounded under the [security contract](security.md#privacy-and-failure-behavior).
+Do not include secrets in Work context or provider feedback.
+Publication may disclose objective, acceptance criteria, and validation commands in a review-request body, so review scope and publication permission before authorizing it.
 
-## Verification checklist
+## Current configuration reference
 
-After configuration changes, run `npm run check`.
-Before publishing a package, run `npm pack --dry-run` and verify that no Archive, session, or credential files are included.
-For behavior changes, run the focused Node test files after rebuilding `dist`.
-For Markdown changes, run `npm run check:markdown`.
+These settings describe the existing implementation, not the target shared-Archive and all-role scheduling policy above.
+Target settings and their implementation status must be updated here when the corresponding behavior is implemented.
+
+| Setting | Current default | Current meaning |
+| --- | --- | --- |
+| `archiveRoot` | `~/.pi/agent/khala` | Directory containing project Archives |
+| `worktreeRoot` | `~/worktrees/khala` | Root for Executor worktrees |
+| `worktreeBranchPrefix` | `khala/` | Sandbox branch prefix |
+| `targetBranch` | `main` | Review-request target branch |
+| `maxConcurrentExecutions` | `2` | Project-level Execution limit |
+| `defaultWorkTokens` | `20000` | Work token cap |
+| `piCommand` | `["pi"]` | Child launch arguments |
+
+Role models use `conclaveModel`, `executorModel`, `observerModel`, and `oracleModel`, with matching `*Thinking` settings.
+The current workflow requires Conclave, Executor, and Oracle models; the target makes Oracle optional.
+Current navigation settings are `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`h`).
+The [target navigation contract](tui-navigation.md) uses configured Pi editing and navigation instead of introducing global letter shortcuts.
+
+Current Archives are named from resolved project paths, and child session, lease, lock, and capability files use project-specific temporary directories.
+Current Execution reservations use half the Work cap rather than the target explicit reservation for every role run.
+Current prompt recovery rejects persisted prompt identities that do not match the installed package.
+These implementation constraints do not authorize rewriting existing Work to fit the target.
+
+The current [`KhalaConfig`](../src/config.ts) does not expose settings for total child count or RPC frame/request limits.
+The target resource bounds must be implemented and verified before being described as available configuration.
+Git/provider commands use 120-second timeouts, RPC requests use 10 seconds, and ordinary child turns use 30 minutes.
+Outbox claims expire after two minutes and renew while running.
+Current transient Conclave startup failures receive one runtime retry and one outbox retry; semantic decisions are not silently retried.
+
+Current payload limits are 64 KB per Archive payload and 128 KB per projection.
+Record reads cap payloads at 16,000 characters, summaries at 500 characters, and evidence references at 20 entries of 500 characters each.
+Provider conversation details retain up to eight comments and eight checks; comment bodies are bounded to 500 characters in details and 2,000 in feedback delivery.
+Oracle text fields are bounded to 16,000 characters.
+Current role-visible status excludes raw Signal text and validation output; full authorized details remain available to the User.
+
+The current workspace adapter runs `npm ci --ignore-scripts` before governed commit and validation when a sandbox contains `package-lock.json`, using sandbox-local binaries without an implicit build.
+That describes current mechanics, not a guarantee of isolation or a target default validation command for every repository.
+
+## Checks before relying on operations
+
+Exhaust each role's allowance, crash with a held reservation, and verify that reconciliation cannot double-charge or refund uncertain usage.
+Verify trusted repository overrides cannot increase global concurrency or change unrelated Work.
+Exercise backup and trusted restore without silently creating a replacement for a missing marked Archive.
+Use [Development](development.md) for repository check commands rather than duplicating build and test procedures here.
