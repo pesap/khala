@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { type ExecFileException, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -31,12 +31,15 @@ const MAX_PROVIDER_CHECKS = 8;
 const MAX_PROVIDER_COMMENT_BODY = 500;
 const MAX_PROVIDER_FIELD = 200;
 const SANDBOX_DEPENDENCIES_PATHSPEC = ":(exclude)node_modules";
+const BUBBLEWRAP = "bwrap";
+const ISOLATED_HOME = "/tmp/khala-home";
 
 type CommandOptions = {
 	cwd: string;
 	timeout: number;
 	killSignal: "SIGKILL";
 	maxBuffer: number;
+	encoding?: "utf8";
 	env?: NodeJS.ProcessEnv;
 	signal?: AbortSignal;
 };
@@ -60,13 +63,15 @@ function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: A
 
 async function sandboxToolchain(sandboxPath: string): Promise<GitToolchain> {
 	const toolchain = await inheritedGitToolchain();
-	// Hooks need real Git first and sandbox-local tools ahead of inherited dependency bins.
+	const npmExecutable = await inheritedExecutable("npm", await filteredInheritedEnvironment());
 	toolchain.environment["PATH"] = [
-		dirname(toolchain.gitExecutable),
 		join(sandboxPath, "node_modules", ".bin"),
-		toolchain.environment["PATH"],
+		dirname(process.execPath),
+		dirname(npmExecutable),
+		"/usr/bin",
+		"/bin",
 	]
-		.filter((path): path is string => path !== undefined && path !== "")
+		.filter((path, index, values) => path !== "" && values.indexOf(path) === index)
 		.join(delimiter);
 	return toolchain;
 }
@@ -100,7 +105,7 @@ function removePathValues(environment: NodeJS.ProcessEnv): void {
 	}
 }
 
-async function inheritedExecutable(command: "git" | "npm", environment: NodeJS.ProcessEnv): Promise<string> {
+async function inheritedExecutable(command: "git" | "npm" | "bwrap", environment: NodeJS.ProcessEnv): Promise<string> {
 	const [locator, args] =
 		process.platform === "win32" ? ["where.exe", [command]] : ["sh", ["-c", `command -v ${command}`]];
 	const output = (await execFileAsync(locator, args, commandOptions(process.cwd(), environment))).stdout;
@@ -208,8 +213,15 @@ export class GitWorkspace implements WorkspacePort {
 		input: { path: string; commands: readonly string[] },
 		operation?: OperationContext,
 	): Promise<readonly ValidationResult[]> {
-		await hydrateSandboxDependencies(input.path, operation?.signal);
-		return runValidationCommands(input, (await sandboxToolchain(input.path)).environment, operation);
+		try {
+			const path = await validationPath(this.worktreeRoot, input.path);
+			const toolchain = await sandboxToolchain(path);
+			await hydrateSandboxDependencies(path, operation?.signal, toolchain.environment);
+			return runValidationCommands({ ...input, path }, toolchain.environment, operation);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return validationIsolationFailure(input.commands, message);
+		}
 	}
 
 	async publishSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<string> {
@@ -646,28 +658,203 @@ async function prepareSandboxCommit(
 	return toolchain;
 }
 
-async function hydrateSandboxDependencies(path: string, signal?: AbortSignal): Promise<void> {
-	const lockfile = await lstat(join(path, "package-lock.json")).catch(() => undefined);
-	if (lockfile === undefined || !lockfile.isFile()) return;
-	const environment = await filteredInheritedEnvironment();
-	await runNpmCi(await inheritedExecutable("npm", environment), path, environment, signal);
+async function validationPath(root: string, input: string): Promise<string> {
+	const path = await realpath(input);
+	if (!(await isRealContainedPath(root, path)))
+		throw new Error("Validation path is outside the configured worktree root.");
+	return path;
 }
 
-async function runNpmCi(
-	npmExecutable: string,
+async function hydrateSandboxDependencies(
 	path: string,
+	signal?: AbortSignal,
+	environment?: NodeJS.ProcessEnv,
+): Promise<void> {
+	const lockfile = await lstat(join(path, "package-lock.json")).catch(() => undefined);
+	if (lockfile === undefined || !lockfile.isFile()) return;
+	const cleanEnvironment = environment ?? (await filteredInheritedEnvironment());
+	const resolverEnvironment = await filteredInheritedEnvironment();
+	await runIsolated(
+		await inheritedExecutable("npm", resolverEnvironment),
+		["ci", "--ignore-scripts", "--offline"],
+		path,
+		cleanEnvironment,
+		signal,
+	);
+}
+
+async function runIsolated(
+	command: string,
+	args: readonly string[],
+	cwd: string,
 	environment: NodeJS.ProcessEnv,
 	signal?: AbortSignal,
-): Promise<void> {
-	if (process.platform !== "win32") {
-		await execFileAsync(npmExecutable, ["ci", "--ignore-scripts"], commandOptions(path, environment, signal));
-		return;
-	}
-	await execFileAsync(
-		environment["ComSpec"] ?? "cmd.exe",
-		["/d", "/c", `"${npmExecutable}" ci --ignore-scripts`],
-		commandOptions(path, environment, signal),
+): Promise<{ stdout: string; stderr: string }> {
+	if (process.platform !== "linux") throw new Error("Validation isolation requires Linux bubblewrap.");
+	const bwrap = await validationIsolationExecutable();
+	const npmPackageRoot = await validationNpmRoot(command, cwd);
+	return runBubblewrap(
+		bwrap,
+		buildBubblewrapArgs(command, args, cwd, environment, npmPackageRoot),
+		cwd,
+		isolatedEnvironment(environment),
+		signal,
 	);
+}
+
+async function validationIsolationExecutable(): Promise<string> {
+	try {
+		return await inheritedExecutable(BUBBLEWRAP, await filteredInheritedEnvironment());
+	} catch (error) {
+		throw new Error(
+			`Validation isolation requires bubblewrap (bwrap) installed on PATH; no command was run. ${String(error)}`,
+		);
+	}
+}
+
+async function runBubblewrap(
+	command: string,
+	args: readonly string[],
+	cwd: string,
+	environment: NodeJS.ProcessEnv,
+	signal: AbortSignal | undefined,
+): Promise<{ stdout: string; stderr: string }> {
+	return new Promise((resolvePromise, reject) => {
+		const options: CommandOptions = {
+			...commandOptions(cwd, environment, signal),
+			encoding: "utf8",
+		};
+		execFile(command, [...args], options, (error: ExecFileException | null, stdout: string, stderr: string) => {
+			if (error === null) resolvePromise({ stdout, stderr });
+			else reject(new CommandExecutionError(error.message, stdout, stderr));
+		});
+	});
+}
+
+class CommandExecutionError extends Error {
+	readonly stdout: string;
+	readonly stderr: string;
+
+	constructor(message: string, stdout: string, stderr: string) {
+		super(message);
+		this.stdout = stdout;
+		this.stderr = stderr;
+	}
+}
+
+function buildBubblewrapArgs(
+	command: string,
+	args: readonly string[],
+	cwd: string,
+	environment: NodeJS.ProcessEnv,
+	npmPackageRoot: string | undefined,
+): string[] {
+	const bwrapArgs = [
+		"--unshare-all",
+		"--unshare-user",
+		"--disable-userns",
+		"--assert-userns-disabled",
+		"--cap-drop",
+		"ALL",
+		"--new-session",
+		"--die-with-parent",
+		"--clearenv",
+		"--chdir",
+		cwd,
+		"--proc",
+		"/proc",
+		"--dev",
+		"/dev",
+		"--tmpfs",
+		"/tmp",
+		"--bind",
+		cwd,
+		cwd,
+		"--dir",
+		ISOLATED_HOME,
+	];
+	bwrapArgs.push(...readonlyMountArguments(), ...runtimeMountArguments(npmPackageRoot));
+	const childEnvironment = {
+		...isolatedEnvironment(environment),
+		PATH: [join(cwd, "node_modules", ".bin"), dirname(process.execPath), "/tmp/khala-bin", "/usr/bin", "/bin"].join(
+			delimiter,
+		),
+	};
+	for (const [key, value] of Object.entries(childEnvironment))
+		if (value !== undefined) bwrapArgs.push("--setenv", key, value);
+	bwrapArgs.push("--", command, ...args);
+	return bwrapArgs;
+}
+
+function readonlyMountArguments(): string[] {
+	return ["/usr", "/bin", "/sbin", "/lib", "/lib64"].flatMap((path) => ["--ro-bind-try", path, path]);
+}
+
+function runtimeMountArguments(npmPackageRoot: string | undefined): string[] {
+	const mounts = [process.execPath];
+	const npmMounts =
+		npmPackageRoot === undefined
+			? []
+			: [
+					"--ro-bind",
+					npmPackageRoot,
+					npmPackageRoot,
+					"--symlink",
+					join(npmPackageRoot, "bin", "npm-cli.js"),
+					"/tmp/khala-bin/npm",
+					"--symlink",
+					join(npmPackageRoot, "bin", "npx-cli.js"),
+					"/tmp/khala-bin/npx",
+				];
+	return [
+		...npmMounts,
+		...mounts
+			.filter((path, index, values) => values.indexOf(path) === index)
+			.filter(
+				(path) =>
+					!["/usr", "/bin", "/sbin", "/lib", "/lib64"].some((root) => path === root || path.startsWith(`${root}/`)),
+			)
+			.flatMap((path) => ["--ro-bind-try", path, path]),
+	];
+}
+
+async function validationNpmRoot(command: string, cwd: string): Promise<string | undefined> {
+	if (basename(command) === "npm-cli.js") return npmRoot(command);
+	const manifest = await lstat(join(cwd, "package.json")).catch(() => undefined);
+	if (manifest === undefined) return undefined;
+	return npmRoot(await inheritedExecutable("npm", await filteredInheritedEnvironment()));
+}
+
+async function npmRoot(executable: string): Promise<string> {
+	let current = dirname(await realpath(executable));
+	while (current !== dirname(current)) {
+		if (await isNpmPackageRoot(current)) return current;
+		current = dirname(current);
+	}
+	throw new Error(`npm package root was not found for ${executable}.`);
+}
+
+async function isNpmPackageRoot(directory: string): Promise<boolean> {
+	const packageJson = await readFile(join(directory, "package.json"), "utf8").catch(() => undefined);
+	if (packageJson === undefined) return false;
+	const packageData: JsonValue = JSON.parse(packageJson);
+	return isJsonObject(packageData) && isTextValue(packageData["name"]) && packageData["name"] === "npm";
+}
+
+function validationIsolationFailure(commands: readonly string[], message: string): readonly ValidationResult[] {
+	const checkedCommands = commands.length === 0 ? ["validation isolation"] : commands;
+	return checkedCommands.map((command) => ({ command, passed: false, output: `Validation was not run: ${message}` }));
+}
+
+function isolatedEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	return {
+		PATH: environment["PATH"] ?? "/usr/bin:/bin",
+		LANG: environment["LANG"] ?? "C",
+		HOME: ISOLATED_HOME,
+		TMPDIR: "/tmp",
+		TMP: "/tmp",
+		TEMP: "/tmp",
+	};
 }
 
 async function validateExistingSandbox(
@@ -794,20 +981,16 @@ function runValidationCommand(
 	environment: NodeJS.ProcessEnv,
 	signal?: AbortSignal,
 ): Promise<Readonly<{ passed: boolean; output: string }>> {
-	return new Promise((resolve) => {
-		execFile(
-			validationShell(),
-			validationShellArguments(command),
-			commandOptions(cwd, environment, signal),
-			(error, stdout, stderr) => {
-				if (error === null) {
-					resolve({ passed: true, output: stdout.slice(-4_000) });
-					return;
-				}
-				resolve({ passed: false, output: failedCommandOutput(stdout, stderr, error.message) });
-			},
-		);
-	});
+	return runIsolated(validationShell(), validationShellArguments(command), cwd, environment, signal)
+		.then(({ stdout }) => ({ passed: true, output: stdout.slice(-4_000) }))
+		.catch((error) => ({
+			passed: false,
+			output: failedCommandOutput(
+				error instanceof CommandExecutionError ? error.stdout : "",
+				error instanceof CommandExecutionError ? error.stderr : "",
+				error instanceof Error ? error.message : String(error),
+			),
+		}));
 }
 
 function failedCommandOutput(stdout: string, stderr: string, message: string): string {
