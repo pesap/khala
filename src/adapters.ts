@@ -691,7 +691,7 @@ async function runIsolated(
 	signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string }> {
 	if (process.platform !== "linux") throw new Error("Validation isolation requires Linux bubblewrap.");
-	const bwrap = await inheritedExecutable(BUBBLEWRAP, await filteredInheritedEnvironment());
+	const bwrap = await validationIsolationExecutable();
 	const npmPackageRoot = await validationNpmRoot(command, cwd);
 	return runBubblewrap(
 		bwrap,
@@ -700,6 +700,16 @@ async function runIsolated(
 		isolatedEnvironment(environment),
 		signal,
 	);
+}
+
+async function validationIsolationExecutable(): Promise<string> {
+	try {
+		return await inheritedExecutable(BUBBLEWRAP, await filteredInheritedEnvironment());
+	} catch (error) {
+		throw new Error(
+			`Validation isolation requires bubblewrap (bwrap) installed on PATH; no command was run. ${String(error)}`,
+		);
+	}
 }
 
 async function runBubblewrap(
