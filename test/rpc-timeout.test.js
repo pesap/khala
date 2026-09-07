@@ -96,6 +96,143 @@ test("runtime state inspection honors cancellation before binding lookup", async
 	await runtime.close();
 });
 
+test("rejects an oversized RPC frame and cleans up the child", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-oversized-frame-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(
+		script,
+		`import readline from "node:readline";
+const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+	const request = JSON.parse(line);
+	if (request.type === "get_state") process.stdout.write("x".repeat(300000) + "\\n");
+});
+`,
+	);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500, maxRpcFrameBytes: 256_000 });
+	await assert.rejects(
+		runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] }),
+		/exceeded the 256000-byte limit/,
+	);
+	await runtime.close();
+});
+
+test("rejects an active turn when a later RPC frame is oversized", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-turn-frame-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(
+		script,
+		`import readline from "node:readline";
+const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
+readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + "x".repeat(300000)); });
+`,
+	);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500, maxRpcFrameBytes: 256_000 });
+	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
+	await assert.rejects(runtime.send(binding, "overflow"), /exceeded the 256000-byte limit/);
+	await runtime.close();
+});
+
+test("rejects a malformed JSON RPC frame", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-malformed-frame-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(script, `process.stdout.write("{not-json}\\n");`);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500 });
+	await assert.rejects(
+		runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] }),
+		/valid JSON/,
+	);
+	await runtime.close();
+});
+
+test("rejects an unterminated oversized RPC frame", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-unterminated-frame-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(script, `process.stdout.write("x".repeat(300000));`);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500, maxRpcFrameBytes: 256_000 });
+	await assert.rejects(
+		runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] }),
+		/exceeded the 256000-byte limit/,
+	);
+	await runtime.close();
+});
+
+test("rejects invalid RPC frame limits", () => {
+	assert.throws(() => new PiRpcRuntime({ projectPath: process.cwd(), command: [process.execPath, "missing"], maxRpcFrameBytes: 0 }), /positive safe integer/);
+	assert.throws(() => new PiRpcRuntime({ projectPath: process.cwd(), command: [process.execPath, "missing"], maxRpcFrameBytes: Number.POSITIVE_INFINITY }), /positive safe integer/);
+});
+
+test("rejects malformed RPC event shapes and pending turns", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-malformed-event-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(script, `import readline from "node:readline";
+const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
+readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + JSON.stringify({ type: "message_end", message: { role: "assistant", content: "not-an-array" } }) + "\\n" + JSON.stringify({ type: "agent_settled" }) + "\\n"); });`);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500 });
+	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
+	await assert.rejects(runtime.send(binding, "malformed"), /message content is invalid/);
+	await runtime.close();
+});
+
+test("preserves fragmented Unicode and multiple LF-delimited RPC lines", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-fragmented-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(
+		script,
+		`import readline from "node:readline";
+const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
+const input = readline.createInterface({ input: process.stdin });
+input.on("line", (line) => {
+	const request = JSON.parse(line);
+	if (request.type === "get_state") {
+		process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n");
+	} else if (request.type === "prompt") {
+		const events = [
+			{ type: "response", id: request.id, command: request.type, success: true },
+			{ type: "message_end", message: { role: "user", content: "native string content" } },
+			{ type: "message_end", message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] } },
+			{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "héllo\\u2028world" }] } },
+			{ type: "agent_settled" },
+		];
+		const bytes = Buffer.from(events.map((event) => JSON.stringify(event)).join("\\n") + "\\n");
+		const split = bytes.indexOf(Buffer.from("é")) + 1;
+		process.stdout.write(bytes.subarray(0, split));
+		setTimeout(() => process.stdout.write(bytes.subarray(split)), 25);
+	}
+});
+`,
+	);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500 });
+	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
+	assert.deepEqual(await runtime.send(binding, "unicode"), { output: "héllo\u2028world" });
+	await runtime.close();
+});
+
+test("bounds retained assistant output with a truncation indicator", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-assistant-limit-"));
+	const script = join(directory, "rpc-stub.mjs");
+	await writeFile(
+		script,
+		`import readline from "node:readline";
+const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
+readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "a".repeat(100000) }] } }) + "\\n" + JSON.stringify({ type: "agent_settled" }) + "\\n"); });
+`,
+	);
+	await chmod(script, 0o755);
+	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500 });
+	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
+	const turn = await runtime.send(binding, "large output");
+	assert.ok(turn.output.length <= 16_000);
+	assert.match(turn.output, /truncated/);
+	await runtime.close();
+});
+
 test("child runtimes do not inherit credential-shaped environment variables", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-environment-"));
 	const script = join(directory, "rpc-stub.mjs");

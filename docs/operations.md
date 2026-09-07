@@ -128,6 +128,10 @@ Current prompt recovery rejects persisted prompt identities that do not match th
 These implementation constraints do not authorize rewriting existing Work to fit the target.
 
 The current [`KhalaConfig`](../src/config.ts) does not expose settings for total child count or RPC frame/request limits.
+`PiRuntimeOptions.maxRpcFrameBytes` bounds each LF-delimited or unterminated RPC frame, including its delimiter, to a positive safe integer of bytes, defaulting to 8 MiB.
+Oversized frames and malformed consumed events fail the pending operation rather than accumulating unbounded input.
+Larger native Pi events require an explicitly increased finite limit.
+The runtime retains at most 16,000 characters of assistant output with an explicit truncation indicator.
 The target resource bounds must be implemented and verified before being described as available configuration.
 Git/provider commands use 120-second timeouts, RPC requests use 10 seconds, and ordinary child turns use 30 minutes.
 Outbox claims expire after two minutes and renew while running.

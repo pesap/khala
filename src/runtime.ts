@@ -3,7 +3,6 @@ import { createHash, type KeyObject, randomUUID, sign } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import process from "node:process";
-import { StringDecoder } from "node:string_decoder";
 import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
 import type { AgentRuntimePort, OperationContext, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
@@ -16,6 +15,7 @@ export type PiRuntimeOptions = Readonly<{
 	authorityPrivateKey?: KeyObject | undefined;
 	rpcTimeoutMs?: number | undefined;
 	agentTimeoutMs?: number | undefined;
+	maxRpcFrameBytes?: number | undefined;
 }>;
 
 type RpcData = Readonly<{
@@ -72,7 +72,8 @@ type MutableChild = {
 	pending: Map<string, PendingResponse>;
 	binding: RuntimeBinding;
 	agentTimeoutMs: number | undefined;
-	buffer: string;
+	maxRpcFrameBytes: number;
+	buffer: Buffer;
 	lastOutput: string;
 	turnUsage: TokenUsage | undefined;
 	lastError: string;
@@ -103,6 +104,9 @@ type SessionLaunch = Readonly<{
 	processMarker: string;
 	storage: RuntimeStorage;
 }>;
+const DEFAULT_MAX_RPC_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_ASSISTANT_TEXT_LENGTH = 16_000;
+const ASSISTANT_TRUNCATION_INDICATOR = "[assistant output truncated]";
 type RpcEventType = "response" | "message_end" | "agent_settled";
 const RPC_EVENT_TYPES: ReadonlyMap<string, RpcEventType> = new Map([
 	["response", "response"],
@@ -119,6 +123,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	private closing = false;
 
 	constructor(options: PiRuntimeOptions) {
+		validateMaxRpcFrameBytes(options.maxRpcFrameBytes);
 		this.options = options;
 		this.storage = createRuntimeStorage(options.projectPath);
 	}
@@ -178,7 +183,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		const launch = createSessionLaunch(input, this.options, this.storage);
 		await prepareSessionLaunch(input, launch);
 		const childProcess = await spawnSessionSafely(this.options.command[0] ?? "pi", launch, input);
-		const child = createStartingChild(childProcess, input, launch);
+		const child = createStartingChild(childProcess, input, launch, this.options);
 		await this.registerStartingChild(input, launch, child);
 		return this.completeSessionStartup(input, launch, child, operation);
 	}
@@ -201,7 +206,19 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	): Promise<RuntimeBinding> {
 		const key = `child-${++childCounter}`;
 		this.children.set(key, child);
-		attachOutput(child, () => this.removeChild(child));
+		attachOutput(
+			child,
+			() => this.removeChild(child),
+			(error) => {
+				if (child.closed) return;
+				child.closed = true;
+				child.buffer = Buffer.alloc(0);
+				rejectPending(child, error);
+				rejectAgentEnd(child, error);
+				killChild(child);
+				this.removeChild(child);
+			},
+		);
 		try {
 			const state = await request(child, "get_state", {}, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
 			const sessionId = startupSessionId(state, launch.sessionPath, launch.storage);
@@ -333,11 +350,14 @@ function removeEphemeralSession(child: MutableChild): void {
 	}
 }
 
-function attachOutput(child: MutableChild, onExit: () => void): void {
-	const decoder = new StringDecoder("utf8");
+function attachOutput(child: MutableChild, onExit: () => void, onProtocolFailure: (error: Error) => void): void {
 	child.process.stdout.on("data", (chunk: Buffer) => {
-		child.buffer += decoder.write(chunk);
-		consumeLines(child);
+		if (child.closed) return;
+		try {
+			consumeChunk(child, chunk);
+		} catch (error) {
+			onProtocolFailure(error instanceof Error ? error : new Error(String(error)));
+		}
 	});
 	child.process.stderr.on("data", (chunk: Buffer) => {
 		child.lastError = `${child.lastError}${chunk.toString("utf8")}`.slice(-4000);
@@ -373,25 +393,32 @@ function attachOutput(child: MutableChild, onExit: () => void): void {
 		cleanupAfterExit();
 	});
 }
-function consumeLines(child: MutableChild): void {
-	let line = nextLine(child);
-	while (line !== undefined) {
-		consumeLine(child, line);
-		line = nextLine(child);
+function consumeChunk(child: MutableChild, chunk: Buffer): void {
+	while (chunk.length > 0) {
+		const newline = chunk.indexOf(10);
+		const end = newline < 0 ? chunk.length : newline + 1;
+		appendFrameBytes(child, chunk.subarray(0, end));
+		chunk = chunk.subarray(end);
+		if (newline >= 0) consumeBufferedLine(child);
 	}
 }
 
-function nextLine(child: MutableChild): string | undefined {
-	const newline = child.buffer.indexOf("\n");
-	if (newline < 0) return undefined;
-	const line = child.buffer.slice(0, newline).replace(/\r$/, "");
-	child.buffer = child.buffer.slice(newline + 1);
-	return line.trim().length === 0 ? nextLine(child) : line;
+function appendFrameBytes(child: MutableChild, bytes: Buffer): void {
+	if (child.buffer.length + bytes.length > child.maxRpcFrameBytes)
+		throw new Error(`Pi RPC frame exceeded the ${child.maxRpcFrameBytes}-byte limit.`);
+	child.buffer = Buffer.concat([child.buffer, bytes]);
+}
+
+function consumeBufferedLine(child: MutableChild): void {
+	const newline = child.buffer.indexOf(10);
+	if (newline < 0) return;
+	const line = child.buffer.subarray(0, newline).toString("utf8").replace(/\r$/, "");
+	child.buffer = child.buffer.subarray(newline + 1);
+	if (line.trim().length > 0) consumeLine(child, line);
 }
 
 function consumeLine(child: MutableChild, line: string): void {
 	const event = parseRpcEvent(line);
-	if (event === undefined) return;
 	const type = RPC_EVENT_TYPES.get(event.type ?? "");
 	if (type === undefined) return;
 	dispatchRpcEvent(child, event, type);
@@ -403,13 +430,111 @@ function dispatchRpcEvent(child: MutableChild, event: RpcEvent, type: RpcEventTy
 	if (type === "agent_settled") resolveAgentEnd(child);
 }
 
-function parseRpcEvent(line: string): RpcEvent | undefined {
+function parseRpcEvent(line: string): RpcEvent {
+	const parsed = parseRpcObject(line);
+	const type = requiredRpcText(parsed, "type");
+	if (type === "response") return readRpcResponseEvent(parsed);
+	if (type === "message_end") return readRpcMessageEvent(parsed);
+	return { type };
+}
+
+function parseRpcObject(line: string): JsonObject {
+	let parsed: JsonValue;
 	try {
-		// SAFETY: Pi RPC emits one JSON object per LF-delimited event; consumers validate required fields below.
-		return JSON.parse(line) as RpcEvent;
+		parsed = JSON.parse(line);
 	} catch {
-		return undefined;
+		throw new Error("Pi RPC frame was not valid JSON.");
 	}
+	if (!isJsonObject(parsed)) throw new Error("Pi RPC frame was not a JSON object.");
+	return parsed;
+}
+
+function readRpcResponseEvent(parsed: JsonObject): RpcEvent {
+	return {
+		type: "response",
+		id: optionalRpcText(parsed, "id"),
+		command: requiredRpcText(parsed, "command"),
+		success: requiredRpcBoolean(parsed, "success"),
+		data: optionalRpcData(parsed["data"]),
+		error: optionalRpcText(parsed, "error"),
+	};
+}
+
+function readRpcMessageEvent(parsed: JsonObject): RpcEvent {
+	const message = parsed["message"];
+	if (!isJsonObject(message)) throw new Error("Pi RPC message_end event is invalid.");
+	return { type: "message_end", message: readRpcMessage(message) };
+}
+
+function readRpcMessage(parsed: JsonObject): RpcMessage {
+	const role = requiredRpcText(parsed, "role");
+	if (role !== "assistant") return { role };
+	const content = parsed["content"];
+	if (!Array.isArray(content)) throw new Error("Pi RPC message content is invalid.");
+	return {
+		role: requiredRpcText(parsed, "role"),
+		content: content.map(readRpcBlock),
+		usage: optionalRpcUsage(parsed["usage"]),
+	};
+}
+
+function readRpcBlock(value: JsonValue): RpcBlock {
+	if (!isJsonObject(value)) throw new Error("Pi RPC message block is invalid.");
+	return { type: optionalRpcText(value, "type"), text: optionalRpcText(value, "text") };
+}
+
+function optionalRpcData(value: JsonValue | undefined): RpcData | undefined {
+	return value === undefined
+		? undefined
+		: isJsonObject(value)
+			? {
+					sessionId: optionalRpcText(value, "sessionId"),
+					sessionFile: optionalRpcText(value, "sessionFile"),
+					isStreaming: optionalRpcBoolean(value, "isStreaming"),
+				}
+			: invalidRpcField("data");
+}
+
+function optionalRpcUsage(value: JsonValue | undefined): RpcUsage | undefined {
+	if (value === undefined) return undefined;
+	if (!isJsonObject(value)) return invalidRpcField("usage");
+	return {
+		input: optionalRpcNumber(value, "input"),
+		output: optionalRpcNumber(value, "output"),
+		cacheRead: optionalRpcNumber(value, "cacheRead"),
+		cacheWrite: optionalRpcNumber(value, "cacheWrite"),
+	};
+}
+
+function requiredRpcText(value: JsonObject, key: string): string {
+	const result = optionalRpcText(value, key);
+	if (result === undefined) throw new Error(`Pi RPC event field ${key} is invalid.`);
+	return result;
+}
+
+function optionalRpcText(value: JsonObject, key: string): string | undefined {
+	const entry = value[key];
+	return entry === undefined ? undefined : isText(entry) ? entry : invalidRpcField(key);
+}
+
+function requiredRpcBoolean(value: JsonObject, key: string): boolean {
+	const result = optionalRpcBoolean(value, key);
+	if (result === undefined) throw new Error(`Pi RPC event field ${key} is invalid.`);
+	return result;
+}
+
+function optionalRpcBoolean(value: JsonObject, key: string): boolean | undefined {
+	const entry = value[key];
+	return entry === undefined ? undefined : entry === true || entry === false ? entry : invalidRpcField(key);
+}
+
+function optionalRpcNumber(value: JsonObject, key: string): number | undefined {
+	const entry = value[key];
+	return entry === undefined ? undefined : isInteger(entry) ? entry : invalidRpcField(key);
+}
+
+function invalidRpcField(key: string): never {
+	throw new Error(`Pi RPC event field ${key} is invalid.`);
 }
 
 function consumeResponse(child: MutableChild, event: RpcEvent): void {
@@ -641,6 +766,7 @@ function createStartingChild(
 	process: ChildProcessWithoutNullStreams,
 	input: SessionInput,
 	launch: SessionLaunch,
+	options: PiRuntimeOptions,
 ): MutableChild {
 	const binding: RuntimeBinding = {
 		sessionId: "starting",
@@ -656,7 +782,8 @@ function createStartingChild(
 		pending: new Map(),
 		binding,
 		agentTimeoutMs: input.agentTimeoutMs,
-		buffer: "",
+		maxRpcFrameBytes: options.maxRpcFrameBytes ?? DEFAULT_MAX_RPC_FRAME_BYTES,
+		buffer: Buffer.alloc(0),
 		lastOutput: "",
 		turnUsage: undefined,
 		lastError: "",
@@ -1278,6 +1405,11 @@ function rpcTimeout(value: number | undefined): number {
 	return value ?? 10_000;
 }
 
+function validateMaxRpcFrameBytes(value: number | undefined): void {
+	if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
+		throw new Error("Pi RPC frame limit must be a positive safe integer.");
+}
+
 async function completedTurn(child: MutableChild, completion: Promise<string>): Promise<RuntimeTurn> {
 	const output = await completion;
 	return child.turnUsage === undefined ? { output } : { output, usage: child.turnUsage };
@@ -1458,11 +1590,29 @@ function isAssistantMessage(
 }
 
 function assistantText(message: Readonly<{ content: readonly RpcBlock[] }>): string {
-	return message.content
-		.filter((block) => block.type === "text" && block.text !== undefined)
-		.map((block) => block.text ?? "")
-		.join("\n")
-		.trim();
+	let output = "";
+	let textBlocks = 0;
+	for (const block of message.content) {
+		if (block.type !== "text") continue;
+		const next = appendAssistantText(output, block.text, textBlocks > 0);
+		output = next.text;
+		textBlocks += 1;
+		if (next.truncated) return truncatedAssistantText(output);
+	}
+	return output.trim();
+}
+
+function appendAssistantText(output: string, text: string | undefined, separated: boolean) {
+	if (text === undefined) return { text: output, truncated: false };
+	const prefix = separated ? "\n" : "";
+	const remaining = MAX_ASSISTANT_TEXT_LENGTH - output.length - prefix.length;
+	if (remaining <= 0) return { text: output, truncated: true };
+	return { text: output + prefix + text.slice(0, remaining), truncated: text.length > remaining };
+}
+
+function truncatedAssistantText(output: string): string {
+	const available = MAX_ASSISTANT_TEXT_LENGTH - ASSISTANT_TRUNCATION_INDICATOR.length - 1;
+	return `${output.slice(0, available).trimEnd()}\n${ASSISTANT_TRUNCATION_INDICATOR}`;
 }
 function readTokenUsage(value: RpcUsage | undefined): TokenUsage | undefined {
 	if (value === undefined) return;
