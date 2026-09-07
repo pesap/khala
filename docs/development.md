@@ -23,7 +23,8 @@ npm run check:markdown
 npm pack --dry-run
 ```
 
-`npm run check` runs Oxlint, Biome, and TypeScript validation.
+`npm run check` runs Oxlint, Biome, and TypeScript validation for the application, extensions, and custom lint tooling.
+`tsconfig.tools.json` inherits the application’s strict compiler checks for `tools/**/*.ts`.
 `npm run check:markdown` checks paragraph sentence boundaries and bullet length.
 `npm run test` builds `dist` and runs every Node test in `test/`.
 Tests use local port adapters and do not require provider credentials.
