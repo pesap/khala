@@ -637,13 +637,14 @@ export class SQLiteArchive implements ArchivePort {
 	query(query: RecordQuery = {}, cursor?: string): Page<RecordView> {
 		const state = resolveQueryState(query, cursor, () => this.latestSequence());
 		const filters = queryFilters(state.query, state.asOfSequence, state.lastSequence, "archive_records");
-		const rows = this.database.prepare(archiveQuerySql(filters.clauses)).all(...filters.parameters);
+		const rows = this.database.prepare(archiveQuerySql(filters.clauses, state.query.order)).all(...filters.parameters);
 		const items = rows.map((row) => this.recordFromRow(row));
 		return archivePage(items, state);
 	}
 
 	querySummaries(query: RecordQuery = {}, visibleExecutionId?: string): Page<RecordSummaryView> {
-		const state = resolveQueryState(query, undefined, () => this.latestSequence());
+		const normalized = normalizeQuery(query);
+		const state = resolveQueryState({ ...normalized, order: "asc" }, undefined, () => this.latestSequence());
 		const filters = queryFilters(
 			state.query,
 			state.asOfSequence,
@@ -925,9 +926,13 @@ type QueryState = Readonly<{
 type QueryFilters = Readonly<{ clauses: readonly string[]; parameters: readonly (string | number)[] }>;
 
 function resolveQueryState(query: RecordQuery, cursor: string | undefined, latestSequence: () => number): QueryState {
-	if (cursor === undefined) return { query: normalizeQuery(query), asOfSequence: latestSequence(), lastSequence: 0 };
+	const normalized = normalizeQuery(query);
+	if (cursor === undefined) {
+		const asOfSequence = latestSequence();
+		return { query: normalized, asOfSequence, lastSequence: normalized.order === "desc" ? asOfSequence + 1 : 0 };
+	}
 	const parsed = decodeCursor(cursor);
-	if (JSON.stringify(normalizeQuery(query)) !== JSON.stringify(parsed.query))
+	if (JSON.stringify(normalized) !== JSON.stringify(parsed.query))
 		throw new Error("Archive cursor does not match the requested filters.");
 	return parsed;
 }
@@ -939,7 +944,7 @@ function queryFilters(
 	source: "archive_records" | "khala_archive_record_summaries",
 	visibleExecutionId?: string,
 ): QueryFilters {
-	const clauses = [`${source}.sequence <= ?`, `${source}.sequence > ?`];
+	const clauses = [`${source}.sequence <= ?`, `${source}.sequence ${query.order === "desc" ? "<" : ">"} ?`];
 	const parameters: Array<string | number> = [asOfSequence, lastSequence];
 	addQueryTextFilters(clauses, parameters, query, source);
 	if (visibleExecutionId !== undefined) {
@@ -995,7 +1000,7 @@ function addQueryDateFilter(
 	addQueryTextFilter(clauses, parameters, clause, value);
 }
 
-function archiveQuerySql(clauses: readonly string[]): string {
+function archiveQuerySql(clauses: readonly string[], order: "asc" | "desc" | undefined): string {
 	return `SELECT archive_records.sequence, archive_records.record_id, archive_records.kind, archive_records.actor,
 		archive_records.work_id, archive_records.mission_id, archive_records.execution_id,
 		archive_records.payload_version, archive_records.summary, archive_records.evidence_refs_json,
@@ -1003,7 +1008,7 @@ function archiveQuerySql(clauses: readonly string[]): string {
 		archive_record_numbers.record_number, archive_record_numbers.mission_record_number
 		FROM archive_records
 		LEFT JOIN archive_record_numbers ON archive_record_numbers.record_id = archive_records.record_id
-		WHERE ${clauses.join(" AND ")} ORDER BY archive_records.sequence LIMIT 100`;
+		WHERE ${clauses.join(" AND ")} ORDER BY archive_records.sequence ${order === "desc" ? "DESC" : "ASC"} LIMIT 100`;
 }
 
 function archiveSummaryQuerySql(clauses: readonly string[]): string {
@@ -1119,8 +1124,15 @@ function nextMissionNumber(numbers: Map<string, Set<number>>, missionId: string 
 	return next;
 }
 
+function readRecordOrder(value: string | undefined): "asc" | "desc" {
+	if (value === undefined) return "asc";
+	if (value === "asc" || value === "desc") return value;
+	throw new Error(`Archive query order ${value} is invalid.`);
+}
+
 function normalizeQuery(query: RecordQuery): RecordQuery {
 	return {
+		order: readRecordOrder(query.order),
 		workId: query.workId,
 		missionId: query.missionId,
 		executionId: query.executionId,
@@ -1177,6 +1189,7 @@ function queryFromJson(value: JsonObject): RecordQuery {
 		}
 		return readStringValue(entry, key);
 	};
+	const order = readRecordOrder(readOptional("order"));
 	const workId = readOptional("workId");
 	const missionId = readOptional("missionId");
 	const executionId = readOptional("executionId");
@@ -1185,6 +1198,7 @@ function queryFromJson(value: JsonObject): RecordQuery {
 	const from = readOptional("from");
 	const to = readOptional("to");
 	return {
+		order,
 		workId,
 		missionId,
 		executionId,
