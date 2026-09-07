@@ -48,7 +48,6 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 			},
 		],
 		inspectWork: () => work,
-		inspectRuntime: async () => work,
 		availableActions: (_workId, _actor, _revision, runtimeState) => [
 			{ id: "hidden", label: "Hidden action", enabled: false, kind: "cancel" },
 			...(runtimeState === "unreachable"
@@ -299,7 +298,7 @@ test("Provider observation archive entries show feedback and evidence", async ()
 				nextAction: work.nextAction,
 			},
 		],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [],
 		readRecords: () => ({ items: [observation], asOfSequence: 1 }),
 	};
@@ -522,7 +521,7 @@ test("Peer-Review lists provider comments separately from Evidence", async () =>
 	};
 	const service = {
 		listWork: () => [{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction }],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [],
 		readRecords: () => ({ items: [observation, delivery, signal, reviewRequest, learning], asOfSequence: 5 }),
 	};
@@ -568,9 +567,9 @@ test("Peer-Review lists provider comments separately from Evidence", async () =>
 	assert.match(evidence, /3\s+ready\s+executor/);
 	assert.match(evidence, /4\s+review request\s+executor/);
 	assert.match(evidence, /ready Signal from Executor; preserve punctuation/);
-	assert.ok(evidence.indexOf("1    observation") < evidence.indexOf("2    delivery"));
-	assert.ok(evidence.indexOf("2    delivery") < evidence.indexOf("3    ready"));
-	assert.ok(evidence.indexOf("3    ready") < evidence.indexOf("4    review request"));
+	assert.ok(evidence.indexOf("4    review request") < evidence.indexOf("3    ready"));
+	assert.ok(evidence.indexOf("3    ready") < evidence.indexOf("2    delivery"));
+	assert.ok(evidence.indexOf("2    delivery") < evidence.indexOf("1    observation"));
 	assert.match(evidence, /Next\s+Executor runtime is unreachable\. Recover it from Actions\./);
 	assert.doesNotMatch(evidence, /Learning/);
 	assert.match(evidence, /Provider observation changed: review-comment/);
@@ -668,7 +667,7 @@ test("Archive lists every record newest first with one heading count", async () 
 	];
 	const service = {
 		listWork: () => [{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction }],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [],
 		readRecords: () => ({ items: records, asOfSequence: 3 }),
 	};
@@ -767,7 +766,8 @@ test("Work picker stays minimal, shows active Work, and marks failures", async (
 	];
 	const service = {
 		listWork: () => works,
-		inspectRuntime: async (workId) => {
+		availableActions: () => [],
+		inspectWork: (workId) => {
 			inspectedWorkIds.push(workId);
 			return {
 				workId,
@@ -887,7 +887,7 @@ test("Blocked Executions are prominent while Signal details stay available in Ar
 		listWork: () => [
 			{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction },
 		],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [],
 		readRecords: () => ({
 			items: [
@@ -1003,7 +1003,7 @@ test("Blocking Signal is hidden unless the current Execution is blocked", async 
 		listWork: () => [
 			{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction },
 		],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [],
 		readRecords: () => ({ items: [], asOfSequence: 0 }),
 	};
@@ -1044,7 +1044,7 @@ test("Work overview hides runtime state for terminal Executions", async () => {
 		listWork: () => [
 			{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction },
 		],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [],
 		readRecords: () => ({ items: [], asOfSequence: 0 }),
 	};
@@ -1220,7 +1220,7 @@ test("TUI schedules runtime recovery effects and refreshes the view", async () =
 		listWork: () => [
 			{ workId: work.workId, title: work.terms.title, state: work.state, executionState: work.execution.state, nextAction: work.nextAction },
 		],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [
 			{ id: "recover:unreachable-work:2", label: "Recover Work", enabled: true, kind: "recover" },
 		],
@@ -1265,11 +1265,9 @@ test("TUI schedules runtime recovery effects and refreshes the view", async () =
 	assert.equal(screens.length, 4);
 	resolveRecovery();
 	await nextTurn();
-	assert.match(screens[3].render(100).join("\n"), /Status\s+succeeded/);
-	assert.match(screens[3].render(100).join("\n"), /Progress\s+complete/);
-	assert.match(screens[3].render(100).join("\n"), /No action is needed/);
+	assert.match(screens[3].render(100).join("\n"), /Status\s+in progress/);
+	assert.doesNotMatch(screens[3].render(100).join("\n"), /Status\s+succeeded/);
 	assert.deepEqual(effects, ["processed"]);
-	screens[3].handleInput("\u001b");
 	await nextTurn();
 	assert.match(screens[4].render(100).join("\n"), /Recoverable Executor[\s\S]*Work\s+active/);
 	assert.match(screens[4].render(100).join("\n"), /Execution\s+running/);
@@ -1293,7 +1291,7 @@ test("TUI distinguishes a failed recovery from a completed recovery", async () =
 	};
 	const service = {
 		listWork: () => [{ workId: work.workId, title: work.terms.title, state: work.state, nextAction: work.nextAction }],
-		inspectRuntime: async () => work,
+		inspectWork: () => work,
 		availableActions: () => [{ id: "recover:unreachable-work:4", label: "Recover Work", enabled: true, kind: "recover" }],
 		perform: async () => ({
 			value: {

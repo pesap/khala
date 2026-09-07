@@ -143,8 +143,20 @@ Provider conversation details retain up to eight comments and eight checks; comm
 Oracle text fields are bounded to 16,000 characters.
 Current role-visible status excludes raw Signal text and validation output; full authorized details remain available to the User.
 
-The current workspace adapter runs `npm ci --ignore-scripts` before governed commit and validation when a sandbox contains `package-lock.json`, using sandbox-local binaries without an implicit build.
-That describes current mechanics, not a guarantee of isolation or a target default validation command for every repository.
+The current workspace adapter runs `npm ci --ignore-scripts --offline` before governed commit and validation when a sandbox contains `package-lock.json`, using sandbox-local binaries without an implicit build.
+Dependency hydration and declared validation run inside Linux bubblewrap with a private network, PID namespace, temporary directory, and home.
+Bubblewrap must already be installed and user namespaces permitted; Khala does not install it or run validation unrestricted when isolation fails.
+The validation path must resolve inside the configured worktree root.
+System runtime directories, Node, and the npm package for Node projects are read-only; only the selected workspace is persistently writable.
+The host home, credential environment, and npm cache are not exposed.
+Offline dependency resolution failures are reported as failed validation rather than retried with network or host-cache access.
+This does not isolate service-owned Git hooks or establish complete Pi child-process isolation.
+
+Runtime stop waits for the owned process group to have no live members before removing its lease.
+A surviving group blocks session takeover even after its leader exits.
+Unattached cleanup with unprovable ownership fails closed and retains the lease for operator reconciliation.
+Process-group confirmation does not contain descendants that deliberately create another session.
+Windows process-tree cleanup is unsupported rather than treated as confirmed.
 
 ## Checks before relying on operations
 

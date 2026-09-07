@@ -1,5 +1,6 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
+	BorderedLoader,
 	type ExtensionContext,
 	type ModelRuntime,
 	ModelSelectorComponent,
@@ -10,7 +11,9 @@ import {
 	type Component,
 	Container,
 	fuzzyFilter,
+	getKeybindings,
 	Input,
+	type Keybinding,
 	matchesKey,
 	parseKey,
 	ScrollView,
@@ -44,6 +47,7 @@ import type {
 	WorkView,
 } from "./model.js";
 import type { ApplicationService } from "./service.js";
+import { type ActionRunner, createActionRunner } from "./tui-actions.js";
 
 export type RoleSettingsController = Readonly<{
 	get: () => RoleSettingsMap;
@@ -237,13 +241,14 @@ async function runKhalaPicker(
 	roleSettings: RoleSettingsController | undefined,
 ): Promise<void> {
 	const pickerState: WorkPickerState = {};
+	const runAction = createActionRunner(service, context, actor);
 	const effectiveKeybindings = normalizeKeybindings(keybindings);
 	for (;;) {
 		const result = await pickWork(() => service.listWork(), context, effectiveKeybindings, pickerState, {
 			showSettings: true,
 		});
 		if (result === null) return;
-		await handlePickerResult(result, service, context, actor, effectiveKeybindings, roleSettings);
+		await handlePickerResult(result, service, context, actor, effectiveKeybindings, roleSettings, runAction);
 	}
 }
 
@@ -254,6 +259,7 @@ async function handlePickerResult(
 	actor: Actor,
 	keybindings: KhalaConfig["keybindings"],
 	roleSettings: RoleSettingsController | undefined,
+	runAction: ActionRunner,
 ): Promise<void> {
 	if (result === "settings") {
 		if (roleSettings !== undefined) await showRoleSettings(roleSettings, context);
@@ -263,13 +269,24 @@ async function handlePickerResult(
 		await showTextPage(context, "Work picker help", workPickerHelp(keybindings));
 		return;
 	}
-	await showWork(service, context, result, actor, keybindings);
+	await showWork(service, context, result, actor, keybindings, runAction);
 }
+
+type WorkFilter = "Work" | "Needs attention" | "Review" | "History";
+const WORK_FILTERS: readonly WorkFilter[] = ["Work", "Needs attention", "Review", "History"];
+const WORK_FILTER_PREDICATES = {
+	Work: (work) => !isHiddenWork(work),
+	"Needs attention": (work) =>
+		hasWorkFailure(work) || work.state === "needs-input" || work.executionState === "blocked",
+	Review: (work) => work.state === "awaiting-review",
+	History: (work) => work.state === "succeeded" || work.state === "stopped",
+} satisfies Readonly<Record<WorkFilter, (work: WorkSummary) => boolean>>;
 
 type WorkPickerState = {
 	selectedWorkId?: string | undefined;
 	filter?: string | undefined;
 	showHistory?: boolean | undefined;
+	scope?: WorkFilter;
 };
 
 type WorkPickerResult = string | "settings" | "help" | null;
@@ -392,6 +409,7 @@ class WorkPickerController {
 	private filtered: readonly WorkSummary[];
 	private selectedIndex = 0;
 	private setHistoryFooter: (showHistory: boolean) => void = () => {};
+	private setScopeHeading: (scope: WorkFilter) => void = () => {};
 
 	constructor(
 		getWork: () => readonly WorkSummary[],
@@ -405,9 +423,22 @@ class WorkPickerController {
 		this.requestRender = requestRender;
 		this.pickerState = pickerState;
 		this.done = done;
-		this.availableWork = pickerWork(getWork(), pickerState.showHistory === true);
+		this.availableWork = pickerWork(getWork(), pickerState);
 		this.filtered = filterWork(this.availableWork, pickerState.filter ?? "");
 		this.restoreSelection();
+	}
+
+	setHeading(update: (scope: WorkFilter) => void): void {
+		this.setScopeHeading = update;
+	}
+
+	cycleScope(input: Input, direction: number): void {
+		const scope = this.pickerState.scope ?? "Work";
+		const index = (WORK_FILTERS.indexOf(scope) + direction + WORK_FILTERS.length) % WORK_FILTERS.length;
+		this.pickerState.scope = WORK_FILTERS[index] ?? "Work";
+		this.pickerState.showHistory = false;
+		this.refresh(input);
+		this.setScopeHeading(this.pickerState.scope);
 	}
 
 	setFooter(update: (showHistory: boolean) => void): void {
@@ -447,8 +478,9 @@ class WorkPickerController {
 	}
 
 	refresh(input: Input): void {
-		const selectedWorkId = this.filtered[this.selectedIndex]?.workId ?? this.pickerState.selectedWorkId;
-		this.availableWork = pickerWork(this.getWork(), this.pickerState.showHistory === true);
+		const selectedWorkId = this.pickerState.selectedWorkId ?? this.filtered[this.selectedIndex]?.workId;
+		this.pickerState.selectedWorkId = selectedWorkId;
+		this.availableWork = pickerWork(this.getWork(), this.pickerState);
 		this.filtered = filterWork(this.availableWork, input.getValue().trim());
 		this.selectedIndex = refreshedWorkIndex(selectedWorkId, this.filtered, this.selectedIndex);
 		this.updateList();
@@ -461,9 +493,9 @@ class WorkPickerController {
 
 	toggleHistory(input: Input): void {
 		this.pickerState.showHistory = this.pickerState.showHistory !== true;
-		this.availableWork = pickerWork(this.getWork(), this.pickerState.showHistory === true);
-		this.filtered = filterWork(this.availableWork, input.getValue().trim());
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filtered.length - 1));
+		this.pickerState.scope = "Work";
+		this.refresh(input);
+		this.setScopeHeading(this.pickerState.showHistory ? "History" : "Work");
 		this.setHistoryFooter(this.pickerState.showHistory === true);
 		this.updateList();
 	}
@@ -471,11 +503,13 @@ class WorkPickerController {
 	move(movingUp: boolean): void {
 		if (this.filtered.length === 0) return;
 		this.selectedIndex = nextPickerIndex(this.selectedIndex, this.filtered.length, movingUp);
+		this.pickerState.selectedWorkId = this.filtered[this.selectedIndex]?.workId;
 		this.updateList();
 	}
 
 	first(): void {
 		this.selectedIndex = 0;
+		this.pickerState.selectedWorkId = this.filtered[0]?.workId;
 		this.updateList();
 	}
 
@@ -485,22 +519,8 @@ class WorkPickerController {
 	}
 
 	private restoreSelection(): void {
-		const filter = this.pickerState.filter;
-		const filterEmpty = filter === undefined || filter.trim().length === 0;
-		const restoredIndex = restoredPickerIndex(filterEmpty, this.pickerState.selectedWorkId, this.filtered);
-		if (restoredIndex !== undefined) this.selectedIndex = restoredIndex;
+		this.selectedIndex = refreshedWorkIndex(this.pickerState.selectedWorkId, this.filtered, this.selectedIndex);
 	}
-}
-
-function restoredPickerIndex(
-	filterEmpty: boolean,
-	selectedWorkId: string | undefined,
-	filtered: readonly WorkSummary[],
-): number | undefined {
-	if (!filterEmpty) return undefined;
-	const restoredIndex =
-		selectedWorkId === undefined ? -1 : filtered.findIndex((item) => item.workId === selectedWorkId);
-	return restoredIndex < 0 ? undefined : restoredIndex;
 }
 
 type FocusableComponent = Component & { focused: boolean };
@@ -521,7 +541,8 @@ function workPickerComponent(
 		},
 		render: (width: number) => container.render(width),
 		invalidate: () => container.invalidate(),
-		handleInput: (data: string) =>
+		handleInput: (data: string) => {
+			if (switchWorkFilter(data, filterInput, controller)) return;
 			handlePickerInput(data, filterInput, keybindings, showSettings, {
 				finish: (value) => controller.finish(value),
 				refresh: () => controller.refresh(filterInput),
@@ -530,8 +551,22 @@ function workPickerComponent(
 				move: (movingUp) => controller.move(movingUp),
 				enter: () => controller.enter(),
 				updateFilter: () => controller.updateFilter(filterInput),
-			}),
+			});
+		},
 	};
+}
+
+function switchWorkFilter(data: string, input: Input, controller: WorkPickerController): boolean {
+	if (input.getValue().length > 0) return false;
+	const bindings = getKeybindings();
+	const directions = [
+		["tui.editor.cursorLeft", -1],
+		["tui.editor.cursorRight", 1],
+	] as const;
+	const direction = directions.find(([key]) => bindings.matches(data, key));
+	if (direction === undefined) return false;
+	controller.cycleScope(input, direction[1]);
+	return true;
 }
 
 type WorkPickerOptions = Readonly<{ showSettings: boolean }>;
@@ -554,7 +589,9 @@ async function pickWork(
 			() => controller.messages(),
 		);
 		const container = new Container();
-		container.addChild(new Text(theme.fg("accent", theme.bold("Work")), 1, 0));
+		const heading = new Text(theme.fg("accent", theme.bold(pickerState.scope ?? "Work")), 1, 0);
+		container.addChild(heading);
+		controller.setHeading((scope) => heading.setText(theme.fg("accent", theme.bold(scope))));
 		container.addChild(new Spacer(1));
 		container.addChild(filterInput);
 		container.addChild(new Spacer(1));
@@ -682,7 +719,7 @@ function workPickerKeybindings(
 	showSettings: boolean,
 ): string {
 	const settings = showSettings ? `  ${keybindings.roleSettings} settings when filter is empty` : "";
-	return `type to filter  ${keybindings.refresh} refresh  ${keybindings.history} ${showHistory ? "active Work" : "history"} when filter is empty  home first  up/down move  enter open  ${keybindings.help} help when filter is empty${settings}  escape/ctrl+c/backspace back`;
+	return `left/right filters  type to filter  ${keybindings.refresh} refresh  ${keybindings.history} ${showHistory ? "active Work" : "history"} when filter is empty  home first  up/down move  enter open  ${keybindings.help} help when filter is empty${settings}  escape/ctrl+c/backspace back`;
 }
 
 function normalizeKeybindings(keybindings: KhalaConfig["keybindings"]): KhalaConfig["keybindings"] {
@@ -699,8 +736,8 @@ function configuredKeybinding(value: string, fallback: string): string {
 	return value || fallback;
 }
 
-function pickerWork(work: readonly WorkSummary[], showHistory: boolean): readonly WorkSummary[] {
-	return showHistory ? work : work.filter((item) => !isHiddenWork(item));
+function pickerWork(work: readonly WorkSummary[], state: WorkPickerState): readonly WorkSummary[] {
+	return state.showHistory ? work : work.filter(WORK_FILTER_PREDICATES[state.scope ?? "Work"]);
 }
 
 function workPickerHelp(keybindings: KhalaConfig["keybindings"], showSettings = true): readonly string[] {
@@ -752,21 +789,28 @@ function addKeyValueRows(container: Container, theme: Theme, rows: readonly (rea
 	container.addChild(new Text(theme.fg("muted", lines.join("\n")), 1, 0));
 }
 
-type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal";
+type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal" | "refresh";
+type WorkSelection = Readonly<{ kind: "section"; section: WorkSection }> | Readonly<{ kind: "action"; action: Action }>;
 async function showWork(
 	service: ApplicationService,
 	context: ExtensionContext,
 	workId: string,
 	actor: Actor,
 	keybindings: KhalaConfig["keybindings"],
+	runAction: ActionRunner,
 ): Promise<"back"> {
+	let refreshed: WorkView | undefined;
 	for (;;) {
-		const work = await service.inspectRuntime(workId);
-		const navigation = readArchiveRecordsForNavigation(service, work, actor);
-		const section = await pickSection(work, navigation.records, navigation.error, context, keybindings);
-		if (section === null || section === "back") return "back";
-		await showWorkSection(section, service, context, work, actor, navigation.records);
+		const saved = service.inspectWork(workId);
+		const work = currentWorkSnapshot(saved, refreshed);
+		const section = await pickSection(work, context, keybindings, availableWorkActions(service, work, actor));
+		if (section === null) return "back";
+		refreshed = await showWorkSection(section, service, context, work, actor, runAction);
 	}
+}
+
+function currentWorkSnapshot(saved: WorkView, refreshed: WorkView | undefined): WorkView {
+	return refreshed?.revision === saved.revision ? refreshed : saved;
 }
 
 async function showArchiveWork(archive: KhalaArchiveView, context: ExtensionContext, workId: string): Promise<void> {
@@ -775,76 +819,94 @@ async function showArchiveWork(archive: KhalaArchiveView, context: ExtensionCont
 }
 
 async function showWorkSection(
-	section: WorkSection,
+	selection: WorkSelection,
 	service: ApplicationService,
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
-	records: readonly RecordView[],
-): Promise<void> {
+	runAction: ActionRunner,
+): Promise<WorkView | undefined> {
+	if (selection.kind === "action") {
+		await applySelectedAction(service, context, work, actor, selection.action, runAction);
+		return;
+	}
 	const handlers = {
-		actions: () => chooseAction(service, context, work, actor),
+		actions: () => chooseAction(service, context, work, actor, runAction),
 		evidence: () => showEvidence(service, work, context, actor),
 		archive: () => showArchive(service, context, work, actor),
-		"peer-review": () => showPeerReview(providerReviewComments(records), context),
+		"peer-review": () => showPeerReview(work, context),
 		"blocking-signal": () => showBlockingSignal(work, context),
-	} satisfies Record<WorkSection, () => Promise<void>>;
-	await handlers[section]();
+		refresh: () => showRuntimeRefresh(service, context, work, actor),
+	} satisfies Record<WorkSection, () => Promise<void | WorkView>>;
+	return (await handlers[selection.section]()) ?? work;
 }
 
 async function pickSection(
 	work: WorkView,
-	records: readonly RecordView[],
-	archiveError: string | undefined,
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
-): Promise<WorkSection | "back" | null> {
-	const reviewComments = providerReviewComments(records);
+	actions: readonly Action[],
+): Promise<WorkSelection | null> {
+	const choices = new Map<string, WorkSelection>([
+		...WORK_SECTIONS.map((section) => [section, { kind: "section", section }] as const),
+		...actions.map((action) => [`action:${action.id}`, { kind: "action", action }] as const),
+	]);
+	const hasReview = work.reviewRequest !== undefined || work.providerOutcome !== undefined;
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
 		{ value: "evidence", label: "Evidence" },
-		...(reviewComments.length === 0 ? [] : [{ value: "peer-review", label: "Peer-Review" }]),
+		...(hasReview ? [{ value: "peer-review", label: "Peer-Review" }] : []),
 		{ value: "archive", label: "Archive" },
 		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
+		{ value: "refresh", label: "Refresh runtime" },
+		...actions.map((action) => ({ value: `action:${action.id}`, label: displayActionLabel(action) })),
 	];
-	return context.ui.custom<WorkSection | "back" | null>((tui, theme, _keybindings, done) => {
-		const rows = workSectionRows(work, archiveError);
-		const list = new SelectList(items, items.length, selectorTheme(theme));
-		list.onSelect = (item) => done(isWorkSection(item.value) ? item.value : "back");
-		list.onCancel = () => done("back");
+	return context.ui.custom<WorkSelection | null>((tui, theme, _keybindings, done) => {
+		const rows = workSectionRows(work, undefined);
+		const list = new SelectList(items, 4, selectorTheme(theme));
+		list.onSelect = (item) => done(choices.get(item.value) ?? null);
+		list.onCancel = () => done(null);
 		const container = new Container();
 		addHeading(container, theme, truncateWorkName(work.terms.title));
 		container.addChild(new Spacer(1));
 		addKeyValueRows(container, theme, rows);
-		container.addChild(new Spacer(1));
-		container.addChild(list);
-		container.addChild(new Spacer(1));
-		const footer =
-			reviewComments.length === 0 ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
-		addPanelKeybindings(container, theme, footer);
+		const scroll = new ScrollView(container, { overscroll: "contain", scrollbar: "auto" });
+		const controls = new Container();
+		controls.addChild(list);
+		const footer = !hasReview ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
+		addPanelKeybindings(controls, theme, `escape back  pgup/pgdn details  ${footer}`);
 		return selectableComponent(
-			container,
+			new VStack([scroll, { component: controls, shrink: 0 }]),
 			list,
 			tui,
-			() => done("back"),
+			() => done(null),
 			(data) => {
-				if (reviewComments.length === 0 || parseKey(data) !== keybindings.comments) return false;
-				done("peer-review");
+				if (isDetailScroll(data)) return scrollPage(scroll, data);
+				if (!hasReview || parseKey(data) !== keybindings.comments) return false;
+				done({ kind: "section", section: "peer-review" });
 				return true;
 			},
 		);
 	});
 }
 
+function isDetailScroll(data: string): boolean {
+	const bindings = getKeybindings();
+	return bindings.matches(data, "tui.editor.pageUp") || bindings.matches(data, "tui.editor.pageDown");
+}
+
 function workSectionRows(work: WorkView, archiveError: string | undefined): readonly (readonly [string, string])[] {
 	return [
 		["Work", formatWorkState(work)],
+		["Goal", work.terms.objective],
+		...workErrorRow(work),
+		...(hasCurrentBlockedSignal(work) ? [["Blocker", work.lastSignal?.summary ?? ""] as const] : []),
+		...nextActionRow(work),
+		["Freshness", `Saved revision ${work.revision}; Refresh runtime for a live check`],
 		...missionRow(work),
 		...archiveErrorRow(archiveError),
 		...executionRows(work.execution),
 		...reviewRequestRow(work),
-		...workErrorRow(work),
-		...nextActionRow(work),
 	];
 }
 
@@ -909,28 +971,13 @@ async function applySelectedAction(
 	work: WorkView,
 	actor: Actor,
 	action: Action,
+	runAction: ActionRunner,
 ): Promise<void> {
 	if (action.kind === "recover") {
 		await showRecovery(service, context, work, actor, action);
 		return;
 	}
-	const input = await actionInput(action, context);
-	if (input === null) return;
-	const result = await service.perform({
-		action: action.kind,
-		workId: work.workId,
-		input,
-		meta: { commandId: `tui:${action.id}`, actor, expectedWorkRevision: work.revision, schemaVersion: 1 },
-	});
-	if ("error" in result) {
-		await showPage(context, "Action failed", formatErrorSections(result.error));
-		return;
-	}
-	schedulePendingEffects(service);
-	await showTextPage(context, "Action complete", [
-		`action: ${displayActionLabel(action)}`,
-		`next: ${presentEvidenceText(result.value.nextAction)}`,
-	]);
+	await runAction(work, action);
 }
 
 async function chooseAction(
@@ -938,15 +985,20 @@ async function chooseAction(
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
+	runAction: ActionRunner,
 ): Promise<void> {
-	const actions = service
-		.availableActions(work.workId, actor, work.revision, work.execution?.runtimeState)
-		.filter((action) => action.enabled);
+	const actions = availableWorkActions(service, work, actor);
 	if (actions.length === 0) {
 		await showTextPage(context, "Actions", ["No actions are currently available."]);
 		return;
 	}
-	await runSelectedAction(actions, service, context, work, actor);
+	await runSelectedAction(actions, service, context, work, actor, runAction);
+}
+
+function availableWorkActions(service: ApplicationService, work: WorkView, actor: Actor): readonly Action[] {
+	return service
+		.availableActions(work.workId, actor, work.revision, work.execution?.runtimeState)
+		.filter((action) => action.enabled);
 }
 
 async function runSelectedAction(
@@ -955,12 +1007,13 @@ async function runSelectedAction(
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
+	runAction: ActionRunner,
 ): Promise<void> {
 	const selected = await selectAction(actions, context);
 	if (selected === null || selected === "back") return;
 	const action = actions.find((candidate) => candidate.id === selected);
 	if (action === undefined) return;
-	await applySelectedAction(service, context, work, actor, action);
+	await applySelectedAction(service, context, work, actor, action, runAction);
 }
 
 function displayActionLabel(action: Action): string {
@@ -1062,6 +1115,8 @@ function recoveryCompletionNext(work: WorkView, awaitingReview: boolean): string
 	return "No action is needed. Khala will continue automatically.";
 }
 
+const pendingRecoveries = new WeakMap<ApplicationService, Set<string>>();
+
 async function showRecovery(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -1069,6 +1124,13 @@ async function showRecovery(
 	actor: Actor,
 	action: Action,
 ): Promise<void> {
+	const pending = pendingRecoveries.get(service) ?? new Set<string>();
+	pendingRecoveries.set(service, pending);
+	if (pending.has(work.workId)) {
+		context.ui.notify("Recovery is already in progress. Leaving the panel does not cancel it.", "info");
+		return;
+	}
+	pending.add(work.workId);
 	await context.ui.custom<void>((tui, theme, _keybindings, done) => {
 		let closed = false;
 		let display: RecoveryDisplay = {
@@ -1078,7 +1140,7 @@ async function showRecovery(
 				work.state === "stopped" && work.stopReason === "cancelled"
 					? "Preparing a new attempt."
 					: "Khala is checking and restoring the Executor.",
-			next: "Keep this screen open until recovery finishes.",
+			next: "Escape returns to Work; recovery continues in the background.",
 		};
 		const body = new Text("", 1, 0);
 		const container = new Container();
@@ -1102,7 +1164,7 @@ async function showRecovery(
 				status: "in progress",
 				progress: `${formatStatus(progress.stage)}  ${presentEvidenceText(progress.message)}`,
 				doing: "Khala is restoring the Executor",
-				next: "Keep this screen open until recovery finishes.",
+				next: "Escape returns to Work; recovery continues in the background.",
 			});
 		};
 		renderDisplay();
@@ -1127,13 +1189,13 @@ async function showRecovery(
 				.catch((error) => {
 					const message = error instanceof Error ? error.message : String(error);
 					update(recoveryFailureDisplay(message));
-				});
+				})
+				.finally(() => pending.delete(work.workId));
 		});
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data: string) => {
-				if (display.status === "in progress") return;
 				if (isPanelBack(data)) {
 					closed = true;
 					done();
@@ -1404,15 +1466,13 @@ function selectorTheme(theme: Theme): SelectListTheme {
 }
 
 function selectableComponent(
-	container: Container,
+	container: Component,
 	list: SelectList,
 	tui: { requestRender(): void },
 	onBack: () => void,
 	interceptInput?: (data: string) => boolean,
 ): Component {
-	return {
-		render: (width: number) => container.render(width),
-		invalidate: () => container.invalidate(),
+	return Object.assign(container, {
 		handleInput: (data: string) => {
 			if (interceptInput?.(data) === true) return;
 			if (matchesKey(data, "backspace")) {
@@ -1422,13 +1482,16 @@ function selectableComponent(
 			list.handleInput(data);
 			tui.requestRender();
 		},
-	};
+	});
 }
-const WORK_SECTIONS: readonly WorkSection[] = ["actions", "evidence", "archive", "peer-review", "blocking-signal"];
-
-function isWorkSection(value: string): value is WorkSection {
-	return WORK_SECTIONS.some((section) => section === value);
-}
+const WORK_SECTIONS: readonly WorkSection[] = [
+	"actions",
+	"evidence",
+	"archive",
+	"peer-review",
+	"blocking-signal",
+	"refresh",
+];
 
 function formatStatus(value: string): string {
 	return value.replace(/-/g, " ");
@@ -1479,100 +1542,11 @@ function optionalPageSection(lines: readonly string[], heading?: string): readon
 }
 
 type RecordListMode = "evidence" | "archive";
-type NavigationRecords = Readonly<{ records: readonly RecordView[]; error?: string }>;
 type RecordListEntry = Readonly<{ kind: "record"; record: RecordView }>;
 type MutableJsonObject = { [key: string]: JsonValue | undefined };
-type MutableProviderReviewComment = {
-	id: string;
-	body: string;
-	author?: string;
-	authorAssociation?: string;
-	createdAt?: string;
-	url?: string;
-	state?: string;
-	source?: ProviderReviewComment["source"];
-	location?: string;
-	minimized?: boolean;
-};
-type ProviderReviewCommentExtras = Omit<MutableProviderReviewComment, "id" | "body">;
-
-function providerReviewComments(records: readonly RecordView[]): readonly ProviderReviewComment[] {
-	for (const record of [...records].reverse()) {
-		const comments = providerReviewCommentsFromRecord(record);
-		if (comments !== undefined) return comments;
-	}
-	return [];
-}
-
-function providerReviewCommentsFromRecord(record: RecordView): readonly ProviderReviewComment[] | undefined {
-	if (record.kind !== "observation") return undefined;
-	const payload =
-		readPayloadObject(readPayloadObjectValue(record.payload), "details") ??
-		readPayloadObject(readPayloadObjectValue(record.payload), "providerObservation");
-	return readProviderReviewComments(payload?.["comments"]);
-}
-
-function readProviderReviewComments(value: JsonValue | undefined): readonly ProviderReviewComment[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const comments = value
-		.filter(isJsonObject)
-		.map(readProviderReviewComment)
-		.filter((comment): comment is ProviderReviewComment => comment !== undefined)
-		.filter((comment) => comment.body.trim().length > 0);
-	return comments.filter((comment, index, all) => all.findIndex((candidate) => candidate.id === comment.id) === index);
-}
-
-function readProviderReviewComment(value: JsonObject): ProviderReviewComment | undefined {
-	const identity = providerReviewCommentIdentity(value);
-	return identity === undefined ? undefined : { ...identity, ...providerReviewCommentExtras(value) };
-}
-
-function providerReviewCommentIdentity(value: JsonObject): Readonly<{ id: string; body: string }> | undefined {
-	const id = readObjectText(value, "id");
-	const body = readObjectText(value, "body");
-	return id === undefined || body === undefined ? undefined : { id, body };
-}
-
-function providerReviewCommentExtras(value: JsonObject): ProviderReviewCommentExtras {
-	const extras: ProviderReviewCommentExtras = {};
-	addCommentAuthorFields(extras, value);
-	addCommentSourceFields(extras, value);
-	addCommentReviewFields(extras, value);
-	addCommentPresentationFields(extras, value);
-	return extras;
-}
-
-function addCommentAuthorFields(extras: ProviderReviewCommentExtras, value: JsonObject): void {
-	const author = readObjectText(value, "author");
-	const authorAssociation = readObjectText(value, "authorAssociation");
-	if (author !== undefined) extras.author = author;
-	if (authorAssociation !== undefined) extras.authorAssociation = authorAssociation;
-}
-
-function addCommentSourceFields(extras: ProviderReviewCommentExtras, value: JsonObject): void {
-	const createdAt = readObjectText(value, "createdAt");
-	const url = readObjectText(value, "url");
-	if (createdAt !== undefined) extras.createdAt = createdAt;
-	if (url !== undefined) extras.url = url;
-}
-
-function addCommentReviewFields(extras: ProviderReviewCommentExtras, value: JsonObject): void {
-	const state = readObjectText(value, "state");
-	const source = readCommentSource(value);
-	if (state !== undefined) extras.state = state;
-	if (source !== undefined) extras.source = source;
-}
-
-function addCommentPresentationFields(extras: ProviderReviewCommentExtras, value: JsonObject): void {
-	const location = readObjectText(value, "location");
-	const minimized = readObjectBoolean(value, "minimized");
-	if (location !== undefined) extras.location = location;
-	if (minimized !== undefined) extras.minimized = minimized;
-}
-
-function readCommentSource(value: JsonObject): ProviderReviewComment["source"] {
-	const source = readObjectText(value, "source");
-	return source === "issue-comment" || source === "review" || source === "inline" ? source : undefined;
+function workReviewComments(work: WorkView): readonly ProviderReviewComment[] {
+	const comments = (work.lastObservation?.details?.comments ?? []).filter((comment) => comment.body.trim().length > 0);
+	return comments.filter((comment, index) => comments.findIndex((candidate) => candidate.id === comment.id) === index);
 }
 
 function readObjectBoolean(object: JsonObject | undefined, key: string): boolean | undefined {
@@ -1750,35 +1724,19 @@ async function showSelectedRecord(
 	await showPage(context, page.title, page.sections);
 }
 
-async function browseRecordPages(
-	records: readonly RecordView[],
-	context: ExtensionContext,
-	mode: RecordListMode,
-	supplement: readonly PageSection[] = [],
-): Promise<void> {
-	for (;;) {
-		const selected = await selectRecordPanel(records, context, mode, supplement);
-		if (selected === null) return;
-		await showSelectedRecord(records, selected, context);
-	}
-}
-
 async function showEvidence(
 	service: ApplicationService,
 	work: WorkView,
 	context: ExtensionContext,
 	actor: Actor,
 ): Promise<void> {
-	let records: readonly RecordView[];
 	try {
-		records = readAllArchiveRecords(service, work, actor);
+		await runArchivePages(service, context, work, actor, "evidence");
 	} catch (error) {
 		await showTextPage(context, "Evidence", [
 			`Unable to read Archive: ${error instanceof Error ? error.message : String(error)}`,
 		]);
-		return;
 	}
-	await browseRecordPages(selectRelevantEvidence(work, records), context, "evidence", formatEvidenceSupplement(work));
 }
 
 function formatEvidenceSupplement(work: WorkView): readonly PageSection[] {
@@ -1798,8 +1756,14 @@ async function browseReviewComments(
 	}
 }
 
-async function showPeerReview(comments: readonly ProviderReviewComment[], context: ExtensionContext): Promise<void> {
-	if (comments.length === 0) return;
+async function showPeerReview(work: WorkView, context: ExtensionContext): Promise<void> {
+	const comments = workReviewComments(work);
+	if (comments.length === 0) {
+		await showTextPage(context, "Peer-Review", [
+			"Provider review comments are unavailable in the saved Work snapshot.",
+		]);
+		return;
+	}
 	await browseReviewComments(comments, context);
 }
 
@@ -1873,34 +1837,40 @@ function formatExecutorEvidenceSections(response: string, evidence: readonly str
 		...(evidence.length === 0 ? [] : [pageSection(evidence, "Evidence")]),
 	];
 }
+type RecordPanelResult = string | "older" | "newest" | null;
+
+function addSupplementToRecordPanel(container: Container, theme: Theme, supplement: readonly PageSection[]): void {
+	if (supplement.length > 0) container.addChild(new Spacer(1));
+	addPageSections(container, theme, supplement);
+}
+
+function recordPanelFooter(navigation: Readonly<{ older: boolean; newest: boolean }>): string {
+	return `${RECORD_NAVIGATION_FOOTER}${navigation.older ? "  left Older" : ""}${navigation.newest ? "  right Newest" : ""}`;
+}
+
 async function selectRecordPanel(
 	records: readonly RecordView[],
 	context: ExtensionContext,
 	mode: RecordListMode,
-	supplement: readonly PageSection[] = [],
-): Promise<string | null> {
+	supplement: readonly PageSection[],
+	navigation: Readonly<{ older: boolean; newest: boolean }>,
+): Promise<RecordPanelResult> {
 	const entries: readonly RecordListEntry[] = records.map((record) => ({ kind: "record" as const, record }));
 	const title = recordPanelTitle(mode, records.length);
-	if (entries.length === 0) {
-		await showPage(context, title, [
-			pageSection([
-				mode === "evidence" ? "No relevant evidence records are available." : "No Archive records are available.",
-			]),
-			...supplement,
-		]);
-		return null;
-	}
-	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+	return context.ui.custom<RecordPanelResult>((tui, theme, _keybindings, done) => {
 		let selectedIndex = 0;
 		const list = createRecordList(entries, mode, theme, () => selectedIndex);
 		const container = new Container();
 		addHeading(container, theme, title);
 		container.addChild(new Spacer(1));
 		container.addChild(list);
-		if (supplement.length > 0) container.addChild(new Spacer(1));
-		addPageSections(container, theme, supplement);
+		if (entries.length === 0)
+			container.addChild(
+				new Text("No matching records on this page. Use the navigation below to continue or refresh.", 1, 0),
+			);
+		addSupplementToRecordPanel(container, theme, supplement);
 		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, RECORD_NAVIGATION_FOOTER);
+		addPanelKeybindings(container, theme, recordPanelFooter(navigation));
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
@@ -1919,18 +1889,20 @@ async function selectRecordPanel(
 	});
 }
 
-type RecordPanelAction = "up" | "down" | "enter" | "back";
-const RECORD_PANEL_ACTIONS: ReadonlyMap<string, RecordPanelAction> = new Map([
-	["up", "up"],
-	["down", "down"],
-	["enter", "enter"],
-	["escape", "back"],
-	["ctrl+c", "back"],
-	["backspace", "back"],
+type RecordPanelAction = "up" | "down" | "enter" | "back" | "older" | "newest";
+const RECORD_PANEL_ACTIONS: ReadonlyMap<Keybinding, RecordPanelAction> = new Map([
+	["tui.select.up", "up"],
+	["tui.select.down", "down"],
+	["tui.select.confirm", "enter"],
+	["tui.editor.cursorLeft", "older"],
+	["tui.editor.cursorRight", "newest"],
+	["tui.select.cancel", "back"],
 ]);
 
 function recordPanelAction(data: string): RecordPanelAction | undefined {
-	return RECORD_PANEL_ACTIONS.get(parseKey(data) ?? "");
+	const bindings = getKeybindings();
+	const action = [...RECORD_PANEL_ACTIONS].find(([key]) => bindings.matches(data, key));
+	return action?.[1] ?? (isPanelBack(data) ? "back" : undefined);
 }
 
 function moveRecordPanelSelection(
@@ -1947,7 +1919,7 @@ function moveRecordPanelSelection(
 function selectRecordPanelEntry(
 	entries: readonly RecordListEntry[],
 	getSelectedIndex: () => number,
-	done: (value: string | null) => void,
+	done: (value: RecordPanelResult) => void,
 ): void {
 	const entry = entries[getSelectedIndex()];
 	if (entry?.kind === "record") done(String(entry.record.sequence));
@@ -1959,7 +1931,7 @@ function handleRecordPanelInput(
 	getSelectedIndex: () => number,
 	setSelectedIndex: (index: number) => void,
 	requestRender: () => void,
-	done: (value: string | null) => void,
+	done: (value: RecordPanelResult) => void,
 ): void {
 	const action = recordPanelAction(data);
 	if (action === undefined) return;
@@ -1967,6 +1939,8 @@ function handleRecordPanelInput(
 		["up", () => moveRecordPanelSelection("up", entries, getSelectedIndex, setSelectedIndex, requestRender)],
 		["down", () => moveRecordPanelSelection("down", entries, getSelectedIndex, setSelectedIndex, requestRender)],
 		["enter", () => selectRecordPanelEntry(entries, getSelectedIndex, done)],
+		["older", () => done("older")],
+		["newest", () => done("newest")],
 		["back", () => done(null)],
 	]);
 	handlers.get(action)?.();
@@ -2420,31 +2394,135 @@ function formatErrorSections(error: ErrorEnvelope | undefined): readonly PageSec
 	];
 }
 
+async function showRuntimeRefresh(
+	service: ApplicationService,
+	context: ExtensionContext,
+	work: WorkView,
+	actor: Actor,
+): Promise<WorkView | undefined> {
+	const result = await context.ui.custom<WorkView | Error | null>((tui, theme, _keys, done) => {
+		const loader = new BorderedLoader(tui, theme, "Checking runtime; Escape stops waiting");
+		let dismissed = false;
+		loader.onAbort = () => {
+			dismissed = true;
+			done(null);
+		};
+		void service
+			.inspectRuntime(
+				work.workId,
+				{
+					actor,
+					commandId: `tui:inspect:${work.workId}:${work.revision}`,
+					expectedWorkRevision: work.revision,
+					schemaVersion: 1,
+				},
+				{ signal: loader.signal },
+			)
+			.then((value) => {
+				if (!dismissed) done(value);
+			})
+			.catch((error) => {
+				if (!dismissed) done(error instanceof Error ? error : new Error(String(error)));
+			});
+		return loader;
+	});
+	if (result === null) return;
+	if (result instanceof Error) {
+		await showPage(
+			context,
+			"Runtime unavailable",
+			formatErrorSections({
+				code: "external-failure",
+				summary: result.message,
+				retryable: true,
+				remediation: "Saved Work remains available; retry the explicit runtime check.",
+				evidenceRefs: [],
+			}),
+		);
+		return;
+	}
+	await showTextPage(context, "Runtime checked", formatFieldRows(workSectionRows(result, undefined)));
+	return result;
+}
+
 function presentEvidenceText(value: string): string {
 	return value.trim();
 }
 
-function readArchiveRecordsForNavigation(service: ApplicationService, work: WorkView, actor: Actor): NavigationRecords {
-	try {
-		return { records: readAllArchiveRecords(service, work, actor) };
-	} catch (error) {
-		return { records: [], error: error instanceof Error ? error.message : String(error) };
+function readArchivePage(service: ApplicationService, work: WorkView, actor: Actor, cursor?: string) {
+	return service.readRecords(
+		{ workId: work.workId, order: "desc" },
+		{ actor, commandId: `tui:archive:${work.workId}:${work.revision}`, schemaVersion: 1 },
+		cursor,
+	);
+}
+
+type ArchivePageState = Readonly<{
+	page: ReturnType<ApplicationService["readRecords"]>;
+	records: readonly RecordView[];
+}>;
+
+function advanceArchivePage(
+	selected: RecordPanelResult,
+	state: ArchivePageState,
+	service: ApplicationService,
+	work: WorkView,
+	actor: Actor,
+): ArchivePageState | undefined {
+	if (selected === "newest") {
+		const page = readArchivePage(service, work, actor);
+		return { page, records: [...page.items] };
+	}
+	if (selected === "older" && state.page.nextCursor !== undefined) {
+		const page = readArchivePage(service, work, actor, state.page.nextCursor);
+		return { page, records: [...page.items] };
+	}
+	return undefined;
+}
+
+async function runArchivePages(
+	service: ApplicationService,
+	context: ExtensionContext,
+	work: WorkView,
+	actor: Actor,
+	mode: RecordListMode,
+): Promise<void> {
+	let state: ArchivePageState = { page: readArchivePage(service, work, actor), records: [] };
+	state = { page: state.page, records: [...state.page.items] };
+	for (;;) {
+		const selected = await selectRecordPanel(
+			visibleArchiveRecords(mode, work, state.records),
+			context,
+			mode,
+			[...formatEvidenceSupplement(work), pageSection([`Saved through sequence ${state.page.asOfSequence}`])],
+			{ older: state.page.nextCursor !== undefined, newest: true },
+		);
+		if (selected === null) return;
+		state = await navigateArchivePage(selected, state, service, work, actor, context);
 	}
 }
 
-function readAllArchiveRecords(service: ApplicationService, work: WorkView, actor: Actor): readonly RecordView[] {
-	const records: RecordView[] = [];
-	let cursor: string | undefined;
-	do {
-		const page = service.readRecords(
-			{ workId: work.workId },
-			{ actor, commandId: `tui:archive:${work.workId}:${work.revision}`, schemaVersion: 1 },
-			cursor,
-		);
-		records.push(...page.items);
-		cursor = page.nextCursor;
-	} while (cursor !== undefined);
-	return records;
+async function navigateArchivePage(
+	selected: string,
+	state: ArchivePageState,
+	service: ApplicationService,
+	work: WorkView,
+	actor: Actor,
+	context: ExtensionContext,
+): Promise<ArchivePageState> {
+	try {
+		const next = advanceArchivePage(selected, state, service, work, actor);
+		if (next !== undefined) return next;
+		await showSelectedRecord(state.records, selected, context);
+	} catch (error) {
+		context.ui.notify(`Archive page unavailable: ${String(error)}`, "error");
+	}
+	return state;
+}
+
+function visibleArchiveRecords(mode: RecordListMode, work: WorkView, records: readonly RecordView[]): RecordView[] {
+	const selected = mode === "evidence" ? selectRelevantEvidence(work, records) : records;
+	return [...selected].sort((left, right) => right.sequence - left.sequence);
 }
 
 async function showArchive(
@@ -2453,16 +2531,13 @@ async function showArchive(
 	work: WorkView,
 	actor: Actor,
 ): Promise<void> {
-	let records: readonly RecordView[];
 	try {
-		records = readAllArchiveRecords(service, work, actor);
+		await runArchivePages(service, context, work, actor, "archive");
 	} catch (error) {
 		await showTextPage(context, "Archive", [
 			`Unable to read Archive: ${error instanceof Error ? error.message : String(error)}`,
 		]);
-		return;
 	}
-	await browseRecordPages([...records].reverse(), context, "archive");
 }
 
 async function showTextPage(
@@ -2479,26 +2554,28 @@ function isPanelBack(data: string): boolean {
 }
 
 function scrollPage(scroll: ScrollView, data: string): boolean {
-	const key = parseKey(data) ?? "";
-	const distance = new Map<string, number>([
-		["up", -1],
-		["down", 1],
-		["pageUp", -Math.max(1, scroll.viewportHeight - 1)],
-		["pageDown", Math.max(1, scroll.viewportHeight - 1)],
-	]).get(key);
+	const bindings = getKeybindings();
+	const distances = new Map<Keybinding, number>([
+		["tui.editor.cursorUp", -1],
+		["tui.editor.cursorDown", 1],
+		["tui.editor.pageUp", -Math.max(1, scroll.viewportHeight - 1)],
+		["tui.editor.pageDown", Math.max(1, scroll.viewportHeight - 1)],
+	]);
+	const distance = [...distances].find(([key]) => bindings.matches(data, key))?.[1];
 	if (distance !== undefined) {
 		scroll.scrollBy(distance ?? 0);
 		return true;
 	}
-	return scrollPageBoundary(scroll, key);
+	return scrollPageBoundary(scroll, data);
 }
 
-function scrollPageBoundary(scroll: ScrollView, key: string): boolean {
-	if (key === "home") {
+function scrollPageBoundary(scroll: ScrollView, data: string): boolean {
+	const bindings = getKeybindings();
+	if (bindings.matches(data, "tui.editor.cursorLineStart")) {
 		scroll.scrollToStart();
 		return true;
 	}
-	if (key === "end") {
+	if (bindings.matches(data, "tui.editor.cursorLineEnd")) {
 		scroll.scrollToEnd();
 		return true;
 	}
@@ -2533,7 +2610,7 @@ async function showPage(
 		const scroll = new ScrollView(content, { overscroll: "contain", scrollbar: "auto" });
 		const footerContainer = new Container();
 		addPanelKeybindings(footerContainer, theme, footer);
-		const page = new VStack([scroll, footerContainer]);
+		const page = new VStack([scroll, { component: footerContainer, shrink: 0 }]);
 		// SAFETY: The custom page adds only the input handler while preserving VStack and ScrollView layout contracts.
 		const interactivePage = page as VStack & { handleInput: (data: string) => void };
 		interactivePage.handleInput = (data: string): void => {
@@ -2543,106 +2620,6 @@ async function showPage(
 		return interactivePage;
 	});
 }
-type InputActionKind =
-	| "amend-terms"
-	| "record-review"
-	| "cancel"
-	| "fail-work"
-	| "run-oracle"
-	| "rename-work"
-	| "amend-budget";
-const INPUT_ACTION_KINDS: readonly InputActionKind[] = [
-	"amend-terms",
-	"record-review",
-	"cancel",
-	"fail-work",
-	"run-oracle",
-	"rename-work",
-	"amend-budget",
-];
-
-async function actionInput(action: Action, context: ExtensionContext): Promise<JsonObject | undefined | null> {
-	if (!isInputActionKind(action.kind)) return {};
-	const handlers = {
-		"amend-terms": () => amendTermsInput(context),
-		"record-review": () => recordReviewInput(context),
-		cancel: () => cancelInput(context),
-		"fail-work": () => simpleTextInput(context, "Failure reason", "reason"),
-		"run-oracle": () => simpleTextInput(context, "Oracle review subject", "subject", "Review this Work"),
-		"rename-work": () => simpleTextInput(context, "New Work title", "title"),
-		"amend-budget": () => amendBudgetInput(action, context),
-	} satisfies Record<InputActionKind, () => Promise<JsonObject | undefined | null>>;
-	return handlers[action.kind]();
-}
-
-function isInputActionKind(value: Action["kind"]): value is InputActionKind {
-	return INPUT_ACTION_KINDS.some((kind) => kind === value);
-}
-
-async function amendTermsInput(context: ExtensionContext): Promise<JsonObject | null> {
-	const field = await context.ui.select("Term to amend:", [
-		"objective",
-		"context",
-		"scope",
-		"acceptanceCriteria",
-		"constraints",
-		"validation",
-		"allowedPaths",
-	]);
-	if (field === undefined) return null;
-	return ["acceptanceCriteria", "constraints", "validation", "allowedPaths"].includes(field)
-		? listTermInput(context, field)
-		: scalarTermInput(context, field);
-}
-
-async function listTermInput(context: ExtensionContext, field: string): Promise<JsonObject | null> {
-	const value = await context.ui.editor(`${field}, one item per line:`, "");
-	return value === undefined ? null : { [field]: splitInputLines(value) };
-}
-
-async function scalarTermInput(context: ExtensionContext, field: string): Promise<JsonObject | null> {
-	const value = await context.ui.input(`${field}:`, "");
-	return value === undefined ? null : { [field]: value };
-}
-
-function splitInputLines(value: string): readonly string[] {
-	return value
-		.split("\n")
-		.map((entry) => entry.trim())
-		.filter(Boolean);
-}
-
-async function recordReviewInput(context: ExtensionContext): Promise<JsonObject | null> {
-	const status = await context.ui.select("Provider review result:", ["changes-requested", "merged", "closed"]);
-	if (status === undefined) return null;
-	const feedback = await context.ui.editor("Feedback, one item per line:", "");
-	return { status, feedback: splitInputLines(feedback ?? "") };
-}
-
-async function cancelInput(context: ExtensionContext): Promise<JsonObject | null> {
-	const confirmed = await context.ui.confirm("Cancel?", "This records an explicit cancellation.");
-	return confirmed ? {} : null;
-}
-
-async function simpleTextInput(
-	context: ExtensionContext,
-	label: string,
-	key: string,
-	placeholder = "",
-): Promise<JsonObject | null> {
-	const value = await context.ui.input(`${label}:`, placeholder);
-	return value === undefined ? null : { [key]: value };
-}
-
-async function amendBudgetInput(action: Action, context: ExtensionContext): Promise<JsonObject | undefined | null> {
-	const value = await context.ui.input("New maximum token budget:", "");
-	if (value === undefined) return null;
-	const maxTokens = Number(value);
-	if (Number.isSafeInteger(maxTokens) && maxTokens > 0) return { maxTokens };
-	context.ui.notify("Enter a positive whole-number token budget.", "error");
-	return actionInput(action, context);
-}
-
 function renderDashboard(work: readonly WorkSummary[]): string {
 	if (work.length === 0) {
 		return "Khala: no Work has been submitted.";

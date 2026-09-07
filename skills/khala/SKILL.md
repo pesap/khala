@@ -28,6 +28,9 @@ This packaged skill describes the implemented provider-review workflow and sessi
 The current extension does not provide local acceptance or a shared background supervisor.
 The [MVP design](https://github.com/pesap/khala/blob/main/docs/mvp-design.md) and [Architecture](https://github.com/pesap/khala/blob/main/docs/architecture.md) describe those target requirements.
 Do not infer those target guarantees from the tools or from runtime liveness.
+Declared validation and dependency hydration require Linux bubblewrap and run without host credentials, host cache, or network access.
+An isolation or offline dependency failure is a failed check, not permission to substitute unrestricted commands.
+Pi child sessions and service-owned Git hooks do not yet have complete OS isolation.
 
 ## Authority and revisions
 
@@ -193,6 +196,7 @@ sets Work to `succeeded`.
 - provider, monitor, or delivery error: inspect the error and evidence records;
   retry the explicit operation when appropriate.
 - revision conflict: reread and recompute the action from current state.
+- uncertain cleanup: retain the writer lease and workspace; do not delete them or launch another writer to bypass the failure.
 - merged provider request with active Work: wait for merge reconciliation and the
   explicit Conclave Outcome.
 
