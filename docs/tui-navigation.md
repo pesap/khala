@@ -76,6 +76,7 @@ Long details scroll without forcing technical metadata into the primary view.
 ## Freshness, disconnection, and recovery
 
 Opening Work reads saved state without probing runtime, polling a provider, or scanning historical records.
+Archive and Evidence begin with one bounded page of up to 100 records.
 Runtime checks and refresh are explicit operations with cancellable waiting and visible freshness or unavailability.
 Navigation never writes lifecycle records or launches agents.
 
@@ -86,22 +87,31 @@ Delayed responses cannot reopen a dismissed panel, move selection, or overwrite 
 
 Requested, running, and confirmed results are visibly distinct.
 An accepted recovery operation has durable status; leaving its progress panel stops waiting, not the operation.
+Escape dismisses the recovery panel without cancelling backend recovery, and late results do not reopen it.
 Offer operation cancellation only when the backend can honor it.
 Leaving a view is always distinct from cancelling Work.
 
 ## Current interface reference
 
-The current picker uses a history toggle and keeps failed Work visible while hiding succeeded and cancelled Work by default.
-It opens Work overviews with Actions, Evidence, Peer-Review, Archive, and Details entries.
-Those entry points remain useful for the [current getting-started workflow](getting-started.md); the filters and colocated actions above are target requirements.
+The current picker switches Work, Needs attention, Review, and terminal History filters with Pi's configured left/right editor bindings when search is empty.
+Work keeps failed Work visible while hiding succeeded and cancelled Work by default.
+The configured history shortcut additionally toggles all Work, including active Work.
+Needs attention currently includes failed Work, input requests, and blocked Executions; acknowledgement of terminal failures remains a backend requirement.
+Work overviews show the goal, blocker, next action, saved revision, section navigation, and enabled revision-bound actions.
+Actions remains available as a dedicated chooser, but is not required to invoke an action.
+Page Up and Page Down scroll overview details while action navigation stays visible on short terminals.
+These entry points also support the [current getting-started workflow](getting-started.md).
 Current configurable shortcut names and defaults are listed in [Operations](operations.md#current-configuration-reference).
 
 Current Archive reads retain one page of up to 100 records, newest first.
 Older records continues the same snapshot; Newest records starts a fresh snapshot without retaining previous pages.
 Cancelling a history read keeps the previous page or returns to the overview when no page has loaded.
-Peer-Review currently locates the latest comments snapshot in observation pages; the target instead reads the current provider snapshot directly.
-Current Details omits runtime capability and process-ownership secrets.
-These implementation notes do not override the target's dismissible recovery and direct-read requirements.
+Peer-Review reads comments from the saved latest provider observation without scanning history.
+A latest observation without comments is shown as unavailable rather than inferred from unrelated records.
+Runtime capability and process-ownership secrets are omitted.
+Multiline action drafts use a separate Pi Editor and remain available while Khala is open.
+Escape leaves editing without submitting; Submit, Discard, and consequential confirmation are explicit choices.
+An unknown command result retains its exact identity, input, and revision for an explicit retry.
 
 ## Checks before relying on interaction
 
