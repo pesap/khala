@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
 import { createHash, type KeyObject, sign } from "node:crypto";
-import { readFileSync, unlinkSync } from "node:fs";
+import { readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import process from "node:process";
 import { nanoid } from "nanoid";
@@ -86,6 +86,8 @@ type MutableChild = {
 	agentTimer: NodeJS.Timeout | undefined;
 	ephemeralSession: boolean;
 	storage: RuntimeStorage;
+	remove: (() => void) | undefined;
+	cleanupPromise: Promise<void> | undefined;
 };
 
 type RpcCommandData = Readonly<{ message?: string | undefined }>;
@@ -207,17 +209,19 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	): Promise<RuntimeBinding> {
 		const key = `child-${++childCounter}`;
 		this.children.set(key, child);
+		child.remove = () => this.removeChild(child);
 		attachOutput(
 			child,
-			() => this.removeChild(child),
+			() => {
+				void cleanupChild(child).catch(() => undefined);
+			},
 			(error) => {
 				if (child.closed) return;
 				child.closed = true;
 				child.buffer = Buffer.alloc(0);
 				rejectPending(child, error);
 				rejectAgentEnd(child, error);
-				killChild(child);
-				this.removeChild(child);
+				void cleanupChild(child).catch(() => undefined);
 			},
 		);
 		try {
@@ -233,9 +237,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		} catch (error) {
 			this.children.delete(key);
 			await removeSessionCapability(launch);
-			killChild(child);
-			removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, this.storage);
-			removeEphemeralSession(child);
+			await cleanupStartingChild(launch, child);
 			throw error;
 		}
 	}
@@ -284,8 +286,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			return childRuntimeState(response);
 		} catch {
 			throwIfAborted(operation);
-			killChild(child);
-			this.removeChild(child);
+			await cleanupChild(child);
 			return "unreachable";
 		}
 	}
@@ -297,24 +298,16 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			return;
 		}
 		if (!sameBindingIdentity(binding, child.binding)) return;
-		try {
-			await request(child, "abort", {}, this.options.rpcTimeoutMs ?? 10_000);
-		} finally {
-			killChild(child);
-			this.removeChild(child);
-		}
+		await requestAbortBestEffort(child, this.options.rpcTimeoutMs ?? 10_000);
+		await cleanupChild(child);
 	}
 
 	async close(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
 		await Promise.allSettled(this.launches);
-		for (const child of this.children.values()) {
-			rejectAgentEnd(child, new Error("Pi runtime closed."));
-			killChild(child);
-			this.removeChild(child);
-		}
-		this.children.clear();
+		const failures = await cleanupRuntimeChildren(this.children.values());
+		if (failures.length > 0) throw failures[0];
 	}
 
 	private trackLaunch(launch: Promise<RuntimeBinding>): Promise<RuntimeBinding> {
@@ -324,8 +317,6 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	}
 
 	private removeChild(child: MutableChild): void {
-		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, this.storage);
-		removeEphemeralSession(child);
 		for (const [key, value] of this.children) {
 			if (value === child) {
 				this.children.delete(key);
@@ -340,6 +331,19 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		}
 		return child;
 	}
+}
+
+async function cleanupRuntimeChildren(children: Iterable<MutableChild>): Promise<Error[]> {
+	const failures: Error[] = [];
+	for (const child of children) {
+		rejectAgentEnd(child, new Error("Pi runtime closed."));
+		try {
+			await cleanupChild(child);
+		} catch (error) {
+			failures.push(error instanceof Error ? error : new Error(String(error)));
+		}
+	}
+	return failures;
 }
 
 function removeEphemeralSession(child: MutableChild): void {
@@ -367,9 +371,7 @@ function attachOutput(child: MutableChild, onExit: () => void, onProtocolFailure
 	const cleanupAfterExit = (): void => {
 		if (exited) return;
 		exited = true;
-		// A detached child can leave shells or tools behind after its own exit.
-		// Kill its owned group before dropping the binding so recovery cannot race those descendants.
-		killExitedProcessGroup(child);
+		// Do not release ownership until the entire owned group is confirmed stopped.
 		onExit();
 	};
 	child.process.stdin.on("error", (error) => {
@@ -759,8 +761,9 @@ async function writePersistentLaunchLease(
 
 async function cleanupStartingChild(launch: SessionLaunch, child: MutableChild): Promise<void> {
 	await removeSessionCapability(launch);
-	killChild(child);
+	await terminateChild(child);
 	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, launch.storage);
+	removeEphemeralSession(child);
 }
 
 function createStartingChild(
@@ -796,6 +799,8 @@ function createStartingChild(
 		agentTimer: undefined,
 		ephemeralSession: input.sessionPath === undefined,
 		storage: launch.storage,
+		remove: undefined,
+		cleanupPromise: undefined,
 	};
 }
 
@@ -867,17 +872,8 @@ function isProcessLease(lease: LaunchLease | undefined): lease is ProcessLease {
 type ProcessLease = LaunchLease & Readonly<{ processGroupId: number }>;
 
 function assertLiveProcessLease(sessionPath: string, lease: ProcessLease): void {
-	if (leaseIsOwnedByLiveProcess(lease))
+	if (processGroupExists(lease.processGroupId))
 		throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
-}
-
-function leaseIsOwnedByLiveProcess(lease: ProcessLease): boolean {
-	const currentStartTime = readProcessStartTime(lease.processGroupId);
-	if (lease.processStartTime === undefined) return processExists(lease.processGroupId);
-	return (
-		currentStartTime === lease.processStartTime ||
-		(currentStartTime === undefined && processExists(lease.processGroupId))
-	);
 }
 
 async function assertLaunchIntentAvailable(
@@ -1200,10 +1196,67 @@ function readPsProcessStartTime(processId: number): string | undefined {
 		return undefined;
 	}
 }
-function killProcessGroup(processGroupId: number | undefined, processStartTime: string | undefined): boolean {
-	if (!isKillableProcessGroup(processGroupId, processStartTime)) return false;
-	if (process.platform === "win32") return killWindowsProcessGroup(processGroupId);
-	return killPosixProcessGroupResult(processGroupId);
+const PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
+const PROCESS_TERMINATION_POLL_MS = 25;
+
+async function requestAbortBestEffort(child: MutableChild, timeoutMs: number): Promise<void> {
+	try {
+		await request(child, "abort", {}, timeoutMs);
+	} catch {
+		// Termination confirmation below is the authoritative stop result.
+	}
+}
+
+async function terminateChild(child: MutableChild): Promise<void> {
+	const processGroupId = child.binding.processGroupId ?? child.process.pid;
+	const leaderExited = child.process.exitCode !== null || child.process.signalCode !== null;
+	await terminateProcessGroup(processGroupId, child.binding.processStartTime, leaderExited);
+}
+
+function cleanupChild(child: MutableChild): Promise<void> {
+	if (child.cleanupPromise !== undefined) return child.cleanupPromise;
+	const cleanup = (async () => {
+		await terminateChild(child);
+		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, child.storage);
+		removeEphemeralSession(child);
+		child.remove?.();
+	})();
+	child.cleanupPromise = cleanup;
+	void cleanup.catch(() => {
+		if (child.cleanupPromise === cleanup) child.cleanupPromise = undefined;
+	});
+	return cleanup;
+}
+
+async function terminateProcessGroup(
+	processGroupId: number | undefined,
+	processStartTime: string | undefined,
+	leaderAlreadyExited = false,
+): Promise<void> {
+	assertSupportedProcessPlatform();
+	const ownedProcessGroupId = requireProcessGroupId(processGroupId);
+	if (!hasLiveProcessGroup(ownedProcessGroupId)) {
+		assertExitedProcessGroupOwnership(ownedProcessGroupId, processStartTime, leaderAlreadyExited);
+		return;
+	}
+	assertTerminationOwnership(ownedProcessGroupId, processStartTime, leaderAlreadyExited);
+	signalProcessGroup(ownedProcessGroupId);
+	await waitForProcessGroupTermination(ownedProcessGroupId);
+}
+
+function requireProcessGroupId(processGroupId: number | undefined): number {
+	if (processGroupId === undefined) throw new Error("Cannot prove Pi process ownership without a process group.");
+	return processGroupId;
+}
+
+function assertExitedProcessGroupOwnership(
+	processGroupId: number,
+	processStartTime: string | undefined,
+	leaderAlreadyExited: boolean,
+): void {
+	if (processStartTime === undefined) throw new Error("Cannot prove Pi process ownership after the process exited.");
+	if (readProcessStartTime(processGroupId) !== undefined)
+		assertTerminationOwnership(processGroupId, processStartTime, leaderAlreadyExited);
 }
 
 function isKillableProcessGroup(
@@ -1215,17 +1268,110 @@ function isKillableProcessGroup(
 	return processStartTime !== undefined && readProcessStartTime(processGroupId) === processStartTime;
 }
 
-function killWindowsProcessGroup(processGroupId: number): boolean {
-	killProcessTree(processGroupId);
-	return !processExists(processGroupId);
+function assertTerminationOwnership(
+	processGroupId: number,
+	processStartTime: string | undefined,
+	leaderAlreadyExited: boolean,
+): void {
+	if (leaderAlreadyExited) {
+		assertExitedLeaderOwnership(processGroupId, processStartTime);
+		return;
+	}
+	assertLiveLeaderOwnership(processGroupId, processStartTime);
 }
 
-function killPosixProcessGroupResult(processGroupId: number): boolean {
+function assertExitedLeaderOwnership(processGroupId: number, processStartTime: string | undefined): void {
+	if (processStartTime === undefined) throw new Error("Cannot prove Pi process ownership after the leader exited.");
+	const liveLeaderStartTime = readProcessStartTime(processGroupId);
+	if (liveLeaderStartTime !== undefined && liveLeaderStartTime !== processStartTime)
+		throw new Error("A different process now owns the Pi process identity.");
+}
+
+function assertLiveLeaderOwnership(processGroupId: number, processStartTime: string | undefined): void {
+	if (!isKillableProcessGroup(processGroupId, processStartTime))
+		throw new Error("Cannot prove Pi process ownership before termination.");
+}
+
+function signalProcessGroup(processGroupId: number): void {
 	try {
 		process.kill(-processGroupId, "SIGKILL");
-		return true;
+	} catch (error) {
+		const failure = error instanceof Error ? error : new Error(String(error));
+		if (isUnexpectedProcessSignalError(failure)) throw failure;
+	}
+}
+
+function assertSupportedProcessPlatform(): void {
+	if (process.platform === "win32") throw new Error("Pi process-tree cleanup is unsupported on Windows.");
+}
+
+function hasLiveProcessGroup(processGroupId: number | undefined): processGroupId is number {
+	return processGroupId !== undefined && processGroupExists(processGroupId);
+}
+
+function isUnexpectedProcessSignalError(error: Error): boolean {
+	return !("code" in error && error.code === "ESRCH");
+}
+
+async function waitForProcessGroupTermination(processGroupId: number): Promise<void> {
+	const deadline = Date.now() + PROCESS_TERMINATION_TIMEOUT_MS;
+	while (processGroupExists(processGroupId)) {
+		if (Date.now() >= deadline) throw new Error("Pi process tree termination could not be confirmed.");
+		await new Promise((resolve) => setTimeout(resolve, PROCESS_TERMINATION_POLL_MS));
+	}
+}
+
+function processGroupExists(processGroupId: number): boolean {
+	if (processGroupId <= 0) return false;
+	return process.platform === "linux"
+		? linuxProcessGroupExists(processGroupId)
+		: posixProcessGroupExists(processGroupId);
+}
+
+function linuxProcessGroupExists(processGroupId: number): boolean {
+	try {
+		return readdirSync("/proc").some((entry) => linuxEntryInProcessGroup(entry, processGroupId));
 	} catch {
-		return !processExists(processGroupId);
+		return true;
+	}
+}
+
+function linuxEntryInProcessGroup(entry: string, processGroupId: number): boolean {
+	if (!isLinuxProcessEntry(entry)) return false;
+	return readLinuxProcessEntry(entry, processGroupId);
+}
+
+function readLinuxProcessEntry(entry: string, processGroupId: number): boolean {
+	try {
+		return processStatBelongsToGroup(readFileSync(`/proc/${entry}/stat`, "utf8"), processGroupId);
+	} catch (error) {
+		if (error instanceof Error && isMissingProcessEntry(error)) return false;
+		throw error;
+	}
+}
+
+function isLinuxProcessEntry(entry: string): boolean {
+	return /^\d+$/.test(entry);
+}
+
+function processStatBelongsToGroup(stat: string, processGroupId: number): boolean {
+	const fields = stat
+		.slice(stat.lastIndexOf(")") + 2)
+		.trim()
+		.split(/\s+/);
+	return Number(fields[2]) === processGroupId && fields[0] !== "Z";
+}
+
+function isMissingProcessEntry(error: Error): boolean {
+	return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH");
+}
+
+function posixProcessGroupExists(processGroupId: number): boolean {
+	try {
+		process.kill(-processGroupId, 0);
+		return true;
+	} catch (error) {
+		return !(error instanceof Error && "code" in error && error.code === "ESRCH");
 	}
 }
 
@@ -1234,12 +1380,8 @@ function isTransientStartupFailure(message: string): boolean {
 }
 
 async function stopUnattachedBinding(binding: RuntimeBinding, storage: RuntimeStorage): Promise<void> {
-	if (binding.processGroupId === undefined || !processExists(binding.processGroupId)) {
-		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker, storage);
-		return;
-	}
-	if (killProcessGroup(binding.processGroupId, binding.processStartTime))
-		removeLaunchLeaseSync(binding.sessionPath, binding.processMarker, storage);
+	await terminateProcessGroup(binding.processGroupId, binding.processStartTime);
+	removeLaunchLeaseSync(binding.sessionPath, binding.processMarker, storage);
 }
 function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boolean {
 	return [
@@ -1252,55 +1394,6 @@ function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boole
 	].every(Boolean);
 }
 
-function killChild(child: MutableChild): void {
-	if (child.binding.processStartTime !== undefined)
-		killProcessGroup(child.binding.processGroupId ?? child.process.pid, child.binding.processStartTime);
-	else killOwnedProcessGroup(child.process);
-	child.process.kill();
-	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, child.storage);
-}
-
-function killExitedProcessGroup(child: MutableChild): void {
-	const processId = child.binding.processGroupId ?? child.process.pid;
-	if (process.platform === "win32") {
-		killProcessTree(processId);
-		return;
-	}
-	killPosixProcessGroup(processId);
-}
-
-function killPosixProcessGroup(processGroupId: number | undefined): void {
-	if (processGroupId === undefined) return;
-	try {
-		process.kill(-processGroupId, "SIGKILL");
-	} catch {
-		// The process group may have exited with its parent.
-	}
-}
-
-function killProcessTree(processId: number | undefined): void {
-	if (processId === undefined) return;
-	try {
-		execFileSync("taskkill", ["/PID", String(processId), "/T", "/F"], { stdio: "ignore" });
-	} catch {
-		// The process tree may have exited before reconciliation.
-	}
-}
-
-function killOwnedProcessGroup(childProcess: ChildProcessWithoutNullStreams): void {
-	const processGroupId = ownedProcessGroupId(childProcess);
-	if (processGroupId === undefined) return;
-	try {
-		process.kill(-processGroupId, "SIGKILL");
-	} catch {
-		// The process group may have exited before reconciliation.
-	}
-}
-
-function ownedProcessGroupId(childProcess: ChildProcessWithoutNullStreams): number | undefined {
-	if (process.platform === "win32" || childProcess.exitCode !== null) return;
-	return childProcess.pid ?? undefined;
-}
 function request(
 	child: MutableChild,
 	command: string,
@@ -1418,7 +1511,12 @@ async function completedTurn(child: MutableChild, completion: Promise<string>): 
 
 async function failTurn(child: MutableChild, completion: Promise<string>, failure: Error): Promise<void> {
 	rejectAgentEnd(child, failure);
-	killChild(child);
+	try {
+		await cleanupChild(child);
+	} catch (error) {
+		const cleanupFailure = error instanceof Error ? error.message : String(error);
+		throw new Error(`${failure.message} Cleanup failed: ${cleanupFailure}`);
+	}
 	await completion.catch(() => undefined);
 }
 
