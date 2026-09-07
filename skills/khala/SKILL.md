@@ -19,7 +19,15 @@ authoritative for argument shape.
 - [Action reference](#action-reference)
 - [Normal workflow](#normal-workflow)
 - [Failure and recovery](#failure-and-recovery)
+- [Current implementation boundary](#current-implementation-boundary)
 - [Boundaries](#boundaries)
+
+## Current implementation boundary
+
+This packaged skill describes the implemented provider-review workflow and session-bound child supervision.
+The current extension does not provide local acceptance or a shared background supervisor.
+The [MVP design](https://github.com/pesap/khala/blob/main/docs/mvp-design.md) and [Architecture](https://github.com/pesap/khala/blob/main/docs/architecture.md) describe those target requirements.
+Do not infer those target guarantees from the tools or from runtime liveness.
 
 ## Authority and revisions
 
