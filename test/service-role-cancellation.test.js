@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { admitAndStart, makeService, meta, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
+import { admitAndStart, makeService, meta, validateWork, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
 
 function deferredRequest() {
 	let release;
@@ -143,6 +143,7 @@ test("failing Work aborts its pending Oracle request and preserves the failure",
 			meta: meta("executor", "oracle-stop:review", work.revision, work.workId, work.execution.executionId),
 		});
 		work = review.value;
+		work = await validateWork(service, work, "oracle-stop:validate");
 		const ready = await service.perform({
 			action: "record-signal",
 			workId: work.workId,

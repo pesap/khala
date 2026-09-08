@@ -36,8 +36,21 @@ import {
 import { formatErrorSections } from "./tui-record-detail.js";
 import { truncateWorkName } from "./tui-work-table.js";
 
-type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal" | "refresh";
-type WorkSelection = Readonly<{ kind: "section"; section: WorkSection }> | Readonly<{ kind: "action"; action: Action }>;
+type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal";
+type WorkSelection = Readonly<{ kind: "section"; section: WorkSection }>;
+type RuntimeRefreshAction = Readonly<{
+	id: "refresh-runtime";
+	kind: "refresh-runtime";
+	label: "Refresh runtime";
+	enabled: true;
+}>;
+type WorkAction = Action | RuntimeRefreshAction;
+const RUNTIME_REFRESH_ACTION: RuntimeRefreshAction = {
+	id: "refresh-runtime",
+	kind: "refresh-runtime",
+	label: "Refresh runtime",
+	enabled: true,
+};
 export async function showWork(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -50,7 +63,7 @@ export async function showWork(
 	for (;;) {
 		const saved = service.inspectWork(workId);
 		const work = currentWorkSnapshot(saved, refreshed);
-		const section = await pickSection(work, context, keybindings, availableWorkActions(service, work, actor));
+		const section = await pickSection(work, context, keybindings);
 		if (section === null) return "back";
 		refreshed = await showWorkSection(section, service, context, work, actor, runAction);
 	}
@@ -77,17 +90,12 @@ async function showWorkSection(
 	actor: Actor,
 	runAction: ActionRunner,
 ): Promise<WorkView | undefined> {
-	if (selection.kind === "action") {
-		await applySelectedAction(service, context, work, actor, selection.action, runAction);
-		return;
-	}
 	const handlers = {
 		actions: () => chooseAction(service, context, work, actor, runAction),
 		evidence: () => showEvidence(service, work, context, actor),
 		archive: () => showArchive(service, context, work, actor),
 		"peer-review": () => showPeerReview(work, context),
 		"blocking-signal": () => showBlockingSignal(work, context),
-		refresh: () => showRuntimeRefresh(service, context, work, actor),
 	} satisfies Record<WorkSection, () => Promise<void | WorkView>>;
 	return (await handlers[selection.section]()) ?? work;
 }
@@ -96,12 +104,10 @@ async function pickSection(
 	work: WorkView,
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
-	actions: readonly Action[],
 ): Promise<WorkSelection | null> {
-	const choices = new Map<string, WorkSelection>([
-		...WORK_SECTIONS.map((section) => [section, { kind: "section", section }] as const),
-		...actions.map((action) => [`action:${action.id}`, { kind: "action", action }] as const),
-	]);
+	const choices = new Map<string, WorkSelection>(
+		WORK_SECTIONS.map((section) => [section, { kind: "section", section }] as const),
+	);
 	const hasReview = work.reviewRequest !== undefined || work.providerOutcome !== undefined;
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
@@ -109,8 +115,6 @@ async function pickSection(
 		...(hasReview ? [{ value: "peer-review", label: "Peer-Review" }] : []),
 		{ value: "archive", label: "Archive" },
 		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
-		{ value: "refresh", label: "Refresh runtime" },
-		...actions.map((action) => ({ value: `action:${action.id}`, label: displayActionLabel(action) })),
 	];
 	return context.ui.custom<WorkSelection | null>((tui, theme, _keybindings, done) => {
 		const rows = workSectionRows(work, undefined);
@@ -127,7 +131,7 @@ async function pickSection(
 		const footer = !hasReview ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
 		addPanelKeybindings(controls, theme, `escape back  pgup/pgdn details  ${footer}`);
 		return selectableComponent(
-			new VStack([scroll, { component: controls, shrink: 0 }]),
+			new VStack([scroll, new Spacer(1), { component: controls, shrink: 0 }]),
 			list,
 			tui,
 			() => done(null),
@@ -149,7 +153,7 @@ function isDetailScroll(data: string): boolean {
 function workSectionRows(work: WorkView, archiveError: string | undefined): readonly (readonly [string, string])[] {
 	return [
 		["Work", formatWorkState(work)],
-		["Goal", work.terms.objective],
+		["Summary", shortWorkSummary(work)],
 		...workErrorRow(work),
 		...(hasCurrentBlockedSignal(work) ? [["Blocker", work.lastSignal?.summary ?? ""] as const] : []),
 		...nextActionRow(work),
@@ -194,10 +198,27 @@ function nextActionRow(work: WorkView): readonly (readonly [string, string])[] {
 	return work.nextAction.trim().length === 0 ? [] : [["Next", presentEvidenceText(work.nextAction)]];
 }
 
+function shortWorkSummary(work: WorkView): string {
+	return truncateToWidth(firstSummarySentence(compactSummaryText(summarySource(work))), 64, "...");
+}
+
+function summarySource(work: WorkView): string {
+	return work.terms.objective ?? work.terms.title ?? "Work";
+}
+
+function compactSummaryText(value: string): string {
+	return value.replace(/\s+/gu, " ").trim();
+}
+
+function firstSummarySentence(value: string): string {
+	const sentence = value.match(/^.*?[.!?](?:\s|$)/u)?.[0];
+	return sentence === undefined ? value : sentence.trim();
+}
+
 function shouldShowRuntime(execution: NonNullable<WorkView["execution"]>): boolean {
 	return execution.runtimeState !== undefined && !["completed", "failed", "stopped"].includes(execution.state);
 }
-async function selectAction(actions: readonly Action[], context: ExtensionContext): Promise<string | null> {
+async function selectAction(actions: readonly WorkAction[], context: ExtensionContext): Promise<string | null> {
 	return context.ui.custom<string | null>((tui, theme, _keybindings, done) => {
 		const container = new Container();
 		addHeading(container, theme, "Actions");
@@ -221,14 +242,16 @@ async function applySelectedAction(
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
-	action: Action,
+	action: WorkAction,
 	runAction: ActionRunner,
-): Promise<void> {
+): Promise<WorkView | undefined> {
+	if (action.kind === "refresh-runtime") return showRuntimeRefresh(service, context, work, actor);
 	if (action.kind === "recover") {
 		await showRecovery(service, context, work, actor, action);
 		return;
 	}
 	await runAction(work, action);
+	return;
 }
 
 async function chooseAction(
@@ -237,14 +260,15 @@ async function chooseAction(
 	work: WorkView,
 	actor: Actor,
 	runAction: ActionRunner,
-): Promise<void> {
+): Promise<WorkView | undefined> {
 	const current = currentWorkSnapshot(service.inspectWork(work.workId), work);
-	const actions = availableWorkActions(service, current, actor);
-	if (actions.length === 0) {
-		await showTextPage(context, "Actions", ["No actions are currently available."]);
-		return;
-	}
-	await runSelectedAction(actions, service, context, current, actor, runAction);
+	const available = availableWorkActions(service, current, actor);
+	const actions: readonly WorkAction[] = [
+		...available.filter((action) => action.kind !== "cancel"),
+		RUNTIME_REFRESH_ACTION,
+		...available.filter((action) => action.kind === "cancel"),
+	];
+	return runSelectedAction(actions, service, context, current, actor, runAction);
 }
 
 function availableWorkActions(service: ApplicationService, work: WorkView, actor: Actor): readonly Action[] {
@@ -254,21 +278,22 @@ function availableWorkActions(service: ApplicationService, work: WorkView, actor
 }
 
 async function runSelectedAction(
-	actions: readonly Action[],
+	actions: readonly WorkAction[],
 	service: ApplicationService,
 	context: ExtensionContext,
 	work: WorkView,
 	actor: Actor,
 	runAction: ActionRunner,
-): Promise<void> {
+): Promise<WorkView | undefined> {
 	const selected = await selectAction(actions, context);
 	if (selected === null || selected === "back") return;
 	const action = actions.find((candidate) => candidate.id === selected);
 	if (action === undefined) return;
-	await applySelectedAction(service, context, work, actor, action, runAction);
+	return applySelectedAction(service, context, work, actor, action, runAction);
 }
 
-function displayActionLabel(action: Action): string {
+function displayActionLabel(action: WorkAction): string {
+	if (action.kind === "refresh-runtime") return action.label;
 	const labels = {
 		admit: "Admit",
 		"request-input": "Request User input",
@@ -466,14 +491,7 @@ async function showRecovery(
 	});
 }
 
-const WORK_SECTIONS: readonly WorkSection[] = [
-	"actions",
-	"evidence",
-	"archive",
-	"peer-review",
-	"blocking-signal",
-	"refresh",
-];
+const WORK_SECTIONS: readonly WorkSection[] = ["actions", "evidence", "archive", "peer-review", "blocking-signal"];
 
 function formatStatus(value: string): string {
 	return value.replace(/-/g, " ");

@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { admitAndStart, makeService, meta } from "./helpers/mvp-fixtures.mjs";
+import { admitAndStart, makeService, meta, validateWork } from "./helpers/mvp-fixtures.mjs";
 
 function recovery(actions) {
 	return actions.find((action) => action.kind === "recover");
@@ -154,7 +154,7 @@ test("ready and blocked Signals disable idle recovery", async () => {
 				meta: meta("executor", `signal-${kind}:review`, current.revision, work.workId, work.execution.executionId),
 			});
 			assert.equal("value" in review, true);
-			current = review.value;
+			current = await validateWork(service, review.value, `signal-${kind}:validate`);
 		}
 		const signaled = await service.perform({
 			action: "record-signal",

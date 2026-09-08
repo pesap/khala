@@ -25,9 +25,9 @@ test("Pi User amends requested input through a saved draft and the same Work rea
 		terminal.keys("Enter");
 		await see("Term to amend:");
 		terminal.keys("Down", "Down", "Enter");
-		await see("scope: Escape saves");
+		await see("Text editor: scope");
 		terminal.keys("-l", scope);
-		terminal.keys("Escape");
+		terminal.keys("Enter");
 		await see("saved draft");
 		assert.equal(terminal.readWork().terms.scope, waiting.terms.scope);
 		assert.equal(terminal.readWork().revision, waiting.revision);

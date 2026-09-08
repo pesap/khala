@@ -33,9 +33,9 @@ test("Pi review feedback resumes the same Execution and republishes a validated 
 		terminal.keys("Enter");
 		await see("Provider review result:");
 		terminal.keys("Enter");
-		await see("feedback: Escape saves");
+		await see("Text editor: feedback");
 		terminal.keys("-l", "Keep hello and add one trailing blank line.");
-		terminal.keys("Escape");
+		terminal.keys("Enter");
 		await see("Record provider review: saved draft");
 		assert.equal(terminal.readWork().revision, reviewed.revision);
 		options.greeting = "hello\n\n";

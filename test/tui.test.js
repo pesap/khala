@@ -11,7 +11,7 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 		workId: "work-1",
 		state: "active",
 		revision: 0,
-		terms: { title: "Work" },
+		terms: { title: "Work", objective: "Deliver the complete documented behavior with all details." },
 		mission: { missionId: "mission-1" },
 		missionState: "active",
 		execution: {
@@ -57,9 +57,9 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 					workId: work.workId,
 					payloadVersion: 1,
 					summary: "Work submitted",
-					evidenceRefs: ["submission evidence"],
+					evidenceRefs: [],
 					recordedAt: "2026-01-01T00:00:00.000Z",
-					payload: { title: work.terms.title },
+					payload: { title: work.terms.title, objective: work.terms.objective },
 				},
 			],
 			asOfSequence: 1,
@@ -125,7 +125,8 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.match(actions, /Actions/);
 	assert.match(actions, /Recover/);
 	assert.doesNotMatch(actions, /Recover Work|Visible action/);
-	assert.ok(actions.indexOf("Recover") < actions.indexOf("Cancel"));
+	assert.ok(actions.indexOf("Recover") < actions.indexOf("Refresh runtime"));
+	assert.ok(actions.indexOf("Refresh runtime") < actions.indexOf("Cancel"));
 	assert.doesNotMatch(actions, /Hidden action/);
 	assert.doesNotMatch(actions, /khala-recover/);
 	screens[2].handleInput("\u007f");
@@ -167,7 +168,7 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.match(recordDetail, /Record ID\s+record-1/);
 	assert.match(recordDetail, /Work ID\s+work-1/);
 	assert.match(recordDetail, /Summary\s+Work submitted/);
-	assert.match(recordDetail, /submission evidence/);
+	assert.match(recordDetail, /objective.*Deliver the complete documented behavior with all details/);
 	screens[7].handleInput("\u007f");
 	await nextTurn();
 	assert.equal(screens.length, 9);

@@ -149,7 +149,10 @@ export class ServiceWorkspaceActions {
 		} catch (error) {
 			throwIfOperationAborted(operation);
 			const afterFailure = await this.verifySourceForValidation(execution, headCommit, operation);
-			const message = `Validation runner failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000);
+			const message = `Validation runner failed: ${error instanceof Error ? error.message : String(error)}`.slice(
+				0,
+				2_000,
+			);
 			return this.recordValidation(work, meta, execution, headCommit, [], afterFailure, message);
 		}
 		throwIfOperationAborted(operation);
@@ -168,7 +171,9 @@ export class ServiceWorkspaceActions {
 	): WorkView {
 		const validation = { executionId: execution.executionId, headCommit, results, ...verification };
 		const passed =
-			attemptFailure === undefined && verification.sourceVerified && validationResultsPassed(results, work.terms.validation);
+			attemptFailure === undefined &&
+			verification.sourceVerified &&
+			validationResultsPassed(results, work.terms.validation);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,

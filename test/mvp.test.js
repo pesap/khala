@@ -229,7 +229,8 @@ test("GitWorkspace commits with its receiver and returns the committed head", as
 	assert.notEqual(committedHead, baseCommit);
 });
 
-test("GitWorkspace hydrates sandbox dependencies for commit and validation", async () => {
+test("GitWorkspace hydrates sandbox dependencies for commit and validation", async (t) => {
+	if (process.platform !== "linux") return t.skip("Dependency hydration and isolated validation require Linux bubblewrap.");
 	const directory = await mkdtemp(join(tmpdir(), "khala-commit-toolchain-"));
 	const parent = join(directory, "parent");
 	const remote = join(directory, "remote.git");
@@ -345,7 +346,8 @@ test("GitWorkspace hydrates sandbox dependencies for commit and validation", asy
 	}
 });
 
-test("Failed validation retains stdout and stderr diagnostics", async () => {
+test("Failed validation retains stdout and stderr diagnostics", async (t) => {
+	if (process.platform !== "linux") return t.skip("Isolated validation requires Linux bubblewrap.");
 	const directory = await mkdtemp(join(tmpdir(), "khala-validation-output-"));
 	const fakeBin = join(directory, "bin");
 	await mkdir(fakeBin);

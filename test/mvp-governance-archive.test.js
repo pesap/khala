@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createApplication } from "../dist/src/factory.js";
-import { makeService, meta, admitAndStart } from "./helpers/mvp-fixtures.mjs";
+import { makeService, meta, admitAndStart, validateWork } from "./helpers/mvp-fixtures.mjs";
 
 async function waitUntil(predicate, message) {
 	const deadline = Date.now() + 2_000;
@@ -25,11 +25,12 @@ test("Terminal cleanup waits for an active feedback turn", async () => {
 			input: {},
 			meta: meta("executor", "feedback-cleanup:review", running.revision, running.workId, running.execution.executionId),
 		});
+		const validated = await validateWork(service, review.value, "feedback-cleanup:validate");
 		const ready = await service.perform({
 			action: "record-signal",
 			workId: running.workId,
 			input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
-			meta: meta("executor", "feedback-cleanup:ready", review.value.revision, running.workId, running.execution.executionId),
+			meta: meta("executor", "feedback-cleanup:ready", validated.revision, running.workId, running.execution.executionId),
 		});
 		const handoff = await service.perform({
 			action: "verdict",
@@ -85,7 +86,8 @@ test("Feedback waits for an active Executor turn instead of being dropped", asyn
 	await service.processPendingEffects();
 	const running = service.inspectWork(submitted.workId);
 	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "feedback-race:review", running.revision, running.workId, running.execution.executionId) });
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback-race:ready", review.value.revision, running.workId, running.execution.executionId) });
+	const validated = await validateWork(service, review.value, "feedback-race:validate");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback-race:ready", validated.revision, running.workId, running.execution.executionId) });
 	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "Review it", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "feedback-race:handoff", ready.value.revision, running.workId) });
 	const changed = await service.perform({ action: "record-review", workId: running.workId, input: { status: "changes-requested", feedback: ["Fix the edge case."] }, meta: meta("user", "feedback-race:changes", handoff.value.revision) });
 	const processing = service.processPendingEffects();
@@ -129,11 +131,12 @@ test("GitHub review feedback wakes the Conclave and resumes the same Execution w
 		input: {},
 		meta: meta("executor", "github-feedback:review", running.revision, running.workId, running.execution.executionId),
 	});
+	const validated = await validateWork(service, review.value, "github-feedback:validate");
 	const ready = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
-		meta: meta("executor", "github-feedback:ready", review.value.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "github-feedback:ready", validated.revision, running.workId, running.execution.executionId),
 	});
 	await service.perform({
 		action: "verdict",

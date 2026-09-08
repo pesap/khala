@@ -137,7 +137,7 @@ function joinTempDirectory(prefix) {
 async function waitForEitherFile(path, failurePath) {
 	const deadline = Date.now() + TEST_TIMEOUT_MS;
 	while (Date.now() < deadline) {
-		const content = await readIfPresent(path);
+		const content = nonEmpty(await readIfPresent(path));
 		if (content !== undefined) return content;
 		const failure = await readIfPresent(failurePath);
 		if (failure !== undefined) throw new Error(failure);
@@ -154,6 +154,10 @@ async function waitForFile(path) {
 		await delay(10);
 	}
 	throw new Error(`Timed out waiting for ${path}.`);
+}
+
+function nonEmpty(content) {
+	return content === undefined || content.trim().length === 0 ? undefined : content;
 }
 
 async function readIfPresent(path) {

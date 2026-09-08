@@ -84,15 +84,46 @@ test("opening saved Work is lazy and short-terminal overview keeps controls reac
 	await close(h);
 });
 
-test("enabled actions can be opened beside Work details without the Actions panel", async () => {
+test("Work overview nests actions and separates the summary from navigation", async () => {
 	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel Work", enabled: true }] });
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
 	const overview = h.screens.at(-1);
-	for (let step = 0; step < 4; step += 1) overview.handleInput("\u001b[B");
-	assert.match(renderScreen(overview, 40, 12).join("\n"), /Cancel/);
+	const lines = overview.render(80);
+	assert.doesNotMatch(lines.join("\n"), /→ Cancel\b/);
+	assert.match(lines.join("\n"), /Summary\s+Deliver the documented behavior\./);
+	assert.doesNotMatch(lines.join("\n"), /Goal/);
+	const summaryEnd = lines.findIndex((line) => line.includes("Freshness"));
+	const navigationStart = lines.findIndex((line) => line.includes("→ Actions"));
+	assert.ok(summaryEnd >= 0 && navigationStart > summaryEnd + 1, JSON.stringify(lines));
+	assert.ok(lines.slice(summaryEnd + 1, navigationStart).some((line) => line.trim().length === 0), JSON.stringify(lines));
+	assert.equal(lines.filter((line) => line.includes("Deliver the documented behavior.")).length, 1);
 	overview.handleInput("\r");
+	await turn();
+	assert.match(h.screens.at(-1).render(80).join("\n"), /→ Refresh runtime\b/);
+	h.screens.at(-1).handleInput("\u007f");
+	await turn();
+	h.screens.at(-1).handleInput("\u007f");
+	await turn();
+	h.screens.at(-1).handleInput("\u007f");
+	await h.result;
+});
+
+test("enabled actions are nested under the Actions section", async () => {
+	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel Work", enabled: true }] });
+	await turn();
+	h.screens[0].handleInput("\r");
+	await turn();
+	const overview = h.screens.at(-1);
+	assert.doesNotMatch(renderScreen(overview, 40, 12).join("\n"), /→ Cancel/);
+	overview.handleInput("\r");
+	await turn();
+	const actions = h.screens.at(-1);
+	assert.match(renderScreen(actions, 40, 12).join("\n"), /→ Refresh runtime/);
+	actions.handleInput("\u001b[B");
+	assert.match(renderScreen(actions, 40, 12).join("\n"), /→ Cancel/);
+	actions.handleInput("\r");
 	await turn();
 	assert.match(h.menus[0].title, /Cancel Work/);
 	assert.ok(h.menus[0].choices.includes("Submit"));
@@ -137,14 +168,23 @@ test("explicit runtime refresh supplies the next overview and available actions"
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
-	for (let step = 0; step < 3; step += 1) h.screens.at(-1).handleInput("\u001b[B");
-	h.screens.at(-1).handleInput("\r");
+	const overview = h.screens.at(-1);
+	overview.handleInput("\r");
+	await turn();
+	const actions = h.screens.at(-1);
+	assert.match(actions.render(100).join("\n"), /Refresh runtime/);
+	actions.handleInput("\r");
 	await turn();
 	assert.match(h.screens.at(-1).render(100).join("\n"), /Runtime checked/);
 	h.screens.at(-1).handleInput("\u001b");
 	await turn();
+	const refreshedOverview = h.screens.at(-1);
+	assert.match(refreshedOverview.render(100).join("\n"), /unreachable/);
+	refreshedOverview.handleInput("\r");
+	await turn();
 	assert.equal(states.at(-1), "unreachable");
-	assert.match(h.screens.at(-1).render(100).join("\n"), /unreachable/);
+	h.screens.at(-1).handleInput("\u007f");
+	await turn();
 	await close(h);
 });
 
@@ -159,13 +199,15 @@ test("dismissed recovery cannot be started again while the original operation is
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
-	for (let step = 0; step < 4; step += 1) h.screens.at(-1).handleInput("\u001b[B");
+	h.screens.at(-1).handleInput("\r");
+	await turn();
 	h.screens.at(-1).handleInput("\r");
 	await turn();
 	assert.equal(calls, 1);
 	h.screens.at(-1).handleInput("\u001b");
 	await turn();
-	for (let step = 0; step < 4; step += 1) h.screens.at(-1).handleInput("\u001b[B");
+	h.screens.at(-1).handleInput("\r");
+	await turn();
 	h.screens.at(-1).handleInput("\r");
 	await turn();
 	assert.equal(calls, 1);

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { SQLiteArchive } from "../dist/src/archive.js";
 import { openSqlite } from "../dist/src/sqlite.js";
 import { summarizeArchiveToolValue } from "../dist/src/index.js";
-import { ZERO_USAGE, makeService, meta, admitAndStart } from "./helpers/mvp-fixtures.mjs";
+import { ZERO_USAGE, makeService, meta, admitAndStart, validateWork } from "./helpers/mvp-fixtures.mjs";
 
 test("A blocked Signal wake records retryable failure when Conclave takes no action", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-blocked-wake-no-action-"));
@@ -40,11 +40,12 @@ test("A ready Signal wake records retryable failure when Conclave takes no actio
 		input: {},
 		meta: meta("executor", "ready-wake-no-action:review", running.revision, running.workId, running.execution.executionId),
 	});
+	const validated = await validateWork(service, review.value, "ready-wake-no-action:validate");
 	const ready = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "ready", summary: "Ready for review", evidence: ["head", "diff", "validation"] },
-		meta: meta("executor", "ready-wake-no-action:signal", review.value.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "ready-wake-no-action:signal", validated.revision, running.workId, running.execution.executionId),
 	});
 	assert.equal("error" in ready, false);
 	const progressAfterReady = await service.perform({

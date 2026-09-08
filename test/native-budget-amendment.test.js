@@ -14,7 +14,7 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 		terminal.keys("Down", "Down", "Down", "Enter");
 		await see("Amend Work budget: saved draft");
 		terminal.keys("Enter");
-		await see("maxTokens: Escape saves");
+		await see("Text editor: maxTokens");
 	};
 	try {
 		await terminal.start();
@@ -29,7 +29,7 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 		await see("Freshness");
 		await openBudget();
 		terminal.keys("-l", "2");
-		terminal.keys("Escape");
+		terminal.keys("Enter");
 		await see("Amend Work budget: saved draft");
 		terminal.keys("Down", "Enter");
 		await see("Apply this consequential change");
@@ -42,7 +42,7 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 		await openBudget();
 		terminal.keys("C-a", "C-k");
 		terminal.keys("-l", "20000");
-		terminal.keys("Escape");
+		terminal.keys("Enter");
 		await see("Amend Work budget: saved draft");
 		assert.equal(terminal.readWork().budget.maxTokens, 2);
 		fixture.steps.conclave = 0;

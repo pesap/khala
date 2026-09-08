@@ -10,7 +10,9 @@ import {
 	type SelectListTheme,
 	Spacer,
 	Text,
+	truncateToWidth,
 	VStack,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { RecordView } from "./model.js";
 
@@ -138,9 +140,22 @@ export function addKeyValueRows(
 	theme: Theme,
 	rows: readonly (readonly [string, string])[],
 ): void {
-	const lines = formatFieldRows(rows);
-	if (lines.length === 0) return;
-	container.addChild(new Text(theme.fg("muted", lines.join("\n")), 1, 0));
+	if (rows.length === 0) return;
+	container.addChild({
+		render: (width: number) => wrappedFieldRows(rows, width).map((line) => theme.fg("muted", line)),
+		invalidate: () => {},
+	});
+}
+
+function wrappedFieldRows(rows: readonly (readonly [string, string])[], width: number): readonly string[] {
+	const labelWidth = Math.max(...rows.map(([label]) => label.length));
+	return rows.flatMap(([label, value]) => {
+		const prefix = `${label.padEnd(labelWidth)}  `;
+		const wrapped = wrapTextWithAnsi(value, Math.max(1, width - prefix.length));
+		return wrapped.map((line, index) =>
+			truncateToWidth(`${index === 0 ? prefix : " ".repeat(prefix.length)}${line}`, width, ""),
+		);
+	});
 }
 
 export function selectorTheme(theme: Theme): SelectListTheme {

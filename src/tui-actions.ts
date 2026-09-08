@@ -1,5 +1,4 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Editor, getKeybindings, Text } from "@earendil-works/pi-tui";
 import { nanoid } from "nanoid";
 import type { Action, Actor, JsonObject, WorkView } from "./model.js";
 import type { ApplicationService } from "./service.js";
@@ -91,45 +90,10 @@ async function editReview(context: ExtensionContext, draft: Draft): Promise<void
 }
 
 async function editField(context: ExtensionContext, field: string, draft: Draft): Promise<void> {
-	await context.ui.custom<void>((tui, theme, _bindings, done) => {
-		const color = (text: string): string => theme.fg("accent", text);
-		const editor = new Editor(tui, {
-			borderColor: color,
-			selectList: { selectedPrefix: color, selectedText: color, description: color, scrollInfo: color, noMatch: color },
-		});
-		editor.setText(draft.values.get(field) ?? "");
-		editor.disableSubmit = true;
-		const container = new Container();
-		container.addChild(new Text(`${field}: Escape saves the draft; use Submit in the action menu.`, 1, 0));
-		container.addChild(editor);
-		const save = (): void => {
-			const text = editor.getExpandedText();
-			draft.values.set(field, text);
-			draft.input = { ...draft.input, ...fieldInput(field, text) };
-		};
-		return {
-			get focused() {
-				return editor.focused;
-			},
-			set focused(value: boolean) {
-				editor.focused = value;
-			},
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => {
-				const bindings = getKeybindings();
-				if (bindings.matches(data, "tui.select.cancel")) {
-					save();
-					done();
-					return;
-				}
-				if (bindings.matches(data, "tui.input.submit")) editor.insertTextAtCursor("\n");
-				else editor.handleInput(data);
-				save();
-				tui.requestRender();
-			},
-		};
-	});
+	const value = await context.ui.editor(`Text editor: ${field}`, draft.values.get(field));
+	if (value === undefined) return;
+	draft.values.set(field, value);
+	draft.input = { ...draft.input, ...fieldInput(field, value) };
 }
 
 function fieldInput(field: string, text: string): JsonObject {

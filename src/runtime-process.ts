@@ -116,9 +116,18 @@ function signalProcessGroup(processGroupId: number): void {
 	try {
 		process.kill(-processGroupId, "SIGKILL");
 	} catch (error) {
-		const failure = error instanceof Error ? error : new Error(String(error));
-		if (isUnexpectedProcessSignalError(failure)) throw failure;
+		if (isProcessGroupGone(processGroupId)) return;
+		throwProcessSignalError(error instanceof Error ? error : new Error(String(error)));
 	}
+}
+
+function throwProcessSignalError(error: Error): void {
+	const failure = error instanceof Error ? error : new Error(String(error));
+	if (isUnexpectedProcessSignalError(failure)) throw failure;
+}
+
+function isProcessGroupGone(processGroupId: number): boolean {
+	return process.platform !== "linux" && !posixProcessGroupExists(processGroupId);
 }
 
 function assertSupportedProcessPlatform(): void {
@@ -187,11 +196,36 @@ function isMissingProcessEntry(error: Error): boolean {
 }
 
 function posixProcessGroupExists(processGroupId: number): boolean {
+	return process.platform === "darwin"
+		? darwinProcessGroupExists(processGroupId)
+		: probePosixProcessGroup(processGroupId);
+}
+
+function probePosixProcessGroup(processGroupId: number): boolean {
 	try {
 		process.kill(-processGroupId, 0);
 		return true;
 	} catch (error) {
-		return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+		return processSignalDidNotFindGroup(error instanceof Error ? error : new Error(String(error)));
+	}
+}
+
+function processSignalDidNotFindGroup(error: Error): boolean {
+	return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+}
+
+function darwinProcessGroupExists(processGroupId: number): boolean {
+	try {
+		const output = execFileSync("ps", ["-axo", "pid=,pgid="], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		return output.split("\n").some((line) => {
+			const fields = line.trim().split(/\s+/);
+			return fields.length >= 2 && Number(fields[0]) > 0 && Number(fields[1]) === processGroupId;
+		});
+	} catch {
+		return true;
 	}
 }
 

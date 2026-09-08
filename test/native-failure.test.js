@@ -23,9 +23,9 @@ test("Pi User failure stops a waiting Executor and project recovery preserves th
 		terminal.keys("Down", "Enter");
 		await see("Fail Work: saved draft");
 		terminal.keys("Enter");
-		await see("reason: Escape saves the draft");
+		await see("Text editor: reason");
 		terminal.keys("-l", reason);
-		terminal.keys("Escape");
+		terminal.keys("Enter");
 		await see("Fail Work: saved draft");
 		assert.equal(terminal.readWork().revision, running.revision);
 		terminal.keys("Down", "Enter");

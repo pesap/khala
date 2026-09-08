@@ -385,6 +385,37 @@ test("A Conclave wake remains retryable when the child records no decision", asy
 	await service.close();
 });
 
+test("Conclave token exhaustion is captured instead of reported as a missing decision", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-conclave-token-exhaustion-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			runtime: {
+				async send(binding) {
+					if (binding.sessionId.startsWith("conclave-"))
+						return { output: "", usage: { ...ZERO_USAGE, inputTokens: 50 } };
+					return { output: "", usage: ZERO_USAGE };
+				},
+			},
+		},
+	});
+	try {
+		const submitted = service.submitWork(
+			{ title: "Token exhaustion", objective: "Capture the exhausted Conclave turn", acceptanceCriteria: ["The error identifies token exhaustion"] },
+			meta("user", "token-exhaustion:submit", 0),
+		);
+		await service.processPendingEffects();
+		const failed = service.inspectWork(submitted.workId);
+		assert.equal(failed.state, "submitted");
+		assert.equal(failed.budget.consumedTokens, 50);
+		assert.equal(failed.budget.reservedTokens, 0);
+		assert.match(failed.lastError.summary, /Conclave token-exhaustion decision failed/);
+		assert.match(failed.lastError.summary, /50\/50 tokens/);
+		assert.doesNotMatch(failed.lastError.summary, /without recording a durable decision/);
+	} finally {
+		await service.close();
+	}
+});
+
 test("Recovered Work still requires an actual admission decision", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-recovered-admission-"));
 	const { service } = makeService(join(directory, "archive.sqlite"));

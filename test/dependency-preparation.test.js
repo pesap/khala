@@ -9,6 +9,7 @@ import { GitWorkspace } from "../dist/src/adapters.js";
 import { DEPENDENCY_POLICY, preparationReceiptPath, prepareDependencyArtifacts, readPreparationReceipt } from "../dist/src/dependency-artifacts.js";
 
 const npm = process.env.npm_execpath ?? execFileSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).trim();
+const dependencyTest = process.platform === "linux" ? test : test.skip;
 
 async function createNpmFixture(root) {
 	const config = join(root, "npm-config");
@@ -25,7 +26,7 @@ function npmOptions(fixture, prefix, cache = fixture.cache) {
 	return ["--cache", cache, "--userconfig", fixture.userConfig, "--globalconfig", fixture.globalConfig, "--prefix", prefix];
 }
 
-test("prepares a cold local tarball for offline script-free validation", async (t) => {
+dependencyTest("prepares a cold local tarball for offline script-free validation", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "khala-dependency-preparation-"));
 	const fixture = join(root, "fixture");
 	const npmFixture = await createNpmFixture(root);
@@ -71,7 +72,7 @@ test("prepares a cold local tarball for offline script-free validation", async (
 	}
 });
 
-test("prepares a remote-shaped tarball with npm12 while isolating hostile ancestor config", async (t) => {
+dependencyTest("prepares a remote-shaped tarball with npm12 while isolating hostile ancestor config", async (t) => {
 	const ancestor = await mkdtemp(join(tmpdir(), "khala-npm-hostile-"));
 	const sandbox = join(ancestor, "sandbox");
 	const packageDirectory = join(ancestor, "remote-package");
@@ -158,7 +159,7 @@ test("prepares a remote-shaped tarball with npm12 while isolating hostile ancest
 	}
 });
 
-test("non-Node workspaces require no dependency artifacts and Node manifests require a lockfile", async () => {
+dependencyTest("non-Node workspaces require no dependency artifacts and Node manifests require a lockfile", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-no-node-preparation-"));
 	try {
 		const workspace = new GitWorkspace(root, "test/");
@@ -169,7 +170,7 @@ test("non-Node workspaces require no dependency artifacts and Node manifests req
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("dependency metadata cannot follow a symbolic link", async () => {
+dependencyTest("dependency metadata cannot follow a symbolic link", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-manifest-symlink-"));
 	try {
 		await writeFile(join(root, "manifest.json"), JSON.stringify({ name: "linked" }));
@@ -179,7 +180,7 @@ test("dependency metadata cannot follow a symbolic link", async () => {
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("rejects a local artifact whose parent symlink escapes the workspace", async () => {
+dependencyTest("rejects a local artifact whose parent symlink escapes the workspace", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-dependency-symlink-"));
 	const outside = await mkdtemp(join(tmpdir(), "khala-dependency-outside-"));
 	try {
@@ -192,7 +193,7 @@ test("rejects a local artifact whose parent symlink escapes the workspace", asyn
 	} finally { await rm(root, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
 });
 
-test("rejects an oversized local artifact before npm cache preparation", async () => {
+dependencyTest("rejects an oversized local artifact before npm cache preparation", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-dependency-size-"));
 	try {
 		const contents = Buffer.alloc(DEPENDENCY_POLICY.maxArtifactBytes + 1);
@@ -203,7 +204,7 @@ test("rejects an oversized local artifact before npm cache preparation", async (
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("fails closed for corrupt preparation receipts", async () => {
+dependencyTest("fails closed for corrupt preparation receipts", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-dependency-receipt-"));
 	try {
 		const store = join(root, "store");
@@ -216,7 +217,7 @@ test("fails closed for corrupt preparation receipts", async () => {
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("interrupted artifact streams fail without publishing partial cache entries", async (t) => {
+dependencyTest("interrupted artifact streams fail without publishing partial cache entries", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "khala-dependency-stream-"));
 	try {
 		await writeFile(join(root, "package.json"), JSON.stringify({ name: "stream-fixture" }));
@@ -240,7 +241,7 @@ for (const scenario of [
 	{ name: "download-corruption", cached: false, fetches: 1, error: /Integrity verification failed/, response: () => new Response("corrupt downloaded bytes") },
 	{ name: "cache-corruption", cached: true, fetches: 0, error: /Integrity verification failed/, response: () => { throw new Error("Cached corruption must not trigger a download"); } },
 ]) {
-	test(`dependency preparation rejects ${scenario.name} without publishing a receipt`, async (t) => {
+	dependencyTest(`dependency preparation rejects ${scenario.name} without publishing a receipt`, async (t) => {
 		const root = await mkdtemp(join(tmpdir(), "khala-artifact-rejection-"));
 		const store = join(root, "store");
 		const integrity = `sha512-${createHash("sha512").update("authorized bytes").digest("base64")}`;
@@ -273,7 +274,7 @@ for (const scenario of [
 	});
 }
 
-test("rejects a lockfile dependency outside the approved registry", async () => {
+dependencyTest("rejects a lockfile dependency outside the approved registry", async () => {
 	const root = await mkdtemp(join(tmpdir(), "khala-dependency-policy-"));
 	try {
 		await writeFile(join(root, "package.json"), JSON.stringify({ name: "policy-fixture", version: "1.0.0" }));

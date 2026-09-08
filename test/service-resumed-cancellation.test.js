@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { admitAndStart, makeService, meta, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
+import { admitAndStart, makeService, meta, validateWork, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
 
 async function waitUntil(predicate, message) {
 	const deadline = Date.now() + 2_000;
@@ -72,11 +72,12 @@ test("cancellation stops a held authorized feedback turn before it settles", asy
 			input: {},
 			meta: meta("executor", "held-feedback:review", running.revision, running.workId, running.execution.executionId),
 		});
+		const validated = await validateWork(service, review.value, "held-feedback:validate");
 		const ready = await service.perform({
 			action: "record-signal",
 			workId: running.workId,
 			input: { kind: "ready", summary: "Ready", evidence: ["head", "validation"] },
-			meta: meta("executor", "held-feedback:ready", review.value.revision, running.workId, running.execution.executionId),
+			meta: meta("executor", "held-feedback:ready", validated.revision, running.workId, running.execution.executionId),
 		});
 		const handoff = await service.perform({
 			action: "verdict",
@@ -269,11 +270,12 @@ async function verifyIndependentStops(mode) {
 			meta: meta("executor", "independent:review", second.revision, second.workId, second.execution.executionId),
 		});
 		assert.equal("value" in review, true, JSON.stringify(review));
+		const validated = await validateWork(service, review.value, "independent:validate");
 		const ready = await service.perform({
 			action: "record-signal",
 			workId: second.workId,
 			input: { kind: "ready", summary: "Ready", evidence: ["head", "validation"] },
-			meta: meta("executor", "independent:ready", review.value.revision, second.workId, second.execution.executionId),
+			meta: meta("executor", "independent:ready", validated.revision, second.workId, second.execution.executionId),
 		});
 		const handoff = await service.perform({
 			action: "verdict",

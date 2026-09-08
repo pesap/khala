@@ -32,6 +32,8 @@ function isCurrentBlockedSignal(signal: Signal | undefined, executionId: string 
 }
 
 const EVIDENCE_RECORD_KINDS: readonly RecordKind[] = [
+	"submission",
+	"work-amended",
 	"assessment",
 	"learning",
 	"validation",
@@ -45,6 +47,7 @@ const EVIDENCE_RECORD_KINDS: readonly RecordKind[] = [
 	"error",
 ];
 type EvidenceSelectionContext = Readonly<{
+	workId: string;
 	missionId: string | undefined;
 	executionId: string | undefined;
 	reviewProviderId: string | undefined;
@@ -56,7 +59,14 @@ function evidenceSelectionContext(work: WorkView): EvidenceSelectionContext {
 	const { missionId } = work.mission ?? {};
 	const { executionId } = work.execution ?? {};
 	const { providerId: reviewProviderId, url: reviewUrl } = work.reviewRequest ?? {};
-	return { missionId, executionId, reviewProviderId, reviewUrl, retainsLastError: Boolean(work.lastError) };
+	return {
+		workId: work.workId,
+		missionId,
+		executionId,
+		reviewProviderId,
+		reviewUrl,
+		retainsLastError: Boolean(work.lastError),
+	};
 }
 
 function matchesExecution(record: RecordView, executionId: string | undefined): boolean {
@@ -90,7 +100,11 @@ function latestRecord(
 	records: readonly RecordView[],
 	predicate: (record: RecordView) => boolean,
 ): RecordView | undefined {
-	return [...records].reverse().find(predicate);
+	return records.reduce<RecordView | undefined>(
+		(latest, record) =>
+			predicate(record) && (latest === undefined || record.sequence > latest.sequence) ? record : latest,
+		undefined,
+	);
 }
 
 function isRelevantErrorRecord(record: RecordView, selection: EvidenceSelectionContext): boolean {
@@ -152,6 +166,14 @@ function addLatestEvidence(
 	addEvidenceRecord(
 		selected,
 		latestRecord(records, (record) => isRelevantReviewRequestRecord(record, selection)),
+	);
+	addEvidenceRecord(
+		selected,
+		latestRecord(
+			records,
+			(record) =>
+				record.workId === selection.workId && (record.kind === "submission" || record.kind === "work-amended"),
+		),
 	);
 }
 

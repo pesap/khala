@@ -178,11 +178,29 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			this.children.set(sessionId, child);
 			return child.binding;
 		} catch (error) {
-			this.children.delete(key);
-			await removeSessionCapability(launch);
-			await cleanupStartingChild(launch, child);
-			throw error;
+			return this.cleanupFailedSessionStartup(
+				key,
+				launch,
+				child,
+				error instanceof Error ? error : new Error(String(error)),
+			);
 		}
+	}
+
+	private async cleanupFailedSessionStartup(
+		key: string,
+		launch: SessionLaunch,
+		child: MutableChild,
+		error: Error,
+	): Promise<never> {
+		this.children.delete(key);
+		try {
+			await removeSessionCapability(launch);
+			await cleanupChild(child);
+		} catch (cleanupError) {
+			throw new Error(`${error.message} (cleanup failed: ${String(cleanupError)})`);
+		}
+		throw error;
 	}
 	/**
 	 * RPC has no public per-prompt provider cap, so enforcement begins when a completed assistant message is observed.

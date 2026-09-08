@@ -28,6 +28,7 @@ import { RunLedger } from "./run-ledger.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 import { ServiceActions } from "./service-actions.js";
 import { ArchiveCore } from "./service-archive-core.js";
+import { runConclaveWake } from "./service-conclave.js";
 import { ServiceConfiguration } from "./service-configuration.js";
 import type { ServiceOptions } from "./service-contracts.js";
 import { ServiceDecisions } from "./service-decisions.js";
@@ -53,7 +54,6 @@ import {
 	actionFingerprint,
 	cleanupFailureMatches,
 	cleanupLabel,
-	conclaveWakeMessage,
 	oraclePayload,
 	throwIfOperationAborted,
 } from "./service-runtime-policy.js";
@@ -355,41 +355,21 @@ export class ApplicationService {
 			this.configuration.options.conclaveModel,
 			this.configuration.options.conclaveThinking,
 		);
-		let binding: RuntimeBinding | undefined;
-		try {
-			await this.invocations.dispatch(
-				work,
-				{ workId, role: "conclave", allowance: invocationAllowance(work) },
-				async (reservation, operation) => {
-					try {
-						binding = await this.ports.runtime.ensureSession(
-							{
-								cwd: this.configuration.options.projectPath,
-								model: this.configuration.options.conclaveModel,
-								thinking: this.configuration.options.conclaveThinking,
-								role: "conclave",
-								promptIdentity: this.configuration.options.conclavePromptIdentity,
-								bindingScope: { workId },
-								tools: ["khala_read_archive", "khala_inspect_runtime", "khala_perform_action", "khala_run_oracle"],
-							},
-							operation,
-						);
-					} catch (error) {
-						throw new InvocationLaunchError(new Error(String(error)));
-					}
-					const live = this.inspectWork(workId);
-					return this.ports.runtime.send(
-						binding,
-						`${conclaveWakeMessage(live, observationId, reason)}\nInvocation run ID: ${reservation.runId}.`,
-						{ tokenAllowance: reservation.allowance, runId: reservation.runId },
-						operation,
-					);
-				},
-			);
-			this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
-		} finally {
-			if (binding !== undefined) await this.ports.runtime.requestStop(binding).catch(() => undefined);
-		}
+		await runConclaveWake({
+			work,
+			workId,
+			observationId,
+			reason,
+			allowance: invocationAllowance(work),
+			projectPath: this.configuration.options.projectPath,
+			model: this.configuration.options.conclaveModel,
+			thinking: this.configuration.options.conclaveThinking,
+			promptIdentity: this.configuration.options.conclavePromptIdentity,
+			runtime: this.ports.runtime,
+			invocations: this.invocations,
+			inspectWork: (currentWorkId) => this.inspectWork(currentWorkId),
+		});
+		this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
 	}
 
 	async processPendingEffects(): Promise<void> {
@@ -497,7 +477,7 @@ export class ApplicationService {
 		const work = this.inspectWork(workId);
 		if (isTerminalWork(work)) return work;
 		this.core.checkRevision(work, meta);
-		const error = conclaveWakeError(failure, wakeErrorKindFor(reason, work.lastObservation));
+		const error = conclaveWakeError(failure, wakeErrorKindFor(reason, work.lastObservation, failure));
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,

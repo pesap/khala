@@ -1,4 +1,4 @@
-import { type ErrorEnvelope, type ServiceResult } from "./model.js";
+import { type ErrorEnvelope, type ServiceResult, type TokenUsage } from "./model.js";
 
 export type ServiceOptions = Readonly<{
 	projectPath: string;
@@ -36,6 +36,15 @@ export class RunGateUnavailable extends Error {
 	constructor() {
 		super("The shared model-run gate is full.");
 		this.name = "RunGateUnavailable";
+	}
+}
+
+export class ConclaveTokenExhaustedError extends Error {
+	constructor(usage: TokenUsage, allowance: number) {
+		super(
+			`The Conclave token allowance was exhausted at ${usage.inputTokens + usage.outputTokens}/${allowance} tokens before a durable decision was recorded.`,
+		);
+		this.name = "ConclaveTokenExhaustedError";
 	}
 }
 

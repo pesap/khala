@@ -26,7 +26,7 @@ import {
 	reviewObservationMatchesRequest,
 	validProviderOutcomeObservation,
 } from "./provider-observation-policy.js";
-import { ActionInputError, ApplicationError } from "./service-contracts.js";
+import { ActionInputError, ApplicationError, ConclaveTokenExhaustedError } from "./service-contracts.js";
 import {
 	canStartQueuedExecution,
 	DEFAULT_SCOPE,
@@ -101,6 +101,16 @@ import { type DispatchEligibility, dispatchEligibility } from "./workflow-dispat
 export function wakeErrorKindFor(
 	reason: ConclaveWakeCause | undefined,
 	observation: ProviderObservation | undefined,
+	failure?: Error,
+): ConclaveWakeErrorKind {
+	const failureKind = wakeErrorKindForFailure(failure);
+	if (failureKind !== undefined) return failureKind;
+	return wakeErrorKindForReason(reason, observation);
+}
+
+function wakeErrorKindForReason(
+	reason: ConclaveWakeCause | undefined,
+	observation: ProviderObservation | undefined,
 ): ConclaveWakeErrorKind {
 	const byReason = new Map<ConclaveWakeCause, ConclaveWakeErrorKind>([
 		["executor-blocked", "blocked"],
@@ -112,8 +122,11 @@ export function wakeErrorKindFor(
 		["token-exhausted", "token"],
 	]);
 	const reasonKind = reason === undefined ? undefined : byReason.get(reason);
-	if (reasonKind !== undefined) return reasonKind;
-	return isActionableReviewComment(observation) ? "feedback" : "admission";
+	return reasonKind ?? (isActionableReviewComment(observation) ? "feedback" : "admission");
+}
+
+function wakeErrorKindForFailure(failure: Error | undefined): ConclaveWakeErrorKind | undefined {
+	return failure instanceof ConclaveTokenExhaustedError ? "token" : undefined;
 }
 
 function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): ErrorEnvelope {
@@ -146,7 +159,8 @@ function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): Err
 		},
 		token: {
 			summary: `Conclave token-exhaustion decision failed: ${message}`,
-			remediation: "Inspect the current token-exhausted Execution and retry its durable Verdict.",
+			remediation:
+				"Inspect the Conclave invocation usage and retry the durable decision; reconcile held usage if the invocation remains uncertain.",
 		},
 		admission: {
 			summary: `Conclave admission failed: ${message}`,
