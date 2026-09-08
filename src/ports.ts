@@ -14,6 +14,11 @@ export type OperationContext = Readonly<{
 	onUpdate?: ((message: string) => void) | undefined;
 }>;
 
+export type RuntimeSendOptions = Readonly<{
+	tokenAllowance: number;
+	runId?: string | undefined;
+}>;
+
 export type WorkspacePreflight = Readonly<{
 	projectPath: string;
 	origin: string;
@@ -21,8 +26,37 @@ export type WorkspacePreflight = Readonly<{
 	headCommit: string;
 }>;
 
+export type DependencyPreparationReceipt = Readonly<{
+	schemaVersion: 1;
+	sandboxPath: string;
+	baseCommit: string;
+	manifestSha256: string;
+	lockfileSha256: string;
+	runtime: Readonly<{ node: string; npm: string }>;
+	policy: Readonly<{
+		registries: readonly ["registry.npmjs.org"];
+		maxArtifactBytes: number;
+		maxPreparationBytes: number;
+		maxConcurrentDownloads: number;
+		timeoutMs: number;
+	}>;
+	artifactDigests: readonly string[];
+	preparedAt: string;
+}>;
+
+/** A workspace may explicitly prove that Node dependency preparation is not applicable. */
+export type NoNodePreparationReceipt = Readonly<{
+	schemaVersion: 1;
+	kind: "no-node";
+	sandboxPath: string;
+	baseCommit: string;
+	preparedAt: string;
+}>;
+export type PreparationReceipt = DependencyPreparationReceipt | NoNodePreparationReceipt;
+
 export interface WorkspacePort {
 	preflight: (projectPath: string, targetBranch: string, operation?: OperationContext) => Promise<WorkspacePreflight>;
+	prepareSandbox: (sandbox: Execution["sandbox"], operation?: OperationContext) => Promise<PreparationReceipt>;
 	ensureSandbox: (
 		input: Readonly<{
 			workId: string;
@@ -88,6 +122,11 @@ export class RuntimeTurnError extends Error {
 
 export type RuntimeTurn = Readonly<{ output: string; usage?: TokenUsage | undefined }>;
 
+export type RuntimeInvocationEvidence = Readonly<{
+	usage?: TokenUsage | undefined;
+	complete: boolean;
+}>;
+
 export type RuntimeBinding = Readonly<{
 	sessionId: string;
 	sessionPath: string;
@@ -119,8 +158,14 @@ export interface AgentRuntimePort {
 		}>,
 		operation?: OperationContext,
 	) => Promise<RuntimeBinding>;
-	send: (binding: RuntimeBinding, message: string, operation?: OperationContext) => Promise<RuntimeTurn>;
+	send: (
+		binding: RuntimeBinding,
+		message: string,
+		options: RuntimeSendOptions,
+		operation?: OperationContext,
+	) => Promise<RuntimeTurn>;
 	getState: (binding: RuntimeBinding, operation?: OperationContext) => Promise<RuntimeState>;
+	reconcileInvocation?: (runId: string, operation?: OperationContext) => Promise<RuntimeInvocationEvidence>;
 	requestStop: (binding: RuntimeBinding) => Promise<void>;
 	close: () => Promise<void>;
 }
@@ -145,6 +190,7 @@ export type OracleFinding = Readonly<{
 }>;
 
 export type OracleResult = Readonly<{
+	usage?: TokenUsage | undefined;
 	verdict: "pass" | "needs-revision" | "blocked" | "incomplete";
 	findings: readonly OracleFinding[];
 	validationGaps: readonly string[];
@@ -157,6 +203,7 @@ export interface OraclePort {
 		packet: OraclePacket,
 		model: string,
 		thinking: string,
+		options: RuntimeSendOptions,
 		operation?: OperationContext,
 	) => Promise<OracleResult>;
 }

@@ -118,4 +118,3 @@ test("symlinked supervision sidecars are rejected without modifying the target",
 		await rm(directory, { recursive: true, force: true });
 	}
 });
-

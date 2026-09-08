@@ -51,6 +51,7 @@ async function exitedLeaderLease() {
 		`import { existsSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
 const readyPath = process.env.KHALA_TAKEOVER_READY;
 const exitPath = process.env.KHALA_TAKEOVER_EXIT;
 const exitedPath = process.env.KHALA_TAKEOVER_EXITED;

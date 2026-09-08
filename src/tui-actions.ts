@@ -3,6 +3,7 @@ import { Container, Editor, getKeybindings, Text } from "@earendil-works/pi-tui"
 import { nanoid } from "nanoid";
 import type { Action, Actor, JsonObject, WorkView } from "./model.js";
 import type { ApplicationService } from "./service.js";
+import { editInvocationRecovery, invocationRecoveryInput } from "./tui-invocation-recovery.js";
 
 type Attempt = Readonly<{ input: JsonObject; revision: number; commandId: string }>;
 type Draft = { values: Map<string, string>; input: JsonObject; pending: Attempt | undefined };
@@ -47,7 +48,7 @@ async function actionMenu(
 	for (;;) {
 		const choice = await context.ui.select(`${action.label}: saved draft`, draftChoices(draft));
 		if (choice === "Edit") {
-			await editDraft(context, action, draft);
+			await editDraft(context, work, action, draft);
 			continue;
 		}
 		if (!isSubmitChoice(choice)) return choice === "Discard";
@@ -63,7 +64,12 @@ function isSubmitChoice(choice: string | undefined): boolean {
 	return choice === "Submit" || choice === "Retry pending command";
 }
 
-async function editDraft(context: ExtensionContext, action: Action, draft: Draft): Promise<void> {
+async function editDraft(context: ExtensionContext, work: WorkView, action: Action, draft: Draft): Promise<void> {
+	if (action.kind === "reconcile-invocation") return editInvocationRecovery(context, work, draft.values);
+	return editLifecycleDraft(context, action, draft);
+}
+
+async function editLifecycleDraft(context: ExtensionContext, action: Action, draft: Draft): Promise<void> {
 	if (action.kind === "record-review") return editReview(context, draft);
 	if (action.kind === "amend-terms") return editTerms(context, draft);
 	const field = TEXT_FIELDS.get(action.kind);
@@ -137,14 +143,26 @@ function feedbackLines(text: string): string[] {
 }
 
 function submissionInput(action: Action, draft: Draft): JsonObject {
+	if (action.kind === "reconcile-invocation") return invocationRecoveryInput(draft.values);
 	if (action.kind !== "amend-budget") return draft.input;
-	const maxTokens = Number(draft.values.get("maxTokens"));
+	return budgetInput(draft.values);
+}
+
+function budgetInput(values: ReadonlyMap<string, string>): JsonObject {
+	const maxTokens = Number(values.get("maxTokens"));
 	if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0)
 		throw new Error("Enter a positive whole-number token budget.");
 	return { maxTokens };
 }
 
-async function confirmed(context: ExtensionContext, action: Action): Promise<boolean> {
+async function confirmed(context: ExtensionContext, action: Action, draft: Draft): Promise<boolean> {
+	if (action.kind === "reconcile-invocation") {
+		const input = invocationRecoveryInput(draft.values);
+		return context.ui.confirm(
+			action.label,
+			`Record ${input.usage.inputTokens} input and ${input.usage.outputTokens} output tokens for ${input.runId}?\nCache: ${input.usage.cacheHitTokens} hit, ${input.usage.cacheMissTokens} miss.\nEvidence: ${input.evidence.join(", ")}\nThis settles the held reservation and permits Work dispatch to resume.`,
+		);
+	}
 	if (action.confirmation !== undefined) return context.ui.confirm(action.label, action.confirmation);
 	if (CONSEQUENTIAL.has(action.kind))
 		return context.ui.confirm(action.label, "Apply this consequential change to Work?");
@@ -160,7 +178,7 @@ async function submitDraft(
 	draft: Draft,
 ): Promise<boolean> {
 	try {
-		if (!(await confirmed(context, action))) return false;
+		if (!(await confirmed(context, action, draft))) return false;
 		draft.pending ??= { input: submissionInput(action, draft), revision: work.revision, commandId: `tui:${nanoid()}` };
 		return await performDraft(service, context, actor, work, action, draft);
 	} catch (error) {

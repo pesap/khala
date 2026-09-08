@@ -8,6 +8,8 @@ import { SQLiteArchive } from "../dist/src/archive.js";
 import { RuntimeTurnError } from "../dist/src/ports.js";
 import { ApplicationService } from "../dist/src/service.js";
 
+const ZERO_USAGE = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
+
 const authority = generateKeyPairSync("ed25519");
 const publicKey = authority.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
 const nonce = "test-nonce";
@@ -43,7 +45,7 @@ function makeService(path, controls) {
 				if (controls.defer) return new Promise((_, reject) => { controls.release = () => reject(new RuntimeTurnError("executor disconnected", controls.usage)); });
 				throw new RuntimeTurnError("executor disconnected", controls.usage);
 			}
-			return { output: "" };
+			return { output: "", usage: ZERO_USAGE };
 		},
 		async getState() { return "idle"; },
 		async requestStop() {},
@@ -52,6 +54,19 @@ function makeService(path, controls) {
 	const workspace = {
 		async preflight() { return { projectPath: "/project", origin: "https://github.com/example/project", targetBranch: "main", headCommit: "base" }; },
 		async ensureSandbox(input) { return { path: join(dirname(path), input.executionId), baseCommit: "base", branch: "branch" }; },
+		async prepareSandbox(sandbox) {
+			return {
+				schemaVersion: 1,
+				sandboxPath: sandbox.path,
+				baseCommit: sandbox.baseCommit,
+				manifestSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+				lockfileSha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+				runtime: { node: process.version, npm: "test-fixture" },
+				policy: { registries: ["registry.npmjs.org"], maxArtifactBytes: 52_428_800, maxPreparationBytes: 524_288_000, maxConcurrentDownloads: 2, timeoutMs: 120_000 },
+				artifactDigests: [],
+				preparedAt: "2020-01-01T00:00:00.000Z",
+			};
+		},
 		async removeSandbox() {},
 	};
 	const ports = {
@@ -85,11 +100,15 @@ test("Executor runtime failure charges partial usage once across repeated effect
 		const failed = service.inspectWork(started.value.workId);
 		assert.equal(failed.execution.state, "failed");
 		assert.equal(failed.budget.consumedTokens, 18);
-		assert.equal(failed.budget.reservedTokens, 0);
+		assert.equal(failed.budget.reservedTokens, 32);
+		assert.deepEqual(failed.activeInvocations?.map(({ state }) => state), ["uncertain"]);
 		const sends = controls.executorSends;
 		await service.processPendingEffects();
 		assert.equal(controls.executorSends, sends);
-		assert.equal(service.inspectWork(started.value.workId).budget.consumedTokens, 18);
+		const drained = service.inspectWork(started.value.workId);
+		assert.equal(drained.budget.consumedTokens, 18);
+		assert.equal(drained.budget.reservedTokens, 32);
+		assert.deepEqual(drained.activeInvocations?.map(({ state }) => state), ["uncertain"]);
 	} finally {
 		await service.close();
 	}
@@ -114,7 +133,8 @@ test("Known failure usage is recorded after cancellation without resurrecting Wo
 		assert.equal(final.state, "stopped");
 		assert.equal(final.stopReason, "cancelled");
 		assert.equal(final.budget.consumedTokens, 18);
-		assert.equal(final.budget.reservedTokens, 0);
+		assert.equal(final.budget.reservedTokens, 32);
+		assert.deepEqual(final.activeInvocations?.map(({ state }) => state), ["uncertain"]);
 	} finally {
 		controls.release?.();
 		await service.close();

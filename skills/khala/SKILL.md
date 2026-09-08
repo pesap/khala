@@ -29,7 +29,8 @@ The current extension does not provide local acceptance or a shared background s
 The [MVP design](https://github.com/pesap/khala/blob/main/docs/mvp-design.md) and [Architecture](https://github.com/pesap/khala/blob/main/docs/architecture.md) describe those target requirements.
 Do not infer those target guarantees from the tools or from runtime liveness.
 Declared validation and dependency hydration require Linux bubblewrap and run without host credentials, host cache, or network access.
-An isolation or offline dependency failure is a failed check, not permission to substitute unrestricted commands.
+Service-owned dependency preparation can acquire integrity-checked artifacts from the approved npm registry into its private cache before child launch.
+An isolation or offline dependency failure is not permission to substitute unrestricted commands or expose the host cache.
 Pi child sessions and service-owned Git hooks do not yet have complete OS isolation.
 
 ## Authority and revisions
@@ -73,15 +74,17 @@ accept the Work.
 
 ### `khala_read_archive`
 
-Reads current Work and Mission terms plus at most ten recent bounded Archive record summaries.
+Reads current Work and Mission terms plus at most ten recent authorized decision-evidence records.
 Filter by `workId`, `missionId`, `executionId`, `kinds`, `states`, or time range.
-The Pi result does not include record payloads or a continuation cursor; use the TUI Archive view for complete authorized history.
-In the Pi TUI, the collapsed result shows only the summary count and Archive sequence; the configured tool-expansion key reveals the same bounded terms and summaries.
+Selected payload fields include Signal diagnoses, validation failures, preparation diagnostics, and assessments.
+Use the returned record continuation cursor when more evidence is needed; inspect explicit omissions before deciding.
+In the Pi TUI, the configured tool-expansion key reveals the bounded decision packet.
 Expansion changes presentation for the user, not the model-visible content.
-Text output is capped at 48 KB and 1,800 lines.
+The decision packet is capped at 24 KB of UTF-8 JSON.
 Read the current Work before any decision.
 Child sessions receive only the records allowed by their binding.
-The returned page includes `asOfSequence` for the summary snapshot.
+The packet includes the Work revision and record `asOfSequence`; these are separate reads, not an atomic snapshot.
+Invocation accounting can advance the revision without changing the lifecycle decision.
 
 ### `khala_poll_provider`
 
@@ -128,8 +131,9 @@ requires `workId`, `summary`, `evidence`, and `expectedWorkRevision`.
 Conclave-session shortcut for an advisory Oracle review.
 It requires `workId`,
 `subject`, and `expectedWorkRevision`.
-The Oracle receives a bounded packet and
-has no tools; its result is evidence, not acceptance.
+The request is queued so the calling Conclave can finish before Oracle uses a run slot.
+The Oracle receives a bounded packet and has no tools; its result is evidence, not acceptance.
+Wait for the result wake and reread the Archive rather than treating the queued request as a completed review.
 
 ## Action reference
 
@@ -157,6 +161,7 @@ surface and required inputs.
 | `record-outcome` | Conclave | none |
 | `cancel` | User | none |
 | `recover` | User or Conclave | none |
+| `reconcile-invocation` | User | `runId`, cumulative `usage`, `evidence` |
 | `rename-work` | User | `title` |
 | `amend-budget` | User | `maxTokens` |
 | `fail-work` | User or Conclave | `reason` when required by the schema |
@@ -167,6 +172,11 @@ A `continue` decision is rejected when the Execution has exhausted its allowance
 `record-review.status` is one of `changes-requested`, `merged`, or `closed`.
 Provider feedback is delivered by observation ID; do not invent or paste a
 provider comment into a different Work.
+`reconcile-invocation.usage` contains nonnegative whole-number `inputTokens`, `outputTokens`, `cacheHitTokens`, and `cacheMissTokens` from final usage evidence.
+Incomplete runtime receipts require all four counts and a nonblank evidence reference.
+Complete durable receipts supply their exact usage; supplied counts must match.
+The owning supervisor must confirm the old writer has stopped before an incomplete invocation can settle.
+After settlement, `/khala-recover` restores an interrupted Executor without creating another Execution.
 
 ## Normal workflow
 
@@ -189,7 +199,12 @@ sets Work to `succeeded`.
 ## Failure and recovery
 
 - `needs-input`: reread the Work and provide missing intent or repository facts.
-- `queued`: the scheduler is waiting for project concurrency or token budget.
+- `queued`: inspect preparation state, project concurrency, and token budget.
+- preparation `waiting`: inspect the recorded prerequisite diagnosis; only explicit User recovery rechecks it.
+- invocation `uncertain`: observed consumption is charged, but the remaining reservation and run slot stay held; process disappearance does not refund them.
+- reservation waiting: wait for settlement or reconcile the existing invocation; do not treat held tokens as a request to increase the budget.
+- crash-held invocation: `/khala-recover` settles complete durable receipts; incomplete receipts require User `reconcile-invocation` with actual cumulative usage and evidence, also available through Actions → Reconcile held usage.
+- Work budget exhausted: only an explicit User budget amendment can permit another invocation; changing models or repeatedly recovering does not restore consumed tokens.
 - `budget-exhausted`: replace the Execution or amend the Work budget before continuing.
 - `unreachable` runtime: inspect it, then use Conclave-authorized `recover`; do
   not start a second Executor manually.
@@ -203,8 +218,9 @@ sets Work to `succeeded`.
 - merged provider request with active Work: wait for merge reconciliation and the
   explicit Conclave Outcome.
 
-Khala may retry transient child startup transport or redeliver a durable effect,
-but never silently retries a semantic decision.
+Khala may retry transient child startup transport before a prompt is sent.
+A failed Conclave effect retains its attention and is not automatically replayed by later polls.
+Inspect the prerequisite, invocation, and decision evidence before authorizing another attempt; do not resubmit Work or increase its budget as an infrastructure workaround.
 Shutdown waits for active
 monitor, effect, and background runtime operations before closing the Archive.
 

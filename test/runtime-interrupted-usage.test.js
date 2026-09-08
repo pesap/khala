@@ -18,6 +18,7 @@ const usage = { inputTokens: 11, outputTokens: 7, cacheHitTokens: 13, cacheMissT
 async function writeRuntimeStub(directory, body) {
 	const script = join(directory, "runtime-stub.mjs");
 	await writeFile(script, `import readline from "node:readline";
+if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
  const request = JSON.parse(line);
@@ -46,7 +47,7 @@ test("an interrupted real process turn rejects with exact accumulated usage", as
 	try {
 		const binding = await runtimeInstance.ensureSession({ cwd: directory, ...input });
 		await assert.rejects(
-			runtimeInstance.send(binding, "fail after partial output"),
+			runtimeInstance.send(binding, "fail after partial output", { tokenAllowance: 100 }),
 			(error) => {
 				if (!(error instanceof RuntimeTurnError) || error.usage === undefined) return false;
 				assert.deepEqual(error.usage, usage);
