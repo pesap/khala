@@ -139,16 +139,22 @@ export function addKeyValueRows(
 	container: Container,
 	theme: Theme,
 	rows: readonly (readonly [string, string])[],
+	labelWidth?: number,
 ): void {
 	if (rows.length === 0) return;
+	const width = labelWidth ?? Math.max(...rows.map(([label]) => label.length));
 	container.addChild({
-		render: (width: number) => wrappedFieldRows(rows, width).map((line) => theme.fg("muted", line)),
+		render: (availableWidth: number) =>
+			wrappedFieldRows(rows, availableWidth, width).map((line) => theme.fg("muted", line)),
 		invalidate: () => {},
 	});
 }
 
-function wrappedFieldRows(rows: readonly (readonly [string, string])[], width: number): readonly string[] {
-	const labelWidth = Math.max(...rows.map(([label]) => label.length));
+function wrappedFieldRows(
+	rows: readonly (readonly [string, string])[],
+	width: number,
+	labelWidth: number,
+): readonly string[] {
 	return rows.flatMap(([label, value]) => {
 		const prefix = `${label.padEnd(labelWidth)}  `;
 		const wrapped = wrapTextWithAnsi(value, Math.max(1, width - prefix.length));

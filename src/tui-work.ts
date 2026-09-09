@@ -117,14 +117,20 @@ async function pickSection(
 		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
 	return context.ui.custom<WorkSelection | null>((tui, theme, _keybindings, done) => {
-		const rows = workSectionRows(work, undefined);
+		const rows = workOverviewRows(work);
 		const list = new SelectList(items, 4, selectorTheme(theme));
 		list.onSelect = (item) => done(choices.get(item.value) ?? null);
 		list.onCancel = () => done(null);
 		const container = new Container();
 		addHeading(container, theme, truncateWorkName(work.terms.title));
 		container.addChild(new Spacer(1));
-		addKeyValueRows(container, theme, rows);
+		const statusRows = workOverviewStatusRows(work);
+		const labelWidth = Math.max(...[...rows, ...statusRows].map(([label]) => label.length));
+		addKeyValueRows(container, theme, rows, labelWidth);
+		if (statusRows.length > 0) {
+			container.addChild(new Spacer(1));
+			addKeyValueRows(container, theme, statusRows, labelWidth);
+		}
 		const scroll = new ScrollView(container, { overscroll: "contain", scrollbar: "auto" });
 		const controls = new Container();
 		controls.addChild(list);
@@ -148,6 +154,42 @@ async function pickSection(
 function isDetailScroll(data: string): boolean {
 	const bindings = getKeybindings();
 	return bindings.matches(data, "tui.editor.pageUp") || bindings.matches(data, "tui.editor.pageDown");
+}
+
+function workOverviewRows(work: WorkView): readonly (readonly [string, string])[] {
+	return [
+		["Work", formatWorkState(work)],
+		["Summary", shortWorkSummary(work)],
+	];
+}
+
+function workOverviewStatusRows(work: WorkView): readonly (readonly [string, string])[] {
+	return [
+		...overviewErrorRow(work),
+		...overviewBlockerRow(work),
+		...overviewNextRow(work),
+		["Freshness", `Saved revision ${work.revision}`],
+	];
+}
+
+function overviewErrorRow(work: WorkView): readonly (readonly [string, string])[] {
+	return work.lastError === undefined ? [] : [["Attention", conciseOverviewText(work.lastError.summary)]];
+}
+
+function overviewBlockerRow(work: WorkView): readonly (readonly [string, string])[] {
+	return hasCurrentBlockedSignal(work)
+		? [["Blocker", conciseOverviewText(work.lastSignal?.summary ?? "Executor is blocked.")]]
+		: [];
+}
+
+function overviewNextRow(work: WorkView): readonly (readonly [string, string])[] {
+	return work.nextAction.trim().length === 0 ? [] : [["Next", conciseOverviewText(work.nextAction)]];
+}
+
+function conciseOverviewText(value: string): string {
+	const sentence = firstSummarySentence(compactSummaryText(value));
+	const clause = sentence.split(/[;:]/u)[0]?.trim() ?? "";
+	return truncateToWidth(clause, 96, "...");
 }
 
 function workSectionRows(work: WorkView, archiveError: string | undefined): readonly (readonly [string, string])[] {
@@ -199,7 +241,8 @@ function nextActionRow(work: WorkView): readonly (readonly [string, string])[] {
 }
 
 function shortWorkSummary(work: WorkView): string {
-	return truncateToWidth(firstSummarySentence(compactSummaryText(summarySource(work))), 64, "...");
+	const sentence = firstSummarySentence(compactSummaryText(summarySource(work)));
+	return truncateToWidth(sentence.split(/[;:]/u)[0]?.trim() ?? "", 64, "...");
 }
 
 function summarySource(work: WorkView): string {

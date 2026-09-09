@@ -216,8 +216,9 @@ test("TUI schedules runtime recovery effects and refreshes the view", async () =
 	assert.deepEqual(effects, ["processed"]);
 	await nextTurn();
 	assert.match(screens[4].render(100).join("\n"), /Recoverable Executor[\s\S]*Work\s+active/);
-	assert.match(screens[4].render(100).join("\n"), /Execution\s+running/);
-	assert.match(screens[4].render(100).join("\n"), /Khala is continuing automatically/);
+	assert.match(screens[4].render(100).join("\n"), /Summary\s+Recoverable Executor/);
+	assert.match(screens[4].render(100).join("\n"), /Next\s+Khala is continuing automatically\./);
+	assert.doesNotMatch(screens[4].render(100).join("\n"), /^(?:Execution|Runtime)\s/m);
 	screens[4].handleInput("\u001b");
 	await nextTurn();
 	screens[5].handleInput("\u001b");

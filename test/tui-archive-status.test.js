@@ -100,6 +100,71 @@ test("Archive lists every record newest first with one heading count", async () 
 	await result;
 });
 
+test("Evidence keeps long summaries on one bounded line", async () => {
+	const screens = [];
+	const work = {
+		workId: "bounded-evidence-work",
+		state: "submitted",
+		revision: 32,
+		terms: { title: "Bounded evidence", objective: "Keep evidence summaries readable." },
+		budget: { reservedTokens: 0, maxTokens: 100, consumedTokens: 0 },
+		nextAction: "Inspect the evidence.",
+		lastError: {
+			code: "external-failure",
+			summary: "Conclave admission failed: Conclave wake returned without recording a durable decision.",
+			retryable: false,
+			remediation: "Inspect the evidence.",
+			evidenceRefs: [],
+		},
+	};
+	const record = {
+		sequence: 32,
+		recordNumber: 32,
+		id: "record-error",
+		kind: "error",
+		actor: "conclave",
+		workId: work.workId,
+		payloadVersion: 1,
+		summary: work.lastError.summary,
+		evidenceRefs: [],
+		recordedAt: "2026-09-08T22:22:18.113Z",
+		payload: work.lastError,
+	};
+	const service = {
+		listWork: () => [{ workId: work.workId, title: work.terms.title, state: work.state, nextAction: work.nextAction }],
+		inspectWork: () => work,
+		availableActions: () => [],
+		readRecords: () => ({ items: [record], asOfSequence: record.sequence }),
+	};
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, {}, done));
+				}),
+		},
+	};
+	const result = showKhala(service, context);
+	await nextTurn();
+	screens[0].handleInput("\r");
+	await nextTurn();
+	screens[1].handleInput("\u001b[B");
+	screens[1].handleInput("\r");
+	await nextTurn();
+	const evidence = screens[2].render(100).join("\n");
+	assert.match(evidence, /Conclave admission failed/);
+	assert.doesNotMatch(evidence, /^\s+without recording a durable decision\./mu);
+	screens[2].handleInput("\u001b");
+	await nextTurn();
+	screens[3].handleInput("\u001b");
+	await nextTurn();
+	screens[4].handleInput("\u001b");
+	await result;
+});
+
 test("Work picker stays minimal, shows active Work, and marks failures", async () => {
 	const screens = [];
 	const inspectedWorkIds = [];
@@ -328,8 +393,12 @@ test("Blocked Executions are prominent while Signal details stay available in Ar
 	screens[0].handleInput("\r");
 	await nextTurn();
 	const overview = screens[1].render(100).join("\n");
-	assert.match(overview, /Execution\s+blocked/);
-	assert.match(overview, /Runtime\s+finishing current turn/);
+	assert.match(overview, /Work\s+active/);
+	assert.match(overview, /Summary\s+Two-minute execution job/);
+	assert.match(overview, /Blocker\s+The Executor cannot publish under the Mission constraints\./);
+	assert.match(overview, /Next\s+Conclave assessment is pending\./);
+	assert.match(overview, /Freshness\s+Saved revision 3/);
+	assert.doesNotMatch(overview, /^(?:Execution|Runtime)\s/m);
 	assert.equal((overview.match(/BLOCKED/g) ?? []).length, 0);
 	assert.ok(overview.indexOf("Archive") < overview.indexOf("Inspect blocking signal"));
 	screens[1].handleInput("\u001b[B");
@@ -462,8 +531,11 @@ test("Work overview hides runtime state for terminal Executions", async () => {
 	screens[0].handleInput("\r");
 	await nextTurn();
 	const overview = screens[1].render(100).join("\n");
-	assert.match(overview, /Execution\s+failed/);
-	assert.doesNotMatch(overview, /Runtime/);
+	assert.match(overview, /Work\s+active/);
+	assert.match(overview, /Summary\s+Terminal runtime/);
+	assert.match(overview, /Next\s+Replace the failed Execution\./);
+	assert.match(overview, /Freshness\s+Saved revision 2/);
+	assert.doesNotMatch(overview, /^(?:Execution|Runtime)\s/m);
 	screens[1].handleInput("\u001b");
 	await nextTurn();
 	screens[2].handleInput("\u001b");

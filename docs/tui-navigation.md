@@ -47,6 +47,7 @@ Acceptance identifies the exact review snapshot and follows the [lifecycle rules
 Provider delivery does not add a second acceptance confirmation in Pi.
 
 Evidence is a filtered Archive-history view with an All records option, not a second history system.
+Evidence list summaries are bounded one-line previews; inspect a record to read its full summary and details.
 Record bodies, full terms, attempt bindings, budget, model, workspace, and prompt details load only on inspection.
 Guidance is inspectable with its sources and applicability, not injected into every screen.
 Settings stays separate and shows effective role defaults; existing attempts retain recorded configuration.

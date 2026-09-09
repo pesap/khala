@@ -241,7 +241,9 @@ function formatEvidenceRecordLines(record: RecordView, summary: string, width: n
 	if (layout.showContext) {
 		prefix += `${tableCell(record.actor, layout.actor)}${tableCell(formatRecordedAt(record.recordedAt), layout.time)}`;
 	}
-	return summary.trim().length === 0 ? [prefix.trimEnd()] : wrapPrefixed(summary, prefix, visibleWidth(prefix), width);
+	return summary.trim().length === 0
+		? [prefix.trimEnd()]
+		: [`${prefix}${truncateToWidth(summary, Math.max(1, width - visibleWidth(prefix)), "...")}`];
 }
 
 function formatArchiveRecordLines(record: RecordView, summary: string, width: number): readonly string[] {
