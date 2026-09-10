@@ -6,6 +6,12 @@ import { failedExecution, isCancelledWork, isTerminalWork, workFailure } from ".
 import { succeededWork } from "./service-lifecycle-policy.js";
 import { isDispatchBudgetAttention, requiredNonBlank, requiredText } from "./service-state-policy.js";
 
+function budgetAmendmentEffects(work: WorkView, revision: number, attention: boolean) {
+	if (work.state === "queued") return [schedulerEffect(work.workId, revision)];
+	if (!attention || work.state !== "submitted") return undefined;
+	return [schedulerEffect(work.workId, revision)];
+}
+
 export class WorkCompletion {
 	private readonly core: ArchiveCore;
 
@@ -95,7 +101,7 @@ export class WorkCompletion {
 			payload: { previousMaxTokens: work.budget.maxTokens, maxTokens },
 			projection: next,
 			summary: `Work token cap amended to ${maxTokens}.`,
-			effects: work.state === "queued" ? [schedulerEffect(work.workId, next.revision)] : undefined,
+			effects: budgetAmendmentEffects(work, next.revision, attention),
 		}).projection;
 	}
 

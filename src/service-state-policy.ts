@@ -343,6 +343,8 @@ export function dispatchGateIdentity(work: WorkView, eligibility: Exclude<Dispat
 
 export function isDispatchBudgetAttention(error: ErrorEnvelope | undefined): boolean {
 	if (error === undefined) return false;
+	if (error.code === "external-failure" && error.summary.startsWith("Conclave token-exhaustion decision failed: "))
+		return true;
 	const summaries = new Map<ErrorEnvelope["code"], string>([
 		["budget-exhausted", "Model dispatch is waiting for additional Work budget."],
 		["external-failure", "Model dispatch is waiting for an existing invocation to settle."],
