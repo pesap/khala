@@ -16,6 +16,20 @@ export async function waitUntil(read, accepts, diagnostic) {
 	assert.fail(diagnostic());
 }
 
+export async function selectNativeListItem(terminal, label, diagnostic) {
+	const selected = (screen) => screen.split("\n").some((line) => line.trim() === `→ ${label}`);
+	for (let attempt = 0; attempt < 30; attempt += 1) {
+		const screen = terminal.screen();
+		if (selected(screen)) {
+			terminal.keys("Enter");
+			return;
+		}
+		terminal.keys("Down");
+		await waitUntil(terminal.screen, (next) => next !== screen, diagnostic);
+	}
+	assert.fail(`Could not select native TUI item ${label}.`);
+}
+
 export function createNativeTerminal(fixture) {
 	const session = `khala-native-${process.pid}-${Date.now()}`;
 	const path = archivePath({ archiveRoot: join(fixture.root, "archive") }, fixture.project);

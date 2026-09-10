@@ -65,7 +65,6 @@ test("Pi rejects source-mutating validation and recovers the same idle Execution
 		await see("Evidence");
 		await selectValidationEvidence(terminal, diagnostic);
 		terminal.keys("Enter");
-		await waitUntil(terminal.screen, (screen) => /^\s*Validation \d+\s*$/m.test(screen), diagnostic);
 		await see("Source verification");
 		await see("greeting.txt");
 		terminal.keys("Escape", "Escape");

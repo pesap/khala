@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
+
+function isTokenExhausted(work) {
+	if (work === undefined) return false;
+	const error = work.lastError;
+	return error === undefined
+		? false
+		: [error.code === "external-failure", /token-exhaustion/u.test(error.summary), work.budget.reservedTokens === 0].every(Boolean);
+}
 
 test("Pi rejects a budget below recorded usage and a confirmed increase resumes exhausted Work", { timeout: 90_000 }, async () => {
 	const fixture = await createNativeWorkflowFixture({ maxTokens: 2 });
@@ -11,7 +19,7 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 	const openBudget = async () => {
 		terminal.keys("Enter");
 		await see("Amend budget");
-		terminal.keys("Down", "Down", "Down", "Enter");
+		await selectNativeListItem(terminal, "Amend budget", diagnostic);
 		await see("Amend Work budget: saved draft");
 		terminal.keys("Enter");
 		await see("Text editor: maxTokens");
@@ -19,7 +27,11 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 	try {
 		await terminal.start();
 		terminal.send("Submit the greeting Work now.");
-		const exhausted = await waitUntil(terminal.readWork, (work) => work?.lastError?.code === "budget-exhausted" && work.budget.reservedTokens === 0, diagnostic);
+		const exhausted = await waitUntil(
+			terminal.readWork,
+			(work) => isTokenExhausted(work),
+			diagnostic,
+		);
 		assert.equal(exhausted.budget.consumedTokens, 15);
 		assert.equal(exhausted.execution, undefined);
 		assert.equal(fixture.steps.executor, 0);

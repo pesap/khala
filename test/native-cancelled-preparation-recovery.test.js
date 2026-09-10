@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture, git } from "./helpers/native-workflow.mjs";
 
 test("Pi recovers cancelled preparation through fresh admission after the target is repaired", { timeout: 90_000 }, async () => {
@@ -40,7 +40,7 @@ test("Pi recovers cancelled preparation through fresh admission after the target
 		terminal.keys("Enter");
 		await see("Recover");
 		await see("Cancel");
-		terminal.keys("Down", "Down", "Down", "Down", "Enter");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
 		await see("Cancel Work: saved draft");
 		terminal.keys("Down", "Enter");
 		await see("Apply this consequential change");

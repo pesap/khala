@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
 
 for (const lost of [true, false]) {
@@ -26,7 +26,7 @@ test(`Pi Recover continues the same Execution after its Executor becomes ${lost 
 		await see("Native greeting");
 		terminal.keys("Enter");
 		await see("Freshness");
-		terminal.keys("Down", "Down", "Down", "Enter");
+		await selectNativeListItem(terminal, "Refresh runtime", diagnostic);
 		await see("Runtime checked");
 		await see(lost ? "unreachable" : "idle");
 		assert.equal(terminal.readWork().execution.executionId, idle.execution.executionId);

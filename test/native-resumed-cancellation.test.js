@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SQLiteArchive } from "../dist/src/archive.js";
 import { archivePath } from "../dist/src/config.js";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
 
 test("native cancellation stops an Executor held during authorized provider feedback", { timeout: 120_000 }, async () => {
@@ -43,7 +43,7 @@ test("native cancellation stops an Executor held during authorized provider feed
 		await see("Freshness");
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
-		terminal.keys("Down", "Down", "Down", "Enter");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
 		await see("Cancel Work: saved draft");
 		terminal.keys("Down", "Enter");
 		await see("Apply this consequential change");

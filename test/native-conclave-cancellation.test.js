@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
 
 test("Pi cancellation stops an in-flight Conclave before admission and settles its usage", { timeout: 90_000 }, async () => {
@@ -22,7 +22,7 @@ test("Pi cancellation stops an in-flight Conclave before admission and settles i
 		await see("Freshness");
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
-		terminal.keys("Down", "Down", "Down", "Down", "Enter");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
 		await see("Cancel Work: saved draft");
 		terminal.keys("Down", "Enter");
 		await see("Apply this consequential change");
@@ -36,7 +36,7 @@ test("Pi cancellation stops an in-flight Conclave before admission and settles i
 		await see("Freshness");
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
-		terminal.keys("Down", "Down", "Enter");
+		await selectNativeListItem(terminal, "Reconcile held usage", diagnostic);
 		await see("saved draft");
 		terminal.keys("Enter");
 		await see("Held invocation to reconcile");

@@ -41,7 +41,15 @@ test("Pi reconciles a provider-closed review as failed Work", { timeout: 90_000 
 		terminal.keys("h");
 		await waitUntil(terminal.screen, (screen) => /^\s*History\s*$/m.test(screen) && screen.includes("Native greeting") && screen.includes("failed"), diagnostic);
 		terminal.keys("Enter");
-		await waitUntil(terminal.screen, (screen) => /^\s*Native greeting\s*$/m.test(screen) && screen.includes(`Work failed: ${reason}`), diagnostic);
+		await waitUntil(
+			terminal.screen,
+			(screen) =>
+				/^\s*Native greeting\s*$/m.test(screen) &&
+				screen.includes("Attention") &&
+				screen.includes("Work failed") &&
+				!screen.includes(reason),
+			diagnostic,
+		);
 		assert.deepEqual(fixture.failures, []);
 	} finally {
 		terminal.close();

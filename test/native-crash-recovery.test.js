@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
 
 test("Pi terminal reconciles a crash-held invocation before resuming its Execution", { timeout: 120_000 }, async () => {
@@ -28,7 +28,7 @@ test("Pi terminal reconciles a crash-held invocation before resuming its Executi
 		await see("Actions");
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
-		terminal.keys("Down", "Down", "Down", "Down", "Enter");
+		await selectNativeListItem(terminal, "Reconcile held usage", diagnostic);
 		await see("saved draft");
 		terminal.keys("Enter");
 		await see("Held invocation to reconcile");
