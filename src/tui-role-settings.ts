@@ -47,6 +47,20 @@ async function selectRoleOption(
 }
 type RoleSettingsSnapshot = Readonly<{ role: GovernedRole; current: RoleSettingsMap[GovernedRole] }>;
 
+function selectedRoleSetting(value: string): RoleSetting {
+	return value.startsWith("Model") ? "model" : value.startsWith("Thinking") ? "thinking" : "usdMax";
+}
+
+function validateRoleSettingValue(setting: RoleSetting, value: string): void {
+	if (setting !== "usdMax") return;
+	const usdMax = Number(value);
+	if (!Number.isFinite(usdMax) || usdMax <= 0) throw new Error("USD max must be a positive number.");
+}
+
+function roleSettingLabel(setting: RoleSetting): string {
+	return setting === "usdMax" ? "USD max" : setting;
+}
+
 function roleFromSelection(value: string | undefined): GovernedRole | undefined {
 	return ROLE_ORDER.find((role) => role === value);
 }
@@ -127,9 +141,10 @@ async function editRoleSetting(
 	const selectedSetting = await selectRoleOption(context, `${ROLE_LABELS[role]} settings:`, [
 		`Model: ${current.model || "not configured"}`,
 		`Thinking: ${current.thinking}`,
+		`USD max: $${(current.usdMax ?? 5).toFixed(2)}`,
 	]);
 	if (selectedSetting === undefined) return;
-	const setting: RoleSetting = selectedSetting.startsWith("Model") ? "model" : "thinking";
+	const setting = selectedRoleSetting(selectedSetting);
 	await saveSelectedRoleSetting(controller, context, role, current, setting);
 }
 
@@ -151,11 +166,16 @@ async function roleSettingValue(
 	current: RoleSettingsMap[GovernedRole],
 	setting: RoleSetting,
 ): Promise<string | undefined> {
-	if (setting === "model") {
-		const selectedModel = await selectRoleModel(context, current.model);
-		return selectedModel === undefined ? undefined : `${selectedModel.provider}/${selectedModel.id}`;
-	}
-	return selectRoleThinking(context, role, current);
+	const editors = {
+		model: async () => {
+			const selectedModel = await selectRoleModel(context, current.model);
+			return selectedModel === undefined ? undefined : `${selectedModel.provider}/${selectedModel.id}`;
+		},
+		thinking: () => selectRoleThinking(context, role, current),
+		usdMax: async () =>
+			(await context.ui.input(`${ROLE_LABELS[role]} USD max:`, (current.usdMax ?? 5).toFixed(2)))?.trim(),
+	} satisfies Record<RoleSetting, () => Promise<string | undefined>>;
+	return editors[setting]();
 }
 
 async function selectRoleThinking(
@@ -181,8 +201,9 @@ async function saveRoleSetting(
 	value: string,
 ): Promise<void> {
 	try {
+		validateRoleSettingValue(setting, value);
 		await controller.set(role, setting, value);
-		context.ui.notify(`${ROLE_LABELS[role]} ${setting} updated.`, "info");
+		context.ui.notify(`${ROLE_LABELS[role]} ${roleSettingLabel(setting)} updated.`, "info");
 	} catch (error) {
 		context.ui.notify(error instanceof Error ? error.message : String(error), "error");
 	}

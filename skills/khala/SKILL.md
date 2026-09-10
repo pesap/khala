@@ -204,7 +204,7 @@ sets Work to `succeeded`.
 - preparation `waiting`: inspect the recorded prerequisite diagnosis; only explicit User recovery rechecks it.
 - invocation `uncertain`: observed consumption is charged, but the remaining reservation and run slot stay held; process disappearance does not refund them.
 - reservation waiting: wait for settlement or reconcile the existing invocation; do not treat held tokens as a request to increase the budget.
-- crash-held invocation: `/khala-recover` settles complete durable receipts; incomplete receipts require User `reconcile-invocation` with actual cumulative usage and evidence, also available through Actions → Reconcile held usage.
+- crash-held invocation: `/khala-recover` settles complete durable receipts; incomplete receipts require User `reconcile-invocation` with actual cumulative usage and evidence, also available by opening Actions and choosing Reconcile held usage.
 - Work budget exhausted: only an explicit User budget amendment can permit another invocation; changing models or repeatedly recovering does not restore consumed tokens.
 - `budget-exhausted`: replace the Execution or amend the Work budget before continuing.
 - `unreachable` runtime: inspect it, then use Conclave-authorized `recover`; do

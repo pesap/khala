@@ -582,41 +582,35 @@ export function userActionSpecs(work: WorkView, runtimeUnavailable: boolean): re
 		{
 			kind: "amend-terms",
 			enabled: canAmendTerms(work),
-			label: "Amend Work terms",
 			disabledReason: amendTermsReason(work),
 		},
 		{
 			kind: "retry-admission",
 			enabled: canRetryAdmission(work),
-			label: "Retry admission",
 			disabledReason: "A submitted Work with an admission failure is required.",
 		},
-		{ kind: "recover", enabled: recoverable, label: "Recover Work", disabledReason: recoveryReason(recoverable) },
+		{ kind: "recover", enabled: recoverable, disabledReason: recoveryReason(recoverable) },
 		{
 			kind: "rename-work",
 			enabled: work.state !== "succeeded",
-			label: "Rename Work",
 			disabledReason: renameReason(work),
 		},
 		{
 			kind: "fail-work",
 			enabled: !terminal,
-			label: "Fail Work",
 			disabledReason: "Terminal Work cannot be failed again.",
 		},
 		{
 			kind: "amend-budget",
 			enabled: !terminal,
-			label: "Amend Work budget",
 			disabledReason: "Terminal Work cannot be amended.",
 		},
 		{
 			kind: "record-review",
 			enabled: work.state === "awaiting-review",
-			label: "Record provider review",
 			disabledReason: reviewReason(work),
 		},
-		{ kind: "cancel", enabled: !terminal, label: "Cancel Work" },
+		{ kind: "cancel", enabled: !terminal },
 	];
 }
 

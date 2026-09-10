@@ -241,7 +241,7 @@ Interaction principles:
 - Find work that needs attention without navigating an organizational hierarchy.
 - Reach every essential action with the keyboard.
 - Use simple lists, visible selection, and consistent navigation.
-- Keep normal typing, multiline paste, and editing separate from list navigation, with explicit Submit and Discard actions.
+- Keep normal typing, multiline paste, and editing separate from list navigation, with an explicit submit step and draft discard.
 - Put actions beside the information that explains them.
 - Show goals, results, and requests for input before internal identifiers and states.
 - Load detailed history and technical metadata only when requested.

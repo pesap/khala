@@ -92,8 +92,8 @@ export function isActor(value: string): value is Actor {
 
 export const GOVERNED_ROLES = ["conclave", "executor", "observer", "oracle"] as const;
 export type GovernedRole = (typeof GOVERNED_ROLES)[number];
-export type RoleSetting = "model" | "thinking";
-export type RoleSettings = Readonly<{ model: string; thinking: string }>;
+export type RoleSetting = "model" | "thinking" | "usdMax";
+export type RoleSettings = Readonly<{ model: string; thinking: string; usdMax: number }>;
 export type RoleSettingsMap = Readonly<Record<GovernedRole, RoleSettings>>;
 
 export type WorkBudget = Readonly<{
@@ -240,10 +240,12 @@ export type ValidationRun = Readonly<{
 	sourceFailure?: string | undefined;
 }>;
 
+export type SignalKind = "progress" | "blocked" | "ready";
+
 export type Signal = Readonly<{
 	signalId: string;
 	executionId: string;
-	kind: "progress" | "blocked" | "ready";
+	kind: SignalKind;
 	summary: string;
 	evidence: readonly string[];
 	observedAt: string;
@@ -482,48 +484,81 @@ export type MutableRecordQuery = {
 	to?: string | undefined;
 };
 
+export const ACTION_KINDS = [
+	"admit",
+	"request-input",
+	"amend-terms",
+	"retry-admission",
+	"amend-mission",
+	"launch-observer",
+	"record-assessment",
+	"start-execution",
+	"record-signal",
+	"commit-sandbox",
+	"run-validation",
+	"create-review-request",
+	"run-oracle",
+	"verdict",
+	"deliver-feedback",
+	"record-review",
+	"record-outcome",
+	"cancel",
+	"recover",
+	"reconcile-invocation",
+	"rename-work",
+	"amend-budget",
+	"fail-work",
+] as const;
+export type ActionKind = (typeof ACTION_KINDS)[number];
+
+export type ActionChoice = Readonly<{ value: string; label: string; description?: string | undefined }>;
+export type ActionVerdictDecision = "continue" | "replace" | "handoff" | "reject";
+export type ActionReviewStatus = "changes-requested" | "merged" | "closed";
+
+export type ActionInputKind =
+	| Readonly<{ kind: "text" }>
+	| Readonly<{ kind: "lines" }>
+	| Readonly<{ kind: "integer"; min: number }>
+	| Readonly<{ kind: "choice"; choices: readonly ActionChoice[] }>;
+
+/**
+ * `name` is a dotted path into `ActionInput`, so nested command input such as
+ * `usage.inputTokens` needs no per-action assembly code in the client.
+ */
+export type ActionField = Readonly<{
+	name: string;
+	label: string;
+	hint?: string | undefined;
+	requirement: ActionFieldRequirement;
+	requiredWhen?: Readonly<{ field: string; value: string }> | undefined;
+	input: ActionInputKind;
+	current?: string | undefined;
+}>;
+
+/** `one-of-group` fields are individually optional, but at least one of them must carry a value. */
+export type ActionFieldRequirement = "required" | "optional" | "one-of-group";
+
 export type Action = Readonly<{
 	id: string;
 	scope: "work" | "mission" | "execution" | "project";
-	kind:
-		| "admit"
-		| "request-input"
-		| "amend-terms"
-		| "retry-admission"
-		| "amend-mission"
-		| "launch-observer"
-		| "record-assessment"
-		| "start-execution"
-		| "record-signal"
-		| "commit-sandbox"
-		| "run-validation"
-		| "create-review-request"
-		| "run-oracle"
-		| "verdict"
-		| "deliver-feedback"
-		| "record-review"
-		| "record-outcome"
-		| "cancel"
-		| "recover"
-		| "reconcile-invocation"
-		| "rename-work"
-		| "amend-budget"
-		| "fail-work";
+	kind: ActionKind;
 	label: string;
+	effect: string;
 	enabled: boolean;
 	disabledReason?: string | undefined;
+	fields: readonly ActionField[];
 	confirmation?: string | undefined;
 	expectedWorkRevision?: number | undefined;
 }>;
 
 export type ActionInput = Readonly<{
-	kind?: string | undefined;
+	kind?: SignalKind | undefined;
 	summary?: string | undefined;
 	evidence?: readonly string[] | undefined;
-	decision?: string | undefined;
+	decision?: ActionVerdictDecision | undefined;
 	reason?: string | undefined;
 	signalId?: string | undefined;
-	status?: string | undefined;
+	status?: ActionReviewStatus | undefined;
 	feedback?: readonly string[] | undefined;
 	title?: string | undefined;
 	objective?: string | undefined;
@@ -542,7 +577,7 @@ export type ActionInput = Readonly<{
 }>;
 
 export type ActionCommand = Readonly<{
-	action: Action["kind"];
+	action: ActionKind;
 	workId: string;
 	input?: ActionInput | undefined;
 	meta: CommandMeta;

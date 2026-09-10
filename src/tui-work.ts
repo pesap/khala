@@ -51,6 +51,17 @@ const RUNTIME_REFRESH_ACTION: RuntimeRefreshAction = {
 	label: "Refresh runtime",
 	enabled: true,
 };
+const ACTION_ORDER: readonly WorkAction["kind"][] = [
+	"recover",
+	"retry-admission",
+	"record-review",
+	"amend-terms",
+	"rename-work",
+	"amend-budget",
+	"refresh-runtime",
+	"cancel",
+	"fail-work",
+];
 export async function showWork(
 	service: ApplicationService,
 	context: ExtensionContext,
@@ -266,11 +277,7 @@ async function selectAction(actions: readonly WorkAction[], context: ExtensionCo
 		const container = new Container();
 		addHeading(container, theme, "Actions");
 		container.addChild(new Spacer(1));
-		const list = new SelectList(
-			actions.map((action) => ({ value: action.id, label: displayActionLabel(action) })),
-			actions.length,
-			selectorTheme(theme),
-		);
+		const list = new SelectList(actions.map(actionSelectItem), actions.length, selectorTheme(theme));
 		list.onSelect = (item) => done(item.value);
 		list.onCancel = () => done("back");
 		container.addChild(list);
@@ -278,6 +285,10 @@ async function selectAction(actions: readonly WorkAction[], context: ExtensionCo
 		addPanelKeybindings(container, theme, NAVIGATION_FOOTER);
 		return selectableComponent(container, list, tui, () => done("back"));
 	});
+}
+
+function actionSelectItem(action: WorkAction): SelectItem {
+	return { value: action.id, label: action.label };
 }
 
 async function applySelectedAction(
@@ -306,12 +317,19 @@ async function chooseAction(
 ): Promise<WorkView | undefined> {
 	const current = currentWorkSnapshot(service.inspectWork(work.workId), work);
 	const available = availableWorkActions(service, current, actor);
-	const actions: readonly WorkAction[] = [
-		...available.filter((action) => action.kind !== "cancel"),
-		RUNTIME_REFRESH_ACTION,
-		...available.filter((action) => action.kind === "cancel"),
-	];
+	const actions = orderWorkActions([...available.filter((action) => action.enabled), RUNTIME_REFRESH_ACTION]);
 	return runSelectedAction(actions, service, context, current, actor, runAction);
+}
+
+function orderWorkActions(actions: readonly WorkAction[]): readonly WorkAction[] {
+	const ordered: WorkAction[][] = ACTION_ORDER.map(() => []);
+	const other: WorkAction[] = [];
+	for (const action of actions) {
+		const index = ACTION_ORDER.indexOf(action.kind);
+		if (index === -1) other.push(action);
+		else ordered[index]?.push(action);
+	}
+	return [...ordered.flat(), ...other];
 }
 
 function availableWorkActions(service: ApplicationService, work: WorkView, actor: Actor): readonly Action[] {
@@ -333,36 +351,6 @@ async function runSelectedAction(
 	const action = actions.find((candidate) => candidate.id === selected);
 	if (action === undefined) return;
 	return applySelectedAction(service, context, work, actor, action, runAction);
-}
-
-function displayActionLabel(action: WorkAction): string {
-	if (action.kind === "refresh-runtime") return action.label;
-	const labels = {
-		admit: "Admit",
-		"request-input": "Request User input",
-		"amend-terms": "Amend Work terms",
-		"retry-admission": "Retry admission",
-		"amend-mission": "Amend Mission",
-		"launch-observer": "Launch observer",
-		"record-assessment": "Record assessment",
-		"start-execution": "Start execution",
-		"record-signal": "Record signal",
-		"commit-sandbox": "Commit sandbox changes",
-		"run-validation": "Run validation",
-		"create-review-request": "Create review request",
-		"run-oracle": "Run oracle",
-		verdict: "Record verdict",
-		"deliver-feedback": "Deliver feedback",
-		"record-review": "Record review",
-		"record-outcome": "Record outcome",
-		cancel: "Cancel",
-		recover: "Recover",
-		"rename-work": "Rename",
-		"amend-budget": "Amend budget",
-		"reconcile-invocation": "Reconcile held usage",
-		"fail-work": "Fail",
-	} satisfies Partial<Record<Action["kind"], string>>;
-	return labels[action.kind] ?? action.label;
 }
 
 function schedulePendingEffects(service: ApplicationService): void {

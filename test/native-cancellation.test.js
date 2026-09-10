@@ -7,14 +7,14 @@ test("Pi cancellation requires confirmation and project recovery leaves cancelle
 	const fixture = await createNativeWorkflowFixture({ holdExecutor: true });
 	const terminal = createNativeTerminal(fixture);
 	const diagnostic = () => JSON.stringify({ screen: terminal.screen(), work: terminal.readWork(), steps: fixture.steps });
-	const see = (text) => waitUntil(terminal.screen, (screen) => screen.includes(text), diagnostic);
+	const see = (text) => waitUntil(terminal.text, (screen) => screen.includes(text), diagnostic);
 	const openCancel = async () => {
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
 		await selectNativeListItem(terminal, "Cancel", diagnostic);
-		await see("Cancel Work: saved draft");
-		terminal.keys("Down", "Enter");
-		await see("Apply this consequential change");
+		await see("Effect Stops this Work without recording a failure. It can be recovered after cleanup.");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
+		await see("keeps its evidence");
 	};
 	try {
 		await terminal.start();
@@ -27,6 +27,8 @@ test("Pi cancellation requires confirmation and project recovery leaves cancelle
 		await see("Freshness");
 		await openCancel();
 		terminal.keys("Down", "Enter");
+		await see("Effect Stops this Work without recording a failure. It can be recovered after cleanup.");
+		terminal.keys("Escape");
 		await see("Freshness");
 		assert.equal(terminal.readWork().revision, running.revision);
 		assert.equal(terminal.readWork().state, "active");

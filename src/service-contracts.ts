@@ -9,12 +9,16 @@ export type ServiceOptions = Readonly<{
 	defaultWorkTokens: number;
 	conclaveModel: string;
 	conclaveThinking: string;
+	conclaveUsdMax: number;
 	executorModel: string;
 	executorThinking: string;
+	executorUsdMax: number;
 	oracleModel: string;
 	oracleThinking: string;
+	oracleUsdMax: number;
 	observerModel: string;
 	observerThinking: string;
+	observerUsdMax: number;
 	conclavePromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	executorPromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	observerPromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;

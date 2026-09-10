@@ -92,8 +92,9 @@ Current questions and provider snapshots are directly readable, not reconstructe
 Footer reads do not load all Work, and opening one record does not retain the whole Archive.
 Each read revalidates repository and role access and reports snapshot identity or freshness where relevant.
 
-Actions expose opaque ID, Work scope, kind, label, enabled state, disabled reason, and expected revision.
-The target also identifies required input and consequential confirmation, including exact-snapshot local acceptance and changed-term approval.
+Actions expose opaque ID, Work scope, kind, label, effect, enabled state, disabled reason, input fields, confirmation, and expected revision.
+An input field carries its own name, label, hint, requirement, conditional requirement, input kind with any choices, and current recorded value.
+The target additionally identifies exact-snapshot local acceptance and changed-term approval.
 The [interaction contract](tui-navigation.md) owns how those facts are presented.
 
 Expected failures through `perform` use `ErrorEnvelope` with code, summary, retryability, remediation, evidence references, and optional learning data.
@@ -152,7 +153,7 @@ OraclePort        review
 ```
 
 Optional current workspace methods do not waive target validation requirements.
-Current actions do not populate input schemas or confirmation metadata; those remain required by the target reads above.
+Current actions populate their input fields and confirmation text; exact-snapshot local acceptance remains required by the target reads above.
 The current extension owns its application runtime in the User Pi session and closes it on `session_shutdown`.
 One eligible User-session service holds an exclusive SQLite supervision lock beside its project Archive before monitoring or consuming effects.
 Competing services remain clients while that lock is held, and role-bound children cannot acquire supervision.

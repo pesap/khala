@@ -18,12 +18,16 @@ export type KhalaConfig = Readonly<{
 	piCommand: readonly string[];
 	conclaveModel: string;
 	conclaveThinking: string;
+	conclaveUsdMax: number;
 	executorModel: string;
 	executorThinking: string;
+	executorUsdMax: number;
 	oracleModel: string;
 	oracleThinking: string;
+	oracleUsdMax: number;
 	observerModel: string;
 	observerThinking: string;
+	observerUsdMax: number;
 	keybindings: Readonly<{ roleSettings: string; comments: string; refresh: string; help: string; history: string }>;
 }>;
 
@@ -46,13 +50,17 @@ const DEFAULTS: KhalaConfig = {
 	piCommand: ["pi"],
 	conclaveModel: "",
 	conclaveThinking: "medium",
+	conclaveUsdMax: 5,
 	executorModel: "",
 	executorThinking: "high",
+	executorUsdMax: 5,
 	oracleModel: "",
 	oracleThinking: "high",
+	oracleUsdMax: 5,
 	observerModel: "",
 	observerThinking: "medium",
-	keybindings: { roleSettings: "r", comments: "c", refresh: "ctrl+r", help: "?", history: "h" },
+	observerUsdMax: 5,
+	keybindings: { roleSettings: "r", comments: "c", refresh: "ctrl+r", help: "?", history: "ctrl+h" },
 };
 
 export function loadConfig(projectPath: string, trusted: boolean, requireModels = true): KhalaConfig {
@@ -108,7 +116,7 @@ export function persistRoleSetting(role: GovernedRole, setting: RoleSetting, val
 	acquireConfigLock(lockPath);
 	try {
 		const current = readConfig(path) ?? {};
-		const next = { ...current, [roleConfigKey(role, setting)]: normalized };
+		const next = { ...current, [roleConfigKey(role, setting)]: storedRoleSetting(role, setting, normalized) };
 		const temporaryPath = `${path}.${nanoid()}.tmp`;
 		try {
 			writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
@@ -161,8 +169,18 @@ function removeStaleConfigLock(path: string): void {
 	}
 }
 
+function storedRoleSetting(role: GovernedRole, setting: RoleSetting, value: string): string | number {
+	return setting === "usdMax" ? parsePositiveNumber(value, role) : value;
+}
+
+function parsePositiveNumber(value: string, role: GovernedRole): number {
+	const number = Number(value);
+	if (!Number.isFinite(number) || number <= 0) throw new ConfigError(`${role} USD max must be a positive number.`);
+	return number;
+}
+
 function roleConfigKey(role: GovernedRole, setting: RoleSetting): string {
-	return `${role}${setting === "model" ? "Model" : "Thinking"}`;
+	return `${role}${setting === "model" ? "Model" : setting === "thinking" ? "Thinking" : "UsdMax"}`;
 }
 
 function readConfig(path: string): JsonObject | undefined {
@@ -205,12 +223,16 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		piCommand: readTextList(values, "piCommand", base.piCommand),
 		conclaveModel: readText(values, "conclaveModel", base.conclaveModel),
 		conclaveThinking: readText(values, "conclaveThinking", base.conclaveThinking),
+		conclaveUsdMax: readPositiveNumber(values, "conclaveUsdMax", base.conclaveUsdMax),
 		executorModel: readText(values, "executorModel", base.executorModel),
 		executorThinking: readText(values, "executorThinking", base.executorThinking),
+		executorUsdMax: readPositiveNumber(values, "executorUsdMax", base.executorUsdMax),
 		oracleModel: readText(values, "oracleModel", base.oracleModel),
 		oracleThinking: readText(values, "oracleThinking", base.oracleThinking),
+		oracleUsdMax: readPositiveNumber(values, "oracleUsdMax", base.oracleUsdMax),
 		observerModel: readText(values, "observerModel", base.observerModel),
 		observerThinking: readText(values, "observerThinking", base.observerThinking),
+		observerUsdMax: readPositiveNumber(values, "observerUsdMax", base.observerUsdMax),
 		keybindings: {
 			roleSettings: readKeybinding(values, "roleSettingsKey", base.keybindings.roleSettings),
 			comments: readKeybinding(values, "commentsKey", base.keybindings.comments),
@@ -289,6 +311,18 @@ function readPositive(values: JsonObject, key: string, fallback: number): number
 	if (value === undefined) return fallback;
 	if (!isPositiveInteger(value)) throw new ConfigError(`${key} must be a positive integer.`);
 	return value;
+}
+
+function readPositiveNumber(values: JsonObject, key: string, fallback: number): number {
+	const value = values[key];
+	if (value === undefined) return fallback;
+	if (!isPositiveNumber(value)) throw new ConfigError(`${key} must be a positive number.`);
+	return value;
+}
+
+function isPositiveNumber(value: JsonValue): value is number {
+	const number = Number(value);
+	return number === value && Number.isFinite(number) && number > 0;
 }
 
 function isPositiveInteger(value: JsonValue | undefined): value is number {

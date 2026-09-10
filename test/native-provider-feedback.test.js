@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -23,7 +23,7 @@ test("native provider feedback is authorized before the same Executor corrects a
 	const fixture = await createNativeWorkflowFixture({ providerFeedback: true, greeting: "hello\n\n" });
 	const terminal = createNativeTerminal(fixture);
 	const records = (kinds) => {
-		const archive = new SQLiteArchive(archivePath({ archiveRoot: join(fixture.root, "archive") }, fixture.project), { readOnly: true });
+		const archive = new SQLiteArchive(archivePath({ archiveRoot: join(fixture.root, "archive") }, realpathSync(fixture.project)), { readOnly: true });
 		try { return archive.query({ workId: "native-execution", kinds, limit: 100 }).items; }
 		finally { archive.close(); }
 	};

@@ -2,6 +2,7 @@ import { createPublicKey, type KeyObject, verify } from "node:crypto";
 import { type ArchiveAppend, type ArchivePort, CommandReuseConflict, RevisionConflict } from "./archive.js";
 import {
 	type Action,
+	type ActionKind,
 	type Actor,
 	type CommandMeta,
 	type ErrorEnvelope,
@@ -17,6 +18,7 @@ import {
 	type WorkView,
 } from "./model.js";
 import type { ModelCatalogPort } from "./ports.js";
+import { actionDescriptor } from "./service-action-catalog.js";
 import { ActionInputError, ApplicationError } from "./service-contracts.js";
 import { capabilityParts, externalFailureEnvelope, type RoleCapability } from "./service-foundation-policy.js";
 import { matchesExecutorCapability, readCapabilityRole, workSummary } from "./service-lifecycle-policy.js";
@@ -27,6 +29,8 @@ import {
 	readCapabilityText,
 	roleActionRemediation,
 } from "./service-state-policy.js";
+
+export type ActionAvailability = Readonly<{ enabled: boolean; disabledReason?: string | undefined }>;
 
 export type ArchiveCoreAppendInput = Readonly<{
 	meta: CommandMeta;
@@ -191,21 +195,18 @@ export class ArchiveCore {
 		}
 	}
 
-	action(
-		kind: Action["kind"],
-		work: WorkView,
-		expectedWorkRevision: number,
-		enabled: boolean,
-		label: string,
-		disabledReason?: string,
-	): Action {
+	action(kind: ActionKind, work: WorkView, expectedWorkRevision: number, spec: ActionAvailability): Action {
+		const descriptor = actionDescriptor(kind, work);
 		return {
 			id: `${kind}:${work.workId}:${expectedWorkRevision}`,
 			scope: "work",
 			kind,
-			label,
-			enabled,
-			disabledReason,
+			label: descriptor.label,
+			effect: descriptor.effect,
+			enabled: spec.enabled,
+			disabledReason: spec.disabledReason,
+			fields: descriptor.fields,
+			confirmation: descriptor.confirmation,
 			expectedWorkRevision,
 		};
 	}

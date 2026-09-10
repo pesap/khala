@@ -158,7 +158,10 @@ The [data model](data-model.md#guidance-and-context) defines explicit promotion,
 
 ## Cancellation, recovery, and retention
 
-Explicit failure or cancellation stops Work and records `stopReason` as `failed` or `cancelled`.
+Cancel stops Work without recording a failure, preserves its evidence, and records `stopReason` as `cancelled`.
+After cleanup, cancelled Work can be recovered and returned to admission.
+Mark as failed ends Work as failed, records why it could not succeed, preserves its evidence, and records `stopReason` as `failed`.
+Failed Work cannot be recovered.
 The service rejects further writer commands, invalidates pending launches and publication effects, and requests termination of the current process tree.
 A recorded stop is not proof that writes have ceased.
 Replacement, workspace release, and cleanup wait for confirmed process-tree termination; uncertain termination retains ownership and requests attention.

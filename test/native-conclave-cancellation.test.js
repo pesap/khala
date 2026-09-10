@@ -7,7 +7,8 @@ test("Pi cancellation stops an in-flight Conclave before admission and settles i
 	const fixture = await createNativeWorkflowFixture({ holdConclave: true });
 	const terminal = createNativeTerminal(fixture);
 	const diagnostic = () => JSON.stringify({ screen: terminal.screen(), work: terminal.readWork(), steps: fixture.steps, requests: fixture.heldRequests.map((response) => ({ destroyed: response.destroyed })) });
-	const see = (text) => waitUntil(terminal.screen, (screen) => screen.includes(text), diagnostic);
+	const see = (text) => waitUntil(terminal.text, (screen) => screen.includes(text), diagnostic);
+	const editor = (text) => waitUntil(terminal.text, (screen) => screen.includes(text) && screen.includes("enter submit"), diagnostic);
 	try {
 		await terminal.start();
 		terminal.send("Submit the greeting Work now.");
@@ -23,9 +24,9 @@ test("Pi cancellation stops an in-flight Conclave before admission and settles i
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
 		await selectNativeListItem(terminal, "Cancel", diagnostic);
-		await see("Cancel Work: saved draft");
-		terminal.keys("Down", "Enter");
-		await see("Apply this consequential change");
+		await see("Effect Stops this Work without recording a failure. It can be recovered after cleanup.");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
+		await see("keeps its evidence");
 		terminal.keys("Enter");
 		await waitUntil(terminal.readWork, (work) => work.state === "stopped", diagnostic);
 		await see("Action complete:");
@@ -37,19 +38,25 @@ test("Pi cancellation stops an in-flight Conclave before admission and settles i
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
 		await selectNativeListItem(terminal, "Reconcile held usage", diagnostic);
-		await see("saved draft");
+		await see("Effect Settles a held invocation reservation with its actual cumulative usage.");
+		await selectNativeListItem(terminal, "Held invocation *", diagnostic);
+		await see("uncertain reservation of");
 		terminal.keys("Enter");
-		await see("Held invocation to reconcile");
-		terminal.keys("Enter");
+		await see(`Held invocation * ${uncertain.activeInvocations[0].runId}`);
 		for (const field of ["Cumulative input tokens", "Cumulative output tokens", "Cumulative cache hit tokens", "Cumulative cache miss tokens"]) {
-			await see(field);
-			terminal.send("0");
+			await selectNativeListItem(terminal, `${field} *`, diagnostic);
+			await editor(field);
+			terminal.keys("-l", "0");
+			terminal.keys("Enter");
+			await see(`${field} * 0`);
 		}
-		await see("Usage evidence reference");
-		terminal.send("Local fixture received the request but produced no completion or tokens.");
-		await see("saved draft");
-		terminal.keys("Down", "Enter");
-		await see("Record 0 input");
+		await selectNativeListItem(terminal, "Usage evidence *", diagnostic);
+		await editor("Usage evidence");
+		terminal.keys("-l", "Local fixture received the request but produced no completion or tokens.");
+		terminal.keys("Enter");
+		await see("Usage evidence * Local fixture received the request");
+		await selectNativeListItem(terminal, "Reconcile held usage", diagnostic);
+		await see("Settles the held reservation with the entered cumulative usage");
 		terminal.keys("Enter");
 		await waitUntil(terminal.readWork, (work) => work.budget.reservedTokens === 0, diagnostic);
 		await see("Freshness");

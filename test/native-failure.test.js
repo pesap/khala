@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
 
 test("Pi User failure stops a waiting Executor and project recovery preserves the failure", { timeout: 90_000 }, async () => {
 	const fixture = await createNativeWorkflowFixture({ holdExecutor: true });
 	const terminal = createNativeTerminal(fixture);
 	const diagnostic = () => JSON.stringify({ screen: terminal.screen(), work: terminal.readWork(), steps: fixture.steps });
-	const see = (text) => waitUntil(terminal.screen, (screen) => screen.includes(text), diagnostic);
+	const see = (text) => waitUntil(terminal.text, (screen) => screen.includes(text), diagnostic);
 	const reason = "The greeting requirement was withdrawn by its owner.";
 	try {
 		await terminal.start();
@@ -20,16 +20,16 @@ test("Pi User failure stops a waiting Executor and project recovery preserves th
 		await see("Freshness");
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
-		terminal.keys("Down", "Enter");
-		await see("Fail Work: saved draft");
-		terminal.keys("Enter");
-		await see("Text editor: reason");
+		await selectNativeListItem(terminal, "Mark as failed", diagnostic);
+		await see("Requires Reason is required.");
+		await selectNativeListItem(terminal, "Reason *", diagnostic);
+		await see("enter submit");
 		terminal.keys("-l", reason);
 		terminal.keys("Enter");
-		await see("Fail Work: saved draft");
+		await see(`Reason * ${reason}`);
 		assert.equal(terminal.readWork().revision, running.revision);
-		terminal.keys("Down", "Enter");
-		await see("Apply this consequential change");
+		await selectNativeListItem(terminal, "Mark as failed", diagnostic);
+		await see("prevents recovery");
 		terminal.keys("Enter");
 		await see("Action complete:");
 		await waitUntil(terminal.readWork, (work) => work.state === "stopped" && work.budget.reservedTokens === 0, diagnostic);

@@ -5,6 +5,8 @@ import {
 	fuzzyFilter,
 	getKeybindings,
 	Input,
+	type KeyId,
+	matchesKey,
 	parseKey,
 	Spacer,
 	Text,
@@ -29,7 +31,7 @@ export async function showKhala(
 		comments: "c",
 		refresh: "ctrl+r",
 		help: "?",
-		history: "h",
+		history: "ctrl+h",
 	},
 	roleSettings?: RoleSettingsController,
 ): Promise<void> {
@@ -59,7 +61,7 @@ async function runKhalaArchivePicker(archive: KhalaArchiveView, context: Extensi
 		comments: "c",
 		refresh: "ctrl+r",
 		help: "?",
-		history: "h",
+		history: "ctrl+h",
 	});
 	for (;;) {
 		const result = await pickWork(() => archive.listWork(), context, keybindings, pickerState, { showSettings: false });
@@ -75,7 +77,7 @@ async function handleArchivePickerResult(
 ): Promise<boolean> {
 	if (result === null) return false;
 	if (result === "help") {
-		await showTextPage(context, "Work picker help", workPickerHelp(keybindings, false));
+		await showTextPage(context, "Work picker help", workPickerHelp(keybindings, false), "");
 		return true;
 	}
 	if (result === "settings") return true;
@@ -116,15 +118,16 @@ async function handlePickerResult(
 		return;
 	}
 	if (result === "help") {
-		await showTextPage(context, "Work picker help", workPickerHelp(keybindings));
+		await showTextPage(context, "Work picker help", workPickerHelp(keybindings), "");
 		return;
 	}
 	await showWork(service, context, result, actor, keybindings, runAction);
 }
 
-type WorkFilter = "Work" | "Needs attention" | "Review" | "History";
-const WORK_FILTERS: readonly WorkFilter[] = ["Work", "Needs attention", "Review", "History"];
+type WorkFilter = "All" | "Work" | "Needs attention" | "Review" | "History";
+const WORK_FILTERS: readonly WorkFilter[] = ["All", "Work", "Needs attention", "Review", "History"];
 const WORK_FILTER_PREDICATES = {
+	All: () => true,
 	Work: (work) => !isHiddenWork(work),
 	"Needs attention": (work) =>
 		hasWorkFailure(work) || work.state === "needs-input" || work.executionState === "blocked",
@@ -258,8 +261,8 @@ class WorkPickerController {
 	private availableWork: readonly WorkSummary[];
 	private filtered: readonly WorkSummary[];
 	private selectedIndex = 0;
-	private setHistoryFooter: (showHistory: boolean) => void = () => {};
 	private setScopeHeading: (scope: WorkFilter) => void = () => {};
+	private updateDetails: (item: WorkSummary | undefined) => void = () => {};
 
 	constructor(
 		getWork: () => readonly WorkSummary[],
@@ -282,17 +285,17 @@ class WorkPickerController {
 		this.setScopeHeading = update;
 	}
 
-	cycleScope(input: Input, direction: number): void {
-		const scope = this.pickerState.scope ?? "Work";
-		const index = (WORK_FILTERS.indexOf(scope) + direction + WORK_FILTERS.length) % WORK_FILTERS.length;
-		this.pickerState.scope = WORK_FILTERS[index] ?? "Work";
-		this.pickerState.showHistory = false;
-		this.refresh(input);
-		this.setScopeHeading(this.pickerState.scope);
+	setDetails(update: (item: WorkSummary | undefined) => void): void {
+		this.updateDetails = update;
 	}
 
-	setFooter(update: (showHistory: boolean) => void): void {
-		this.setHistoryFooter = update;
+	cycleScope(input: Input, direction: number): void {
+		const scope = this.pickerState.scope ?? "All";
+		const index = (WORK_FILTERS.indexOf(scope) + direction + WORK_FILTERS.length) % WORK_FILTERS.length;
+		this.pickerState.scope = WORK_FILTERS[index] ?? "Work";
+		this.pickerState.showHistory = this.pickerState.scope === "History";
+		this.refresh(input);
+		this.setScopeHeading(this.pickerState.scope);
 	}
 
 	rows(): readonly WorkPickerRow[] {
@@ -316,6 +319,7 @@ class WorkPickerController {
 	}
 
 	updateList(): void {
+		this.updateDetails(this.filtered[this.selectedIndex]);
 		this.requestRender();
 	}
 
@@ -343,10 +347,9 @@ class WorkPickerController {
 
 	toggleHistory(input: Input): void {
 		this.pickerState.showHistory = this.pickerState.showHistory !== true;
-		this.pickerState.scope = "Work";
+		this.pickerState.scope = this.pickerState.showHistory ? "History" : "All";
 		this.refresh(input);
-		this.setScopeHeading(this.pickerState.showHistory ? "History" : "Work");
-		this.setHistoryFooter(this.pickerState.showHistory === true);
+		this.setScopeHeading(this.pickerState.scope);
 		this.updateList();
 	}
 
@@ -407,15 +410,9 @@ function workPickerComponent(
 }
 
 function switchWorkFilter(data: string, input: Input, controller: WorkPickerController): boolean {
-	if (input.getValue().length > 0) return false;
 	const bindings = getKeybindings();
-	const directions = [
-		["tui.editor.cursorLeft", -1],
-		["tui.editor.cursorRight", 1],
-	] as const;
-	const direction = directions.find(([key]) => bindings.matches(data, key));
-	if (direction === undefined) return false;
-	controller.cycleScope(input, direction[1]);
+	if (!bindings.matches(data, "tui.input.tab")) return false;
+	controller.cycleScope(input, 1);
 	return true;
 }
 
@@ -439,22 +436,24 @@ async function pickWork(
 			() => controller.messages(),
 		);
 		const container = new Container();
-		const heading = new Text(theme.fg("accent", theme.bold(pickerState.scope ?? "Work")), 1, 0);
-		container.addChild(heading);
-		controller.setHeading((scope) => heading.setText(theme.fg("accent", theme.bold(scope))));
+		const scopeLabel = new Text(scopeLabelText(theme, pickerState.scope ?? "Work"), 1, 0);
+		const scopeHint = new Text(theme.fg("muted", scopeHintText()), 1, 0);
+		container.addChild(new Spacer(1));
+		container.addChild(scopeLabel);
+		container.addChild(scopeHint);
+		controller.setHeading((scope) => scopeLabel.setText(scopeLabelText(theme, scope)));
 		container.addChild(new Spacer(1));
 		container.addChild(filterInput);
 		container.addChild(new Spacer(1));
 		container.addChild(listContainer);
 		container.addChild(new Spacer(1));
-		const footer = addPanelKeybindings(
-			container,
-			theme,
-			workPickerKeybindings(keybindings, pickerState.showHistory === true, options.showSettings),
+		const selectedDetails = new Text("", 0, 0);
+		container.addChild(selectedDetails);
+		controller.setDetails((item) =>
+			selectedDetails.setText(item === undefined ? "" : theme.fg("muted", `  Work: ${item.title}`)),
 		);
-		controller.setFooter((showHistory) =>
-			footer.setText(theme.fg("dim", workPickerKeybindings(keybindings, showHistory, options.showSettings))),
-		);
+		container.addChild(new Spacer(1));
+		addPanelKeybindings(container, theme, workPickerKeybindings(keybindings, options.showSettings));
 		controller.updateList();
 		return workPickerComponent(filterInput, container, keybindings, controller, options.showSettings);
 	});
@@ -472,13 +471,6 @@ type PickerInputAction =
 	| "back"
 	| "type";
 
-const PICKER_NAVIGATION_ACTIONS: ReadonlyMap<string | undefined, PickerInputAction> = new Map([
-	["home", "home"],
-	["up", "up"],
-	["down", "down"],
-	["enter", "enter"],
-]);
-
 function pickerInputAction(
 	data: string,
 	input: Input,
@@ -487,25 +479,42 @@ function pickerInputAction(
 ): PickerInputAction {
 	const key = parseKey(data);
 	const filterEmpty = input.getValue().trim().length === 0;
-	if (filterEmpty) {
-		const shortcut = pickerShortcut(key, keybindings, showSettings);
-		if (shortcut !== undefined) return shortcut;
-	}
-	const navigation = pickerNavigationAction(key, filterEmpty, keybindings);
+	const shortcut = pickerShortcut(data, key, keybindings, showSettings);
+	if (shortcut !== undefined) return shortcut;
+	const navigation = pickerNavigationAction(data, keybindings);
 	if (navigation !== undefined) return navigation;
 	return pickerFallbackAction(key, filterEmpty);
 }
 
-function pickerNavigationAction(
-	key: string | undefined,
-	filterEmpty: boolean,
+function pickerNavigationAction(data: string, keybindings: KhalaConfig["keybindings"]): PickerInputAction | undefined {
+	const configured = configuredNavigationAction(data, keybindings);
+	if (configured !== undefined) return configured;
+	return standardNavigationAction(data);
+}
+
+function configuredNavigationAction(
+	data: string,
 	keybindings: KhalaConfig["keybindings"],
 ): PickerInputAction | undefined {
-	if (key === keybindings.refresh) return "refresh";
-	if (filterEmpty) {
-		if (key === keybindings.history) return "history";
-	}
-	return PICKER_NAVIGATION_ACTIONS.get(key);
+	if (isConfiguredKey(data, keybindings.refresh)) return "refresh";
+	if (isConfiguredKey(data, keybindings.history)) return "history";
+	return undefined;
+}
+
+function standardNavigationAction(data: string): PickerInputAction | undefined {
+	const bindings = getKeybindings();
+	const actions = [
+		["tui.select.up", "up"],
+		["tui.select.down", "down"],
+		["tui.select.confirm", "enter"],
+	] as const;
+	const action = actions.find(([binding]) => bindings.matches(data, binding))?.[1];
+	return action ?? (matchesKey(data, "home") ? "home" : undefined);
+}
+
+function isConfiguredKey(data: string, configured: string): boolean {
+	// SAFETY: config validation restricts custom bindings to Pi's KeyId grammar.
+	return matchesKey(data, configured as KeyId);
 }
 
 const PICKER_BACK_KEYS: ReadonlySet<string | undefined> = new Set(["escape", "ctrl+c"]);
@@ -517,6 +526,7 @@ function pickerFallbackAction(key: string | undefined, filterEmpty: boolean): Pi
 }
 
 function pickerShortcut(
+	data: string,
 	key: string | undefined,
 	keybindings: KhalaConfig["keybindings"],
 	showSettings: boolean,
@@ -527,7 +537,10 @@ function pickerShortcut(
 		[keybindings.refresh, "refresh"],
 		[keybindings.history, "history"],
 	] as const;
-	return shortcuts.find(([expected]) => expected === key)?.[1];
+	return shortcuts.find(([expected]) => {
+		// SAFETY: Config validation supplies Pi key identifiers; this is the shared config contract.
+		return expected === key || matchesKey(data, expected as KeyId);
+	})?.[1];
 }
 
 function nextPickerIndex(index: number, length: number, movingUp: boolean): number {
@@ -568,13 +581,19 @@ export function renderDashboard(work: readonly WorkSummary[]): string {
 		...work.map((item) => `${item.state.padEnd(16)} ${item.title} (${item.workId}): ${item.nextAction}`),
 	].join("\n");
 }
-export function workPickerKeybindings(
-	keybindings: KhalaConfig["keybindings"],
-	showHistory: boolean,
-	showSettings: boolean,
-): string {
-	const settings = showSettings ? `  ${keybindings.roleSettings} settings when filter is empty` : "";
-	return `left/right filters  type to filter  ${keybindings.refresh} refresh  ${keybindings.history} ${showHistory ? "active Work" : "history"} when filter is empty  home first  up/down move  enter open  ${keybindings.help} help when filter is empty${settings}  escape/ctrl+c/backspace back`;
+function scopeLabelText(theme: Theme, scope: WorkFilter): string {
+	return `${theme.fg("muted", "Scope: ")}${WORK_FILTERS.map((item) =>
+		item === scope ? theme.fg("accent", item) : theme.fg("muted", item),
+	).join(theme.fg("muted", " | "))}`;
+}
+
+function scopeHintText(): string {
+	return "tab to switch scope";
+}
+
+export function workPickerKeybindings(keybindings: KhalaConfig["keybindings"], showSettings = true): string {
+	const settings = showSettings ? `  ${keybindings.roleSettings} settings` : "";
+	return `${keybindings.refresh} refresh${settings}  up/down move  enter open  ${keybindings.help} help  escape/ctrl+c/backspace back`;
 }
 
 export function normalizeKeybindings(keybindings: KhalaConfig["keybindings"]): KhalaConfig["keybindings"] {
@@ -583,7 +602,7 @@ export function normalizeKeybindings(keybindings: KhalaConfig["keybindings"]): K
 		comments: configuredKeybinding(keybindings.comments, "c"),
 		refresh: configuredKeybinding(keybindings.refresh, "ctrl+r"),
 		help: configuredKeybinding(keybindings.help, "?"),
-		history: configuredKeybinding(keybindings.history, "h"),
+		history: configuredKeybinding(keybindings.history, "ctrl+h"),
 	};
 }
 
@@ -592,18 +611,18 @@ function configuredKeybinding(value: string, fallback: string): string {
 }
 
 export function pickerWork(work: readonly WorkSummary[], state: WorkPickerState): readonly WorkSummary[] {
-	return state.showHistory ? work : work.filter(WORK_FILTER_PREDICATES[state.scope ?? "Work"]);
+	const scope = state.scope ?? (state.showHistory ? "History" : "All");
+	return work.filter(WORK_FILTER_PREDICATES[scope]);
 }
 
-export function workPickerHelp(keybindings: KhalaConfig["keybindings"], showSettings = true): readonly string[] {
+export function workPickerHelp(_keybindings: KhalaConfig["keybindings"], showSettings = true): readonly string[] {
 	return [
 		"Use the Work picker to inspect active or historical Work.",
 		"",
-		`${keybindings.refresh}  Refresh Work and preserve the current selection and filter.`,
-		`${keybindings.history}  Toggle completed and cancelled Work when the filter is empty.`,
-		`${keybindings.help}  Open this help when the filter is empty.`,
-		...(showSettings ? [`${keybindings.roleSettings}  Open role settings when the filter is empty.`] : []),
-		"Up/Down  Move selection; Home  select the first Work; Enter  open.",
-		"Backspace  Clear a nonempty filter; otherwise go back. Escape or Ctrl-C  Close the picker.",
+		"The picker footer shows all available actions.",
+		"Switch between Work, Needs attention, Review, and History scopes.",
+		"Refresh preserves the current selection and search filter.",
+		"History includes completed and cancelled Work, and remains available while searching.",
+		...(showSettings ? ["Role settings are available from the picker."] : []),
 	];
 }

@@ -50,9 +50,7 @@ export class ServiceActions {
 	}
 
 	private actionList(work: WorkView, expected: number, specs: readonly ActionSpec[]): readonly Action[] {
-		return specs.map((spec) =>
-			this.core.action(spec.kind, work, expected, spec.enabled, spec.label, spec.disabledReason),
-		);
+		return specs.map((spec) => this.core.action(spec.kind, work, expected, spec));
 	}
 
 	private recoveryAvailable(
@@ -67,10 +65,7 @@ export class ServiceActions {
 	private userActions(work: WorkView, expected: number, recoverable: boolean): readonly Action[] {
 		const specs = userActionSpecs(work, recoverable);
 		if ((work.activeInvocations?.length ?? 0) === 0) return this.actionList(work, expected, specs);
-		return this.actionList(work, expected, [
-			...specs,
-			{ kind: "reconcile-invocation", enabled: true, label: "Reconcile held invocation" },
-		]);
+		return this.actionList(work, expected, [...specs, { kind: "reconcile-invocation", enabled: true }]);
 	}
 
 	private conclaveActions(work: WorkView, expected: number, runtimeUnavailable: boolean): readonly Action[] {
@@ -82,51 +77,43 @@ export class ServiceActions {
 			{
 				kind: "request-input",
 				enabled: canRequestInput(work),
-				label: "Request User input",
 				disabledReason: requestInputReason(work),
 			},
 			{
 				kind: "amend-mission",
 				enabled: canAmendMission(work),
-				label: "Amend Mission",
 				disabledReason: amendMissionReason(work),
 			},
 			{
 				kind: "recover",
 				enabled: runtimeUnavailable,
-				label: "Recover Executor runtime",
 				disabledReason: recoveryReason(runtimeUnavailable),
 			},
-			{ kind: "admit", enabled: work.state === "submitted", label: "Admit Work" },
+			{ kind: "admit", enabled: work.state === "submitted" },
 			{
 				kind: "fail-work",
 				enabled: work.state !== "succeeded" && work.state !== "stopped",
-				label: "Fail Work",
 				disabledReason: "Terminal Work cannot be failed again.",
 			},
 			{
 				kind: "launch-observer",
 				enabled: canLaunchObserver(work),
-				label: "Gather missing repository context",
 				disabledReason: observerReason(work),
 			},
 			{
 				kind: "start-execution",
 				enabled: startExecutionEnabled(work),
-				label: "Start Execution",
 				disabledReason: startExecutionReasonForWork(work),
 			},
-			{ kind: "verdict", enabled: verdictReady(work), label: "Issue Verdict", disabledReason: verdictReason(work) },
+			{ kind: "verdict", enabled: verdictReady(work), disabledReason: verdictReason(work) },
 			{
 				kind: "run-oracle",
 				enabled: oracleReady(work),
-				label: "Run Oracle review",
 				disabledReason: oracleReason(oracleReady(work), oracleInputsReady(work)),
 			},
 			{
 				kind: "record-outcome",
 				enabled: isProviderOutcomeSettlementPending(work),
-				label: "Record Work Outcome",
 				disabledReason: "Provider-confirmed merge evidence is required for active or awaiting-review Work.",
 			},
 			this.feedbackActionSpec(work),
@@ -139,7 +126,6 @@ export class ServiceActions {
 		return {
 			kind: "deliver-feedback",
 			enabled,
-			label: "Deliver provider feedback",
 			disabledReason: feedbackReason(enabled),
 		};
 	}
@@ -150,25 +136,21 @@ export class ServiceActions {
 			{
 				kind: "commit-sandbox",
 				enabled: running,
-				label: "Commit sandbox changes",
 				disabledReason: "The current Execution is not running.",
 			},
 			{
 				kind: "run-validation",
 				enabled: running,
-				label: "Run validation",
 				disabledReason: "The current Execution is not running.",
 			},
 			{
 				kind: "record-signal",
 				enabled: running,
-				label: "Record Signal",
 				disabledReason: "The current Execution is not running.",
 			},
 			{
 				kind: "create-review-request",
 				enabled: running,
-				label: "Create or reconcile draft review request",
 				disabledReason: "A running Execution is required.",
 			},
 		]);

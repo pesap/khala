@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,12 +13,12 @@ test("native cancellation stops an Executor held during authorized provider feed
 	const fixture = await createNativeWorkflowFixture({ providerFeedback: true, greeting: "hello\n\n" });
 	const terminal = createNativeTerminal(fixture);
 	const records = (kinds) => {
-		const archive = new SQLiteArchive(archivePath({ archiveRoot: join(fixture.root, "archive") }, fixture.project), { readOnly: true });
+		const archive = new SQLiteArchive(archivePath({ archiveRoot: join(fixture.root, "archive") }, realpathSync(fixture.project)), { readOnly: true });
 		try { return archive.query({ workId: "native-execution", kinds, limit: 100 }).items; }
 		finally { archive.close(); }
 	};
 	const diagnostic = () => JSON.stringify({ screen: terminal.screen(), work: terminal.readWork(), steps: fixture.steps, held: fixture.heldRequests.map((response) => ({ destroyed: response.destroyed })), records: records(["delivery", "invocation", "error"]) });
-	const see = (text) => waitUntil(terminal.screen, (screen) => screen.includes(text), diagnostic);
+	const see = (text) => waitUntil(terminal.text, (screen) => screen.includes(text), diagnostic);
 	try {
 		await terminal.start();
 		terminal.send("Submit the greeting Work now.");
@@ -44,9 +45,9 @@ test("native cancellation stops an Executor held during authorized provider feed
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
 		await selectNativeListItem(terminal, "Cancel", diagnostic);
-		await see("Cancel Work: saved draft");
-		terminal.keys("Down", "Enter");
-		await see("Apply this consequential change");
+		await see("Effect Stops this Work without recording a failure. It can be recovered after cleanup.");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
+		await see("keeps its evidence");
 		terminal.keys("Enter");
 		const cancelled = await waitUntil(terminal.readWork, (work) => work.state === "stopped" && work.budget.reservedTokens === 0, diagnostic);
 		await waitUntil(() => fixture.heldRequests[0].destroyed, Boolean, diagnostic);

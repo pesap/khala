@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { openKhalaArchive } from "../../dist/src/archive-view.js";
@@ -16,25 +16,35 @@ export async function waitUntil(read, accepts, diagnostic) {
 	assert.fail(diagnostic());
 }
 
+/** Panel rows carry descriptions, so a selected row is matched by its label prefix. */
+function isSelectedRow(screen, label) {
+	return screen
+		.split("\n")
+		.map((line) => line.trim())
+		.some((line) => line === `→ ${label}` || line.startsWith(`→ ${label} `));
+}
+
 export async function selectNativeListItem(terminal, label, diagnostic) {
-	const selected = (screen) => screen.split("\n").some((line) => line.trim() === `→ ${label}`);
 	for (let attempt = 0; attempt < 30; attempt += 1) {
 		const screen = terminal.screen();
-		if (selected(screen)) {
+		if (isSelectedRow(screen, label)) {
 			terminal.keys("Enter");
 			return;
 		}
 		terminal.keys("Down");
 		await waitUntil(terminal.screen, (next) => next !== screen, diagnostic);
 	}
-	assert.fail(`Could not select native TUI item ${label}.`);
+	assert.fail(`Could not select native TUI item ${label}. ${diagnostic()}`);
 }
 
 export function createNativeTerminal(fixture) {
 	const session = `khala-native-${process.pid}-${Date.now()}`;
-	const path = archivePath({ archiveRoot: join(fixture.root, "archive") }, fixture.project);
+	// The Archive key hashes the resolved project path, and macOS resolves /var to /private/var.
+	const path = archivePath({ archiveRoot: join(fixture.root, "archive") }, realpathSync(fixture.project));
 	const tmux = (...args) => execFileSync("tmux", ["-L", `khala-native-${process.pid}`, "-f", "/dev/null", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 	const screen = () => tmux("capture-pane", "-p", "-t", session);
+	// Panel prose wraps at the pane width, so text assertions match the collapsed screen.
+	const text = () => screen().replace(/\s+/gu, " ");
 	const keys = (...values) => tmux("send-keys", "-t", session, ...values);
 	const send = (text) => { keys("-l", text); keys("Enter"); };
 	const readWork = () => {
@@ -56,5 +66,5 @@ export function createNativeTerminal(fixture) {
 	const waitForExit = () => waitUntil(() => {
 		try { tmux("has-session", "-t", session); return false; } catch { return true; }
 	}, Boolean, screen);
-	return { screen, keys, send, readWork, start, close, crash, waitForExit };
+	return { screen, text, keys, send, readWork, start, close, crash, waitForExit };
 }

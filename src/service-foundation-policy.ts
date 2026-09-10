@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { type PendingArchiveEffect } from "./archive.js";
 import {
-	type Action,
+	type ActionKind,
 	type Actor,
 	assertPositiveInteger,
 	type CommandMeta,
@@ -40,9 +40,8 @@ export type RoleCapability = Readonly<{
 }>;
 
 export type ActionSpec = Readonly<{
-	kind: Action["kind"];
+	kind: ActionKind;
 	enabled: boolean;
-	label: string;
 	disabledReason?: string | undefined;
 }>;
 
@@ -499,10 +498,26 @@ export function feedbackReason(enabled: boolean): string | undefined {
 }
 
 export const ROLE_SETTING_CHANGES = {
-	conclave: { model: (value) => ({ conclaveModel: value }), thinking: (value) => ({ conclaveThinking: value }) },
-	executor: { model: (value) => ({ executorModel: value }), thinking: (value) => ({ executorThinking: value }) },
-	observer: { model: (value) => ({ observerModel: value }), thinking: (value) => ({ observerThinking: value }) },
-	oracle: { model: (value) => ({ oracleModel: value }), thinking: (value) => ({ oracleThinking: value }) },
+	conclave: {
+		model: (value) => ({ conclaveModel: value }),
+		thinking: (value) => ({ conclaveThinking: value }),
+		usdMax: (value) => ({ conclaveUsdMax: Number(value) }),
+	},
+	executor: {
+		model: (value) => ({ executorModel: value }),
+		thinking: (value) => ({ executorThinking: value }),
+		usdMax: (value) => ({ executorUsdMax: Number(value) }),
+	},
+	observer: {
+		model: (value) => ({ observerModel: value }),
+		thinking: (value) => ({ observerThinking: value }),
+		usdMax: (value) => ({ observerUsdMax: Number(value) }),
+	},
+	oracle: {
+		model: (value) => ({ oracleModel: value }),
+		thinking: (value) => ({ oracleThinking: value }),
+		usdMax: (value) => ({ oracleUsdMax: Number(value) }),
+	},
 } satisfies Record<GovernedRole, Readonly<Record<RoleSetting, (value: string) => Partial<ServiceOptions>>>>;
 
 export function normalizeCaughtError(error: Error | string): Error {

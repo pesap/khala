@@ -9,7 +9,7 @@ test("Pi Recover returns cancelled Work to admission and a fresh Execution reach
 	const fixture = await createNativeWorkflowFixture({ holdExecutor: true });
 	const terminal = createNativeTerminal(fixture);
 	const diagnostic = () => JSON.stringify({ screen: terminal.screen(), work: terminal.readWork(), steps: fixture.steps, actions: fixture.toolResults.filter((result) => !result.includes("khala-decision-evidence")) });
-	const see = (text) => waitUntil(terminal.screen, (screen) => screen.includes(text), diagnostic);
+	const see = (text) => waitUntil(terminal.text, (screen) => screen.includes(text), diagnostic);
 	try {
 		await terminal.start();
 		terminal.send("Submit the greeting Work now.");
@@ -22,9 +22,9 @@ test("Pi Recover returns cancelled Work to admission and a fresh Execution reach
 		terminal.keys("Enter");
 		await see("Reconcile held usage");
 		await selectNativeListItem(terminal, "Cancel", diagnostic);
-		await see("Cancel Work: saved draft");
-		terminal.keys("Down", "Enter");
-		await see("Apply this consequential change");
+		await see("Effect Stops this Work without recording a failure. It can be recovered after cleanup.");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
+		await see("keeps its evidence");
 		terminal.keys("Enter");
 		await see("Action complete:");
 		const cancelled = await waitUntil(terminal.readWork, (work) => work.stopReason === "cancelled" && work.budget.reservedTokens === 0, diagnostic);

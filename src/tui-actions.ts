@@ -1,181 +1,189 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { nanoid } from "nanoid";
-import type { Action, Actor, JsonObject, WorkView } from "./model.js";
+import type { Action, ActionChoice, ActionField, Actor, ErrorEnvelope, WorkView } from "./model.js";
 import type { ApplicationService } from "./service.js";
-import { editInvocationRecovery, invocationRecoveryInput } from "./tui-invocation-recovery.js";
+import {
+	type ActionDraft,
+	type ActionIntent,
+	type ActionPanelState,
+	buildCommandInput,
+	preview,
+	showActionPanel,
+} from "./tui-action-panel.js";
 
-type Attempt = Readonly<{ input: JsonObject; revision: number; commandId: string }>;
-type Draft = { values: Map<string, string>; input: JsonObject; pending: Attempt | undefined };
 export type ActionRunner = (work: WorkView, action: Action) => Promise<void>;
-const TEXT_FIELDS: ReadonlyMap<Action["kind"], string> = new Map([
-	["fail-work", "reason"],
-	["run-oracle", "subject"],
-	["rename-work", "title"],
-	["amend-budget", "maxTokens"],
-]);
-const TERM_FIELDS = [
-	"objective",
-	"context",
-	"scope",
-	"acceptanceCriteria",
-	"constraints",
-	"validation",
-	"allowedPaths",
-];
-const LIST_FIELDS = new Set(["acceptanceCriteria", "constraints", "validation", "allowedPaths"]);
-const CONSEQUENTIAL = new Set<Action["kind"]>(["cancel", "fail-work", "amend-budget"]);
 
 export function createActionRunner(service: ApplicationService, context: ExtensionContext, actor: Actor): ActionRunner {
-	const drafts = new Map<string, Draft>();
+	const drafts = new Map<string, ActionDraft>();
 	return async (work, action) => {
 		const key = `${work.workId}:${action.kind}`;
-		const draft = drafts.get(key) ?? { values: new Map<string, string>(), input: {}, pending: undefined };
+		const draft = drafts.get(key) ?? { values: new Map<string, string>(), pending: undefined, failure: undefined };
 		drafts.set(key, draft);
-		const completed = await actionMenu(service, context, actor, work, action, draft);
-		if (completed) drafts.delete(key);
+		if (await runActionPanel(service, context, actor, { work, action, draft })) drafts.delete(key);
 	};
 }
 
-async function actionMenu(
+/**
+ * Each field edit, confirmation, and submission runs between panel showings because Pi gives
+ * `ui.editor`, `ui.select`, and `ui.custom` one shared slot and restores the User prompt on close.
+ */
+async function runActionPanel(
 	service: ApplicationService,
 	context: ExtensionContext,
 	actor: Actor,
-	work: WorkView,
-	action: Action,
-	draft: Draft,
+	state: ActionPanelState,
 ): Promise<boolean> {
 	for (;;) {
-		const choice = await context.ui.select(`${action.label}: saved draft`, draftChoices(draft));
-		if (choice === "Edit") {
-			await editDraft(context, work, action, draft);
-			continue;
-		}
-		if (!isSubmitChoice(choice)) return choice === "Discard";
-		return submitDraft(service, context, actor, work, action, draft);
+		const step = await runActionStep(service, context, actor, state);
+		if (step !== "continue") return step === "done";
 	}
 }
 
-function draftChoices(draft: Draft): string[] {
-	return draft.pending === undefined ? ["Edit", "Submit", "Discard", "Back"] : ["Retry pending command", "Back"];
-}
+type ActionStep = "done" | "abandoned" | "continue";
 
-function isSubmitChoice(choice: string | undefined): boolean {
-	return choice === "Submit" || choice === "Retry pending command";
-}
-
-async function editDraft(context: ExtensionContext, work: WorkView, action: Action, draft: Draft): Promise<void> {
-	if (action.kind === "reconcile-invocation") return editInvocationRecovery(context, work, draft.values);
-	return editLifecycleDraft(context, action, draft);
-}
-
-async function editLifecycleDraft(context: ExtensionContext, action: Action, draft: Draft): Promise<void> {
-	if (action.kind === "record-review") return editReview(context, draft);
-	if (action.kind === "amend-terms") return editTerms(context, draft);
-	const field = TEXT_FIELDS.get(action.kind);
-	if (field !== undefined) await editField(context, field, draft);
-}
-
-async function editTerms(context: ExtensionContext, draft: Draft): Promise<void> {
-	const field = await context.ui.select("Term to amend:", TERM_FIELDS);
-	if (field === undefined) return;
-	if (TERM_FIELDS.includes(field)) await editField(context, field, draft);
-}
-
-async function editReview(context: ExtensionContext, draft: Draft): Promise<void> {
-	const status = await context.ui.select("Provider review result:", ["changes-requested", "merged", "closed"]);
-	if (status === undefined) return;
-	draft.values.set("status", status);
-	draft.input = { ...draft.input, status };
-	await editField(context, "feedback", draft);
-}
-
-async function editField(context: ExtensionContext, field: string, draft: Draft): Promise<void> {
-	const value = await context.ui.editor(`Text editor: ${field}`, draft.values.get(field));
-	if (value === undefined) return;
-	draft.values.set(field, value);
-	draft.input = { ...draft.input, ...fieldInput(field, value) };
-}
-
-function fieldInput(field: string, text: string): JsonObject {
-	if (field === "feedback") return { feedback: feedbackLines(text) };
-	if (field === "maxTokens") return {};
-	return { [field]: LIST_FIELDS.has(field) ? text.split("\n").filter((line) => line.trim().length > 0) : text };
-}
-
-function feedbackLines(text: string): string[] {
-	return text.length === 0 ? [] : [text];
-}
-
-function submissionInput(action: Action, draft: Draft): JsonObject {
-	if (action.kind === "reconcile-invocation") return invocationRecoveryInput(draft.values);
-	if (action.kind !== "amend-budget") return draft.input;
-	return budgetInput(draft.values);
-}
-
-function budgetInput(values: ReadonlyMap<string, string>): JsonObject {
-	const maxTokens = Number(values.get("maxTokens"));
-	if (!Number.isSafeInteger(maxTokens) || maxTokens <= 0)
-		throw new Error("Enter a positive whole-number token budget.");
-	return { maxTokens };
-}
-
-async function confirmed(context: ExtensionContext, action: Action, draft: Draft): Promise<boolean> {
-	if (action.kind === "reconcile-invocation") {
-		const input = invocationRecoveryInput(draft.values);
-		return context.ui.confirm(
-			action.label,
-			`Record ${input.usage.inputTokens} input and ${input.usage.outputTokens} output tokens for ${input.runId}?\nCache: ${input.usage.cacheHitTokens} hit, ${input.usage.cacheMissTokens} miss.\nEvidence: ${input.evidence.join(", ")}\nThis settles the held reservation and permits Work dispatch to resume.`,
-		);
-	}
-	if (action.confirmation !== undefined) return context.ui.confirm(action.label, action.confirmation);
-	if (CONSEQUENTIAL.has(action.kind))
-		return context.ui.confirm(action.label, "Apply this consequential change to Work?");
-	return true;
-}
-
-async function submitDraft(
+async function runActionStep(
 	service: ApplicationService,
 	context: ExtensionContext,
 	actor: Actor,
-	work: WorkView,
-	action: Action,
-	draft: Draft,
-): Promise<boolean> {
-	try {
-		if (!(await confirmed(context, action, draft))) return false;
-		draft.pending ??= { input: submissionInput(action, draft), revision: work.revision, commandId: `tui:${nanoid()}` };
-		return await performDraft(service, context, actor, work, action, draft);
-	} catch (error) {
-		context.ui.notify(String(error), "error");
-		return false;
-	}
+	state: ActionPanelState,
+): Promise<ActionStep> {
+	const intent = await showActionPanel(context, state);
+	const steps = {
+		back: async (): Promise<ActionStep> => "abandoned",
+		discard: async (): Promise<ActionStep> => discardDraft(state.draft),
+		submit: async (): Promise<ActionStep> =>
+			(await submitAction(service, context, actor, state)) ? "done" : "continue",
+		edit: async (): Promise<ActionStep> => editStep(context, state, intent),
+	} satisfies Record<ActionIntent["kind"], () => Promise<ActionStep>>;
+	return steps[intent.kind]();
 }
 
-async function performDraft(
+async function editStep(context: ExtensionContext, state: ActionPanelState, intent: ActionIntent): Promise<ActionStep> {
+	if (intent.kind === "edit") await editField(context, intent.field, state.draft);
+	return "continue";
+}
+
+function discardDraft(draft: ActionDraft): ActionStep {
+	draft.values.clear();
+	return "done";
+}
+
+async function editField(context: ExtensionContext, field: ActionField, draft: ActionDraft): Promise<void> {
+	if (field.input.kind === "choice") return editChoice(context, field, field.input.choices, draft);
+	const value = await context.ui.editor(field.label, draft.values.get(field.name) ?? field.current);
+	if (value !== undefined) draft.values.set(field.name, editedValue(field, value));
+}
+
+function editedValue(field: ActionField, value: string): string {
+	return field.input.kind === "integer" ? value.trim() : value;
+}
+
+async function editChoice(
+	context: ExtensionContext,
+	field: ActionField,
+	choices: readonly ActionChoice[],
+	draft: ActionDraft,
+): Promise<void> {
+	if (choices.length === 0) {
+		context.ui.notify(`${field.label} has no available options.`, "error");
+		return;
+	}
+	const options = choices.map(choiceOption);
+	const selected = await context.ui.select(field.label, options);
+	const choice = selected === undefined ? undefined : choices[options.indexOf(selected)];
+	if (choice !== undefined) draft.values.set(field.name, choice.value);
+}
+
+function choiceOption(choice: ActionChoice): string {
+	return choice.description === undefined ? choice.label : `${choice.label} - ${choice.description}`;
+}
+
+async function submitAction(
 	service: ApplicationService,
 	context: ExtensionContext,
 	actor: Actor,
-	work: WorkView,
-	action: Action,
-	draft: Draft,
+	state: ActionPanelState,
 ): Promise<boolean> {
+	if (!(await confirmed(context, state))) return false;
+	const { work, action, draft } = state;
+	draft.pending ??= {
+		input: buildCommandInput(action.fields, draft.values),
+		revision: work.revision,
+		commandId: `tui:${nanoid()}`,
+	};
+	return performAttempt(service, context, actor, state);
+}
+
+async function confirmed(context: ExtensionContext, state: ActionPanelState): Promise<boolean> {
+	const confirmation = state.action.confirmation;
+	if (confirmation === undefined) return true;
+	const changes = state.action.fields
+		.filter((field) => state.draft.values.has(field.name))
+		.map((field) => `${field.label}: ${preview(field.current ?? "not set")} -> ${valuePreview(state, field)}`);
+	const message = changes.length === 0 ? confirmation : `${confirmation}\n\n${changes.join("\n")}`;
+	return context.ui.confirm(state.action.label, message);
+}
+
+function valuePreview(state: ActionPanelState, field: ActionField): string {
+	return preview(state.draft.values.get(field.name) ?? "");
+}
+
+async function performAttempt(
+	service: ApplicationService,
+	context: ExtensionContext,
+	actor: Actor,
+	state: ActionPanelState,
+): Promise<boolean> {
+	const { work, action, draft } = state;
 	const attempt = draft.pending;
 	if (attempt === undefined) return false;
-	const result = await service.perform({
-		action: action.kind,
-		workId: work.workId,
-		input: attempt.input,
-		meta: { commandId: attempt.commandId, actor, expectedWorkRevision: attempt.revision, schemaVersion: 1 },
-	});
-	draft.pending = undefined;
-	if ("error" in result) {
-		context.ui.notify(
-			`${result.error.summary}\n${result.error.remediation}\nDraft retained. Reopen the action to review and submit again.`,
-			"error",
-		);
+	try {
+		const result = await service.perform({
+			action: action.kind,
+			workId: work.workId,
+			input: attempt.input,
+			meta: { commandId: attempt.commandId, actor, expectedWorkRevision: attempt.revision, schemaVersion: 1 },
+		});
+		return settleResult(service, context, draft, result);
+	} catch (error) {
+		// An unknown outcome retains the exact attempt so a retry cannot become a second decision.
+		draft.failure = unknownOutcome(error instanceof Error ? error.message : String(error));
 		return false;
 	}
+}
+
+function settleResult(
+	service: ApplicationService,
+	context: ExtensionContext,
+	draft: ActionDraft,
+	result: Awaited<ReturnType<ApplicationService["perform"]>>,
+): boolean {
+	if (!("error" in result)) return completeSubmission(service, context, draft, result.value.nextAction);
+	// A rejected command is a settled outcome, so the retained attempt must not be resent.
+	draft.pending = undefined;
+	draft.failure = result.error;
+	return false;
+}
+
+function completeSubmission(
+	service: ApplicationService,
+	context: ExtensionContext,
+	draft: ActionDraft,
+	nextAction: string,
+): boolean {
+	draft.pending = undefined;
+	draft.failure = undefined;
 	void service.processPendingEffects().catch((error) => context.ui.notify(String(error), "error"));
-	context.ui.notify(`Action complete: ${result.value.nextAction}`, "info");
+	context.ui.notify(`Action complete: ${nextAction}`, "info");
 	return true;
+}
+
+function unknownOutcome(summary: string): ErrorEnvelope {
+	return {
+		code: "external-failure",
+		summary,
+		retryable: true,
+		remediation: "Retry the pending command; Khala resends the identical decision.",
+		evidenceRefs: [],
+	};
 }

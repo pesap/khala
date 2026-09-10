@@ -168,7 +168,7 @@ test("TUI schedules runtime recovery effects and refreshes the view", async () =
 		],
 		inspectWork: () => work,
 		availableActions: () => [
-			{ id: "recover:unreachable-work:2", label: "Recover Work", enabled: true, kind: "recover" },
+			{ id: "recover:unreachable-work:2", label: "Recover", enabled: true, kind: "recover" },
 		],
 		perform: async (command) =>
 			new Promise((resolve) => {
@@ -239,7 +239,7 @@ test("TUI distinguishes a failed recovery from a completed recovery", async () =
 	const service = {
 		listWork: () => [{ workId: work.workId, title: work.terms.title, state: work.state, nextAction: work.nextAction }],
 		inspectWork: () => work,
-		availableActions: () => [{ id: "recover:unreachable-work:4", label: "Recover Work", enabled: true, kind: "recover" }],
+		availableActions: () => [{ id: "recover:unreachable-work:4", label: "Recover", enabled: true, kind: "recover" }],
 		perform: async () => ({
 			value: {
 				...work,

@@ -77,7 +77,8 @@ An unconfirmed Executor restoration is reported as a failure rather than a compl
 Completed durable invocation receipts settle held usage automatically during recovery.
 An incomplete receipt keeps its reservation and reports the invocation that needs cumulative usage evidence.
 In `/khala`, open the Work's Actions and choose Reconcile held usage.
-Choose the invocation, enter final input, output, cache-hit, and cache-miss counts with an evidence reference, then Submit and confirm.
+Choose the Held invocation field, select the invocation from the Work's active invocations, and enter the four cumulative usage fields and Usage evidence in the native editor.
+Select the Reconcile held usage submit row and confirm the service-supplied consequence sentence.
 Use actual cumulative usage from the provider or retained runtime evidence; do not estimate or substitute the reserved allowance.
 Reconciliation verifies that the old owned writer has stopped before settling usage and permitting pending dispatch.
 Run `/khala-recover` after settlement to restore an interrupted Executor and continue its existing Execution.
@@ -144,7 +145,7 @@ The Archive enforces the effective ceiling across existing and newly submitted W
 
 Role models use `conclaveModel`, `executorModel`, `observerModel`, and `oracleModel`, with matching `*Thinking` settings.
 The current workflow requires Conclave, Executor, and Oracle models; the target makes Oracle optional.
-Current navigation settings are `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`h`).
+Current navigation settings are `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`ctrl+h`).
 The [target navigation contract](tui-navigation.md) uses configured Pi editing and navigation instead of introducing global letter shortcuts.
 
 Current Archives are named from resolved project paths, and child session, lease, lock, and capability files use project-specific temporary directories.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,7 +35,7 @@ function readWork(path) {
 test("Pi terminal submits native Work, recovers after restart, and records success", { timeout: 90_000 }, async () => {
 	const fixture = await createNativeWorkflowFixture();
 	const session = `khala-native-${process.pid}-${Date.now()}`;
-	const path = archivePath({ archiveRoot: join(fixture.root, "archive") }, fixture.project);
+	const path = archivePath({ archiveRoot: join(fixture.root, "archive") }, realpathSync(fixture.project));
 	const screen = () => tmux("capture-pane", "-p", "-t", session);
 	const send = (text) => {
 		tmux("send-keys", "-t", session, "-l", text);

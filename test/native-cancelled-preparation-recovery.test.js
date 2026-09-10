@@ -15,7 +15,7 @@ test("Pi recovers cancelled preparation through fresh admission after the target
 			steps: fixture.steps,
 			actions: fixture.toolResults.filter((result) => !result.includes("khala-decision-evidence")),
 		});
-	const see = (text) => waitUntil(terminal.screen, (screen) => screen.includes(text), diagnostic);
+	const see = (text) => waitUntil(terminal.text, (screen) => screen.includes(text), diagnostic);
 	try {
 		const manifest = { name: "native-cancelled-preparation-fixture", version: "1.0.0" };
 		await writeFile(join(fixture.project, "package.json"), JSON.stringify(manifest));
@@ -41,9 +41,9 @@ test("Pi recovers cancelled preparation through fresh admission after the target
 		await see("Recover");
 		await see("Cancel");
 		await selectNativeListItem(terminal, "Cancel", diagnostic);
-		await see("Cancel Work: saved draft");
-		terminal.keys("Down", "Enter");
-		await see("Apply this consequential change");
+		await see("Effect Stops this Work without recording a failure. It can be recovered after cleanup.");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
+		await see("keeps its evidence");
 		terminal.keys("Enter");
 		await see("Action complete:");
 		const cancelled = await waitUntil(

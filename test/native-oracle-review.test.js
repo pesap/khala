@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SQLiteArchive } from "../dist/src/archive.js";
@@ -16,7 +17,7 @@ test("native Conclave runs Oracle before handing off the same Execution", { time
 	const fixture = await createNativeWorkflowFixture({ oracleResponse });
 	const terminal = createNativeTerminal(fixture);
 	const records = (kinds) => {
-		const archive = new SQLiteArchive(archivePath({ archiveRoot: join(fixture.root, "archive") }, fixture.project), { readOnly: true });
+		const archive = new SQLiteArchive(archivePath({ archiveRoot: join(fixture.root, "archive") }, realpathSync(fixture.project)), { readOnly: true });
 		try { return archive.query({ workId: "native-execution", kinds, limit: 100 }).items; }
 		finally { archive.close(); }
 	};

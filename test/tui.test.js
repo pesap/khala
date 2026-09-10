@@ -40,11 +40,18 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 		],
 		inspectWork: () => work,
 		availableActions: (_workId, _actor, _revision, runtimeState) => [
-			{ id: "hidden", label: "Hidden action", enabled: false, kind: "cancel" },
+			{ id: "hidden", label: "Hidden action", effect: "Unavailable action", fields: [], enabled: false, disabledReason: "Hidden action is unavailable.", kind: "cancel" },
+			{ id: "other", label: "Other action", effect: "Runs another action.", fields: [], enabled: true, kind: "other" },
 			...(runtimeState === "unreachable"
-				? [{ id: "recover", label: "Recover Work", enabled: true, kind: "recover" }]
+				? [{ id: "recover", label: "Recover", effect: "Restores the Work.", fields: [], enabled: true, kind: "recover" }]
 				: []),
-			{ id: "visible", label: "Visible action", enabled: true, kind: "cancel" },
+			{ id: "retry", label: "Retry admission", effect: "Retries admission.", fields: [], enabled: true, kind: "retry-admission" },
+			{ id: "review", label: "Record review", effect: "Records review.", fields: [], enabled: true, kind: "record-review" },
+			{ id: "terms", label: "Amend terms", effect: "Amends terms.", fields: [], enabled: true, kind: "amend-terms" },
+			{ id: "rename", label: "Rename", effect: "Renames the Work.", fields: [], enabled: true, kind: "rename-work" },
+			{ id: "budget", label: "Amend budget", effect: "Amends the budget.", fields: [], enabled: true, kind: "amend-budget" },
+			{ id: "cancel", label: "Cancel", effect: "Stops the Work.", fields: [], enabled: true, kind: "cancel" },
+			{ id: "failed", label: "Mark as failed", effect: "Fails the Work.", fields: [], enabled: true, kind: "fail-work" },
 		],
 		readRecords: () => ({
 			items: [
@@ -87,14 +94,16 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	assert.doesNotMatch(initialView, /admission creates a Mission/);
 	assert.match(initialView, /TITLE\s+ID\s+STATE\s+EXECUTION/);
 	assert.match(initialView, /→\s+Work\s+work-1\s+active\s+running/);
-	assert.match(initialView, /type to filter/);
-	assert.match(initialView, /\?\s+help/);
-	assert.match(initialView, /r\s+settings/);
+	assert.match(initialView, /Scope:.*All/);
+	assert.doesNotMatch(initialView, /tab scope|home first|ctrl\+h history/);
+	assert.match(initialView, /ctrl\+r refresh/);
+	assert.match(initialView, /r settings/);
+	assert.doesNotMatch(initialView, /ctrl\+h history/);
+	assert.match(initialView, /enter open/);
+	assert.match(initialView, /\? help/);
+	assert.match(initialView, /escape\/ctrl\+c\/backspace back/);
 	assert.doesNotMatch(initialView, /Help|—|…/);
-	assert.match(initialView, /home\s+first/);
-	assert.match(initialView, /up\/down\s+move/);
-	assert.match(initialView, /enter\s+open/);
-	assert.match(initialView, /escape\/ctrl\+c\/backspace\s+back/);
+
 	assert.ok(screens[0].render(100).length <= 18);
 
 	screens[0].handleInput("\r");
@@ -121,13 +130,21 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 	await nextTurn();
 	assert.equal(screens.length, 3);
 	const actions = screens[2].render(100).join("\n");
-	assert.match(actions, /Cancel/);
 	assert.match(actions, /Actions/);
 	assert.match(actions, /Recover/);
-	assert.doesNotMatch(actions, /Recover Work|Visible action/);
-	assert.ok(actions.indexOf("Recover") < actions.indexOf("Refresh runtime"));
-	assert.ok(actions.indexOf("Refresh runtime") < actions.indexOf("Cancel"));
+	assert.match(actions, /Other action/);
 	assert.doesNotMatch(actions, /Hidden action/);
+	for (const [before, after] of [
+		["Recover", "Retry admission"],
+		["Retry admission", "Record review"],
+		["Record review", "Amend terms"],
+		["Amend terms", "Rename"],
+		["Rename", "Amend budget"],
+		["Amend budget", "Refresh runtime"],
+		["Refresh runtime", "Cancel"],
+		["Cancel", "Mark as failed"],
+		["Mark as failed", "Other action"],
+	]) assert.ok(actions.indexOf(before) < actions.indexOf(after), `${before} should precede ${after}`);
 	assert.doesNotMatch(actions, /khala-recover/);
 	screens[2].handleInput("\u007f");
 	await nextTurn();
@@ -234,12 +251,17 @@ test("Work picker refreshes, exposes history, and opens complete help", async ()
 	screens[0].handleInput("\u0012");
 	assert.match(screens[0].render(100).join("\n"), /Refreshed Work/);
 	work = { ...work, state: "succeeded", executionState: "completed" };
-	screens[0].handleInput("h");
+	screens[0].handleInput("\u0008");
 	assert.match(screens[0].render(100).join("\n"), /Refreshed Work/);
 	screens[0].handleInput("?");
 	await nextTurn();
 	assert.match(screens[1].render(100).join("\n"), /Work picker help/);
-	assert.match(screens[1].render(100).join("\n"), /Refresh Work/);
+	const help = screens[1].render(100).join("\n");
+	assert.match(help, /Refresh preserves/);
+	assert.match(help, /picker footer shows all available actions/);
+	assert.match(help, /History includes completed/);
+	assert.doesNotMatch(help, /ctrl\+h|tab scope|escape\/ctrl\+c/);
+	assert.doesNotMatch(help, /Type.*Filter Work/);
 	screens[1].handleInput("\u001b");
 	await nextTurn();
 	screens[2].handleInput("\u001b");

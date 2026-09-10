@@ -62,6 +62,17 @@ async function close(h) {
 	await h.result;
 }
 
+async function closeFromAction(h) {
+	h.screens.at(-1).handleInput("\u001b");
+	await turn();
+	await turn();
+	h.screens.at(-1).handleInput("\u001b");
+	await turn();
+	await turn();
+	h.screens.at(-1).handleInput("\u001b");
+	await h.result;
+}
+
 test("opening saved Work is lazy and short-terminal overview keeps controls reachable after resize", async () => {
 	const h = harness();
 	await turn();
@@ -85,7 +96,7 @@ test("opening saved Work is lazy and short-terminal overview keeps controls reac
 });
 
 test("Work overview nests actions and separates the summary from navigation", async () => {
-	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel Work", enabled: true }] });
+	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel", enabled: true }] });
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
@@ -119,7 +130,7 @@ test("Work overview nests actions and separates the summary from navigation", as
 });
 
 test("enabled actions are nested under the Actions section", async () => {
-	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel Work", enabled: true }] });
+	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel", effect: "Stops this Work without recording a failure. It can be recovered after cleanup.", fields: [], enabled: true }] });
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
@@ -133,10 +144,12 @@ test("enabled actions are nested under the Actions section", async () => {
 	assert.match(renderScreen(actions, 40, 12).join("\n"), /→ Cancel/);
 	actions.handleInput("\r");
 	await turn();
-	assert.match(h.menus[0].title, /Cancel Work/);
-	assert.ok(h.menus[0].choices.includes("Submit"));
+	const panel = h.screens.at(-1).render(80).join("\n");
+	assert.match(panel, /Cancel/);
+	assert.match(panel, /Effect\s+Stops this Work without recording a failure\. It can be recovered\s+after cleanup\./);
+	assert.match(panel, /→ Cancel/);
 	assert.equal(h.reads.length, 0);
-	await close(h);
+	await closeFromAction(h);
 });
 
 test("Work filters separate attention, review and terminal history without loading record bodies", async () => {

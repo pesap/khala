@@ -16,11 +16,13 @@ test("Role settings persist without discarding other Khala configuration", async
 		);
 		persistRoleSetting("conclave", "model", "new/model");
 		persistRoleSetting("conclave", "thinking", "low");
+		persistRoleSetting("conclave", "usdMax", "2.5");
 		const config = JSON.parse(await readFile(join(directory, "khala.json"), "utf8"));
 		assert.deepEqual(config, {
 			targetBranch: "develop",
 			conclaveModel: "new/model",
 			conclaveThinking: "low",
+			conclaveUsdMax: 2.5,
 			roleSettingsKey: "s",
 			commentsKey: "c",
 		});
@@ -29,7 +31,8 @@ test("Role settings persist without discarding other Khala configuration", async
 		assert.equal(loadedConfig.keybindings.comments, "c");
 		assert.equal(loadedConfig.keybindings.refresh, "ctrl+r");
 		assert.equal(loadedConfig.keybindings.help, "?");
-		assert.equal(loadedConfig.keybindings.history, "h");
+		assert.equal(loadedConfig.keybindings.history, "ctrl+h");
+		assert.equal(loadedConfig.conclaveUsdMax, 2.5);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ commentsKey: "   " }));
 		assert.throws(() => loadConfig(directory, false, false), /commentsKey must not be blank/);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ targetBranch: "feature/.hidden" }));

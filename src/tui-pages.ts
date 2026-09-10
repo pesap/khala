@@ -101,9 +101,10 @@ export async function showPage(
 		const content = new Container();
 		addPageContent(content, theme, title, sections);
 		const scroll = new ScrollView(content, { overscroll: "contain", scrollbar: "auto" });
-		const footerContainer = new Container();
-		addPanelKeybindings(footerContainer, theme, footer);
-		const page = new VStack([scroll, { component: footerContainer, shrink: 0 }]);
+		const page =
+			footer.length === 0
+				? new VStack([scroll])
+				: new VStack([scroll, { component: addPageFooter(theme, footer), shrink: 0 }]);
 		// SAFETY: The custom page adds only the input handler while preserving VStack and ScrollView layout contracts.
 		const interactivePage = page as VStack & { handleInput: (data: string) => void };
 		interactivePage.handleInput = (data: string): void => {
@@ -116,6 +117,12 @@ export async function showPage(
 
 export const NAVIGATION_FOOTER = "up/down move  enter select  escape/ctrl+c/backspace back";
 export const RECORD_NAVIGATION_FOOTER = "up/down move  enter inspect  escape/ctrl+c/backspace back";
+function addPageFooter(theme: Theme, footer: string): Container {
+	const footerContainer = new Container();
+	addPanelKeybindings(footerContainer, theme, footer);
+	return footerContainer;
+}
+
 export const PANEL_BACK_FOOTER = "escape/ctrl+c/backspace back";
 
 export function addPanelKeybindings(container: Container, theme: Theme, footer: string): Text {
