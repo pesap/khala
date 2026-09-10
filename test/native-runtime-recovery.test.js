@@ -26,6 +26,8 @@ test(`Pi Recover continues the same Execution after its Executor becomes ${lost 
 		await see("Native greeting");
 		terminal.keys("Enter");
 		await see("Freshness");
+		terminal.keys("Enter");
+		await see("Actions");
 		await selectNativeListItem(terminal, "Refresh runtime", diagnostic);
 		await see("Runtime checked");
 		await see(lost ? "unreachable" : "idle");
