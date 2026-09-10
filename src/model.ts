@@ -36,6 +36,7 @@ export const EXECUTION_RUNTIME_STATES = ["working", "idle", "pending", "unreacha
 export type ExecutionRuntimeState = (typeof EXECUTION_RUNTIME_STATES)[number];
 
 export const CONCLAVE_WAKE_CAUSES = [
+	"admission",
 	"executor-blocked",
 	"executor-ready",
 	"executor-failed",
@@ -45,6 +46,7 @@ export const CONCLAVE_WAKE_CAUSES = [
 	"provider-outcome",
 	"provider-feedback",
 	"token-exhausted",
+	"oracle-result",
 ] as const;
 export type ConclaveWakeCause = (typeof CONCLAVE_WAKE_CAUSES)[number];
 
@@ -70,6 +72,7 @@ export const RECORD_KINDS = [
 	"error",
 	"validation",
 	"work-amended",
+	"invocation",
 ] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
 
@@ -97,6 +100,21 @@ export type WorkBudget = Readonly<{
 	maxTokens: number;
 	reservedTokens: number;
 	consumedTokens: number;
+}>;
+
+export type ActiveInvocation = Readonly<{
+	runId: string;
+	role: "conclave" | "executor" | "observer" | "oracle";
+	allowance: number;
+	state: "reserved" | "uncertain";
+}>;
+
+export type PreparationState = Readonly<{
+	status: "waiting" | "preparing" | "runnable";
+	prerequisiteId: string;
+	operation: "isolation" | "dependencies" | "validation";
+	diagnostic: string;
+	recovery: "user" | "prerequisite-change";
 }>;
 
 export type TokenUsage = Readonly<{
@@ -218,6 +236,8 @@ export type ValidationRun = Readonly<{
 	executionId: string;
 	headCommit: string;
 	results: readonly ValidationResult[];
+	sourceVerified?: boolean | undefined;
+	sourceFailure?: string | undefined;
 }>;
 
 export type Signal = Readonly<{
@@ -357,6 +377,21 @@ export type WorkView = Readonly<{
 	lastError?: ErrorEnvelope | undefined;
 	nextAction: string;
 	queuedSequence: number;
+	preparation?: PreparationState | undefined;
+	correctionCount?: number | undefined;
+	/** Persisted per-Work limits prevent restarts from reverting to process defaults. */
+	dispatchLimits?: Readonly<{ maxConcurrentRuns: number; maxCorrections: number }> | undefined;
+	oraclePending?:
+		| Readonly<{
+				requestId: string;
+				signalId: string;
+				headCommit: string;
+				subject: string;
+				missionId: string;
+				executionId?: string | undefined;
+		  }>
+		| undefined;
+	activeInvocations?: readonly ActiveInvocation[] | undefined;
 }>;
 
 export type WorkSummary = Readonly<{
@@ -454,6 +489,7 @@ export type Action = Readonly<{
 		| "admit"
 		| "request-input"
 		| "amend-terms"
+		| "retry-admission"
 		| "amend-mission"
 		| "launch-observer"
 		| "record-assessment"
@@ -469,6 +505,7 @@ export type Action = Readonly<{
 		| "record-outcome"
 		| "cancel"
 		| "recover"
+		| "reconcile-invocation"
 		| "rename-work"
 		| "amend-budget"
 		| "fail-work";
@@ -500,6 +537,8 @@ export type ActionInput = Readonly<{
 	observationId?: string | undefined;
 	subject?: string | undefined;
 	maxTokens?: number | undefined;
+	runId?: string | undefined;
+	usage?: TokenUsage | undefined;
 }>;
 
 export type ActionCommand = Readonly<{

@@ -158,6 +158,8 @@ function createServiceOptions(
 		projectPath: context.projectPath,
 		targetBranch: config.targetBranch,
 		maxConcurrentExecutions: config.maxConcurrentExecutions,
+		maxConcurrentRuns: config.maxConcurrentRuns,
+		maxCorrections: config.maxCorrections,
 		defaultWorkTokens: config.defaultWorkTokens,
 		conclaveModel: config.conclaveModel,
 		conclaveThinking: config.conclaveThinking,
@@ -172,6 +174,7 @@ function createServiceOptions(
 		observerPromptIdentity: prompts.observer,
 		oraclePromptIdentity: prompts.oracle,
 		rolePublicKey: context.rolePublicKey,
+		supervision: context.child ? "client" : "candidate",
 		autonomousMonitor: !context.child,
 	};
 }

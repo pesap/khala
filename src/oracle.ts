@@ -1,5 +1,13 @@
-import type { PromptIdentity } from "./model.js";
-import type { AgentRuntimePort, OperationContext, OraclePacket, OraclePort, OracleResult } from "./ports.js";
+import { InvocationLaunchError } from "./dispatch.js";
+import type { PromptIdentity, TokenUsage } from "./model.js";
+import type {
+	AgentRuntimePort,
+	OperationContext,
+	OraclePacket,
+	OraclePort,
+	OracleResult,
+	RuntimeSendOptions,
+} from "./ports.js";
 
 const MAX_PACKET_TEXT = 16_000;
 const VERDICT_PATTERN = /^Verdict:\s*(Pass|Needs revision|Blocked|Incomplete)\s*$/i;
@@ -20,12 +28,15 @@ class PiOracle implements OraclePort {
 		packet: OraclePacket,
 		model: string,
 		thinking: string,
+		options: RuntimeSendOptions,
 		operation?: OperationContext,
 	): Promise<OracleResult> {
 		const started = Date.now();
-		const binding = await this.runtime.ensureSession(this.sessionInput(model, thinking), operation);
+		const binding = await this.runtime.ensureSession(this.sessionInput(model, thinking), operation).catch((error) => {
+			throw new InvocationLaunchError(error instanceof Error ? error : new Error(String(error)));
+		});
 		try {
-			return oracleResult(await this.runtime.send(binding, buildPrompt(packet), operation), started);
+			return oracleResult(await this.runtime.send(binding, buildPrompt(packet), options, operation), started);
 		} finally {
 			await this.runtime.requestStop(binding).catch(() => undefined);
 		}
@@ -42,9 +53,10 @@ class PiOracle implements OraclePort {
 		};
 	}
 }
-function oracleResult(turn: { output: string }, started: number): OracleResult {
+function oracleResult(turn: { output: string; usage?: TokenUsage | undefined }, started: number): OracleResult {
 	const parsed = parseVerdict(turn.output);
 	return {
+		usage: turn.usage,
 		...parsedResult(parsed),
 		durationMs: Date.now() - started,
 		output: turn.output.slice(0, MAX_PACKET_TEXT),

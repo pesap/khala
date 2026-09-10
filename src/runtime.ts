@@ -1,126 +1,68 @@
-import { type ChildProcessWithoutNullStreams, execFileSync, spawn } from "node:child_process";
-import { createHash, type KeyObject, sign } from "node:crypto";
-import { readdirSync, readFileSync, unlinkSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
-import process from "node:process";
-import { nanoid } from "nanoid";
-import type { JsonObject, JsonValue, PromptIdentity, TokenUsage } from "./model.js";
-import type { AgentRuntimePort, OperationContext, RuntimeBinding, RuntimeState, RuntimeTurn } from "./ports.js";
+import { createHash } from "node:crypto";
+import type { PromptIdentity } from "./model.js";
+import {
+	type AgentRuntimePort,
+	type OperationContext,
+	type RuntimeBinding,
+	type RuntimeInvocationEvidence,
+	type RuntimeSendOptions,
+	type RuntimeState,
+	type RuntimeTurn,
+	RuntimeTurnError,
+} from "./ports.js";
+import { beginInvocation, invocationWriterIsSettled, reconcilePersistedInvocation } from "./runtime-invocation.js";
+import {
+	assertChildRunning,
+	cleanupStartingChild,
+	createSessionLaunch,
+	createStartingChild,
+	prepareSessionLaunch,
+	removeSessionCapability,
+	spawnSessionSafely,
+	startupSessionId,
+	verifyNativePiVersion,
+	writePersistentLaunchLease,
+} from "./runtime-launch.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 
-export type PiRuntimeOptions = Readonly<{
-	projectPath: string;
-	command: readonly string[];
-	extensionPath?: string | undefined;
-	baseEnvironment?: NodeJS.ProcessEnv | undefined;
-	authorityPrivateKey?: KeyObject | undefined;
-	rpcTimeoutMs?: number | undefined;
-	agentTimeoutMs?: number | undefined;
-	maxRpcFrameBytes?: number | undefined;
-}>;
+export { SUPPORTED_NATIVE_PI_VERSION } from "./runtime-launch.js";
 
-type RpcData = Readonly<{
-	sessionId?: string | undefined;
-	sessionFile?: string | undefined;
-	isStreaming?: boolean | undefined;
-}>;
+import { isTransientStartupFailure, sameBindingIdentity } from "./runtime-process.js";
+import {
+	agentTimeout,
+	attachOutput,
+	awaitOperation,
+	childRuntimeState,
+	cleanupChild,
+	completedTurn,
+	createAbortHandler,
+	failTurn,
+	readRuntimeTokenAllowance,
+	registerAbortHandler,
+	rejectAgentEnd,
+	rejectPending,
+	removeAbortHandler,
+	request,
+	requestAbortBestEffort,
+	rpcTimeout,
+	sendPrompt,
+	stopUnattachedBinding,
+	throwIfAborted,
+	unattachedRuntimeState,
+	validateMaxRpcFrameBytes,
+	waitForAgentSettled,
+} from "./runtime-protocol.js";
+import type { MutableChild, PiRuntimeOptions, SessionInput, SessionLaunch } from "./runtime-types.js";
 
-type RpcBlock = Readonly<{
-	type?: string | undefined;
-	text?: string | undefined;
-}>;
+export type { PiRuntimeOptions } from "./runtime-types.js";
 
-type RpcUsage = Readonly<{
-	input?: number | undefined;
-	output?: number | undefined;
-	cacheRead?: number | undefined;
-	cacheWrite?: number | undefined;
-}>;
-
-type RpcMessage = Readonly<{
-	role?: string | undefined;
-	content?: readonly RpcBlock[] | undefined;
-	usage?: RpcUsage | undefined;
-}>;
-
-type RpcEvent = Readonly<{
-	type?: string | undefined;
-	id?: string | undefined;
-	command?: string | undefined;
-	success?: boolean | undefined;
-	data?: RpcData | undefined;
-	error?: string | undefined;
-	message?: RpcMessage | undefined;
-}>;
-
-type RpcResponse = Readonly<{
-	type: "response";
-	id?: string | undefined;
-	command: string;
-	success: boolean;
-	data?: RpcData | undefined;
-	error?: string | undefined;
-}>;
-
-type PendingResponse = Readonly<{
-	resolve: (response: RpcResponse) => void;
-	reject: (error: Error) => void;
-	timer: NodeJS.Timeout;
-}>;
-
-type MutableChild = {
-	process: ChildProcessWithoutNullStreams;
-	pending: Map<string, PendingResponse>;
-	binding: RuntimeBinding;
-	agentTimeoutMs: number | undefined;
-	maxRpcFrameBytes: number;
-	buffer: Buffer;
-	lastOutput: string;
-	turnUsage: TokenUsage | undefined;
-	lastError: string;
-	closed: boolean;
-	sending: boolean;
-	lastAgentEnd: Promise<string> | undefined;
-	resolveAgentEnd: ((output: string) => void) | undefined;
-	rejectAgentEnd: ((error: Error) => void) | undefined;
-	agentTimer: NodeJS.Timeout | undefined;
-	ephemeralSession: boolean;
-	storage: RuntimeStorage;
-	remove: (() => void) | undefined;
-	cleanupPromise: Promise<void> | undefined;
-};
-
-type RpcCommandData = Readonly<{ message?: string | undefined }>;
-type SessionInput = Parameters<AgentRuntimePort["ensureSession"]>[0];
-type CapabilityScopeInput = Readonly<{
-	workId?: string | undefined;
-	executionId?: string | undefined;
-	nonce?: string | undefined;
-}>;
-type SessionLaunch = Readonly<{
-	sessionPath: string;
-	args: string[];
-	capabilityNonce: string | undefined;
-	capabilityToken: string | undefined;
-	capabilityFile: string | undefined;
-	environment: NodeJS.ProcessEnv;
-	processMarker: string;
-	storage: RuntimeStorage;
-}>;
-const DEFAULT_MAX_RPC_FRAME_BYTES = 8 * 1024 * 1024;
-const MAX_ASSISTANT_TEXT_LENGTH = 16_000;
-const ASSISTANT_TRUNCATION_INDICATOR = "[assistant output truncated]";
-type RpcEventType = "response" | "message_end" | "agent_settled";
-const RPC_EVENT_TYPES: ReadonlyMap<string, RpcEventType> = new Map([
-	["response", "response"],
-	["message_end", "message_end"],
-	["agent_settled", "agent_settled"],
-]);
+let childCounter = 0;
 
 export class PiRpcRuntime implements AgentRuntimePort {
 	private readonly children = new Map<string, MutableChild>();
 	private readonly sessionLaunches = new Map<string, Promise<RuntimeBinding>>();
 	private readonly launches = new Set<Promise<RuntimeBinding>>();
+	private readonly activeRunIds = new Set<string>();
 	private readonly options: PiRuntimeOptions;
 	private readonly storage: RuntimeStorage;
 	private closing = false;
@@ -183,9 +125,10 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	): Promise<RuntimeBinding> {
 		if (this.closing) throw new Error("Pi runtime is closed.");
 		throwIfAborted(operation);
+		await verifyNativePiVersion(this.options.command, input.cwd);
 		const launch = createSessionLaunch(input, this.options, this.storage);
 		await prepareSessionLaunch(input, launch);
-		const childProcess = await spawnSessionSafely(this.options.command[0] ?? "pi", launch, input);
+		const childProcess = await spawnSessionSafely(this.options.command[0], launch, input);
 		const child = createStartingChild(childProcess, input, launch, this.options);
 		await this.registerStartingChild(input, launch, child);
 		return this.completeSessionStartup(input, launch, child, operation);
@@ -235,26 +178,59 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			this.children.set(sessionId, child);
 			return child.binding;
 		} catch (error) {
-			this.children.delete(key);
-			await removeSessionCapability(launch);
-			await cleanupStartingChild(launch, child);
-			throw error;
+			return this.cleanupFailedSessionStartup(
+				key,
+				launch,
+				child,
+				error instanceof Error ? error : new Error(String(error)),
+			);
 		}
 	}
-	async send(binding: RuntimeBinding, message: string, operation?: OperationContext): Promise<RuntimeTurn> {
+
+	private async cleanupFailedSessionStartup(
+		key: string,
+		launch: SessionLaunch,
+		child: MutableChild,
+		error: Error,
+	): Promise<never> {
+		this.children.delete(key);
+		try {
+			await removeSessionCapability(launch);
+			await cleanupChild(child);
+		} catch (cleanupError) {
+			throw new Error(`${error.message} (cleanup failed: ${String(cleanupError)})`);
+		}
+		throw error;
+	}
+	/**
+	 * RPC has no public per-prompt provider cap, so enforcement begins when a completed assistant message is observed.
+	 * Abort is reactive: an already-started provider response or tool may finish before the child handles it.
+	 */
+	async send(
+		binding: RuntimeBinding,
+		message: string,
+		options: RuntimeSendOptions,
+		operation?: OperationContext,
+	): Promise<RuntimeTurn> {
 		const child = this.requireChild(binding);
 		if (child.sending) throw new Error(`Pi session ${binding.sessionId} is already processing a prompt.`);
 		throwIfAborted(operation);
-		return this.sendTurn(child, message, operation);
+		const allowance = readRuntimeTokenAllowance(options);
+		return this.sendTurn(child, message, options.runId, operation, allowance);
 	}
 
 	private async sendTurn(
 		child: MutableChild,
 		message: string,
+		runId: string | undefined,
 		operation: OperationContext | undefined,
+		tokenAllowance: number,
 	): Promise<RuntimeTurn> {
+		this.beginTrackedInvocation(child, runId);
 		child.turnUsage = undefined;
 		child.lastOutput = "";
+		child.turnAllowance = tokenAllowance;
+		child.allowanceStop = undefined;
 		child.sending = true;
 		const completion = waitForAgentSettled(child, agentTimeout(child, this.options.agentTimeoutMs));
 		const abortHandler = createAbortHandler(child, operation, rpcTimeout(this.options.rpcTimeoutMs));
@@ -264,18 +240,47 @@ export class PiRpcRuntime implements AgentRuntimePort {
 			await sendPrompt(child, message, rpcTimeout(this.options.rpcTimeoutMs), operation?.signal);
 			return await completedTurn(child, completion);
 		} catch (error) {
-			const failure = error instanceof Error ? error : new Error(String(error));
-			await failTurn(child, completion, failure);
-			throw failure;
+			const failure = new RuntimeTurnError(error instanceof Error ? error.message : String(error), child.turnUsage);
+			throw await failTurn(child, completion, failure);
 		} finally {
 			removeAbortHandler(operation, abortHandler);
 			child.sending = false;
+			child.turnAllowance = undefined;
+			child.allowanceStop = undefined;
+			this.finishTrackedInvocation(child, runId);
 		}
+	}
+
+	private beginTrackedInvocation(child: MutableChild, runId: string | undefined): void {
+		this.assertRunAvailable(runId);
+		if (child.invocationWriter !== undefined)
+			throw new Error(`Pi session ${child.binding.sessionId} has incomplete invocation cleanup.`);
+		child.invocationWriter = beginInvocation(runId, child.binding, this.storage);
+		if (runId !== undefined) this.activeRunIds.add(runId);
+	}
+
+	private assertRunAvailable(runId: string | undefined): void {
+		if (runId !== undefined && this.activeRunIds.has(runId))
+			throw new Error(`Runtime invocation ${runId} is already active in this runtime.`);
+	}
+
+	private finishTrackedInvocation(child: MutableChild, runId: string | undefined): void {
+		if (invocationWriterIsSettled(child.invocationWriter)) child.invocationWriter = undefined;
+		if (runId !== undefined) this.activeRunIds.delete(runId);
+	}
+
+	async reconcileInvocation(runId: string, operation?: OperationContext): Promise<RuntimeInvocationEvidence> {
+		throwIfAborted(operation);
+		if (this.activeRunIds.has(runId)) throw new Error(`Runtime invocation ${runId} is still active in this runtime.`);
+		const evidence = await reconcilePersistedInvocation(runId, this.storage);
+		throwIfAborted(operation);
+		return evidence;
 	}
 	async getState(binding: RuntimeBinding, operation?: OperationContext): Promise<RuntimeState> {
 		throwIfAborted(operation);
 		const child = this.children.get(binding.sessionId);
-		if (child === undefined || !sameBindingIdentity(binding, child.binding)) return "unreachable";
+		if (child === undefined) return unattachedRuntimeState(binding);
+		if (!sameBindingIdentity(binding, child.binding)) return unattachedRuntimeState(child.binding);
 		if (child.sending) return "working";
 		return this.readChildState(child, operation);
 	}
@@ -344,1440 +349,6 @@ async function cleanupRuntimeChildren(children: Iterable<MutableChild>): Promise
 		}
 	}
 	return failures;
-}
-
-function removeEphemeralSession(child: MutableChild): void {
-	if (!child.ephemeralSession || child.binding.sessionPath.length === 0) return;
-	try {
-		unlinkSync(child.binding.sessionPath);
-	} catch {
-		// The child may have removed its session file already.
-	}
-}
-
-function attachOutput(child: MutableChild, onExit: () => void, onProtocolFailure: (error: Error) => void): void {
-	child.process.stdout.on("data", (chunk: Buffer) => {
-		if (child.closed) return;
-		try {
-			consumeChunk(child, chunk);
-		} catch (error) {
-			onProtocolFailure(error instanceof Error ? error : new Error(String(error)));
-		}
-	});
-	child.process.stderr.on("data", (chunk: Buffer) => {
-		child.lastError = `${child.lastError}${chunk.toString("utf8")}`.slice(-4000);
-	});
-	let exited = false;
-	const cleanupAfterExit = (): void => {
-		if (exited) return;
-		exited = true;
-		// Do not release ownership until the entire owned group is confirmed stopped.
-		onExit();
-	};
-	child.process.stdin.on("error", (error) => {
-		child.closed = true;
-		child.lastError = `${child.lastError}${error.message}`.slice(-4000);
-		rejectPending(child, error);
-		rejectAgentEnd(child, error);
-		cleanupAfterExit();
-	});
-	child.process.on("error", (error) => {
-		child.closed = true;
-		rejectPending(child, error);
-		rejectAgentEnd(child, error);
-		cleanupAfterExit();
-	});
-	child.process.on("exit", () => {
-		child.closed = true;
-		const detail = child.lastError.trim();
-		const error = new Error(detail.length === 0 ? "Pi child exited before responding." : `Pi child exited: ${detail}`);
-		rejectPending(child, error);
-		rejectAgentEnd(child, error);
-		cleanupAfterExit();
-	});
-}
-function consumeChunk(child: MutableChild, chunk: Buffer): void {
-	while (chunk.length > 0) {
-		const newline = chunk.indexOf(10);
-		const end = newline < 0 ? chunk.length : newline + 1;
-		appendFrameBytes(child, chunk.subarray(0, end));
-		chunk = chunk.subarray(end);
-		if (newline >= 0) consumeBufferedLine(child);
-	}
-}
-
-function appendFrameBytes(child: MutableChild, bytes: Buffer): void {
-	if (child.buffer.length + bytes.length > child.maxRpcFrameBytes)
-		throw new Error(`Pi RPC frame exceeded the ${child.maxRpcFrameBytes}-byte limit.`);
-	child.buffer = Buffer.concat([child.buffer, bytes]);
-}
-
-function consumeBufferedLine(child: MutableChild): void {
-	const newline = child.buffer.indexOf(10);
-	if (newline < 0) return;
-	const line = child.buffer.subarray(0, newline).toString("utf8").replace(/\r$/, "");
-	child.buffer = child.buffer.subarray(newline + 1);
-	if (line.trim().length > 0) consumeLine(child, line);
-}
-
-function consumeLine(child: MutableChild, line: string): void {
-	const event = parseRpcEvent(line);
-	const type = RPC_EVENT_TYPES.get(event.type ?? "");
-	if (type === undefined) return;
-	dispatchRpcEvent(child, event, type);
-}
-
-function dispatchRpcEvent(child: MutableChild, event: RpcEvent, type: RpcEventType): void {
-	if (type === "response") consumeResponse(child, event);
-	if (type === "message_end") consumeMessage(child, event);
-	if (type === "agent_settled") resolveAgentEnd(child);
-}
-
-function parseRpcEvent(line: string): RpcEvent {
-	const parsed = parseRpcObject(line);
-	const type = requiredRpcText(parsed, "type");
-	if (type === "response") return readRpcResponseEvent(parsed);
-	if (type === "message_end") return readRpcMessageEvent(parsed);
-	return { type };
-}
-
-function parseRpcObject(line: string): JsonObject {
-	let parsed: JsonValue;
-	try {
-		parsed = JSON.parse(line);
-	} catch {
-		throw new Error("Pi RPC frame was not valid JSON.");
-	}
-	if (!isJsonObject(parsed)) throw new Error("Pi RPC frame was not a JSON object.");
-	return parsed;
-}
-
-function readRpcResponseEvent(parsed: JsonObject): RpcEvent {
-	return {
-		type: "response",
-		id: optionalRpcText(parsed, "id"),
-		command: requiredRpcText(parsed, "command"),
-		success: requiredRpcBoolean(parsed, "success"),
-		data: optionalRpcData(parsed["data"]),
-		error: optionalRpcText(parsed, "error"),
-	};
-}
-
-function readRpcMessageEvent(parsed: JsonObject): RpcEvent {
-	const message = parsed["message"];
-	if (!isJsonObject(message)) throw new Error("Pi RPC message_end event is invalid.");
-	return { type: "message_end", message: readRpcMessage(message) };
-}
-
-function readRpcMessage(parsed: JsonObject): RpcMessage {
-	const role = requiredRpcText(parsed, "role");
-	if (role !== "assistant") return { role };
-	const content = parsed["content"];
-	if (!Array.isArray(content)) throw new Error("Pi RPC message content is invalid.");
-	return {
-		role: requiredRpcText(parsed, "role"),
-		content: content.map(readRpcBlock),
-		usage: optionalRpcUsage(parsed["usage"]),
-	};
-}
-
-function readRpcBlock(value: JsonValue): RpcBlock {
-	if (!isJsonObject(value)) throw new Error("Pi RPC message block is invalid.");
-	return { type: optionalRpcText(value, "type"), text: optionalRpcText(value, "text") };
-}
-
-function optionalRpcData(value: JsonValue | undefined): RpcData | undefined {
-	return value === undefined
-		? undefined
-		: isJsonObject(value)
-			? {
-					sessionId: optionalRpcText(value, "sessionId"),
-					sessionFile: optionalRpcText(value, "sessionFile"),
-					isStreaming: optionalRpcBoolean(value, "isStreaming"),
-				}
-			: invalidRpcField("data");
-}
-
-function optionalRpcUsage(value: JsonValue | undefined): RpcUsage | undefined {
-	if (value === undefined) return undefined;
-	if (!isJsonObject(value)) return invalidRpcField("usage");
-	return {
-		input: optionalRpcNumber(value, "input"),
-		output: optionalRpcNumber(value, "output"),
-		cacheRead: optionalRpcNumber(value, "cacheRead"),
-		cacheWrite: optionalRpcNumber(value, "cacheWrite"),
-	};
-}
-
-function requiredRpcText(value: JsonObject, key: string): string {
-	const result = optionalRpcText(value, key);
-	if (result === undefined) throw new Error(`Pi RPC event field ${key} is invalid.`);
-	return result;
-}
-
-function optionalRpcText(value: JsonObject, key: string): string | undefined {
-	const entry = value[key];
-	return entry === undefined ? undefined : isText(entry) ? entry : invalidRpcField(key);
-}
-
-function requiredRpcBoolean(value: JsonObject, key: string): boolean {
-	const result = optionalRpcBoolean(value, key);
-	if (result === undefined) throw new Error(`Pi RPC event field ${key} is invalid.`);
-	return result;
-}
-
-function optionalRpcBoolean(value: JsonObject, key: string): boolean | undefined {
-	const entry = value[key];
-	return entry === undefined ? undefined : entry === true || entry === false ? entry : invalidRpcField(key);
-}
-
-function optionalRpcNumber(value: JsonObject, key: string): number | undefined {
-	const entry = value[key];
-	return entry === undefined ? undefined : isInteger(entry) ? entry : invalidRpcField(key);
-}
-
-function invalidRpcField(key: string): never {
-	throw new Error(`Pi RPC event field ${key} is invalid.`);
-}
-
-function consumeResponse(child: MutableChild, event: RpcEvent): void {
-	try {
-		const response = readResponse(event);
-		if (response.id !== undefined) resolvePendingResponse(child, response.id, response);
-	} catch {
-		// Ignore malformed responses and continue consuming the stream.
-	}
-}
-
-function resolvePendingResponse(child: MutableChild, id: string, response: RpcResponse): void {
-	const pending = child.pending.get(id);
-	if (pending === undefined) return;
-	child.pending.delete(id);
-	clearTimeout(pending.timer);
-	pending.resolve(response);
-}
-
-function consumeMessage(child: MutableChild, event: RpcEvent): void {
-	if (!isAssistantMessage(event.message)) return;
-	child.lastOutput = assistantText(event.message);
-	const usage = readTokenUsage(event.message.usage);
-	if (usage !== undefined) child.turnUsage = addTokenUsage(child.turnUsage, usage);
-}
-
-let requestCounter = 0;
-let childCounter = 0;
-
-type LaunchLease = Readonly<{
-	processGroupId?: number | undefined;
-	processStartTime?: string | undefined;
-	capabilityFile?: string | undefined;
-	processMarker?: string | undefined;
-	ownerProcessId?: number | undefined;
-	createdAt?: number | undefined;
-}>;
-
-const LAUNCH_INTENT_STALE_MS = 60_000;
-
-function createSessionLaunch(input: SessionInput, options: PiRuntimeOptions, storage: RuntimeStorage): SessionLaunch {
-	const sessionPath = storage.ownedPath(input.sessionPath ?? storage.ephemeralSessionPath());
-	const capabilityNonce = sessionCapabilityNonce(input);
-	const capabilityToken = createSessionCapability(input, options, capabilityNonce);
-	const capabilityFile = sessionCapabilityFile(capabilityToken, storage);
-	const processMarker = nanoid();
-	return {
-		sessionPath,
-		args: sessionArguments(input, options, sessionPath),
-		capabilityNonce,
-		capabilityToken,
-		capabilityFile,
-		environment: sessionEnvironment(input, options, capabilityFile, capabilityNonce, processMarker),
-		processMarker,
-		storage,
-	};
-}
-
-function sessionArguments(input: SessionInput, options: PiRuntimeOptions, sessionPath: string): string[] {
-	return [
-		...options.command.slice(1),
-		"--mode",
-		"rpc",
-		"--model",
-		input.model,
-		"--thinking",
-		input.thinking,
-		"--session",
-		sessionPath,
-		...toolArguments(input.tools),
-		...extensionArguments(options.extensionPath),
-		"--khala-role",
-		input.role,
-	];
-}
-
-function toolArguments(tools: readonly string[]): readonly string[] {
-	return tools.length === 0 ? ["--no-tools"] : ["--tools", tools.join(",")];
-}
-
-function extensionArguments(extensionPath: string | undefined): readonly string[] {
-	return extensionPath === undefined ? [] : ["--extension", extensionPath];
-}
-
-function sessionCapabilityNonce(input: SessionInput): string | undefined {
-	return input.tools.length === 0 ? undefined : (input.bindingScope?.nonce ?? nanoid());
-}
-
-function sessionCapabilityFile(token: string | undefined, storage: RuntimeStorage): string | undefined {
-	return token === undefined ? undefined : storage.capabilityFilePath();
-}
-
-function createSessionCapability(
-	input: SessionInput,
-	options: PiRuntimeOptions,
-	capabilityNonce: string | undefined,
-): string | undefined {
-	if (input.tools.length === 0) return undefined;
-	const token = createCapability(
-		options.authorityPrivateKey,
-		input.role,
-		capabilityScopeForInput(input, capabilityNonce),
-	);
-	if (token === undefined) throw new Error("This runtime cannot launch a governed child without an authority key.");
-	return token;
-}
-
-function capabilityScopeForInput(input: SessionInput, nonce: string | undefined): CapabilityScopeInput {
-	return { workId: input.bindingScope?.workId, executionId: input.bindingScope?.executionId, nonce };
-}
-
-function sessionEnvironment(
-	input: SessionInput,
-	options: PiRuntimeOptions,
-	capabilityFile: string | undefined,
-	capabilityNonce: string | undefined,
-	processMarker: string,
-): NodeJS.ProcessEnv {
-	const environment = childEnvironment({
-		...process.env,
-		...options.baseEnvironment,
-		KHALA_ALLOWED_PATHS: input.allowedPaths === undefined ? undefined : JSON.stringify(input.allowedPaths),
-		KHALA_SANDBOX_ROOT: input.sandboxRoot,
-		KHALA_BOUND_WORK_ID: input.bindingScope?.workId,
-		KHALA_BOUND_EXECUTION_ID: input.bindingScope?.executionId,
-		KHALA_PROCESS_MARKER: processMarker,
-	});
-	delete environment["KHALA_ROLE_TOKEN"];
-	delete environment["KHALA_ROLE_TOKEN_FILE"];
-	delete environment["KHALA_ROLE_NONCE"];
-	addCapabilityEnvironment(environment, capabilityFile, capabilityNonce);
-	return environment;
-}
-
-function addCapabilityEnvironment(
-	environment: NodeJS.ProcessEnv,
-	capabilityFile: string | undefined,
-	capabilityNonce: string | undefined,
-): void {
-	if (capabilityFile !== undefined) environment["KHALA_ROLE_TOKEN_FILE"] = capabilityFile;
-	if (capabilityNonce !== undefined) environment["KHALA_ROLE_NONCE"] = capabilityNonce;
-}
-
-async function prepareSessionLaunch(input: SessionInput, launch: SessionLaunch): Promise<void> {
-	try {
-		await prepareSessionPath(input, launch);
-		await writeSessionCapability(launch);
-	} catch (error) {
-		await removeSessionCapability(launch);
-		throw error;
-	}
-}
-
-async function prepareSessionPath(input: SessionInput, launch: SessionLaunch): Promise<void> {
-	await launch.storage.prepare();
-	await launch.storage.prepareSessionFile(launch.sessionPath);
-	if (input.sessionPath !== undefined)
-		await reserveLaunch(launch.sessionPath, launch.capabilityFile, launch.processMarker, launch.storage);
-}
-
-async function writeSessionCapability(launch: SessionLaunch): Promise<void> {
-	if (launch.capabilityFile !== undefined && launch.capabilityToken !== undefined)
-		await writeCapabilityFile(launch.capabilityFile, launch.capabilityToken, launch.storage);
-}
-
-async function removeSessionCapability(launch: SessionLaunch): Promise<void> {
-	if (launch.capabilityFile !== undefined) await unlink(launch.capabilityFile).catch(() => undefined);
-}
-
-function spawnSessionProcess(
-	command: string,
-	args: readonly string[],
-	cwd: string,
-	environment: NodeJS.ProcessEnv,
-): ChildProcessWithoutNullStreams {
-	return spawn(command, args, {
-		cwd,
-		detached: process.platform !== "win32",
-		env: environment,
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-}
-
-async function spawnSessionSafely(
-	command: string,
-	launch: SessionLaunch,
-	input: SessionInput,
-): Promise<ChildProcessWithoutNullStreams> {
-	try {
-		return spawnSessionProcess(command, launch.args, input.cwd, launch.environment);
-	} catch (error) {
-		await removeSessionCapability(launch);
-		if (input.sessionPath !== undefined)
-			removeLaunchLeaseSync(launch.sessionPath, launch.processMarker, launch.storage);
-		throw error;
-	}
-}
-
-function startupSessionId(state: RpcResponse, sessionPath: string, storage: RuntimeStorage): string {
-	if (!state.success) throw new Error(state.error ?? "Pi did not return its session state.");
-	const sessionId = readSessionText(state.data, "sessionId");
-	const reportedSessionPath = storage.ownedPath(readSessionText(state.data, "sessionFile"));
-	if (reportedSessionPath !== sessionPath)
-		throw new Error("Pi returned a session file outside the runtime-owned session path.");
-	return sessionId;
-}
-
-function assertChildRunning(child: MutableChild): void {
-	if ([child.closed, child.process.exitCode !== null, child.process.signalCode !== null].some(Boolean))
-		throw new Error("Pi child exited during session startup.");
-}
-
-async function writePersistentLaunchLease(
-	input: SessionInput,
-	launch: SessionLaunch,
-	child: MutableChild,
-): Promise<void> {
-	if (input.sessionPath !== undefined)
-		await writeLaunchLease(launch.sessionPath, child.binding, launch.capabilityFile, launch.storage);
-}
-
-async function cleanupStartingChild(launch: SessionLaunch, child: MutableChild): Promise<void> {
-	await removeSessionCapability(launch);
-	await terminateChild(child);
-	removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, launch.storage);
-	removeEphemeralSession(child);
-}
-
-function createStartingChild(
-	process: ChildProcessWithoutNullStreams,
-	input: SessionInput,
-	launch: SessionLaunch,
-	options: PiRuntimeOptions,
-): MutableChild {
-	const binding: RuntimeBinding = {
-		sessionId: "starting",
-		sessionPath: launch.sessionPath,
-		processGroupId: process.pid,
-		processStartTime: readProcessStartTime(process.pid),
-		capabilityNonce: launch.capabilityNonce,
-		processMarker: launch.processMarker,
-		promptIdentity: input.promptIdentity,
-	};
-	return {
-		process,
-		pending: new Map(),
-		binding,
-		agentTimeoutMs: input.agentTimeoutMs,
-		maxRpcFrameBytes: options.maxRpcFrameBytes ?? DEFAULT_MAX_RPC_FRAME_BYTES,
-		buffer: Buffer.alloc(0),
-		lastOutput: "",
-		turnUsage: undefined,
-		lastError: "",
-		closed: false,
-		sending: false,
-		lastAgentEnd: undefined,
-		resolveAgentEnd: undefined,
-		rejectAgentEnd: undefined,
-		agentTimer: undefined,
-		ephemeralSession: input.sessionPath === undefined,
-		storage: launch.storage,
-		remove: undefined,
-		cleanupPromise: undefined,
-	};
-}
-
-async function writeCapabilityFile(path: string, token: string, storage: RuntimeStorage): Promise<void> {
-	await storage.prepareSessionFile(path, false);
-	await writeFile(path, token, { encoding: "utf8", mode: 0o600, flag: "wx" });
-}
-async function reserveLaunch(
-	sessionPath: string,
-	capabilityFile: string | undefined,
-	processMarker: string,
-	storage: RuntimeStorage,
-): Promise<void> {
-	await withLaunchLock(sessionPath, storage, async () => {
-		const path = storage.launchLeasePath(sessionPath);
-		await storage.prepareSessionFile(path, false);
-		const text = await readFile(path, "utf8").catch(() => undefined);
-		if (text !== undefined) await replaceExistingLaunch(path, sessionPath, text, storage);
-		await writeLaunchIntentSafely(sessionPath, capabilityFile, processMarker, storage);
-	});
-}
-
-async function writeLaunchIntentSafely(
-	sessionPath: string,
-	capabilityFile: string | undefined,
-	processMarker: string,
-	storage: RuntimeStorage,
-): Promise<void> {
-	try {
-		await writeLaunchIntent(sessionPath, capabilityFile, processMarker, storage);
-	} catch (error) {
-		if (error instanceof Error && isExistsError(error))
-			throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
-		throw error;
-	}
-}
-
-async function replaceExistingLaunch(
-	path: string,
-	sessionPath: string,
-	text: string,
-	storage: RuntimeStorage,
-): Promise<void> {
-	const lease = parseLaunchLease(text);
-	validateLeaseCapability(lease, storage);
-	await assertLaunchAvailable(path, sessionPath, lease);
-	const displacedPath = `${path}.stale-${nanoid()}`;
-	await renameStaleLaunch(path, displacedPath, sessionPath);
-	if (lease?.capabilityFile !== undefined) await unlink(lease.capabilityFile).catch(() => undefined);
-	await unlink(displacedPath).catch(() => undefined);
-}
-
-function validateLeaseCapability(lease: LaunchLease | undefined, storage: RuntimeStorage): void {
-	if (lease?.capabilityFile !== undefined) storage.ownedPath(lease.capabilityFile);
-}
-
-async function assertLaunchAvailable(path: string, sessionPath: string, lease: LaunchLease | undefined): Promise<void> {
-	if (isProcessLease(lease)) {
-		assertLiveProcessLease(sessionPath, lease);
-		return;
-	}
-	await assertLaunchIntentAvailable(path, sessionPath, lease);
-}
-
-function isProcessLease(lease: LaunchLease | undefined): lease is ProcessLease {
-	return lease?.processGroupId !== undefined;
-}
-
-type ProcessLease = LaunchLease & Readonly<{ processGroupId: number }>;
-
-function assertLiveProcessLease(sessionPath: string, lease: ProcessLease): void {
-	if (processGroupExists(lease.processGroupId))
-		throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
-}
-
-async function assertLaunchIntentAvailable(
-	path: string,
-	sessionPath: string,
-	lease: LaunchLease | undefined,
-): Promise<void> {
-	if (liveLaunchIntent(lease)) throw new Error(`Runtime session ${sessionPath} is already launching.`);
-	const createdAt = await launchIntentCreatedAt(path, lease);
-	if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
-		throw new Error(`Runtime session ${sessionPath} is already launching.`);
-}
-
-function liveLaunchIntent(lease: LaunchLease | undefined): boolean {
-	return lease?.ownerProcessId !== undefined && processExists(lease.ownerProcessId);
-}
-
-async function launchIntentCreatedAt(path: string, lease: LaunchLease | undefined): Promise<number> {
-	return lease?.createdAt ?? (await stat(path)).mtimeMs;
-}
-
-async function renameStaleLaunch(path: string, displacedPath: string, sessionPath: string): Promise<void> {
-	try {
-		await rename(path, displacedPath);
-	} catch (error) {
-		if (error instanceof Error && isMissingFileError(error))
-			throw new Error(`Runtime session ${sessionPath} is already owned by another Khala process.`);
-		throw error;
-	}
-}
-
-async function withLaunchLock<T>(
-	sessionPath: string,
-	storage: RuntimeStorage,
-	operation: () => Promise<T>,
-): Promise<T> {
-	const lockPath = storage.launchLockPath(sessionPath);
-	await acquireLaunchLock(lockPath, sessionPath, storage);
-	try {
-		return await operation();
-	} finally {
-		await rmdir(lockPath).catch(() => undefined);
-	}
-}
-
-async function acquireLaunchLock(lockPath: string, sessionPath: string, storage: RuntimeStorage): Promise<void> {
-	storage.ownedPath(lockPath);
-	try {
-		await mkdir(lockPath, { mode: 0o700 });
-	} catch (error) {
-		if (!(error instanceof Error)) throw error;
-		await replaceStaleLaunchLock(lockPath, sessionPath, error, storage);
-	}
-}
-
-async function replaceStaleLaunchLock(
-	lockPath: string,
-	sessionPath: string,
-	error: Error,
-	storage: RuntimeStorage,
-): Promise<void> {
-	if (!isExistsError(error)) throw error;
-	await chmod(lockPath, 0o700);
-	const createdAt = await stat(lockPath)
-		.then((entry) => entry.mtimeMs)
-		.catch(() => Date.now());
-	if (Date.now() - createdAt < LAUNCH_INTENT_STALE_MS)
-		throw new Error(`Runtime session ${sessionPath} is already launching.`);
-	await chmod(lockPath, 0o700);
-	await rmdir(lockPath).catch(() => undefined);
-	storage.ownedPath(lockPath);
-	await mkdir(lockPath, { mode: 0o700 });
-}
-
-function isMissingFileError(error: Error): boolean {
-	return "code" in error && error.code === "ENOENT";
-}
-
-function isExistsError(error: Error): boolean {
-	return "code" in error && error.code === "EEXIST";
-}
-
-function processExists(processId: number): boolean {
-	try {
-		process.kill(processId, 0);
-		return true;
-	} catch (error) {
-		return !(error instanceof Error && "code" in error && error.code === "ESRCH");
-	}
-}
-
-async function writeLaunchIntent(
-	sessionPath: string,
-	capabilityFile: string | undefined,
-	processMarker: string,
-	storage: RuntimeStorage,
-): Promise<void> {
-	await writeFile(
-		storage.launchLeasePath(sessionPath),
-		JSON.stringify({ capabilityFile, processMarker, ownerProcessId: process.pid, createdAt: Date.now() }),
-		{
-			encoding: "utf8",
-			mode: 0o600,
-			flag: "wx",
-		},
-	);
-}
-async function writeLaunchLease(
-	sessionPath: string,
-	binding: RuntimeBinding,
-	capabilityFile: string | undefined,
-	storage: RuntimeStorage,
-): Promise<void> {
-	if (binding.processGroupId === undefined) return;
-	const existing = parseLaunchLease(readFileSync(storage.launchLeasePath(sessionPath), "utf8"));
-	if (existing?.processMarker !== binding.processMarker) throw new Error("Runtime launch ownership was lost.");
-	const leasePath = storage.launchLeasePath(sessionPath);
-	const temporaryPath = storage.launchTemporaryPath(sessionPath);
-	try {
-		await writeFile(temporaryPath, launchLeaseJson(binding, capabilityFile, existing), {
-			encoding: "utf8",
-			mode: 0o600,
-			flag: "wx",
-		});
-		await rename(temporaryPath, leasePath);
-	} finally {
-		await unlink(temporaryPath).catch(() => undefined);
-	}
-}
-
-function launchOwner(existing: LaunchLease | undefined): number {
-	return existing?.ownerProcessId ?? process.pid;
-}
-
-function launchCreatedAt(existing: LaunchLease | undefined): number {
-	return existing?.createdAt ?? Date.now();
-}
-
-function launchLeaseJson(
-	binding: RuntimeBinding,
-	capabilityFile: string | undefined,
-	existing: LaunchLease | undefined,
-): string {
-	return JSON.stringify({
-		processGroupId: binding.processGroupId,
-		processStartTime: binding.processStartTime,
-		capabilityFile,
-		processMarker: binding.processMarker,
-		ownerProcessId: launchOwner(existing),
-		createdAt: launchCreatedAt(existing),
-	});
-}
-
-function removeLaunchLeaseSync(sessionPath: string, processMarker: string | undefined, storage: RuntimeStorage): void {
-	if (sessionPath.length === 0) return;
-	try {
-		const leasePath = storage.launchLeasePath(sessionPath);
-		const existing = parseLaunchLease(readFileSync(leasePath, "utf8"));
-		if (leaseBelongsToAnotherProcess(existing, processMarker)) return;
-		unlinkSync(leasePath);
-	} catch {
-		// The lease may already have been removed by normal completion.
-	}
-}
-
-function leaseBelongsToAnotherProcess(lease: LaunchLease | undefined, processMarker: string | undefined): boolean {
-	return processMarker !== undefined && lease?.processMarker !== undefined && lease.processMarker !== processMarker;
-}
-function parseLaunchLease(text: string): LaunchLease | undefined {
-	const parsed = readLaunchLeaseJson(text);
-	if (parsed === undefined || !isJsonObject(parsed)) return undefined;
-	return launchLeaseFromObject(parsed);
-}
-
-function readLaunchLeaseJson(text: string): JsonValue | undefined {
-	try {
-		// SAFETY: launch lease JSON is parsed and validated as a JsonValue before its fields are read.
-		return JSON.parse(text) as JsonValue;
-	} catch {
-		return undefined;
-	}
-}
-
-type LaunchLeaseFields = Readonly<{
-	capabilityFile: string | undefined;
-	processMarker: string | undefined;
-	ownerProcessId: number | undefined;
-	createdAt: number | undefined;
-}>;
-
-function launchLeaseFromObject(parsed: JsonObject): LaunchLease | undefined {
-	const fields = readLaunchLeaseFields(parsed);
-	if (fields === undefined) return undefined;
-	if (isLaunchIntent(parsed)) return launchIntentLease(fields);
-	const processGroupId = parsed["processGroupId"];
-	const processStartTime = parsed["processStartTime"];
-	const process = readLeaseProcess(processGroupId, processStartTime);
-	if (process === undefined) return undefined;
-	return { ...fields, ...process };
-}
-
-function isLaunchIntent(parsed: JsonObject): boolean {
-	return parsed["processGroupId"] === undefined && parsed["processStartTime"] === undefined;
-}
-
-function readLeaseProcess(
-	processGroupId: JsonValue | undefined,
-	processStartTime: JsonValue | undefined,
-): { processGroupId: number; processStartTime: string | undefined } | undefined {
-	if (!validProcessGroup(processGroupId) || !validProcessStartTime(processStartTime)) return undefined;
-	return { processGroupId, processStartTime };
-}
-
-function readLaunchLeaseFields(parsed: JsonObject): LaunchLeaseFields | undefined {
-	const valid = validLaunchLeaseFields(parsed);
-	if (!valid) return undefined;
-	return {
-		capabilityFile: optionalLeaseText(parsed["capabilityFile"]),
-		processMarker: optionalLeaseText(parsed["processMarker"]),
-		ownerProcessId: optionalLeaseInteger(parsed["ownerProcessId"]),
-		createdAt: optionalLeaseInteger(parsed["createdAt"]),
-	};
-}
-
-function validLaunchLeaseFields(parsed: JsonObject): boolean {
-	return [
-		validOptionalPositiveInteger(parsed["ownerProcessId"]),
-		validOptionalPositiveInteger(parsed["createdAt"]),
-		parsed["capabilityFile"] === undefined || isText(parsed["capabilityFile"]),
-		parsed["processMarker"] === undefined || isText(parsed["processMarker"]),
-	].every(Boolean);
-}
-
-function validOptionalPositiveInteger(value: JsonValue | undefined): boolean {
-	return value === undefined || (isInteger(value) && value > 0);
-}
-
-function optionalLeaseText(value: JsonValue | undefined): string | undefined {
-	if (value === undefined) return undefined;
-	return isText(value) ? value : undefined;
-}
-
-function optionalLeaseInteger(value: JsonValue | undefined): number | undefined {
-	if (value === undefined) return undefined;
-	return isInteger(value) ? value : undefined;
-}
-
-function launchIntentLease(fields: LaunchLeaseFields): LaunchLease {
-	return hasLeaseFields(fields) ? fields : {};
-}
-
-function hasLeaseFields(fields: LaunchLeaseFields): boolean {
-	return [
-		fields.capabilityFile !== undefined,
-		fields.processMarker !== undefined,
-		fields.ownerProcessId !== undefined,
-		fields.createdAt !== undefined,
-	].some(Boolean);
-}
-
-function validProcessGroup(value: JsonValue | undefined): value is number {
-	return isInteger(value) && value > 0;
-}
-
-function validProcessStartTime(value: JsonValue | undefined): value is string | undefined {
-	return value === undefined || (isText(value) && value.length > 0);
-}
-
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
-}
-
-function isText(value: JsonValue | undefined): value is string {
-	return value !== undefined && value === String(value);
-}
-
-function isInteger(value: JsonValue | undefined): value is number {
-	return value !== undefined && value === Number(value) && Number.isSafeInteger(Number(value));
-}
-
-const SENSITIVE_ENVIRONMENT_KEY = /(API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)/i;
-
-function childEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-	for (const key of Object.keys(environment)) {
-		if (SENSITIVE_ENVIRONMENT_KEY.test(key)) delete environment[key];
-	}
-	return environment;
-}
-function readProcessStartTime(processId: number | undefined): string | undefined {
-	if (processId === undefined || process.platform === "win32") return undefined;
-	return readUnixProcessStartTime(processId);
-}
-
-function readUnixProcessStartTime(processId: number): string | undefined {
-	const linuxStartTime = readLinuxProcessStartTime(processId);
-	return linuxStartTime ?? readPsProcessStartTime(processId);
-}
-
-function readLinuxProcessStartTime(processId: number): string | undefined {
-	try {
-		const stat = readFileSync(`/proc/${processId}/stat`, "utf8");
-		const endOfCommand = stat.lastIndexOf(")");
-		return stat
-			.slice(endOfCommand + 2)
-			.trim()
-			.split(/\s+/)[19];
-	} catch {
-		return undefined;
-	}
-}
-
-function readPsProcessStartTime(processId: number): string | undefined {
-	try {
-		const value = execFileSync("ps", ["-o", "lstart=", "-p", String(processId)], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		}).trim();
-		return value.length === 0 ? undefined : value;
-	} catch {
-		return undefined;
-	}
-}
-const PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
-const PROCESS_TERMINATION_POLL_MS = 25;
-
-async function requestAbortBestEffort(child: MutableChild, timeoutMs: number): Promise<void> {
-	try {
-		await request(child, "abort", {}, timeoutMs);
-	} catch {
-		// Termination confirmation below is the authoritative stop result.
-	}
-}
-
-async function terminateChild(child: MutableChild): Promise<void> {
-	const processGroupId = child.binding.processGroupId ?? child.process.pid;
-	const leaderExited = child.process.exitCode !== null || child.process.signalCode !== null;
-	await terminateProcessGroup(processGroupId, child.binding.processStartTime, leaderExited);
-}
-
-function cleanupChild(child: MutableChild): Promise<void> {
-	if (child.cleanupPromise !== undefined) return child.cleanupPromise;
-	const cleanup = (async () => {
-		await terminateChild(child);
-		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, child.storage);
-		removeEphemeralSession(child);
-		child.remove?.();
-	})();
-	child.cleanupPromise = cleanup;
-	void cleanup.catch(() => {
-		if (child.cleanupPromise === cleanup) child.cleanupPromise = undefined;
-	});
-	return cleanup;
-}
-
-async function terminateProcessGroup(
-	processGroupId: number | undefined,
-	processStartTime: string | undefined,
-	leaderAlreadyExited = false,
-): Promise<void> {
-	assertSupportedProcessPlatform();
-	const ownedProcessGroupId = requireProcessGroupId(processGroupId);
-	if (!hasLiveProcessGroup(ownedProcessGroupId)) {
-		assertExitedProcessGroupOwnership(ownedProcessGroupId, processStartTime, leaderAlreadyExited);
-		return;
-	}
-	assertTerminationOwnership(ownedProcessGroupId, processStartTime, leaderAlreadyExited);
-	signalProcessGroup(ownedProcessGroupId);
-	await waitForProcessGroupTermination(ownedProcessGroupId);
-}
-
-function requireProcessGroupId(processGroupId: number | undefined): number {
-	if (processGroupId === undefined) throw new Error("Cannot prove Pi process ownership without a process group.");
-	return processGroupId;
-}
-
-function assertExitedProcessGroupOwnership(
-	processGroupId: number,
-	processStartTime: string | undefined,
-	leaderAlreadyExited: boolean,
-): void {
-	if (processStartTime === undefined) throw new Error("Cannot prove Pi process ownership after the process exited.");
-	if (readProcessStartTime(processGroupId) !== undefined)
-		assertTerminationOwnership(processGroupId, processStartTime, leaderAlreadyExited);
-}
-
-function isKillableProcessGroup(
-	processGroupId: number | undefined,
-	processStartTime: string | undefined,
-): processGroupId is number {
-	if (processGroupId === undefined) return false;
-	if (process.platform === "win32") return true;
-	return processStartTime !== undefined && readProcessStartTime(processGroupId) === processStartTime;
-}
-
-function assertTerminationOwnership(
-	processGroupId: number,
-	processStartTime: string | undefined,
-	leaderAlreadyExited: boolean,
-): void {
-	if (leaderAlreadyExited) {
-		assertExitedLeaderOwnership(processGroupId, processStartTime);
-		return;
-	}
-	assertLiveLeaderOwnership(processGroupId, processStartTime);
-}
-
-function assertExitedLeaderOwnership(processGroupId: number, processStartTime: string | undefined): void {
-	if (processStartTime === undefined) throw new Error("Cannot prove Pi process ownership after the leader exited.");
-	const liveLeaderStartTime = readProcessStartTime(processGroupId);
-	if (liveLeaderStartTime !== undefined && liveLeaderStartTime !== processStartTime)
-		throw new Error("A different process now owns the Pi process identity.");
-}
-
-function assertLiveLeaderOwnership(processGroupId: number, processStartTime: string | undefined): void {
-	if (!isKillableProcessGroup(processGroupId, processStartTime))
-		throw new Error("Cannot prove Pi process ownership before termination.");
-}
-
-function signalProcessGroup(processGroupId: number): void {
-	try {
-		process.kill(-processGroupId, "SIGKILL");
-	} catch (error) {
-		const failure = error instanceof Error ? error : new Error(String(error));
-		if (isUnexpectedProcessSignalError(failure)) throw failure;
-	}
-}
-
-function assertSupportedProcessPlatform(): void {
-	if (process.platform === "win32") throw new Error("Pi process-tree cleanup is unsupported on Windows.");
-}
-
-function hasLiveProcessGroup(processGroupId: number | undefined): processGroupId is number {
-	return processGroupId !== undefined && processGroupExists(processGroupId);
-}
-
-function isUnexpectedProcessSignalError(error: Error): boolean {
-	return !("code" in error && error.code === "ESRCH");
-}
-
-async function waitForProcessGroupTermination(processGroupId: number): Promise<void> {
-	const deadline = Date.now() + PROCESS_TERMINATION_TIMEOUT_MS;
-	while (processGroupExists(processGroupId)) {
-		if (Date.now() >= deadline) throw new Error("Pi process tree termination could not be confirmed.");
-		await new Promise((resolve) => setTimeout(resolve, PROCESS_TERMINATION_POLL_MS));
-	}
-}
-
-function processGroupExists(processGroupId: number): boolean {
-	if (processGroupId <= 0) return false;
-	return process.platform === "linux"
-		? linuxProcessGroupExists(processGroupId)
-		: posixProcessGroupExists(processGroupId);
-}
-
-function linuxProcessGroupExists(processGroupId: number): boolean {
-	try {
-		return readdirSync("/proc").some((entry) => linuxEntryInProcessGroup(entry, processGroupId));
-	} catch {
-		return true;
-	}
-}
-
-function linuxEntryInProcessGroup(entry: string, processGroupId: number): boolean {
-	if (!isLinuxProcessEntry(entry)) return false;
-	return readLinuxProcessEntry(entry, processGroupId);
-}
-
-function readLinuxProcessEntry(entry: string, processGroupId: number): boolean {
-	try {
-		return processStatBelongsToGroup(readFileSync(`/proc/${entry}/stat`, "utf8"), processGroupId);
-	} catch (error) {
-		if (error instanceof Error && isMissingProcessEntry(error)) return false;
-		throw error;
-	}
-}
-
-function isLinuxProcessEntry(entry: string): boolean {
-	return /^\d+$/.test(entry);
-}
-
-function processStatBelongsToGroup(stat: string, processGroupId: number): boolean {
-	const fields = stat
-		.slice(stat.lastIndexOf(")") + 2)
-		.trim()
-		.split(/\s+/);
-	return Number(fields[2]) === processGroupId && fields[0] !== "Z";
-}
-
-function isMissingProcessEntry(error: Error): boolean {
-	return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH");
-}
-
-function posixProcessGroupExists(processGroupId: number): boolean {
-	try {
-		process.kill(-processGroupId, 0);
-		return true;
-	} catch (error) {
-		return !(error instanceof Error && "code" in error && error.code === "ESRCH");
-	}
-}
-
-function isTransientStartupFailure(message: string): boolean {
-	return message.includes("Pi child exited") || message.includes("Pi RPC get_state timed out");
-}
-
-async function stopUnattachedBinding(binding: RuntimeBinding, storage: RuntimeStorage): Promise<void> {
-	await terminateProcessGroup(binding.processGroupId, binding.processStartTime);
-	removeLaunchLeaseSync(binding.sessionPath, binding.processMarker, storage);
-}
-function sameBindingIdentity(left: RuntimeBinding, right: RuntimeBinding): boolean {
-	return [
-		left.sessionId === right.sessionId,
-		left.sessionPath === right.sessionPath,
-		left.processGroupId === right.processGroupId,
-		left.processStartTime === right.processStartTime,
-		left.capabilityNonce === right.capabilityNonce,
-		left.processMarker === right.processMarker,
-	].every(Boolean);
-}
-
-function request(
-	child: MutableChild,
-	command: string,
-	data: RpcCommandData,
-	timeoutMs: number,
-	signal?: AbortSignal,
-): Promise<RpcResponse> {
-	const id = `khala-${++requestCounter}`;
-	const payload = JSON.stringify({ id, type: command, ...data });
-	return new Promise((resolve, reject) =>
-		initializeRequest(child, id, payload, command, timeoutMs, signal, resolve, reject),
-	);
-}
-
-function initializeRequest(
-	child: MutableChild,
-	id: string,
-	payload: string,
-	command: string,
-	timeoutMs: number,
-	signal: AbortSignal | undefined,
-	resolve: (response: RpcResponse) => void,
-	reject: (error: Error) => void,
-): void {
-	if (signal?.aborted === true) {
-		reject(abortError());
-		return;
-	}
-	let onAbort: () => void = () => undefined;
-	const timer = setTimeout(() => timeoutRequest(child, id, command, timeoutMs, signal, onAbort, reject), timeoutMs);
-	onAbort = () => abortRequest(child, id, timer, reject);
-	signal?.addEventListener("abort", onAbort, { once: true });
-	child.pending.set(id, pendingRequest(timer, signal, onAbort, resolve, reject));
-	writeRequest(child, id, payload, timer, signal, onAbort, reject);
-}
-
-function timeoutRequest(
-	child: MutableChild,
-	id: string,
-	command: string,
-	timeoutMs: number,
-	signal: AbortSignal | undefined,
-	onAbort: () => void,
-	reject: (error: Error) => void,
-): void {
-	child.pending.delete(id);
-	signal?.removeEventListener("abort", onAbort);
-	reject(new Error(`Pi RPC ${command} timed out after ${timeoutMs}ms.`));
-}
-
-function abortRequest(child: MutableChild, id: string, timer: NodeJS.Timeout, reject: (error: Error) => void): void {
-	child.pending.delete(id);
-	clearTimeout(timer);
-	reject(abortError());
-}
-
-function pendingRequest(
-	timer: NodeJS.Timeout,
-	signal: AbortSignal | undefined,
-	onAbort: () => void,
-	resolve: (response: RpcResponse) => void,
-	reject: (error: Error) => void,
-): PendingResponse {
-	return {
-		resolve: (response) => {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", onAbort);
-			resolve(response);
-		},
-		reject: (error) => {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", onAbort);
-			reject(error);
-		},
-		timer,
-	};
-}
-
-function writeRequest(
-	child: MutableChild,
-	id: string,
-	payload: string,
-	timer: NodeJS.Timeout,
-	signal: AbortSignal | undefined,
-	onAbort: () => void,
-	reject: (error: Error) => void,
-): void {
-	try {
-		child.process.stdin.write(`${payload}\n`);
-	} catch (error) {
-		clearTimeout(timer);
-		signal?.removeEventListener("abort", onAbort);
-		child.pending.delete(id);
-		reject(error instanceof Error ? error : new Error(String(error)));
-	}
-}
-
-function agentTimeout(child: MutableChild, fallback: number | undefined): number {
-	return child.agentTimeoutMs ?? fallback ?? 1_800_000;
-}
-
-function rpcTimeout(value: number | undefined): number {
-	return value ?? 10_000;
-}
-
-function validateMaxRpcFrameBytes(value: number | undefined): void {
-	if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
-		throw new Error("Pi RPC frame limit must be a positive safe integer.");
-}
-
-async function completedTurn(child: MutableChild, completion: Promise<string>): Promise<RuntimeTurn> {
-	const output = await completion;
-	return child.turnUsage === undefined ? { output } : { output, usage: child.turnUsage };
-}
-
-async function failTurn(child: MutableChild, completion: Promise<string>, failure: Error): Promise<void> {
-	rejectAgentEnd(child, failure);
-	try {
-		await cleanupChild(child);
-	} catch (error) {
-		const cleanupFailure = error instanceof Error ? error.message : String(error);
-		throw new Error(`${failure.message} Cleanup failed: ${cleanupFailure}`);
-	}
-	await completion.catch(() => undefined);
-}
-
-async function sendPrompt(
-	child: MutableChild,
-	message: string,
-	timeoutMs: number,
-	signal: AbortSignal | undefined,
-): Promise<void> {
-	const response = await sendPromptRequest(child, message, timeoutMs, signal);
-	if (response?.success === false) throw new Error(response.error ?? "Pi rejected the prompt.");
-}
-
-async function sendPromptRequest(
-	child: MutableChild,
-	message: string,
-	timeoutMs: number,
-	signal: AbortSignal | undefined,
-): Promise<RpcResponse | undefined> {
-	try {
-		return await request(child, "prompt", { message }, timeoutMs, signal);
-	} catch (error) {
-		if (error instanceof Error && error.message.startsWith("Pi RPC prompt timed out after ")) return undefined;
-		throw error;
-	}
-}
-
-function createAbortHandler(
-	child: MutableChild,
-	operation: OperationContext | undefined,
-	timeoutMs: number,
-): (() => void) | undefined {
-	if (operation?.signal === undefined) return undefined;
-	return () => {
-		void request(child, "abort", {}, timeoutMs).catch(() => undefined);
-		rejectAgentEnd(child, abortError());
-	};
-}
-
-function registerAbortHandler(operation: OperationContext | undefined, handler: (() => void) | undefined): void {
-	if (operation?.signal !== undefined && handler !== undefined)
-		operation.signal.addEventListener("abort", handler, { once: true });
-}
-
-function removeAbortHandler(operation: OperationContext | undefined, handler: (() => void) | undefined): void {
-	if (operation?.signal !== undefined && handler !== undefined) operation.signal.removeEventListener("abort", handler);
-}
-
-function childRuntimeState(response: RpcResponse): RuntimeState {
-	if (!response.success) return "unknown";
-	return response.data?.isStreaming === true ? "working" : "idle";
-}
-
-function rejectPending(child: MutableChild, error: Error): void {
-	for (const pending of child.pending.values()) {
-		clearTimeout(pending.timer);
-		pending.reject(error);
-	}
-	child.pending.clear();
-}
-
-function waitForAgentSettled(child: MutableChild, timeoutMs: number): Promise<string> {
-	child.lastAgentEnd = new Promise((resolve, reject) => {
-		child.resolveAgentEnd = resolve;
-		child.rejectAgentEnd = reject;
-		child.agentTimer = setTimeout(
-			() => rejectAgentEnd(child, new Error(`Pi agent turn timed out after ${timeoutMs}ms.`)),
-			timeoutMs,
-		);
-	});
-	return child.lastAgentEnd;
-}
-
-function resolveAgentEnd(child: MutableChild): void {
-	if (child.agentTimer !== undefined) {
-		clearTimeout(child.agentTimer);
-		child.agentTimer = undefined;
-	}
-	if (child.resolveAgentEnd !== undefined) {
-		child.resolveAgentEnd(child.lastOutput);
-	}
-	child.resolveAgentEnd = undefined;
-	child.rejectAgentEnd = undefined;
-	child.lastAgentEnd = undefined;
-}
-
-function rejectAgentEnd(child: MutableChild, error: Error): void {
-	if (child.agentTimer !== undefined) {
-		clearTimeout(child.agentTimer);
-		child.agentTimer = undefined;
-	}
-	if (child.rejectAgentEnd !== undefined) {
-		child.rejectAgentEnd(error);
-	}
-	child.resolveAgentEnd = undefined;
-	child.rejectAgentEnd = undefined;
-	child.lastAgentEnd = undefined;
-}
-
-function abortError(): Error {
-	return new Error("Pi agent turn was cancelled.");
-}
-
-function awaitOperation<T>(promise: Promise<T>, operation: OperationContext | undefined): Promise<T> {
-	const signal = operation?.signal;
-	if (signal === undefined) return promise;
-	if (signal.aborted) return Promise.reject(abortError());
-	return abortableOperation(promise, signal);
-}
-
-function abortableOperation<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const cleanup = (): void => signal.removeEventListener("abort", onAbort);
-		const onAbort = (): void => {
-			cleanup();
-			reject(abortError());
-		};
-		signal.addEventListener("abort", onAbort, { once: true });
-		void promise.then(
-			(value) => {
-				cleanup();
-				resolve(value);
-			},
-			(error) => {
-				cleanup();
-				const message = error instanceof Error ? error.message : String(error);
-				reject(new Error(message));
-			},
-		);
-	});
-}
-
-function throwIfAborted(operation: OperationContext | undefined): void {
-	if (operation?.signal?.aborted === true) throw abortError();
-}
-function readResponse(value: RpcEvent): RpcResponse {
-	if (!isValidResponse(value)) throw new Error("Pi RPC response is invalid.");
-	return {
-		type: "response",
-		id: value.id,
-		command: value.command,
-		success: value.success,
-		data: value.data,
-		error: value.error,
-	};
-}
-
-function isValidResponse(value: RpcEvent): value is RpcEvent & RpcResponse {
-	return [
-		value.type === "response",
-		value.command !== undefined,
-		value.command === String(value.command),
-		value.success === true || value.success === false,
-	].every(Boolean);
-}
-function readSessionText(value: RpcData | undefined, key: "sessionId" | "sessionFile"): string {
-	const entry = value?.[key];
-	if (!isSessionText(entry)) throw new Error(`Pi RPC state is missing ${key}.`);
-	return entry;
-}
-
-function isSessionText(value: JsonValue | undefined): value is string {
-	return value !== undefined && value === String(value) && value.length > 0;
-}
-
-function isAssistantMessage(
-	value: RpcMessage | undefined,
-): value is RpcMessage & Readonly<{ role: "assistant"; content: readonly RpcBlock[] }> {
-	return value !== undefined && value.role === "assistant" && value.content !== undefined;
-}
-
-function assistantText(message: Readonly<{ content: readonly RpcBlock[] }>): string {
-	let output = "";
-	let textBlocks = 0;
-	for (const block of message.content) {
-		if (block.type !== "text") continue;
-		const next = appendAssistantText(output, block.text, textBlocks > 0);
-		output = next.text;
-		textBlocks += 1;
-		if (next.truncated) return truncatedAssistantText(output);
-	}
-	return output.trim();
-}
-
-function appendAssistantText(output: string, text: string | undefined, separated: boolean) {
-	if (text === undefined) return { text: output, truncated: false };
-	const prefix = separated ? "\n" : "";
-	const remaining = MAX_ASSISTANT_TEXT_LENGTH - output.length - prefix.length;
-	if (remaining <= 0) return { text: output, truncated: true };
-	return { text: output + prefix + text.slice(0, remaining), truncated: text.length > remaining };
-}
-
-function truncatedAssistantText(output: string): string {
-	const available = MAX_ASSISTANT_TEXT_LENGTH - ASSISTANT_TRUNCATION_INDICATOR.length - 1;
-	return `${output.slice(0, available).trimEnd()}\n${ASSISTANT_TRUNCATION_INDICATOR}`;
-}
-function readTokenUsage(value: RpcUsage | undefined): TokenUsage | undefined {
-	if (value === undefined) return;
-	const counts = [value.input, value.output, value.cacheRead, value.cacheWrite].map(readTokenCount);
-	if (!allTokenCounts(counts)) return;
-	const cacheMissTokens = counts[0] + counts[3];
-	if (!Number.isSafeInteger(cacheMissTokens)) return;
-	return { inputTokens: counts[0], outputTokens: counts[1], cacheHitTokens: counts[2], cacheMissTokens };
-}
-
-function allTokenCounts(value: readonly (number | undefined)[]): value is readonly [number, number, number, number] {
-	return value.length === 4 && value.every((entry): entry is number => entry !== undefined);
-}
-
-function readTokenCount(value: number | undefined): number | undefined {
-	return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
-}
-function addTokenUsage(previous: TokenUsage | undefined, current: TokenUsage): TokenUsage {
-	const totals = tokenTotals(previous, current);
-	return { inputTokens: totals[0], outputTokens: totals[1], cacheHitTokens: totals[2], cacheMissTokens: totals[3] };
-}
-
-function tokenTotals(previous: TokenUsage | undefined, current: TokenUsage): readonly [number, number, number, number] {
-	return [
-		tokenTotal(previous, current, "inputTokens"),
-		tokenTotal(previous, current, "outputTokens"),
-		tokenTotal(previous, current, "cacheHitTokens"),
-		tokenTotal(previous, current, "cacheMissTokens"),
-	];
-}
-
-function tokenTotal(previous: TokenUsage | undefined, current: TokenUsage, key: keyof TokenUsage): number {
-	return (previous?.[key] ?? 0) + current[key];
-}
-type CapabilityScope = Readonly<{
-	role: "conclave" | "observer" | "executor" | "oracle";
-	workId: string | undefined;
-	executionId: string | undefined;
-	nonce: string | undefined;
-}>;
-
-function capabilityScope(
-	role: CapabilityScope["role"],
-	scope:
-		| Readonly<{ workId?: string | undefined; executionId?: string | undefined; nonce?: string | undefined }>
-		| undefined,
-): CapabilityScope {
-	return {
-		role,
-		workId: scope?.workId,
-		executionId: scope?.executionId,
-		nonce: scope?.nonce,
-	} satisfies CapabilityScope;
-}
-
-function createCapability(
-	privateKey: KeyObject | undefined,
-	role: "conclave" | "observer" | "executor" | "oracle",
-	scope:
-		| Readonly<{ workId?: string | undefined; executionId?: string | undefined; nonce?: string | undefined }>
-		| undefined,
-): string | undefined {
-	if (privateKey === undefined) return;
-	const payload = Buffer.from(JSON.stringify(capabilityScope(role, scope)), "utf8").toString("base64url");
-	const signature = sign(null, Buffer.from(payload, "utf8"), privateKey).toString("base64url");
-	return `${payload}.${signature}`;
 }
 
 export function promptIdentity(prompt: string, packageVersion: string): PromptIdentity {

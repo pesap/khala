@@ -12,6 +12,8 @@ export type KhalaConfig = Readonly<{
 	worktreeBranchPrefix: string;
 	targetBranch: string;
 	maxConcurrentExecutions: number;
+	maxConcurrentRuns: number;
+	maxCorrections: number;
 	defaultWorkTokens: number;
 	piCommand: readonly string[];
 	conclaveModel: string;
@@ -38,6 +40,8 @@ const DEFAULTS: KhalaConfig = {
 	worktreeBranchPrefix: "khala/",
 	targetBranch: "main",
 	maxConcurrentExecutions: 2,
+	maxConcurrentRuns: 2,
+	maxCorrections: 3,
 	defaultWorkTokens: 20_000,
 	piCommand: ["pi"],
 	conclaveModel: "",
@@ -190,6 +194,8 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		worktreeBranchPrefix: readGitBranchPrefix(values, "worktreeBranchPrefix", base.worktreeBranchPrefix),
 		targetBranch: readGitBranch(values, "targetBranch", base.targetBranch),
 		maxConcurrentExecutions: readPositive(values, "maxConcurrentExecutions", base.maxConcurrentExecutions),
+		maxConcurrentRuns: readPositive(values, "maxConcurrentRuns", base.maxConcurrentRuns),
+		maxCorrections: readPositive(values, "maxCorrections", base.maxCorrections),
 		defaultWorkTokens: readPositive(values, "defaultWorkTokens", base.defaultWorkTokens),
 		piCommand: readTextList(values, "piCommand", base.piCommand),
 		conclaveModel: readText(values, "conclaveModel", base.conclaveModel),

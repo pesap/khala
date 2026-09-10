@@ -16,10 +16,10 @@ jobs:
         with:
           node-version: 22.19.0
           cache: npm
-      - name: Install validation isolation runtime
+      - name: Install validation and terminal test runtimes
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
+          sudo apt-get install --yes --no-install-recommends bubblewrap tmux
           sudo install --mode=0644 .github/bwrap.apparmor /etc/apparmor.d/khala-ci-bwrap
           sudo apparmor_parser --replace /etc/apparmor.d/khala-ci-bwrap
           bwrap --version

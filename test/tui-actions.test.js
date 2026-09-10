@@ -4,7 +4,7 @@ import { createActionRunner } from "../dist/src/tui-actions.js";
 
 function setup(choices, edits = []) {
 	const performed = [];
-	const initialScreens = [];
+	const editorCalls = [];
 	const errors = [];
 	const ui = {
 		select: async () => choices.shift(),
@@ -12,26 +12,22 @@ function setup(choices, edits = []) {
 		getEditorText: () => { throw new Error("Must not read the User editor"); },
 		confirm: async () => true,
 		notify: (message) => errors.push(message),
-		custom: (factory) => new Promise((resolve) => {
-			const theme = { fg: (_color, text) => text };
-			const component = factory({ requestRender() {}, terminal: { rows: 24, columns: 80 } }, theme, {}, resolve);
-			initialScreens.push(component.render(80).join("\n"));
-			const text = edits.shift();
-			if (text !== undefined) component.handleInput(`\u001b[200~${text}\u001b[201~`);
-			component.handleInput("\u001b");
-		}),
+		editor: async (title, prefill) => {
+			editorCalls.push({ title, prefill });
+			return edits.shift();
+		},
 	};
 	const service = {
 		perform: async (command) => { performed.push(command); return { value: { nextAction: "done" } }; },
 		processPendingEffects: async () => {},
 	};
-	return { context: { ui }, service, performed, initialScreens, errors };
+	return { context: { ui }, service, performed, editorCalls, errors };
 }
 
 const work = { workId: "w1", revision: 1 };
 const action = { id: "a1", scope: "work", kind: "record-review", label: "Review", enabled: true };
 
-test("Escape saves a multiline draft without submitting or touching the User editor", async () => {
+test("the native editor preserves a multiline draft without touching the User editor", async () => {
 	const feedback = " first\n\n  second\n";
 	const choices = ["Edit", "changes-requested", "Back"];
 	const fake = setup(choices, [feedback]);
@@ -41,6 +37,14 @@ test("Escape saves a multiline draft without submitting or touching the User edi
 	choices.push("Submit");
 	await run(work, action);
 	assert.deepEqual(fake.performed[0].input.feedback, [feedback]);
+});
+
+test("amending Work terms opens a labeled text editor", async () => {
+	const fake = setup(["Edit", "context", "Back"], ["Updated Work context"]);
+	await createActionRunner(fake.service, fake.context, "user")(work, { ...action, kind: "amend-terms", label: "Amend Work terms" });
+	assert.equal(fake.editorCalls[0].title, "Text editor: context");
+	assert.equal(fake.editorCalls[0].prefill, undefined);
+	assert.equal(fake.performed.length, 0);
 });
 
 test("closing the action menu is not implicit Submit", async () => {
@@ -89,9 +93,35 @@ test("discard removes a saved draft and consequential denial performs nothing", 
 	const run = createActionRunner(fake.service, fake.context, "user");
 	await run(work, action);
 	await run(work, action);
-	assert.doesNotMatch(fake.initialScreens[1], /discard me/);
+	assert.doesNotMatch(fake.editorCalls[1].prefill ?? "", /discard me/);
 	choices.push("Submit");
 	fake.context.ui.confirm = async () => false;
 	await run(work, { ...action, kind: "fail-work" });
 	assert.equal(fake.performed.length, 0);
+});
+
+test("held usage reconciliation keeps its draft and requires explicit confirmation", async () => {
+	const choices = ["Edit", "executor run-1 (uncertain)", "Back"];
+	const fake = setup(choices);
+	const fields = [];
+	const edits = ["12", "8", "3", "9", "provider usage receipt 42"];
+	fake.context.ui.editor = async (title, prefill) => { fields.push({ title, prefill }); return edits.shift(); };
+	const held = { ...work, activeInvocations: [{ runId: "run-1", role: "executor", allowance: 100, state: "uncertain" }] };
+	const reconciliation = { ...action, kind: "reconcile-invocation", label: "Reconcile held usage" };
+	const run = createActionRunner(fake.service, fake.context, "user");
+	await run(held, reconciliation);
+	assert.equal(fake.performed.length, 0);
+	assert.equal(fields.length, 5);
+	choices.push("Submit");
+	fake.context.ui.confirm = async () => false;
+	await run(held, reconciliation);
+	assert.equal(fake.performed.length, 0);
+	choices.push("Submit");
+	fake.context.ui.confirm = async (_title, message) => { assert.match(message, /12 input.*8 output/); return true; };
+	await run(held, reconciliation);
+	assert.deepEqual(fake.performed[0].input, {
+		runId: "run-1",
+		usage: { inputTokens: 12, outputTokens: 8, cacheHitTokens: 3, cacheMissTokens: 9 },
+		evidence: ["provider usage receipt 42"],
+	});
 });

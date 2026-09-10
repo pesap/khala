@@ -20,6 +20,7 @@ export default defineConfig({
 	jsPlugins: ["./tools/oxlint/anti-slop/index.ts"],
 	rules: {
 		complexity: ["error", { max: 4 }],
+		"max-lines": ["error", { max: 700, skipBlankLines: false, skipComments: false }],
 		"no-console": "error",
 		"no-debugger": "error",
 		"no-eval": "error",
