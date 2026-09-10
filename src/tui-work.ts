@@ -341,6 +341,7 @@ function displayActionLabel(action: WorkAction): string {
 		admit: "Admit",
 		"request-input": "Request User input",
 		"amend-terms": "Amend Work terms",
+		"retry-admission": "Retry admission",
 		"amend-mission": "Amend Mission",
 		"launch-observer": "Launch observer",
 		"record-assessment": "Record assessment",

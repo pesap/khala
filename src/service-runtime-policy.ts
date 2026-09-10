@@ -539,6 +539,10 @@ function hasRecoverablePreparation(work: WorkView): boolean {
 	return work.preparation?.status === "waiting";
 }
 
+function canRetryAdmission(work: WorkView): boolean {
+	return work.state === "submitted" && work.mission === undefined && work.lastError !== undefined;
+}
+
 export function userActionSpecs(work: WorkView, runtimeUnavailable: boolean): readonly ActionSpec[] {
 	const terminal = isTerminalWork(work);
 	const recoverable = isCancelledWork(work) || runtimeUnavailable || hasRecoverablePreparation(work);
@@ -548,6 +552,12 @@ export function userActionSpecs(work: WorkView, runtimeUnavailable: boolean): re
 			enabled: canAmendTerms(work),
 			label: "Amend Work terms",
 			disabledReason: amendTermsReason(work),
+		},
+		{
+			kind: "retry-admission",
+			enabled: canRetryAdmission(work),
+			label: "Retry admission",
+			disabledReason: "A submitted Work with an admission failure is required.",
 		},
 		{ kind: "recover", enabled: recoverable, label: "Recover Work", disabledReason: recoveryReason(recoverable) },
 		{

@@ -102,6 +102,7 @@ The configured history shortcut additionally toggles all Work, including active 
 Needs attention currently includes failed Work, input requests, and blocked Executions; acknowledgement of terminal failures remains a backend requirement.
 Work overviews show a short summary, blocker, next action, saved revision, section navigation, and enabled revision-bound actions.
 Actions is the dedicated chooser for lifecycle actions; individual actions are not shown in the Work overview.
+Retry admission is available for submitted Work with a recorded admission failure after the User changes the Conclave model in Role settings.
 Refresh runtime is an explicit action in that chooser and is not run when Work is opened.
 Page Up and Page Down scroll overview details while action navigation stays visible on short terminals.
 These entry points also support the [current getting-started workflow](getting-started.md).

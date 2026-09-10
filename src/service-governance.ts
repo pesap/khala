@@ -72,6 +72,32 @@ export class ServiceGovernance {
 		}).projection;
 	}
 
+	retryAdmission(work: WorkView, meta: CommandMeta): WorkView {
+		this.core.requireActor(meta, "user");
+		if (work.state !== "submitted" || work.mission !== undefined || work.lastError === undefined)
+			throw this.core.error(
+				"invalid-state",
+				"Only submitted Work with an admission failure can be retried.",
+				false,
+				"Inspect the current Work state before retrying admission.",
+			);
+		const next: WorkView = {
+			...work,
+			revision: work.revision + 1,
+			lastError: undefined,
+			nextAction: "Conclave admission is pending.",
+		};
+		return this.core.append({
+			meta,
+			kind: "observation",
+			workId: work.workId,
+			payload: { action: "retry-admission" },
+			projection: next,
+			summary: "User retried failed Conclave admission.",
+			effects: [schedulerEffect(work.workId, next.revision)],
+		}).projection;
+	}
+
 	amendMission(work: WorkView, meta: CommandMeta, input: ActionInput | undefined): WorkView {
 		this.core.requireActor(meta, "conclave");
 		const predecessor = this.requireAmendableMission(work);

@@ -146,6 +146,7 @@ surface and required inputs.
 | `admit` | Conclave | none |
 | `request-input` | Conclave | `reason`, optional `missing` |
 | `amend-terms` | User | one or more pre-admission term fields |
+| `retry-admission` | User | none; choose the Conclave model in Role settings first |
 | `amend-mission` | Conclave | changed terms, `reason`, optional `evidence` |
 | `launch-observer` | Conclave | none |
 | `record-assessment` | Observer | `summary`, `evidence` |

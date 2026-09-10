@@ -165,7 +165,7 @@ function conclaveWakeErrorFor(kind: ConclaveWakeErrorKind, message: string): Err
 		admission: {
 			summary: `Conclave admission failed: ${message}`,
 			remediation:
-				"Inspect Evidence in /khala and reconcile held invocation usage before authorizing another attempt; amend or stop the Work if needed.",
+				"Open /khala, choose a working Conclave model in Role settings, then use Actions > Retry admission; reconcile held invocation usage before retrying if needed.",
 		},
 	} satisfies Record<ConclaveWakeErrorKind, Readonly<{ summary: string; remediation: string }>>;
 	return { code: "external-failure", ...details[kind], retryable: false, evidenceRefs: [] };

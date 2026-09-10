@@ -596,6 +596,7 @@ export class ApplicationService {
 			admit: async () => this.governance.admit(work, command.meta),
 			"request-input": async () => this.governance.requestInput(work, command.meta, command.input),
 			"amend-terms": async () => this.governance.amendTerms(work, command.meta, command.input),
+			"retry-admission": async () => this.governance.retryAdmission(work, command.meta),
 			"amend-mission": async () => this.governance.amendMission(work, command.meta, command.input),
 			"launch-observer": async () => this.observer.launch(work, command.meta),
 			"record-assessment": async () => this.observer.recordAssessment(work, command.meta, command.input),

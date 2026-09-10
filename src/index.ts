@@ -116,6 +116,7 @@ const performSchema = Type.Object({
 		"admit",
 		"request-input",
 		"amend-terms",
+		"retry-admission",
 		"amend-mission",
 		"launch-observer",
 		"record-assessment",

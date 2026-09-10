@@ -411,6 +411,20 @@ test("Conclave token exhaustion is captured instead of reported as a missing dec
 		assert.match(failed.lastError.summary, /Conclave token-exhaustion decision failed/);
 		assert.match(failed.lastError.summary, /50\/50 tokens/);
 		assert.doesNotMatch(failed.lastError.summary, /without recording a durable decision/);
+		const retry = service.availableActions(failed.workId, "user", failed.revision).find(
+			(action) => action.kind === "retry-admission",
+		);
+		assert.equal(retry?.enabled, true);
+		const retried = await service.perform({
+			action: "retry-admission",
+			workId: failed.workId,
+			input: {},
+			meta: meta("user", "token-exhaustion:retry", failed.revision),
+		});
+		assert.equal("error" in retried, false);
+		assert.equal(retried.value.state, "submitted");
+		assert.equal(retried.value.lastError, undefined);
+		assert.equal(retried.value.nextAction, "Conclave admission is pending.");
 	} finally {
 		await service.close();
 	}

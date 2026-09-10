@@ -489,6 +489,7 @@ export type Action = Readonly<{
 		| "admit"
 		| "request-input"
 		| "amend-terms"
+		| "retry-admission"
 		| "amend-mission"
 		| "launch-observer"
 		| "record-assessment"

@@ -384,7 +384,7 @@ test("unreachable runtime recovery fails closed and is visible to another Archiv
 	);
 	assert.deepEqual(
 		actions.map((action) => action.kind),
-		["amend-terms", "recover", "rename-work", "fail-work", "amend-budget", "record-review", "cancel"],
+		["amend-terms", "retry-admission", "recover", "rename-work", "fail-work", "amend-budget", "record-review", "cancel"],
 	);
 	assert.equal(actions.find((action) => action.kind === "recover")?.enabled, true);
 	const result = await service.perform({
