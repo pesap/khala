@@ -233,8 +233,8 @@ async function acquireLocalArtifact(input: ArtifactInput): Promise<Artifact> {
 	const bytes = await localArtifactSize(path, input.name);
 	if (bytes > DEPENDENCY_POLICY.maxArtifactBytes)
 		throw new PreparationError("artifact-size", `${input.name} exceeds the artifact size limit.`);
-	await verifyIntegrity(path, input.integrity, input.name);
-	return { path, digest: digest(input.integrity), bytes };
+	const artifactDigest = await verifyIntegrity(path, input.integrity, input.name);
+	return { path, digest: artifactDigest, bytes };
 }
 async function localArtifactParent(path: string, name: string): Promise<string> {
 	return realpath(dirname(path)).catch(() => {
@@ -259,8 +259,8 @@ async function acquireRemoteArtifact(input: ArtifactInput): Promise<Artifact> {
 async function verifyCachedArtifact(input: ArtifactInput, path: string, bytes: number): Promise<Artifact> {
 	if (bytes > DEPENDENCY_POLICY.maxArtifactBytes)
 		throw new PreparationError("artifact-size", `${input.name} exceeds the artifact size limit.`);
-	await verifyIntegrity(path, input.integrity, input.name);
-	return { path, digest: digest(input.integrity), bytes };
+	const artifactDigest = await verifyIntegrity(path, input.integrity, input.name);
+	return { path, digest: artifactDigest, bytes };
 }
 async function cachedArtifactEntry(path: string): Promise<{ size: number } | undefined> {
 	const entry = await lstat(path).catch(() => undefined);
@@ -283,18 +283,21 @@ async function downloadArtifact(input: ArtifactInput, artifactPath: string): Pro
 	try {
 		const result = await downloadArtifactBody(input, temporary);
 		await publishArtifact(temporary, artifactPath, input);
-		return { path: artifactPath, digest: digest(input.integrity), bytes: result.bytes };
+		return { path: artifactPath, digest: result.digest, bytes: result.bytes };
 	} catch (error) {
 		throw error instanceof PreparationError ? error : preparationFailure(input.name);
 	} finally {
 		await rm(temporary, { force: true });
 	}
 }
-async function downloadArtifactBody(input: ArtifactInput, path: string): Promise<{ digest: string; bytes: number }> {
+async function downloadArtifactBody(
+	input: ArtifactInput,
+	path: string,
+): Promise<{ integrity: string; digest: string; bytes: number }> {
 	const response = await fetch(checkedRegistryUrl(input.resolved), { redirect: "manual", signal: input.signal });
 	const body = requireDownloadBody(response, input.name);
 	const result = await streamArtifact(body, path, input);
-	assertDownloadedIntegrity(result.digest, input.integrity, input.name);
+	assertDownloadedIntegrity(result.integrity, input.integrity, input.name);
 	return result;
 }
 function requireDownloadBody(response: Response, name: string): ReadableStream<Uint8Array> {
@@ -323,29 +326,37 @@ async function streamArtifact(
 	body: ReadableStream<Uint8Array>,
 	path: string,
 	input: ArtifactInput,
-): Promise<{ digest: string; bytes: number }> {
-	const hash = createHash("sha512");
+): Promise<{ integrity: string; digest: string; bytes: number }> {
+	const integrityHash = createHash("sha512");
+	const artifactHash = createHash("sha256");
 	const progress = { bytes: 0 };
 	// Pipeline owns backpressure, abort propagation, and errors from opening the output file.
 	await pipeline(
 		Readable.from(body),
-		(source: AsyncIterable<Uint8Array>) => countedChunks(source, input.name, hash, progress),
+		(source: AsyncIterable<Uint8Array>) =>
+			countedChunks(source, input.name, integrityHash, artifactHash, progress),
 		createWriteStream(path, { mode: 0o600, flags: "wx" }),
 		{ signal: input.signal },
 	);
-	return { digest: `sha512-${hash.digest("base64")}`, bytes: progress.bytes };
+	return {
+		integrity: `sha512-${integrityHash.digest("base64")}`,
+		digest: artifactHash.digest("hex"),
+		bytes: progress.bytes,
+	};
 }
 
 type TransferProgress = { bytes: number };
 async function* countedChunks(
 	source: AsyncIterable<Uint8Array>,
 	name: string,
-	hash: Hash,
+	integrityHash: Hash,
+	artifactHash: Hash,
 	progress: TransferProgress,
 ): AsyncGenerator<Uint8Array> {
 	for await (const chunk of source) {
 		progress.bytes = checkedArtifactBytes(progress.bytes, chunk.byteLength, name);
-		hash.update(chunk);
+		integrityHash.update(chunk);
+		artifactHash.update(chunk);
 		yield chunk;
 	}
 }
@@ -370,24 +381,31 @@ function checkedRegistryUrl(value: string): string {
 		throw new PreparationError("registry-url", "Dependency URL is outside the approved npm registry policy.");
 	return url.toString();
 }
-async function verifyIntegrity(path: string, integrity: string, name: string): Promise<void> {
+async function verifyIntegrity(path: string, integrity: string, name: string): Promise<string> {
 	if (!integrity.startsWith("sha512-"))
 		throw new PreparationError("integrity", `Unsupported integrity for ${basename(path)}.`);
 	const actual = await integrityOfFile(path, name);
-	if (actual !== integrity) throw new PreparationError("integrity", `Integrity verification failed for ${name}.`);
+	if (actual.integrity !== integrity)
+		throw new PreparationError("integrity", `Integrity verification failed for ${name}.`);
+	return actual.digest;
 }
-async function integrityOfFile(path: string, name: string): Promise<string> {
-	const hash = createHash("sha512");
+async function integrityOfFile(path: string, name: string): Promise<{ integrity: string; digest: string }> {
+	const integrityHash = createHash("sha512");
+	const artifactHash = createHash("sha256");
 	let bytes = 0;
 	try {
 		for await (const chunk of createReadStream(path)) {
 			bytes = checkedArtifactBytes(bytes, chunk.length, name);
-			hash.update(chunk);
+			integrityHash.update(chunk);
+			artifactHash.update(chunk);
 		}
 	} catch {
 		throw new PreparationError("integrity", `Could not verify ${name}.`);
 	}
-	return `sha512-${hash.digest("base64")}`;
+	return {
+		integrity: `sha512-${integrityHash.digest("base64")}`,
+		digest: artifactHash.digest("hex"),
+	};
 }
 
 async function npmCacheAdd(

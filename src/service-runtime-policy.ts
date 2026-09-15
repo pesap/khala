@@ -2,6 +2,7 @@ import { type ArchivePort } from "./archive.js";
 import {
 	type ActionInput,
 	type Actor,
+	type AdmissionFailure,
 	assertPositiveInteger,
 	type ConclaveWakeCause,
 	type ErrorEnvelope,
@@ -237,6 +238,34 @@ export function stoppedWorkAction(reason: WorkView["stopReason"]): string {
 
 export function cleanupFailureMatches(work: WorkView | undefined, effectId: string): work is WorkView {
 	return work?.lastError?.evidenceRefs.includes(effectId) === true;
+}
+
+export function isAdmissionFailure(error: ErrorEnvelope | undefined): error is AdmissionFailure {
+	return error?.source === "admission";
+}
+
+export function markAdmissionFailure(error: ErrorEnvelope): AdmissionFailure {
+	return { ...error, source: "admission" };
+}
+
+export function restoreInvocationGateAttention(
+	work: WorkView,
+	append: (projection: WorkView) => WorkView,
+): WorkView {
+	if ((work.activeInvocations?.length ?? 0) > 0 || !hasHeldInvocationAttention(work)) return work;
+	return append({
+		...work,
+		revision: work.revision + 1,
+		lastError: undefined,
+		nextAction: isTerminalWork(work) ? work.nextAction : "Work dispatch is pending.",
+	});
+}
+
+function hasHeldInvocationAttention(work: WorkView): boolean {
+	return (
+		work.lastError?.code === "external-failure" &&
+		work.lastError.summary === "Model dispatch is waiting for an existing invocation to settle."
+	);
 }
 
 export function actionFingerprint(action: string, input: SubmitWorkInput | ActionInput | undefined): string {
@@ -538,7 +567,7 @@ function hasRecoverablePreparation(work: WorkView): boolean {
 }
 
 function canRetryAdmission(work: WorkView): boolean {
-	return work.state === "submitted" && work.mission === undefined && work.lastError !== undefined;
+	return work.state === "submitted" && work.mission === undefined && isAdmissionFailure(work.lastError);
 }
 
 export function userActionSpecs(work: WorkView, runtimeUnavailable: boolean): readonly ActionSpec[] {

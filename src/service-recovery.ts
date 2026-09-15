@@ -23,19 +23,16 @@ import { isResumableIdleExecutor } from "./service-idle-recovery.js";
 import { InvocationCoordinator } from "./service-invocation-coordinator.js";
 import { reconcileCompletedInvocations } from "./service-invocation-recovery.js";
 import { ServiceObserver } from "./service-observer.js";
-import { failedRecoveryExecution, throwIfOperationAborted } from "./service-runtime-policy.js";
+import {
+	failedRecoveryExecution,
+	restoreInvocationGateAttention,
+	throwIfOperationAborted,
+} from "./service-runtime-policy.js";
 import { executorRecoveryEffect, isRuntimeUnavailable, sameRuntimeBinding } from "./service-state-policy.js";
 import { WorkCompletion } from "./service-work-completion.js";
 
 function hasActiveInvocations(work: WorkView): boolean {
 	return (work.activeInvocations?.length ?? 0) > 0;
-}
-
-function hasHeldInvocationAttention(work: WorkView): boolean {
-	return (
-		work.lastError?.code === "external-failure" &&
-		work.lastError.summary === "Model dispatch is waiting for an existing invocation to settle."
-	);
 }
 
 function sameExecutorExecution(left: Execution, right: Execution): boolean {
@@ -58,10 +55,6 @@ function isPendingExecutorPlaceholder(execution: Execution): boolean {
 		binding.capabilityNonce,
 		binding.processMarker,
 	].every((value) => value === undefined);
-}
-
-function nextActionAfterInvocationGate(work: WorkView): string {
-	return isTerminalWork(work) ? work.nextAction : "Work dispatch is pending.";
 }
 
 type RecoveryCallbacks = Readonly<{
@@ -525,25 +518,20 @@ export class ServiceRecovery {
 	}
 
 	private clearInvocationGateAttention(work: WorkView): WorkView {
-		if (hasActiveInvocations(work) || !hasHeldInvocationAttention(work)) return work;
-		const next: WorkView = {
-			...work,
-			revision: work.revision + 1,
-			lastError: undefined,
-			nextAction: nextActionAfterInvocationGate(work),
-		};
-		return this.core.append({
-			meta: {
-				actor: "system",
-				commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
-				expectedWorkRevision: work.revision,
-				schemaVersion: 1,
-			},
-			kind: "execution",
-			workId: work.workId,
-			payload: { dispatch: "eligible" },
-			projection: next,
-			summary: "Held invocation dispatch gate was restored.",
-		}).projection;
+		return restoreInvocationGateAttention(work, (projection) =>
+			this.core.append({
+				meta: {
+					actor: "system",
+					commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
+					expectedWorkRevision: work.revision,
+					schemaVersion: 1,
+				},
+				kind: "execution",
+				workId: work.workId,
+				payload: { dispatch: "eligible" },
+				projection,
+				summary: "Held invocation dispatch gate was restored.",
+			}).projection,
+		);
 	}
 }

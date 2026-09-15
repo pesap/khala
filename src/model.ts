@@ -563,7 +563,7 @@ export type ErrorEnvelope = Readonly<{
 	retryable: boolean;
 	remediation: string;
 	evidenceRefs: readonly string[];
-	source?: "provider-monitor" | undefined;
+	source?: "admission" | "provider-monitor" | undefined;
 	learning?:
 		| Readonly<{
 				failure: string;
@@ -572,6 +572,8 @@ export type ErrorEnvelope = Readonly<{
 		  }>
 		| undefined;
 }>;
+
+export type AdmissionFailure = Readonly<ErrorEnvelope & { source: "admission" }>;
 
 export type ServiceResult<T> = Readonly<{ value: T }> | Readonly<{ error: ErrorEnvelope }>;
 

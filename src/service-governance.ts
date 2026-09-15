@@ -5,7 +5,7 @@ import { ArchiveCore } from "./service-archive-core.js";
 import { mergeTermChanges, reviewFeedback } from "./service-dispatch-policy.js";
 import { type ReviewStatus } from "./service-foundation-policy.js";
 import { readOptionalActionTextList, readReviewStatus, reviewProjection } from "./service-lifecycle-policy.js";
-import { reviewEffects, reviewFeedbackDelivery } from "./service-runtime-policy.js";
+import { isAdmissionFailure, reviewEffects, reviewFeedbackDelivery } from "./service-runtime-policy.js";
 import {
 	amendedMissionSpecificity,
 	hasActiveExecution,
@@ -74,7 +74,7 @@ export class ServiceGovernance {
 
 	retryAdmission(work: WorkView, meta: CommandMeta): WorkView {
 		this.core.requireActor(meta, "user");
-		if (work.state !== "submitted" || work.mission !== undefined || work.lastError === undefined)
+		if (work.state !== "submitted" || work.mission !== undefined || !isAdmissionFailure(work.lastError))
 			throw this.core.error(
 				"invalid-state",
 				"Only submitted Work with an admission failure can be retried.",

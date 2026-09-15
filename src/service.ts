@@ -54,7 +54,9 @@ import {
 	actionFingerprint,
 	cleanupFailureMatches,
 	cleanupLabel,
+	markAdmissionFailure,
 	oraclePayload,
+	restoreInvocationGateAttention,
 	throwIfOperationAborted,
 } from "./service-runtime-policy.js";
 import { invocationAllowance } from "./service-state-policy.js";
@@ -64,17 +66,6 @@ import { ServiceWorkspaceActions } from "./service-workspace-actions.js";
 
 export type { ServiceOptions } from "./service-contracts.js";
 export { ActionInputError, ApplicationError, RunGateUnavailable, resultText } from "./service-contracts.js";
-
-function hasActiveInvocations(work: WorkView): boolean {
-	return work.activeInvocations !== undefined && work.activeInvocations.length > 0;
-}
-
-function hasHeldInvocationAttention(work: WorkView): boolean {
-	return (
-		work.lastError?.code === "external-failure" &&
-		work.lastError.summary === "Model dispatch is waiting for an existing invocation to settle."
-	);
-}
 
 function reconciledExecutorBinding(work: WorkView, fact: ReturnType<RunLedger["find"]>): RuntimeBinding | undefined {
 	if (fact === undefined) return undefined;
@@ -477,7 +468,13 @@ export class ApplicationService {
 		const work = this.inspectWork(workId);
 		if (isTerminalWork(work)) return work;
 		this.core.checkRevision(work, meta);
-		const error = conclaveWakeError(failure, wakeErrorKindFor(reason, work.lastObservation, failure));
+		const wakeReason = reason ?? "admission";
+		const wakeErrorKind = wakeErrorKindFor(reason, work.lastObservation, failure);
+		const wakeError = conclaveWakeError(failure, wakeErrorKind);
+		const error =
+			wakeReason === "admission" || wakeErrorKind === "admission"
+				? markAdmissionFailure(wakeError)
+				: wakeError;
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -488,7 +485,7 @@ export class ApplicationService {
 			meta,
 			kind: "error",
 			workId,
-			payload: { ...error, dispatchEffectId, dispatchCause: reason ?? "admission" },
+			payload: { ...error, dispatchEffectId, dispatchCause: wakeReason },
 			evidenceRefs: observationId === undefined ? error.evidenceRefs : [...error.evidenceRefs, observationId],
 			projection: next,
 			summary: error.summary,
@@ -652,26 +649,20 @@ export class ApplicationService {
 	}
 
 	private clearInvocationGateAttention(work: WorkView): WorkView {
-		if (hasActiveInvocations(work)) return work;
-		if (!hasHeldInvocationAttention(work)) return work;
-		const next: WorkView = {
-			...work,
-			revision: work.revision + 1,
-			lastError: undefined,
-			nextAction: isTerminalWork(work) ? work.nextAction : "Work dispatch is pending.",
-		};
-		return this.core.append({
-			meta: {
-				actor: "system",
-				commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
-				expectedWorkRevision: work.revision,
-				schemaVersion: 1,
-			},
-			kind: "execution",
-			workId: work.workId,
-			payload: { dispatch: "eligible" },
-			projection: next,
-			summary: "Held invocation dispatch gate was restored.",
-		}).projection;
+		return restoreInvocationGateAttention(work, (projection) =>
+			this.core.append({
+				meta: {
+					actor: "system",
+					commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
+					expectedWorkRevision: work.revision,
+					schemaVersion: 1,
+				},
+				kind: "execution",
+				workId: work.workId,
+				payload: { dispatch: "eligible" },
+				projection,
+				summary: "Held invocation dispatch gate was restored.",
+			}).projection,
+		);
 	}
 }

@@ -311,6 +311,7 @@ test("Conclave wake failures preserve provider detail and remediation", async ()
 	await service.processPendingEffects();
 	const failed = service.inspectWork(submitted.workId);
 	assert.equal(failed.lastError.summary, "Conclave admission failed: OpenAI API error (429): quota exceeded");
+	assert.equal(failed.lastError.source, "admission");
 	assert.match(failed.lastError.remediation, /\/khala/);
 	assert.equal(failed.nextAction, "Conclave decision failed; inspect Evidence and choose amendment, recovery, or failure.");
 	const records = service.readRecords(
@@ -319,6 +320,52 @@ test("Conclave wake failures preserve provider detail and remediation", async ()
 	);
 	assert.equal(records.items[0].payload.summary, failed.lastError.summary);
 	await service.close();
+});
+
+test("Admission retry ignores unrelated submitted Work errors", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-admission-retry-guard-"));
+	const { service, archive } = makeService(join(directory, "archive.sqlite"));
+	try {
+		const submitted = service.submitWork(
+			{ title: "Retry guard", objective: "Do not retry unrelated errors", acceptanceCriteria: ["Only admission failures retry"] },
+			meta("user", "retry-guard:submit", 0),
+		);
+		const current = service.inspectWork(submitted.workId);
+		const unrelated = {
+			code: "external-failure",
+			summary: "An unrelated submitted Work failure.",
+			retryable: false,
+			remediation: "Inspect the recorded failure.",
+			evidenceRefs: [],
+		};
+		archive.append({
+			commandId: "retry-guard:error",
+			expectedWorkRevision: current.revision,
+			kind: "error",
+			actor: "system",
+			workId: current.workId,
+			payloadVersion: 1,
+			summary: unrelated.summary,
+			payload: unrelated,
+			projection: { ...current, revision: current.revision + 1, lastError: unrelated, nextAction: "Inspect the recorded failure." },
+		});
+		const failed = service.inspectWork(submitted.workId);
+		assert.equal(
+			service.availableActions(failed.workId, "user", failed.revision).find((action) => action.kind === "retry-admission")?.enabled,
+			false,
+		);
+		const retried = await service.perform({
+			action: "retry-admission",
+			workId: failed.workId,
+			input: {},
+			meta: meta("user", "retry-guard:retry", failed.revision),
+		});
+		assert.equal("error" in retried, true);
+		assert.equal(retried.error.code, "invalid-state");
+		assert.deepEqual(service.inspectWork(failed.workId).lastError, unrelated);
+	} finally {
+		await service.close();
+	}
 });
 
 test("uncertain Conclave failures retain their reservation without automatic retries", async () => {

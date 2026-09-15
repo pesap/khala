@@ -52,7 +52,7 @@ dependencyTest("prepares a cold local tarball for offline script-free validation
 		const receipt = await workspace.prepareSandbox({ path: root, baseCommit: "base", branch: "test" });
 		assert.equal(receipt.schemaVersion, 1);
 		assert.deepEqual(receipt.policy.registries, ["registry.npmjs.org"]);
-		assert.ok(receipt.artifactDigests.length > 0);
+		assert.deepEqual(receipt.artifactDigests, [createHash("sha256").update(await readFile(join(root, "fixture.tgz"))).digest("hex")]);
 
 		const previousHome = process.env.HOME;
 		process.env.HOME = join(root, "user-home-that-must-not-be-read");
@@ -140,6 +140,7 @@ dependencyTest("prepares a remote-shaped tarball with npm12 while isolating host
 		assert.equal(fetchedUrl, resolved);
 		assert.equal(fetchCount, 1);
 		assert.deepEqual(secondReceipt.artifactDigests, receipt.artifactDigests);
+		assert.deepEqual(receipt.artifactDigests, [createHash("sha256").update(tarball).digest("hex")]);
 		assert.deepEqual(await readdir(join(store, "downloads")), [downloadName]);
 		assert.equal(await readFile(join(ancestor, ".npmrc"), "utf8"), hostileConfig);
 		assert.equal(await readdir(hostilePrefix).catch(() => undefined), undefined);

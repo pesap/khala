@@ -419,6 +419,7 @@ export function isErrorEnvelope(value: JsonValue | undefined): value is ErrorEnv
 		isBoolean(value["retryable"]),
 		isText(value["remediation"]),
 		isTextList(value["evidenceRefs"]),
+		optional(value["source"], (entry) => isOneOf(entry, ["admission", "provider-monitor"])),
 		optional(value["learning"], isLearning),
 	].every(Boolean);
 }
