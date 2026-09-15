@@ -3,8 +3,8 @@ import {
 	type Component,
 	Container,
 	fuzzyFilter,
-	getKeybindings,
 	Input,
+	type KeybindingsManager,
 	type KeyId,
 	matchesKey,
 	parseKey,
@@ -65,7 +65,7 @@ async function runKhalaArchivePicker(archive: KhalaArchiveView, context: Extensi
 	});
 	for (;;) {
 		const result = await pickWork(() => archive.listWork(), context, keybindings, pickerState, { showSettings: false });
-		if (!(await handleArchivePickerResult(result, archive, context, keybindings))) return;
+		if (!(await handleArchivePickerResult(result, archive, context))) return;
 	}
 }
 
@@ -73,11 +73,10 @@ async function handleArchivePickerResult(
 	result: WorkPickerResult,
 	archive: KhalaArchiveView,
 	context: ExtensionContext,
-	keybindings: KhalaConfig["keybindings"],
 ): Promise<boolean> {
 	if (result === null) return false;
 	if (result === "help") {
-		await showTextPage(context, "Work picker help", workPickerHelp(keybindings, false), "");
+		await showTextPage(context, "Work picker help", workPickerHelp(false), "");
 		return true;
 	}
 	if (result === "settings") return true;
@@ -118,7 +117,7 @@ async function handlePickerResult(
 		return;
 	}
 	if (result === "help") {
-		await showTextPage(context, "Work picker help", workPickerHelp(keybindings), "");
+		await showTextPage(context, "Work picker help", workPickerHelp(), "");
 		return;
 	}
 	await showWork(service, context, result, actor, keybindings, runAction);
@@ -227,10 +226,11 @@ function handlePickerInput(
 	data: string,
 	input: Input,
 	keybindings: KhalaConfig["keybindings"],
+	piKeybindings: KeybindingsManager,
 	showSettings: boolean,
 	handlers: PickerInputHandlers,
 ): void {
-	const action = pickerInputAction(data, input, keybindings, showSettings);
+	const action = pickerInputAction(data, input, keybindings, piKeybindings, showSettings);
 	const actionHandlers = new Map<PickerInputAction, () => void>([
 		["settings", () => handlers.finish("settings")],
 		["help", () => handlers.finish("help")],
@@ -290,7 +290,7 @@ class WorkPickerController {
 	}
 
 	cycleScope(input: Input, direction: number): void {
-		const scope = this.pickerState.scope ?? "All";
+		const scope = this.pickerState.scope ?? "Work";
 		const index = (WORK_FILTERS.indexOf(scope) + direction + WORK_FILTERS.length) % WORK_FILTERS.length;
 		this.pickerState.scope = WORK_FILTERS[index] ?? "Work";
 		this.pickerState.showHistory = this.pickerState.scope === "History";
@@ -382,6 +382,7 @@ function workPickerComponent(
 	filterInput: Input,
 	container: Container,
 	keybindings: KhalaConfig["keybindings"],
+	piKeybindings: KeybindingsManager,
 	controller: WorkPickerController,
 	showSettings: boolean,
 ): FocusableComponent {
@@ -395,8 +396,8 @@ function workPickerComponent(
 		render: (width: number) => container.render(width),
 		invalidate: () => container.invalidate(),
 		handleInput: (data: string) => {
-			if (switchWorkFilter(data, filterInput, controller)) return;
-			handlePickerInput(data, filterInput, keybindings, showSettings, {
+			if (switchWorkFilter(data, filterInput, controller, piKeybindings)) return;
+			handlePickerInput(data, filterInput, keybindings, piKeybindings, showSettings, {
 				finish: (value) => controller.finish(value),
 				refresh: () => controller.refresh(filterInput),
 				toggleHistory: () => controller.toggleHistory(filterInput),
@@ -409,10 +410,20 @@ function workPickerComponent(
 	};
 }
 
-function switchWorkFilter(data: string, input: Input, controller: WorkPickerController): boolean {
-	const bindings = getKeybindings();
-	if (!bindings.matches(data, "tui.input.tab")) return false;
-	controller.cycleScope(input, 1);
+function switchWorkFilter(
+	data: string,
+	input: Input,
+	controller: WorkPickerController,
+	keybindings: KeybindingsManager,
+): boolean {
+	if (!isPickerFilterEmpty(input)) return false;
+	const directions = [
+		["tui.editor.cursorLeft", -1],
+		["tui.editor.cursorRight", 1],
+	] as const;
+	const match = directions.find(([binding]) => keybindings.matches(data, binding));
+	if (match === undefined) return false;
+	controller.cycleScope(input, match[1]);
 	return true;
 }
 
@@ -425,7 +436,7 @@ async function pickWork(
 	pickerState: WorkPickerState,
 	options: WorkPickerOptions,
 ): Promise<WorkPickerResult> {
-	return context.ui.custom<WorkPickerResult>((tui, theme, _keybindings, done) => {
+	return context.ui.custom<WorkPickerResult>((tui, theme, piKeybindings, done) => {
 		const filterInput = new Input();
 		filterInput.focused = true;
 		filterInput.setValue(pickerState.filter ?? "");
@@ -437,7 +448,7 @@ async function pickWork(
 		);
 		const container = new Container();
 		const scopeLabel = new Text(scopeLabelText(theme, pickerState.scope ?? "Work"), 1, 0);
-		const scopeHint = new Text(theme.fg("muted", scopeHintText()), 1, 0);
+		const scopeHint = new Text(theme.fg("muted", scopeHintText(piKeybindings)), 1, 0);
 		container.addChild(new Spacer(1));
 		container.addChild(scopeLabel);
 		container.addChild(scopeHint);
@@ -453,9 +464,9 @@ async function pickWork(
 			selectedDetails.setText(item === undefined ? "" : theme.fg("muted", `  Work: ${item.title}`)),
 		);
 		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, workPickerKeybindings(keybindings, options.showSettings));
+		addPanelKeybindings(container, theme, workPickerKeybindings(keybindings, piKeybindings, options.showSettings));
 		controller.updateList();
-		return workPickerComponent(filterInput, container, keybindings, controller, options.showSettings);
+		return workPickerComponent(filterInput, container, keybindings, piKeybindings, controller, options.showSettings);
 	});
 }
 
@@ -475,21 +486,26 @@ function pickerInputAction(
 	data: string,
 	input: Input,
 	keybindings: KhalaConfig["keybindings"],
+	piKeybindings: KeybindingsManager,
 	showSettings: boolean,
 ): PickerInputAction {
 	const key = parseKey(data);
-	const filterEmpty = input.getValue().trim().length === 0;
-	const shortcut = pickerShortcut(data, key, keybindings, showSettings);
+	const filterEmpty = isPickerFilterEmpty(input);
+	const shortcut = filterEmpty ? pickerShortcut(data, key, keybindings, showSettings) : undefined;
 	if (shortcut !== undefined) return shortcut;
-	const navigation = pickerNavigationAction(data, keybindings);
+	const navigation = pickerNavigationAction(data, keybindings, piKeybindings);
 	if (navigation !== undefined) return navigation;
 	return pickerFallbackAction(key, filterEmpty);
 }
 
-function pickerNavigationAction(data: string, keybindings: KhalaConfig["keybindings"]): PickerInputAction | undefined {
+function pickerNavigationAction(
+	data: string,
+	keybindings: KhalaConfig["keybindings"],
+	piKeybindings: KeybindingsManager,
+): PickerInputAction | undefined {
 	const configured = configuredNavigationAction(data, keybindings);
 	if (configured !== undefined) return configured;
-	return standardNavigationAction(data);
+	return standardNavigationAction(data, piKeybindings);
 }
 
 function configuredNavigationAction(
@@ -501,14 +517,13 @@ function configuredNavigationAction(
 	return undefined;
 }
 
-function standardNavigationAction(data: string): PickerInputAction | undefined {
-	const bindings = getKeybindings();
+function standardNavigationAction(data: string, keybindings: KeybindingsManager): PickerInputAction | undefined {
 	const actions = [
 		["tui.select.up", "up"],
 		["tui.select.down", "down"],
 		["tui.select.confirm", "enter"],
 	] as const;
-	const action = actions.find(([binding]) => bindings.matches(data, binding))?.[1];
+	const action = actions.find(([binding]) => keybindings.matches(data, binding))?.[1];
 	return action ?? (matchesKey(data, "home") ? "home" : undefined);
 }
 
@@ -518,6 +533,10 @@ function isConfiguredKey(data: string, configured: string): boolean {
 }
 
 const PICKER_BACK_KEYS: ReadonlySet<string | undefined> = new Set(["escape", "ctrl+c"]);
+
+function isPickerFilterEmpty(input: Input): boolean {
+	return input.getValue().trim().length === 0;
+}
 
 function pickerFallbackAction(key: string | undefined, filterEmpty: boolean): PickerInputAction {
 	if (PICKER_BACK_KEYS.has(key)) return "back";
@@ -587,13 +606,23 @@ function scopeLabelText(theme: Theme, scope: WorkFilter): string {
 	).join(theme.fg("muted", " | "))}`;
 }
 
-function scopeHintText(): string {
-	return "tab to switch scope";
+function scopeHintText(keybindings: KeybindingsManager): string {
+	return `${scopeKeysText(keybindings)} to switch scope`;
 }
 
-export function workPickerKeybindings(keybindings: KhalaConfig["keybindings"], showSettings = true): string {
+function scopeKeysText(keybindings: KeybindingsManager): string {
+	const left = keybindings.getKeys("tui.editor.cursorLeft")[0] ?? "unbound";
+	const right = keybindings.getKeys("tui.editor.cursorRight")[0] ?? "unbound";
+	return `${left}/${right}`;
+}
+
+export function workPickerKeybindings(
+	keybindings: KhalaConfig["keybindings"],
+	piKeybindings: KeybindingsManager,
+	showSettings = true,
+): string {
 	const settings = showSettings ? `  ${keybindings.roleSettings} settings` : "";
-	return `${keybindings.refresh} refresh${settings}  up/down move  enter open  ${keybindings.help} help  escape/ctrl+c/backspace back`;
+	return `${scopeKeysText(piKeybindings)} filters  ${keybindings.refresh} refresh${settings}  up/down move  enter open  ${keybindings.help} help  escape/ctrl+c/backspace back`;
 }
 
 export function normalizeKeybindings(keybindings: KhalaConfig["keybindings"]): KhalaConfig["keybindings"] {
@@ -611,11 +640,11 @@ function configuredKeybinding(value: string, fallback: string): string {
 }
 
 export function pickerWork(work: readonly WorkSummary[], state: WorkPickerState): readonly WorkSummary[] {
-	const scope = state.scope ?? (state.showHistory ? "History" : "All");
+	const scope = state.scope ?? (state.showHistory ? "History" : "Work");
 	return work.filter(WORK_FILTER_PREDICATES[scope]);
 }
 
-export function workPickerHelp(_keybindings: KhalaConfig["keybindings"], showSettings = true): readonly string[] {
+export function workPickerHelp(showSettings = true): readonly string[] {
 	return [
 		"Use the Work picker to inspect active or historical Work.",
 		"",

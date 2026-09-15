@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { showKhalaArchive } from "../dist/src/index.js";
+import { tuiKeybindings } from "./helpers/tui-fixtures.mjs";
 
 const theme = {
 	fg: (_color, text) => text,
@@ -41,7 +42,7 @@ test("read-only Khala archive display includes history without lifecycle actions
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { showKhala } from "../dist/src/tui.js";
-import { theme, nextTurn } from "./helpers/tui-fixtures.mjs";
+import { nextTurn, theme, tuiKeybindings } from "./helpers/tui-fixtures.mjs";
 
 test("Role settings open with r, show a comparison table, and use the native model selector", async () => {
 	initTheme();
@@ -28,15 +28,7 @@ test("Role settings open with r, show a comparison table, and use the native mod
 		{ provider: "provider", id: "fallback", name: "Fallback model" },
 		{ provider: "provider", id: "conclave", name: "Conclave model" },
 	];
-	const keybindings = {
-		matches: (data, action) => ({
-			"tui.input.tab": "\t",
-			"tui.select.up": "\u001b[A",
-			"tui.select.down": "\u001b[B",
-			"tui.select.confirm": "\r",
-			"tui.select.cancel": "\u001b",
-		}[action] === data),
-	};
+	const keybindings = tuiKeybindings;
 	const context = {
 		hasUI: true,
 		mode: "tui",
@@ -111,7 +103,7 @@ test("Backspace from Role settings returns to the Work picker", async () => {
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -137,7 +129,7 @@ test("empty Work lists explain their state inside the TUI", async () => {
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -191,7 +183,7 @@ test("TUI schedules runtime recovery effects and refreshes the view", async () =
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -259,7 +251,7 @@ test("TUI distinguishes a failed recovery from a completed recovery", async () =
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { showKhala } from "../dist/src/tui.js";
-import { theme, nextTurn } from "./helpers/tui-fixtures.mjs";
+import { nextTurn, theme, tuiKeybindings } from "./helpers/tui-fixtures.mjs";
 
 test("Archive lists every record newest first with one heading count", async () => {
 	const screens = [];
@@ -75,7 +75,7 @@ test("Archive lists every record newest first with one heading count", async () 
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -143,7 +143,7 @@ test("Evidence keeps long summaries on one bounded line", async () => {
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -259,7 +259,7 @@ test("Work picker stays minimal, shows active Work, and marks failures", async (
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -281,7 +281,7 @@ test("Work picker stays minimal, shows active Work, and marks failures", async (
 	assert.match(current, /\? help/);
 	assert.match(current, /escape\/ctrl\+c\/backspace back/);
 	assert.doesNotMatch(current, /…/);
-	assert.doesNotMatch(current, /completed-work|cancelled-work|Filter Work/);
+	assert.doesNotMatch(current, /completed-work|cancelled-work|Completed mission|Cancelled Work|Filter Work/);
 	const rows = current.split("\n");
 	const activeRow = rows.find((line) => line.includes("active-wor"));
 	const failedRow = rows.find((line) => line.includes("failed-wor"));
@@ -323,13 +323,13 @@ test("Work picker stays minimal, shows active Work, and marks failures", async (
 	screens[2].handleInput("\u001b[H");
 	const selectedFirst = screens[2].render(100).join("\n");
 	assert.match(selectedFirst, /active-wor/);
-	assert.match(selectedFirst, /Completed mission to hide|Cancelled Work to hide/);
+	assert.doesNotMatch(selectedFirst, /completed-work|cancelled-work|Completed mission to hide|Cancelled Work to hide/);
 	screens[2].handleInput("\r");
 	await nextTurn();
 	screens[3].handleInput("\u001b");
 	await nextTurn();
 	assert.match(screens[4].render(100).join("\n"), /lifecycle walk/);
-	assert.match(screens[4].render(100).join("\n"), /Completed mission to hide|Cancelled Work to hide/);
+	assert.doesNotMatch(screens[4].render(100).join("\n"), /completed-work|cancelled-work|Completed mission to hide|Cancelled Work to hide/);
 	screens[4].handleInput("\u001b");
 	await result;
 });
@@ -387,7 +387,7 @@ test("Blocked Executions are prominent while Signal details stay available in Ar
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -488,7 +488,7 @@ test("Blocking Signal is hidden unless the current Execution is blocked", async 
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -529,7 +529,7 @@ test("Work overview hides runtime state for terminal Executions", async () => {
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};

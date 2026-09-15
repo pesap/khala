@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, stripTerminalSequences, TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { showKhala } from "../dist/src/tui.js";
 
 initTheme("dark");
@@ -48,7 +48,7 @@ function harness(overrides = {}) {
 		select: async (title, choices) => { menus.push({ title, choices }); return undefined; },
 		custom: (factory) => new Promise((resolve) => {
 			const done = (value) => { component.dispose?.(); resolve(value); };
-			const component = factory({ requestRender() {} }, theme, {}, done);
+			const component = factory({ requestRender() {} }, theme, getKeybindings(), done);
 			screens.push(component);
 		}),
 	} };
@@ -166,6 +166,21 @@ test("Work filters separate attention, review and terminal history without loadi
 	assert.match(picker.render(100).join("\n"), /Needs attention/);
 	assert.match(picker.render(100).join("\n"), /Clarify task/);
 	assert.doesNotMatch(picker.render(100).join("\n"), /Normal task|Review task|Completed task/);
+	picker.handleInput("\u001b[D");
+	assert.match(picker.render(100).join("\n"), /Normal task/);
+	assert.doesNotMatch(picker.render(100).join("\n"), /Completed task/);
+	const beforeSearch = picker.render(100).join("\n");
+	for (const character of "Unique") picker.handleInput(character);
+	const filteredAttention = picker.render(100).join("\n");
+	assert.notEqual(filteredAttention, beforeSearch);
+	assert.match(filteredAttention, /No matching Work/);
+	picker.handleInput("\u001b[C");
+	assert.equal(picker.render(100).join("\n"), filteredAttention);
+	for (const _character of "Unique") picker.handleInput("\u007f");
+	picker.handleInput("\u001b[C");
+	assert.match(picker.render(100).join("\n"), /Needs attention/);
+	assert.match(picker.render(100).join("\n"), /Clarify task/);
+	assert.doesNotMatch(picker.render(100).join("\n"), /Normal task|Review task/);
 	picker.handleInput("\u001b[C");
 	assert.match(picker.render(100).join("\n"), /Review task/);
 	assert.doesNotMatch(picker.render(100).join("\n"), /Clarify task/);
@@ -175,6 +190,16 @@ test("Work filters separate attention, review and terminal history without loadi
 	assert.equal(h.reads.length, 0);
 	picker.handleInput("\u001b[C");
 	assert.match(picker.render(100).join("\n"), /→\s+Normal task/);
+	picker.handleInput("\u001b");
+	await h.result;
+});
+
+test("Work picker closes with Escape while search is active", async () => {
+	const h = harness({ listWork: () => [{ workId: "other", title: "Other task", state: "active" }] });
+	await turn();
+	const picker = h.screens[0];
+	for (const character of "Unique") picker.handleInput(character);
+	assert.match(picker.render(100).join("\n"), /No matching Work/);
 	picker.handleInput("\u001b");
 	await h.result;
 });

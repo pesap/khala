@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { showKhala } from "../dist/src/tui.js";
-import { theme, nextTurn } from "./helpers/tui-fixtures.mjs";
+import { nextTurn, theme, tuiKeybindings } from "./helpers/tui-fixtures.mjs";
 
 test("Khala keeps mission information and navigation inside the small TUI", async () => {
 	const screens = [];
@@ -80,7 +80,7 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					const screen = factory({ requestRender() {} }, theme, {}, done);
+					const screen = factory({ requestRender() {} }, theme, tuiKeybindings, done);
 					screens.push(screen);
 				}),
 		},
@@ -240,7 +240,7 @@ test("Work picker refreshes, exposes history, and opens complete help", async ()
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -327,7 +327,7 @@ test("Provider observation archive entries show feedback and evidence", async ()
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -550,7 +550,7 @@ test("Peer-Review lists provider comments separately from Evidence", async () =>
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, {}, done));
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
