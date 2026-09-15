@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadConfig } from "../dist/src/config.js";
+import { workMaxConcurrentRuns } from "../dist/src/service-runtime-policy.js";
 
 test("dispatch limits have explicit native service defaults", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-dispatch-config-"));
@@ -18,6 +19,31 @@ test("dispatch limits have explicit native service defaults", async () => {
 		else process.env.PI_CODING_AGENT_DIR = previousDirectory;
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+test("trusted project run limits cannot raise the global ceiling", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-dispatch-config-"));
+	const project = join(directory, "project");
+	const previousDirectory = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = directory;
+	try {
+		await mkdir(join(project, ".pi"), { recursive: true });
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ maxConcurrentRuns: 2 }));
+		await writeFile(join(project, ".pi", "khala.json"), JSON.stringify({ maxConcurrentRuns: 5 }));
+		assert.equal(loadConfig(project, true, false).maxConcurrentRuns, 2);
+		await writeFile(join(project, ".pi", "khala.json"), JSON.stringify({ maxConcurrentRuns: 1 }));
+		assert.equal(loadConfig(project, true, false).maxConcurrentRuns, 1);
+	} finally {
+		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousDirectory;
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("existing Works use the current shared run ceiling", () => {
+	const options = { maxConcurrentExecutions: 2, maxConcurrentRuns: 1 };
+	assert.equal(workMaxConcurrentRuns({ dispatchLimits: { maxConcurrentRuns: 5 } }, options), 1);
+	assert.equal(workMaxConcurrentRuns({ dispatchLimits: { maxConcurrentRuns: 1 } }, options), 1);
 });
 
 test("dispatch limits are validated independently", async () => {

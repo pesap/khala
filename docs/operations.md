@@ -139,6 +139,9 @@ Target settings and their implementation status must be updated here when the co
 | `defaultWorkTokens` | `20000` | Work token cap |
 | `piCommand` | `["pi"]` | Child launch arguments; the public CLI must report version `0.85.0` |
 
+Trusted project configuration may lower `maxConcurrentRuns` but cannot raise the global ceiling.
+The Archive enforces the effective ceiling across existing and newly submitted Works.
+
 Role models use `conclaveModel`, `executorModel`, `observerModel`, and `oracleModel`, with matching `*Thinking` settings.
 The current workflow requires Conclave, Executor, and Oracle models; the target makes Oracle optional.
 Current navigation settings are `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`h`).

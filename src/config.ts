@@ -57,10 +57,15 @@ const DEFAULTS: KhalaConfig = {
 
 export function loadConfig(projectPath: string, trusted: boolean, requireModels = true): KhalaConfig {
 	const globalPath = join(agentDirectory(), "khala.json");
+	const globalConfig = apply(DEFAULTS, readConfig(globalPath));
 	const projectConfig = trusted ? readConfig(join(projectPath, ".pi", "khala.json")) : undefined;
-	const config = apply(apply(DEFAULTS, readConfig(globalPath)), projectConfig);
-	if (requireModels) validateRequiredModels(config);
-	return config;
+	const config = apply(globalConfig, projectConfig);
+	const effective = {
+		...config,
+		maxConcurrentRuns: Math.min(config.maxConcurrentRuns, globalConfig.maxConcurrentRuns),
+	};
+	if (requireModels) validateRequiredModels(effective);
+	return effective;
 }
 
 function validateRequiredModels(config: KhalaConfig): void {

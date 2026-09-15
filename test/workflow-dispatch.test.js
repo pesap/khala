@@ -16,8 +16,8 @@ const rolePublicKey = publicKey.export({ type: "spki", format: "der" }).toString
 const capabilityNonce = "workflow-dispatch-capability";
 const zero = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
 
-function terms() {
-	return { title: "Waiting", objective: "Test dispatch", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens: 100 };
+function terms(maxTokens = 100) {
+	return { title: "Waiting", objective: "Test dispatch", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["check"], allowedPaths: ["."], maxTokens };
 }
 
 function options(projectPath) {
@@ -215,7 +215,7 @@ function appendWork(archive, work, effects = []) {
 }
 
 function queuedDispatchWork(workId, budget, preparation, observer) {
-	const assignment = terms();
+	const assignment = terms(budget.maxTokens);
 	const mission = { missionId: `mission-${workId}`, workId, assignment, mandateRevision: 1, createdAt: new Date().toISOString() };
 	return {
 		workId,
@@ -231,6 +231,23 @@ function queuedDispatchWork(workId, budget, preparation, observer) {
 		queuedSequence: 1,
 	};
 }
+
+test("an admitted Work with one token dispatches its minimum allowance", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-one-token-dispatch-"));
+	const archive = new SQLiteArchive(join(directory, "archive.sqlite"));
+	const work = queuedDispatchWork("one-token", { maxTokens: 1, reservedTokens: 0, consumedTokens: 0 });
+	appendWork(archive, work, [{ effectId: "scheduler:one-token", kind: "scheduler-wake", payload: { workId: work.workId } }]);
+	const counters = { sandboxes: 0, sessions: 0 };
+	try {
+		const service = new ApplicationService(archive, ports(counters), options(directory));
+		await service.processPendingEffects();
+		assert.equal(counters.sessions, 1);
+		assert.equal(archive.project(work.workId).execution.tokenAllowance, 1);
+	} finally {
+		archive.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
 
 test("an exhausted Work records one durable budget gate and reevaluates after amendment", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-workflow-budget-gate-"));

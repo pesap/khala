@@ -379,8 +379,8 @@ export type WorkView = Readonly<{
 	queuedSequence: number;
 	preparation?: PreparationState | undefined;
 	correctionCount?: number | undefined;
-	/** Persisted per-Work limits prevent restarts from reverting to process defaults. */
-	dispatchLimits?: Readonly<{ maxConcurrentRuns: number; maxCorrections: number }> | undefined;
+	/** Persisted per-Work correction limits prevent restarts from reverting to process defaults. */
+	dispatchLimits?: Readonly<{ maxCorrections: number }> | undefined;
 	oraclePending?:
 		| Readonly<{
 				requestId: string;

@@ -4,9 +4,12 @@ export type DispatchEligibility = "eligible" | "preparation-waiting" | "reservat
 
 export function dispatchEligibility(work: WorkView): DispatchEligibility {
 	if (work.preparation?.status === "waiting") return "preparation-waiting";
-	const allowance = Math.floor(work.budget.maxTokens / 2);
 	const available = work.budget.maxTokens - work.budget.consumedTokens - work.budget.reservedTokens;
-	return budgetEligibility(work, allowance, available);
+	return budgetEligibility(work, invocationAllowance(work.budget.maxTokens, available), available);
+}
+
+export function invocationAllowance(maxTokens: number, available: number): number {
+	return Math.min(Math.max(1, Math.floor(maxTokens / 2)), available);
 }
 
 function budgetEligibility(

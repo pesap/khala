@@ -20,7 +20,12 @@ import {
 import { type RuntimeBinding, type RuntimeState } from "./ports.js";
 import { isTextValue, schedulerEffect } from "./provider-observation-policy.js";
 import { ActionInputError, RunGateUnavailable } from "./service-contracts.js";
-import { type DispatchEligibility, DispatchEligibilityError, dispatchEligibility } from "./workflow-dispatch.js";
+import {
+	type DispatchEligibility,
+	DispatchEligibilityError,
+	dispatchEligibility,
+	invocationAllowance as workInvocationAllowance,
+} from "./workflow-dispatch.js";
 
 export function directedWakeMessage(workId: string, reason: ConclaveWakeCause | undefined): string | undefined {
 	const messages = new Map<ConclaveWakeCause, string>([
@@ -317,7 +322,7 @@ export function invocationAllowance(work: WorkView): number {
 	const eligibility = dispatchEligibility(work);
 	if (eligibility !== "eligible") throw new DispatchEligibilityError(eligibility);
 	const available = work.budget.maxTokens - work.budget.consumedTokens - work.budget.reservedTokens;
-	return Math.min(Math.floor(work.budget.maxTokens / 2), available);
+	return workInvocationAllowance(work.budget.maxTokens, available);
 }
 
 export function isDispatchDeferral(failure: Error): boolean {
