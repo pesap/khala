@@ -30,7 +30,12 @@ import {
 	queuedExecutionProjection,
 	throwIfOperationAborted,
 } from "./service-runtime-policy.js";
-import { executorEffect, invocationAllowance, sandboxCleanupEffect } from "./service-state-policy.js";
+import {
+	executorEffect,
+	invocationAllowance,
+	isDispatchDeferral,
+	sandboxCleanupEffect,
+} from "./service-state-policy.js";
 import { invocationAllowance as workInvocationAllowance } from "./workflow-dispatch.js";
 
 type PreparedExecution = Readonly<{ execution: Execution; queued: WorkView }>;
@@ -138,7 +143,9 @@ export class ServiceExecution {
 				await this.executorRuntime.dispatchTurn({ work, execution: context.execution });
 				queueMicrotask(() => void this.processPendingEffects().catch(() => undefined));
 			} catch (error) {
-				await this.failTurn(work, context.execution, error instanceof Error ? error : new Error(String(error)));
+				const failure = error instanceof Error ? error : new Error(String(error));
+				if (isDispatchDeferral(failure)) throw failure;
+				await this.failTurn(work, context.execution, failure);
 			}
 		});
 		this.drivingExecutions.set(context.key, turn);
@@ -366,13 +373,9 @@ export class ServiceExecution {
 			this.executorRuntime.recordTurn(result.running);
 			queueMicrotask(() => void this.processPendingEffects().catch(() => undefined));
 		} catch (error) {
-			if (error instanceof RunGateUnavailable) throw error;
-			await this.reconcileInitialFailure(
-				work,
-				meta,
-				execution,
-				error instanceof Error ? error : new Error(String(error)),
-			);
+			const failure = error instanceof Error ? error : new Error(String(error));
+			if (isDispatchDeferral(failure)) throw failure;
+			await this.reconcileInitialFailure(work, meta, execution, failure);
 			queueMicrotask(() => void this.processPendingEffects().catch(() => undefined));
 			throw this.core.error(
 				"external-failure",

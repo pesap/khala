@@ -24,6 +24,7 @@ import { observerDriveIsCurrent, throwIfOperationAborted } from "./service-runti
 import {
 	caughtError,
 	invocationAllowance,
+	isDispatchDeferral,
 	isRuntimeUnavailable,
 	observerEffect,
 	requiredNonBlank,
@@ -408,7 +409,7 @@ export class ServiceObserver {
 	}
 
 	private async handleDriveError(work: WorkView, binding: RuntimeBinding | undefined, error: Error): Promise<never> {
-		if (error instanceof RunGateUnavailable) throw error;
+		if (isDispatchDeferral(error)) throw error;
 		if (binding !== undefined) await this.failDrive(work, binding, caughtError(error.message));
 		throw error;
 	}

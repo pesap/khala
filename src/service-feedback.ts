@@ -32,6 +32,7 @@ import {
 	executorSessionInput,
 	feedbackEffect,
 	invocationAllowance,
+	isDispatchDeferral,
 	isRuntimeUnavailable,
 } from "./service-state-policy.js";
 
@@ -397,6 +398,7 @@ export class ServiceFeedback {
 			this.recordFeedbackTurnDisposition(current, feedback, deliveryId, observationId);
 			throw error;
 		}
+		if (isDispatchDeferral(error)) throw error;
 		this.appendFeedbackDeliveryFailure(current, executionId, feedback, deliveryId, observationId, error);
 		throw error;
 	}
