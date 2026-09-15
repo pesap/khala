@@ -56,10 +56,11 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 		await see("Dispatch resumes when the new cap");
 		terminal.keys("Enter");
 		await see("The amended cap cannot be below reserved or consumed tokens.");
+		terminal.keys("Escape");
+		await see("Freshness");
 		assert.equal(terminal.readWork().budget.maxTokens, 2);
 		assert.equal(terminal.readWork().budget.consumedTokens, exhausted.budget.consumedTokens);
 		assert.equal(terminal.readWork().revision, exhausted.revision);
-		await see("Freshness");
 		await openBudget();
 		terminal.keys("C-a", "C-k");
 		terminal.keys("-l", "20000");

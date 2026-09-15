@@ -73,7 +73,11 @@ test("Pi terminal submits native Work, recovers after restart, and records succe
 		const review = JSON.parse(await readFile(reviewPath, "utf8"));
 		await writeFile(reviewPath, JSON.stringify({ ...review, state: "MERGED", isDraft: false, mergedAt: new Date().toISOString(), mergeCommit: { oid: recovered.reviewRequest.headCommit } }));
 		send("Check the merged review and finish the Work.");
-		const succeeded = await waitUntil(() => readWork(path), (work) => work?.state === "succeeded", () => JSON.stringify({ screen: screen(), work: readWork(path) }));
+		const succeeded = await waitUntil(
+			() => readWork(path),
+			(work) => work?.state === "succeeded" && work.budget.reservedTokens === 0,
+			() => JSON.stringify({ screen: screen(), work: readWork(path) }),
+		);
 		assert.equal(succeeded.execution.executionId, current.execution.executionId);
 		assert.equal(succeeded.budget.reservedTokens, 0);
 		send("/khala");
