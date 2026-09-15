@@ -67,6 +67,26 @@ import { ServiceWorkspaceActions } from "./service-workspace-actions.js";
 export type { ServiceOptions } from "./service-contracts.js";
 export { ActionInputError, ApplicationError, RunGateUnavailable, resultText } from "./service-contracts.js";
 
+function admissionWakeError(
+	error: ErrorEnvelope,
+	kind: ReturnType<typeof wakeErrorKindFor>,
+	work: WorkView,
+): ErrorEnvelope {
+	if (kind === "admission") return markAdmissionFailure(error);
+	if (work.state === "submitted" && work.mission === undefined) return markAdmissionFailure(error);
+	return error;
+}
+
+function wakeFailureCause(reason: ConclaveWakeCause | undefined): ConclaveWakeCause {
+	if (reason === undefined) return "admission";
+	return reason;
+}
+
+function wakeFailureEvidence(error: ErrorEnvelope, observationId: string | undefined): readonly string[] {
+	if (observationId === undefined) return error.evidenceRefs;
+	return [...error.evidenceRefs, observationId];
+}
+
 function reconciledExecutorBinding(work: WorkView, fact: ReturnType<RunLedger["find"]>): RuntimeBinding | undefined {
 	if (fact === undefined) return undefined;
 	return matchingExecutorBinding(work, fact.role, fact.executionId);
@@ -468,13 +488,8 @@ export class ApplicationService {
 		const work = this.inspectWork(workId);
 		if (isTerminalWork(work)) return work;
 		this.core.checkRevision(work, meta);
-		const wakeReason = reason ?? "admission";
 		const wakeErrorKind = wakeErrorKindFor(reason, work.lastObservation, failure);
-		const wakeError = conclaveWakeError(failure, wakeErrorKind);
-		const error =
-			wakeReason === "admission" || wakeErrorKind === "admission"
-				? markAdmissionFailure(wakeError)
-				: wakeError;
+		const error = admissionWakeError(conclaveWakeError(failure, wakeErrorKind), wakeErrorKind, work);
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
@@ -485,8 +500,8 @@ export class ApplicationService {
 			meta,
 			kind: "error",
 			workId,
-			payload: { ...error, dispatchEffectId, dispatchCause: wakeReason },
-			evidenceRefs: observationId === undefined ? error.evidenceRefs : [...error.evidenceRefs, observationId],
+			payload: { ...error, dispatchEffectId, dispatchCause: wakeFailureCause(reason) },
+			evidenceRefs: wakeFailureEvidence(error, observationId),
 			projection: next,
 			summary: error.summary,
 			// The original outbox effect remains pending. Creating another wake here
@@ -649,20 +664,22 @@ export class ApplicationService {
 	}
 
 	private clearInvocationGateAttention(work: WorkView): WorkView {
-		return restoreInvocationGateAttention(work, (projection) =>
-			this.core.append({
-				meta: {
-					actor: "system",
-					commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
-					expectedWorkRevision: work.revision,
-					schemaVersion: 1,
-				},
-				kind: "execution",
-				workId: work.workId,
-				payload: { dispatch: "eligible" },
-				projection,
-				summary: "Held invocation dispatch gate was restored.",
-			}).projection,
+		return restoreInvocationGateAttention(
+			work,
+			(projection) =>
+				this.core.append({
+					meta: {
+						actor: "system",
+						commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
+						expectedWorkRevision: work.revision,
+						schemaVersion: 1,
+					},
+					kind: "execution",
+					workId: work.workId,
+					payload: { dispatch: "eligible" },
+					projection,
+					summary: "Held invocation dispatch gate was restored.",
+				}).projection,
 		);
 	}
 }

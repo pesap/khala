@@ -136,7 +136,7 @@ export function isPreparation(value: JsonValue | undefined): boolean {
 
 export function isDispatchLimits(value: JsonValue | undefined): boolean {
 	if (!isJsonObject(value)) return false;
-	return isPositiveInteger(value["maxConcurrentRuns"]) && isPositiveInteger(value["maxCorrections"]);
+	return isPositiveInteger(value["maxCorrections"]);
 }
 
 export function isOraclePending(value: JsonValue | undefined): boolean {

@@ -333,8 +333,7 @@ async function streamArtifact(
 	// Pipeline owns backpressure, abort propagation, and errors from opening the output file.
 	await pipeline(
 		Readable.from(body),
-		(source: AsyncIterable<Uint8Array>) =>
-			countedChunks(source, input.name, integrityHash, artifactHash, progress),
+		(source: AsyncIterable<Uint8Array>) => countedChunks(source, input.name, integrityHash, artifactHash, progress),
 		createWriteStream(path, { mode: 0o600, flags: "wx" }),
 		{ signal: input.signal },
 	);

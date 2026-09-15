@@ -248,17 +248,22 @@ export function markAdmissionFailure(error: ErrorEnvelope): AdmissionFailure {
 	return { ...error, source: "admission" };
 }
 
-export function restoreInvocationGateAttention(
-	work: WorkView,
-	append: (projection: WorkView) => WorkView,
-): WorkView {
-	if ((work.activeInvocations?.length ?? 0) > 0 || !hasHeldInvocationAttention(work)) return work;
+export function restoreInvocationGateAttention(work: WorkView, append: (projection: WorkView) => WorkView): WorkView {
+	if (work.activeInvocations !== undefined) {
+		if (work.activeInvocations.length > 0) return work;
+	}
+	if (!hasHeldInvocationAttention(work)) return work;
 	return append({
 		...work,
 		revision: work.revision + 1,
 		lastError: undefined,
-		nextAction: isTerminalWork(work) ? work.nextAction : "Work dispatch is pending.",
+		nextAction: invocationGateNextAction(work),
 	});
+}
+
+function invocationGateNextAction(work: WorkView): string {
+	if (isTerminalWork(work)) return work.nextAction;
+	return "Work dispatch is pending.";
 }
 
 function hasHeldInvocationAttention(work: WorkView): boolean {

@@ -518,20 +518,22 @@ export class ServiceRecovery {
 	}
 
 	private clearInvocationGateAttention(work: WorkView): WorkView {
-		return restoreInvocationGateAttention(work, (projection) =>
-			this.core.append({
-				meta: {
-					actor: "system",
-					commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
-					expectedWorkRevision: work.revision,
-					schemaVersion: 1,
-				},
-				kind: "execution",
-				workId: work.workId,
-				payload: { dispatch: "eligible" },
-				projection,
-				summary: "Held invocation dispatch gate was restored.",
-			}).projection,
+		return restoreInvocationGateAttention(
+			work,
+			(projection) =>
+				this.core.append({
+					meta: {
+						actor: "system",
+						commandId: `invocation-gate-restored:${work.workId}:${work.revision}`,
+						expectedWorkRevision: work.revision,
+						schemaVersion: 1,
+					},
+					kind: "execution",
+					workId: work.workId,
+					payload: { dispatch: "eligible" },
+					projection,
+					summary: "Held invocation dispatch gate was restored.",
+				}).projection,
 		);
 	}
 }

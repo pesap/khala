@@ -33,7 +33,7 @@ test("Work projection validation rejects malformed newer optional fields", () =>
 	const malformed = [
 		["preparation", { status: "waiting", prerequisiteId: "id", operation: "dependencies", diagnostic: 3, recovery: "user" }],
 		["correctionCount", -1],
-		["dispatchLimits", { maxConcurrentRuns: 0, maxCorrections: 3 }],
+		["dispatchLimits", { maxCorrections: 0 }],
 		["oraclePending", { requestId: "request", signalId: "signal", headCommit: "head", subject: {}, missionId: "mission" }],
 		["activeInvocations", [{ runId: "run", role: "executor", allowance: 0, state: "reserved" }]],
 	];

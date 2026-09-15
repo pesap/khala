@@ -236,7 +236,22 @@ test("an admitted Work with one token dispatches its minimum allowance", async (
 	const directory = await mkdtemp(join(tmpdir(), "khala-one-token-dispatch-"));
 	const archive = new SQLiteArchive(join(directory, "archive.sqlite"));
 	const work = queuedDispatchWork("one-token", { maxTokens: 1, reservedTokens: 0, consumedTokens: 0 });
-	appendWork(archive, work, [{ effectId: "scheduler:one-token", kind: "scheduler-wake", payload: { workId: work.workId } }]);
+	const queued = {
+		...work,
+		execution: {
+			executionId: "execution-one-token",
+			workId: work.workId,
+			missionId: work.mission.missionId,
+			state: "queued",
+			runtimeState: "idle",
+			model: "provider/executor",
+			thinking: "high",
+			tokenAllowance: 1,
+			promptIdentity: { packageVersion: "test", promptSha256: "executor" },
+			sandbox: { path: "/tmp/sandbox", baseCommit: "base", branch: "branch" },
+		},
+	};
+	appendWork(archive, queued, [{ effectId: "executor-wake:one-token", kind: "executor-wake", payload: { workId: work.workId } }]);
 	const counters = { sandboxes: 0, sessions: 0 };
 	try {
 		const service = new ApplicationService(archive, ports(counters), options(directory));
