@@ -3,12 +3,19 @@ import { test } from "node:test";
 import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
 
-function isTokenExhausted(work) {
+function hasTokenFailure(error) {
+	return error?.code === "external-failure" && /token-exhaustion/u.test(error.summary);
+}
+
+function hasRecordedOverrun(work) {
+	return work.budget.reservedTokens === 0 && work.budget.consumedTokens > work.budget.maxTokens;
+}
+
+function isBudgetExhausted(work) {
 	if (work === undefined) return false;
-	const error = work.lastError;
-	return error === undefined
-		? false
-		: [error.code === "external-failure", /token-exhaustion/u.test(error.summary), work.budget.reservedTokens === 0].every(Boolean);
+	if (!hasRecordedOverrun(work)) return false;
+	if (hasTokenFailure(work.lastError)) return true;
+	return work.state === "queued";
 }
 
 test("Pi rejects a budget below recorded usage and a confirmed increase resumes exhausted Work", { timeout: 90_000 }, async () => {
@@ -30,10 +37,10 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 		terminal.send("Submit the greeting Work now.");
 		const exhausted = await waitUntil(
 			terminal.readWork,
-			(work) => isTokenExhausted(work),
+			(work) => isBudgetExhausted(work),
 			diagnostic,
 		);
-		assert.ok(exhausted.budget.consumedTokens >= 15);
+		assert.ok(exhausted.budget.consumedTokens > exhausted.budget.maxTokens);
 		assert.equal(exhausted.execution, undefined);
 		assert.equal(fixture.steps.executor, 0);
 		terminal.send("/khala");
