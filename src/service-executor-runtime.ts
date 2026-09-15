@@ -4,7 +4,6 @@ import type { CommandMeta, Execution, WorkView } from "./model.js";
 import type { OperationContext, RuntimeBinding, RuntimeState, RuntimeTurn, ServicePorts } from "./ports.js";
 import type { ReservedInvocation } from "./run-ledger.js";
 import { ArchiveCore } from "./service-archive-core.js";
-import { RunGateUnavailable } from "./service-contracts.js";
 import {
 	currentExecutorTurnIsCurrent,
 	executorRuntimeNextAction,
@@ -227,7 +226,8 @@ export class ExecutorRuntimeCoordinator {
 		operation: OperationContext,
 	): Promise<RuntimeTurn> {
 		const live = this.archive.project(work.workId);
-		if (!currentExecutorTurnIsCurrent(live, execution)) throw new RunGateUnavailable();
+		if (!currentExecutorTurnIsCurrent(live, execution))
+			throw new InvocationLaunchError(new Error("Executor Work became stale before its next prompt."));
 		return this.runtime.send(
 			binding,
 			executorPrompt(live, execution.executionId, reservation.runId),

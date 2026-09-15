@@ -6,7 +6,7 @@ import type { OperationContext, RuntimeBinding, ServicePorts } from "./ports.js"
 import type { ReservedInvocation } from "./run-ledger.js";
 import type { RuntimeStorage } from "./runtime-storage.js";
 import { ArchiveCore } from "./service-archive-core.js";
-import { RunGateUnavailable, type ServiceOptions } from "./service-contracts.js";
+import { type ServiceOptions } from "./service-contracts.js";
 import {
 	currentExecutorTurnIsCurrent,
 	executionAdmissionAvailable,
@@ -39,6 +39,10 @@ import {
 import { invocationAllowance as workInvocationAllowance } from "./workflow-dispatch.js";
 
 type PreparedExecution = Readonly<{ execution: Execution; queued: WorkView }>;
+
+function isCurrentInitialExecutorTurn(work: WorkView, execution: Execution): boolean {
+	return work.execution?.executionId === execution.executionId && work.execution.state === "queued";
+}
 
 export class ServiceExecution {
 	private readonly drivingExecutions = new Map<string, Promise<void>>();
@@ -395,15 +399,24 @@ export class ServiceExecution {
 		operation: OperationContext,
 	): Promise<InitialExecutorTurn> {
 		const current = this.inspectWork(work.workId);
-		if (current.execution?.executionId !== execution.executionId || current.execution.state !== "queued")
-			throw new RunGateUnavailable();
+		if (!isCurrentInitialExecutorTurn(current, execution))
+			throw new InvocationLaunchError(new Error("Executor Work became stale before its initial prompt."));
 		const binding = await this.executorRuntime.ensureBinding(current, execution, operation);
-		const running = this.startInitial(current, meta, execution, binding);
-		started(running);
 		const live = this.inspectWork(work.workId);
+		if (!isCurrentInitialExecutorTurn(live, execution)) {
+			await this.runtime.requestStop(binding).catch(() => undefined);
+			throw new InvocationLaunchError(new Error("Executor Work became stale before its initial prompt."));
+		}
+		const running = this.startInitial(live, meta, execution, binding);
+		started(running);
+		const promptWork = this.inspectWork(work.workId);
+		if (!currentExecutorTurnIsCurrent(promptWork, running.execution)) {
+			await this.runtime.requestStop(binding).catch(() => undefined);
+			throw new InvocationLaunchError(new Error("Executor Work became stale before its initial prompt."));
+		}
 		const turn = await this.runtime.send(
 			binding,
-			`Work ${live.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${live.revision}.\nInvocation run ID: ${reservation.runId}.`,
+			`Work ${promptWork.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${promptWork.revision}.\nInvocation run ID: ${reservation.runId}.`,
 			{ tokenAllowance: reservation.allowance, runId: reservation.runId },
 			operation,
 		);

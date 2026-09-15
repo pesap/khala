@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { InvocationCapacityExceeded } from "../dist/src/archive.js";
 import { RunGateUnavailable } from "../dist/src/service-contracts.js";
 import { DispatchEligibilityError } from "../dist/src/workflow-dispatch.js";
-import { makeService } from "./helpers/mvp-fixtures.mjs";
+import { makeService, meta } from "./helpers/mvp-fixtures.mjs";
 
 function terms() {
 	return {
@@ -61,6 +61,22 @@ function observerWork(workId) {
 		observerInFlight: true,
 		nextAction: "Observer is queued.",
 		queuedSequence: 1,
+	};
+}
+
+function queuedExecutionWork(workId) {
+	const work = executionWork(workId);
+	return {
+		...work,
+		execution: { ...work.execution, state: "queued", runtimeState: undefined, pi: undefined },
+		nextAction: "Executor is starting.",
+	};
+}
+
+function boundObserverWork(workId) {
+	return {
+		...observerWork(workId),
+		observer: { sessionId: "observer-session", sessionPath: "/tmp/observer-session.jsonl" },
 	};
 }
 
@@ -178,6 +194,126 @@ test("genuine dispatch errors still record runtime failures", async () => {
 			service.invocations.dispatch = async () => { throw new Error("provider runtime failed"); };
 			await service.processPendingEffects();
 			assertGenuineDispatchFailure(role, service.inspectWork(work.workId), archive, work.workId);
+		} finally {
+			await service.close();
+			await rm(directory, { recursive: true, force: true });
+		}
+	}
+});
+
+async function cancelAfterReservation(service, workId, commandId) {
+	const current = service.inspectWork(workId);
+	const result = await service.perform({
+		action: "cancel",
+		workId,
+		input: {},
+		meta: meta("user", commandId, current.revision, workId),
+	});
+	assert.equal("value" in result, true);
+}
+
+function installCancellationRace(service, workId, commandId) {
+	const dispatch = service.invocations.dispatch.bind(service.invocations);
+	service.invocations.dispatch = (work, input, send) =>
+		dispatch(work, input, async (reservation, operation) => {
+			await cancelAfterReservation(service, workId, commandId);
+			return send(reservation, operation);
+		});
+}
+
+function assertSettledLaunchAbort(service, archive, controls, workId, effectId) {
+	const current = service.inspectWork(workId);
+	assert.equal(current.state, "stopped");
+	assert.deepEqual(current.activeInvocations, []);
+	assert.equal(current.budget.reservedTokens, 0);
+	assert.equal(archive.countPendingInvocations(), 0);
+	assert.equal(archive.query({ workId, kinds: ["error"] }).items.length, 0);
+	assert.equal(controls.prompts.length, 0);
+	const invocation = archive.query({ workId, kinds: ["invocation"], order: "desc" }).items[0].payload;
+	assert.equal(invocation.state, "settled");
+	assert.deepEqual(invocation.usage, { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 });
+	if (effectId !== undefined)
+		assert.equal(archive.pendingEffects("assertion").some(({ effectId: pendingId }) => pendingId === effectId), false);
+}
+
+function installInitialEnsureCancellationRace(service, runtime, workId, commandId) {
+	const ensureSession = runtime.ensureSession.bind(runtime);
+	let cancelled = false;
+	runtime.ensureSession = async (input, operation) => {
+		const binding = await ensureSession(input, operation);
+		if (!cancelled && input.role === "executor") {
+			cancelled = true;
+			await cancelAfterReservation(service, workId, commandId);
+		}
+		return binding;
+	};
+}
+
+test("initial sender rechecks Work after runtime preparation", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-initial-stale-preparation-"));
+	const { service, runtime, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	const work = queuedExecutionWork("stale-executor-preparation");
+	const effect = { effectId: "stale-executor-preparation:wake", kind: "executor-wake", payload: { workId: work.workId } };
+	seed(archive, work, effect);
+	installInitialEnsureCancellationRace(service, runtime, work.workId, "executor-preparation:cancel");
+	try {
+		await service.processPendingEffects();
+		await service.processPendingEffects();
+		assertSettledLaunchAbort(service, archive, controls, work.workId, effect.effectId);
+	} finally {
+		await service.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("bound observer sender rejects stale Work before its prompt", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-bound-observer-stale-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	const work = boundObserverWork("stale-bound-observer");
+	seed(archive, work, { effectId: "unused", kind: "observer-wake", payload: { workId: work.workId } });
+	installCancellationRace(service, work.workId, "bound-observer:cancel");
+	try {
+		await assert.rejects(service.observer.drive(work, work.observer), /Observer Work became stale before its prompt/);
+		await service.processPendingEffects();
+		assertSettledLaunchAbort(service, archive, controls, work.workId);
+	} finally {
+		await service.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("post-reservation stale sender paths settle without retaining capacity", async () => {
+	const staleCases = [
+		{
+			name: "executor-initial",
+			work: queuedExecutionWork("stale-executor-initial"),
+			effect: { effectId: "stale-executor-initial:wake", kind: "executor-wake", payload: { workId: "stale-executor-initial" } },
+		},
+		{
+			name: "executor-turn",
+			work: executionWork("stale-executor-turn"),
+			effect: { effectId: "stale-executor-turn:wake", kind: "executor-wake", payload: { workId: "stale-executor-turn" } },
+		},
+		{
+			name: "feedback",
+			work: executionWork("stale-feedback"),
+			effect: { effectId: "stale-feedback:wake", kind: "feedback-wake", payload: { workId: "stale-feedback", executionId: "execution-stale-feedback", feedback: ["Address the requested change."] } },
+		},
+		{
+			name: "observer",
+			work: observerWork("stale-observer"),
+			effect: { effectId: "stale-observer:wake", kind: "observer-wake", payload: { workId: "stale-observer" } },
+		},
+	];
+	for (const { name, work, effect } of staleCases) {
+		const directory = await mkdtemp(join(tmpdir(), `khala-${name}-stale-launch-`));
+		const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+		seed(archive, work, effect);
+		installCancellationRace(service, work.workId, `${name}:cancel`);
+		try {
+			await service.processPendingEffects();
+			await service.processPendingEffects();
+			assertSettledLaunchAbort(service, archive, controls, work.workId, effect.effectId);
 		} finally {
 			await service.close();
 			await rm(directory, { recursive: true, force: true });

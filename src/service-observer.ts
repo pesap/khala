@@ -371,11 +371,16 @@ export class ServiceObserver {
 				{ workId: work.workId, role: "observer", allowance: invocationAllowance(work) },
 				async ({ runId, allowance }, operation) => {
 					const prepared = await this.prepareInvocationForDispatch(work, existingBinding, meta, operation);
+					const live = this.archive.project(work.workId);
+					if (!observerDriveIsCurrent(live, prepared.binding)) {
+						await this.runtime.requestStop(prepared.binding).catch(() => undefined);
+						throw new InvocationLaunchError(new Error("Observer Work became stale before its prompt."));
+					}
 					binding = prepared.binding;
 					started?.();
 					return this.runtime.send(
 						prepared.binding,
-						`Inspect Work ${prepared.live.workId} read-only. Record exactly one bounded assessment with concrete repository evidence using Archive revision ${prepared.live.revision}, then stop.\nInvocation run ID: ${runId}.`,
+						`Inspect Work ${live.workId} read-only. Record exactly one bounded assessment with concrete repository evidence using Archive revision ${live.revision}, then stop.\nInvocation run ID: ${runId}.`,
 						{ tokenAllowance: allowance, runId },
 						operation,
 					);

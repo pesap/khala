@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SQLiteArchive } from "../dist/src/archive.js";
 import { dispatchInvocation, InvocationLaunchError } from "../dist/src/dispatch.js";
+import { RuntimeTurnError } from "../dist/src/ports.js";
 import { RunLedger } from "../dist/src/run-ledger.js";
 
 function view(workId, revision, budget = { maxTokens: 100, reservedTokens: 0, consumedTokens: 0 }) {
@@ -92,6 +93,29 @@ test("a persisted reservation is not permission to repeat an unobserved provider
 		await assert.rejects(dispatchInvocation(ledger, input, async () => { called = true; return { output: "" }; }), /reconciliation/);
 		assert.equal(called, false);
 		assert.equal(archive.project("work-1").budget.reservedTokens, 20);
+	} finally {
+		archive.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("an unproven sender failure remains uncertain", async () => {
+	const { archive, directory } = await fixture();
+	try {
+		const ledger = new RunLedger(archive);
+		const error = new RuntimeTurnError("provider response was lost");
+		await assert.rejects(
+			dispatchInvocation(ledger, { workId: "work-1", role: "executor", allowance: 20 }, async () => {
+				throw error;
+			}),
+			error,
+		);
+		const current = archive.project("work-1");
+		const reservation = current.activeInvocations[0];
+		assert.equal(current.budget.reservedTokens, 20);
+		assert.deepEqual(current.activeInvocations, [{ ...reservation, state: "uncertain" }]);
+		assert.equal(archive.countPendingInvocations(), 1);
+		assert.equal(new RunLedger(archive).find(reservation.runId).state, "uncertain");
 	} finally {
 		archive.close();
 		await rm(directory, { recursive: true, force: true });
