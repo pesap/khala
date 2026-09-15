@@ -48,6 +48,7 @@ test("Pi rejects a budget below recorded usage and a confirmed increase resumes 
 		terminal.keys("Enter");
 		await see("Freshness");
 		await openBudget();
+		terminal.keys("C-a", "C-k");
 		terminal.keys("-l", "2");
 		terminal.keys("Enter");
 		await see("Token cap * 2");
