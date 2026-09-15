@@ -115,6 +115,49 @@ export function isWorkViewProjection(value: JsonValue): value is WorkView {
 		optional(value["providerOutcome"], isProviderOutcomeObservation),
 		optional(value["lastValidation"], isValidationRun),
 		optional(value["lastError"], isErrorEnvelope),
+		optional(value["preparation"], isPreparation),
+		optional(value["correctionCount"], isNonNegativeInteger),
+		optional(value["dispatchLimits"], isDispatchLimits),
+		optional(value["oraclePending"], isOraclePending),
+		optional(value["activeInvocations"], isActiveInvocations),
+	].every(Boolean);
+}
+
+export function isPreparation(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return [
+		isOneOf(value["status"], ["waiting", "preparing", "runnable"]),
+		isText(value["prerequisiteId"]),
+		isOneOf(value["operation"], ["isolation", "dependencies", "validation"]),
+		isText(value["diagnostic"]),
+		isOneOf(value["recovery"], ["user", "prerequisite-change"]),
+	].every(Boolean);
+}
+
+export function isDispatchLimits(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return isPositiveInteger(value["maxConcurrentRuns"]) && isPositiveInteger(value["maxCorrections"]);
+}
+
+export function isOraclePending(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return [
+		hasTextFields(value, ["requestId", "signalId", "headCommit", "subject", "missionId"]),
+		optional(value["executionId"], isText),
+	].every(Boolean);
+}
+
+export function isActiveInvocations(value: JsonValue | undefined): boolean {
+	return Array.isArray(value) && value.every(isActiveInvocation);
+}
+
+export function isActiveInvocation(value: JsonValue): boolean {
+	if (!isJsonObject(value)) return false;
+	return [
+		isText(value["runId"]),
+		isOneOf(value["role"], ["conclave", "executor", "observer", "oracle"]),
+		isPositiveInteger(value["allowance"]),
+		isOneOf(value["state"], ["reserved", "uncertain"]),
 	].every(Boolean);
 }
 

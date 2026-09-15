@@ -53,7 +53,7 @@ export interface ArchivePort {
 	completeEffect: (effectId: string, owner?: string) => boolean;
 	releaseEffect: (effectId: string, owner?: string) => void;
 	renewEffect: (effectId: string, owner?: string) => boolean;
-	query: (query?: RecordQuery, cursor?: string) => Page<RecordView>;
+	query: (query?: RecordQuery, cursor?: string, visibleExecutionId?: string) => Page<RecordView>;
 	querySummaries: (query?: RecordQuery, visibleExecutionId?: string) => Page<RecordSummaryView>;
 	project: (workId: string) => WorkView | undefined;
 	findObservation: (workId: string, observationId: string) => ProviderObservation | undefined;

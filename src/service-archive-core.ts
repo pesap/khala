@@ -117,8 +117,7 @@ export class ArchiveCore {
 	readRecords(query: RecordQuery | undefined, meta: CommandMeta, cursor?: string): Page<RecordView> {
 		const capability = this.readArchiveCapability(meta);
 		const normalized = this.normalizeRecordQuery(query, meta.actor, capability);
-		const page = this.archive.query(normalized, cursor);
-		return this.readRecordsForCapability(page, normalized, capability);
+		return this.archive.query(normalized, cursor, this.visibleExecutionId(capability));
 	}
 
 	readRecordSummaries(query: RecordQuery | undefined, meta: CommandMeta): Page<RecordSummaryView> {
@@ -256,36 +255,13 @@ export class ArchiveCore {
 		this.requireScopedCapability(meta, capability, this.inspectWork(capability.workId ?? ""));
 	}
 
-	private readRecordsForCapability(
-		page: Page<RecordView>,
-		query: RecordQuery,
-		capability: RoleCapability | undefined,
-	): Page<RecordView> {
-		if (capability?.role !== "executor") return page;
-		return this.readExecutorRecords(page, query, capability.executionId);
+	private summaryVisibleExecutionId(capability: RoleCapability | undefined): string | undefined {
+		return this.visibleExecutionId(capability);
 	}
 
-	private summaryVisibleExecutionId(capability: RoleCapability | undefined): string | undefined {
+	private visibleExecutionId(capability: RoleCapability | undefined): string | undefined {
 		if (capability?.role !== "executor") return undefined;
 		return this.executorRecordExecutionId(capability.executionId);
-	}
-
-	private readExecutorRecords(
-		page: Page<RecordView>,
-		query: RecordQuery,
-		boundExecutionId: string | undefined,
-	): Page<RecordView> {
-		const executionId = this.executorRecordExecutionId(boundExecutionId);
-		const items = page.items.filter((record) => record.executionId === undefined || record.executionId === executionId);
-		let nextCursor = page.nextCursor;
-		while (items.length < 100 && nextCursor !== undefined) {
-			const nextPage = this.archive.query(query, nextCursor);
-			items.push(
-				...nextPage.items.filter((record) => record.executionId === undefined || record.executionId === executionId),
-			);
-			nextCursor = nextPage.nextCursor;
-		}
-		return { ...page, items, nextCursor };
 	}
 
 	private executorRecordExecutionId(executionId: string | undefined): string {

@@ -170,7 +170,12 @@ export function verifyNativePiVersion(command: readonly string[], cwd: string): 
 		execFile(
 			executable,
 			[...command.slice(1), "--version"],
-			{ cwd, timeout: VERSION_CHECK_TIMEOUT_MS, killSignal: "SIGKILL", env: { ...process.env, PI_OFFLINE: "1" } },
+			{
+				cwd,
+				timeout: VERSION_CHECK_TIMEOUT_MS,
+				killSignal: "SIGKILL",
+				env: childEnvironment({ ...process.env, PI_OFFLINE: "1" }),
+			},
 			(error, stdout, stderr) => completeNativeVersionCheck(error, stdout, stderr, resolve, reject),
 		);
 	});

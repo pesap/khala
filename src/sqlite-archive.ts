@@ -436,9 +436,15 @@ export class SQLiteArchive implements ArchivePort {
 		if (projection === undefined) throw new Error(`Archive command ${commandId} has no projection.`);
 		return { record: this.readRecord(readInteger(row, "sequence")), projection, duplicate: true };
 	}
-	query(query: RecordQuery = {}, cursor?: string): Page<RecordView> {
+	query(query: RecordQuery = {}, cursor?: string, visibleExecutionId?: string): Page<RecordView> {
 		const state = resolveQueryState(query, cursor, () => this.latestSequence());
-		const filters = queryFilters(state.query, state.asOfSequence, state.lastSequence, "archive_records");
+		const filters = queryFilters(
+			state.query,
+			state.asOfSequence,
+			state.lastSequence,
+			"archive_records",
+			visibleExecutionId,
+		);
 		const rows = this.database.prepare(archiveQuerySql(filters.clauses, state.query.order)).all(...filters.parameters);
 		const items = rows.map((row) => this.recordFromRow(row));
 		return archivePage(items, state);
