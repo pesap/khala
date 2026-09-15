@@ -78,7 +78,7 @@ test("Pi terminal submits native Work, recovers after restart, and records succe
 		assert.equal(succeeded.budget.reservedTokens, 0);
 		send("/khala");
 		await waitUntil(screen, (value) => value.includes("left/right filters"), screen);
-		tmux("send-keys", "-t", session, "h");
+		tmux("send-keys", "-t", session, "Right", "Right", "Right");
 		await waitUntil(screen, (value) => value.includes("Native greeting") && value.includes("succeeded"), screen);
 		assert.deepEqual(fixture.failures, []);
 	} finally {

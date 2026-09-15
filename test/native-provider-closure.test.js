@@ -37,9 +37,9 @@ test("Pi reconciles a provider-closed review as failed Work", { timeout: 90_000 
 		assert.equal(failed.budget.reservedTokens, 0);
 
 		terminal.send("/khala");
-		await waitUntil(terminal.screen, (screen) => /^\s*Work\s*$/m.test(screen) && screen.includes("left/right filters"), diagnostic);
-		terminal.keys("h");
-		await waitUntil(terminal.screen, (screen) => /^\s*History\s*$/m.test(screen) && screen.includes("Native greeting") && screen.includes("failed"), diagnostic);
+		await waitUntil(terminal.screen, (screen) => screen.includes("Scope: All | Work") && screen.includes("left/right filters"), diagnostic);
+		terminal.keys("Right", "Right", "Right");
+		await waitUntil(terminal.screen, (screen) => screen.includes("Native greeting") && screen.includes("failed"), diagnostic);
 		terminal.keys("Enter");
 		await waitUntil(
 			terminal.screen,
