@@ -61,8 +61,14 @@ export class SQLiteArchive implements ArchivePort {
 	}
 
 	private validateWorkProjections(): void {
-		for (const row of this.database.prepare("SELECT view_json FROM work_projection").all())
-			parseWorkView(readString(row, "view_json"));
+		validateProjectionIntegrity(this.database, this.readWorkProjections());
+	}
+
+	private readWorkProjections(): readonly WorkView[] {
+		return this.database
+			.prepare("SELECT view_json FROM work_projection")
+			.all()
+			.map((row) => parseWorkView(readString(row, "view_json")));
 	}
 
 	private validateRecordPayloads(): void {
@@ -190,6 +196,8 @@ export class SQLiteArchive implements ArchivePort {
 			return this.duplicateResult(concurrentDuplicate, input.workId, input.commandFingerprint);
 		const current = this.database.prepare("SELECT revision FROM work_projection WHERE work_id = ?").get(input.workId);
 		assertCurrentRevision(current, input);
+		const projections = this.readWorkProjections().filter((projection) => projection.workId !== input.workId);
+		validateProjectionIntegrity(this.database, [...projections, input.projection], input);
 		this.assertAppendAdmission(input);
 		this.assertInvocationCapacity(input.invocationLimit);
 		const inserted = this.insertArchiveRecord(input);
@@ -318,6 +326,8 @@ export class SQLiteArchive implements ArchivePort {
 		this.transaction(() => {
 			const existing = this.database.prepare("SELECT work_id FROM archive_records WHERE command_id = ?").get(commandId);
 			assertCommandProjectionOwnership(existing, commandId, projection.workId);
+			const projections = this.readWorkProjections().filter((candidate) => candidate.workId !== projection.workId);
+			validateProjectionIntegrity(this.database, [...projections, projection]);
 			this.database
 				.prepare("UPDATE archive_records SET projection_json = ? WHERE command_id = ?")
 				.run(serialized, commandId);
@@ -618,6 +628,7 @@ import {
 	readStringValue,
 	validateProjection,
 } from "./archive-codec.js";
+import { validateProjectionIntegrity } from "./archive-integrity.js";
 import {
 	archivePage,
 	archiveQuerySql,

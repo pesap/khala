@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { RunLedger } from "../dist/src/run-ledger.js";
 import { admitAndStart, makeService, meta, validateWork } from "./helpers/mvp-fixtures.mjs";
 
 function recovery(actions) {
@@ -172,11 +173,18 @@ test("held invocations and exhausted allowances disable idle recovery", async ()
 	const cases = [
 		{
 			name: "active-invocation",
+			prepare(work, archive) {
+				return new RunLedger(archive).reserve({
+					workId: work.workId,
+					role: "executor",
+					missionId: work.mission.missionId,
+					executionId: work.execution.executionId,
+					allowance: 1,
+					runId: "held-run",
+				}).projection;
+			},
 			changes(work) {
-				return {
-					activeInvocations: [{ runId: "held-run", role: "executor", allowance: 1, state: "uncertain" }],
-					budget: { ...work.budget, reservedTokens: 1 },
-				};
+				return { activeInvocations: work.activeInvocations, budget: work.budget };
 			},
 		},
 		{
@@ -200,7 +208,8 @@ test("held invocations and exhausted allowances disable idle recovery", async ()
 
 	for (const scenario of cases) {
 		const { service, archive, work } = await idleWork(scenario.name);
-		const guarded = replaceProjection(archive, work, scenario.changes(work), scenario.name);
+		const prepared = scenario.prepare?.(work, archive) ?? work;
+		const guarded = replaceProjection(archive, prepared, scenario.changes(prepared), scenario.name);
 		assert.equal(enabled(userRecovery(service, guarded, "idle")), false, scenario.name);
 		await service.close();
 	}
