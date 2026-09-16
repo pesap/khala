@@ -13,11 +13,15 @@ pi -e .
 
 ## Local validation
 
+The native workflow tests require Linux, bubblewrap (`bwrap`), and `tmux`.
+On systems where AppArmor blocks bwrap user namespaces, apply a profile equivalent to [`.github/bwrap.apparmor`](../.github/bwrap.apparmor).
+
 Install dependencies and run the local validation and packaging checks:
 
 ```sh
 npm ci --ignore-scripts
 npm run check
+npm run typecheck:tools
 npm run test
 npm run check:markdown
 npm pack --dry-run
@@ -61,19 +65,18 @@ node scripts/copy-runtime-assets.mjs
 node --test test/mvp.test.js
 ```
 
-The GitHub Actions workflow runs linting, the build-backed test suite, and
-`npm pack --dry-run`: [CI workflow](../.github/workflows/ci.yaml).
+The GitHub Actions workflow runs `npm run lint`, `npm run typecheck:tools`, `npm run check:markdown`, `npm run test`, and `npm pack --dry-run`: [CI workflow](../.github/workflows/ci.yaml).
 
 ## Repository layout
 
-- `src/` — application implementation.
-- `extensions/` — bundled Pi extensions.
-- `system-prompts/` — role prompts loaded by child sessions.
-- `skills/` — the packaged Khala tool-usage skill.
-- `templates/` — repository templates used by the extension.
-- `test/` — behavioral tests for the service, runtime, adapters, commands, and
+- `src/`: application implementation.
+- `extensions/`: bundled Pi extensions.
+- `system-prompts/`: role prompts loaded by child sessions.
+- `skills/`: the packaged Khala tool-usage skill.
+- `templates/`: packaged Work and review-request templates for reference and reuse.
+- `test/`: behavioral tests for the service, runtime, adapters, commands, and
   TUI.
-- `docs/` — lifecycle, data model, supervision, design, operations, and
+- `docs/`: lifecycle, data model, supervision, design, operations, and
   navigation references.
 
 The extension entry point registers Pi tools, commands, and lifecycle handlers.
@@ -81,7 +84,9 @@ The application service composes separate execution, recovery, decision, workspa
 `extension-role.ts` enforces role capabilities and workspace access; `extension-results.ts` formats tool output and errors.
 The runtime separates session orchestration, launch, persistent leases, process ownership, and RPC protocol handling into `runtime*.ts` modules.
 `adapters.ts` exposes the workspace and code-host APIs; their implementations separate Git operations, validation isolation, provider response parsing, and review templates.
-`archive.ts` exposes the Archive contracts and SQLite implementation, with storage initialization, record validation, and paginated queries in separate modules.
+The public `archive.ts` facade exposes the Archive contracts and SQLite implementation, with storage initialization, record validation, and paginated queries in separate modules.
+The adapter reads pull-request templates from the target repository, not from this package's `templates/` directory.
+It checks root, `docs`, and `.github` template locations; it does not read GitLab's `.gitlab/merge_request_templates` directory.
 The MVP tests are grouped by admission, recovery, provider workflow, governance, and adapters; TUI tests separate navigation, evidence, and recovery behavior.
 
 Start with [Foundations](foundations.md) and the [MVP reading map](mvp-design.md#reading-map-and-ownership), then read the owning contract, relevant source, and behavioral tests together.

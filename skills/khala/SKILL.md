@@ -26,9 +26,12 @@ authoritative for argument shape.
 
 This packaged skill describes the implemented provider-review workflow and session-bound child supervision.
 The current extension does not provide local acceptance or a shared background supervisor.
+Autonomous provider polling belongs to the hosting User session and stops when that session closes.
 The [MVP design](https://github.com/pesap/khala/blob/main/docs/mvp-design.md) and [Architecture](https://github.com/pesap/khala/blob/main/docs/architecture.md) describe those target requirements.
 Do not infer those target guarantees from the tools or from runtime liveness.
 Declared validation and dependency hydration require Linux bubblewrap and run without host credentials, host cache, or network access.
+Provider delivery also requires a `github.com` or `gitlab.com` repository origin and an authenticated `gh` or `glab` session for the process that performs the operation.
+The Executor child can invoke provider delivery, and current Pi child launches do not provide OS filesystem isolation, so provider credential files are not guaranteed to be inaccessible to that child.
 Service-owned dependency preparation can acquire integrity-checked artifacts from the approved npm registry into its private cache before child launch.
 An isolation or offline dependency failure is not permission to substitute unrestricted commands or expose the host cache.
 Pi child sessions and service-owned Git hooks do not yet have complete OS isolation.
@@ -91,18 +94,17 @@ Invocation accounting can advance the revision without changing the lifecycle de
 User-session tool for polling the current GitHub Pull Request or GitLab Merge
 Request.
 It requires `workId` and `expectedWorkRevision`.
-It records changed provider observations and confirmed merge evidence, then
-schedules applicable Conclave effects.
+It records changed provider observations and confirmed merge evidence, then schedules applicable Conclave effects.
 It does not merge or accept Work.
-The root service also polls active review requests autonomously.
+The hosting User-session service also polls active review requests autonomously while that session remains open.
 
 ### `khala_inspect_runtime`
 
 Read-only runtime inspection for a Work.
 It requires `workId` and `expectedWorkRevision`.
 It can refresh the displayed runtime state without writing an Archive record.
-`idle` can mean that an active Execution is between turns;
-`unreachable` requires Conclave-authorized recovery.
+`idle` can mean that an active Execution is between turns.
+`unreachable` requires the authorized `recover` action by the owning User or bound Conclave.
 
 ### `khala_perform_action`
 
@@ -146,7 +148,7 @@ surface and required inputs.
 | `admit` | Conclave | none |
 | `request-input` | Conclave | `reason`, optional `missing` |
 | `amend-terms` | User | one or more pre-admission term fields |
-| `retry-admission` | User | none; choose the Conclave model in Role settings first |
+| `retry-admission` | User | none; changing the Conclave model may be needed for the retry to succeed |
 | `amend-mission` | Conclave | changed terms, `reason`, optional `evidence` |
 | `launch-observer` | Conclave | none |
 | `record-assessment` | Observer | `summary`, `evidence` |
@@ -161,7 +163,7 @@ surface and required inputs.
 | `record-review` | User | `status`, optional `feedback` |
 | `record-outcome` | Conclave | none |
 | `cancel` | User | none |
-| `recover` | User or Conclave | none |
+| `recover` | Owning User or bound Conclave | none |
 | `reconcile-invocation` | User | `runId`, cumulative `usage`, `evidence` |
 | `rename-work` | User | `title` |
 | `amend-budget` | User | `maxTokens` |
@@ -177,14 +179,14 @@ provider comment into a different Work.
 Incomplete runtime receipts require all four counts and a nonblank evidence reference.
 Complete durable receipts supply their exact usage; supplied counts must match.
 The owning supervisor must confirm the old writer has stopped before an incomplete invocation can settle.
-After settlement, `/khala-recover` restores an interrupted Executor without creating another Execution.
+After settlement, the authorized `recover` action or `/khala-recover` restores an interrupted Executor without creating another Execution.
 
 ## Normal workflow
 
 1. After an explicit user request, submit complete intent with `khala_submit_work`.
 2. Read the Work and Archive records with `khala_read_archive`.
 3. Let the Conclave admit the Mission and schedule an Execution.
-4. Let the Executor work in its isolated Git sandbox, commit through the
+4. Let the Executor work in its dedicated Git sandbox, commit through the
    governed workspace action, run declared validation, create or reconcile the
    draft review request, and record a `ready` Signal.
 5. Record User review evidence or poll the provider with
@@ -194,8 +196,7 @@ After settlement, `/khala-recover` restores an interrupted Executor without crea
    evidence.
 
 A ready Signal, handoff, provider approval, or provider merge is not acceptance.
-Only a Conclave `record-outcome` backed by provider-confirmed merge evidence
-sets Work to `succeeded`.
+Current provider delivery reaches `succeeded` only through a Conclave `record-outcome` backed by provider-confirmed merge evidence.
 
 ## Failure and recovery
 
@@ -207,10 +208,13 @@ sets Work to `succeeded`.
 - crash-held invocation: `/khala-recover` settles complete durable receipts; incomplete receipts require User `reconcile-invocation` with actual cumulative usage and evidence, also available by opening Actions and choosing Reconcile held usage.
 - Work budget exhausted: only an explicit User budget amendment can permit another invocation; changing models or repeatedly recovering does not restore consumed tokens.
 - `budget-exhausted`: replace the Execution or amend the Work budget before continuing.
-- `unreachable` runtime: inspect it, then use Conclave-authorized `recover`; do
-  not start a second Executor manually.
+- `unreachable` runtime: inspect it, then use `recover` as the owning User or bound Conclave.
+  User-initiated recovery must run in the owning User session.
+  Use `/khala-recover` there to reread the project Archive and reconcile runtime bindings.
+  That session must hold the Archive's exclusive supervision lock.
+  Do not start a second Executor manually.
 - `unknown` runtime: a live child may belong to another Pi session; this is not proof of a dead Executor.
-- competing supervisor: perform runtime recovery in the owning Pi session or wait for its shutdown; never delete the supervision lock to force takeover.
+- competing supervisor: perform runtime recovery in the owning User Pi session or wait for its shutdown; never delete the supervision lock to force takeover.
 - supervision code update: reload existing Khala Pi sessions before retrying stopped Work; already-loaded services do not adopt source edits.
 - provider, monitor, or delivery error: inspect the error and evidence records;
   retry the explicit operation when appropriate.
@@ -222,8 +226,8 @@ sets Work to `succeeded`.
 Khala may retry transient child startup transport before a prompt is sent.
 A failed Conclave effect retains its attention and is not automatically replayed by later polls.
 Inspect the prerequisite, invocation, and decision evidence before authorizing another attempt; do not resubmit Work or increase its budget as an infrastructure workaround.
-Shutdown waits for active
-monitor, effect, and background runtime operations before closing the Archive.
+Shutdown waits for active monitor, effect, and background runtime operations before closing the Archive.
+The `recover` action can be authorized by the owning User or the bound Conclave, but User recovery cannot run from a competing session.
 
 ## Boundaries
 

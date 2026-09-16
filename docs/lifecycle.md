@@ -4,6 +4,15 @@ Lifecycle sustains progress by giving each consequential transition an authorize
 This document defines the target lifecycle from the [MVP design](mvp-design.md), not a claim that the current tools implement every transition.
 [Data model](data-model.md) owns durable identities and evidence; [Architecture](architecture.md) owns effect execution; [Security](security.md) owns enforcement boundaries.
 
+> [!NOTE]
+> The lifecycle below is the target contract.
+> Current implementation supports provider delivery only through draft GitHub Pull Requests and GitLab Merge Requests.
+> It has no local-accept action and reaches `succeeded` only after provider merge evidence and a Conclave Outcome.
+> The current `amend-mission` action is Conclave-authorized and rejects an active Execution.
+> The current Conclave prompt asks for at most 500 added code lines per change; the application service does not independently validate that prompt rule.
+> Current recovery uses the authorized `recover` action for one Work or `/khala-recover` for project-wide reconciliation.
+> User-initiated recovery must run from the owning User session, which holds the Archive's exclusive supervision lock.
+
 ## Lifecycle loop
 
 ```text
@@ -31,7 +40,8 @@ It may include context, scope, constraints, validation requirements, permitted p
 The repository is captured from the invoking workspace or explicitly selected before admission; changing directories later cannot retarget Work.
 
 The Conclave resolves bounded scope, permitted paths, and validation from User intent and trusted repository instructions.
-It asks when requirements or authorization are unclear and never assumes every repository uses `npm run check`.
+If validation is omitted, the current implementation defaults it to `npm run check`.
+Provide explicit validation commands for repositories that use another check; target behavior may resolve repository-specific validation instead of assuming a single command.
 One structured clarification request serves both pre-admission and admitted Work, recording reason, optional missing fields, evidence reference, and permitted response.
 
 Before admission, `request-input` places Work in `needs-input`.
@@ -52,13 +62,14 @@ Before Execution reservation, the service verifies target branch, sandbox base, 
 The scheduler then follows the [architecture contract](architecture.md#scheduling-and-child-runs).
 
 Corrections within unchanged Mission terms require Conclave authorization, not another User approval.
-Changed Mission terms require User approval of the exact successor terms, bound to the current Mission and expected Work revision.
-Different or stale proposed terms are rejected by the service.
+Target requirement: changed Mission terms require User approval of the exact successor terms, bound to the current Mission and expected Work revision.
+Different or stale proposed terms are rejected by the target service.
 
-Approval of successor terms authorizes ending the current attempt without cancelling the Work.
+Target behavior is for approval of successor terms to authorize ending the current attempt without cancelling the Work.
 A running, blocked, queued, or awaiting-review Execution is stopped for amendment; its useful work and evidence remain available, and Work remains nonterminal.
 No continuation under the predecessor terms is authorized once that stop is requested.
-The Conclave may apply `amend-mission` only when the current Execution is absent, failed, or stopped.
+The target Conclave may apply `amend-mission` only when the current Execution is absent, failed, or stopped.
+Current `amend-mission` is Conclave-authorized and rejects active Executions instead of implementing this stop-and-amend path.
 The amendment creates a successor Mission, marks the predecessor superseded, and records reason, User approval, evidence, and disposition.
 It clears current review and Execution bindings and returns Work to the FIFO queue.
 No successor Execution starts until the predecessor's process tree is confirmed stopped.
@@ -108,8 +119,10 @@ The no-tools Oracle returns advisory findings; its prompt identity and parsed re
 
 ## Publication and base drift
 
-Local delivery commits through the governed workspace action without fetching, pushing, or contacting a code host.
-Provider delivery creates a draft review request through a reconciled service action before ready.
+Target local delivery commits through the governed workspace action without fetching, pushing, or contacting a code host.
+Current implementation does not provide local delivery.
+Target provider delivery creates a draft review request through a reconciled service action before ready.
+Current provider delivery creates draft GitHub Pull Requests or GitLab Merge Requests.
 The authorized sandbox branch and current head are passed to the provider adapter only after publication permission is verified.
 
 For provider delivery, Khala refreshes the stored target branch before Execution creation and publication.
@@ -122,13 +135,15 @@ Provider base or head drift also blocks ready handoff.
 ## Acceptance and settlement
 
 Ready and handoff are evidence that a result can be reviewed, not acceptance.
-For local delivery, explicit User acceptance of the exact reviewed snapshot plus a Conclave Outcome creates `succeeded` from awaiting review.
+Target local delivery requires explicit User acceptance of the exact reviewed snapshot plus a Conclave Outcome to create `succeeded` from awaiting review.
 Acceptance does not merge, cherry-pick, or modify the User's checkout.
 Previous acceptance cannot authorize a changed head.
+Current implementation has no local acceptance path.
 
-For provider delivery, the Mission's recorded delegation makes verified provider merge evidence acceptance.
+Target provider delivery uses the Mission's recorded delegation to make verified provider merge evidence acceptance.
 No second confirmation in Pi is required.
-The Conclave may settle from active or awaiting-review Work after verifying the reviewed snapshot and merge evidence.
+Current provider delivery requires provider merge evidence and a Conclave Outcome.
+The target Conclave may settle from active or awaiting-review Work after verifying the reviewed snapshot and merge evidence.
 Evidence must connect the snapshot's source head to the merged result, including squash and rebase merges; commit IDs need not be equal.
 A merge without a matching reviewed snapshot requires attention rather than inferred success.
 
@@ -142,7 +157,8 @@ The design does not replace Conclave settlement with automatic application-code 
 
 ## Feedback and correction
 
-Explicit User feedback in Pi is supported for both delivery modes and binds to a review snapshot.
+The target supports explicit User feedback in Pi for both delivery modes and binds it to a review snapshot.
+Current implementation supports provider review feedback; local delivery is not implemented.
 The Conclave checks Mission fit before authorizing another bounded implementation pass.
 The initial pass is not a correction; subsequent passes after review or a blocker consume the finite allowance defined in [Operations](operations.md#allowances-and-limits).
 

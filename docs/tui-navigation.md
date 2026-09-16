@@ -109,7 +109,8 @@ The Actions list shows only enabled actions and does not show disabled-action re
 Enabled actions appear in this order: Recover, Retry admission, Record review, Amend terms, Rename, Amend budget, Refresh runtime, Cancel, and Mark as failed.
 Other enabled actions remain visible after these known actions in service-provided order.
 Selecting an enabled action opens one native panel with its effect, fields, visible draft values, and submit row.
-Retry admission is available for submitted Work with a recorded admission failure after the User changes the Conclave model in Role settings.
+Retry admission is available for submitted Work with a recorded admission failure.
+Changing the Conclave model may be needed for the retry to succeed.
 Refresh runtime is an explicit action in that chooser and is not run when Work is opened.
 Page Up and Page Down scroll overview details while action navigation stays visible on short terminals.
 These entry points also support the [current getting-started workflow](getting-started.md).

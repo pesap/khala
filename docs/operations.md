@@ -18,7 +18,8 @@ No automatic migration, consolidation, or deletion of existing Archives is autho
 
 Role settings affect future launches and never change the User's active model or settings.
 Existing Executions retain their recorded model, thinking level, and prompt identity.
-Observer and Oracle configuration is needed only when their optional help is used.
+In the Pi extension, Observer and Oracle configuration is optional.
+The base Pi workflow uses Conclave and Executor models; configure Observer or Oracle models only when those roles run.
 Starting Work does not install global tools or open unsolicited terminal panes.
 
 ## Allowances and limits
@@ -27,6 +28,8 @@ The default Work budget is 20,000 tokens across the complete workflow, including
 Before autonomous launch, an explicit total concurrency limit and finite automatic correction allowance must be resolved from User settings or the submission.
 Repository overrides may lower the shared total child-run ceiling, not raise it.
 No separate machine-wide resource scheduler is required.
+The current session-owned service polls active provider requests once per minute while the hosting User session is alive.
+Independent background polling remains a target requirement.
 
 Every child invocation reserves an explicit allowance from the remaining Work budget before launch.
 Reservation and usage updates are durable and idempotently bound to its run ID.
@@ -54,16 +57,21 @@ Model price does not establish runtime memory efficiency.
 Measure the process tree, including validation and build subprocesses, separately from token accounting.
 
 Observer turns have a 120-second timeout and consume Work budget.
-The autonomous provider monitor runs once per minute while the background supervisor is alive.
+The current session-owned provider monitor runs once per minute while the hosting User session is alive and stops when that session closes.
 Monitoring polls only published Work and uses bounded transport retries, not unlimited model wakes.
+Independent background monitoring remains a target requirement.
 Logs, retained context, artifact reads, RPC traffic, and pending requests must remain bounded.
 Application resource bounds do not imply a hard aggregate operating-system memory limit.
 
 ## Startup and recovery
 
-The [architecture contract](architecture.md#supervision-and-recovery) defines the single shared supervisor, exclusive lock, and restart reconciliation.
-Closing or switching the User Pi session disconnects its interface without stopping accepted Work.
-A new session reconnects to saved state; runtime probes remain distinct from lifecycle decisions.
+The [architecture contract](architecture.md#supervision-and-recovery) defines the target single shared supervisor, exclusive lock, and restart reconciliation.
+Target behavior is for closing or switching the User Pi session to disconnect its interface without stopping accepted Work.
+Current behavior is session-owned: closing the hosting User Pi session closes the service and stops its child runtimes.
+A new session can reconnect to saved state.
+Use the authorized `Recover` action for one Work or `/khala-recover` from the owning User session to reconcile project state.
+User-initiated recovery must run in the session holding the Archive's exclusive supervision lock.
+Runtime probes remain distinct from lifecycle decisions.
 
 An uncertain writer retains workspace ownership until termination of its process tree is confirmed.
 Inspect error and execution evidence before choosing recovery, replacement, amendment, or explicit failure.
@@ -71,7 +79,8 @@ Never delete a worktree, binding, or session artifact while Khala may still own 
 A new Archive does not recover or terminate processes owned by another Archive.
 Result retention and permitted cleanup are owned by [Lifecycle](lifecycle.md#cancellation-recovery-and-retention).
 
-The current `/khala-recover` command rereads the project Archive, drains pending effects, and reconciles runtime bindings.
+The current `/khala-recover` command runs in the owning User session, which must hold the Archive's exclusive supervision lock.
+It rereads the project Archive, drains pending effects, and reconciles runtime bindings.
 Recovery continues across individual Work failures and reports each failed Work with its diagnostic and next step.
 An unconfirmed Executor restoration is reported as a failure rather than a completed recovery.
 Completed durable invocation receipts settle held usage automatically during recovery.
@@ -81,7 +90,7 @@ Choose the Held invocation field, select the invocation from the Work's active i
 Select the Reconcile held usage submit row and confirm the service-supplied consequence sentence.
 Use actual cumulative usage from the provider or retained runtime evidence; do not estimate or substitute the reserved allowance.
 Reconciliation verifies that the old owned writer has stopped before settling usage and permitting pending dispatch.
-Run `/khala-recover` after settlement to restore an interrupted Executor and continue its existing Execution.
+After settlement, use the Work's authorized `Recover` action or run `/khala-recover` to restore an interrupted Executor and continue its existing Execution.
 If an Executor ends its turn without a ready or blocked Signal, open the Work's Actions and choose Recover to resume its existing Pi session.
 This explicit continuation requires an idle runtime, settled invocations, and remaining Work and Execution allowances.
 Khala checks the live runtime and current binding before continuing; a pending ready or blocked Signal still requires a Conclave decision.
@@ -99,13 +108,17 @@ Opening another project does not reconnect to the same shared Archive yet.
 
 ## Provider operation
 
-Local delivery requires no provider credentials, fetch, or publication.
-Provider delivery requires an authenticated `gh` or `glab` session available to the service, not the child.
-The current adapters support `github.com` and `gitlab.com` origins.
+Target local delivery requires no provider credentials, fetch, or publication.
+Current delivery is provider-only through draft GitHub Pull Requests and GitLab Merge Requests.
+Provider operations currently execute through the role-bound service, and the Executor child can invoke `create-review-request`.
+An authenticated `gh` or `glab` session must be available to the process that performs the operation.
+Current Pi child launches do not provide OS filesystem isolation, so do not treat provider credential files as inaccessible to the Executor.
+The current repository `origin` must be hosted on `github.com` or `gitlab.com` for provider delivery.
 The target stores the authorized provider repository and branch in the Mission instead of following later origin changes.
 
 GitHub supports draft requests, status, merge observation, and bounded eligible provider-comment feedback.
 GitLab supports draft requests, status, and merge observation without provider-comment normalization.
+The current adapter reads pull-request templates from root, `docs`, and `.github` locations; it does not read GitLab's `.gitlab/merge_request_templates` directory.
 Eligibility and credential boundaries are defined in [Security](security.md#provider-feedback), not inferred from publication ownership.
 Base drift requires the [approved successor path](lifecycle.md#publication-and-base-drift), not an implicit operator rebase.
 
@@ -116,7 +129,8 @@ Back up after stopping its supervisor and confirming child processes have exited
 Preserve the initialization marker with the backup.
 Do not independently copy database and WAL files while writes are active.
 Restore only a trusted backup and verify Archive and repository identities before reopening.
-Integrity failure fails closed; there is no in-process restore, startup migration, or automatic repair.
+Integrity failure fails closed; there is no in-process restore or automatic repair.
+Writable startup currently applies explicit Archive migrations before integrity validation, as described in [Data model](data-model.md#archive-durability).
 
 Raw child transcripts are not copied into the Archive.
 Keep retained artifacts private and bounded under the [security contract](security.md#privacy-and-failure-behavior).
@@ -138,13 +152,15 @@ Target settings and their implementation status must be updated here when the co
 | `maxConcurrentRuns` | `2` | Total reserved or uncertain role invocations in the project Archive |
 | `maxCorrections` | `3` | Replacement Verdict limit recorded with Work |
 | `defaultWorkTokens` | `20000` | Work token cap |
-| `piCommand` | `["pi"]` | Child launch arguments; the public CLI must report version `0.85.0` |
+| `piCommand` | `["pi"]` | Child launch command and arguments; the command must report Pi version `0.85.0` |
 
 Trusted project configuration may lower `maxConcurrentRuns` but cannot raise the global ceiling.
 The Archive enforces the effective ceiling across existing and newly submitted Works.
 
 Role models use `conclaveModel`, `executorModel`, `observerModel`, and `oracleModel`, with matching `*Thinking` settings.
-The current workflow requires Conclave, Executor, and Oracle models; the target makes Oracle optional.
+The Pi extension's base workflow requires Conclave and Executor models.
+Observer and Oracle models are optional in the Pi extension and are used only when those roles run.
+Direct `createApplication` construction validates Conclave, Executor, and Oracle models by default.
 Current navigation settings are `roleSettingsKey` (`r`), `commentsKey` (`c`), `refreshKey` (`ctrl+r`), `helpKey` (`?`), and `historyKey` (`ctrl+h`).
 The [target navigation contract](tui-navigation.md) uses configured Pi editing and navigation instead of introducing global letter shortcuts.
 
@@ -160,7 +176,7 @@ Interrupted turns retain their unspent reservation and run slot until complete u
 The runtime persists invocation receipts before dispatch and after turn completion; recovery uses complete receipts without launching another model turn.
 Incomplete receipts require explicit User reconciliation with cumulative usage and evidence; automatic transcript-based reconstruction is not implemented.
 The current correction counter covers replacement Verdicts, not resumed implementation passes.
-Current prompt recovery rejects persisted prompt identities that do not match the installed package.
+Prompt identities are persisted and passed to recovered sessions, but current recovery does not compare a persisted identity with the installed package.
 These implementation constraints do not authorize rewriting existing Work to fit the target.
 
 The current [`KhalaConfig`](../src/config.ts) exposes total role-run capacity but not RPC frame/request limits.
@@ -174,7 +190,7 @@ Outbox claims expire after two minutes and renew while running.
 Transient child startup failures receive one native runtime retry before a prompt is sent.
 Failed Conclave effects retain durable attention and are not automatically replayed by later outbox drains.
 
-Current payload limits are 64 KB per Archive payload and 128 KB per projection.
+Current payload limits are a serialized JSON length of 64,000 for each Archive payload and 128,000 for each projection.
 Record reads cap payloads at 16,000 characters, summaries at 500 characters, and evidence references at 20 entries of 500 characters each.
 Provider conversation details retain up to eight comments and eight checks; comment bodies are bounded to 500 characters in details and 2,000 in feedback delivery.
 Oracle text fields are bounded to 16,000 characters.
@@ -183,7 +199,9 @@ Omissions and record continuation cursors are explicit; Work and record freshnes
 Capabilities, private runtime bindings, and raw transcripts are not model-facing decision evidence.
 
 The workspace adapter prepares dependency artifacts before launching an Executor.
-Service-owned acquisition permits only HTTPS artifacts from `registry.npmjs.org` with pinned SHA-512 integrity, rejects redirects, and uses a private cache under the configured worktree root.
+Remote acquisition permits only HTTPS artifacts from `registry.npmjs.org` with pinned SHA-512 integrity and rejects redirects.
+Local `file:` artifacts are allowed only when they remain inside the authorized workspace and pass the same integrity and size checks.
+Both paths use a private cache under the configured worktree root.
 Downloaded tarballs use npm-recognized `.tgz` paths.
 Preparation pins npm's project prefix, home, user configuration, and global configuration to private directories so ancestor project configuration cannot affect cache preparation.
 Preparation permits two concurrent downloads, 50 MiB per artifact, 500 MiB per preparation, and a 120-second deadline.
@@ -198,7 +216,7 @@ Governed commit and validation use `npm ci --ignore-scripts --offline` against t
 Dependency hydration and declared validation run inside Linux bubblewrap with a private network, PID namespace, temporary directory, and home.
 Bubblewrap must already be installed and user namespaces permitted; Khala does not install it or run validation unrestricted when isolation fails.
 The validation path must resolve inside the configured worktree root.
-System runtime directories, Node, and the npm package for Node projects are read-only; only the selected workspace is persistently writable.
+System runtime directories, Node, and the npm package for Node projects are read-only; the selected workspace and private dependency cache are persistently writable.
 The host home, credential environment, and npm cache are not exposed.
 Offline dependency resolution failures are reported rather than retried with unrestricted network or host-cache access.
 Discovered Pi extensions, skills, prompt templates, and themes are disabled in role children; native repository context files remain enabled.

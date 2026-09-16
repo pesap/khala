@@ -9,11 +9,12 @@ See [Foundations](foundations.md) for the intent and guarantees.
 Install:
 
 - Node.js 22.19 or newer.
-- Pi.
+- A Pi installation whose configured child command reports version `0.85.0` (the default command is `pi`).
 - Linux.
+- Bubblewrap, available as `bwrap`, with the required user-namespace support for dependency hydration and declared validation.
 - Git.
-- An authenticated `gh` or `glab` session if the Work will publish a review
-  request.
+- An authenticated `gh` or `glab` session if the Work will publish a review request.
+- A repository whose `origin` is hosted on `github.com` or `gitlab.com` if the Work will publish a review request.
 
 ## Install and configure
 
@@ -31,13 +32,15 @@ pi install git:github.com/pesap/khala@v1.1.1 -l
 ```
 
 Start Pi in a trusted repository.
-Open `/khala`, choose Role settings, and configure models and thinking levels for Conclave, Executor, Observer, and Oracle.
-Keep the hosting Pi session open while relying on autonomous progress; the current extension closes its application service during session shutdown.
+Open `/khala`, choose Role settings, and configure models and thinking levels for Conclave and Executor.
+Configure an Oracle model only when Oracle advisory review is needed.
+Configure an Observer model only when repository context gathering is required.
+Keep the hosting Pi session open while relying on autonomous progress because the current service and child runtimes close during session shutdown.
 See [Operations](operations.md#startup-and-recovery) for recovery and the target background-supervision boundary.
-Settings are stored in
-`~/.pi/agent/khala.json` and apply to future launches.
-An existing Execution
-keeps its persisted model and thinking level.
+By default, settings are stored in `~/.pi/agent/khala.json` and apply to future launches.
+Set `PI_CODING_AGENT_DIR` to use another base directory for that configuration.
+In a trusted project, `.pi/khala.json` overrides the base configuration for that project.
+An existing Execution keeps its persisted model and thinking level.
 
 ## Submit Work
 
@@ -45,6 +48,8 @@ Call `khala_submit_work` with a title, objective, and acceptance criteria.
 Add
 scope, constraints, repository context, validation commands, and a token cap
 when they are known.
+If validation is omitted, the current implementation defaults it to `npm run check`.
+Provide explicit validation commands for repositories that use another check.
 Submission is persisted immediately; Conclave processing
 runs asynchronously.
 
@@ -59,21 +64,20 @@ Use the history key to inspect completed and cancelled Work.
    Observer assessment.
 3. The scheduler reserves an Execution within project concurrency and Work
    token limits.
-4. The Executor works in an isolated Git worktree, commits through the governed
+4. The Executor works in a dedicated Git worktree, commits through the governed
    workspace action, runs the declared validation commands, and creates or
    reconciles a draft Pull Request or Merge Request.
 5. The Executor sends a `ready` Signal with validation evidence.
 6. The Conclave hands the Work to User review, where handoff is not acceptance.
-7. Record review evidence and use `khala_poll_provider` after the request is
-   open.
-   The root service also polls active requests autonomously.
-8. New actionable GitHub comments may be delivered to the same Execution. A
-   confirmed provider merge wakes the Conclave, which must record the explicit
-   Outcome before Work becomes `succeeded`.
+7. Record review evidence and use `khala_poll_provider` after the request is open.
+   The hosting User-session service also polls active requests autonomously while that session remains open.
+8. New actionable GitHub comments may be delivered to the same Execution.
+   A confirmed provider merge wakes the Conclave, which must record the explicit Outcome before Work becomes `succeeded`.
 
 Provider polling records observations and merge evidence; it never merges code or settles Work by itself.
 Provider delivery delegates acceptance to the repository's merge process, with a Conclave Outcome required for success.
-See [Lifecycle](lifecycle.md) for the target transitions, [Architecture](architecture.md) for effects, and [Application actions](supervision-tools.md) for current tool entry points.
+See [Lifecycle](lifecycle.md) for the target transitions and [Architecture](architecture.md) for effects.
+See the packaged [tool-usage skill](../skills/khala/SKILL.md) and [Application actions](supervision-tools.md) for current tool entry points.
 
 ## Inspect evidence
 
@@ -82,9 +86,9 @@ Use the `/khala` Archive view for complete record history, newest first in bound
 Select Older records to continue through the snapshot or Newest records to refresh from the head.
 Use
 `khala_inspect_runtime` for a read-only runtime check.
-An unreachable Executor
-must be recovered by the bound Conclave through the `recover` action; runtime
-liveness alone does not grant authority.
+An unreachable Executor must be recovered through the authorized `recover` action by the owning User or bound Conclave.
+User-initiated recovery must run in the owning User session, which holds the Archive's exclusive supervision lock.
+Runtime liveness alone does not grant authority.
 
 Use `/khala` to open:
 
@@ -100,16 +104,15 @@ See [TUI navigation](tui-navigation.md#current-interface-reference) for the curr
 - Needs input: add the missing intent or repository context, then let the
   Conclave reread the Archive.
 - Queued: the Work is waiting for a project slot or token allowance.
-- Unreachable Executor: inspect runtime evidence and use Conclave recovery; do
-  not start a second Executor manually.
+- Unreachable Executor: inspect runtime evidence and use the authorized `recover` action from the owning User session or bound Conclave; do not start a second Executor manually.
+  User recovery must run in the session holding the Archive's exclusive supervision lock.
 - Provider or delivery failure: inspect the error and evidence records, then
   retry the explicit operation when appropriate.
 - Merged provider request with active Work: wait for provider-outcome
   reconciliation and the explicit Conclave Outcome; a merge observation alone
   is insufficient.
-- Interrupted project session: run the Pi command `/khala-recover` after
-  reopening the project to drain pending effects and reconcile persisted runtime
-  bindings.
+- Interrupted project session: reopen the project and run `/khala-recover` from the owning User session to drain pending effects and reconcile persisted runtime bindings.
+  The command requires that session to hold the Archive's exclusive supervision lock.
 
 Khala does not silently change Mission terms, increase token allowance, merge
 provider requests, or retry semantic decisions.

@@ -1,216 +1,192 @@
-<div>
+<img src="./assets/khala-sigil.svg" alt="khala sigil" align="left" width="220px" height="220px" hspace="10"/>
+<img align="left" alt="" width="0" height="220px" hspace="10"/>
 
-<img src="assets/khala-sigil.svg" alt="forge" align="left" width="192px" height="192px"/>
-<img align="left" width="0" height="192px" hspace="10"/>
+#### khala
+<p><small>Govern coding work, execute it in dedicated worktres and keep the evidence</small></p>
 
-</div>
+[![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
+[![CI](https://github.com/pesap/khala/actions/workflows/ci.yaml/badge.svg)](https://github.com/pesap/khala/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/pesap/khala)](https://github.com/pesap/khala/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT.txt)
+[![Latest commit](https://img.shields.io/github/last-commit/pesap/khala?style=flat-square)](https://github.com/pesap/khala/commits)
 
-### khala
-> Govern coding work with a Conclave, execute it in isolated sandboxes, and keep the evidence.
->
-> [![Managed by humans](https://img.shields.io/badge/managed%20by-humans-1f6feb)](https://github.com/pesap/khala)
-> [![CI](https://github.com/pesap/khala/actions/workflows/ci.yaml/badge.svg)](https://github.com/pesap/khala/actions/workflows/ci.yaml)
-> [![Release](https://img.shields.io/github/v/release/pesap/khala)](https://github.com/pesap/khala/releases)
-> [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT.txt)
-> [![Latest commit](https://img.shields.io/github/last-commit/pesap/khala?style=flat-square)](https://github.com/pesap/khala/commits)
-<br/>
-<br/>
-<br/>
+<br clear="left">
 
-<p align="center">
-  <a href="#khala">Why Khala</a> ·
-  <a href="#core-boundaries">Features</a> ·
-  <a href="src/index.ts">Pi Tools</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#explore-the-repository">Documentation</a> ·
-  <a href="docs/development.md">Development</a>
-</p>
+[Why Khala](#khala) · [Features](#core-boundaries) · [Pi tools](src/index.ts) · [Quick start](#quick-start) · [Documentation](#explore-the-repository) · [Development](docs/development.md)
 
 
-Khala is a quiet forge for coding work in Pi.
-You give it a bounded assignment, it prepares reviewable changes in an isolated worktree, and it keeps the evidence needed to understand what happened.
-
-The [foundations](docs/foundations.md) explain the guarantees behind that intent.
-The [MVP design](docs/mvp-design.md) describes the goal, the first working loop, and where the detailed contracts live.
-The current tools use provider-review completion and a session-owned application runtime; local acceptance and independent background supervision remain target requirements.
-
-The [Archive](docs/data-model.md) is authoritative for Work, Mission,
-Execution, and Record state.
-Runtime state, Git, provider responses, model output, and TUI views are
-evidence or projections only.
-
-> [!IMPORTANT]
-> The current review-request workflow requires Node.js 22.19 or newer, Pi, Git, and an authenticated `gh` or `glab` session.
-> Keep the hosting Pi session open while relying on autonomous progress; background continuation is part of the target design, not a current guarantee.
+Khala is a Pi extension for governed coding work.
+It records each assignment in an Archive, runs an Executor in a dedicated Git worktree, and keeps the evidence needed for review and recovery.
 
 ## Quick start
 
-### Try Khala first
+### Prerequisites
 
-> [!TIP]
-> Try the latest tagged release in a temporary Pi session before installing it.
-> Pi loads the package for that run without adding it to your global or
-> project settings.
+The current provider workflow requires:
+
+- Node.js 22.19 or newer.
+- A Pi installation whose configured child command reports version `0.85.0`.
+- Linux and bubblewrap (`bwrap`) with the required user-namespace support.
+- Git.
+- Git credentials with write access to `origin`; current delivery pushes the Executor branch before creating a review request.
+- An authenticated `gh` or `glab` session.
+- A repository whose `origin` is hosted on `github.com` or `gitlab.com`.
+
+### Install
+
+Try a tagged release without installing it:
 
 ```sh
 pi -e git:github.com/pesap/khala@v1.1.1
 ```
 
-### Install Khala for regular use
-
-Install the latest Khala release from its Git tag:
+Install the latest tagged release for regular use:
 
 ```sh
 pi install git:github.com/pesap/khala@v1.1.1
 ```
 
 Pi installs packages globally by default.
-To install Khala only for the current project, add `-l`:
+Add `-l` to install Khala only for the current project:
 
 ```sh
 pi install git:github.com/pesap/khala@v1.1.1 -l
 ```
 
-For another GitHub repository, use the same form with its owner, repository,
-and release tag:
+### Configure
 
-```sh
-pi install git:github.com/<user>/<repo>@<tag>
+Start Pi in a trusted repository and open `/khala`.
+Use Role settings to choose Conclave and Executor models.
+Oracle and Observer are optional; configure them only for advisory review or repository context gathering.
+The target branch defaults to `main`; in a trusted project, set `targetBranch` in `.pi/khala.json` to use another branch.
+
+### Submit Work
+
+Call `khala_submit_work` with a title, objective, and at least one acceptance criterion.
+Add scope, constraints, validation commands, allowed paths, and a token cap when known.
+If validation is omitted, the current implementation uses `npm run check`.
+
+Khala then:
+
+1. Persists the Work and submits it for Conclave admission.
+2. Creates an immutable Mission and schedules an Executor.
+3. Runs the Executor in a dedicated Git worktree.
+4. Commits and validates the change, then creates or reconciles a draft Pull Request or Merge Request.
+5. Presents the result for review and records provider feedback or merge evidence.
+6. Records a Conclave Outcome after verified provider merge evidence.
+
+See [Getting started](docs/getting-started.md) for the complete workflow, evidence views, and recovery steps.
+
+A first request can look like this:
+
+```json
+{
+  "title": "Document the current command",
+  "objective": "Update README.md with the current command usage.",
+  "acceptanceCriteria": [
+    "README.md documents the command and its expected result."
+  ],
+  "validation": ["npm run check:markdown"],
+  "allowedPaths": ["README.md"]
+}
 ```
 
-Then start Pi normally.
-
-In Pi:
-
-1. Start Pi in the trusted repository.
-2. Open `/khala` and configure Conclave, Executor, and Oracle models in Role settings.
-   Configure an Observer model when repository context gathering is needed.
-3. Submit complete intent with `khala_submit_work`.
-4. Reopen `/khala` to inspect Work through Actions, Evidence, Peer-Review, and Archive.
-
-The current extension closes its application service with the User Pi session.
-See [Operations](docs/operations.md#startup-and-recovery) for recovery and the distinction from target background supervision.
-
-Use the Pi command `/khala-recover` after reopening a project when a child
-session may have been interrupted.
-See [Getting started](docs/getting-started.md) for the complete first-Work
-workflow and verification steps.
-
-## Current review workflow
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant C as Conclave
-    participant E as Executor
-    participant P as Provider
-
-    U->>C: Submit Work
-    C->>E: Admit Mission and start Execution
-    loop Until provider confirms merge
-        E->>E: Work in isolated sandbox
-        E->>P: Publish review request and ready Signal
-        alt Feedback requested
-            P-->>C: Provider review feedback
-            C->>E: Deliver bounded authorized feedback
-        else Provider merges
-            P-->>C: Merge evidence
-        end
-    end
-    C->>C: Verify merge and record Outcome
-    C-->>U: Succeeded Work
-```
-
-The loop returns authorized provider feedback to the Executor until the
-provider confirms a merge.
-A `ready` Signal, review handoff, or provider approval alone does not complete Work.
-Provider delivery delegates acceptance to the repository's merge process; verified merge evidence must still be settled through a Conclave Outcome before Work becomes `succeeded`.
-See the [full lifecycle loop](docs/lifecycle.md#lifecycle-loop).
-
-## Commands and tools
-
-- `/khala` opens the on-demand Work view and Role settings.
-- `/khala-recover` rereads the Archive and reconciles persisted runtime
-  bindings.
-- `/khala-demo` opens a packaged read-only Archive containing representative
-  Work and Execution states.
-- `khala_submit_work` records User intent without waiting for admission.
-- `khala_poll_provider` records changed GitHub or GitLab observations and
-  confirmed merge evidence.
-- `khala_read_archive`, `khala_inspect_runtime`, and the role-scoped action
-  tools expose bounded evidence and governed decisions.
-
-See the packaged [tool-usage skill](skills/khala/SKILL.md) for the complete
-contract and action reference.
-
-## Explore the repository
-
-| Goal | Start here |
-| --- | --- |
-| Complete a first Work | [Getting started](docs/getting-started.md) |
-| Understand the intent and guarantees | [Foundations](docs/foundations.md) |
-| Start with the goal and reading map | [MVP design](docs/mvp-design.md) |
-| Understand states and recovery | [Lifecycle](docs/lifecycle.md) |
-| Understand supervision, polling, and effects | [Architecture](docs/architecture.md) |
-| Use current Pi tools | [Application actions](docs/supervision-tools.md) |
-| Inspect records and runtime bindings | [Data model](docs/data-model.md) |
-| Navigate the TUI | [TUI navigation](docs/tui-navigation.md) |
-| Understand terminology | [Glossary](docs/glossary.md) |
-| Understand isolation and authority | [Security](docs/security.md) |
-| Configure and recover Work | [Operations](docs/operations.md) |
-| Develop or validate changes | [Development](docs/development.md) |
-| Tune role behavior | [Role prompts](docs/role-prompts.md) |
-| Extend Pi integration | [Pi extensions](docs/pi-extensions.md) |
-
-<details>
-<summary>Source map</summary>
-
-- [`src/model.ts`](src/model.ts) — domain contracts and state discriminants.
-- [`src/archive.ts`](src/archive.ts) — SQLite WAL Archive, projections,
-  cursors, idempotency, and transactional outbox.
-- [`src/service.ts`](src/service.ts) — lifecycle decisions, actor
-  authorization, scheduling, governed commit/validation actions, effects, and supervision.
-- [`src/runtime.ts`](src/runtime.ts) — isolated Pi JSON-RPC child sessions,
-  bounded timeouts, process ownership, and transcript permissions.
-- [`src/adapters.ts`](src/adapters.ts) — Git worktrees and GitHub/GitLab
-  provider adapters.
-- [`src/tui.ts`](src/tui.ts) — on-demand Work-first terminal interface.
-- [`src/index.ts`](src/index.ts) — Pi tools, commands, role boundaries, and
-  runtime wiring.
-- [`system-prompts/`](system-prompts/) — role instructions for Conclave,
-  Executor, Observer, and Oracle.
-- [`skills/`](skills/) — tool-usage guidance packaged with Khala.
-
-</details>
+Call `khala_submit_work` with these fields from Pi.
+The tool returns immediately; Conclave processing runs asynchronously.
 
 ## Core boundaries
 
-- The User submits intent and makes explicit review, rename, budget, failure,
-  cancellation, and eligible recovery decisions.
-- The Conclave admits Missions, authorizes bounded attempts, issues Verdicts, handles provider feedback, and records Outcomes.
-  Application code owns scheduling and effect execution.
-- The Executor changes files only in its isolated sandbox and under the
-  Mission's permitted paths; the Mission itself remains immutable and the
-  Executor reports evidence-bearing Signals.
-- The Observer is read-only and records at most one bounded assessment when
-  repository context is missing.
-- The Oracle is advisory and has no tools.
-- Child sessions are deny-by-default and receive only their role-scoped Pi and
-  Khala tools; Executors have no arbitrary shell tool.
-- Provider polling and runtime monitoring record evidence; they do not merge or
-  accept Work automatically.
-- GitHub and GitLab review requests support status and merge observation.
-  GitHub feedback delivery is supported; GitLab feedback normalization is not.
+- The User sets the objective, scope, acceptance criteria, allowed paths, budget, and review decisions.
+- The Conclave admits Missions, authorizes bounded attempts, assesses feedback, and records Outcomes.
+- The Executor changes files only in its dedicated worktree and under the Mission's allowed paths.
+- The Observer gathers missing repository facts without writing files.
+- The Oracle provides optional advisory review without tools.
+- The Archive stores Work, Mission, Execution, and Record state; runtime, Git, provider, and model output remain evidence.
+- Provider polling records observations and merge evidence; it does not merge code or accept Work automatically.
+
+## Commands and tools
+
+| Entry point | Purpose |
+| --- | --- |
+| `/khala` | Open the Work view and Role settings. |
+| `/khala-recover` | Reconcile project state and persisted runtime bindings from the owning User session. |
+| `/khala-demo` | Browse a packaged read-only Archive fixture. |
+| `khala_submit_work` | Record complete User intent without waiting for admission. |
+| `khala_read_archive` | Read bounded, role-authorized Work facts and records. |
+| `khala_inspect_runtime` | Inspect runtime liveness without changing Archive state. |
+| `khala_poll_provider` | Record changed provider observations and merge evidence. |
+| `khala_perform_action` | Submit one actor-authorized lifecycle action. |
+| `khala_record_signal`, `khala_record_assessment`, `khala_run_oracle` | Record role-bound evidence or request advisory review. |
+
+See the packaged [tool-usage skill](skills/khala/SKILL.md) for the complete tool contract and action reference.
+
+## Current limits
+
+> [!WARNING]
+> Current delivery is provider-only through draft GitHub Pull Requests and GitLab Merge Requests.
+> Work becomes `succeeded` only after provider merge evidence and a Conclave Outcome.
+> Local delivery and local acceptance are not available.
+> GitHub provider-comment feedback is supported.
+> GitLab status and merge observation are supported, but GitLab review comments are not delivered as normalized feedback.
+> The hosting User Pi session owns the current service and provider polling; closing it stops child runtimes.
+> Independent background continuation remains a target requirement.
+> Current Pi child launches do not provide OS filesystem isolation.
+> Bubblewrap applies to dependency hydration and declared validation, not Pi child launches or service-owned Git hooks.
+> Do not treat provider credential files as inaccessible to an Executor child.
+
+### Defaults
+
+| Setting | Default |
+| --- | --- |
+| Work token budget | 20,000 tokens |
+| Concurrent Executions | 2 |
+| Concurrent role runs | 2 |
+| Replacement correction limit | 3 |
+| Review target branch | `main` |
+
+The token allowance is an observed stopping limit, not a hard financial spending ceiling.
+
+## Explore the repository
+
+Use the guide that matches your task:
+
+| Goal | Guide |
+| --- | --- |
+| Complete a first Work | [Getting started](docs/getting-started.md) |
+| Understand the design | [Foundations](docs/foundations.md) and [MVP design](docs/mvp-design.md) |
+| Follow states and recovery | [Lifecycle](docs/lifecycle.md) |
+| Configure and operate Khala | [Operations](docs/operations.md) |
+| Understand the application boundary | [Architecture](docs/architecture.md) |
+| Inspect records and projections | [Data model](docs/data-model.md) |
+| Review authority and isolation | [Security](docs/security.md) |
+| Use the current Pi interface | [TUI navigation](docs/tui-navigation.md) and [Application actions](docs/supervision-tools.md) |
+| Extend Pi integration | [Pi extensions](docs/pi-extensions.md) and [Role prompts](docs/role-prompts.md) |
+| Use role-bound tools | [Khala tool-usage skill](skills/khala/SKILL.md) |
+| Develop and validate changes | [Development](docs/development.md) |
+
+## Development
+
+The native workflow tests require Linux, bubblewrap (`bwrap`), and `tmux`.
+Install dependencies and run the repository checks:
+
+```sh
+npm ci --ignore-scripts
+npm run check
+npm run test
+npm run check:markdown
+npm pack --dry-run
+```
+
+See [Development](docs/development.md) for targeted checks, test coverage, packaging, and troubleshooting.
+See the [CI workflow](.github/workflows/ci.yaml) for the automated validation sequence.
 
 ## Bundled extensions
 
-- [`pi-review`](extensions/pi-review/README.md) provides `/review` and
-  `/end-review` for reviewing uncommitted changes, branches, commits, pull
-  requests, and snapshots.
-- [`pi-clarify`](extensions/pi-clarify/README.md) provides `/clarify` and the
-  `-clarify` marker.
-  It places a rewritten prompt in the editor for User review;
-  it does not send the prompt.
-- [`khala-demo`](extensions/khala-demo/README.md) provides `/khala-demo` for
-  browsing a packaged read-only Archive without changing the live Archive or
-  calling models.
+- [`pi-review`](extensions/pi-review/README.md) provides `/review` and `/end-review` for scoped code reviews.
+- [`pi-clarify`](extensions/pi-clarify/README.md) provides `/clarify` and the `-clarify` marker for prompt rewriting.
+- [`khala-demo`](extensions/khala-demo/README.md) provides `/khala-demo` for browsing a read-only Archive fixture.
+
+## License
+
+MIT.
+See [LICENSE-MIT.txt](LICENSE-MIT.txt) for the full license text.

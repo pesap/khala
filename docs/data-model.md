@@ -148,7 +148,7 @@ A transaction failure does not leave only part of the decision recorded.
 First creation writes an initialization marker beside the database.
 An existing marker with a missing database fails closed rather than silently replacing the Archive.
 Schema creation only initializes an empty, unmarked database and is transactional.
-Existing Archives are validated without migrations or automatic repairs.
+The target requires existing Archives to be validated without migrations or automatic repairs.
 Missing tables, obsolete Work shapes, inconsistent record identities, and integrity failures fail closed; failed initialization closes its connection.
 Backup and restore are operator responsibilities described in [Operations](operations.md#archive-backup-and-privacy).
 
@@ -163,14 +163,23 @@ Reads retain only bounded pages and selected record bodies, not the entire Archi
 
 ## Current implementation reference
 
-The existing discriminants and storage layout are defined by [`src/model.ts`](../src/model.ts) and [`src/archive.ts`](../src/archive.ts); they are not a complete implementation of the target contract above.
-The existing SQLite tables include `archive_records`, `archive_record_numbers`, `work_projection`, and `outbox`.
-Record kinds include `submission`, `assessment`, `learning`, `mission`, `mission-change`, `execution`, `validation`, `signal`, `review-request`, `observation`, `delivery`, `verdict`, `oracle-review`, `outcome`, `error`, and `work-amended`.
+The existing discriminants and storage layout are defined by [`src/model.ts`](../src/model.ts), [`src/archive.ts`](../src/archive.ts), and the SQLite Archive modules; they are not a complete implementation of the target contract above.
+The public `src/archive.ts` module is a facade that exports the Archive types and `SQLiteArchive`.
+`src/sqlite-archive.ts` implements SQLite Archive operations, projections, transactions, idempotency, outbox effects, and invocation queries.
+`src/archive-storage.ts` owns schema setup, initialization helpers, migration helpers, and storage utilities.
+`src/archive-query.ts` owns query filters, cursors, and bounded pagination.
+`src/archive-integrity.ts` validates projections and active invocation accounting.
+`src/supervision.ts` owns the exclusive Archive supervision lock.
+The existing SQLite tables include `archive_records`, `archive_record_numbers`, `work_projection`, `outbox`, and `outbox_claim`.
+Record kinds include `submission`, `assessment`, `learning`, `mission`, `mission-change`, `execution`, `validation`, `signal`, `review-request`, `observation`, `delivery`, `verdict`, `oracle-review`, `outcome`, `error`, `work-amended`, and `invocation`.
 Current projection parsing validates Work/Mission/Execution relationships, budgets, exact discriminants, row identity, revision, and queue sequence.
 Stored command replay uses its original projection snapshot rather than substituting the latest Work.
 Opening an Archive validates stored projections, while ordinary Work inspection selects the requested projection.
-
-Shared repository targeting, workflow-wide run accounting, local acceptance, version-pinned guidance, and the target review and attention projections remain design requirements until implemented and verified.
+A writable Archive currently applies explicit migrations for command and projection columns, legacy Work terms and states, and missing record numbers before integrity validation.
+Current Work terms do not include the target delivery mode, provider repository target, or review snapshot identity.
+`RunLedger` and `SQLiteArchive` implement workflow-wide invocation accounting for Conclave, Executor, Observer, and Oracle runs, including reservation, settled or uncertain usage, cumulative settlement, and User reconciliation.
+The target child-run contract is richer than this current invocation ledger and requires additional durable run facts, including complete per-run prompt identity coverage.
+Shared repository targeting, local acceptance, version-pinned guidance, and the target review and attention projections remain design requirements until implemented and verified.
 Do not infer their availability from the existence of similarly named current fields.
 
 ## Checks before relying on memory

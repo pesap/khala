@@ -1,11 +1,17 @@
 # Khala foundations
 
-Khala is a quiet forge for coding work that continues while you focus elsewhere.
-You give it a meaningful assignment, it carries out the work in an isolated Git worktree, and it brings back a result you can understand and review.
+Khala is a quiet forge for coding work that the target design should continue while you focus elsewhere.
+You give it a meaningful assignment, it carries out the work in a dedicated Git worktree, and it brings back a result you can understand and review.
+
+> [!NOTE]
+> Current implementation supports provider delivery only through draft GitHub Pull Requests and GitLab Merge Requests.
+> It reaches `succeeded` only after provider merge evidence and a Conclave Outcome.
+> Local delivery and exact-snapshot local acceptance are target requirements, not current actions.
+> Closing the hosting User Pi session currently closes the service and stops its child runtimes.
 
 > “For we are bound by the Khala, the sacred union of our every thought and emotion.”
 >
-> — Artanis, *Legacy of the Void*[^2]
+> Artanis, *Legacy of the Void*[^2]
 
 Khala is not another chat window to supervise.
 It is not a dashboard for watching agents think.
@@ -43,7 +49,8 @@ They are less useful when you have several repositories, several ideas, or a res
 A normal agent conversation ties progress to one window, one working directory, and one active train of thought.
 
 Khala exists to separate your attention from the work without separating you from responsibility for the result.
-You should be able to assign a bounded task, close Pi, and return later without guessing what ran, what changed, or whether it is safe to continue.
+The target design should let you assign a bounded task, close Pi, and return later without guessing what ran, what changed, or whether it is safe to continue.
+Current child runtimes stop when the hosting User session closes.
 
 The value is not the number of agents Khala can start.
 The value is reliable delegation:
@@ -53,7 +60,7 @@ The value is reliable delegation:
 > Khala should earn trust through one completed loop before it takes on more autonomy.
 
 - Your active conversation stays focused.
-- Work happens in an isolated workspace, either created by Khala or explicitly assigned and dedicated to the attempt, separate from your active checkout and other writers.
+- Work happens in a dedicated workspace, either created by Khala or explicitly assigned to the attempt, separate from your active checkout and other writers.
 - Commits and checks give you something concrete to review.
 - A stopped attempt leaves an explanation and preserves its useful work.
 - Feedback improves the current assignment without becoming an uncontrolled instruction.
@@ -95,8 +102,8 @@ Their traffic does not fill the conversation, and their settings do not silently
 Khala does not treat a worker's final message as proof of success.
 A useful result has a repository, workspace, commit, check results, and a clear relationship to the assignment.
 A worker's handoff makes a result available for review; it does not itself constitute acceptance.
-For local delivery, you accept the exact reviewed commit in Pi.
-By explicitly authorizing provider delivery, you delegate acceptance to the repository's merge process, including its permitted maintainers and automation.
+Target requirement: for local delivery, you accept the exact reviewed commit in Pi.
+Target requirement: by explicitly authorizing provider delivery, you delegate acceptance to the repository's merge process, including its permitted maintainers and automation.
 Khala verifies the merged result and records completion without requiring a second acceptance in Pi.
 This delegation does not authorize Khala to merge code.
 
@@ -119,9 +126,9 @@ These roles support the work; they do not create a bureaucracy the user must ope
 
 Khala can launch work and handle routine mechanics.
 It cannot silently expand scope, increase spending, merge code, or turn untrusted feedback into authority.
-You remain responsible for boundaries, feedback, and the choice to accept directly or delegate acceptance to the repository's merge process.
+Target requirement: you remain responsible for boundaries, feedback, and the choice to accept directly or delegate acceptance to the repository's merge process.
 Background supervision and monitoring stay within those authorized boundaries and limits; they do not create new authority.
-An isolated worktree is not a process security boundary: children and checks must also be restricted to authorized resources, without publication credentials or direct Archive access.
+A dedicated worktree is not a process security boundary: children and checks must also be restricted to authorized resources, without publication credentials or direct Archive access.
 If that isolation cannot be established, work does not launch.
 
 ## The three pillars
@@ -163,7 +170,7 @@ Lifecycle principles:
 
 - An active assignment has a clear next step.
 - Every consequential action has an authorized owner.
-- Independent work can progress without keeping the initiating Pi conversation open.
+- Target requirement: independent work can progress without keeping the initiating Pi conversation open.
 - A result is distinct from its acceptance.
 - Feedback can produce a bounded correction without creating an endless loop.
 - A blocked or failed attempt explains what happened and what can happen next.
@@ -216,7 +223,7 @@ It stores the facts needed for safe continuation and meaningful review.
 > “Guard us while we preserve our knowledge for those that may follow.
 > They must not make the mistakes we did.”
 >
-> — High Templar, *In Utter Darkness*[^1]
+> High Templar, *In Utter Darkness*[^1]
 
 ### Interaction sustains agency
 
@@ -258,7 +265,7 @@ It must not recreate lifecycle authority by interpreting labels or reconstructin
 > “Trust in each other.
 > Strike as one will!”
 >
-> — Artanis, *In Utter Darkness*[^1]
+> Artanis, *In Utter Darkness*[^1]
 
 ## How the pillars reinforce one another
 
