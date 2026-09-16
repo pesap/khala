@@ -53,7 +53,7 @@
     "check": "npm run lint && npm run typecheck && npm run typecheck:tools",
     "check:markdown": "node scripts/check-markdown-sentences.mjs",
     "dev": "tsc --watch",
-    "test": "npm run build && node --test --test-concurrency=1 test/*.js"
+    "test": "npm run build && node scripts/run-tests.mjs"
   },
   "engines": {
     "node": ">=22.19.0"

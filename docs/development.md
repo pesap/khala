@@ -31,7 +31,8 @@ npm pack --dry-run
 Oxlint limits checked JavaScript and TypeScript files to 700 lines, including comments and blank lines.
 `tsconfig.tools.json` inherits the application’s strict compiler checks for `tools/**/*.ts`.
 `npm run check:markdown` checks paragraph sentence boundaries and bullet length.
-`npm run test` builds `dist` and runs every Node test in `test/`.
+`npm run test` builds `dist` and runs every Node test in `test/` on Linux.
+On other platforms it skips the native workflow tests because they require Linux bubblewrap.
 `scripts/copy-runtime-assets.mjs` copies package metadata, role prompts, and the demo fixture beside compiled entry points.
 Tests use local port adapters and do not require provider credentials.
 `test/native-role-workflow.test.js` runs real Pi child processes against a deterministic localhost model endpoint.
