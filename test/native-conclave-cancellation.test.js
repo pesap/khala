@@ -1,0 +1,80 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
+
+test("Pi cancellation stops an in-flight Conclave before admission and settles its usage", { timeout: 90_000 }, async () => {
+	const fixture = await createNativeWorkflowFixture({ holdConclave: true });
+	const terminal = createNativeTerminal(fixture);
+	const diagnostic = () => JSON.stringify({ screen: terminal.screen(), work: terminal.readWork(), steps: fixture.steps, requests: fixture.heldRequests.map((response) => ({ destroyed: response.destroyed })) });
+	const see = (text) => waitUntil(terminal.text, (screen) => screen.includes(text), diagnostic);
+	const editor = (text) => waitUntil(terminal.text, (screen) => screen.includes(text) && screen.includes("enter submit"), diagnostic);
+	try {
+		await terminal.start();
+		terminal.send("Submit the greeting Work now.");
+		await waitUntil(() => fixture.heldRequests.length, (count) => count === 1, diagnostic);
+		const submitted = terminal.readWork();
+		assert.equal(submitted.state, "submitted");
+		assert.equal(submitted.execution, undefined);
+		assert.ok(submitted.budget.reservedTokens > 0);
+		terminal.send("/khala");
+		await see("Native greeting");
+		terminal.keys("Enter");
+		await see("Freshness");
+		terminal.keys("Enter");
+		await see("Reconcile held usage");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
+		await see("Effect Stops this Work without recording a failure. It can be recovered after cleanup.");
+		await selectNativeListItem(terminal, "Cancel", diagnostic);
+		await see("keeps its evidence");
+		terminal.keys("Enter");
+		await waitUntil(terminal.readWork, (work) => work.state === "stopped", diagnostic);
+		await see("Action complete:");
+		await waitUntil(() => fixture.heldRequests[0].destroyed, Boolean, diagnostic);
+		const uncertain = await waitUntil(terminal.readWork, (work) => work.activeInvocations?.[0]?.state === "uncertain", diagnostic);
+		assert.equal(uncertain.budget.reservedTokens, submitted.budget.reservedTokens);
+		assert.equal(uncertain.budget.consumedTokens, submitted.budget.consumedTokens);
+		await see("Freshness");
+		terminal.keys("Enter");
+		await see("Reconcile held usage");
+		await selectNativeListItem(terminal, "Reconcile held usage", diagnostic);
+		await see("Effect Settles a held invocation reservation with its actual cumulative usage.");
+		await selectNativeListItem(terminal, "Held invocation *", diagnostic);
+		await see("uncertain reservation of");
+		terminal.keys("Enter");
+		await see(`Held invocation * ${uncertain.activeInvocations[0].runId}`);
+		for (const field of ["Cumulative input tokens", "Cumulative output tokens", "Cumulative cache hit tokens", "Cumulative cache miss tokens"]) {
+			await selectNativeListItem(terminal, `${field} *`, diagnostic);
+			await editor(field);
+			terminal.keys("-l", "0");
+			terminal.keys("Enter");
+			await see(`${field} * 0`);
+		}
+		await selectNativeListItem(terminal, "Usage evidence *", diagnostic);
+		await editor("Usage evidence");
+		terminal.keys("-l", "Local fixture received the request but produced no completion or tokens.");
+		terminal.keys("Enter");
+		await see("Usage evidence * Local fixture received the request");
+		await selectNativeListItem(terminal, "Reconcile held usage", diagnostic);
+		await see("Settles the held reservation with the entered cumulative usage");
+		terminal.keys("Enter");
+		await waitUntil(terminal.readWork, (work) => work.budget.reservedTokens === 0, diagnostic);
+		await see("Freshness");
+		terminal.keys("Escape");
+		await see("left/right filters");
+		terminal.keys("Escape");
+		await waitUntil(terminal.screen, (screen) => !screen.includes("left/right filters"), diagnostic);
+		terminal.send("/khala-recover");
+		await see("reconciliation completed for 1 Work item");
+		const stopped = await waitUntil(terminal.readWork, (work) => work.budget.reservedTokens === 0, diagnostic);
+		assert.equal(stopped.stopReason, "cancelled");
+		assert.equal(stopped.execution, undefined);
+		assert.equal(stopped.budget.consumedTokens, submitted.budget.consumedTokens);
+		assert.equal(fixture.steps.conclave, 0);
+		assert.equal(fixture.steps.executor, 0);
+		assert.deepEqual(fixture.failures, []);
+	} finally {
+		terminal.close();
+		await fixture.close();
+	}
+});

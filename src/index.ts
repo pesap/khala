@@ -1,24 +1,40 @@
-import { existsSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	type AgentToolUpdateCallback,
 	type ExtensionAPI,
 	type ExtensionContext,
-	keyHint,
-	type Theme,
-	type ToolCallEvent,
-	truncateHead,
 } from "@earendil-works/pi-coding-agent";
-import { type Component, Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { persistRoleSetting } from "./config.js";
+import { createDecisionEvidencePacket } from "./decision-evidence.js";
+import { type RecoveryReport, recoverUserWork } from "./extension-recovery.js";
+import {
+	archiveToolResult,
+	formatCommandError,
+	renderArchiveToolResult,
+	type ToolResult,
+	throwIfAborted,
+	toolError,
+	toolErrorFromError,
+	toolErrorText,
+	toolOperation,
+	toolResult,
+} from "./extension-results.js";
+import {
+	meta,
+	ROLE_FLAG,
+	requireSessionRole,
+	restrictedToolViolation,
+	rolePromptFiles,
+	sessionRole,
+	setRoleTools,
+} from "./extension-role.js";
 import { type ApplicationModelRegistry, type ApplicationRuntime, createApplication } from "./factory.js";
 import {
 	type Actor,
-	type CommandMeta,
-	type JsonObject,
 	type JsonValue,
 	type MutableRecordQuery,
 	parseRecordKind,
@@ -28,50 +44,10 @@ import {
 	WORK_STATES,
 	type WorkView,
 } from "./model.js";
-import type { OperationContext } from "./ports.js";
 import { ApplicationError } from "./service.js";
 import { showKhala } from "./tui.js";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const MODEL_VISIBLE_SIGNAL_KINDS = ["progress", "blocked", "ready"] as const;
-const MISSING_EXECUTABLE_MARKERS = [
-	"command not found",
-	"is not recognized as an internal or external command",
-	"cannot find the path specified",
-] as const;
-const ROLE_FLAG = "khala-role";
-type SessionRole = "user" | "conclave" | "observer" | "executor" | "oracle";
-type RestrictedSessionRole = Exclude<SessionRole, "user">;
-const RESTRICTED_ROLE_TOOLS = {
-	conclave: new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle", "khala_inspect_runtime"]),
-	executor: new Set([
-		"read",
-		"edit",
-		"write",
-		"grep",
-		"find",
-		"ls",
-		"khala_read_archive",
-		"khala_record_signal",
-		"khala_perform_action",
-	]),
-	observer: new Set(["read", "grep", "find", "ls", "khala_read_archive", "khala_record_assessment"]),
-	oracle: new Set(),
-} satisfies Record<RestrictedSessionRole, ReadonlySet<string>>;
-const rolePromptFiles = {
-	conclave: "conclave.md",
-	observer: "observer.md",
-	executor: "executor.md",
-	oracle: "oracle.md",
-} as const;
-const roleToken = readRoleToken();
-const SESSION_ROLES = new Map<string, "conclave" | "observer" | "executor" | "oracle">([
-	["conclave", "conclave"],
-	["observer", "observer"],
-	["executor", "executor"],
-	["oracle", "oracle"],
-]);
-
 const submitSchema = Type.Object({
 	workId: Type.Optional(Type.String()),
 	title: Type.String({ minLength: 1 }),
@@ -89,8 +65,9 @@ type SubmitParams = Static<typeof submitSchema>;
 const readArchiveSchema = Type.Object({
 	workId: Type.Optional(Type.String({ minLength: 1 })),
 	missionId: Type.Optional(Type.String({ minLength: 1 })),
-	executionId: Type.Optional(Type.String({ minLength: 1 })),
+	cursor: Type.Optional(Type.String({ minLength: 1 })),
 	kinds: Type.Optional(Type.Array(StringEnum(RECORD_KINDS))),
+	executionId: Type.Optional(Type.String({ minLength: 1 })),
 	states: Type.Optional(Type.Array(StringEnum(WORK_STATES))),
 	from: Type.Optional(Type.String()),
 	to: Type.Optional(Type.String()),
@@ -104,6 +81,15 @@ const inspectRuntimeSchema = Type.Object({
 type InspectRuntimeParams = Static<typeof inspectRuntimeSchema>;
 
 const actionInputSchema = Type.Object({
+	runId: Type.Optional(Type.String({ minLength: 1 })),
+	usage: Type.Optional(
+		Type.Object({
+			inputTokens: Type.Integer({ minimum: 0 }),
+			outputTokens: Type.Integer({ minimum: 0 }),
+			cacheHitTokens: Type.Integer({ minimum: 0 }),
+			cacheMissTokens: Type.Integer({ minimum: 0 }),
+		}),
+	),
 	kind: Type.Optional(StringEnum(["progress", "blocked", "ready"] as const)),
 	summary: Type.Optional(Type.String({ minLength: 1 })),
 	evidence: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
@@ -130,6 +116,7 @@ const performSchema = Type.Object({
 		"admit",
 		"request-input",
 		"amend-terms",
+		"retry-admission",
 		"amend-mission",
 		"launch-observer",
 		"record-assessment",
@@ -147,6 +134,7 @@ const performSchema = Type.Object({
 		"recover",
 		"rename-work",
 		"amend-budget",
+		"reconcile-invocation",
 		"fail-work",
 	] as const),
 	workId: Type.String({ minLength: 1 }),
@@ -156,8 +144,6 @@ const performSchema = Type.Object({
 type PerformParams = Static<typeof performSchema>;
 
 type RuntimeState = Readonly<{ runtime: ApplicationRuntime; projectPath: string; trusted: boolean }>;
-type ToolResult = { content: [{ type: "text"; text: string }]; details: JsonValue };
-
 export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerFlag(ROLE_FLAG, { description: "Khala role for an isolated child session", type: "string" });
 	pi.on("tool_call", (event) => {
@@ -227,8 +213,9 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "khala_read_archive",
 		label: "Read Khala Archive",
-		description: "Read current Work and Mission terms plus the ten most recent bounded Archive record summaries.",
-		promptSnippet: "Read authoritative current Work facts and recent Archive summaries before making decisions",
+		description:
+			"Read one bounded, scoped decision-evidence packet with current Work facts and selected Archive records.",
+		promptSnippet: "Read authoritative Work decision evidence and bounded records before making decisions",
 		parameters: readArchiveSchema,
 		async execute(toolCallId, params: ReadArchiveParams, signal, _onUpdate, context) {
 			try {
@@ -237,16 +224,11 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				const query = readArchiveQuery(params, actor);
 				const service = (await getRuntime(context)).service;
 				throwIfAborted(signal);
-				const page = service.readRecordSummaries(query, meta(actor, `tool:archive:${toolCallId}`, 0));
-				const projects = archiveWorkIds(query, page).flatMap((workId) => {
-					try {
-						return [service.inspectWork(workId)];
-					} catch (error) {
-						if (error instanceof ApplicationError && error.envelope.code === "not-found") return [];
-						throw error;
-					}
-				});
-				return archiveToolResult(page, projects);
+				const commandMeta = meta(actor, `tool:archive:${toolCallId}`, 0);
+				const page = service.readRecords(query, commandMeta, params.cursor);
+				return archiveToolResult(
+					createDecisionEvidencePacket({ works: decisionWorks(service, query, page), records: page }),
+				);
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) {
@@ -456,10 +438,10 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 				const service = (await getRuntime(context)).service;
 				await service.processPendingEffects();
 				const work = service.listWork();
-				await recoverUserWork(service, work);
+				const report = await recoverUserWork(service, work);
 				await service.processPendingEffects();
 				updateExecutorStatus(service, context);
-				notifyRecoveryComplete(context, work.length);
+				notifyRecoveryComplete(context, report);
 			} catch (error) {
 				context.ui.notify(formatCommandError(error instanceof Error ? error : new Error(String(error))), "error");
 			}
@@ -532,22 +514,14 @@ function createRuntimeState(
 	};
 }
 
-async function recoverUserWork(
-	service: ApplicationRuntime["service"],
-	work: readonly ReturnType<ApplicationRuntime["service"]["listWork"]>[number][],
-): Promise<void> {
-	for (const item of work) {
-		const current = service.inspectWork(item.workId);
-		await service.recoverWork(
-			item.workId,
-			meta("user", `recover:${item.workId}:${current.revision}`, current.revision),
-		);
+function notifyRecoveryComplete(context: ExtensionContext, report: RecoveryReport): void {
+	const noun = report.completed === 1 ? "item" : "items";
+	const message = `Archive reread and runtime reconciliation completed for ${report.completed} Work ${noun}.`;
+	if (report.failures.length === 0) return context.ui.notify(message, "info");
+	context.ui.notify(`${message} ${report.failures.length} require attention.`, "warning");
+	for (const failure of report.failures) {
+		context.ui.notify(`Work ${failure.workId}: ${formatCommandError(failure.error)}`, "error");
 	}
-}
-
-function notifyRecoveryComplete(context: ExtensionContext, workCount: number): void {
-	const noun = workCount === 1 ? "item" : "items";
-	context.ui.notify(`Archive reread and runtime reconciliation completed for ${workCount} Work ${noun}.`, "info");
 }
 
 async function executeActionTool(
@@ -610,211 +584,11 @@ function updateExecutorStatus(service: ApplicationRuntime["service"], context: E
 	context.ui.setStatus("khala-executors", context.ui.theme.fg("dim", status));
 }
 
-function sessionRole(pi: ExtensionAPI): SessionRole {
-	const value = pi.getFlag(ROLE_FLAG);
-	return isSessionRole(value) ? value : "user";
-}
-
-function restrictedToolViolation(pi: ExtensionAPI, event: ToolCallEvent): string | undefined {
-	const role = sessionRole(pi);
-	const allowed = roleToolNames(role);
-	if (allowed === undefined) return;
-	if (!allowed.has(event.toolName)) return `The ${role} session cannot use the ${event.toolName} tool.`;
-	return restrictedPathViolation(role, event);
-}
-
-function restrictedPathViolation(role: SessionRole, event: ToolCallEvent): string | undefined {
-	return role === "executor" || role === "observer" ? executorToolViolation(event) : undefined;
-}
-
-function isSessionRole(value: string | boolean | undefined): value is "conclave" | "observer" | "executor" | "oracle" {
-	return value !== undefined && SESSION_ROLES.get(String(value)) === value;
-}
-
-function requireSessionRole(pi: ExtensionAPI, expected: Exclude<Actor, "monitor" | "system">): void {
-	const actual = sessionRole(pi);
-	if (actual !== expected)
-		throw new ApplicationError({
-			code: "forbidden",
-			summary: `The ${expected} tool requires a ${expected} session.`,
-			retryable: false,
-			remediation: "Use the tool from its bound Khala role session.",
-			evidenceRefs: [],
-		});
-}
-
-function setRoleTools(pi: ExtensionAPI): void {
-	const allowed = roleToolNames(sessionRole(pi));
-	if (allowed === undefined) return;
-	pi.setActiveTools(pi.getActiveTools().filter((name) => allowed.has(name)));
-}
-
-function roleToolNames(role: SessionRole): ReadonlySet<string> | undefined {
-	return role === "user" ? undefined : RESTRICTED_ROLE_TOOLS[role];
-}
-
-function executorToolViolation(event: ToolCallEvent): string | undefined {
-	const path = executorToolPath(event);
-	if (path === null) return `The ${event.toolName} tool requires a path.`;
-	return path === undefined ? undefined : pathViolation(path, event.toolName === "write" || event.toolName === "edit");
-}
-
-function pathViolation(path: string, write: boolean): string | undefined {
-	if (!executorPathInsideSandbox(path)) return `The Mission does not permit access to ${path}.`;
-	if (write && !executorPathAllowed(path)) return `The Mission does not permit writes to ${path}.`;
-	return;
-}
-
-function executorToolPath(event: ToolCallEvent): string | null | undefined {
-	const filePath = fileToolPath(event);
-	return filePath === undefined ? searchToolPath(event) : filePath;
-}
-
-type FileToolCallEvent = Extract<ToolCallEvent, { toolName: "read" | "write" | "edit" }>;
-
-function fileToolPath(event: ToolCallEvent): string | null | undefined {
-	if (!isFileTool(event)) return;
-	// SAFETY: Pi's file tool schemas supply a path string; the assertion narrows the external tool event at this boundary.
-	return textValue(event.input.path as JsonValue) ?? null;
-}
-
-function isFileTool(event: ToolCallEvent): event is FileToolCallEvent {
-	return ["read", "write", "edit"].includes(event.toolName);
-}
-
-type SearchToolCallEvent = Extract<ToolCallEvent, { toolName: "grep" | "find" | "ls" }>;
-
-function searchToolPath(event: ToolCallEvent): string | undefined {
-	if (!isSearchTool(event)) return;
-	// SAFETY: Pi's search/list schemas supply an optional path string; the assertion narrows the external tool event at this boundary.
-	return textValue(event.input.path as JsonValue) ?? ".";
-}
-
-function isSearchTool(event: ToolCallEvent): event is SearchToolCallEvent {
-	return event.toolName === "grep" || event.toolName === "find" || event.toolName === "ls";
-}
-
-function textValue(value: JsonValue | undefined): string | undefined {
-	return value === String(value) ? String(value) : undefined;
-}
-
-function executorPathInsideSandbox(path: string): boolean {
-	const scope = executorPathScope();
-	return scope === null ? false : pathInsideRoot(path, scope.root);
-}
-
-function executorPathAllowed(path: string): boolean {
-	const scope = executorPathScope();
-	return scope === null ? false : pathMatchesScope(path, scope);
-}
-
-function pathMatchesScope(path: string, scope: Readonly<{ root: string; allowedPaths: readonly string[] }>): boolean {
-	const rootRelative = relativeToRoot(path, scope.root);
-	return rootRelative !== undefined && scope.allowedPaths.some((allowed) => matchesAllowedPath(rootRelative, allowed));
-}
-
-function pathInsideRoot(path: string, root: string): boolean {
-	return relativeToRoot(path, root) !== undefined;
-}
-
-function relativeToRoot(path: string, root: string): string | undefined {
-	const resolvedRoot = realPath(root);
-	const candidate = resolveExistingPath(resolveExecutorPath(root, path));
-	if (resolvedRoot === undefined || candidate === undefined) return;
-	const rootRelative = relative(resolvedRoot, candidate).replace(/\\/g, "/");
-	return isInsideRoot(rootRelative) ? rootRelative : undefined;
-}
-
-function resolveExistingPath(path: string): string | undefined {
-	let current = path;
-	const suffix: string[] = [];
-	while (!existsSync(current)) {
-		const parent = dirname(current);
-		if (parent === current) return;
-		suffix.unshift(current.slice(parent.length + 1));
-		current = parent;
-	}
-	const resolved = realPath(current);
-	return resolved === undefined ? undefined : resolve(resolved, ...suffix);
-}
-
-function realPath(path: string): string | undefined {
-	try {
-		return realpathSync(path);
-	} catch {
-		return undefined;
-	}
-}
-
-function executorPathScope(): Readonly<{ root: string; allowedPaths: readonly string[] }> | null {
-	const root = process.env["KHALA_SANDBOX_ROOT"];
-	const encodedPaths = process.env["KHALA_ALLOWED_PATHS"];
-	if (root === undefined) return null;
-	if (encodedPaths === undefined) return null;
-	const allowedPaths = parseAllowedPaths(encodedPaths);
-	return allowedPaths === undefined ? null : { root, allowedPaths };
-}
-
-function resolveExecutorPath(root: string, path: string): string {
-	return isAbsolute(path) ? resolve(path) : resolve(root, path);
-}
-
-function parseAllowedPaths(encoded: string): readonly string[] | undefined {
-	try {
-		// SAFETY: isTextValue verifies every JSON array member before narrowing it to a string.
-		const parsed = JSON.parse(encoded) as JsonValue;
-		return Array.isArray(parsed) && parsed.every(isTextValue) ? parsed.filter(isTextValue) : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function isInsideRoot(rootRelative: string): boolean {
-	return !rootRelative.startsWith("..") && !isAbsolute(rootRelative);
-}
-
-function matchesAllowedPath(rootRelative: string, allowed: string): boolean {
-	const normalized = allowed.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
-	return normalized === "." || rootRelative === normalized || rootRelative.startsWith(`${normalized}/`);
-}
-
-function readRoleToken(): string | undefined {
-	const path = process.env["KHALA_ROLE_TOKEN_FILE"];
-	if (path === undefined) return;
-	try {
-		const token = readFileSync(path, "utf8").trim();
-		removeRoleTokenFile(path);
-		return token.length === 0 ? undefined : token;
-	} catch {
-		return;
-	}
-}
-
-function removeRoleTokenFile(path: string): void {
-	try {
-		unlinkSync(path);
-	} catch {
-		// The runtime removes the capability file during child startup cleanup.
-	}
-}
-
-function meta(actor: Actor, commandId: string, expectedWorkRevision: number): CommandMeta {
-	return {
-		actor,
-		commandId,
-		expectedWorkRevision,
-		roleToken: actor === "user" ? undefined : roleToken,
-		roleNonce: actor === "user" ? undefined : process.env["KHALA_ROLE_NONCE"],
-		boundWorkId: process.env["KHALA_BOUND_WORK_ID"],
-		boundExecutionId: process.env["KHALA_BOUND_EXECUTION_ID"],
-		schemaVersion: 1,
-	};
-}
-
 function readArchiveQuery(params: ReadArchiveParams, actor: Actor): MutableRecordQuery {
 	const scopedWorkId = boundWorkId(actor);
 	assertArchiveWorkScope(params.workId, scopedWorkId);
 	return {
+		order: "desc",
 		workId: scopedWorkId ?? params.workId,
 		missionId: params.missionId,
 		executionId: params.executionId,
@@ -842,6 +616,23 @@ function boundWorkId(actor: Actor): string | undefined {
 	return actor === "observer" || actor === "executor" ? process.env["KHALA_BOUND_WORK_ID"] : undefined;
 }
 
+function decisionWorks(
+	service: ApplicationRuntime["service"],
+	query: MutableRecordQuery,
+	page: Readonly<{ items: readonly Readonly<{ workId: string }>[] }>,
+): readonly WorkView[] {
+	const workIds = [
+		...new Set([...(query.workId === undefined ? [] : [query.workId]), ...page.items.map((record) => record.workId)]),
+	];
+	return workIds.flatMap((workId) => {
+		try {
+			return [service.inspectWork(workId)];
+		} catch (error) {
+			if (error instanceof ApplicationError && error.envelope.code === "not-found") return [];
+			throw error;
+		}
+	});
+}
 function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
 	try {
 		return values.map(parseRecordKind);
@@ -856,315 +647,10 @@ function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
 	}
 }
 
-function toolResult(value: JsonValue): ToolResult {
-	return {
-		content: [{ type: "text", text: boundedToolText(summarizeToolValue(value), value) }],
-		details: value,
-	};
-}
-
-function archiveToolResult(value: JsonValue, projects: readonly WorkView[]): ToolResult {
-	return {
-		content: [{ type: "text", text: boundedToolText(summarizeArchiveToolValue(value, projects), value) }],
-		details: value,
-	};
-}
-
-function renderArchiveToolResult(
-	result: ArchiveRenderResult,
-	expanded: boolean,
-	isPartial: boolean,
-	theme: Theme,
-): Component {
-	if (isPartial) return new Text(theme.fg("warning", "Reading Archive..."), 0, 0);
-	// SAFETY: Pi passes the JSON-serializable details returned by archiveToolResult.
-	const details = result.details as JsonValue | undefined;
-	const headline = archiveToolHeadline(details);
-	return expanded ? expandedArchiveToolResult(result, headline, theme) : collapsedArchiveToolResult(headline, theme);
-}
-
-type ArchiveRenderResult = Readonly<{
-	content: readonly Readonly<{ type: string; text?: string }>[];
-	details?: unknown;
-}>;
-
-function collapsedArchiveToolResult(headline: string, theme: Theme): Component {
-	return new Text(theme.fg("success", `${headline} ${keyHint("app.tools.expand", "to expand")}`), 0, 0);
-}
-
-function expandedArchiveToolResult(result: ArchiveRenderResult, headline: string, theme: Theme): Component {
-	const content = result.content[0];
-	const text = content?.type === "text" ? (content.text ?? headline) : headline;
-	return new Text(theme.fg("toolOutput", text), 0, 0);
-}
-
-function archiveToolHeadline(value: JsonValue | undefined): string {
-	if (!isArchiveSummary(value)) return "Archive read complete.";
-	return `Archive: ${value["items"].length} recent summaries through sequence ${value["asOfSequence"]}.`;
-}
-
-// Pi marks an execute() failure only when the tool throws; an isError field on a returned value is ignored.
-function toolError(error: JsonObject): never {
-	throw new Error(boundedToolText(summarizeToolError(error), error));
-}
-
-function toolOperation(
-	signal: AbortSignal | undefined,
-	onUpdate: AgentToolUpdateCallback<JsonValue> | undefined,
-): OperationContext {
-	return {
-		signal,
-		onUpdate:
-			onUpdate === undefined
-				? undefined
-				: (message) =>
-						onUpdate({
-							content: [{ type: "text", text: message }],
-							details: { progress: message },
-						}),
-	};
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-	if (signal?.aborted === true) throw new Error("Khala operation was cancelled.");
-}
-function boundedToolText(text: string, value: JsonValue): string {
-	const truncated = truncateHead(text, { maxBytes: 48_000, maxLines: 1_800 });
-	if (!truncated.truncated) return truncated.content;
-	return `${truncated.content}\n[Output truncated. ${continuationHint(value)}]`;
-}
-
-function continuationHint(value: JsonValue): string {
-	const cursor = isJsonObject(value) && isTextValue(value["nextCursor"]) ? value["nextCursor"] : undefined;
-	return cursor === undefined
-		? "Use narrower filters or a targeted query to retrieve the remainder."
-		: `Use nextCursor ${cursor} to continue.`;
-}
-
-function formatCommandError(error: Error): string {
-	if (!(error instanceof ApplicationError)) return error.message;
-	const envelope = error.envelope;
-	const evidence = envelope.evidenceRefs.length === 0 ? "" : `\nEvidence: ${envelope.evidenceRefs.join(", ")}`;
-	return `Code: ${envelope.code}\n${envelope.summary}\nNext: ${envelope.remediation}${evidence}`;
-}
-
-function toolErrorText(message: string): never {
-	return toolError({
-		code: "external-failure",
-		summary: message,
-		retryable: true,
-		remediation: "Inspect the error and retry the operation when the underlying failure is resolved.",
-		evidenceRefs: [],
-	});
-}
-
-function toolErrorFromError(error: Error, fallback: string): never {
-	return error instanceof ApplicationError ? toolError(error.envelope) : toolErrorText(error.message || fallback);
-}
-function summarizeToolValue(value: JsonValue): string {
-	const workSummary = summarizeWorkValue(value);
-	if (workSummary !== undefined) return workSummary;
-	const archiveSummary = summarizeArchiveValue(value);
-	return archiveSummary ?? prettyJson(value);
-}
-
-function summarizeWorkValue(value: JsonValue): string | undefined {
-	if (!isWorkSummary(value)) return undefined;
-	return [
-		`Work: ${value["workId"]}`,
-		`State: ${value["state"]}`,
-		`Next action: ${presentToolText(String(value["nextAction"]))}`,
-		`Revision: ${value["revision"] ?? "unknown"}`,
-		...modelVisibleWorkEvidence(value),
-	].join("\n");
-}
-
-function summarizeArchiveValue(value: JsonValue): string | undefined {
-	return isArchiveSummary(value) ? summarizeArchiveToolValue(value, []) : undefined;
-}
-
-export function summarizeArchiveToolValue(value: JsonValue, projects: readonly WorkView[]): string {
-	if (!isArchiveSummary(value)) return prettyJson(value);
-	const records = value["items"].filter(isJsonObject).map(archiveRecordSummary);
-	const nextCursor = archiveNextCursor(value);
-	return [
-		...projects.map(archiveWorkProjection),
-		`Archive records: ${records.length}`,
-		`As of sequence: ${value["asOfSequence"]}`,
-		...(nextCursor === undefined ? [] : [nextCursor]),
-		...records,
-	].join("\n");
-}
-
-function archiveWorkIds(query: MutableRecordQuery, page: JsonObject): readonly string[] {
-	const records = Array.isArray(page["items"])
-		? page["items"].filter(isJsonObject).map((record) => record["workId"])
-		: [];
-	const ids = [...(query.workId === undefined ? [] : [query.workId]), ...records.filter(isTextValue)];
-	return [...new Set(ids)];
-}
-
-function archiveWorkProjection(work: WorkView): string {
-	const terms = work.mission?.assignment ?? work.terms;
-	return [
-		`Work ${work.workId}: revision ${work.revision}; state ${work.state}`,
-		...archiveMissionState(work),
-		...archiveMissionIdentity(work),
-		`Terms title: ${boundedProjectionText(terms.title)}`,
-		`Terms objective: ${boundedProjectionText(terms.objective)}`,
-		`Terms scope: ${boundedProjectionText(terms.scope)}`,
-		`Terms acceptance criteria:`,
-		...boundedProjectionList(terms.acceptanceCriteria),
-		`Terms constraints:`,
-		...boundedProjectionList(terms.constraints),
-		`Terms validation:`,
-		...boundedProjectionList(terms.validation),
-		`Terms allowed paths:`,
-		...boundedProjectionList(terms.allowedPaths),
-		...modelVisibleWorkEvidence(work),
-	].join("\n");
-}
-
-function archiveMissionState(work: WorkView): readonly string[] {
-	return work.missionState === undefined ? [] : [`Mission state: ${work.missionState}`];
-}
-
-function archiveMissionIdentity(work: WorkView): readonly string[] {
-	const mission = work.mission;
-	return mission === undefined ? [] : [`Mission ${mission.missionId}: mandate revision ${mission.mandateRevision}`];
-}
-
-function boundedProjectionText(value: string): string {
-	return value.replace(/\s+/g, " ").trim().slice(0, 2_000);
-}
-
-function boundedProjectionList(values: readonly string[]): readonly string[] {
-	const text = values
-		.slice(0, 20)
-		.map(boundedProjectionText)
-		.filter((value) => value.length > 0)
-		.join("\n  - ")
-		.slice(0, 3_996);
-	return text.length === 0 ? ["  (none)"] : [`  - ${text}`];
-}
-
-function modelVisibleWorkEvidence(value: JsonObject): readonly string[] {
-	return [...modelVisibleSignal(value["lastSignal"]), ...modelVisibleValidation(value["lastValidation"])];
-}
-
-function modelVisibleSignal(value: JsonValue | undefined): readonly string[] {
-	if (!isJsonObject(value)) return [];
-	const kind = MODEL_VISIBLE_SIGNAL_KINDS.find((candidate) => candidate === value["kind"]);
-	if (kind === undefined) return [];
-	const signalId = value["signalId"];
-	if (!isTextValue(signalId)) return [];
-	return [`Current Signal: ${kind}; signal ID: ${signalId}; evidence count: ${signalEvidenceCount(value["evidence"])}`];
-}
-
-function signalEvidenceCount(value: JsonValue | undefined): number {
-	return Array.isArray(value) ? value.length : 0;
-}
-
-function modelVisibleValidation(value: JsonValue | undefined): readonly string[] {
-	if (!isJsonObject(value) || !Array.isArray(value["results"])) return [];
-	const failures = value["results"].filter(isJsonObject).filter((result) => result["passed"] === false);
-	if (failures.length === 0) return [];
-	const categories = [...new Set(failures.map(validationFailureCategory))];
-	return [`Validation status: failed; failed count: ${failures.length}; categories: ${categories.join(", ")}`];
-}
-
-function validationFailureCategory(
-	result: JsonObject,
-): "required executable unavailable" | "declared validation command failed" {
-	const output = result["output"];
-	const missingExecutable =
-		isTextValue(output) && MISSING_EXECUTABLE_MARKERS.some((marker) => output.toLowerCase().includes(marker));
-	return missingExecutable ? "required executable unavailable" : "declared validation command failed";
-}
-
-function isWorkSummary(value: JsonValue): value is JsonObject {
-	if (!isJsonObject(value)) return false;
-	return ["workId", "state", "nextAction"].every((key) => isTextValue(value[key]));
-}
-
-function isArchiveSummary(
-	value: JsonValue | undefined,
-): value is JsonObject & { items: readonly JsonObject[]; asOfSequence: number } {
-	if (!isJsonObject(value)) return false;
-	return Array.isArray(value["items"]) && isIntegerValue(value["asOfSequence"]);
-}
-
-function archiveRecordSummary(record: JsonObject): string {
-	const sequence = archiveSequence(record);
-	const kind = archiveKind(record);
-	const summary = archiveSummary(record);
-	return `${sequence}${kind}${summary.length === 0 ? "" : `: ${summary}`}`;
-}
-
-function archiveSequence(record: JsonObject): string {
-	return isIntegerValue(record["sequence"]) ? `#${record["sequence"]} ` : "";
-}
-
-function archiveKind(record: JsonObject): string {
-	return isTextValue(record["kind"]) ? record["kind"] : "record";
-}
-
-function archiveSummary(record: JsonObject): string {
-	return isTextValue(record["summary"]) ? record["summary"] : "";
-}
-
-function archiveNextCursor(value: JsonObject): string | undefined {
-	if (!isTextValue(value["nextCursor"]) || value["nextCursor"].length === 0) return undefined;
-	return `Next cursor: ${value["nextCursor"]}`;
-}
-export function summarizeToolError(error: JsonObject): string {
-	return [errorSummary(error), errorRemediation(error), errorEvidence(error)].filter(isTextValue).join("\n");
-}
-
-function errorSummary(error: JsonObject): string {
-	return isTextValue(error["summary"]) ? `Error: ${presentToolText(error["summary"])}` : "Khala action failed.";
-}
-
-function errorRemediation(error: JsonObject): string | undefined {
-	return isTextValue(error["remediation"]) ? `Next step: ${presentToolText(error["remediation"])}` : undefined;
-}
-
-function errorEvidence(error: JsonObject): string | undefined {
-	const refs = error["evidenceRefs"];
-	if (!Array.isArray(refs) || refs.length === 0) return undefined;
-	return `Evidence: ${refs.filter(isTextValue).join(", ")}`;
-}
-
-function presentToolText(value: string): string {
-	return value
-		.split(";")
-		.map((part, index) => {
-			const text = part.trim();
-			return index === 0 ? text : `${text[0]?.toUpperCase() ?? ""}${text.slice(1)}`;
-		})
-		.filter((part) => part.length > 0)
-		.join(". ");
-}
-
-function prettyJson(value: JsonValue): string {
-	return JSON.stringify(value, null, 2) ?? String(value);
-}
-
-function isJsonObject(value: JsonValue | undefined): value is JsonObject {
-	return Object.prototype.toString.call(value) === "[object Object]";
-}
-
-function isTextValue(value: JsonValue | undefined): value is string {
-	return value !== undefined && value === String(value);
-}
-
-function isIntegerValue(value: JsonValue | undefined): value is number {
-	return value !== undefined && value === Number(value) && Number.isSafeInteger(Number(value));
-}
-
 export { SQLiteArchive } from "./archive.js";
 export type { KhalaArchiveView } from "./archive-view.js";
 export { openKhalaArchive } from "./archive-view.js";
+export { summarizeArchiveToolValue, summarizeToolError } from "./extension-results.js";
 export type { ApplicationRuntime } from "./factory.js";
 export { createApplication } from "./factory.js";
 export type {

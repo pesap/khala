@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, stripTerminalSequences, TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { showKhala } from "../dist/src/tui.js";
 
 initTheme("dark");
@@ -48,7 +48,7 @@ function harness(overrides = {}) {
 		select: async (title, choices) => { menus.push({ title, choices }); return undefined; },
 		custom: (factory) => new Promise((resolve) => {
 			const done = (value) => { component.dispose?.(); resolve(value); };
-			const component = factory({ requestRender() {} }, theme, {}, done);
+			const component = factory({ requestRender() {} }, theme, getKeybindings(), done);
 			screens.push(component);
 		}),
 	} };
@@ -57,6 +57,17 @@ function harness(overrides = {}) {
 
 async function close(h) {
 	h.screens.at(-1).handleInput("\u001b");
+	await turn();
+	h.screens.at(-1).handleInput("\u001b");
+	await h.result;
+}
+
+async function closeFromAction(h) {
+	h.screens.at(-1).handleInput("\u001b");
+	await turn();
+	await turn();
+	h.screens.at(-1).handleInput("\u001b");
+	await turn();
 	await turn();
 	h.screens.at(-1).handleInput("\u001b");
 	await h.result;
@@ -84,20 +95,61 @@ test("opening saved Work is lazy and short-terminal overview keeps controls reac
 	await close(h);
 });
 
-test("enabled actions can be opened beside Work details without the Actions panel", async () => {
-	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel Work", enabled: true }] });
+test("Work overview nests actions and separates the summary from navigation", async () => {
+	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel", enabled: true }] });
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
 	const overview = h.screens.at(-1);
-	for (let step = 0; step < 4; step += 1) overview.handleInput("\u001b[B");
-	assert.match(renderScreen(overview, 40, 12).join("\n"), /Cancel/);
+	const lines = overview.render(80);
+	assert.doesNotMatch(lines.join("\n"), /→ Cancel\b/);
+	assert.match(lines.join("\n"), /Summary\s+Deliver the documented behavior\./);
+	assert.match(lines.join("\n"), /Next\s+Inspect the result/);
+	assert.match(lines.join("\n"), /Freshness\s+Saved revision 4/);
+	assert.doesNotMatch(lines.join("\n"), /Goal/);
+	assert.doesNotMatch(lines.join("\n"), /[;:]/);
+	const summaryEnd = lines.findIndex((line) => line.includes("Summary"));
+	const navigationStart = lines.findIndex((line) => line.includes("→ Actions"));
+	assert.ok(summaryEnd >= 0 && navigationStart > summaryEnd + 1, JSON.stringify(lines));
+	assert.ok(lines.slice(summaryEnd + 1, navigationStart).some((line) => line.trim().length === 0), JSON.stringify(lines));
+	assert.equal(lines.filter((line) => line.includes("Deliver the documented behavior.")).length, 1);
+	const summaryLine = lines.find((line) => line.includes("Summary"));
+	const nextLine = lines.find((line) => line.includes("Next"));
+	assert.ok(summaryLine);
+	assert.ok(nextLine);
+	assert.equal(summaryLine.indexOf("Deliver"), nextLine.indexOf("Inspect"));
 	overview.handleInput("\r");
 	await turn();
-	assert.match(h.menus[0].title, /Cancel Work/);
-	assert.ok(h.menus[0].choices.includes("Submit"));
+	assert.match(h.screens.at(-1).render(80).join("\n"), /→ Refresh runtime\b/);
+	h.screens.at(-1).handleInput("\u007f");
+	await turn();
+	h.screens.at(-1).handleInput("\u007f");
+	await turn();
+	h.screens.at(-1).handleInput("\u007f");
+	await h.result;
+});
+
+test("enabled actions are nested under the Actions section", async () => {
+	const h = harness({ availableActions: () => [{ id: "cancel", kind: "cancel", label: "Cancel", effect: "Stops this Work without recording a failure. It can be recovered after cleanup.", fields: [], enabled: true }] });
+	await turn();
+	h.screens[0].handleInput("\r");
+	await turn();
+	const overview = h.screens.at(-1);
+	assert.doesNotMatch(renderScreen(overview, 40, 12).join("\n"), /→ Cancel/);
+	overview.handleInput("\r");
+	await turn();
+	const actions = h.screens.at(-1);
+	assert.match(renderScreen(actions, 40, 12).join("\n"), /→ Refresh runtime/);
+	actions.handleInput("\u001b[B");
+	assert.match(renderScreen(actions, 40, 12).join("\n"), /→ Cancel/);
+	actions.handleInput("\r");
+	await turn();
+	const panel = h.screens.at(-1).render(80).join("\n");
+	assert.match(panel, /Cancel/);
+	assert.match(panel, /Effect\s+Stops this Work without recording a failure\. It can be recovered\s+after cleanup\./);
+	assert.match(panel, /→ Cancel/);
 	assert.equal(h.reads.length, 0);
-	await close(h);
+	await closeFromAction(h);
 });
 
 test("Work filters separate attention, review and terminal history without loading record bodies", async () => {
@@ -114,6 +166,21 @@ test("Work filters separate attention, review and terminal history without loadi
 	assert.match(picker.render(100).join("\n"), /Needs attention/);
 	assert.match(picker.render(100).join("\n"), /Clarify task/);
 	assert.doesNotMatch(picker.render(100).join("\n"), /Normal task|Review task|Completed task/);
+	picker.handleInput("\u001b[D");
+	assert.match(picker.render(100).join("\n"), /Normal task/);
+	assert.doesNotMatch(picker.render(100).join("\n"), /Completed task/);
+	const beforeSearch = picker.render(100).join("\n");
+	for (const character of "Unique") picker.handleInput(character);
+	const filteredAttention = picker.render(100).join("\n");
+	assert.notEqual(filteredAttention, beforeSearch);
+	assert.match(filteredAttention, /No matching Work/);
+	picker.handleInput("\u001b[C");
+	assert.equal(picker.render(100).join("\n"), filteredAttention);
+	for (const _character of "Unique") picker.handleInput("\u007f");
+	picker.handleInput("\u001b[C");
+	assert.match(picker.render(100).join("\n"), /Needs attention/);
+	assert.match(picker.render(100).join("\n"), /Clarify task/);
+	assert.doesNotMatch(picker.render(100).join("\n"), /Normal task|Review task/);
 	picker.handleInput("\u001b[C");
 	assert.match(picker.render(100).join("\n"), /Review task/);
 	assert.doesNotMatch(picker.render(100).join("\n"), /Clarify task/);
@@ -123,6 +190,16 @@ test("Work filters separate attention, review and terminal history without loadi
 	assert.equal(h.reads.length, 0);
 	picker.handleInput("\u001b[C");
 	assert.match(picker.render(100).join("\n"), /→\s+Normal task/);
+	picker.handleInput("\u001b");
+	await h.result;
+});
+
+test("Work picker closes with Escape while search is active", async () => {
+	const h = harness({ listWork: () => [{ workId: "other", title: "Other task", state: "active" }] });
+	await turn();
+	const picker = h.screens[0];
+	for (const character of "Unique") picker.handleInput(character);
+	assert.match(picker.render(100).join("\n"), /No matching Work/);
 	picker.handleInput("\u001b");
 	await h.result;
 });
@@ -137,14 +214,24 @@ test("explicit runtime refresh supplies the next overview and available actions"
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
-	for (let step = 0; step < 3; step += 1) h.screens.at(-1).handleInput("\u001b[B");
-	h.screens.at(-1).handleInput("\r");
+	const overview = h.screens.at(-1);
+	overview.handleInput("\r");
+	await turn();
+	const actions = h.screens.at(-1);
+	assert.match(actions.render(100).join("\n"), /Refresh runtime/);
+	actions.handleInput("\r");
 	await turn();
 	assert.match(h.screens.at(-1).render(100).join("\n"), /Runtime checked/);
 	h.screens.at(-1).handleInput("\u001b");
 	await turn();
+	const refreshedOverview = h.screens.at(-1);
+	assert.match(refreshedOverview.render(100).join("\n"), /Summary\s+Deliver the documented behavior\./);
+	assert.doesNotMatch(refreshedOverview.render(100).join("\n"), /unreachable/);
+	refreshedOverview.handleInput("\r");
+	await turn();
 	assert.equal(states.at(-1), "unreachable");
-	assert.match(h.screens.at(-1).render(100).join("\n"), /unreachable/);
+	h.screens.at(-1).handleInput("\u007f");
+	await turn();
 	await close(h);
 });
 
@@ -159,13 +246,15 @@ test("dismissed recovery cannot be started again while the original operation is
 	await turn();
 	h.screens[0].handleInput("\r");
 	await turn();
-	for (let step = 0; step < 4; step += 1) h.screens.at(-1).handleInput("\u001b[B");
+	h.screens.at(-1).handleInput("\r");
+	await turn();
 	h.screens.at(-1).handleInput("\r");
 	await turn();
 	assert.equal(calls, 1);
 	h.screens.at(-1).handleInput("\u001b");
 	await turn();
-	for (let step = 0; step < 4; step += 1) h.screens.at(-1).handleInput("\u001b[B");
+	h.screens.at(-1).handleInput("\r");
+	await turn();
 	h.screens.at(-1).handleInput("\r");
 	await turn();
 	assert.equal(calls, 1);

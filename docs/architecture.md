@@ -37,9 +37,12 @@ A competing supervisor cannot process effects while the lock is held.
 Acquiring the lock after a crash does not release persisted workspace ownership.
 The supervisor is ordinary application code, not a global model conversation or a fleet of per-repository supervisors.
 
-Closing or switching the initiating User Pi session disconnects the interface without cancelling workers or waiting for completion.
-A new Pi session reconnects to the same Archive and reconciled status.
-After restart, the supervisor reconciles persisted bindings and pending effects before launching replacement processes.
+Target behavior is for closing or switching the initiating User Pi session to disconnect the interface without cancelling workers or waiting for completion.
+Current behavior is session-owned: closing the hosting User Pi session closes the service and stops its child runtimes.
+A new Pi session can reread the same project Archive.
+Current recovery uses the authorized `recover` action for one Work or `/khala-recover` from the owning User session for project-wide reconciliation.
+User-initiated recovery must run in the session holding the Archive's exclusive supervision lock.
+Target restart behavior is for the supervisor to reconcile persisted bindings and pending effects before launching replacement processes.
 Conclave children cannot kill Executors as part of their own shutdown or impersonate the supervisor.
 
 Runtime liveness comes from persisted bindings and a bounded Pi RPC probe; it is not lifecycle authority.
@@ -92,8 +95,9 @@ Current questions and provider snapshots are directly readable, not reconstructe
 Footer reads do not load all Work, and opening one record does not retain the whole Archive.
 Each read revalidates repository and role access and reports snapshot identity or freshness where relevant.
 
-Actions expose opaque ID, Work scope, kind, label, enabled state, disabled reason, and expected revision.
-The target also identifies required input and consequential confirmation, including exact-snapshot local acceptance and changed-term approval.
+Actions expose opaque ID, Work scope, kind, label, effect, enabled state, disabled reason, input fields, confirmation, and expected revision.
+An input field carries its own name, label, hint, requirement, conditional requirement, input kind with any choices, and current recorded value.
+The target additionally identifies exact-snapshot local acceptance and changed-term approval.
 The [interaction contract](tui-navigation.md) owns how those facts are presented.
 
 Expected failures through `perform` use `ErrorEnvelope` with code, summary, retryability, remediation, evidence references, and optional learning data.
@@ -107,7 +111,8 @@ Effects are enqueued atomically with their causative Archive decision.
 After an unknown result, reconcile before retrying; never silently retry a semantic decision, substitute a model, increase an allowance, change scope, or redeliver completed feedback.
 
 Local Git belongs to the workspace adapter; remote review requests belong to the code-host adapter.
-The Mission's stored authorized provider target selects the adapter rather than mutable origin configuration.
+The target Mission's stored authorized provider target selects the adapter rather than mutable origin configuration.
+Current provider selection resolves the repository from the Git `origin` when provider work is first needed.
 Provider capability is checked before publication.
 The target includes GitHub and GitLab draft review requests and merge observation.
 GitHub polling normalizes checks, issue comments, submitted reviews, inline comments, and outcomes.
@@ -142,7 +147,7 @@ The current port methods likewise describe an implementation boundary, not addit
 ArchivePort       append, updateCommandProjection, findCommand,
                   pendingEffects, completeEffect, releaseEffect, renewEffect,
                   query, querySummaries, project, findObservation, findLatestObservation,
-                  listProjects, close
+                  listProjects, acquireSupervision, releaseSupervision, close
 AgentRuntimePort  ensureSession, send, getState, requestStop, close
 WorkspacePort     preflight, ensureSandbox, inspectHead, inspectChanges,
                   commitSandbox?, runValidation?, publishSandbox, removeSandbox
@@ -152,8 +157,12 @@ OraclePort        review
 ```
 
 Optional current workspace methods do not waive target validation requirements.
-Current actions do not populate input schemas or confirmation metadata; those remain required by the target reads above.
+Current actions populate their input fields and confirmation text; exact-snapshot local acceptance remains required by the target reads above.
 The current extension owns its application runtime in the User Pi session and closes it on `session_shutdown`.
+One eligible User-session service holds an exclusive SQLite supervision lock beside its project Archive before monitoring or consuming effects.
+Competing services remain clients while that lock is held, and role-bound children cannot acquire supervision.
+The lock is released after service shutdown drains runtime operations, or by the operating system when its owner exits.
+A live process without an attached RPC connection is `unknown`, not evidence that the process has died.
 Project-scoped storage and those session-bound runtime bindings do not implement the target shared background supervisor.
 See [Operations](operations.md#current-configuration-reference) for current settings and [Application actions](supervision-tools.md) for tool entry points.
 
@@ -162,7 +171,12 @@ See [Operations](operations.md#current-configuration-reference) for current sett
 | Component | Responsibility |
 | --- | --- |
 | [`src/model.ts`](../src/model.ts) | Domain contracts and state discriminants |
-| [`src/archive.ts`](../src/archive.ts) | SQLite Archive, projections, cursors, idempotency, and outbox |
+| [`src/archive.ts`](../src/archive.ts) | Public Archive facade and exports |
+| [`src/sqlite-archive.ts`](../src/sqlite-archive.ts) | SQLite Archive operations, projections, transactions, idempotency, and outbox effects |
+| [`src/archive-storage.ts`](../src/archive-storage.ts) | Schema, initialization, migration helpers, and storage utilities |
+| [`src/archive-query.ts`](../src/archive-query.ts) | Query filters, cursors, and bounded pagination |
+| [`src/archive-integrity.ts`](../src/archive-integrity.ts) | Projection and invocation accounting integrity checks |
+| [`src/supervision.ts`](../src/supervision.ts) | Exclusive Archive supervision locking |
 | [`src/service.ts`](../src/service.ts) | Lifecycle, authorization, scheduling, and effects |
 | [`src/ports.ts`](../src/ports.ts) | Runtime, workspace, provider, model, and Oracle boundaries |
 | [`src/runtime.ts`](../src/runtime.ts) | Pi RPC children, timeouts, ownership, and transcripts |

@@ -24,7 +24,8 @@ Each part of the work must preserve these guarantees:
 - Pi interaction stays quiet, keyboard-first, draft-preserving, and honest about pending or disconnected operations.
 
 These guarantees apply from the first working loop, not as later hardening.
-The design does not authorize Archive migrations, automatic consolidation, deletion of existing Work, or a weaker isolation mode.
+The target design does not authorize Archive migrations, automatic consolidation, deletion of existing Work, or a weaker isolation mode.
+Current writable Archive opening still applies explicit migrations for command and projection columns, legacy Work terms and states, and missing record numbers.
 
 ## Scope and responsibilities
 
@@ -47,14 +48,18 @@ Roles support delegation; they do not create a hierarchy the User must administe
 
 ## Delivery and acceptance
 
-Local commits are the default and require neither code-host credentials nor publication.
-The User accepts the exact reviewed head in Pi; acceptance does not merge or modify the User's checkout.
+The delivery modes in this section are target requirements.
+Current implementation supports provider delivery only through draft GitHub Pull Requests and GitLab Merge Requests.
+Current Work has no local-accept action and reaches `succeeded` only after provider merge evidence and Conclave Outcome settlement.
 
-Authorizing provider delivery records permission to publish and explicitly delegates acceptance to the repository's merge process, including its permitted maintainers and automation.
+Target local delivery requires neither code-host credentials nor publication.
+The target User accepts the exact reviewed head in Pi; acceptance does not merge or modify the User's checkout.
+
+Target provider delivery records permission to publish and explicitly delegates acceptance to the repository's merge process, including its permitted maintainers and automation.
 Verified merge evidence represents acceptance without a second confirmation in Pi.
 It does not authorize Khala to merge code.
 
-Both modes retain Conclave Outcome settlement before Work becomes `succeeded`.
+Both target modes retain Conclave Outcome settlement before Work becomes `succeeded`.
 The [lifecycle contract](lifecycle.md#acceptance-and-settlement) owns the evidence, state, and insufficient-budget rules.
 
 ## Build from one working loop

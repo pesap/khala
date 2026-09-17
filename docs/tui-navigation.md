@@ -2,7 +2,7 @@
 
 Interaction sustains agency by showing what changed, what needs a decision, and what can happen next.
 This document owns the target Pi interaction from the [MVP design](mvp-design.md).
-The current interface still has separate Actions, Peer-Review, and Archive views; those are not the target layout described below.
+The current interface has separate Work, Peer-Review, and Archive views, and opens each action in one native panel; the single-surface layout described below is not yet the current layout.
 [Architecture](architecture.md#commands-and-reads) owns the read/action boundary, and [Data model](data-model.md#current-projections-and-attention) owns saved attention facts.
 
 ## Quiet and on demand
@@ -34,18 +34,21 @@ The footer uses a small summary read rather than loading every Work.
 The selected Work shows its goal, current input request when present, current activity or stop reason, latest meaningful result, and available actions.
 An input request's reason and permitted response precede generic status and technical metadata, including before a Mission exists.
 Actions sit beside the information explaining them, not in a required separate Actions panel.
-The service supplies revision-bound actions and confirmation requirements; the UI does not infer authority from labels or scan arbitrary records for questions.
+The service supplies revision-bound actions with their effect, input fields, confirmation text, and disabled reason.
+The UI presents those facts directly; it does not infer authority from labels or scan arbitrary records for questions.
 
 Resolving a request or reconciling an operation clears that attention reason.
 The User can acknowledge a terminal failure without removing History or concealing other unresolved operations.
 A recorded acceptance waiting for budgeted Conclave settlement is shown as “accepted, awaiting settlement”, not as completed Work.
 
 Review details expose the reviewed base and head, commits, checks, feedback, and provider link when present.
+Work overviews show one short summary sentence; inspect the Work's submission or amendment records in Evidence for complete terms and supporting detail.
 Local delivery offers a bounded on-demand diff against the recorded base; provider delivery may also use its PR/MR for full review.
 Acceptance identifies the exact review snapshot and follows the [lifecycle rules](lifecycle.md#acceptance-and-settlement).
 Provider delivery does not add a second acceptance confirmation in Pi.
 
 Evidence is a filtered Archive-history view with an All records option, not a second history system.
+Evidence list summaries are bounded one-line previews; inspect a record to read its full summary and details.
 Record bodies, full terms, attempt bindings, budget, model, workspace, and prompt details load only on inspection.
 Guidance is inspectable with its sources and applicability, not injected into every screen.
 Settings stays separate and shows effective role defaults; existing attempts retain recorded configuration.
@@ -62,9 +65,13 @@ The following describes navigation roles; hints use Pi's configured bindings rat
 | Enter | Open an item or choose an explicit action |
 | Escape | Return one level; close Khala at the root |
 
-Text input uses normal Pi multiline editing, including paste, blank lines, cursor movement, and configured editor bindings.
+Text input uses Pi's native extension editor, including paste, blank lines, cursor movement, and configured editor bindings.
+The native editor replaces the Pi prompt while it is active and shows its own title and submit, newline, cancel, and external-editor hints.
 List navigation is inactive while editing.
-Leaving the editor preserves the draft and returns to explicit Submit and Discard actions.
+The action panel shows the service-supplied effect, visible field values, the saved revision, and a submit row.
+A blocked submit row states why the action cannot be submitted.
+The discard row appears only while the draft contains values and clears those draft values.
+Escape, ctrl+c, and backspace leave the panel without submitting and keep the draft.
 Typing, inserting a newline, accepting a field, or navigating away never submits a decision or cancels Work.
 
 Submission and consequential confirmations are explicit actions.
@@ -93,12 +100,18 @@ Leaving a view is always distinct from cancelling Work.
 
 ## Current interface reference
 
-The current picker switches Work, Needs attention, Review, and terminal History filters with Pi's configured left/right editor bindings when search is empty.
+The current picker switches Work, Needs attention, Review, and terminal History filters with Pi's configured left/right editor bindings.
 Work keeps failed Work visible while hiding succeeded and cancelled Work by default.
-The configured history shortcut additionally toggles all Work, including active Work.
+The configured history shortcut (`ctrl+h` by default) additionally toggles all Work, including active Work.
 Needs attention currently includes failed Work, input requests, and blocked Executions; acknowledgement of terminal failures remains a backend requirement.
-Work overviews show the goal, blocker, next action, saved revision, section navigation, and enabled revision-bound actions.
-Actions remains available as a dedicated chooser, but is not required to invoke an action.
+Work overviews show a short summary, blocker, next action, saved revision, section navigation, and available revision-bound actions.
+The Actions list shows only enabled actions and does not show disabled-action reasons.
+Enabled actions appear in this order: Recover, Retry admission, Record review, Amend terms, Rename, Amend budget, Refresh runtime, Cancel, and Mark as failed.
+Other enabled actions remain visible after these known actions in service-provided order.
+Selecting an enabled action opens one native panel with its effect, fields, visible draft values, and submit row.
+Retry admission is available for submitted Work with a recorded admission failure.
+Changing the Conclave model may be needed for the retry to succeed.
+Refresh runtime is an explicit action in that chooser and is not run when Work is opened.
 Page Up and Page Down scroll overview details while action navigation stays visible on short terminals.
 These entry points also support the [current getting-started workflow](getting-started.md).
 Current configurable shortcut names and defaults are listed in [Operations](operations.md#current-configuration-reference).
@@ -109,9 +122,11 @@ Cancelling a history read keeps the previous page or returns to the overview whe
 Peer-Review reads comments from the saved latest provider observation without scanning history.
 A latest observation without comments is shown as unavailable rather than inferred from unrelated records.
 Runtime capability and process-ownership secrets are omitted.
-Multiline action drafts use a separate Pi Editor and remain available while Khala is open.
-Escape leaves editing without submitting; Submit, Discard, and consequential confirmation are explicit choices.
-An unknown command result retains its exact identity, input, and revision for an explicit retry.
+Multiline action drafts use Pi's native extension editor and remain available while Khala is open.
+The panel shows Pending after an unknown outcome and offers Retry pending command with the same command identity and input.
+A failed submission shows Outcome and Remediation without discarding the draft.
+Escape leaves editing without submitting, and Discard draft values appears only when values have been entered.
+Consequential confirmation uses the service-supplied sentence and lists each entered field change.
 
 ## Checks before relying on interaction
 

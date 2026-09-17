@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { tuiKeybindings } from "./helpers/tui-fixtures.mjs";
 
 const root = process.cwd();
 const fixture = join(root, "data", "fixtures", "khala-demo.sqlite");
@@ -47,7 +48,7 @@ test("/khala-demo displays the packaged archive and starts fresh on each invocat
 				custom: (factory) =>
 					new Promise((resolve) => {
 						pending.done = resolve;
-						factory({ requestRender() {} }, interactiveContext.ui.theme, {}, resolve);
+						factory({ requestRender() {} }, interactiveContext.ui.theme, tuiKeybindings, resolve);
 					}),
 			},
 		};

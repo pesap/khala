@@ -33,7 +33,7 @@ test("missing bubblewrap fails closed with an actionable isolation diagnostic", 
 	const workspace = new GitWorkspace(root, "test/");
 	const [result] = await workspace.runValidation({ path: root, commands: ["touch marker"] });
 	assert.equal(result.passed, false);
-	assert.match(result.output, /Validation isolation requires bubblewrap/);
+	assert.match(result.output, /Validation isolation requires (?:Linux )?bubblewrap/);
 	await assert.rejects(access(join(root, "marker")), { code: "ENOENT" });
 });
 

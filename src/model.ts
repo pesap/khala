@@ -36,6 +36,7 @@ export const EXECUTION_RUNTIME_STATES = ["working", "idle", "pending", "unreacha
 export type ExecutionRuntimeState = (typeof EXECUTION_RUNTIME_STATES)[number];
 
 export const CONCLAVE_WAKE_CAUSES = [
+	"admission",
 	"executor-blocked",
 	"executor-ready",
 	"executor-failed",
@@ -45,6 +46,7 @@ export const CONCLAVE_WAKE_CAUSES = [
 	"provider-outcome",
 	"provider-feedback",
 	"token-exhausted",
+	"oracle-result",
 ] as const;
 export type ConclaveWakeCause = (typeof CONCLAVE_WAKE_CAUSES)[number];
 
@@ -70,6 +72,7 @@ export const RECORD_KINDS = [
 	"error",
 	"validation",
 	"work-amended",
+	"invocation",
 ] as const;
 export type RecordKind = (typeof RECORD_KINDS)[number];
 
@@ -89,14 +92,29 @@ export function isActor(value: string): value is Actor {
 
 export const GOVERNED_ROLES = ["conclave", "executor", "observer", "oracle"] as const;
 export type GovernedRole = (typeof GOVERNED_ROLES)[number];
-export type RoleSetting = "model" | "thinking";
-export type RoleSettings = Readonly<{ model: string; thinking: string }>;
+export type RoleSetting = "model" | "thinking" | "usdMax";
+export type RoleSettings = Readonly<{ model: string; thinking: string; usdMax: number }>;
 export type RoleSettingsMap = Readonly<Record<GovernedRole, RoleSettings>>;
 
 export type WorkBudget = Readonly<{
 	maxTokens: number;
 	reservedTokens: number;
 	consumedTokens: number;
+}>;
+
+export type ActiveInvocation = Readonly<{
+	runId: string;
+	role: "conclave" | "executor" | "observer" | "oracle";
+	allowance: number;
+	state: "reserved" | "uncertain";
+}>;
+
+export type PreparationState = Readonly<{
+	status: "waiting" | "preparing" | "runnable";
+	prerequisiteId: string;
+	operation: "isolation" | "dependencies" | "validation";
+	diagnostic: string;
+	recovery: "user" | "prerequisite-change";
 }>;
 
 export type TokenUsage = Readonly<{
@@ -218,12 +236,16 @@ export type ValidationRun = Readonly<{
 	executionId: string;
 	headCommit: string;
 	results: readonly ValidationResult[];
+	sourceVerified?: boolean | undefined;
+	sourceFailure?: string | undefined;
 }>;
+
+export type SignalKind = "progress" | "blocked" | "ready";
 
 export type Signal = Readonly<{
 	signalId: string;
 	executionId: string;
-	kind: "progress" | "blocked" | "ready";
+	kind: SignalKind;
 	summary: string;
 	evidence: readonly string[];
 	observedAt: string;
@@ -357,6 +379,21 @@ export type WorkView = Readonly<{
 	lastError?: ErrorEnvelope | undefined;
 	nextAction: string;
 	queuedSequence: number;
+	preparation?: PreparationState | undefined;
+	correctionCount?: number | undefined;
+	/** Persisted per-Work correction limits prevent restarts from reverting to process defaults. */
+	dispatchLimits?: Readonly<{ maxCorrections: number }> | undefined;
+	oraclePending?:
+		| Readonly<{
+				requestId: string;
+				signalId: string;
+				headCommit: string;
+				subject: string;
+				missionId: string;
+				executionId?: string | undefined;
+		  }>
+		| undefined;
+	activeInvocations?: readonly ActiveInvocation[] | undefined;
 }>;
 
 export type WorkSummary = Readonly<{
@@ -447,46 +484,81 @@ export type MutableRecordQuery = {
 	to?: string | undefined;
 };
 
+export const ACTION_KINDS = [
+	"admit",
+	"request-input",
+	"amend-terms",
+	"retry-admission",
+	"amend-mission",
+	"launch-observer",
+	"record-assessment",
+	"start-execution",
+	"record-signal",
+	"commit-sandbox",
+	"run-validation",
+	"create-review-request",
+	"run-oracle",
+	"verdict",
+	"deliver-feedback",
+	"record-review",
+	"record-outcome",
+	"cancel",
+	"recover",
+	"reconcile-invocation",
+	"rename-work",
+	"amend-budget",
+	"fail-work",
+] as const;
+export type ActionKind = (typeof ACTION_KINDS)[number];
+
+export type ActionChoice = Readonly<{ value: string; label: string; description?: string | undefined }>;
+export type ActionVerdictDecision = "continue" | "replace" | "handoff" | "reject";
+export type ActionReviewStatus = "changes-requested" | "merged" | "closed";
+
+export type ActionInputKind =
+	| Readonly<{ kind: "text" }>
+	| Readonly<{ kind: "lines" }>
+	| Readonly<{ kind: "integer"; min: number }>
+	| Readonly<{ kind: "choice"; choices: readonly ActionChoice[] }>;
+
+/**
+ * `name` is a dotted path into `ActionInput`, so nested command input such as
+ * `usage.inputTokens` needs no per-action assembly code in the client.
+ */
+export type ActionField = Readonly<{
+	name: string;
+	label: string;
+	hint?: string | undefined;
+	requirement: ActionFieldRequirement;
+	requiredWhen?: Readonly<{ field: string; value: string }> | undefined;
+	input: ActionInputKind;
+	current?: string | undefined;
+}>;
+
+/** `one-of-group` fields are individually optional, but at least one of them must carry a value. */
+export type ActionFieldRequirement = "required" | "optional" | "one-of-group";
+
 export type Action = Readonly<{
 	id: string;
 	scope: "work" | "mission" | "execution" | "project";
-	kind:
-		| "admit"
-		| "request-input"
-		| "amend-terms"
-		| "amend-mission"
-		| "launch-observer"
-		| "record-assessment"
-		| "start-execution"
-		| "record-signal"
-		| "commit-sandbox"
-		| "run-validation"
-		| "create-review-request"
-		| "run-oracle"
-		| "verdict"
-		| "deliver-feedback"
-		| "record-review"
-		| "record-outcome"
-		| "cancel"
-		| "recover"
-		| "rename-work"
-		| "amend-budget"
-		| "fail-work";
+	kind: ActionKind;
 	label: string;
+	effect: string;
 	enabled: boolean;
 	disabledReason?: string | undefined;
+	fields: readonly ActionField[];
 	confirmation?: string | undefined;
 	expectedWorkRevision?: number | undefined;
 }>;
 
 export type ActionInput = Readonly<{
-	kind?: string | undefined;
+	kind?: SignalKind | undefined;
 	summary?: string | undefined;
 	evidence?: readonly string[] | undefined;
-	decision?: string | undefined;
+	decision?: ActionVerdictDecision | undefined;
 	reason?: string | undefined;
 	signalId?: string | undefined;
-	status?: string | undefined;
+	status?: ActionReviewStatus | undefined;
 	feedback?: readonly string[] | undefined;
 	title?: string | undefined;
 	objective?: string | undefined;
@@ -500,10 +572,12 @@ export type ActionInput = Readonly<{
 	observationId?: string | undefined;
 	subject?: string | undefined;
 	maxTokens?: number | undefined;
+	runId?: string | undefined;
+	usage?: TokenUsage | undefined;
 }>;
 
 export type ActionCommand = Readonly<{
-	action: Action["kind"];
+	action: ActionKind;
 	workId: string;
 	input?: ActionInput | undefined;
 	meta: CommandMeta;
@@ -524,7 +598,7 @@ export type ErrorEnvelope = Readonly<{
 	retryable: boolean;
 	remediation: string;
 	evidenceRefs: readonly string[];
-	source?: "provider-monitor" | undefined;
+	source?: "admission" | "provider-monitor" | undefined;
 	learning?:
 		| Readonly<{
 				failure: string;
@@ -533,6 +607,8 @@ export type ErrorEnvelope = Readonly<{
 		  }>
 		| undefined;
 }>;
+
+export type AdmissionFailure = Readonly<ErrorEnvelope & { source: "admission" }>;
 
 export type ServiceResult<T> = Readonly<{ value: T }> | Readonly<{ error: ErrorEnvelope }>;
 

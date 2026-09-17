@@ -38,25 +38,37 @@ The same writable branch cannot be shared by concurrent Executors.
 The [lifecycle](lifecycle.md#cancellation-recovery-and-retention) governs termination confirmation before ownership release.
 
 A Git worktree separates file changes; it is not a process security boundary.
-All children and validation subprocesses require restricted filesystem, network, environment, and credential access.
-Only authorized workspace, context, and required runtime resources are accessible.
-Unrelated repositories, direct Archive storage, unrelated session artifacts, and credential stores are inaccessible.
-Children and validation subprocesses receive no code-host credentials or unrestricted host environment.
+Target requirement: all children and validation subprocesses require restricted filesystem, network, environment, and credential access.
+Target requirement: only authorized workspace, context, and required runtime resources are accessible.
+Target requirement: unrelated repositories, direct Archive storage, unrelated session artifacts, and credential stores are inaccessible.
+Target requirement: children and validation subprocesses receive no code-host credentials or unrestricted host environment.
 If these restrictions cannot be established, execution is blocked; there is no isolation exception mode.
 Prove a supported isolation mechanism before relying on autonomous execution rather than treating a tool allowlist as that proof.
 
+> [!WARNING]
+> Current Pi child launches do not establish the target OS isolation boundary.
+> [`runtime-launch.ts`](../src/runtime-launch.ts) directly spawns Pi child processes.
+> [`runtime-process.ts`](../src/runtime-process.ts) filters environment variable names that match sensitive patterns, but it does not sandbox child filesystem or network access.
+> The current bubblewrap boundary is used for offline dependency hydration and declared validation, not for Pi child launches or service-owned Git hooks.
+> CI configures AppArmor for the bubblewrap launcher; that profile does not isolate Pi child sessions.
+
 ## Validation and privileged effects
 
-Executors have no arbitrary shell tool.
+Target requirement: Executors have no arbitrary shell tool.
 They commit through governed workspace actions and run only the Mission's declared validation commands through the workspace adapter.
 A declared command may execute repository code changed by the agent.
-Isolation therefore applies to the complete process tree, not just the command string or Pi file-tool checks.
+Target isolation therefore applies to the complete process tree, not just the command string or Pi file-tool checks.
 A command name remaining unchanged does not establish that its executable content is trusted.
 
-Publication and authenticated provider operations remain service-owned.
-Repository hooks and subprocesses must not inherit that privileged access.
-The service checks the stored authorized provider target rather than following mutable origin configuration.
-The Mission records publication permission and delegated provider acceptance before a branch is pushed or a request is created.
+Target publication and authenticated provider operations remain service-owned.
+Target repository hooks and subprocesses must not inherit that privileged access.
+The target service checks the stored authorized provider target rather than following mutable origin configuration.
+Current provider selection resolves the repository from the Git `origin` when provider work is first needed.
+The target Mission records publication permission and delegated provider acceptance before a branch is pushed or a request is created.
+Current delivery is provider-only through draft GitHub Pull Requests and GitLab Merge Requests.
+The Executor child can invoke `create-review-request`, which runs Git and provider operations through its role-bound service.
+Current Pi child launches do not provide OS filesystem isolation, so do not treat provider credential files as inaccessible to the Executor.
+Local delivery and local acceptance remain target behavior.
 Delegation to the repository's merge process does not permit Khala to merge code.
 
 `gh` and `glab` use their own authenticated sessions for service-owned provider calls.

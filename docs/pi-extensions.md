@@ -19,7 +19,8 @@ Review mode is persisted in the session branch and follows session tree navigati
 The review is a separate session workflow.
 It does not mutate Khala lifecycle state or turn review prose into a Verdict.
 `/end-review` ends the local review mode and leaves findings in the session for the User to act on.
-The commands require a UI-capable Pi session, such as interactive or RPC mode.
+The `/review` command requires a UI-capable Pi session, such as interactive or RPC mode.
+`/end-review` clears active review state in the current session.
 
 ## `pi-clarify`
 
@@ -27,7 +28,8 @@ The commands require a UI-capable Pi session, such as interactive or RPC mode.
 A `-clarify` marker intercepts the input, places the rewrite in the editor, and waits for User review.
 The marker is a whole token, so it does not match words such as `pre-clarify` or `-clarify-now`.
 The extension never silently sends the rewritten prompt and never changes global Pi settings.
-The command and marker require a UI-capable Pi session, such as interactive or RPC mode.
+The `/clarify` command and active `-clarify` rewrite flow require a UI-capable Pi session, such as interactive or RPC mode.
+In print or JSON mode, `/clarify` reports that a UI is required and a `-clarify` marker is passed through unchanged.
 
 ## `khala-demo`
 

@@ -11,6 +11,7 @@ async function runtimeWithWriter() {
 	const script = join(directory, "writer.mjs");
 	await writeFile(script, `import readline from "node:readline";
 import { appendFileSync } from "node:fs";
+if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 const output = process.env.KHALA_TEST_OUTPUT;
 const writer = setInterval(() => appendFileSync(output, "x"), 10);
@@ -56,7 +57,7 @@ test("requestStop kills a descendant after the leader exits and releases its lea
 	const script = join(directory, "leader.mjs");
 	const output = join(directory, "writes");
 	await writeFile(output, "");
-	await writeFile(script, `import { spawn } from "node:child_process"; import readline from "node:readline"; const sessionPath = process.argv[process.argv.indexOf("--session") + 1]; spawn(process.execPath, ["--input-type=module", "-e", "import { appendFileSync } from 'node:fs'; setInterval(() => appendFileSync(process.env.KHALA_TEST_OUTPUT, 'x'), 10)"], { env: process.env, stdio: "ignore" }); readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") { process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "descendant", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); setTimeout(() => process.exit(0), 30); } });`);
+	await writeFile(script, `import { spawn } from "node:child_process"; import readline from "node:readline"; if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); } const sessionPath = process.argv[process.argv.indexOf("--session") + 1]; spawn(process.execPath, ["--input-type=module", "-e", "import { appendFileSync } from 'node:fs'; setInterval(() => appendFileSync(process.env.KHALA_TEST_OUTPUT, 'x'), 10)"], { env: process.env, stdio: "ignore" }); readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") { process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "descendant", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); setTimeout(() => process.exit(0), 30); } });`);
 	await chmod(script, 0o755);
 	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], baseEnvironment: { KHALA_TEST_OUTPUT: output }, rpcTimeoutMs: 500, agentTimeoutMs: 500 });
 	const storage = createRuntimeStorage(directory);

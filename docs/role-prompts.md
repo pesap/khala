@@ -82,6 +82,7 @@ in every role prompt; link to the shared skill instead.
 ### Conclave
 
 Tune admission criteria, bounded-attempt authorization, Verdict handling, provider feedback assessment, runtime recovery judgment, and Outcome verification.
+The current prompt asks for at most 500 added code lines per change; the application service does not independently validate that prompt rule.
 Scheduling and process mechanics belong to application code under [Architecture](architecture.md#scheduling-and-child-runs), not the prompt.
 Keep the
 Conclave read-only with respect to the repository and require Archive evidence

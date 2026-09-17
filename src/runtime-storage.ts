@@ -41,8 +41,23 @@ export class RuntimeStorage {
 		return this.ownedPath(`${this.launchLeasePath(sessionPath)}.${nanoid()}.tmp`);
 	}
 
+	invocationPath(runId: string): string {
+		const key = createHash("sha256").update(runId).digest("hex");
+		return this.ownedPath(join(this.root, "invocations", `${key}.json`));
+	}
+
+	invocationTemporaryPath(runId: string): string {
+		return this.ownedPath(`${this.invocationPath(runId)}.${nanoid()}.tmp`);
+	}
+
 	async prepare(): Promise<void> {
-		for (const path of [dirname(this.root), this.root, join(this.root, "sessions"), join(this.root, "capabilities")])
+		for (const path of [
+			dirname(this.root),
+			this.root,
+			join(this.root, "sessions"),
+			join(this.root, "capabilities"),
+			join(this.root, "invocations"),
+		])
 			await this.ensurePrivateDirectory(path);
 	}
 

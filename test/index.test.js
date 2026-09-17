@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,14 +13,6 @@ test("user sessions show a branded Executor status in the footer", async () => {
 	process.env.PI_CODING_AGENT_DIR = directory;
 	try {
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ archiveRoot: join(directory, "archive") }));
-		const packagePath = join(process.cwd(), "dist", "package.json");
-		const temporaryPackagePath = `${packagePath}.${process.pid}.tmp`;
-		await writeFile(temporaryPackagePath, JSON.stringify({ version: "1.0.0", type: "module" }));
-		await rename(temporaryPackagePath, packagePath);
-		await mkdir(join(process.cwd(), "dist", "system-prompts"), { recursive: true });
-		for (const prompt of ["conclave.md", "executor.md", "observer.md", "oracle.md"]) {
-			await copyFile(join(process.cwd(), "system-prompts", prompt), join(process.cwd(), "dist", "system-prompts", prompt));
-		}
 		const { default: khalaExtension, summarizeToolError } = await import("../dist/src/index.js");
 		initTheme();
 		assert.equal(
@@ -93,8 +85,6 @@ test("user sessions show a branded Executor status in the footer", async () => {
 	} finally {
 		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousDirectory;
-		await rm(join(process.cwd(), "dist", "package.json"), { force: true });
-		await rm(join(process.cwd(), "dist", "system-prompts"), { recursive: true, force: true });
 		await rm(directory, { recursive: true, force: true });
 	}
 });

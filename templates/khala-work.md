@@ -16,6 +16,11 @@
 
 <!-- Optional boundary. Defaults to repository changes required by Objective. -->
 
+## Allowed paths
+
+<!-- Optional repository-relative paths the Executor may change. -->
+<!-- Omit this section to use ["."] by default. -->
+
 ## Acceptance criteria
 
 <!-- Required: observable outcomes, one per line. -->
