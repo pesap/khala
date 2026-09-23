@@ -24,6 +24,15 @@ import { observationFingerprint, validationPassed } from "./service-runtime-poli
 import { sameRuntimeBinding } from "./service-state-policy.js";
 
 const MAX_CHECK_FIELD = 200;
+type RepairableLifecycle = Readonly<{
+	missionState: "active" | "awaiting-review";
+	executionState: "running" | "awaiting-review";
+	runtimeStates: readonly ("idle" | "working")[];
+}>;
+const REPAIRABLE_LIFECYCLES = new Map<WorkView["state"], RepairableLifecycle>([
+	["active", { missionState: "active", executionState: "running", runtimeStates: ["idle", "working"] }],
+	["awaiting-review", { missionState: "awaiting-review", executionState: "awaiting-review", runtimeStates: ["idle"] }],
+]);
 
 export const TERMINAL_REPAIR_STATUSES = ["completed", "blocked", "uncertain", "superseded"] as const;
 export type RepairStatus = "started" | (typeof TERMINAL_REPAIR_STATUSES)[number];
@@ -325,9 +334,40 @@ export function isDraftReview(status: NonNullable<WorkView["reviewRequest"]>["st
 }
 
 export function currentSignalAllowsRepair(work: WorkView): boolean {
+	return !currentSignalBlocksRepair(work);
+}
+
+function currentSignalBlocksRepair(work: WorkView): boolean {
 	const signal = work.lastSignal;
-	if (signal === undefined || signal.executionId !== work.execution?.executionId) return true;
-	return signal.kind === "progress";
+	return signal !== undefined && signal.executionId === work.execution?.executionId && signal.kind === "blocked";
+}
+
+export function currentExecutionCanResume(work: WorkView, runtimeState: "idle" | "working"): boolean {
+	const lifecycle = currentRepairableLifecycle(work);
+	return (
+		lifecycle !== undefined &&
+		work.mission !== undefined &&
+		executionMatchesRepairLifecycle(work, lifecycle, runtimeState)
+	);
+}
+
+function currentRepairableLifecycle(work: WorkView): RepairableLifecycle | undefined {
+	const lifecycle = REPAIRABLE_LIFECYCLES.get(work.state);
+	return lifecycle?.missionState === work.missionState ? lifecycle : undefined;
+}
+
+function executionMatchesRepairLifecycle(
+	work: WorkView,
+	lifecycle: RepairableLifecycle,
+	runtimeState: "idle" | "working",
+): boolean {
+	const execution = work.execution;
+	return (
+		execution !== undefined &&
+		execution.state === lifecycle.executionState &&
+		execution.runtimeState === runtimeState &&
+		lifecycle.runtimeStates.includes(runtimeState)
+	);
 }
 
 export function currentValidationAllowsRepair(work: WorkView): boolean {
@@ -542,7 +582,41 @@ export function ciRepairPrompt(authorization: CiRepairAuthorization, work: WorkV
 
 export function statusProjection(work: WorkView, authorization: CiRepairAuthorization, status: RepairStatus): WorkView {
 	const sameExecution = isSameAuthorizedExecution(work, authorization);
-	return { ...work, revision: work.revision + 1, nextAction: ciRepairStatusAction(work, status, sameExecution) };
+	const current = status === "started" ? startedRepairProjection(work, authorization, sameExecution) : work;
+	return { ...current, revision: work.revision + 1, nextAction: ciRepairStatusAction(current, status, sameExecution) };
+}
+
+function startedRepairProjection(
+	work: WorkView,
+	authorization: CiRepairAuthorization,
+	sameExecution: boolean,
+): WorkView {
+	const execution = work.execution;
+	if (!sameExecution || execution === undefined) return work;
+	return {
+		...work,
+		...startedRepairLifecycle(work, execution),
+		lastSignal: signalAfterRepairStart(work, authorization),
+	};
+}
+
+function startedRepairLifecycle(
+	work: WorkView,
+	execution: NonNullable<WorkView["execution"]>,
+): Pick<WorkView, "state" | "missionState" | "execution"> {
+	if (!isAwaitingReviewExecution(work, execution))
+		return { state: work.state, missionState: work.missionState, execution };
+	return { state: "active", missionState: "active", execution: { ...execution, state: "running" } };
+}
+
+function isAwaitingReviewExecution(work: WorkView, execution: NonNullable<WorkView["execution"]>): boolean {
+	return (
+		work.state === "awaiting-review" && work.missionState === "awaiting-review" && execution.state === "awaiting-review"
+	);
+}
+
+function signalAfterRepairStart(work: WorkView, authorization: CiRepairAuthorization): WorkView["lastSignal"] {
+	return work.lastSignal?.executionId === authorization.executionId ? undefined : work.lastSignal;
 }
 
 function isSameAuthorizedExecution(work: WorkView, authorization: CiRepairAuthorization): boolean {

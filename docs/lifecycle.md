@@ -128,6 +128,8 @@ With `enableCiRepair` enabled, a current provider CI failure wakes Conclave with
 CI repair is disabled by default, and no CI repair can be authorized without the opt-in.
 Conclave may authorize one bounded CI-repair continuation of the same Execution only when the observation and review identity match, the live runtime is provably idle with no active Executor turn, current validation is not blocked, invocations are settled, and the existing Work and Execution allowances permit it.
 A later failure observation cannot authorize another CI-repair turn on that Execution.
+When a matching CI failure arrives after a ready Signal or handoff, starting the authorized repair clears that stale Signal and reopens the same awaiting-review Work, Mission, and Execution as active and running; blocked Signals remain non-resumable.
+After a same-head failure, a successful CI observation supersedes it only when every previously failed check has one matching verified result with a later provider completion time; stale or timestamp-ambiguous snapshots are ignored.
 The Executor addresses only selected in-scope failures, commits through the governed action, validates in isolation, and reconciles the same draft review request to the exact validated commit.
 Unavailable isolation blocks the Executor; it does not trigger unrestricted validation.
 Readiness and handoff are blocked by current failures, stale observations, pending checks, or checks that cannot be verified as successful for the current published head.

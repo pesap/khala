@@ -16,6 +16,7 @@ import {
 	type CiRepairAuthorization,
 	type CurrentCiFailure,
 	ciRepairPrompt,
+	currentExecutionCanResume,
 	currentFailureScope,
 	currentReviewMatches,
 	currentSignalAllowsRepair,
@@ -518,19 +519,10 @@ export class ServiceCiRepair {
 
 	private currentExecutionIsResumable(work: WorkView, runtimeState: "idle" | "working"): boolean {
 		return (
-			this.workMissionIsActive(work) &&
-			this.executionIsRunning(work.execution, runtimeState) &&
+			currentExecutionCanResume(work, runtimeState) &&
 			this.executionIsBoundToMission(work) &&
 			this.executionCanContinue(work.execution)
 		);
-	}
-
-	private workMissionIsActive(work: WorkView): boolean {
-		return work.state === "active" && work.missionState === "active" && work.mission !== undefined;
-	}
-
-	private executionIsRunning(execution: WorkView["execution"], runtimeState: "idle" | "working"): boolean {
-		return execution !== undefined && execution.state === "running" && execution.runtimeState === runtimeState;
 	}
 
 	private executionIsBoundToMission(work: WorkView): boolean {

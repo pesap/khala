@@ -23,6 +23,7 @@ function createGitlabPipelineCheck(pipeline: JsonObject, status: string): Provid
 		name: name.slice(0, MAX_PROVIDER_FIELD),
 		status: status.slice(0, MAX_PROVIDER_FIELD),
 		detailsUrl: readProviderText(pipeline["web_url"])?.slice(0, MAX_PROVIDER_FIELD),
+		completedAt: readProviderText(pipeline["finished_at"])?.slice(0, MAX_PROVIDER_FIELD),
 	};
 }
 

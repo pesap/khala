@@ -159,7 +159,8 @@ Target settings and their implementation status must be updated here when the co
 Trusted project configuration may lower `maxConcurrentRuns` but cannot raise the global ceiling.
 The Archive enforces the effective ceiling across existing and newly submitted Works.
 When `requireProviderCi` is true, ready and handoff require verified successful checks for the current published PR head.
-Set it to false only when provider CI is explicitly not configured; observed failing, pending, stale, or unverified checks still block readiness.
+After a same-head failure, a successful snapshot supersedes it only when each previously failed check has one matching verified result with a later provider completion timestamp; stale or timestamp-ambiguous snapshots are ignored.
+Set `requireProviderCi` to false only when provider CI is explicitly not configured; observed failing, pending, stale, or unverified checks still block readiness.
 
 Role models use `conclaveModel`, `executorModel`, `observerModel`, and `oracleModel`, with matching `*Thinking` settings.
 The Pi extension's base workflow requires Conclave and Executor models.

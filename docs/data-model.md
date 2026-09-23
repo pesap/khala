@@ -107,6 +107,7 @@ Edited provider text creates a new observation; previous observations and comple
 A CI-repair Delivery binds one authorization to the exact CI observation record, current Mission, Execution, PR head, runtime binding, and selected failed checks.
 Its durable status records distinguish authorization, start, completion, blockage, uncertainty, and supersession; a started CI-repair Delivery prevents another repair turn on that Execution, even if a later observation reports failure again.
 Provider readiness compares check observations with the current publication and requires exact provider, PR URL, repository, branch, and head identity plus verified success for every reported check.
+After a same-head failure, a successful observation supersedes it only when every failed check has one matching verified result with a later provider completion timestamp; stale or timestamp-ambiguous snapshots do not replace current failure evidence.
 Provider text remains evidence under the [security contract](security.md#provider-feedback).
 
 ## Guidance and context

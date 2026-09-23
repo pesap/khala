@@ -108,7 +108,7 @@ test("an unchanged successful check is refreshed after a same-head publication",
 	}
 });
 
-test("an old successful snapshot cannot replace a newer failure for the same PR head", async () => {
+test("a previously unseen older successful snapshot cannot replace a newer failure", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-ci-stale-success-"));
 	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
 	try {
@@ -123,13 +123,19 @@ test("an old successful snapshot cannot replace a newer failure for the same PR 
 		assert.equal("error" in result, false);
 		const request = result.value.reviewRequest;
 		const oldSuccess = successfulCiObservation(request);
+		oldSuccess.details.checks[0].completedAt = "2026-09-08T00:00:00.000Z";
 		work = await pollSameCi(service, controls, work, oldSuccess, "ci-stale-success:poll-success");
 		recordSameHeadPublication(archive, service.inspectWork(work.workId), "ci-stale-success:republish");
-		work = await pollSameCi(service, controls, work, failedCiObservation(request), "ci-stale-success:poll-failure");
+		const newerFailure = failedCiObservation(request);
+		newerFailure.details.checks[0].completedAt = "2026-09-09T00:00:00.000Z";
+		work = await pollSameCi(service, controls, work, newerFailure, "ci-stale-success:poll-failure");
 		const failure = work.lastObservation;
 		assert.equal(failure.status, "checks-failed");
+		const unseenStaleSuccess = successfulCiObservation(request);
+		unseenStaleSuccess.observationId = "ci-status:fixture:unseen-stale-success";
+		unseenStaleSuccess.details.checks[0].completedAt = "2026-09-08T12:00:00.000Z";
 
-		work = await pollSameCi(service, controls, work, oldSuccess, "ci-stale-success:poll-stale-success");
+		work = await pollSameCi(service, controls, work, unseenStaleSuccess, "ci-stale-success:poll-stale-success");
 		assert.equal(work.lastObservation.observationId, failure.observationId);
 		const observations = archive.query({ workId: work.workId, kinds: ["observation"], order: "desc" }).items;
 		assert.equal(observations[0].payload.observationId, failure.observationId);
@@ -144,6 +150,23 @@ test("an old successful snapshot cannot replace a newer failure for the same PR 
 			meta: meta("executor", "ci-stale-success:ready", work.revision, work.workId, work.execution.executionId),
 		});
 		assert.equal("error" in ready, true);
+
+		const freshSuccess = successfulCiObservation(request);
+		freshSuccess.observationId = "ci-status:fixture:fresh-success";
+		freshSuccess.details.checks[0].completedAt = "2026-09-10T00:00:00.000Z";
+		work = await pollSameCi(service, controls, work, freshSuccess, "ci-stale-success:poll-fresh-success");
+		assert.equal(work.lastObservation.observationId, freshSuccess.observationId);
+		const currentReady = await service.perform({
+			action: "record-signal",
+			workId: work.workId,
+			input: {
+				kind: "ready",
+				summary: "The current successful check run is newer than the recorded failure.",
+				evidence: [request.headCommit, "validation passed", "new provider success"],
+			},
+			meta: meta("executor", "ci-stale-success:ready-after-current-checks", work.revision, work.workId, work.execution.executionId),
+		});
+		assert.equal("error" in currentReady, false);
 	} finally {
 		await service.close();
 	}

@@ -1,7 +1,11 @@
 import type { ArchivePort } from "./archive.js";
 import { isJsonObject, isObservation, isReviewRequest } from "./archive-codec.js";
-import type { JsonObject, JsonValue, ProviderCiObservation, RecordView, WorkView } from "./model.js";
-import { providerCheckIsVerified, providerObservationExactlyMatchesReview } from "./provider-observation-policy.js";
+import type { JsonObject, JsonValue, ProviderCheck, ProviderCiObservation, RecordView, WorkView } from "./model.js";
+import {
+	failedProviderChecks,
+	providerCheckIsVerified,
+	providerObservationExactlyMatchesReview,
+} from "./provider-observation-policy.js";
 import { observationFingerprint } from "./service-runtime-policy.js";
 
 type ReviewRequest = NonNullable<WorkView["reviewRequest"]>;
@@ -22,7 +26,7 @@ export function providerEvidenceAllowsReady(
 	let scan: ReadinessScan = {};
 	do {
 		const page = archive.query(readinessQuery(work), cursor);
-		scan = scanReadinessRecords(page.items, scan, request, work, requireProviderCi);
+		scan = scanReadinessRecords(page.items, scan, request, work);
 		if (scan.decision !== undefined) return scan.decision;
 		cursor = page.nextCursor;
 	} while (cursor !== undefined);
@@ -43,6 +47,97 @@ export function providerCiObservationNeedsRefresh(
 	if (!providerObservationExactlyMatchesReview(observation, request)) return false;
 	const sequences = latestProviderEvidenceSequences(archive, work, request, observation);
 	return observationPredatesPublication(sequences);
+}
+
+export function providerCiObservationIsStale(
+	archive: ArchivePort,
+	work: WorkView,
+	observation: ProviderCiObservation,
+): boolean {
+	if (!isSuccessfulProviderStatus(observation.status)) return false;
+	const request = work.reviewRequest;
+	if (request === undefined || !providerObservationExactlyMatchesReview(observation, request)) return false;
+	return currentFailureMakesObservationStale(archive, work, request, observation);
+}
+
+function currentFailureMakesObservationStale(
+	archive: ArchivePort,
+	work: WorkView,
+	request: ReviewRequest,
+	observation: ProviderCiObservation,
+): boolean {
+	const previous = latestCurrentProviderChecksObservation(archive, work, request);
+	return previous?.status === "checks-failed" && !previousFailureIsSuperseded(previous, observation);
+}
+
+function previousFailureIsSuperseded(previous: ProviderCiObservation, observation: ProviderCiObservation): boolean {
+	const failedChecks = failedProviderChecks(previous);
+	return failedChecks.length > 0 && failedChecks.every((failed) => newerVerifiedCheck(observation, failed));
+}
+
+function latestCurrentProviderChecksObservation(
+	archive: ArchivePort,
+	work: WorkView,
+	request: ReviewRequest,
+): ProviderCiObservation | undefined {
+	let cursor: string | undefined;
+	do {
+		const page = archive.query(readinessQuery(work), cursor);
+		for (const record of page.items) {
+			const observation = matchingProviderChecksObservation(record, request);
+			if (observation !== undefined) return observation;
+		}
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return undefined;
+}
+
+function newerVerifiedCheck(observation: ProviderCiObservation, previous: ProviderCheck): boolean {
+	const current = uniqueMatchingCheck(observation, previous);
+	return current !== undefined && currentCheckIsVerifiedAndLater(current, previous);
+}
+
+function uniqueMatchingCheck(observation: ProviderCiObservation, previous: ProviderCheck): ProviderCheck | undefined {
+	const matches = (observation.details?.checks ?? []).filter((check) => sameCheckIdentity(check, previous));
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+function currentCheckIsVerifiedAndLater(current: ProviderCheck, previous: ProviderCheck): boolean {
+	if (!providerCheckIsVerified(current)) return false;
+	const currentCompletion = providerCheckCompletion(current);
+	const previousCompletion = providerCheckCompletion(previous);
+	return checkCompletionIsLater(currentCompletion, previousCompletion);
+}
+
+function checkCompletionIsLater(current: number | undefined, previous: number | undefined): boolean {
+	return current !== undefined && previous !== undefined && current > previous;
+}
+
+function sameCheckIdentity(left: ProviderCheck, right: ProviderCheck): boolean {
+	return sameCheckTypeAndWorkflow(left, right) && sameCheckName(left, right);
+}
+
+function sameCheckTypeAndWorkflow(left: ProviderCheck, right: ProviderCheck): boolean {
+	return left.kind === right.kind && left.workflowName === right.workflowName;
+}
+
+function sameCheckName(left: ProviderCheck, right: ProviderCheck): boolean {
+	return left.name === right.name || isMatchingGitLabPipelineName(left, right);
+}
+
+function isMatchingGitLabPipelineName(left: ProviderCheck, right: ProviderCheck): boolean {
+	return isGitLabPipelineCheck(left) && isGitLabPipelineCheck(right);
+}
+
+function isGitLabPipelineCheck(check: ProviderCheck): boolean {
+	return check.kind === "status-context" && /^GitLab pipeline \d+$/.test(check.name);
+}
+
+function providerCheckCompletion(check: ProviderCheck): number | undefined {
+	const timestamp = check.completedAt;
+	if (timestamp === undefined) return undefined;
+	const value = Date.parse(timestamp);
+	return Number.isFinite(value) ? value : undefined;
 }
 
 type ProviderEvidenceSequences = Readonly<{
@@ -170,11 +265,10 @@ function scanReadinessRecords(
 	initial: ReadinessScan,
 	request: ReviewRequest,
 	work: WorkView,
-	requireProviderCi: boolean,
 ): ReadinessScan {
 	let scan = initial;
 	for (const record of records) {
-		scan = scanReadinessRecord(record, scan, request, work, requireProviderCi);
+		scan = scanReadinessRecord(record, scan, request, work);
 		if (scan.decision !== undefined) return scan;
 	}
 	return scan;
@@ -185,7 +279,6 @@ function scanReadinessRecord(
 	initial: ReadinessScan,
 	request: ReviewRequest,
 	work: WorkView,
-	requireProviderCi: boolean,
 ): ReadinessScan {
 	const checks = initial.checks ?? providerChecks(record);
 	const publicationSequence =
@@ -193,7 +286,7 @@ function scanReadinessRecord(
 	return {
 		checks,
 		publicationSequence,
-		decision: readinessDecision(publicationSequence, checks, request, requireProviderCi),
+		decision: readinessDecision(publicationSequence, checks, request),
 	};
 }
 
@@ -201,25 +294,15 @@ function readinessDecision(
 	publicationSequence: number | undefined,
 	checks: ProviderChecksEvidence | undefined,
 	request: ReviewRequest,
-	requireProviderCi: boolean,
 ): boolean | undefined {
 	if (publicationSequence === undefined || checks === undefined) return undefined;
-	if (checks.sequence <= publicationSequence) return staleNoCiAllowsReady(checks, requireProviderCi);
+	if (checks.sequence <= publicationSequence) return false;
 	return checksAllowReady(checks.observation, request);
-}
-
-function staleNoCiAllowsReady(checks: ProviderChecksEvidence, requireProviderCi: boolean): boolean {
-	return !requireProviderCi && noChecksReported(checks.observation);
 }
 
 function providerChecks(record: RecordView): ProviderChecksEvidence | undefined {
 	const observation = providerChecksObservation(record);
 	return observation === undefined ? undefined : { observation, sequence: record.sequence };
-}
-
-function noChecksReported(observation: ProviderCiObservation): boolean {
-	const checks = observation.details?.checks;
-	return checks === undefined || checks.length === 0;
 }
 
 function checksAllowReady(checks: ProviderCiObservation, request: ReviewRequest): boolean {

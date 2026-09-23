@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	providerCiObservationIsStale,
 	providerCiObservationNeedsRefresh,
 	providerEvidenceAllowsReady,
 } from "../dist/src/service-provider-readiness.js";
@@ -78,6 +79,49 @@ test("provider readiness uses publication order without weakening current CI gua
 	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, [{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }]), publication(4)]), work, request), true);
 });
 
+test("CI freshness matches GitLab reruns by pipeline identity rather than generated display name", () => {
+	const failed = checks(5, "checks-failed", request.headCommit, request.repository, [
+		{
+			kind: "status-context",
+			name: "GitLab pipeline 73",
+			status: "failed",
+			completedAt: "2026-09-09T00:00:00.000Z",
+		},
+	]);
+	const successfulRerun = checks(6, "open", request.headCommit, request.repository, [
+		{
+			kind: "status-context",
+			name: "GitLab pipeline 74",
+			status: "success",
+			completedAt: "2026-09-10T00:00:00.000Z",
+		},
+	]);
+	const staleSuccessfulRerun = checks(6, "open", request.headCommit, request.repository, [
+		{
+			kind: "status-context",
+			name: "GitLab pipeline 74",
+			status: "success",
+			completedAt: "2026-09-08T00:00:00.000Z",
+		},
+	]);
+	const current = { ...work, reviewRequest: request };
+	assert.equal(providerCiObservationIsStale(archive([failed]), current, successfulRerun.payload), false);
+	assert.equal(providerCiObservationIsStale(archive([failed]), current, staleSuccessfulRerun.payload), true);
+});
+
+test("status-context success without a terminal completion timestamp cannot replace failure", () => {
+	const failed = checks(5, "checks-failed", request.headCommit, request.repository, [
+		{ kind: "status-context", name: "coverage", status: "failure" },
+	]);
+	const successful = checks(6, "open", request.headCommit, request.repository, [
+		{ kind: "status-context", name: "coverage", status: "success" },
+	]);
+	assert.equal(
+		providerCiObservationIsStale(archive([failed]), { ...work, reviewRequest: request }, successful.payload),
+		true,
+	);
+});
+
 test("provider readiness fails closed when the current publication has no CI evidence", () => {
 	assert.equal(providerEvidenceAllowsReady(archive([publication(4)]), work, request), false);
 });
@@ -91,11 +135,20 @@ test("provider readiness permits missing CI evidence only when no-CI is explicit
 			request,
 			false,
 		),
-		true,
+		false,
+	);
+	assert.equal(
+		providerEvidenceAllowsReady(
+			archive([publication(6), checks(5, "checks-failed", request.headCommit)]),
+			work,
+			request,
+			false,
+		),
+		false,
 	);
 });
 
-test("explicit no-CI does not excuse newer empty or mismatched CI evidence", (t) => {
+test("explicit no-CI does not excuse newer empty or mismatched CI evidence", async (t) => {
 	const newerEmpty = checks(5, "open", request.headCommit);
 	const newerForeignProvider = checks(5, "checks-failed", request.headCommit, request.repository, [
 		{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "FAILURE" },
@@ -105,19 +158,19 @@ test("explicit no-CI does not excuse newer empty or mismatched CI evidence", (t)
 		["empty current checks", newerEmpty],
 		["different provider ID", newerForeignProvider],
 	]) {
-		t.test(identity, () => {
+		await t.test(identity, () => {
 			assert.equal(providerEvidenceAllowsReady(archive([observation, publication(4)]), work, request, false), false);
 		});
 	}
 });
 
-test("explicit no-CI configuration does not excuse mismatched PR evidence", (t) => {
+test("explicit no-CI configuration does not excuse mismatched PR evidence", async (t) => {
 	for (const [identity, observation] of [
 		["head", checks(5, "open", "different-head")],
 		["repository", checks(5, "open", request.headCommit, "other/project")],
 		["URL", checks(5, "open", request.headCommit, request.repository, [], "https://example.test/review/99")],
 	]) {
-		t.test(identity, () => {
+		await t.test(identity, () => {
 			assert.equal(providerEvidenceAllowsReady(archive([observation, publication(4)]), work, request, false), false);
 		});
 	}

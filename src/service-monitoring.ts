@@ -30,7 +30,7 @@ import {
 } from "./service-dispatch-policy.js";
 import { normalizeCaughtError, sameObservationIdentity } from "./service-foundation-policy.js";
 import { isRevisionConflictError, sameObservation } from "./service-lifecycle-policy.js";
-import { providerCiObservationNeedsRefresh } from "./service-provider-readiness.js";
+import { providerCiObservationIsStale, providerCiObservationNeedsRefresh } from "./service-provider-readiness.js";
 import {
 	latestObservationFingerprint,
 	monitorFailureEnvelope,
@@ -256,9 +256,7 @@ export class ServiceMonitoring {
 		let work = initial;
 		for (const [index, observation] of observations.entries())
 			work = this.recordObservation(work.workId, observation, `${meta.commandId}:${index}`, work.revision);
-		return work.lastError !== undefined && isProviderMonitorError(work.lastError)
-			? this.recordProviderPollRecovery(work, observations[0], `${meta.commandId}:recovered`)
-			: work;
+		return this.recordProviderPollRecoveryIfNeeded(work, observations[0], meta.commandId);
 	}
 
 	private recordObservation(
@@ -281,7 +279,22 @@ export class ServiceMonitoring {
 		const previous = this.heartbeat.get(key) ?? this.persistedObservationFingerprint(work, normalized);
 		if (previous === fingerprint)
 			return this.recordUnchangedObservation(work, normalized, observation, key, fingerprint, classification, meta);
-		return this.recordChangedObservation(work, observation, normalized, classification, meta);
+		return this.recordChangedOrIgnoreStale(work, observation, normalized, key, fingerprint, classification, meta);
+	}
+
+	private recordChangedOrIgnoreStale(
+		work: WorkView,
+		observation: ProviderObservation,
+		normalized: ProviderObservation,
+		key: string,
+		fingerprint: string,
+		classification: ReturnType<typeof classifyProviderObservation>,
+		meta: CommandMeta,
+	): WorkView {
+		if (!this.providerObservationIsStale(work, normalized))
+			return this.recordChangedObservation(work, observation, normalized, classification, meta);
+		this.heartbeat.set(key, fingerprint);
+		return work;
 	}
 
 	private recordChangedObservation(
@@ -396,7 +409,22 @@ export class ServiceMonitoring {
 	): WorkView {
 		this.heartbeat.set(key, fingerprint);
 		if (observation.kind === "provider-outcome") return this.queueProviderOutcomeWake(work);
+		if (this.providerObservationIsStale(work, normalized)) return work;
 		return this.recordProviderRecoveryIfNeeded(work, normalized, meta.commandId);
+	}
+
+	private providerObservationIsStale(work: WorkView, observation: ProviderObservation | undefined): boolean {
+		return observation?.kind === "ci-status" && providerCiObservationIsStale(this.archive, work, observation);
+	}
+
+	private recordProviderPollRecoveryIfNeeded(
+		work: WorkView,
+		observation: ProviderObservation | undefined,
+		commandId: string,
+	): WorkView {
+		if (work.lastError === undefined || !isProviderMonitorError(work.lastError)) return work;
+		if (this.providerObservationIsStale(work, observation)) return work;
+		return this.recordProviderPollRecovery(work, observation, `${commandId}:recovered`);
 	}
 
 	private recordProviderRecoveryIfNeeded(

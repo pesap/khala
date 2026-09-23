@@ -492,7 +492,7 @@ test("CI repair stays blocked when isolated validation is unavailable", async ()
 	}
 });
 
-test("Conclave cannot hand off a ready Signal after matching provider checks fail", async () => {
+test("Conclave repairs a current CI failure that supersedes a ready Signal, but cannot hand it off", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-ci-handoff-blocked-"));
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
 	try {
@@ -519,7 +519,7 @@ test("Conclave cannot hand off a ready Signal after matching provider checks fai
 			observationId: latest.lastObservation.observationId,
 			evidence: ["1"],
 		});
-		assert.equal("error" in repair, true);
+		assert.equal("error" in repair, false);
 		const verdict = await performCurrent(service, "conclave", "verdict", "ci-handoff-blocked:verdict", {
 			decision: "handoff",
 			reason: "Attempt to hand off despite current failed provider checks.",
