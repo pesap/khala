@@ -20,6 +20,9 @@ Child Conclave sessions cannot impersonate User recovery operations or acquire s
 Shared Archive storage does not grant shared context or filesystem access.
 Each child receives only its bound Work, Mission when admitted, relevant repository instructions and evidence, and applicable pinned guidance.
 Unrelated repository content and transcripts are not included merely because they share an Archive.
+Skill lookup uses only the explicit global `trustedSkills` allowlist and `PI_CODING_AGENT_DIR/skills/<id>/SKILL.md`; project skills and other Pi discovery locations are never scanned.
+Conclave may read allowlisted skill content, but Executor receives only selected references and a bounded instruction packet.
+That packet cannot grant authority, amend Mission terms, expand allowed paths, change tool permissions, or take precedence over repository instructions.
 All Archive reads go through the role-scoped service rather than direct database or unrelated session-file access.
 Authorization is revalidated on each read and each page; a cursor is not an access token.
 

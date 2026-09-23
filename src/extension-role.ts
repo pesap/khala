@@ -4,12 +4,19 @@ import type { ExtensionAPI, ToolCallEvent } from "@earendil-works/pi-coding-agen
 import { isTextValue } from "./extension-results.js";
 import type { Actor, CommandMeta, JsonValue } from "./model.js";
 import { ApplicationError } from "./service.js";
+import { TRUSTED_SKILL_TOOLS } from "./trusted-skills.js";
 
 export const ROLE_FLAG = "khala-role";
 type SessionRole = "user" | "conclave" | "observer" | "executor" | "oracle";
 type RestrictedSessionRole = Exclude<SessionRole, "user">;
 const RESTRICTED_ROLE_TOOLS = {
-	conclave: new Set(["khala_read_archive", "khala_perform_action", "khala_run_oracle", "khala_inspect_runtime"]),
+	conclave: new Set([
+		"khala_read_archive",
+		"khala_perform_action",
+		"khala_run_oracle",
+		"khala_inspect_runtime",
+		...TRUSTED_SKILL_TOOLS,
+	]),
 	executor: new Set([
 		"read",
 		"edit",

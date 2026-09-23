@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { type Api, getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import { codeHostForOrigin, GitWorkspace } from "./adapters.js";
 import { SQLiteArchive } from "./archive.js";
-import { archivePath, type KhalaConfig, loadConfig } from "./config.js";
+import { agentDirectory, archivePath, type KhalaConfig, loadConfig } from "./config.js";
 import type { GovernedRole, JsonObject, JsonValue, RoleSetting } from "./model.js";
 import { PiOracle } from "./oracle.js";
 import type { CodeHostPort, ModelCatalogPort, ServicePorts } from "./ports.js";
 import { PiRpcRuntime, promptIdentity } from "./runtime.js";
 import { ApplicationService, type ServiceOptions } from "./service.js";
+import { createTrustedSkillCatalog, type TrustedSkillCatalog } from "./trusted-skills.js";
 
 export type ApplicationModelRegistry = Readonly<{
 	find: (provider: string, modelId: string) => Model<Api> | undefined;
@@ -19,6 +20,7 @@ export type ApplicationModelRegistry = Readonly<{
 export type ApplicationRuntime = Readonly<{
 	service: ApplicationService;
 	config: KhalaConfig;
+	trustedSkillCatalog: TrustedSkillCatalog;
 	updateRoleSetting: (role: GovernedRole, setting: RoleSetting, value: string) => void;
 }>;
 
@@ -35,12 +37,17 @@ export function createApplication(
 	const config = loadConfig(context.projectPath, context.trusted, options?.requireModels ?? true);
 	const archive = new SQLiteArchive(archivePath(config, context.projectPath));
 	const runtime = createRuntime(config, packageRoot, context, context.authorityPrivateKey);
+	const trustedSkillCatalog = createTrustedSkillCatalog(agentDirectory(), config.trustedSkills);
 	const version = packageVersion(packageRoot);
 	const prompts = readPromptIdentities(packageRoot, version);
 	const models = new ConfiguredModels(config, options?.modelRegistry);
 	const ports = createPorts(config, context.projectPath, runtime, models, prompts.oracle);
-	const service = new ApplicationService(archive, ports, createServiceOptions(config, context, prompts));
-	return createApplicationRuntime(service, config, models);
+	const service = new ApplicationService(
+		archive,
+		ports,
+		createServiceOptions(config, context, prompts, trustedSkillCatalog),
+	);
+	return createApplicationRuntime(service, config, models, trustedSkillCatalog);
 }
 
 type ApplicationContext = Readonly<{
@@ -153,6 +160,7 @@ function createServiceOptions(
 	config: KhalaConfig,
 	context: ApplicationContext,
 	prompts: PromptIdentities,
+	trustedSkillCatalog: TrustedSkillCatalog,
 ): ServiceOptions {
 	return {
 		projectPath: context.projectPath,
@@ -175,6 +183,7 @@ function createServiceOptions(
 		observerUsdMax: config.observerUsdMax,
 		conclavePromptIdentity: prompts.conclave,
 		executorPromptIdentity: prompts.executor,
+		trustedSkillCatalog,
 		observerPromptIdentity: prompts.observer,
 		oraclePromptIdentity: prompts.oracle,
 		rolePublicKey: context.rolePublicKey,
@@ -187,10 +196,12 @@ function createApplicationRuntime(
 	service: ApplicationService,
 	config: KhalaConfig,
 	models: ConfiguredModels,
+	trustedSkillCatalog: TrustedSkillCatalog,
 ): ApplicationRuntime {
 	return {
 		service,
 		config,
+		trustedSkillCatalog,
 		updateRoleSetting: (role, setting, value) => {
 			if (setting === "model") models.updateRoleModel(role, value);
 			service.updateRoleSetting(role, setting, value);

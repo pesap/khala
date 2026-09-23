@@ -19,10 +19,14 @@ prompt:
 
 | Role | Prompt file | Khala tools exposed |
 | --- | --- | --- |
-| Conclave | [`conclave.md`](../system-prompts/conclave.md) | Archive, actions, runtime inspection, Oracle |
+| Conclave | [`conclave.md`](../system-prompts/conclave.md) | Archive, actions, runtime inspection, Oracle; trusted skill catalog when configured |
 | Executor | [`executor.md`](../system-prompts/executor.md) | Archive, signals, actions |
 | Observer | [`observer.md`](../system-prompts/observer.md) | Archive, assessment |
 | Oracle | [`oracle.md`](../system-prompts/oracle.md) | No tools during Oracle review |
+
+The Conclave skill catalog tools are exposed only when the global `trustedSkills` allowlist is nonempty.
+When those tools are available, Conclave is instructed to inspect the catalog, read selected `SKILL.md` files, and include bounded task-specific guidance and skill identities when starting or replacing an Execution.
+Executor sessions still use `--no-skills` and receive only the selected references and Conclave's bounded instruction packet, never unrelated skill files.
 
 The ordinary User session is not assigned a child role.
 [`user.md`](../system-prompts/user.md)

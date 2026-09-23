@@ -1,4 +1,5 @@
 import { type ErrorEnvelope, type ServiceResult, type TokenUsage } from "./model.js";
+import type { TrustedSkillCatalog } from "./trusted-skills.js";
 
 export type ServiceOptions = Readonly<{
 	projectPath: string;
@@ -21,6 +22,7 @@ export type ServiceOptions = Readonly<{
 	observerUsdMax: number;
 	conclavePromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	executorPromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
+	trustedSkillCatalog?: TrustedSkillCatalog | undefined;
 	observerPromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	oraclePromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	rolePublicKey: string;
