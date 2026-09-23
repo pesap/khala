@@ -23,6 +23,7 @@ type ConclaveWakeInput = Readonly<{
 	model: string;
 	thinking: string;
 	promptIdentity: PromptIdentity;
+	enableCiRepair: boolean;
 	runtime: AgentRuntimePort;
 	invocations: Pick<InvocationCoordinator, "dispatch">;
 	inspectWork: (workId: string) => WorkView;
@@ -54,7 +55,7 @@ async function dispatchConclaveTurn(input: ConclaveWakeInput, setBinding: Bindin
 				const live = input.inspectWork(input.workId);
 				return input.runtime.send(
 					binding,
-					`${conclaveWakeMessage(live, input.observationId, input.reason)}\nInvocation run ID: ${reservation.runId}.`,
+					`${conclaveWakeMessage(live, input.observationId, input.reason, input.enableCiRepair)}\nInvocation run ID: ${reservation.runId}.`,
 					{ tokenAllowance: reservation.allowance, runId: reservation.runId },
 					operation,
 				);

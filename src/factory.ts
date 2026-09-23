@@ -161,6 +161,7 @@ function createServiceOptions(
 		maxConcurrentRuns: config.maxConcurrentRuns,
 		maxCorrections: config.maxCorrections,
 		defaultWorkTokens: config.defaultWorkTokens,
+		enableCiRepair: config.enableCiRepair,
 		conclaveModel: config.conclaveModel,
 		conclaveThinking: config.conclaveThinking,
 		conclaveUsdMax: config.conclaveUsdMax,

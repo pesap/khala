@@ -19,6 +19,7 @@ import {
 	type WorkView,
 } from "./model.js";
 import { type OperationContext, type OracleResult, type RuntimeBinding, type RuntimeState } from "./ports.js";
+import { providerCiWakeMessage } from "./provider-ci-wake-policy.js";
 import { schedulerEffect } from "./provider-observation-policy.js";
 import { ApplicationError, type ServiceOptions } from "./service-contracts.js";
 import {
@@ -649,6 +650,17 @@ export function conclaveWakeMessage(
 	work: WorkView,
 	observationId: string | undefined,
 	reason: ConclaveWakeCause | undefined,
+	enableCiRepair = false,
 ): string {
+	return wakeMessageForReason(work, observationId, reason, enableCiRepair);
+}
+
+function wakeMessageForReason(
+	work: WorkView,
+	observationId: string | undefined,
+	reason: ConclaveWakeCause | undefined,
+	enableCiRepair: boolean,
+): string {
+	if (reason === "provider-ci" && enableCiRepair) return providerCiWakeMessage(work, observationId);
 	return directedWakeMessage(work.workId, reason) ?? providerWakeMessage(work, observationId);
 }

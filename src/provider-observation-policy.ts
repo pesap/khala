@@ -3,6 +3,7 @@ import type {
 	ErrorEnvelope,
 	JsonObject,
 	JsonValue,
+	ProviderCheck,
 	ProviderCiObservation,
 	ProviderObservation,
 	ProviderOutcomeObservation,
@@ -50,6 +51,51 @@ function providerChecksError(work: WorkView, observation: ProviderObservation): 
 		remediation: "Inspect the provider checks and reconcile the Work before handoff.",
 		evidenceRefs: providerObservationEvidence(work, observation),
 	};
+}
+
+export function failedProviderChecks(observation: ProviderCiObservation): readonly ProviderCheck[] {
+	return (observation.details?.checks ?? []).filter(isFailedProviderCheck).slice(0, 8);
+}
+
+export function isFailedProviderCheck(check: ProviderCheck): boolean {
+	const value = `${check.status} ${check.conclusion ?? ""}`.toLowerCase();
+	return ["failure", "failed", "error", "canceled", "cancelled", "timed_out", "action_required"].some((term) =>
+		value.includes(term),
+	);
+}
+
+export function providerCheckIsVerified(check: ProviderCheck): boolean {
+	if (check.kind === "status-context") return check.status.toLowerCase() === "success";
+	return check.status.toLowerCase() === "completed" && check.conclusion?.toLowerCase() === "success";
+}
+
+export function providerChecksAreSettled(observation: ProviderCiObservation): boolean {
+	const checks = observation.details?.checks;
+	return checks !== undefined && checks.length > 0 && checks.every(providerCheckIsSettled);
+}
+
+const SETTLED_CHECK_CONCLUSIONS = new Set([
+	"success",
+	"failure",
+	"neutral",
+	"canceled",
+	"cancelled",
+	"timed_out",
+	"action_required",
+	"skipped",
+	"startup_failure",
+]);
+
+function providerCheckIsSettled(check: ProviderCheck): boolean {
+	if (check.kind === "status-context")
+		return ["success", "failure", "failed", "error", "canceled", "cancelled", "skipped"].includes(
+			check.status.toLowerCase(),
+		);
+	return (
+		check.status.toLowerCase() === "completed" &&
+		check.conclusion !== undefined &&
+		SETTLED_CHECK_CONCLUSIONS.has(check.conclusion.toLowerCase())
+	);
 }
 
 export function classifyProviderObservation(
@@ -204,16 +250,26 @@ export function providerObservationEffects(
 	revision: number,
 	observation: ProviderObservation,
 	classification: ProviderObservationClassification,
+	missionId?: string,
+	executionId?: string,
 ) {
 	if (!providerObservationNeedsWake(observation, classification)) return undefined;
-	return [
-		schedulerEffect(
-			workId,
-			revision,
-			observation.kind === "review-comment" ? observation.observationId : undefined,
-			providerWakeReason(observation, classification),
-		),
-	];
+	return [providerObservationWakeEffect(workId, revision, observation, classification, missionId, executionId)];
+}
+
+function providerObservationWakeEffect(
+	workId: string,
+	revision: number,
+	observation: ProviderObservation,
+	classification: ProviderObservationClassification,
+	missionId?: string,
+	executionId?: string,
+) {
+	const observationId =
+		observation.kind === "review-comment" || observation.kind === "ci-status" ? observation.observationId : undefined;
+	const effect = schedulerEffect(workId, revision, observationId, providerWakeReason(observation, classification));
+	if (observation.kind !== "ci-status") return effect;
+	return { ...effect, payload: { ...effect.payload, missionId, executionId } };
 }
 
 function providerObservationNeedsWake(
@@ -395,6 +451,29 @@ export function reviewObservationMatchesRequest(
 			reviewRequest.baseCommit === undefined ||
 			observation.baseCommit === reviewRequest.baseCommit,
 	].every(Boolean);
+}
+
+export function providerObservationExactlyMatchesReview(
+	observation: ProviderObservation,
+	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	return [
+		observation.providerId === reviewRequest.providerId,
+		observation.repository === reviewRequest.repository,
+		observation.sourceBranch === reviewRequest.sourceBranch,
+		observation.targetBranch === reviewRequest.targetBranch,
+		observation.headCommit === reviewRequest.headCommit,
+		observation.baseCommit === reviewRequest.baseCommit,
+		providerPullRequestUrlMatches(observation, reviewRequest),
+	].every(Boolean);
+}
+
+function providerPullRequestUrlMatches(
+	observation: ProviderObservation,
+	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	if (observation.kind !== "ci-status") return true;
+	return observation.details?.pullRequest.url === reviewRequest.url;
 }
 
 export function providerObservationMatchesReview(

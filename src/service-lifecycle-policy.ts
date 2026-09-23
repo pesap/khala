@@ -243,12 +243,71 @@ export function executorTurnNextAction(current: WorkView, exhausted: boolean, wo
 	return sameSignal(current, work) ? IDLE_EXECUTOR_RECOVERY_ACTION : current.nextAction;
 }
 
-export function conclaveWakeApplicable(work: WorkView, reason: ConclaveWakeCause | undefined): boolean {
+type ProviderCiWakeIdentity = Readonly<{
+	observationId?: string | undefined;
+	missionId?: string | undefined;
+	executionId?: string | undefined;
+}>;
+
+export function conclaveWakeApplicable(
+	work: WorkView,
+	reason: ConclaveWakeCause | undefined,
+	ciWake?: ProviderCiWakeIdentity,
+): boolean {
 	if (isTerminalWork(work)) return false;
+	return conclaveWakeAppliesToCurrentState(work, reason, ciWake);
+}
+
+function conclaveWakeAppliesToCurrentState(
+	work: WorkView,
+	reason: ConclaveWakeCause | undefined,
+	ciWake: ProviderCiWakeIdentity | undefined,
+): boolean {
 	if (reason === "admission") return ["submitted", "queued"].includes(work.state);
-	if (["provider-ci", "provider-feedback", "provider-outcome", "provider-closed"].some((cause) => cause === reason))
-		return true;
-	return wakeResolutionMissing(work, work, reason);
+	if (reason === "provider-ci") return providerCiWakeApplicable(work, ciWake);
+	return isProviderWake(reason) || wakeResolutionMissing(work, work, reason);
+}
+
+function isProviderWake(reason: ConclaveWakeCause | undefined): boolean {
+	return reason === "provider-feedback" || reason === "provider-outcome" || reason === "provider-closed";
+}
+
+function providerCiWakeApplicable(work: WorkView, identity: ProviderCiWakeIdentity | undefined): boolean {
+	return identity !== undefined && currentProviderCiWakeMatches(work, identity);
+}
+
+function currentProviderCiWakeMatches(work: WorkView, identity: ProviderCiWakeIdentity): boolean {
+	const observation = work.lastObservation;
+	if (observation === undefined) return false;
+	if (observation.kind !== "ci-status") return false;
+	return currentProviderCiWakeIdentityMatches(work, identity, observation);
+}
+
+function currentProviderCiWakeIdentityMatches(
+	work: WorkView,
+	identity: ProviderCiWakeIdentity,
+	observation: Extract<ProviderObservation, { kind: "ci-status" }>,
+): boolean {
+	return (
+		currentCiObservationMatches(identity, observation) &&
+		currentMissionMatchesCiWake(work, identity) &&
+		currentExecutionMatchesCiWake(work, identity)
+	);
+}
+
+function currentCiObservationMatches(
+	identity: ProviderCiWakeIdentity,
+	observation: Extract<ProviderObservation, { kind: "ci-status" }>,
+): boolean {
+	return identity.observationId !== undefined && identity.observationId === observation.observationId;
+}
+
+function currentMissionMatchesCiWake(work: WorkView, identity: ProviderCiWakeIdentity): boolean {
+	return identity.missionId !== undefined && identity.missionId === work.mission?.missionId;
+}
+
+function currentExecutionMatchesCiWake(work: WorkView, identity: ProviderCiWakeIdentity): boolean {
+	return identity.executionId !== undefined && identity.executionId === work.execution?.executionId;
 }
 
 export function modelEffectEligibility(effect: PendingArchiveEffect, work: WorkView): DispatchEligibility {

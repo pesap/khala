@@ -25,6 +25,8 @@ import {
 export type ExecutorInvocationInput = Readonly<{
 	work: WorkView;
 	execution: Execution;
+	prompt?: (work: WorkView, runId: string) => string;
+	beforeSend?: (work: WorkView, runId: string) => void;
 }>;
 type ExecutorStopContext = Readonly<{ execution: Execution; explicitStop: boolean }>;
 
@@ -72,10 +74,16 @@ export class ExecutorRuntimeCoordinator {
 				missionId: current.mission?.missionId,
 				allowance: Math.min(remainingExecutionAllowance(input.execution), invocationAllowance(current)),
 			},
-			(reservation, operation) => this.sendReservedTurn(current, input.execution, binding, reservation, operation),
+			(reservation, operation) => this.sendReservedTurn(current, input, binding, reservation, operation),
 		);
 		this.recordTurn(current);
 		return binding;
+	}
+
+	async runIfIdle(workId: string, executionId: string, operation: () => Promise<void>): Promise<boolean> {
+		if (this.hasActiveTurn(workId, executionId)) return false;
+		await this.runTracked(workId, executionId, operation);
+		return true;
 	}
 
 	async runTracked(workId: string, executionId: string, operation: () => Promise<void>): Promise<void> {
@@ -220,17 +228,17 @@ export class ExecutorRuntimeCoordinator {
 
 	private async sendReservedTurn(
 		work: WorkView,
-		execution: Execution,
+		input: ExecutorInvocationInput,
 		binding: RuntimeBinding,
 		reservation: Pick<ReservedInvocation, "runId" | "allowance">,
 		operation: OperationContext,
 	): Promise<RuntimeTurn> {
 		const live = this.archive.project(work.workId);
-		if (!currentExecutorTurnIsCurrent(live, execution))
+		if (!currentExecutorTurnIsCurrent(live, input.execution))
 			throw new InvocationLaunchError(new Error("Executor Work became stale before its next prompt."));
 		return this.runtime.send(
 			binding,
-			executorPrompt(live, execution.executionId, reservation.runId),
+			executorTurnPrompt(live, input, reservation.runId),
 			{ tokenAllowance: reservation.allowance, runId: reservation.runId },
 			operation,
 		);
@@ -261,6 +269,11 @@ export class ExecutorRuntimeCoordinator {
 
 function executorPrompt(work: WorkView, executionId: string, runId: string): string {
 	return `Work ${work.workId}, Execution ${executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${work.revision}.\nInvocation run ID: ${runId}.`;
+}
+
+function executorTurnPrompt(work: WorkView, input: ExecutorInvocationInput, runId: string): string {
+	input.beforeSend?.(work, runId);
+	return input.prompt?.(work, runId) ?? executorPrompt(work, input.execution.executionId, runId);
 }
 
 function systemMeta(commandId: string, expectedWorkRevision: number): CommandMeta {

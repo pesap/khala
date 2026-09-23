@@ -131,6 +131,7 @@ export class ServiceWorkspaceActions {
 			executionId: execution.executionId,
 			payload: execution,
 			projection: next,
+			evidenceRefs: [headCommit],
 			summary: `Sandbox changes committed at ${headCommit}.`,
 		}).projection;
 	}

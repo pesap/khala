@@ -128,6 +128,7 @@ const performSchema = Type.Object({
 		"run-oracle",
 		"verdict",
 		"deliver-feedback",
+		"repair-ci",
 		"record-review",
 		"record-outcome",
 		"cancel",

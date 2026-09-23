@@ -8,83 +8,238 @@ import type {
 	RecordView,
 	WorkView,
 } from "./model.js";
-import { providerObservationMatchesReview } from "./provider-observation-policy.js";
+import { providerCheckIsVerified, providerObservationExactlyMatchesReview } from "./provider-observation-policy.js";
+import { observationFingerprint } from "./service-runtime-policy.js";
 
 type ReviewRequest = NonNullable<WorkView["reviewRequest"]>;
-type ScanState = Readonly<{ checks?: ProviderCiObservation | undefined; decision?: boolean | undefined }>;
+type ProviderChecksEvidence = Readonly<{ observation: ProviderCiObservation; sequence: number }>;
+type ReadinessScan = Readonly<{
+	checks?: ProviderChecksEvidence | undefined;
+	publicationSequence?: number | undefined;
+	decision?: boolean | undefined;
+}>;
 
 export function providerEvidenceAllowsReady(archive: ArchivePort, work: WorkView, request: ReviewRequest): boolean {
 	let cursor: string | undefined;
-	let state: ScanState = {};
+	let scan: ReadinessScan = {};
 	do {
-		const page = archive.query(
-			{ workId: work.workId, kinds: ["observation", "review-request"], order: "desc" },
-			cursor,
-		);
-		state = scanRecords(page.items, state, request, work.execution?.executionId);
-		if (state.decision !== undefined) return state.decision;
+		const page = archive.query(readinessQuery(work), cursor);
+		scan = scanReadinessRecords(page.items, scan, request, work);
+		if (scan.decision !== undefined) return scan.decision;
 		cursor = page.nextCursor;
 	} while (cursor !== undefined);
-	return state.checks === undefined;
+	return false;
 }
 
-function scanRecords(
+export function providerCiObservationNeedsRefresh(
+	archive: ArchivePort,
+	work: WorkView,
+	observation: ProviderCiObservation,
+): boolean {
+	const request = work.reviewRequest;
+	if (request === undefined) return false;
+	if (!providerObservationExactlyMatchesReview(observation, request)) return false;
+	const sequences = latestProviderEvidenceSequences(archive, work, request, observation);
+	return observationPredatesPublication(sequences);
+}
+
+type ProviderEvidenceSequences = Readonly<{
+	observationSequence?: number | undefined;
+	publicationSequence?: number | undefined;
+}>;
+
+function latestProviderEvidenceSequences(
+	archive: ArchivePort,
+	work: WorkView,
+	request: ReviewRequest,
+	observation: ProviderCiObservation,
+): ProviderEvidenceSequences {
+	let cursor: string | undefined;
+	let sequences: ProviderEvidenceSequences = {};
+	do {
+		const page = archive.query(readinessQuery(work), cursor);
+		sequences = scanProviderEvidenceSequences(page.items, sequences, request, work, observation);
+		if (hasProviderEvidenceSequences(sequences)) return sequences;
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return sequences;
+}
+
+function scanProviderEvidenceSequences(
 	records: readonly RecordView[],
-	initial: ScanState,
+	initial: ProviderEvidenceSequences,
 	request: ReviewRequest,
-	executionId: string | undefined,
-): ScanState {
-	let state = initial;
+	work: WorkView,
+	observation: ProviderCiObservation,
+): ProviderEvidenceSequences {
+	let sequences = initial;
 	for (const record of records) {
-		state = scanRecord(record, state, request, executionId);
-		if (state.decision !== undefined) return state;
+		sequences = scanProviderEvidenceSequence(record, sequences, request, work, observation);
+		if (hasProviderEvidenceSequences(sequences)) return sequences;
 	}
-	return state;
+	return sequences;
 }
 
-function scanRecord(
+function scanProviderEvidenceSequence(
 	record: RecordView,
-	state: ScanState,
+	initial: ProviderEvidenceSequences,
 	request: ReviewRequest,
-	executionId: string | undefined,
-): ScanState {
-	const checks = state.checks ?? providerChecks(record, request.providerId);
-	if (!isCurrentPublication(record, request, executionId)) return { checks };
-	if (checks === undefined) return { decision: true };
-	return { checks, decision: checksAllowReady(checks, request) };
+	work: WorkView,
+	observation: ProviderCiObservation,
+): ProviderEvidenceSequences {
+	return {
+		observationSequence: initial.observationSequence ?? providerChecksSequence(record, request, observation),
+		publicationSequence: initial.publicationSequence ?? currentPublicationSequence(record, request, work),
+	};
 }
 
-function providerChecks(record: RecordView, providerId: string): ProviderCiObservation | undefined {
-	if (record.kind !== "observation") return undefined;
-	if (!isObservation(record.payload)) return undefined;
-	return isProviderChecksObservation(record.payload, providerId) ? record.payload : undefined;
+function providerChecksSequence(
+	record: RecordView,
+	request: ReviewRequest,
+	observation: ProviderCiObservation,
+): number | undefined {
+	return isMatchingProviderChecksRecord(record, request, observation) ? record.sequence : undefined;
+}
+
+function currentPublicationSequence(record: RecordView, request: ReviewRequest, work: WorkView): number | undefined {
+	return isCurrentPublication(record, request, work) ? record.sequence : undefined;
+}
+
+function observationPredatesPublication(sequences: ProviderEvidenceSequences): boolean {
+	if (sequences.observationSequence === undefined || sequences.publicationSequence === undefined) return false;
+	return sequences.observationSequence <= sequences.publicationSequence;
+}
+
+function isMatchingProviderChecksRecord(
+	record: RecordView,
+	request: ReviewRequest,
+	observation: ProviderCiObservation,
+): boolean {
+	if (record.kind !== "observation" || !isObservation(record.payload)) return false;
+	const recorded = record.payload;
+	return [
+		recorded.kind === "ci-status",
+		recorded.providerId === request.providerId,
+		providerObservationExactlyMatchesReview(recorded, request),
+		observationFingerprint(recorded) === observationFingerprint(observation),
+	].every(Boolean);
+}
+
+function hasProviderEvidenceSequences(sequences: ProviderEvidenceSequences): boolean {
+	return sequences.observationSequence !== undefined && sequences.publicationSequence !== undefined;
+}
+
+function readinessQuery(work: WorkView) {
+	return {
+		workId: work.workId,
+		missionId: work.mission?.missionId,
+		executionId: work.execution?.executionId,
+		kinds: ["observation", "review-request"] as const,
+		order: "desc" as const,
+	};
+}
+
+function scanReadinessRecords(
+	records: readonly RecordView[],
+	initial: ReadinessScan,
+	request: ReviewRequest,
+	work: WorkView,
+): ReadinessScan {
+	let scan = initial;
+	for (const record of records) {
+		scan = scanReadinessRecord(record, scan, request, work);
+		if (scan.decision !== undefined) return scan;
+	}
+	return scan;
+}
+
+function scanReadinessRecord(
+	record: RecordView,
+	initial: ReadinessScan,
+	request: ReviewRequest,
+	work: WorkView,
+): ReadinessScan {
+	const checks = initial.checks ?? providerChecks(record, request.providerId);
+	const publicationSequence =
+		initial.publicationSequence ?? (isCurrentPublication(record, request, work) ? record.sequence : undefined);
+	return { checks, publicationSequence, decision: readinessDecision(publicationSequence, checks, request) };
+}
+
+function readinessDecision(
+	publicationSequence: number | undefined,
+	checks: ProviderChecksEvidence | undefined,
+	request: ReviewRequest,
+): boolean | undefined {
+	if (publicationSequence === undefined || checks === undefined) return undefined;
+	if (checks.sequence <= publicationSequence) return false;
+	return checksAllowReady(checks.observation, request);
+}
+
+function providerChecks(record: RecordView, providerId: string): ProviderChecksEvidence | undefined {
+	if (record.kind !== "observation" || !isObservation(record.payload)) return undefined;
+	return isProviderChecksObservation(record.payload, providerId)
+		? { observation: record.payload, sequence: record.sequence }
+		: undefined;
 }
 
 function isProviderChecksObservation(
 	observation: ProviderObservation,
 	providerId: string,
 ): observation is ProviderCiObservation {
-	return [observation.kind === "ci-status", observation.providerId === providerId].every(Boolean);
+	return observation.kind === "ci-status" && observation.providerId === providerId;
 }
 
 function checksAllowReady(checks: ProviderCiObservation, request: ReviewRequest): boolean {
-	return checks.status !== "checks-failed" && providerObservationMatchesReview(checks, request);
+	return [
+		isSuccessfulProviderStatus(checks.status),
+		providerObservationExactlyMatchesReview(checks, request),
+		reportedChecksAreVerified(checks.details?.checks),
+	].every(Boolean);
 }
 
-function isCurrentPublication(record: RecordView, request: ReviewRequest, executionId: string | undefined): boolean {
-	if (record.kind !== "review-request") return false;
-	if (record.executionId !== executionId) return false;
+function isSuccessfulProviderStatus(status: ProviderCiObservation["status"]): boolean {
+	return status === "draft" || status === "open";
+}
+
+function reportedChecksAreVerified(
+	checks: NonNullable<ProviderCiObservation["details"]>["checks"] | undefined,
+): boolean {
+	return checks !== undefined && checks.length > 0 && checks.every(providerCheckIsVerified);
+}
+
+function isCurrentPublication(record: RecordView, request: ReviewRequest, work: WorkView): boolean {
+	if (record.kind !== "review-request" || !publicationIsBoundToWork(record, work)) return false;
 	const payload = reviewPayload(record.payload);
-	if (payload === undefined) return false;
-	return [
-		payload["provider"] === request.provider,
-		payload["providerId"] === request.providerId,
-		payload["repository"] === request.repository,
-		payload["sourceBranch"] === request.sourceBranch,
-		payload["targetBranch"] === request.targetBranch,
-		payload["baseCommit"] === request.baseCommit,
-		payload["headCommit"] === request.headCommit,
-	].every(Boolean);
+	return payload !== undefined && currentPublicationIdentityMatches(payload, request);
+}
+
+function publicationIsBoundToWork(record: RecordView, work: WorkView): boolean {
+	return record.executionId === work.execution?.executionId && record.missionId === work.mission?.missionId;
+}
+
+function currentPublicationIdentityMatches(payload: JsonObject, request: ReviewRequest): boolean {
+	return (
+		providerPublicationMatches(payload, request) &&
+		branchPublicationMatches(payload, request) &&
+		headPublicationMatches(payload, request)
+	);
+}
+
+function providerPublicationMatches(payload: JsonObject, request: ReviewRequest): boolean {
+	return (
+		payload["provider"] === request.provider &&
+		payload["providerId"] === request.providerId &&
+		payload["url"] === request.url &&
+		payload["repository"] === request.repository
+	);
+}
+
+function branchPublicationMatches(payload: JsonObject, request: ReviewRequest): boolean {
+	return payload["sourceBranch"] === request.sourceBranch && payload["targetBranch"] === request.targetBranch;
+}
+
+function headPublicationMatches(payload: JsonObject, request: ReviewRequest): boolean {
+	return payload["baseCommit"] === request.baseCommit && payload["headCommit"] === request.headCommit;
 }
 
 function reviewPayload(value: JsonValue): JsonObject | undefined {

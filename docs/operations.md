@@ -117,7 +117,7 @@ The current repository `origin` must be hosted on `github.com` or `gitlab.com` f
 The target stores the authorized provider repository and branch in the Mission instead of following later origin changes.
 
 GitHub supports draft requests, status, merge observation, and bounded eligible provider-comment feedback.
-GitLab supports draft requests, status, and merge observation without provider-comment normalization.
+GitLab supports draft requests, current merge-request and head-pipeline status, and merge observation without provider-comment normalization.
 The current adapter reads pull-request templates from root, `docs`, and `.github` locations; it does not read GitLab's `.gitlab/merge_request_templates` directory.
 Eligibility and credential boundaries are defined in [Security](security.md#provider-feedback), not inferred from publication ownership.
 Base drift requires the [approved successor path](lifecycle.md#publication-and-base-drift), not an implicit operator rebase.
@@ -152,6 +152,7 @@ Target settings and their implementation status must be updated here when the co
 | `maxConcurrentRuns` | `2` | Total reserved or uncertain role invocations in the project Archive |
 | `maxCorrections` | `3` | Replacement Verdict limit recorded with Work |
 | `defaultWorkTokens` | `20000` | Work token cap |
+| `enableCiRepair` | `false` | Opts into bounded Conclave-authorized CI repair behavior |
 | `piCommand` | `["pi"]` | Child launch command and arguments; the command must report Pi version `0.85.0` |
 
 Trusted project configuration may lower `maxConcurrentRuns` but cannot raise the global ceiling.
@@ -178,6 +179,9 @@ Incomplete receipts require explicit User reconciliation with cumulative usage a
 The current correction counter covers replacement Verdicts, not resumed implementation passes.
 Prompt identities are persisted and passed to recovered sessions, but current recovery does not compare a persisted identity with the installed package.
 These implementation constraints do not authorize rewriting existing Work to fit the target.
+
+CI repair is disabled by default and must remain disabled until the required versioned held-out evaluation set and same-harness baseline satisfy the repository's LLM release gate.
+Enable `enableCiRepair` only after satisfying that gate; enabling it activates the bounded Conclave and Executor CI-repair prompts and action.
 
 The current [`KhalaConfig`](../src/config.ts) exposes total role-run capacity but not RPC frame/request limits.
 `PiRuntimeOptions.maxRpcFrameBytes` bounds each LF-delimited or unterminated RPC frame, including its delimiter, to a positive safe integer of bytes, defaulting to 8 MiB.

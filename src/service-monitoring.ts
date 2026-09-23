@@ -30,6 +30,7 @@ import {
 } from "./service-dispatch-policy.js";
 import { normalizeCaughtError, sameObservationIdentity } from "./service-foundation-policy.js";
 import { isRevisionConflictError, sameObservation } from "./service-lifecycle-policy.js";
+import { providerCiObservationNeedsRefresh } from "./service-provider-readiness.js";
 import {
 	latestObservationFingerprint,
 	monitorFailureEnvelope,
@@ -45,6 +46,22 @@ import {
 	runtimeBinding,
 	runtimeNeedsInspection,
 } from "./service-state-policy.js";
+
+function changedObservationEffects(
+	work: WorkView,
+	next: WorkView,
+	observation: ProviderObservation,
+	classification: ReturnType<typeof classifyProviderObservation>,
+) {
+	return providerObservationEffects(
+		work.workId,
+		next.revision,
+		observation,
+		classification,
+		work.mission?.missionId,
+		work.execution?.executionId,
+	);
+}
 
 export type MonitoringCallbacks = Readonly<{
 	acquireSupervision: () => boolean;
@@ -263,7 +280,7 @@ export class ServiceMonitoring {
 		const fingerprint = observationFingerprint(normalized);
 		const previous = this.heartbeat.get(key) ?? this.persistedObservationFingerprint(work, normalized);
 		if (previous === fingerprint)
-			return this.recordUnchangedObservation(work, normalized, observation, commandId, key, fingerprint);
+			return this.recordUnchangedObservation(work, normalized, observation, key, fingerprint, classification, meta);
 		return this.recordChangedObservation(work, observation, normalized, classification, meta);
 	}
 
@@ -286,7 +303,7 @@ export class ServiceMonitoring {
 			projection: next,
 			summary: `Provider observation changed: ${observation.kind}.`,
 			evidenceRefs: providerObservationEvidence(work, observation),
-			effects: providerObservationEffects(work.workId, next.revision, observation, classification),
+			effects: changedObservationEffects(work, next, observation, classification),
 		});
 		this.clearProviderMonitorFailure(work);
 		this.heartbeat.set(observationKey(work.workId, normalized), observationFingerprint(normalized));
@@ -347,15 +364,48 @@ export class ServiceMonitoring {
 		work: WorkView,
 		normalized: ProviderObservation,
 		observation: ProviderObservation,
-		commandId: string,
 		key: string,
 		fingerprint: string,
+		classification: ReturnType<typeof classifyProviderObservation>,
+		meta: CommandMeta,
+	): WorkView {
+		const refreshed = this.refreshStaleCiObservation(work, normalized, observation, classification, meta);
+		if (refreshed !== undefined) return refreshed;
+		return this.recordOrdinaryUnchangedObservation(work, normalized, observation, key, fingerprint, meta);
+	}
+
+	private refreshStaleCiObservation(
+		work: WorkView,
+		normalized: ProviderObservation,
+		observation: ProviderObservation,
+		classification: ReturnType<typeof classifyProviderObservation>,
+		meta: CommandMeta,
+	): WorkView | undefined {
+		if (normalized.kind !== "ci-status") return undefined;
+		if (!providerCiObservationNeedsRefresh(this.archive, work, normalized)) return undefined;
+		return this.recordChangedObservation(work, observation, normalized, classification, meta);
+	}
+
+	private recordOrdinaryUnchangedObservation(
+		work: WorkView,
+		normalized: ProviderObservation,
+		observation: ProviderObservation,
+		key: string,
+		fingerprint: string,
+		meta: CommandMeta,
 	): WorkView {
 		this.heartbeat.set(key, fingerprint);
 		if (observation.kind === "provider-outcome") return this.queueProviderOutcomeWake(work);
-		return work.lastError === undefined || !isProviderMonitorError(work.lastError)
-			? work
-			: this.recordProviderPollRecovery(work, normalized, `${commandId}:recovered`);
+		return this.recordProviderRecoveryIfNeeded(work, normalized, meta.commandId);
+	}
+
+	private recordProviderRecoveryIfNeeded(
+		work: WorkView,
+		observation: ProviderObservation,
+		commandId: string,
+	): WorkView {
+		if (work.lastError === undefined || !isProviderMonitorError(work.lastError)) return work;
+		return this.recordProviderPollRecovery(work, observation, `${commandId}:recovered`);
 	}
 
 	private clearProviderMonitorFailure(work: WorkView): void {

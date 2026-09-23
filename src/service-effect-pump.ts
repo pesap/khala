@@ -4,6 +4,7 @@ import type { CommandMeta, ConclaveWakeCause, ErrorEnvelope, JsonObject, WorkVie
 import type { ServicePorts } from "./ports.js";
 import { isTextValue } from "./provider-observation-policy.js";
 import { ArchiveCore } from "./service-archive-core.js";
+import { ServiceCiRepair } from "./service-ci-repair.js";
 import { RunGateUnavailable } from "./service-contracts.js";
 import {
 	dispatchEligibilityAttention,
@@ -71,6 +72,7 @@ export class ServiceEffectPump {
 	private readonly archive: ArchivePort;
 	private readonly core: ArchiveCore;
 	private readonly invocations: InvocationCoordinator;
+	private readonly ciRepair: ServiceCiRepair;
 	private readonly executorRuntime: ExecutorRuntimeCoordinator;
 	private readonly feedback: ServiceFeedback;
 	private readonly observer: ServiceObserver;
@@ -86,6 +88,7 @@ export class ServiceEffectPump {
 		archive: ArchivePort;
 		core: ArchiveCore;
 		invocations: InvocationCoordinator;
+		ciRepair: ServiceCiRepair;
 		executorRuntime: ExecutorRuntimeCoordinator;
 		feedback: ServiceFeedback;
 		observer: ServiceObserver;
@@ -98,6 +101,7 @@ export class ServiceEffectPump {
 		this.archive = input.archive;
 		this.core = input.core;
 		this.invocations = input.invocations;
+		this.ciRepair = input.ciRepair;
 		this.executorRuntime = input.executorRuntime;
 		this.feedback = input.feedback;
 		this.observer = input.observer;
@@ -329,6 +333,7 @@ export class ServiceEffectPump {
 			["executor-stop", () => this.processExecutorStop(effect, work)],
 			["executor-recovery", () => this.processExecutorRecovery(effect, work)],
 			["feedback-wake", () => this.processFeedbackWake(work, feedbackExecutionId, observationId, effect)],
+			["ci-repair-wake", () => this.ciRepair.processWake(effect)],
 			["executor-wake", () => this.processExecutorWake(effect, work)],
 			["observer-wake", () => this.observer.processWake(effect, work)],
 		]);
@@ -343,7 +348,14 @@ export class ServiceEffectPump {
 		observationId: string | undefined,
 		wakeReason: ConclaveWakeCause | undefined,
 	): Promise<void> {
-		if (!conclaveWakeApplicable(work, wakeReason)) return;
+		if (
+			!conclaveWakeApplicable(work, wakeReason, {
+				observationId,
+				missionId: readOptionalEffectText(effect.payload, "missionId"),
+				executionId: readOptionalEffectText(effect.payload, "executionId"),
+			})
+		)
+			return;
 		await this.callbacks.wakeConclave(workId, `outbox:${effect.effectId}:${work.revision}`, observationId, wakeReason);
 	}
 

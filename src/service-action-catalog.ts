@@ -162,6 +162,18 @@ const actionDescriptors = {
 		effect: "Authorizes bounded provider review feedback for the running Executor.",
 		fields: [optionalText("observationId", "Observation ID", "Defaults to the latest observation")],
 	},
+	"repair-ci": {
+		label: "Authorize CI repair",
+		effect: "Authorizes one bounded continuation of the same idle Execution for selected current CI failures.",
+		fields: [
+			requiredText("observationId", "CI observation ID"),
+			requiredLines(
+				"evidence",
+				"Selected failed check indexes",
+				"One-based indexes from the numbered failed-check evidence",
+			),
+		],
+	},
 	"record-review": {
 		label: "Record review",
 		effect: "Records the User's review result for the published change.",
@@ -262,6 +274,7 @@ const currentResolvers = {
 	verdict: (fieldName, work) => (fieldName === "signalId" ? verdictSignalId(work) : undefined),
 	"deliver-feedback": (fieldName, work) =>
 		fieldName === "observationId" ? work.lastObservation?.observationId : undefined,
+	"repair-ci": (fieldName, work) => (fieldName === "observationId" ? work.lastObservation?.observationId : undefined),
 } satisfies Partial<Record<ActionKind, CurrentResolver>>;
 
 function applyCurrentValues(kind: ActionKind, fields: readonly ActionField[], work: WorkView): readonly ActionField[] {

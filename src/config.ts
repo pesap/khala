@@ -15,6 +15,7 @@ export type KhalaConfig = Readonly<{
 	maxConcurrentRuns: number;
 	maxCorrections: number;
 	defaultWorkTokens: number;
+	enableCiRepair: boolean;
 	piCommand: readonly string[];
 	conclaveModel: string;
 	conclaveThinking: string;
@@ -47,6 +48,7 @@ const DEFAULTS: KhalaConfig = {
 	maxConcurrentRuns: 2,
 	maxCorrections: 3,
 	defaultWorkTokens: 20_000,
+	enableCiRepair: false,
 	piCommand: ["pi"],
 	conclaveModel: "",
 	conclaveThinking: "medium",
@@ -220,6 +222,7 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		maxConcurrentRuns: readPositive(values, "maxConcurrentRuns", base.maxConcurrentRuns),
 		maxCorrections: readPositive(values, "maxCorrections", base.maxCorrections),
 		defaultWorkTokens: readPositive(values, "defaultWorkTokens", base.defaultWorkTokens),
+		enableCiRepair: readBoolean(values, "enableCiRepair", base.enableCiRepair),
 		piCommand: readTextList(values, "piCommand", base.piCommand),
 		conclaveModel: readText(values, "conclaveModel", base.conclaveModel),
 		conclaveThinking: readText(values, "conclaveThinking", base.conclaveThinking),
@@ -241,6 +244,13 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 			history: readKeybinding(values, "historyKey", base.keybindings.history),
 		},
 	};
+}
+
+function readBoolean(values: JsonObject, key: string, fallback: boolean): boolean {
+	const value = values[key];
+	if (value === undefined) return fallback;
+	if (value === true || value === false) return value;
+	throw new ConfigError(`${key} must be a boolean.`);
 }
 
 function readText(values: JsonObject, key: string, fallback: string): string {

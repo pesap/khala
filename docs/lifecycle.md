@@ -124,6 +124,14 @@ Current implementation does not provide local delivery.
 Target provider delivery creates a draft review request through a reconciled service action before ready.
 Current provider delivery creates draft GitHub Pull Requests or GitLab Merge Requests.
 The authorized sandbox branch and current head are passed to the provider adapter only after publication permission is verified.
+With `enableCiRepair` enabled, a current provider CI failure wakes Conclave with bounded repository, branch, PR-head, and failed-check evidence tied to the current Mission and Execution.
+CI repair is disabled by default, and no CI repair can be authorized without the opt-in.
+Conclave may authorize one bounded CI-repair continuation of the same Execution only when the observation and review identity match, the live runtime is provably idle with no active Executor turn, current validation is not blocked, invocations are settled, and the existing Work and Execution allowances permit it.
+A later failure observation cannot authorize another CI-repair turn on that Execution.
+The Executor addresses only selected in-scope failures, commits through the governed action, validates in isolation, and reconciles the same draft review request to the exact validated commit.
+Unavailable isolation blocks the Executor; it does not trigger unrestricted validation.
+Readiness and handoff are blocked by current failures, stale observations, pending checks, or checks that cannot be verified as successful for the current published head.
+A published review request requires matching CI success evidence recorded after the current publication; readiness fails closed when CI is not configured or provider checks cannot be verified.
 
 For provider delivery, Khala refreshes the stored target branch before Execution creation and publication.
 The target must still point to the Execution's base commit when publication begins.

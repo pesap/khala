@@ -500,6 +500,7 @@ export const ACTION_KINDS = [
 	"run-oracle",
 	"verdict",
 	"deliver-feedback",
+	"repair-ci",
 	"record-review",
 	"record-outcome",
 	"cancel",

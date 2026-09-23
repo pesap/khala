@@ -104,6 +104,9 @@ Merge verification may connect different source and resulting commit IDs for squ
 Provider observation kinds include `ci-status`, `review-comment`, `feedback-delivery`, `monitor-failure`, and `provider-outcome`.
 Each kind uses its own status vocabulary rather than one ambiguous generic status field.
 Edited provider text creates a new observation; previous observations and completed Deliveries remain immutable.
+A CI-repair Delivery binds one authorization to the exact CI observation record, current Mission, Execution, PR head, runtime binding, and selected failed checks.
+Its durable status records distinguish authorization, start, completion, blockage, uncertainty, and supersession; a started CI-repair Delivery prevents another repair turn on that Execution, even if a later observation reports failure again.
+Provider readiness compares check observations with the current publication and requires exact provider, PR URL, repository, branch, and head identity plus verified success for every reported check.
 Provider text remains evidence under the [security contract](security.md#provider-feedback).
 
 ## Guidance and context

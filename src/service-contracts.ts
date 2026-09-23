@@ -25,6 +25,7 @@ export type ServiceOptions = Readonly<{
 	oraclePromptIdentity: Readonly<{ packageVersion: string; promptSha256: string }>;
 	rolePublicKey: string;
 	supervision: "candidate" | "client";
+	enableCiRepair?: boolean | undefined;
 	autonomousMonitor?: boolean | undefined;
 	shutdownGraceMs?: number | undefined;
 }>;

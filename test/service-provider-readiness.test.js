@@ -22,11 +22,11 @@ function record(sequence, kind, payload, executionId = "execution") {
 	return { sequence, kind, payload, executionId };
 }
 
-function publication(sequence, headCommit = request.headCommit) {
-	return record(sequence, "review-request", { ...request, headCommit });
+function publication(sequence, headCommit = request.headCommit, url = request.url) {
+	return record(sequence, "review-request", { ...request, headCommit, url });
 }
 
-function checks(sequence, status, headCommit, repository = request.repository) {
+function checks(sequence, status, headCommit, repository = request.repository, providerChecks = [], url = request.url) {
 	return record(sequence, "observation", {
 		observationId: `ci-${sequence}`,
 		kind: "ci-status",
@@ -40,6 +40,11 @@ function checks(sequence, status, headCommit, repository = request.repository) {
 		targetBranch: request.targetBranch,
 		baseCommit: request.baseCommit,
 		headCommit,
+		details: {
+			pullRequest: { url, status: request.status, state: "OPEN", reviewDecision: "", mergedAt: null },
+			comments: [],
+			checks: providerChecks,
+		},
 	});
 }
 
@@ -53,14 +58,50 @@ function archive(...pages) {
 }
 
 test("provider readiness uses publication order without weakening current CI guards", () => {
-	assert.equal(providerEvidenceAllowsReady(archive([publication(4), checks(3, "checks-failed", "old-head", "wrong/project")]), work, request), true);
+	assert.equal(providerEvidenceAllowsReady(archive([publication(4), checks(3, "checks-failed", "old-head", "wrong/project")]), work, request), false);
 	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", "other-head"), publication(4)]), work, request), false);
 	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "checks-failed", request.headCommit), publication(4)]), work, request), false);
-	assert.equal(providerEvidenceAllowsReady(archive([publication(4)]), work, request), true);
+	assert.equal(providerEvidenceAllowsReady(archive([publication(4)]), work, request), false);
+	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit), publication(4)]), work, request), false);
+	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, [{ kind: "check-run", name: "tests", status: "IN_PROGRESS" }]), publication(4)]), work, request), false);
+	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, [{ kind: "check-run", name: "tests", status: "COMPLETED" }]), publication(4)]), work, request), false);
+	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, [{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }]), publication(4)]), work, request), true);
+});
+
+test("provider readiness fails closed when the current publication has no CI evidence", () => {
+	assert.equal(providerEvidenceAllowsReady(archive([publication(4)]), work, request), false);
+});
+
+test("provider readiness requires exact PR URL identity for publication and CI evidence", () => {
+	const successfulChecks = [{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }];
+	assert.equal(
+		providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, successfulChecks, "https://example.test/review/99"), publication(4)]), work, request),
+		false,
+	);
+	assert.equal(
+		providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, successfulChecks), publication(4, request.headCommit, "https://example.test/review/99")]), work, request),
+		false,
+	);
+});
+
+test("provider readiness requires successful CI evidence recorded after the current publication", () => {
+	assert.equal(
+		providerEvidenceAllowsReady(
+			archive([
+				publication(5),
+				checks(4, "open", request.headCommit, request.repository, [
+					{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" },
+				]),
+			]),
+			work,
+			request,
+		),
+		false,
+	);
 });
 
 test("provider readiness paginates until the current publication is proven", () => {
 	const noise = Array.from({ length: 100 }, (_, index) => publication(200 - index, `unrelated-${index}`));
-	assert.equal(providerEvidenceAllowsReady(archive(noise, [publication(4), checks(3, "checks-failed", "old-head")]), work, request), true);
+	assert.equal(providerEvidenceAllowsReady(archive(noise, [publication(4), checks(3, "checks-failed", "old-head")]), work, request), false);
 	assert.equal(providerEvidenceAllowsReady(archive(noise, [checks(5, "open", "other-head")]), work, request), false);
 });

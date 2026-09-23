@@ -28,6 +28,7 @@ import { RunLedger } from "./run-ledger.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 import { ServiceActions } from "./service-actions.js";
 import { ArchiveCore } from "./service-archive-core.js";
+import { ServiceCiRepair } from "./service-ci-repair.js";
 import { runConclaveWake } from "./service-conclave.js";
 import { ServiceConfiguration } from "./service-configuration.js";
 import type { ServiceOptions } from "./service-contracts.js";
@@ -123,6 +124,7 @@ export class ApplicationService {
 	private readonly monitoring: ServiceMonitoring;
 	private readonly invocations: InvocationCoordinator;
 	private readonly executorRuntime: ExecutorRuntimeCoordinator;
+	private readonly ciRepair: ServiceCiRepair;
 	private readonly actions: ServiceActions;
 	private readonly feedback: ServiceFeedback;
 	private readonly submission: ServiceSubmission;
@@ -144,6 +146,14 @@ export class ApplicationService {
 		this.completion = new WorkCompletion(this.core);
 		this.invocations = new InvocationCoordinator(archive, this.core, this.ledger, options);
 		this.executorRuntime = new ExecutorRuntimeCoordinator(archive, this.core, this.invocations, ports.runtime);
+		this.ciRepair = new ServiceCiRepair({
+			archive,
+			core: this.core,
+			runtime: ports.runtime,
+			invocations: this.invocations,
+			executorRuntime: this.executorRuntime,
+			enabled: this.configuration.options.enableCiRepair === true,
+		});
 		this.feedback = new ServiceFeedback(
 			archive,
 			this.core,
@@ -152,8 +162,10 @@ export class ApplicationService {
 			this.executorRuntime,
 			this.heartbeat,
 		);
-		this.actions = new ServiceActions(this.core, (work, observation) =>
-			this.feedback.canDeliverFeedback(work, observation),
+		this.actions = new ServiceActions(
+			this.core,
+			(work, observation) => this.feedback.canDeliverFeedback(work, observation),
+			(work) => this.ciRepair.canAuthorize(work),
 		);
 		this.submission = new ServiceSubmission(archive, this.core, () => this.configuration.options);
 		this.observer = new ServiceObserver(
@@ -217,6 +229,7 @@ export class ApplicationService {
 			archive,
 			core: this.core,
 			invocations: this.invocations,
+			ciRepair: this.ciRepair,
 			executorRuntime: this.executorRuntime,
 			feedback: this.feedback,
 			observer: this.observer,
@@ -376,6 +389,7 @@ export class ApplicationService {
 			model: this.configuration.options.conclaveModel,
 			thinking: this.configuration.options.conclaveThinking,
 			promptIdentity: this.configuration.options.conclavePromptIdentity,
+			enableCiRepair: this.configuration.options.enableCiRepair === true,
 			runtime: this.ports.runtime,
 			invocations: this.invocations,
 			inspectWork: (currentWorkId) => this.inspectWork(currentWorkId),
@@ -620,6 +634,7 @@ export class ApplicationService {
 			"run-oracle": async () => this.decisions.runOracle(work, command.meta, command.input, operation),
 			verdict: async () => this.decisions.verdict(work, command.meta, command.input, operation),
 			"deliver-feedback": async () => this.feedback.deliverFeedback(work, command.meta, command.input),
+			"repair-ci": async () => this.ciRepair.authorize(work, command.meta, command.input, operation),
 			"record-review": async () => this.governance.recordReview(work, command.meta, command.input),
 			"record-outcome": async () => this.completion.recordOutcome(work, command.meta),
 			cancel: async () => this.completion.cancel(work, command.meta),

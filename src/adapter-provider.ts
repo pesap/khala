@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { gitlabProviderChecks } from "./adapter-gitlab-ci.js";
 import {
 	MAX_PROVIDER_CHECKS,
 	MAX_PROVIDER_COMMENT_BODY,
@@ -19,6 +20,7 @@ import type {
 	ReviewRequest,
 } from "./model.js";
 import type { ReviewRequestInput } from "./ports.js";
+import { isFailedProviderCheck } from "./provider-observation-policy.js";
 
 export function parseJsonArray(value: string): readonly Record<string, JsonValue>[] {
 	const parsed: JsonValue = JSON.parse(value);
@@ -43,6 +45,16 @@ export function requireProviderRow(data: string, message: string): Record<string
 	return row;
 }
 
+type ProviderCiObservationIdentity = Readonly<
+	Pick<
+		ProviderCiObservation,
+		"status" | "repository" | "sourceBranch" | "targetBranch" | "baseCommit" | "headCommit"
+	> & {
+		pullRequestUrl: string;
+		checks?: readonly ProviderCheck[];
+	}
+>;
+
 export function githubCiObservation(
 	data: string,
 	row: Record<string, JsonValue>,
@@ -50,15 +62,30 @@ export function githubCiObservation(
 	repository: string,
 	details: GithubProviderDetails,
 ): ProviderCiObservation {
+	const status = githubCheckStatus(githubPollStatus(row, reviewRequest.status), details);
+	const sourceBranch = readOptionalTextValue(row, "headRefName");
+	const targetBranch = readOptionalTextValue(row, "baseRefName");
+	const baseCommit = readOptionalTextValue(row, "baseRefOid");
+	const headCommit = readOptionalTextValue(row, "headRefOid");
 	return {
 		...providerObservationBase("ci-status", reviewRequest.providerId, data),
+		observationId: providerCiObservationId(reviewRequest.providerId, {
+			status,
+			repository,
+			sourceBranch,
+			targetBranch,
+			baseCommit,
+			headCommit,
+			pullRequestUrl: details.pullRequest.url,
+			checks: details.checks,
+		}),
 		kind: "ci-status",
-		status: githubCheckStatus(githubPollStatus(row, reviewRequest.status), details),
+		status,
 		repository,
-		sourceBranch: readOptionalTextValue(row, "headRefName"),
-		targetBranch: readOptionalTextValue(row, "baseRefName"),
-		baseCommit: readOptionalTextValue(row, "baseRefOid"),
-		headCommit: readOptionalTextValue(row, "headRefOid"),
+		sourceBranch,
+		targetBranch,
+		baseCommit,
+		headCommit,
 		details,
 	};
 }
@@ -68,15 +95,45 @@ export function gitlabCiObservation(
 	row: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
 ): ProviderCiObservation {
+	const reviewStatus = gitlabStatus(readValue(row, "state"), readBoolean(row, "draft"));
+	const checks = gitlabProviderChecks(row);
+	const status = providerCiStatus(reviewStatus, checks);
+	const repository = readRepository(row);
+	const sourceBranch = readOptionalTextValue(row, "source_branch");
+	const targetBranch = readOptionalTextValue(row, "target_branch");
+	const baseCommit = readNestedTextValue(row, "diff_refs", "base_sha");
+	const headCommit = readOptionalTextValue(row, "sha");
+	const pullRequestUrl = boundedText(readOptionalTextValue(row, "web_url") ?? "", MAX_PROVIDER_FIELD);
 	return {
 		...providerObservationBase("ci-status", reviewRequest.providerId, data),
+		observationId: providerCiObservationId(reviewRequest.providerId, {
+			status,
+			repository,
+			sourceBranch,
+			targetBranch,
+			baseCommit,
+			headCommit,
+			pullRequestUrl,
+			checks,
+		}),
 		kind: "ci-status",
-		status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
-		repository: readRepository(row),
-		sourceBranch: readOptionalTextValue(row, "source_branch"),
-		targetBranch: readOptionalTextValue(row, "target_branch"),
-		baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
-		headCommit: readOptionalTextValue(row, "sha"),
+		status,
+		repository,
+		sourceBranch,
+		targetBranch,
+		baseCommit,
+		headCommit,
+		details: {
+			pullRequest: {
+				url: pullRequestUrl,
+				status: reviewStatus,
+				state: boundedText(readOptionalTextValue(row, "state") ?? "", MAX_PROVIDER_FIELD),
+				reviewDecision: "",
+				mergedAt: boundedOptional(readOptionalTextValue(row, "merged_at"), MAX_PROVIDER_FIELD) ?? null,
+			},
+			comments: [],
+			checks,
+		},
 	};
 }
 
@@ -400,7 +457,7 @@ function githubPullRequestDetails(
 	reviewRequest: ReviewRequest,
 ): GithubProviderDetails["pullRequest"] {
 	return {
-		url: boundedText(reviewRequest.url, MAX_PROVIDER_FIELD),
+		url: boundedText(readOptionalTextValue(row, "url") ?? "", MAX_PROVIDER_FIELD),
 		status: githubPollStatus(row, reviewRequest.status),
 		state: boundedText(githubState(row), MAX_PROVIDER_FIELD),
 		reviewDecision: boundedText(textField(row, "reviewDecision") ?? "", MAX_PROVIDER_FIELD),
@@ -587,15 +644,17 @@ function githubCheckStatus(
 	reviewStatus: ReviewRequest["status"],
 	details: NonNullable<ProviderObservation["details"]>,
 ): ProviderCiStatus {
-	if (reviewStatus === "merged" || reviewStatus === "closed") return reviewStatus;
-	return details.checks.some(providerCheckFailed) ? "checks-failed" : reviewStatus;
+	return providerCiStatus(reviewStatus, details.checks);
 }
 
-function providerCheckFailed(check: ProviderCheck): boolean {
-	const value = `${check.status} ${check.conclusion ?? ""}`.toLowerCase();
-	return ["failure", "failed", "error", "cancelled", "timed_out", "action_required"].some((term) =>
-		value.includes(term),
-	);
+function providerCiStatus(reviewStatus: ReviewRequest["status"], checks: readonly ProviderCheck[]): ProviderCiStatus {
+	if (reviewStatus === "merged" || reviewStatus === "closed") return reviewStatus;
+	return checks.some(isFailedProviderCheck) ? "checks-failed" : reviewStatus;
+}
+
+function providerCiObservationId(providerId: string, identity: ProviderCiObservationIdentity): string {
+	const digest = createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
+	return `ci-status:${providerId}:${digest}`;
 }
 
 function githubCommentCommit(entry: Record<string, JsonValue>): string | undefined {
