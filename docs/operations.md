@@ -153,10 +153,13 @@ Target settings and their implementation status must be updated here when the co
 | `maxCorrections` | `3` | Replacement Verdict limit recorded with Work |
 | `defaultWorkTokens` | `20000` | Work token cap |
 | `enableCiRepair` | `false` | Opts into bounded Conclave-authorized CI repair behavior |
+| `requireProviderCi` | `true` | Requires verified provider CI evidence before ready or handoff; set `false` only for repositories explicitly configured without provider CI |
 | `piCommand` | `["pi"]` | Child launch command and arguments; the command must report Pi version `0.85.0` |
 
 Trusted project configuration may lower `maxConcurrentRuns` but cannot raise the global ceiling.
 The Archive enforces the effective ceiling across existing and newly submitted Works.
+When `requireProviderCi` is true, ready and handoff require verified successful checks for the current published PR head.
+Set it to false only when provider CI is explicitly not configured; observed failing, pending, stale, or unverified checks still block readiness.
 
 Role models use `conclaveModel`, `executorModel`, `observerModel`, and `oracleModel`, with matching `*Thinking` settings.
 The Pi extension's base workflow requires Conclave and Executor models.

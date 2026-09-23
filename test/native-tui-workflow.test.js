@@ -50,7 +50,11 @@ test("Pi terminal submits native Work, recovers after restart, and records succe
 	try {
 		await start();
 		send("Submit the greeting Work now.");
-		const current = await waitUntil(() => readWork(path), (work) => work?.state === "awaiting-review", () => JSON.stringify({ screen: screen(), work: readWork(path), failures: fixture.failures.map(String) }));
+		const current = await waitUntil(
+			() => readWork(path),
+			(work) => work?.state === "awaiting-review" && work.activeInvocations?.length === 0,
+			() => JSON.stringify({ screen: screen(), work: readWork(path), failures: fixture.failures.map(String) }),
+		);
 		send("/khala");
 		await waitUntil(screen, (value) => value.includes("Native greeting"), screen);
 		tmux("send-keys", "-t", session, "Escape");

@@ -131,7 +131,8 @@ A later failure observation cannot authorize another CI-repair turn on that Exec
 The Executor addresses only selected in-scope failures, commits through the governed action, validates in isolation, and reconciles the same draft review request to the exact validated commit.
 Unavailable isolation blocks the Executor; it does not trigger unrestricted validation.
 Readiness and handoff are blocked by current failures, stale observations, pending checks, or checks that cannot be verified as successful for the current published head.
-A published review request requires matching CI success evidence recorded after the current publication; readiness fails closed when CI is not configured or provider checks cannot be verified.
+By default, a published review request requires matching CI success evidence recorded after the current publication.
+`requireProviderCi: false` explicitly declares that provider CI is not configured and permits absent CI evidence only; any observed failing, pending, stale, or unverified checks still block readiness.
 
 For provider delivery, Khala refreshes the stored target branch before Execution creation and publication.
 The target must still point to the Execution's base commit when publication begins.

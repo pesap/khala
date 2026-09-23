@@ -227,7 +227,7 @@ export class ServiceWorkspaceActions {
 				execution,
 				request,
 				head,
-				providerEvidenceAllowsReady(this.archive, work, request),
+				providerEvidenceAllowsReady(this.archive, work, request, this.getOptions().requireProviderCi),
 				this.workspace.runValidation,
 			)
 		)

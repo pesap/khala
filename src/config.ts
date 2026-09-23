@@ -16,6 +16,7 @@ export type KhalaConfig = Readonly<{
 	maxCorrections: number;
 	defaultWorkTokens: number;
 	enableCiRepair: boolean;
+	requireProviderCi: boolean;
 	piCommand: readonly string[];
 	conclaveModel: string;
 	conclaveThinking: string;
@@ -49,6 +50,7 @@ const DEFAULTS: KhalaConfig = {
 	maxCorrections: 3,
 	defaultWorkTokens: 20_000,
 	enableCiRepair: false,
+	requireProviderCi: true,
 	piCommand: ["pi"],
 	conclaveModel: "",
 	conclaveThinking: "medium",
@@ -223,6 +225,7 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		maxCorrections: readPositive(values, "maxCorrections", base.maxCorrections),
 		defaultWorkTokens: readPositive(values, "defaultWorkTokens", base.defaultWorkTokens),
 		enableCiRepair: readBoolean(values, "enableCiRepair", base.enableCiRepair),
+		requireProviderCi: readBoolean(values, "requireProviderCi", base.requireProviderCi),
 		piCommand: readTextList(values, "piCommand", base.piCommand),
 		conclaveModel: readText(values, "conclaveModel", base.conclaveModel),
 		conclaveThinking: readText(values, "conclaveThinking", base.conclaveThinking),

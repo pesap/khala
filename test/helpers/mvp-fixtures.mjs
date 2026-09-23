@@ -253,6 +253,7 @@ function makeService(path, overrides = {}) {
 		maxConcurrentExecutions: overrides.maxConcurrentExecutions ?? 2,
 		defaultWorkTokens: 100,
 		enableCiRepair: overrides.enableCiRepair === true,
+		requireProviderCi: false,
 		conclaveModel: "provider/conclave",
 		conclaveThinking: "medium",
 		executorModel: "provider/executor",

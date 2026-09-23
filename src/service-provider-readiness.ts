@@ -1,13 +1,6 @@
 import type { ArchivePort } from "./archive.js";
 import { isJsonObject, isObservation, isReviewRequest } from "./archive-codec.js";
-import type {
-	JsonObject,
-	JsonValue,
-	ProviderCiObservation,
-	ProviderObservation,
-	RecordView,
-	WorkView,
-} from "./model.js";
+import type { JsonObject, JsonValue, ProviderCiObservation, RecordView, WorkView } from "./model.js";
 import { providerCheckIsVerified, providerObservationExactlyMatchesReview } from "./provider-observation-policy.js";
 import { observationFingerprint } from "./service-runtime-policy.js";
 
@@ -19,16 +12,25 @@ type ReadinessScan = Readonly<{
 	decision?: boolean | undefined;
 }>;
 
-export function providerEvidenceAllowsReady(archive: ArchivePort, work: WorkView, request: ReviewRequest): boolean {
+export function providerEvidenceAllowsReady(
+	archive: ArchivePort,
+	work: WorkView,
+	request: ReviewRequest,
+	requireProviderCi = true,
+): boolean {
 	let cursor: string | undefined;
 	let scan: ReadinessScan = {};
 	do {
 		const page = archive.query(readinessQuery(work), cursor);
-		scan = scanReadinessRecords(page.items, scan, request, work);
+		scan = scanReadinessRecords(page.items, scan, request, work, requireProviderCi);
 		if (scan.decision !== undefined) return scan.decision;
 		cursor = page.nextCursor;
 	} while (cursor !== undefined);
-	return false;
+	return explicitlyConfiguredNoCiAllowsReady(scan, requireProviderCi);
+}
+
+function explicitlyConfiguredNoCiAllowsReady(scan: ReadinessScan, requireProviderCi: boolean): boolean {
+	return !requireProviderCi && scan.publicationSequence !== undefined && scan.checks === undefined;
 }
 
 export function providerCiObservationNeedsRefresh(
@@ -45,7 +47,13 @@ export function providerCiObservationNeedsRefresh(
 
 type ProviderEvidenceSequences = Readonly<{
 	observationSequence?: number | undefined;
+	latestCurrentObservationSequence?: number | undefined;
 	publicationSequence?: number | undefined;
+}>;
+type CompleteProviderEvidenceSequences = Readonly<{
+	observationSequence: number;
+	latestCurrentObservationSequence: number;
+	publicationSequence: number;
 }>;
 
 function latestProviderEvidenceSequences(
@@ -89,6 +97,8 @@ function scanProviderEvidenceSequence(
 ): ProviderEvidenceSequences {
 	return {
 		observationSequence: initial.observationSequence ?? providerChecksSequence(record, request, observation),
+		latestCurrentObservationSequence:
+			initial.latestCurrentObservationSequence ?? currentProviderChecksSequence(record, request),
 		publicationSequence: initial.publicationSequence ?? currentPublicationSequence(record, request, work),
 	};
 }
@@ -98,7 +108,29 @@ function providerChecksSequence(
 	request: ReviewRequest,
 	observation: ProviderCiObservation,
 ): number | undefined {
-	return isMatchingProviderChecksRecord(record, request, observation) ? record.sequence : undefined;
+	const recorded = matchingProviderChecksObservation(record, request);
+	return recorded !== undefined && observationFingerprint(recorded) === observationFingerprint(observation)
+		? record.sequence
+		: undefined;
+}
+
+function currentProviderChecksSequence(record: RecordView, request: ReviewRequest): number | undefined {
+	return matchingProviderChecksObservation(record, request) === undefined ? undefined : record.sequence;
+}
+
+function matchingProviderChecksObservation(
+	record: RecordView,
+	request: ReviewRequest,
+): ProviderCiObservation | undefined {
+	const observation = providerChecksObservation(record);
+	return observation !== undefined && providerObservationExactlyMatchesReview(observation, request)
+		? observation
+		: undefined;
+}
+
+function providerChecksObservation(record: RecordView): ProviderCiObservation | undefined {
+	if (record.kind !== "observation" || !isObservation(record.payload)) return undefined;
+	return record.payload.kind === "ci-status" ? record.payload : undefined;
 }
 
 function currentPublicationSequence(record: RecordView, request: ReviewRequest, work: WorkView): number | undefined {
@@ -106,27 +138,21 @@ function currentPublicationSequence(record: RecordView, request: ReviewRequest, 
 }
 
 function observationPredatesPublication(sequences: ProviderEvidenceSequences): boolean {
-	if (sequences.observationSequence === undefined || sequences.publicationSequence === undefined) return false;
-	return sequences.observationSequence <= sequences.publicationSequence;
+	if (!hasProviderEvidenceSequences(sequences)) return false;
+	return (
+		sequences.observationSequence === sequences.latestCurrentObservationSequence &&
+		sequences.observationSequence <= sequences.publicationSequence
+	);
 }
 
-function isMatchingProviderChecksRecord(
-	record: RecordView,
-	request: ReviewRequest,
-	observation: ProviderCiObservation,
-): boolean {
-	if (record.kind !== "observation" || !isObservation(record.payload)) return false;
-	const recorded = record.payload;
-	return [
-		recorded.kind === "ci-status",
-		recorded.providerId === request.providerId,
-		providerObservationExactlyMatchesReview(recorded, request),
-		observationFingerprint(recorded) === observationFingerprint(observation),
-	].every(Boolean);
-}
-
-function hasProviderEvidenceSequences(sequences: ProviderEvidenceSequences): boolean {
-	return sequences.observationSequence !== undefined && sequences.publicationSequence !== undefined;
+function hasProviderEvidenceSequences(
+	sequences: ProviderEvidenceSequences,
+): sequences is CompleteProviderEvidenceSequences {
+	return (
+		sequences.observationSequence !== undefined &&
+		sequences.latestCurrentObservationSequence !== undefined &&
+		sequences.publicationSequence !== undefined
+	);
 }
 
 function readinessQuery(work: WorkView) {
@@ -144,10 +170,11 @@ function scanReadinessRecords(
 	initial: ReadinessScan,
 	request: ReviewRequest,
 	work: WorkView,
+	requireProviderCi: boolean,
 ): ReadinessScan {
 	let scan = initial;
 	for (const record of records) {
-		scan = scanReadinessRecord(record, scan, request, work);
+		scan = scanReadinessRecord(record, scan, request, work, requireProviderCi);
 		if (scan.decision !== undefined) return scan;
 	}
 	return scan;
@@ -158,41 +185,48 @@ function scanReadinessRecord(
 	initial: ReadinessScan,
 	request: ReviewRequest,
 	work: WorkView,
+	requireProviderCi: boolean,
 ): ReadinessScan {
-	const checks = initial.checks ?? providerChecks(record, request.providerId);
+	const checks = initial.checks ?? providerChecks(record);
 	const publicationSequence =
 		initial.publicationSequence ?? (isCurrentPublication(record, request, work) ? record.sequence : undefined);
-	return { checks, publicationSequence, decision: readinessDecision(publicationSequence, checks, request) };
+	return {
+		checks,
+		publicationSequence,
+		decision: readinessDecision(publicationSequence, checks, request, requireProviderCi),
+	};
 }
 
 function readinessDecision(
 	publicationSequence: number | undefined,
 	checks: ProviderChecksEvidence | undefined,
 	request: ReviewRequest,
+	requireProviderCi: boolean,
 ): boolean | undefined {
 	if (publicationSequence === undefined || checks === undefined) return undefined;
-	if (checks.sequence <= publicationSequence) return false;
+	if (checks.sequence <= publicationSequence) return staleNoCiAllowsReady(checks, requireProviderCi);
 	return checksAllowReady(checks.observation, request);
 }
 
-function providerChecks(record: RecordView, providerId: string): ProviderChecksEvidence | undefined {
-	if (record.kind !== "observation" || !isObservation(record.payload)) return undefined;
-	return isProviderChecksObservation(record.payload, providerId)
-		? { observation: record.payload, sequence: record.sequence }
-		: undefined;
+function staleNoCiAllowsReady(checks: ProviderChecksEvidence, requireProviderCi: boolean): boolean {
+	return !requireProviderCi && noChecksReported(checks.observation);
 }
 
-function isProviderChecksObservation(
-	observation: ProviderObservation,
-	providerId: string,
-): observation is ProviderCiObservation {
-	return observation.kind === "ci-status" && observation.providerId === providerId;
+function providerChecks(record: RecordView): ProviderChecksEvidence | undefined {
+	const observation = providerChecksObservation(record);
+	return observation === undefined ? undefined : { observation, sequence: record.sequence };
+}
+
+function noChecksReported(observation: ProviderCiObservation): boolean {
+	const checks = observation.details?.checks;
+	return checks === undefined || checks.length === 0;
 }
 
 function checksAllowReady(checks: ProviderCiObservation, request: ReviewRequest): boolean {
 	return [
 		isSuccessfulProviderStatus(checks.status),
 		providerObservationExactlyMatchesReview(checks, request),
+		checks.details?.pullRequest.status === request.status,
 		reportedChecksAreVerified(checks.details?.checks),
 	].every(Boolean);
 }
@@ -220,6 +254,7 @@ function publicationIsBoundToWork(record: RecordView, work: WorkView): boolean {
 function currentPublicationIdentityMatches(payload: JsonObject, request: ReviewRequest): boolean {
 	return (
 		providerPublicationMatches(payload, request) &&
+		payload["status"] === request.status &&
 		branchPublicationMatches(payload, request) &&
 		headPublicationMatches(payload, request)
 	);

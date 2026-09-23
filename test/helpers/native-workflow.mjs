@@ -228,7 +228,7 @@ export async function createNativeWorkflowFixture(options = {}) {
 	const modelsPath = join(agent, "models.json");
 	const modelIds = fixtureModelIds(options);
 	await writeFile(modelsPath, JSON.stringify({ providers: { fixture: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: "openai-completions", apiKey: "fixture", models: modelIds.map((id) => ({ id, reasoning: false, contextWindow: 100_000, maxTokens: 2000 })) } } }));
-	await writeFile(join(agent, "khala.json"), JSON.stringify({ archiveRoot: join(root, "archive"), worktreeRoot: join(root, "worktrees"), piCommand: [join(packageRoot, "node_modules", ".bin", "pi"), "--offline"], conclaveModel: "fixture/conclave", conclaveThinking: "off", executorModel: "fixture/executor", executorThinking: "off", oracleModel: fixtureOracleModel(options), oracleThinking: "off", observerModel: "fixture/conclave", observerThinking: "off" }));
+	await writeFile(join(agent, "khala.json"), JSON.stringify({ archiveRoot: join(root, "archive"), worktreeRoot: join(root, "worktrees"), requireProviderCi: false, piCommand: [join(packageRoot, "node_modules", ".bin", "pi"), "--offline"], conclaveModel: "fixture/conclave", conclaveThinking: "off", executorModel: "fixture/executor", executorThinking: "off", oracleModel: fixtureOracleModel(options), oracleThinking: "off", observerModel: "fixture/conclave", observerThinking: "off" }));
 	return { root, project, remote, agent, bin, modelsPath, steps, failures, toolResults, oracleRequests, heldRequests, pauseExecutor, resumeExecutor, resumeConclave, close };
 	} catch (error) {
 		server.closeAllConnections();

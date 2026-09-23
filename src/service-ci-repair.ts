@@ -100,9 +100,21 @@ export class ServiceCiRepair {
 
 	async processWake(effect: PendingArchiveEffect): Promise<void> {
 		const authorization = this.readEffectAuthorization(effect);
-		if (authorization === undefined) return;
-		if (hasTerminalCiRepairStatus(this.archive, authorization) || this.blockDisabledWake(authorization)) return;
-		await this.processAuthorization(authorization);
+		if (authorization === undefined || this.shouldSkipWake(authorization)) return;
+		this.activeRepairs.add(authorization.authorizationId);
+		try {
+			await this.processAuthorization(authorization);
+		} finally {
+			this.activeRepairs.delete(authorization.authorizationId);
+		}
+	}
+
+	private shouldSkipWake(authorization: CiRepairAuthorization): boolean {
+		return (
+			hasTerminalCiRepairStatus(this.archive, authorization) ||
+			this.blockDisabledWake(authorization) ||
+			this.activeRepairs.has(authorization.authorizationId)
+		);
 	}
 
 	private blockDisabledWake(authorization: CiRepairAuthorization): boolean {
@@ -326,17 +338,7 @@ export class ServiceCiRepair {
 			);
 			return;
 		}
-		await this.runIfIdleOrRecord(authorization);
-	}
-
-	private async runIfIdleOrRecord(authorization: CiRepairAuthorization): Promise<void> {
-		if (this.activeRepairs.has(authorization.authorizationId)) return;
-		this.activeRepairs.add(authorization.authorizationId);
-		try {
-			await this.runOwnedRepair(authorization);
-		} finally {
-			this.activeRepairs.delete(authorization.authorizationId);
-		}
+		await this.runOwnedRepair(authorization);
 	}
 
 	private async runOwnedRepair(authorization: CiRepairAuthorization): Promise<void> {

@@ -26,6 +26,7 @@ export type ServiceOptions = Readonly<{
 	rolePublicKey: string;
 	supervision: "candidate" | "client";
 	enableCiRepair?: boolean | undefined;
+	requireProviderCi: boolean;
 	autonomousMonitor?: boolean | undefined;
 	shutdownGraceMs?: number | undefined;
 }>;

@@ -4,85 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RunLedger } from "../dist/src/run-ledger.js";
+import { ciFailure, ciSuccess, makeService, performCurrent, repairAction, workWithCiFailure } from "./helpers/ci-repair-fixtures.mjs";
 import { makeService as makeBaseService, meta, admitAndStart } from "./helpers/mvp-fixtures.mjs";
 
 const ZERO_USAGE = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 };
-
-function makeService(path, overrides = {}) {
-	return makeBaseService(path, { ...overrides, enableCiRepair: true });
-}
-
-function ciFailure(reviewRequest, overrides = {}) {
-	return {
-		observationId: "ci-failure:42:run-1",
-		kind: "ci-status",
-		providerId: reviewRequest.providerId,
-		status: "checks-failed",
-		summary: "A provider check failed.",
-		repository: reviewRequest.repository,
-		sourceBranch: reviewRequest.sourceBranch,
-		targetBranch: reviewRequest.targetBranch,
-		baseCommit: reviewRequest.baseCommit,
-		headCommit: reviewRequest.headCommit,
-		details: {
-			pullRequest: { url: reviewRequest.url, status: reviewRequest.status, state: "OPEN", reviewDecision: "", mergedAt: null },
-			comments: [],
-			checks: [
-				{ kind: "check-run", name: "unit tests", status: "COMPLETED", conclusion: "FAILURE" },
-				{ kind: "check-run", name: "format", status: "COMPLETED", conclusion: "SUCCESS" },
-			],
-		},
-		changed: true,
-		observedAt: new Date().toISOString(),
-		...overrides,
-	};
-}
-
-function ciSuccess(reviewRequest) {
-	return ciFailure(reviewRequest, {
-		observationId: "ci-success:42:run-2",
-		status: "open",
-		summary: "All provider checks passed.",
-		details: {
-			pullRequest: { url: reviewRequest.url, status: reviewRequest.status, state: "OPEN", reviewDecision: "", mergedAt: null },
-			comments: [],
-			checks: [{ kind: "check-run", name: "unit tests", status: "COMPLETED", conclusion: "SUCCESS" }],
-		},
-	});
-}
-
-async function workWithCiFailure(service, controls, prefix, overrides = {}) {
-	const running = await admitAndStart(service, prefix);
-	const published = await service.perform({
-		action: "create-review-request",
-		workId: running.workId,
-		input: {},
-		meta: meta("executor", `${prefix}:publish`, running.revision, running.workId, running.execution.executionId),
-	});
-	assert.equal("error" in published, false);
-	controls.pollObservations = [ciFailure(published.value.reviewRequest, overrides)];
-	const observed = await service.pollProvider(
-		running.workId,
-		meta("user", `${prefix}:poll-ci`, published.value.revision),
-	);
-	return { work: observed, reviewRequest: published.value.reviewRequest };
-}
-
-async function performCurrent(service, actor, action, commandId, input = {}) {
-	const summary = service.listWork()[0];
-	const work = service.inspectWork(summary.workId);
-	const executionId = actor === "executor" ? work.execution.executionId : undefined;
-	return service.perform({
-		action,
-		workId: work.workId,
-		input,
-		meta: meta(actor, commandId, work.revision, work.workId, executionId),
-	});
-}
-
-function repairAction(service, workId) {
-	return service.availableActions(workId, "conclave").find((action) => action.kind === "repair-ci");
-}
 
 function claimEffectOfKind(archive, owner, kind) {
 	const claimed = [];
@@ -107,10 +32,10 @@ async function waitForHeldExecutor(controls) {
 	assert.ok(controls.releaseExecutor !== undefined);
 }
 
-async function waitForTwoRuntimeStateReads(stateReads) {
-	for (let attempt = 0; attempt < 100 && stateReads.count < 2; attempt += 1)
+async function waitForRuntimeStateRead(stateReads) {
+	for (let attempt = 0; attempt < 100 && stateReads.count < 1; attempt += 1)
 		await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(stateReads.count, 2);
+	assert.equal(stateReads.count, 1);
 }
 
 function ciRepairStatuses(archive, workId) {
@@ -171,6 +96,44 @@ test("current provider CI wakes Conclave with bounded checks and explicit reconc
 		assert.doesNotMatch(messages[0], /format/);
 		assert.equal(messages[0].includes(longBranch), false);
 		assert.equal(messages[0].length < 3_000, true);
+	} finally {
+		await service.close();
+	}
+});
+
+test("CI repair wake waits for its originating Conclave invocation to settle", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-ci-settlement-order-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	try {
+		const { work } = await workWithCiFailure(service, controls, "ci-settlement-order");
+		controls.onConclaveWake = async (message) => {
+			if (!message.includes(work.lastObservation.observationId)) return;
+			const current = service.inspectWork(work.workId);
+			assert.equal(current.activeInvocations.some((invocation) => invocation.role === "conclave" && invocation.state === "reserved"), true);
+			const authorized = await performCurrent(service, "conclave", "repair-ci", "ci-settlement-order:authorize", {
+				observationId: work.lastObservation.observationId,
+				evidence: ["1"],
+			});
+			assert.equal("error" in authorized, false);
+		};
+		controls.onExecutorTurn = async (message) => {
+			if (!message.includes("Provider CI repair")) return;
+			const current = service.inspectWork(work.workId);
+			assert.equal(current.activeInvocations.some((invocation) => invocation.role === "conclave"), false);
+			assert.equal(current.activeInvocations.some((invocation) => invocation.role === "executor" && invocation.state === "reserved"), true);
+		};
+
+		await service.processPendingEffects();
+		assert.equal(
+			archive.query({ workId: work.workId, kinds: ["delivery"] }).items.some(
+				(record) => record.payload.kind === "ci-repair" && record.payload.status === "started",
+			),
+			true,
+		);
+		const blocked = archive.query({ workId: work.workId, kinds: ["delivery"] }).items.find(
+			(record) => record.payload.kind === "ci-repair" && record.payload.status === "blocked",
+		);
+		assert.doesNotMatch(blocked?.payload.reason ?? "", /invocation is unsettled/);
 	} finally {
 		await service.close();
 	}
@@ -434,6 +397,36 @@ test("exhausted Execution allowance blocks repair", async () => {
 	}
 });
 
+test("exhausted Work budget blocks repair separately from Execution allowance exhaustion", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-ci-work-budget-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"));
+	try {
+		const { work } = await workWithCiFailure(service, controls, "ci-work-budget");
+		const ledger = new RunLedger(archive);
+		const runId = "consume-work-budget-without-execution-usage";
+		ledger.reserve({
+			workId: work.workId,
+			role: "observer",
+			missionId: work.mission.missionId,
+			allowance: work.budget.maxTokens,
+			runId,
+		});
+		ledger.settle({ runId, complete: true, usage: { ...ZERO_USAGE, inputTokens: work.budget.maxTokens } });
+		const current = service.inspectWork(work.workId);
+		assert.equal(current.budget.consumedTokens, current.budget.maxTokens);
+		assert.equal(current.execution.usage?.inputTokens ?? 0, 0);
+		assert.equal(repairAction(service, work.workId).enabled, false);
+		const result = await performCurrent(service, "conclave", "repair-ci", "ci-work-budget:authorize", {
+			observationId: current.lastObservation.observationId,
+			evidence: ["1"],
+		});
+		assert.equal("error" in result, true);
+		assert.equal(archive.query({ workId: work.workId, kinds: ["delivery"] }).items.some((record) => record.payload.status === "authorized" && record.payload.kind === "ci-repair"), false);
+	} finally {
+		await service.close();
+	}
+});
+
 test("CI repair stays blocked when isolated validation is unavailable", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-ci-isolation-blocked-"));
 	let validationRuns = 0;
@@ -652,7 +645,7 @@ test("overlapping duplicate repair wakes do not mark an active Executor turn blo
 				async getState() {
 					if (holdStateReads) {
 						stateReads.count += 1;
-						if (stateReads.count === 2) releaseStateGate();
+						if (stateReads.count === 1) releaseStateGate();
 						await stateGate;
 					}
 					return "idle";
@@ -677,7 +670,7 @@ test("overlapping duplicate repair wakes do not mark an active Executor turn blo
 		holdStateReads = true;
 		firstWake = service.ciRepair.processWake(repairWake);
 		secondWake = service.ciRepair.processWake(repairWake);
-		await waitForTwoRuntimeStateReads(stateReads);
+		await waitForRuntimeStateRead(stateReads);
 		await waitForHeldExecutor(controls);
 		await service.ciRepair.processWake(repairWake);
 		assert.deepEqual(ciRepairStatuses(archive, work.workId).sort(), ["authorized", "started"]);

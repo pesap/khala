@@ -231,7 +231,7 @@ export class ServiceDecisions {
 	private handoffProviderEvidence(work: WorkView): boolean {
 		const request = work.reviewRequest;
 		if (request === undefined) return false;
-		return providerEvidenceAllowsReady(this.archive, work, request);
+		return providerEvidenceAllowsReady(this.archive, work, request, this.getOptions().requireProviderCi);
 	}
 
 	private async replaceVerdictExecution(work: WorkView, meta: CommandMeta): Promise<WorkView> {

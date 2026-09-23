@@ -28,6 +28,7 @@ function options(projectPath) {
 		maxConcurrentRuns: 1,
 		maxCorrections: 3,
 		defaultWorkTokens: 100,
+		requireProviderCi: false,
 		conclaveModel: "provider/conclave",
 		conclaveThinking: "medium",
 		executorModel: "provider/executor",
@@ -551,6 +552,20 @@ test("Oracle wake invokes once, persists its advisory, and stale cancellation su
 	const pending = { requestId: "request-1", subject: "Review the handoff", missionId: "mission", executionId: "execution", signalId: "signal", headCommit: "head" };
 	const work = oracleWork("oracle-work", pending);
 	appendWork(archive, work, [{ effectId: "oracle-wake:oracle-work:request-1:1", kind: "oracle-wake", payload: { workId: work.workId, ...pending } }]);
+	const published = archive.project(work.workId);
+	archive.append({
+		commandId: "oracle-work:published",
+		expectedWorkRevision: published.revision,
+		kind: "review-request",
+		actor: "executor",
+		workId: work.workId,
+		missionId: work.mission.missionId,
+		executionId: work.execution.executionId,
+		payloadVersion: 1,
+		summary: "Draft review request published.",
+		payload: work.reviewRequest,
+		projection: { ...published, revision: published.revision + 1 },
+	});
 	const conclaveMessages = [];
 	let service;
 	const counters = {

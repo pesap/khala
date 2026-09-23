@@ -78,6 +78,7 @@ function makeService(path, controls) {
 	};
 	return new ApplicationService(new SQLiteArchive(path), ports, {
 		projectPath: dirname(path), targetBranch: "main", maxConcurrentExecutions: 1, defaultWorkTokens: 100,
+		requireProviderCi: false,
 		conclaveModel: "conclave", conclaveThinking: "medium", executorModel: "executor", executorThinking: "medium",
 		oracleModel: "conclave", oracleThinking: "medium", observerModel: "conclave", observerThinking: "medium",
 		conclavePromptIdentity: { packageVersion: "1", promptSha256: "conclave" }, executorPromptIdentity: { packageVersion: "1", promptSha256: "executor" },
