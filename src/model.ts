@@ -102,6 +102,12 @@ export type WorkBudget = Readonly<{
 	consumedTokens: number;
 }>;
 
+export type WorkBudgetView = WorkBudget &
+	Readonly<{
+		availableTokens: number;
+		overrunTokens: number;
+	}>;
+
 export type ActiveInvocation = Readonly<{
 	runId: string;
 	role: "conclave" | "executor" | "observer" | "oracle";
@@ -406,7 +412,7 @@ export type WorkSummary = Readonly<{
 	hasFailure: boolean;
 	revision: number;
 	queuePosition?: number | undefined;
-	budget: WorkBudget;
+	budget: WorkBudgetView;
 	nextAction: string;
 }>;
 

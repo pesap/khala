@@ -35,6 +35,12 @@ import {
 } from "./tui-pages.js";
 import { formatErrorSections } from "./tui-record-detail.js";
 import { truncateWorkName } from "./tui-work-table.js";
+import {
+	dispatchEligibility,
+	dispatchEligibilityReason,
+	replacementEligibility,
+	workBudgetView,
+} from "./workflow-dispatch.js";
 
 type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal";
 type WorkSelection = Readonly<{ kind: "section"; section: WorkSection }>;
@@ -212,10 +218,74 @@ function workSectionRows(work: WorkView, archiveError: string | undefined): read
 		...nextActionRow(work),
 		["Freshness", `Saved revision ${work.revision}; Refresh runtime for a live check`],
 		...missionRow(work),
+		...workBudgetRows(work),
+		...dispatchRows(work),
+		...executionBudgetRows(work),
+		...correctionRows(work),
+		...replacementRows(work),
+		...invocationRows(work),
 		...archiveErrorRow(archiveError),
 		...executionRows(work.execution),
 		...reviewRequestRow(work),
 	];
+}
+
+function workBudgetRows(work: WorkView): readonly (readonly [string, string])[] {
+	const budget = workBudgetView(work.budget);
+	return [
+		["Token cap", String(budget.maxTokens)],
+		["Consumed input + output", String(budget.consumedTokens)],
+		["Held reservations", String(budget.reservedTokens)],
+		["Available tokens", String(budget.availableTokens)],
+		["Observed overrun", String(budget.overrunTokens)],
+	];
+}
+
+function dispatchRows(work: WorkView): readonly (readonly [string, string])[] {
+	const eligibility = dispatchEligibility(work);
+	return [["Work dispatch", `${eligibility}: ${dispatchEligibilityReason(eligibility)}`]];
+}
+
+function executionBudgetRows(work: WorkView): readonly (readonly [string, string])[] {
+	const execution = work.execution;
+	if (execution === undefined || !Number.isSafeInteger(execution.tokenAllowance)) return [];
+	const observed = executionUsageTotal(execution.usage);
+	return [
+		["Execution token allowance", String(execution.tokenAllowance)],
+		["Execution consumed input + output", execution.usage === undefined ? "not reported" : String(observed)],
+		["Execution tokens remaining", String(Math.max(0, execution.tokenAllowance - observed))],
+		["Execution overrun", String(Math.max(0, observed - execution.tokenAllowance))],
+	];
+}
+
+function executionUsageTotal(usage: NonNullable<WorkView["execution"]>["usage"]): number {
+	return usage === undefined ? 0 : usage.inputTokens + usage.outputTokens;
+}
+
+function correctionRows(work: WorkView): readonly (readonly [string, string])[] {
+	const used = work.correctionCount ?? 0;
+	const limit = work.dispatchLimits?.maxCorrections;
+	return [
+		[
+			"Correction attempts",
+			limit === undefined
+				? `${used} used; allowance not recorded`
+				: `${used} of ${limit} used; ${Math.max(0, limit - used)} remaining`,
+		],
+	];
+}
+
+function replacementRows(work: WorkView): readonly (readonly [string, string])[] {
+	const eligibility = replacementEligibility(work);
+	const status = eligibility.eligibleByCorrectionAndWorkDispatch ? "pass" : "blocked";
+	return [["Replacement eligibility (correction and Work dispatch gates)", `${status}: ${eligibility.reason}`]];
+}
+
+function invocationRows(work: WorkView): readonly (readonly [string, string])[] {
+	return (work.activeInvocations ?? []).map((invocation): readonly [string, string] => [
+		`${invocation.role} ${invocation.state} reservation ${invocation.runId}`,
+		`${invocation.allowance} allowance; ${invocation.state === "uncertain" ? "usage reconciliation pending" : "usage not reported"}`,
+	]);
 }
 
 function missionRow(work: WorkView): readonly (readonly [string, string])[] {

@@ -61,7 +61,7 @@ import {
 	queueSchedulerEffect,
 	sameRuntimeBinding,
 } from "./service-state-policy.js";
-import { DispatchEligibilityError, dispatchEligibility, invocationAllowance } from "./workflow-dispatch.js";
+import { DispatchEligibilityError, dispatchEligibility, workInvocationAllowance } from "./workflow-dispatch.js";
 
 export function oraclePayload(
 	result: OracleResult,
@@ -350,8 +350,7 @@ export function workMaxConcurrentRuns(_work: WorkView, options: ServiceOptions):
 }
 
 export function hasExecutionAllowance(work: WorkWithMission): boolean {
-	const available = work.budget.maxTokens - work.budget.consumedTokens - work.budget.reservedTokens;
-	return invocationAllowance(work.budget.maxTokens, available) > 0;
+	return workInvocationAllowance(work.budget) > 0;
 }
 
 export function isQueuedMission(candidate: WorkView): candidate is WorkWithMission {

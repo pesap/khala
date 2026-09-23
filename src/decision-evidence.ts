@@ -1,4 +1,11 @@
 import type { JsonObject, JsonValue, Page, RecordKind, RecordView, WorkView } from "./model.js";
+import {
+	dispatchEligibility,
+	dispatchEligibilityReason,
+	invocationAllowance,
+	replacementEligibility,
+	workBudgetView,
+} from "./workflow-dispatch.js";
 
 type MutableJsonObject = { [key: string]: JsonValue | undefined };
 type PacketFit = Readonly<{
@@ -189,6 +196,9 @@ function packetTooLarge(packet: DecisionEvidencePacket): boolean {
 }
 
 function workProjection(work: WorkView): JsonObject {
+	const budget = workBudgetView(work.budget);
+	const eligibility = dispatchEligibility(work);
+	const allowance = Math.max(0, invocationAllowance(budget.maxTokens, budget.availableTokens));
 	return {
 		workId: work.workId,
 		revision: work.revision,
@@ -197,13 +207,16 @@ function workProjection(work: WorkView): JsonObject {
 		nextAction: shortText(work.nextAction),
 		mission: missionProjection(work),
 		terms: termsProjection(work.terms),
-		budget: work.budget,
+		budget,
+		dispatch: { eligibility, allowanceTokens: allowance, reason: dispatchEligibilityReason(eligibility) },
 		dispatchLimits: work.dispatchLimits ?? null,
 		correctionCount: work.correctionCount ?? 0,
+		correctionAllowance: correctionAllowanceProjection(work),
+		replacementEligibility: replacementEligibility(work),
 		activeInvocations: optionalProjection(work.activeInvocations, (runs) => runs.slice(0, MAX_ITEMS)),
 		preparation: optionalProjection(work.preparation, preparationProjection),
 		oraclePending: optionalProjection(work.oraclePending, oraclePendingProjection),
-		execution: executionProjection(work),
+		execution: executionProjection(work, allowance, eligibility),
 		checkedHead: checkedHead(work),
 		signal: optionalProjection(work.lastSignal, signalProjection),
 		validation: optionalProjection(work.lastValidation, validationProjection),
@@ -213,6 +226,16 @@ function workProjection(work: WorkView): JsonObject {
 		assessment: null,
 	};
 }
+function correctionAllowanceProjection(work: WorkView): JsonObject {
+	const used = work.correctionCount ?? 0;
+	const limit = work.dispatchLimits?.maxCorrections;
+	return { used, limit: limit ?? null, remaining: remainingCorrectionAttempts(used, limit) };
+}
+function remainingCorrectionAttempts(used: number, limit: number | undefined): number | null {
+	if (limit === undefined) return null;
+	return Math.max(0, limit - used);
+}
+
 function preparationProjection(preparation: NonNullable<WorkView["preparation"]>): JsonObject {
 	return {
 		status: preparation.status,
@@ -239,17 +262,42 @@ function missionProjection(work: WorkView): JsonValue {
 				terms: termsProjection(work.mission.assignment),
 			};
 }
-function executionProjection(work: WorkView): JsonValue {
-	return work.execution === undefined
-		? null
-		: {
-				executionId: work.execution.executionId,
-				state: work.execution.state,
-				blockReason: work.execution.blockReason ?? null,
-				model: shortText(work.execution.model),
-				thinking: shortText(work.execution.thinking),
-				tokenAllowance: work.execution.tokenAllowance,
-			};
+function executionProjection(
+	work: WorkView,
+	workAllowance: number,
+	workEligibility: ReturnType<typeof dispatchEligibility>,
+): JsonValue {
+	const execution = work.execution;
+	if (execution === undefined) return null;
+	const observedTokens = executionObservedTokens(execution);
+	const remainingAllowanceTokens = Math.max(0, execution.tokenAllowance - observedTokens);
+	return {
+		executionId: execution.executionId,
+		state: execution.state,
+		blockReason: execution.blockReason ?? null,
+		model: shortText(execution.model),
+		thinking: shortText(execution.thinking),
+		tokenAllowance: execution.tokenAllowance,
+		usage: execution.usage ?? null,
+		remainingAllowanceTokens,
+		nextInvocationAllowanceTokens: Math.min(remainingAllowanceTokens, workAllowance),
+		dispatchReason: executionDispatchReason(remainingAllowanceTokens, workEligibility),
+		overrunTokens: Math.max(0, observedTokens - execution.tokenAllowance),
+	};
+}
+function executionObservedTokens(execution: NonNullable<WorkView["execution"]>): number {
+	const usage = execution.usage;
+	return usage === undefined ? 0 : usage.inputTokens + usage.outputTokens;
+}
+function executionDispatchReason(
+	remainingAllowanceTokens: number,
+	workEligibility: ReturnType<typeof dispatchEligibility>,
+): string {
+	if (remainingAllowanceTokens === 0)
+		return "The current Execution allowance is exhausted, so another Executor turn cannot continue; consult replacementEligibility before deciding whether another Execution can start.";
+	if (workEligibility === "eligible")
+		return "Work and Execution token allowances are positive; lifecycle and project-capacity gates still apply.";
+	return dispatchEligibilityReason(workEligibility);
 }
 function checkedHead(work: WorkView): string | null {
 	return validationHead(work) ?? reviewHead(work) ?? null;

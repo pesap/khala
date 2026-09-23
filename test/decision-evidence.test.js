@@ -95,6 +95,110 @@ test("allowlisted recursive fields terminate and error payload diagnostics survi
 	assert.equal(packet.omissions[0].omittedCount, 0);
 });
 
+test("decision evidence reports token capacity, held reservations, overrun, and replacement gates separately", () => {
+	const packetFor = (work) => createDecisionEvidencePacket({
+		works: [projection("work-budget", 4, work)],
+		records: { items: [], asOfSequence: 4 },
+	});
+	const available = packetFor({
+		budget: { maxTokens: 100, consumedTokens: 99, reservedTokens: 0 },
+		dispatchLimits: { maxCorrections: 3 },
+		correctionCount: 2,
+	});
+	assert.deepEqual(available.work.budget, {
+		maxTokens: 100,
+		consumedTokens: 99,
+		reservedTokens: 0,
+		availableTokens: 1,
+		overrunTokens: 0,
+	});
+	assert.deepEqual(available.work.correctionAllowance, { used: 2, limit: 3, remaining: 1 });
+	assert.equal(available.work.dispatch.allowanceTokens, 1);
+	assert.equal(available.work.replacementEligibility.eligibleByCorrectionAndWorkDispatch, true);
+	assert.match(available.work.replacementEligibility.reason, /FIFO, project invocation capacity, and concurrent Execution admission/u);
+
+	const executionAllowance = packetFor({
+		budget: { maxTokens: 100, consumedTokens: 40, reservedTokens: 0 },
+		dispatchLimits: { maxCorrections: 3 },
+		correctionCount: 0,
+		execution: {
+			executionId: "execution-budget",
+			state: "running",
+			model: "model",
+			thinking: "off",
+			tokenAllowance: 20,
+			usage: { inputTokens: 14, outputTokens: 5, cacheHitTokens: 90, cacheMissTokens: 70 },
+		},
+	});
+	assert.equal(executionAllowance.work.execution.remainingAllowanceTokens, 1);
+	assert.equal(executionAllowance.work.execution.nextInvocationAllowanceTokens, 1);
+	assert.match(executionAllowance.work.execution.dispatchReason, /lifecycle and project-capacity gates/u);
+	assert.equal(executionAllowance.work.execution.overrunTokens, 0);
+	assert.equal(executionAllowance.work.execution.usage.cacheHitTokens, 90);
+
+	const reservationWait = packetFor({
+		budget: { maxTokens: 100, consumedTokens: 90, reservedTokens: 10 },
+		dispatchLimits: { maxCorrections: 3 },
+		correctionCount: 1,
+		activeInvocations: [{ runId: "held-run", role: "conclave", allowance: 20, state: "uncertain" }],
+	});
+	assert.equal(reservationWait.work.budget.availableTokens, 0);
+	assert.equal(reservationWait.work.dispatch.eligibility, "reservation-waiting");
+	assert.deepEqual(reservationWait.work.correctionAllowance, { used: 1, limit: 3, remaining: 2 });
+	assert.equal(reservationWait.work.replacementEligibility.eligibleByCorrectionAndWorkDispatch, false);
+	assert.match(reservationWait.work.replacementEligibility.reason, /reservation/u);
+	const invocationRecord = {
+		id: "held-invocation",
+		sequence: 5,
+		recordNumber: 5,
+		kind: "invocation",
+		actor: "system",
+		workId: "work-budget",
+		payloadVersion: 1,
+		summary: "Partial usage observed",
+		evidenceRefs: [],
+		recordedAt: "now",
+		payload: {
+			runId: "held-run",
+			role: "conclave",
+			allowance: 20,
+			state: "uncertain",
+			usage: { inputTokens: 10, outputTokens: 2, cacheHitTokens: 4, cacheMissTokens: 6 },
+		},
+	};
+	const invocationEvidence = createDecisionEvidencePacket({
+		works: [projection("work-budget", 4, { budget: { maxTokens: 100, consumedTokens: 90, reservedTokens: 10 } })],
+		records: { items: [invocationRecord], asOfSequence: 5 },
+	});
+	assert.deepEqual(invocationEvidence.records.items[0].payload.usage, {
+		inputTokens: 10,
+		outputTokens: 2,
+		cacheHitTokens: 4,
+		cacheMissTokens: 6,
+	});
+
+	const overrun = packetFor({
+		budget: { maxTokens: 100, consumedTokens: 105, reservedTokens: 0 },
+		dispatchLimits: { maxCorrections: 3 },
+		correctionCount: 3,
+		execution: {
+			executionId: "execution-exhausted",
+			state: "blocked",
+			blockReason: "budget-exhausted",
+			model: "model",
+			thinking: "off",
+			tokenAllowance: 10,
+			usage: { inputTokens: 10, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 },
+		},
+	});
+	assert.equal(overrun.work.budget.availableTokens, -5);
+	assert.equal(overrun.work.budget.overrunTokens, 5);
+	assert.deepEqual(overrun.work.correctionAllowance, { used: 3, limit: 3, remaining: 0 });
+	assert.equal(overrun.work.replacementEligibility.eligibleByCorrectionAndWorkDispatch, false);
+	assert.match(overrun.work.replacementEligibility.reason, /correction allowance is exhausted/u);
+	assert.match(overrun.work.execution.dispatchReason, /another Executor turn cannot continue.*replacementEligibility/u);
+});
+
 test("decision evidence distinguishes passing commands from failed source verification", () => {
 	const validation = {
 		executionId: "execution-source",

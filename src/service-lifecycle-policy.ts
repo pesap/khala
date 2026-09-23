@@ -96,7 +96,7 @@ import {
 	sameSignal,
 	tokenUsageTotal,
 } from "./service-state-policy.js";
-import { type DispatchEligibility, dispatchEligibility } from "./workflow-dispatch.js";
+import { type DispatchEligibility, dispatchEligibility, workBudgetView } from "./workflow-dispatch.js";
 
 export function wakeErrorKindFor(
 	reason: ConclaveWakeCause | undefined,
@@ -567,7 +567,7 @@ export function workSummary(work: WorkView, queuePositions: ReadonlyMap<string, 
 		hasFailure: workHasFailure(work),
 		revision: work.revision,
 		queuePosition: queuePositions.get(work.workId),
-		budget: work.budget,
+		budget: workBudgetView(work.budget),
 		nextAction: work.nextAction,
 	};
 }
