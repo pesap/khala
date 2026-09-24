@@ -1,7 +1,7 @@
 import type { WorkView } from "./model.js";
 import type { RuntimeState } from "./ports.js";
 import { tokenUsageTotal } from "./service-state-policy.js";
-import { invocationAllowance } from "./workflow-dispatch.js";
+import { workInvocationAllowance } from "./workflow-dispatch.js";
 
 export function isResumableIdleExecutor(work: WorkView, runtimeState?: RuntimeState): boolean {
 	const execution = work.execution;
@@ -26,8 +26,7 @@ function hasExecutionAllowance(execution: NonNullable<WorkView["execution"]>): b
 }
 
 function hasWorkAllowance(work: WorkView): boolean {
-	const available = work.budget.maxTokens - work.budget.consumedTokens - work.budget.reservedTokens;
-	return invocationAllowance(work.budget.maxTokens, available) > 0;
+	return workInvocationAllowance(work.budget) > 0;
 }
 
 function idleRuntimeMatches(recorded: RuntimeState | undefined, observed: RuntimeState | undefined): boolean {

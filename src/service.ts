@@ -47,7 +47,12 @@ import {
 import { ServiceGovernance } from "./service-governance.js";
 import { InvocationCoordinator } from "./service-invocation-coordinator.js";
 import { reconcileInvocation } from "./service-invocation-recovery.js";
-import { closeRuntimeAfterDrain, conclaveWakeError, wakeErrorKindFor } from "./service-lifecycle-policy.js";
+import {
+	admissionWakeError,
+	closeRuntimeAfterDrain,
+	conclaveWakeError,
+	wakeErrorKindFor,
+} from "./service-lifecycle-policy.js";
 import { ServiceMonitoring } from "./service-monitoring.js";
 import { ServiceObserver } from "./service-observer.js";
 import { ServiceRecovery } from "./service-recovery.js";
@@ -55,7 +60,6 @@ import {
 	actionFingerprint,
 	cleanupFailureMatches,
 	cleanupLabel,
-	markAdmissionFailure,
 	oraclePayload,
 	restoreInvocationGateAttention,
 	throwIfOperationAborted,
@@ -67,26 +71,6 @@ import { ServiceWorkspaceActions } from "./service-workspace-actions.js";
 
 export type { ServiceOptions } from "./service-contracts.js";
 export { ActionInputError, ApplicationError, RunGateUnavailable, resultText } from "./service-contracts.js";
-
-function admissionWakeError(
-	error: ErrorEnvelope,
-	kind: ReturnType<typeof wakeErrorKindFor>,
-	work: WorkView,
-): ErrorEnvelope {
-	if (kind === "admission") return markAdmissionFailure(error);
-	if (work.state === "submitted" && work.mission === undefined) return markAdmissionFailure(error);
-	return error;
-}
-
-function wakeFailureCause(reason: ConclaveWakeCause | undefined): ConclaveWakeCause {
-	if (reason === undefined) return "admission";
-	return reason;
-}
-
-function wakeFailureEvidence(error: ErrorEnvelope, observationId: string | undefined): readonly string[] {
-	if (observationId === undefined) return error.evidenceRefs;
-	return [...error.evidenceRefs, observationId];
-}
 
 function reconciledExecutorBinding(work: WorkView, fact: ReturnType<RunLedger["find"]>): RuntimeBinding | undefined {
 	if (fact === undefined) return undefined;
@@ -390,6 +374,7 @@ export class ApplicationService {
 			thinking: this.configuration.options.conclaveThinking,
 			promptIdentity: this.configuration.options.conclavePromptIdentity,
 			enableCiRepair: this.configuration.options.enableCiRepair === true,
+			trustedSkillCatalog: this.configuration.options.trustedSkillCatalog,
 			runtime: this.ports.runtime,
 			invocations: this.invocations,
 			inspectWork: (currentWorkId) => this.inspectWork(currentWorkId),
@@ -514,8 +499,8 @@ export class ApplicationService {
 			meta,
 			kind: "error",
 			workId,
-			payload: { ...error, dispatchEffectId, dispatchCause: wakeFailureCause(reason) },
-			evidenceRefs: wakeFailureEvidence(error, observationId),
+			payload: { ...error, dispatchEffectId, dispatchCause: reason ?? "admission" },
+			evidenceRefs: observationId === undefined ? error.evidenceRefs : [...error.evidenceRefs, observationId],
 			projection: next,
 			summary: error.summary,
 			// The original outbox effect remains pending. Creating another wake here
@@ -626,7 +611,7 @@ export class ApplicationService {
 			"amend-mission": async () => this.governance.amendMission(work, command.meta, command.input),
 			"launch-observer": async () => this.observer.launch(work, command.meta),
 			"record-assessment": async () => this.observer.recordAssessment(work, command.meta, command.input),
-			"start-execution": async () => this.execution.start(work, command.meta, operation),
+			"start-execution": async () => this.execution.start(work, command.meta, command.input, operation),
 			"record-signal": async () => this.workspaceActions.recordSignal(work, command.meta, command.input, operation),
 			"commit-sandbox": async () => this.workspaceActions.commitSandbox(work, command.meta, operation),
 			"run-validation": async () => this.workspaceActions.runValidation(work, command.meta, operation),

@@ -140,12 +140,17 @@ export class ServiceDecisions {
 			summary: `Conclave Verdict: ${decision}.`,
 			effects: verdictEffects(work.workId, next.revision, decision, transition.execution),
 		});
-		return this.finishVerdict(decision, result.projection, meta);
+		return this.finishVerdict(decision, result.projection, meta, input);
 	}
 
-	private async finishVerdict(decision: VerdictDecision, work: WorkView, meta: CommandMeta): Promise<WorkView> {
+	private async finishVerdict(
+		decision: VerdictDecision,
+		work: WorkView,
+		meta: CommandMeta,
+		input: ActionInput | undefined,
+	): Promise<WorkView> {
 		if (decision !== "replace") return work;
-		return this.replaceVerdictExecution(work, meta);
+		return this.replaceVerdictExecution(work, meta, input);
 	}
 
 	private async validateHandoffDecision(
@@ -234,13 +239,21 @@ export class ServiceDecisions {
 		return providerEvidenceAllowsReady(this.archive, work, request, this.getOptions().requireProviderCi);
 	}
 
-	private async replaceVerdictExecution(work: WorkView, meta: CommandMeta): Promise<WorkView> {
-		const replacement = await this.execution.start(work, {
-			...meta,
-			commandId: `${meta.commandId}:replacement`,
-			commandFingerprint: undefined,
-			expectedWorkRevision: work.revision,
-		});
+	private async replaceVerdictExecution(
+		work: WorkView,
+		meta: CommandMeta,
+		input: ActionInput | undefined,
+	): Promise<WorkView> {
+		const replacement = await this.execution.start(
+			work,
+			{
+				...meta,
+				commandId: `${meta.commandId}:replacement`,
+				commandFingerprint: undefined,
+				expectedWorkRevision: work.revision,
+			},
+			input,
+		);
 		this.archive.updateCommandProjection(meta.commandId, replacement);
 		return replacement;
 	}

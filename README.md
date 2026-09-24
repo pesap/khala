@@ -145,6 +145,7 @@ See the packaged [tool-usage skill](skills/khala/SKILL.md) for the complete tool
 | Review target branch | `main` |
 
 The token allowance is an observed stopping limit, not a hard financial spending ceiling.
+See [Operations: Allowances and limits](docs/operations.md#allowances-and-limits) for token accounting, reservations, correction limits, and overshoot.
 
 ## Explore the repository
 

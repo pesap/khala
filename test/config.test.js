@@ -1,9 +1,31 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadConfig, persistRoleSetting } from "../dist/src/config.js";
+
+test("trusted skills come only from the explicit global allowlist", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-trusted-skills-config-"));
+	const agentDirectory = join(directory, "agent");
+	const projectDirectory = join(directory, "project");
+	const previousDirectory = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDirectory;
+	try {
+		await mkdir(agentDirectory, { recursive: true });
+		await mkdir(join(projectDirectory, ".pi", "skills", "rogue"), { recursive: true });
+		await writeFile(join(agentDirectory, "khala.json"), JSON.stringify({ trustedSkills: ["approved-skill"] }));
+		await writeFile(join(projectDirectory, ".pi", "khala.json"), JSON.stringify({ trustedSkills: ["rogue"] }));
+		assert.deepEqual(loadConfig(projectDirectory, true, false).trustedSkills, ["approved-skill"]);
+
+		await writeFile(join(agentDirectory, "khala.json"), JSON.stringify({}));
+		assert.deepEqual(loadConfig(projectDirectory, true, false).trustedSkills, []);
+	} finally {
+		if (previousDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousDirectory;
+		await rm(directory, { recursive: true, force: true });
+	}
+});
 
 test("Role settings persist without discarding other Khala configuration", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-config-"));

@@ -12,6 +12,7 @@ import { wakeResolutionMissing } from "./service-foundation-policy.js";
 import type { InvocationCoordinator } from "./service-invocation-coordinator.js";
 import { conclaveWakeMessage } from "./service-runtime-policy.js";
 import { tokenUsageTotal } from "./service-state-policy.js";
+import { TRUSTED_SKILL_TOOLS, type TrustedSkillCatalog } from "./trusted-skills.js";
 
 type ConclaveWakeInput = Readonly<{
 	work: WorkView;
@@ -27,6 +28,7 @@ type ConclaveWakeInput = Readonly<{
 	runtime: AgentRuntimePort;
 	invocations: Pick<InvocationCoordinator, "dispatch">;
 	inspectWork: (workId: string) => WorkView;
+	trustedSkillCatalog?: TrustedSkillCatalog | undefined;
 }>;
 
 type BindingSink = (binding: RuntimeBinding) => void;
@@ -76,13 +78,18 @@ async function ensureConclaveSession(input: ConclaveWakeInput, operation: Operat
 				role: "conclave",
 				promptIdentity: input.promptIdentity,
 				bindingScope: { workId: input.workId },
-				tools: ["khala_read_archive", "khala_inspect_runtime", "khala_perform_action", "khala_run_oracle"],
+				tools: conclaveTools(input.trustedSkillCatalog),
 			},
 			operation,
 		);
 	} catch (error) {
 		throw new InvocationLaunchError(new Error(String(error)));
 	}
+}
+
+function conclaveTools(catalog: TrustedSkillCatalog | undefined): readonly string[] {
+	const core = ["khala_read_archive", "khala_inspect_runtime", "khala_perform_action", "khala_run_oracle"];
+	return catalog === undefined || catalog.length === 0 ? core : [...core, ...TRUSTED_SKILL_TOOLS];
 }
 
 function wakeNeedsDecision(input: ConclaveWakeInput): boolean {

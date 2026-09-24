@@ -32,6 +32,7 @@ import {
 	sessionRole,
 	setRoleTools,
 } from "./extension-role.js";
+import { registerTrustedSkillTools } from "./extension-trusted-skills.js";
 import { type ApplicationModelRegistry, type ApplicationRuntime, createApplication } from "./factory.js";
 import {
 	type Actor,
@@ -110,6 +111,26 @@ const actionInputSchema = Type.Object({
 	observationId: Type.Optional(Type.String({ minLength: 1 })),
 	subject: Type.Optional(Type.String({ minLength: 1 })),
 	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
+	skillIds: Type.Optional(
+		Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+			maxItems: 3,
+			description:
+				"For start-execution or a replace Verdict, select relevant IDs from khala_list_trusted_skills. Omit when none apply.",
+		}),
+	),
+	skillInstructions: Type.Optional(
+		Type.String({
+			maxLength: 4_000,
+			description:
+				"For start-execution or a replace Verdict, send concise task-specific guidance derived from selected skills.",
+		}),
+	),
+	skillSelectionReason: Type.Optional(
+		Type.String({
+			maxLength: 500,
+			description: "For start-execution or a replace Verdict, briefly explain the skill selection or why none apply.",
+		}),
+	),
 });
 const performSchema = Type.Object({
 	action: StringEnum([
@@ -242,6 +263,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			return renderArchiveToolResult(result, options.expanded, options.isPartial, theme);
 		},
 	});
+
+	if (sessionRole(pi) === "conclave") registerTrustedSkillTools(pi, getRuntime);
 
 	pi.registerTool({
 		name: "khala_poll_provider",

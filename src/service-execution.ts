@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { type ArchivePort, ExecutionAdmissionConflict, type PendingArchiveEffect } from "./archive.js";
 import { InvocationLaunchError } from "./dispatch.js";
-import type { CommandMeta, Execution, WorkView } from "./model.js";
+import type { ActionInput, CommandMeta, Execution, PreparationState, WorkView } from "./model.js";
 import type { OperationContext, RuntimeBinding, ServicePorts } from "./ports.js";
 import type { ReservedInvocation } from "./run-ledger.js";
 import type { RuntimeStorage } from "./runtime-storage.js";
@@ -36,12 +36,18 @@ import {
 	isDispatchDeferral,
 	sandboxCleanupEffect,
 } from "./service-state-policy.js";
-import { invocationAllowance as workInvocationAllowance } from "./workflow-dispatch.js";
+import { executorSkillGuidance, executorSkillGuidanceMessage } from "./trusted-skills.js";
+import { workInvocationAllowance } from "./workflow-dispatch.js";
 
 type PreparedExecution = Readonly<{ execution: Execution; queued: WorkView }>;
 
 function isCurrentInitialExecutorTurn(work: WorkView, execution: Execution): boolean {
 	return work.execution?.executionId === execution.executionId && work.execution.state === "queued";
+}
+
+function recoverySkillGuidance(work: WorkView, options: ServiceOptions): Execution["skillGuidance"] {
+	if (work.preparation?.skillGuidance !== undefined) return work.preparation.skillGuidance;
+	return executorSkillGuidance(options.trustedSkillCatalog ?? [], undefined);
 }
 
 export class ServiceExecution {
@@ -84,23 +90,25 @@ export class ServiceExecution {
 		this.inspectWork = input.inspectWork;
 	}
 
-	async start(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
+	async start(work: WorkView, meta: CommandMeta, input?: ActionInput, operation?: OperationContext): Promise<WorkView> {
 		this.core.requireActor(meta, "conclave");
 		const startable = this.requireStartableMission(work);
 		if (this.executionAlreadyStarted(startable.execution)) return startable;
-		return this.startAvailable(startable, meta, operation);
+		const skillGuidance = executorSkillGuidance(this.getOptions().trustedSkillCatalog ?? [], input);
+		return this.startAvailable(startable, meta, skillGuidance, operation);
 	}
 
 	private async startAvailable(
 		work: WorkWithMission,
 		meta: CommandMeta,
+		skillGuidance: Execution["skillGuidance"],
 		operation?: OperationContext,
 	): Promise<WorkView> {
 		if (work.preparation?.status === "waiting") return work;
 		const options = this.getOptions();
 		if (!executionAdmissionAvailable(work, this.archive.listProjects(), options.maxConcurrentExecutions)) return work;
 		this.core.validateModel("executor", options.executorModel, options.executorThinking);
-		return this.prepareAndAppend(work, meta, operation);
+		return this.prepareAndAppend(work, meta, skillGuidance, operation);
 	}
 
 	async recoverPreparation(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
@@ -114,7 +122,7 @@ export class ServiceExecution {
 			);
 		let prepared: PreparedExecution;
 		try {
-			prepared = await this.prepare(work, operation);
+			prepared = await this.prepare(work, recoverySkillGuidance(work, this.getOptions()), operation);
 		} catch (error) {
 			return this.handleRecoveryPreparationFailure(
 				work.workId,
@@ -163,16 +171,18 @@ export class ServiceExecution {
 	private async prepareAndAppend(
 		work: WorkWithMission,
 		meta: CommandMeta,
+		skillGuidance: Execution["skillGuidance"],
 		operation?: OperationContext,
 	): Promise<WorkView> {
 		let prepared: PreparedExecution;
 		try {
-			prepared = await this.prepare(work, operation);
+			prepared = await this.prepare(work, skillGuidance, operation);
 		} catch (error) {
 			return this.handleStartPreparationFailure(
 				work.workId,
 				meta,
 				error instanceof Error ? error : new Error(String(error)),
+				skillGuidance,
 			);
 		}
 		return this.appendPrepared(work, meta, prepared, operation);
@@ -182,27 +192,43 @@ export class ServiceExecution {
 		const current = this.inspectWork(workId);
 		if (current.preparation?.status === "waiting") return current;
 		if (!hasQueuedMission(current)) return current;
-		return this.recordPreparationWaiting(current, meta, error);
+		return this.recordRecoveryPreparationWaiting(current, meta, error);
 	}
 
-	private handleStartPreparationFailure(workId: string, meta: CommandMeta, error: Error): WorkView {
+	private recordRecoveryPreparationWaiting(work: WorkWithMission, meta: CommandMeta, error: Error): WorkView {
+		return this.recordPreparationWaiting(work, meta, error, work.preparation?.skillGuidance);
+	}
+
+	private handleStartPreparationFailure(
+		workId: string,
+		meta: CommandMeta,
+		error: Error,
+		skillGuidance: Execution["skillGuidance"],
+	): WorkView {
 		const current = this.inspectWork(workId);
 		if (current.preparation?.status === "waiting") return current;
 		if (!isStartableMission(current)) return current;
-		return this.recordPreparationWaiting(current, meta, error);
+		return this.recordPreparationWaiting(current, meta, error, skillGuidance);
 	}
 
-	private recordPreparationWaiting(work: WorkWithMission, meta: CommandMeta, error: Error): WorkView {
+	private recordPreparationWaiting(
+		work: WorkWithMission,
+		meta: CommandMeta,
+		error: Error,
+		skillGuidance: Execution["skillGuidance"],
+	): WorkView {
+		let preparation: PreparationState = {
+			status: "waiting",
+			prerequisiteId: `${work.mission.missionId}:${work.revision}`,
+			operation: "dependencies",
+			diagnostic: error.message.slice(0, 2_000),
+			recovery: "user",
+		};
+		if (skillGuidance !== undefined) preparation = { ...preparation, skillGuidance };
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
-			preparation: {
-				status: "waiting",
-				prerequisiteId: `${work.mission.missionId}:${work.revision}`,
-				operation: "dependencies",
-				diagnostic: error.message.slice(0, 2_000),
-				recovery: "user",
-			},
+			preparation,
 			nextAction: "Executor preparation failed; User recovery is required.",
 			lastError: {
 				code: "external-failure",
@@ -227,7 +253,11 @@ export class ServiceExecution {
 		}).projection;
 	}
 
-	private async prepare(work: WorkWithMission, operation?: OperationContext): Promise<PreparedExecution> {
+	private async prepare(
+		work: WorkWithMission,
+		skillGuidance: Execution["skillGuidance"],
+		operation?: OperationContext,
+	): Promise<PreparedExecution> {
 		const executionId = nanoid();
 		let sandbox: Execution["sandbox"] | undefined;
 		try {
@@ -244,10 +274,7 @@ export class ServiceExecution {
 				operation,
 			);
 			await this.workspace.prepareSandbox(sandbox, operation);
-			const allowance = workInvocationAllowance(
-				work.budget.maxTokens,
-				work.budget.maxTokens - work.budget.consumedTokens - work.budget.reservedTokens,
-			);
+			const allowance = workInvocationAllowance(work.budget);
 			if (allowance <= 0) throw new Error("Work budget has no available Executor allowance.");
 			const execution: Execution = {
 				executionId,
@@ -263,6 +290,7 @@ export class ServiceExecution {
 				tokenAllowance: allowance,
 				promptIdentity: options.executorPromptIdentity,
 				sandbox,
+				skillGuidance,
 			};
 			return { execution, queued: queuedExecutionProjection(work, execution) };
 		} catch (error) {
@@ -416,7 +444,7 @@ export class ServiceExecution {
 		}
 		const turn = await this.runtime.send(
 			binding,
-			`Work ${promptWork.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${promptWork.revision}.\nInvocation run ID: ${reservation.runId}.`,
+			`Work ${promptWork.workId}, Execution ${execution.executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${promptWork.revision}.${executorSkillGuidanceMessage(execution.skillGuidance)}\nInvocation run ID: ${reservation.runId}.`,
 			{ tokenAllowance: reservation.allowance, runId: reservation.runId },
 			operation,
 		);

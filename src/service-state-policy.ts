@@ -24,7 +24,7 @@ import {
 	type DispatchEligibility,
 	DispatchEligibilityError,
 	dispatchEligibility,
-	invocationAllowance as workInvocationAllowance,
+	workInvocationAllowance,
 } from "./workflow-dispatch.js";
 
 export function directedWakeMessage(workId: string, reason: ConclaveWakeCause | undefined): string | undefined {
@@ -321,8 +321,7 @@ export function tokenUsageTotal(usage: TokenUsage): number {
 export function invocationAllowance(work: WorkView): number {
 	const eligibility = dispatchEligibility(work);
 	if (eligibility !== "eligible") throw new DispatchEligibilityError(eligibility);
-	const available = work.budget.maxTokens - work.budget.consumedTokens - work.budget.reservedTokens;
-	return workInvocationAllowance(work.budget.maxTokens, available);
+	return workInvocationAllowance(work.budget);
 }
 
 export function isDispatchDeferral(failure: Error): boolean {

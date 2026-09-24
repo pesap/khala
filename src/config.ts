@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { nanoid } from "nanoid";
-import type { GovernedRole, JsonObject, JsonValue, RoleSetting } from "./model.js";
+import { type GovernedRole, isSkillId, type JsonObject, type JsonValue, type RoleSetting } from "./model.js";
 
 export type KhalaConfig = Readonly<{
 	archiveRoot: string;
@@ -18,6 +18,7 @@ export type KhalaConfig = Readonly<{
 	enableCiRepair: boolean;
 	requireProviderCi: boolean;
 	piCommand: readonly string[];
+	trustedSkills: readonly string[];
 	conclaveModel: string;
 	conclaveThinking: string;
 	conclaveUsdMax: number;
@@ -52,6 +53,7 @@ const DEFAULTS: KhalaConfig = {
 	enableCiRepair: false,
 	requireProviderCi: true,
 	piCommand: ["pi"],
+	trustedSkills: [],
 	conclaveModel: "",
 	conclaveThinking: "medium",
 	conclaveUsdMax: 5,
@@ -69,7 +71,8 @@ const DEFAULTS: KhalaConfig = {
 
 export function loadConfig(projectPath: string, trusted: boolean, requireModels = true): KhalaConfig {
 	const globalPath = join(agentDirectory(), "khala.json");
-	const globalConfig = apply(DEFAULTS, readConfig(globalPath));
+	const globalValues = readConfig(globalPath);
+	const globalConfig = { ...apply(DEFAULTS, globalValues), trustedSkills: readTrustedSkills(globalValues) };
 	const projectConfig = trusted ? readConfig(join(projectPath, ".pi", "khala.json")) : undefined;
 	const config = apply(globalConfig, projectConfig);
 	const effective = {
@@ -227,6 +230,7 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		enableCiRepair: readBoolean(values, "enableCiRepair", base.enableCiRepair),
 		requireProviderCi: readBoolean(values, "requireProviderCi", base.requireProviderCi),
 		piCommand: readTextList(values, "piCommand", base.piCommand),
+		trustedSkills: base.trustedSkills,
 		conclaveModel: readText(values, "conclaveModel", base.conclaveModel),
 		conclaveThinking: readText(values, "conclaveThinking", base.conclaveThinking),
 		conclaveUsdMax: readPositiveNumber(values, "conclaveUsdMax", base.conclaveUsdMax),
@@ -343,6 +347,22 @@ function isPositiveInteger(value: JsonValue | undefined): value is number {
 	if (number !== value) return false;
 	if (!Number.isSafeInteger(number)) return false;
 	return number > 0;
+}
+
+function readTrustedSkills(values: JsonObject | undefined): readonly string[] {
+	const value = values?.["trustedSkills"];
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new ConfigError("trustedSkills must be a string list.");
+	const ids = value.map((entry) => readStringValue(entry, "trustedSkills").trim());
+	assertTrustedSkillIds(ids);
+	return ids;
+}
+
+function assertTrustedSkillIds(ids: readonly string[]): void {
+	if (ids.some((id) => !isSkillId(id)))
+		throw new ConfigError("trustedSkills must contain unique Pi skill directory names.");
+	if (new Set(ids).size !== ids.length)
+		throw new ConfigError("trustedSkills must contain unique Pi skill directory names.");
 }
 
 function readTextList(values: JsonObject, key: string, fallback: readonly string[]): readonly string[] {
