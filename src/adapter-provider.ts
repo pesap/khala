@@ -95,8 +95,7 @@ export function gitlabCiObservation(
 	reviewRequest: ReviewRequest,
 ): ProviderCiObservation {
 	const reviewStatus = gitlabStatus(readValue(row, "state"), readBoolean(row, "draft"));
-	const checks = gitlabProviderChecks(row);
-	const checksComplete = checks.length > 0;
+	const { checks, checksComplete } = gitlabProviderChecks(row);
 	const status = providerCiStatus(reviewStatus, checks, checksComplete);
 	const repository = readRepository(row);
 	const sourceBranch = readOptionalTextValue(row, "source_branch");

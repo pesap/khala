@@ -2,14 +2,32 @@ import { MAX_PROVIDER_FIELD } from "./adapter-shared.js";
 import { isFiniteNumber, isJsonObject, isText } from "./archive-codec.js";
 import type { JsonObject, JsonValue, ProviderCheck } from "./model.js";
 
-export function gitlabProviderChecks(row: Record<string, JsonValue>): readonly ProviderCheck[] {
-	const check = gitlabPipelineCheck(row);
-	return check === undefined ? [] : [check];
+export type GitlabProviderChecks = Readonly<{
+	checks: readonly ProviderCheck[];
+	checksComplete: boolean;
+}>;
+
+export function gitlabProviderChecks(row: Record<string, JsonValue>): GitlabProviderChecks {
+	const pipeline = row["head_pipeline"];
+	if (!isJsonObject(pipeline)) return { checks: [], checksComplete: false };
+	const check = gitlabPipelineCheck(pipeline);
+	return {
+		checks: check === undefined ? [] : [check],
+		checksComplete: isCurrentPipelineEvidence(row, pipeline, check),
+	};
 }
 
-function gitlabPipelineCheck(row: Record<string, JsonValue>): ProviderCheck | undefined {
-	const pipeline = row["head_pipeline"];
-	if (!isJsonObject(pipeline)) return undefined;
+function isCurrentPipelineEvidence(
+	row: Record<string, JsonValue>,
+	pipeline: JsonObject,
+	check: ProviderCheck | undefined,
+): boolean {
+	if (check === undefined) return false;
+	const currentHead = readProviderText(row["sha"]);
+	return currentHead !== undefined && currentHead === readProviderText(pipeline["sha"]);
+}
+
+function gitlabPipelineCheck(pipeline: JsonObject): ProviderCheck | undefined {
 	const status = readProviderText(pipeline["status"]);
 	if (status === undefined) return undefined;
 	return createGitlabPipelineCheck(pipeline, status);

@@ -15,7 +15,7 @@ import { authority, ZERO_USAGE, makeService, meta, admitAndStart, restorePath } 
 
 test("GitLab pipeline status becomes bounded current CI check evidence", () => {
 	const reviewRequest = { providerId: "42", status: "draft", url: "https://gitlab.example/fixture/project/-/merge_requests/42" };
-	const observationFor = (status, hasPipeline = true) => {
+	const observationFor = (status, hasPipeline = true, pipelineSha = "head") => {
 		const row = {
 			iid: 42,
 			state: "opened",
@@ -29,6 +29,7 @@ test("GitLab pipeline status becomes bounded current CI check evidence", () => {
 			head_pipeline: hasPipeline
 				? {
 						id: 73,
+						sha: pipelineSha,
 						status,
 						web_url: "https://gitlab.example/fixture/project/-/pipelines/73",
 						finished_at: "2026-09-09T00:00:00.000Z",
@@ -49,6 +50,13 @@ test("GitLab pipeline status becomes bounded current CI check evidence", () => {
 	assert.equal(providerChecksAreSettled(running), false);
 	assert.equal(passed.details.checks[0].status, "success");
 	assert.equal(providerChecksAreSettled(passed), true);
+	const stalePipeline = observationFor("success", true, "older-head");
+	assert.equal(stalePipeline.headCommit, "head");
+	assert.equal(stalePipeline.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(stalePipeline), false);
+	const unidentifiedPipeline = observationFor("success", true, null);
+	assert.equal(unidentifiedPipeline.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(unidentifiedPipeline), false);
 	const missingPipeline = observationFor(undefined, false);
 	assert.equal(missingPipeline.status, "checks-incomplete");
 	assert.equal(providerChecksAreSettled(missingPipeline), false);
