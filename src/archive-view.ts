@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { SQLiteArchive } from "./archive.js";
 import type { WorkSummary, WorkView } from "./model.js";
+import { workBudgetView } from "./workflow-dispatch.js";
 
 export interface KhalaArchiveView {
 	listWork: () => readonly WorkSummary[];
@@ -33,7 +34,7 @@ function listWork(projects: readonly WorkView[]): readonly WorkSummary[] {
 		hasFailure: workHasFailure(work),
 		revision: work.revision,
 		queuePosition: queuePositions.get(work.workId),
-		budget: work.budget,
+		budget: workBudgetView(work.budget),
 		nextAction: work.nextAction,
 	}));
 }

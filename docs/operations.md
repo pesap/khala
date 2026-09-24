@@ -1,8 +1,8 @@
 # Operations
 
 Khala should remain understandable when the initiating Pi session is gone.
-This document owns target configuration, allowances, state locations, and operator recovery from the [MVP design](mvp-design.md).
-The current configuration reference below is explicitly separate from that target.
+This document owns operational configuration, token accounting, state locations, and operator recovery from the [MVP design](mvp-design.md).
+Current behavior and target requirements are identified separately.
 Use [Getting started](getting-started.md) for the existing provider-review workflow.
 
 ## Configuration and state locations
@@ -27,35 +27,86 @@ Starting Work does not install global tools or open unsolicited terminal panes.
 
 ## Allowances and limits
 
-The default Work budget is 20,000 tokens across the complete workflow, including Conclave, Executor, Observer, and Oracle.
-Before autonomous launch, an explicit total concurrency limit and finite automatic correction allowance must be resolved from User settings or the submission.
-Repository overrides may lower the shared total child-run ceiling, not raise it.
-No separate machine-wide resource scheduler is required.
+The default Work cap is 20,000 tokens across Conclave, Executor, Observer, and Oracle invocations.
+Work submissions store the resolved `maxCorrections` value, defaulting to 3, separately from this token cap.
+The Archive enforces a shared `maxConcurrentRuns` ceiling over reserved and uncertain invocations.
+Repository overrides may lower this project-wide ceiling, not raise it.
 The current session-owned service polls active provider requests once per minute while the hosting User session is alive.
 Independent background polling remains a target requirement.
 
-Every child invocation reserves an explicit allowance from the remaining Work budget before launch.
-Reservation and usage updates are durable and idempotently bound to its run ID.
-Observed input and output tokens are charged as turns complete and inspectable by role and attempt.
-Cache counters remain metadata and are not added a second time.
-Unspent reservations are released when a run ends; replacement never restores consumed tokens.
+### Token accounting
 
-After a crash, outstanding reservations remain held until runtime and usage are reconciled.
-Unreported in-flight usage is uncertain, not newly spendable budget merely because a process disappeared.
-Release requires reconciled evidence or an explicit User decision.
-An Executor reaching its allowance becomes blocked with `budget-exhausted`.
-Another role exhausting its allowance records the failed decision or operation and exposes the next User action without launching an unbudgeted child.
-Only the User can increase the Work budget.
+The Work token cap applies to every governed role using that Work.
+The Archive records aggregate consumed and reserved token counts on the Work and stores each invocation's role, allowance, state, and cumulative usage.
+Work details show active run IDs, roles, states, and original allowances; inspect the invocation Record for that run's cumulative usage.
 
-A correction attempt is one Conclave-authorized implementation pass after review or a blocker, whether it resumes or replaces an Execution.
-The initial pass does not consume a correction attempt.
-Replacement and Mission amendment do not reset consumed correction allowance.
-Increasing it requires explicit User authorization.
-Insufficient budget or correction allowance stops automatic progress and requests a User decision.
-[Lifecycle](lifecycle.md#acceptance-and-settlement) defines accepted-but-unsettled Work when Conclave settlement lacks budget.
+`Consumed tokens` are the sum of observed input plus output tokens for all Work invocations.
+Each cumulative report is charged only for its newly observed delta.
+Cache hit and cache miss counters are retained as usage metadata and are not added to consumed tokens.
 
-A provider turn may overshoot its allowance before Khala can observe and stop it.
-The token allowance is an observed stopping limit, not a hard financial spending ceiling.
+`Held reservations` are the unspent parts of invocations that are still reserved or uncertain.
+For an invocation with allowance `A` and observed input plus output `U`, its held amount is `max(0, A - U)`.
+A missing usage report leaves the full allowance held.
+Partial usage is charged once and reduces the held amount by the same observed amount.
+
+`Available tokens` are `Work cap - consumed tokens - held reservations`.
+This value is signed and may be negative after an overrun.
+`Observed overrun` is `max(0, consumed tokens - Work cap)`.
+The cap is never increased automatically.
+
+### Allowance calculation and dispatch
+
+For a Work with cap `C` and available tokens `V`, an ordinary invocation's Work allowance is `min(max(1, floor(C / 2)), V)` when `V > 0`.
+No invocation is dispatched when `V <= 0`.
+At Execution creation, `Execution.tokenAllowance` is fixed to the Work allowance then available.
+An Executor invocation is limited to the smaller of the current Work allowance and the Execution's remaining allowance.
+The Execution's remaining allowance is its token allowance minus its observed input and output usage across its invocations.
+Conclave, Observer, and Oracle invocations use the Work allowance without a separate cumulative Execution allowance.
+
+Work dispatch is eligible by budget when available tokens are positive and preparation is not waiting for User recovery.
+When preparation is not waiting, available tokens of zero or less with a held invocation reservation put the Work in reservation-waiting.
+When preparation is not waiting and no reservation remains, the Work budget is exhausted.
+A positive Work allowance does not bypass the separate project run limit, Executor FIFO order, or concurrent Execution limit.
+An uncertain invocation keeps its project run slot even if its observed usage has reduced its held token reservation to zero.
+
+Completed invocations release unused reservation and retain all observed consumption.
+A known pre-launch failure settles with zero usage and releases its reservation.
+An uncertain invocation retains its unspent allowance and run slot until complete usage is reconciled, either from a complete durable receipt during recovery or by User reconciliation with evidence.
+Missing or partial usage is not permission to spend the held amount again.
+User reconciliation reports cumulative usage; the ledger charges only the increase over the previous observation and releases the remaining reservation.
+An Executor that reaches its allowance becomes blocked with `budget-exhausted`.
+Another role that reaches its allowance cannot launch an unbudgeted retry.
+Only the User can amend the Work cap, and an amendment must be at least current consumed plus held tokens.
+
+### Correction and USD limits
+
+Correction allowance is a count, not a token amount.
+The current `correctionCount` increments when Conclave records a `replace` Verdict.
+It does not count resumed implementation or feedback turns.
+The initial Execution does not consume a correction count.
+The count is committed before replacement admission, so a replacement may remain queued for capacity after consuming its correction count.
+An amendment or budget increase does not restore that count.
+The current count limit is snapshotted on each Work at submission.
+The current action set does not amend that per-Work limit; changing `maxCorrections` affects subsequently submitted Work.
+
+Role settings also expose a role-specific `usdMax`, defaulting to $5.
+That setting is separate from token allowances and is not charged against the Work cap.
+Current invocation code passes a token allowance to the runtime but does not apply `usdMax` as a per-call spending cap.
+Do not treat it as a hard USD limit or as permission to increase any token allowance.
+
+### Overshoot and resource limits
+
+The token allowance is a stopping threshold, not a hard cap.
+The runtime accumulates usage from completed messages and requests an RPC abort when observed input plus output reaches the allowance.
+Usage arrives after a message completes, and another in-flight response may continue before abort acknowledgement.
+Settlement waits for the invocation's abort acknowledgement before allowing another prompt.
+If Pi does not settle after the allowance stop, the RPC deadline fails the turn rather than waiting for the ordinary turn timeout.
+The invocation can therefore exceed its allowance and the Work cap.
+Khala charges the full observed input and output, including overshoot, and does not enlarge the cap automatically.
+The Work view and Conclave decision evidence show available tokens, observed overrun, held reservations, remaining correction count, and the computed Work dispatch reason.
+Both views report combined replacement eligibility and explain whether correction, Work-token, or preparation gates block it.
+FIFO, project invocation capacity, and concurrent Execution admission may still defer a replacement after those gates pass.
+
 Model price does not establish runtime memory efficiency.
 Measure the process tree, including validation and build subprocesses, separately from token accounting.
 
@@ -168,17 +219,9 @@ Current navigation settings are `roleSettingsKey` (`r`), `commentsKey` (`c`), `r
 The [target navigation contract](tui-navigation.md) uses configured Pi editing and navigation instead of introducing global letter shortcuts.
 
 Current Archives are named from resolved project paths, and child session, lease, lock, and capability files use project-specific temporary directories.
-Every role turn reserves up to half the Work cap, limited by available Work budget and the remaining Execution allowance when applicable.
-The runtime receives that exact allowance and requests RPC abort when cumulative completed-message input and output reach it.
-Cache counters remain metadata.
-Already-in-flight output remains chargeable, and a failed or ineffective abort terminates the child after the RPC deadline rather than waiting for the ordinary turn timeout.
-A session cannot receive another prompt until both settlement and any allowance-stop acknowledgement complete.
-The Archive enforces total invocation capacity in the same transaction as reservation.
-Usage settlement is independent of lifecycle state, so cancellation, blocked Signals, and replacement do not discard observed consumption.
-Interrupted turns retain their unspent reservation and run slot until complete usage is reconciled.
+The [Allowances and limits](#allowances-and-limits) section is the canonical reference for Work and Execution allowances, per-invocation reservations, usage settlement, correction counts, USD settings, dispatch waits, and overshoot.
 The runtime persists invocation receipts before dispatch and after turn completion; recovery uses complete receipts without launching another model turn.
 Incomplete receipts require explicit User reconciliation with cumulative usage and evidence; automatic transcript-based reconstruction is not implemented.
-The current correction counter covers replacement Verdicts, not resumed implementation passes.
 Prompt identities are persisted and passed to recovered sessions, but current recovery does not compare a persisted identity with the installed package.
 These implementation constraints do not authorize rewriting existing Work to fit the target.
 

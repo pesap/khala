@@ -37,7 +37,7 @@ import {
 	sandboxCleanupEffect,
 } from "./service-state-policy.js";
 import { executorSkillGuidance, executorSkillGuidanceMessage } from "./trusted-skills.js";
-import { invocationAllowance as workInvocationAllowance } from "./workflow-dispatch.js";
+import { workInvocationAllowance } from "./workflow-dispatch.js";
 
 type PreparedExecution = Readonly<{ execution: Execution; queued: WorkView }>;
 
@@ -274,10 +274,7 @@ export class ServiceExecution {
 				operation,
 			);
 			await this.workspace.prepareSandbox(sandbox, operation);
-			const allowance = workInvocationAllowance(
-				work.budget.maxTokens,
-				work.budget.maxTokens - work.budget.consumedTokens - work.budget.reservedTokens,
-			);
+			const allowance = workInvocationAllowance(work.budget);
 			if (allowance <= 0) throw new Error("Work budget has no available Executor allowance.");
 			const execution: Execution = {
 				executionId,

@@ -84,7 +84,7 @@ test("read-only Khala archive views expose projections without writes", async ()
 				hasFailure: false,
 				revision: 1,
 				queuePosition: 1,
-				budget: { maxTokens: 1000, reservedTokens: 0, consumedTokens: 0 },
+				budget: { maxTokens: 1000, reservedTokens: 0, consumedTokens: 0, availableTokens: 1000, overrunTokens: 0 },
 				nextAction: "Wait for the demo execution.",
 			},
 		]);
