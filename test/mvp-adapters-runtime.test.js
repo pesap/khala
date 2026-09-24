@@ -15,7 +15,7 @@ import { authority, ZERO_USAGE, makeService, meta, admitAndStart, restorePath } 
 
 test("GitLab pipeline status becomes bounded current CI check evidence", () => {
 	const reviewRequest = { providerId: "42", status: "draft", url: "https://gitlab.example/fixture/project/-/merge_requests/42" };
-	const observationFor = (status) => {
+	const observationFor = (status, hasPipeline = true) => {
 		const row = {
 			iid: 42,
 			state: "opened",
@@ -26,12 +26,14 @@ test("GitLab pipeline status becomes bounded current CI check evidence", () => {
 			target_branch: "main",
 			diff_refs: { base_sha: "base" },
 			sha: "head",
-			head_pipeline: {
-				id: 73,
-				status,
-				web_url: "https://gitlab.example/fixture/project/-/pipelines/73",
-				finished_at: "2026-09-09T00:00:00.000Z",
-			},
+			head_pipeline: hasPipeline
+				? {
+						id: 73,
+						status,
+						web_url: "https://gitlab.example/fixture/project/-/pipelines/73",
+						finished_at: "2026-09-09T00:00:00.000Z",
+					}
+				: null,
 		};
 		return gitlabCiObservation(JSON.stringify(row), row, reviewRequest);
 	};
@@ -47,6 +49,9 @@ test("GitLab pipeline status becomes bounded current CI check evidence", () => {
 	assert.equal(providerChecksAreSettled(running), false);
 	assert.equal(passed.details.checks[0].status, "success");
 	assert.equal(providerChecksAreSettled(passed), true);
+	const missingPipeline = observationFor(undefined, false);
+	assert.equal(missingPipeline.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(missingPipeline), false);
 });
 
 test("GitHub CI identity includes the provider-reported PR URL", () => {
@@ -74,6 +79,95 @@ test("GitHub CI identity includes the provider-reported PR URL", () => {
 	const second = observationForUrl("https://github.com/fixture/project/pull/43");
 	assert.notEqual(first.observationId, second.observationId);
 	assert.equal(first.details.pullRequest.url, "https://github.com/fixture/project/pull/42");
+});
+
+test("GitHub check rollups fail closed when bounded evidence omits provider checks", () => {
+	const reviewRequest = { providerId: "42", status: "draft", url: "https://github.com/fixture/project/pull/42" };
+	const row = {
+		url: reviewRequest.url,
+		state: "OPEN",
+		isDraft: true,
+		mergedAt: null,
+		reviewDecision: "",
+		statusCheckRollup: Array.from({ length: 9 }, (_, index) => ({
+			__typename: "CheckRun",
+			name: `check-${index + 1}`,
+			status: "COMPLETED",
+			conclusion: index === 8 ? "FAILURE" : "SUCCESS",
+		})),
+		headRefName: "khala/work",
+		baseRefName: "main",
+		headRefOid: "head",
+		baseRefOid: "base",
+	};
+	const details = githubProviderDetails(row, reviewRequest, []);
+	const observation = githubCiObservation(JSON.stringify(row), row, reviewRequest, "fixture/project", details);
+	assert.equal(details.checks.length, 8);
+	assert.equal(observation.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(observation), false);
+});
+
+test("GitHub check fields are trimmed before bounding", () => {
+	const reviewRequest = { providerId: "42", status: "draft", url: "https://github.com/fixture/project/pull/42" };
+	const row = {
+		url: reviewRequest.url,
+		state: "OPEN",
+		isDraft: true,
+		mergedAt: null,
+		reviewDecision: "",
+		statusCheckRollup: [{
+			__typename: "CheckRun",
+			name: `${" ".repeat(200)}unit tests`,
+			status: `${" ".repeat(200)}COMPLETED`,
+			conclusion: "SUCCESS",
+		}],
+		headRefName: "khala/work",
+		baseRefName: "main",
+		headRefOid: "head",
+		baseRefOid: "base",
+	};
+	const details = githubProviderDetails(row, reviewRequest, []);
+	const observation = githubCiObservation(JSON.stringify(row), row, reviewRequest, "fixture/project", details);
+	assert.equal(observation.status, "draft");
+	assert.equal(observation.details.checks[0].name, "unit tests");
+	assert.equal(observation.details.checks[0].status, "COMPLETED");
+	assert.equal(providerChecksAreSettled(observation), true);
+});
+
+test("missing or unrecognized GitHub rollups are incomplete", () => {
+	const reviewRequest = { providerId: "42", status: "draft", url: "https://github.com/fixture/project/pull/42" };
+	const baseRow = {
+		url: reviewRequest.url,
+		state: "OPEN",
+		isDraft: true,
+		mergedAt: null,
+		reviewDecision: "",
+		headRefName: "khala/work",
+		baseRefName: "main",
+		headRefOid: "head",
+		baseRefOid: "base",
+	};
+	const rollups = [
+		["missing", {}],
+		["non-array", { statusCheckRollup: {} }],
+		["unrecognized", { statusCheckRollup: [{ __typename: "UnknownCheck" }] }],
+		["unknown type with check-shaped fields", {
+			statusCheckRollup: [{ __typename: "UnknownCheck", name: "unknown", status: "COMPLETED", conclusion: "SUCCESS" }],
+		}],
+		["blank check name", {
+			statusCheckRollup: [{ __typename: "CheckRun", name: " ", status: "COMPLETED", conclusion: "SUCCESS" }],
+		}],
+		["blank status context", {
+			statusCheckRollup: [{ __typename: "StatusContext", context: " ", state: "SUCCESS" }],
+		}],
+	];
+	for (const [name, extra] of rollups) {
+		const row = { ...baseRow, ...extra };
+		const details = githubProviderDetails(row, reviewRequest, []);
+		const observation = githubCiObservation(JSON.stringify(row), row, reviewRequest, "fixture/project", details);
+		assert.equal(observation.status, "checks-incomplete", name);
+		assert.equal(providerChecksAreSettled(observation), false, name);
+	}
 });
 
 test("a released project slot wakes the FIFO queued Mission", async () => {

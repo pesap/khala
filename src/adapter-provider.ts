@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { githubProviderChecks } from "./adapter-github-ci.js";
 import { gitlabProviderChecks } from "./adapter-gitlab-ci.js";
 import {
-	MAX_PROVIDER_CHECKS,
+	isJsonObject,
+	isTextValue,
 	MAX_PROVIDER_COMMENT_BODY,
 	MAX_PROVIDER_COMMENTS,
 	MAX_PROVIDER_FIELD,
@@ -35,10 +37,6 @@ export function parseJsonArray(value: string): readonly Record<string, JsonValue
 	});
 }
 
-function isJsonObject(value: JsonValue | undefined): value is Record<string, JsonValue> {
-	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
-}
-
 export function requireProviderRow(data: string, message: string): Record<string, JsonValue> {
 	const row = parseJsonArray(`[${data}]`)[0];
 	if (row === undefined) throw new Error(message);
@@ -51,7 +49,7 @@ type ProviderCiObservationIdentity = Readonly<
 		"status" | "repository" | "sourceBranch" | "targetBranch" | "baseCommit" | "headCommit"
 	> & {
 		pullRequestUrl: string;
-		checks?: readonly ProviderCheck[];
+		checks: readonly ProviderCheck[];
 	}
 >;
 
@@ -62,7 +60,8 @@ export function githubCiObservation(
 	repository: string,
 	details: GithubProviderDetails,
 ): ProviderCiObservation {
-	const status = githubCheckStatus(githubPollStatus(row, reviewRequest.status), details);
+	const { checksComplete, ...providerDetails } = details;
+	const status = providerCiStatus(githubPollStatus(row, reviewRequest.status), details.checks, checksComplete);
 	const sourceBranch = readOptionalTextValue(row, "headRefName");
 	const targetBranch = readOptionalTextValue(row, "baseRefName");
 	const baseCommit = readOptionalTextValue(row, "baseRefOid");
@@ -86,7 +85,7 @@ export function githubCiObservation(
 		targetBranch,
 		baseCommit,
 		headCommit,
-		details,
+		details: providerDetails,
 	};
 }
 
@@ -97,7 +96,8 @@ export function gitlabCiObservation(
 ): ProviderCiObservation {
 	const reviewStatus = gitlabStatus(readValue(row, "state"), readBoolean(row, "draft"));
 	const checks = gitlabProviderChecks(row);
-	const status = providerCiStatus(reviewStatus, checks);
+	const checksComplete = checks.length > 0;
+	const status = providerCiStatus(reviewStatus, checks, checksComplete);
 	const repository = readRepository(row);
 	const sourceBranch = readOptionalTextValue(row, "source_branch");
 	const targetBranch = readOptionalTextValue(row, "target_branch");
@@ -328,8 +328,7 @@ function providerObservationBase(
 		observedAt: new Date().toISOString(),
 	};
 }
-type GithubProviderDetails = NonNullable<ProviderObservation["details"]>;
-
+type GithubProviderDetails = NonNullable<ProviderObservation["details"]> & Readonly<{ checksComplete: boolean }>;
 type GithubCommentSource = Readonly<{
 	source: "issue-comment" | "review" | "inline";
 	entries: JsonValue | readonly Record<string, JsonValue>[] | undefined;
@@ -340,10 +339,12 @@ export function githubProviderDetails(
 	reviewRequest: ReviewRequest,
 	inlineComments: readonly Record<string, JsonValue>[],
 ): GithubProviderDetails {
+	const { checks, checksComplete } = githubProviderChecks(row);
 	return {
 		pullRequest: githubPullRequestDetails(row, reviewRequest),
 		comments: githubProviderComments(row, inlineComments),
-		checks: githubProviderChecks(row),
+		checksComplete,
+		checks,
 	};
 }
 
@@ -408,44 +409,6 @@ function githubCommentState(entry: Record<string, JsonValue>): string | undefine
 function githubCommentLocation(path: string | undefined, line: string | undefined): string | undefined {
 	if (path === undefined) return undefined;
 	return boundedText(`${path}${line === undefined ? "" : `:${line}`}`, MAX_PROVIDER_FIELD);
-}
-
-function githubProviderChecks(row: Record<string, JsonValue>): readonly ProviderCheck[] {
-	const entries = Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"].filter(isJsonObject) : [];
-	return entries.map(githubProviderCheck).filter(isDefined).slice(0, MAX_PROVIDER_CHECKS);
-}
-
-function githubProviderCheck(entry: Record<string, JsonValue>): ProviderCheck | undefined {
-	const checkRun = githubCheckRun(entry);
-	return checkRun ?? githubStatusContext(entry);
-}
-
-function githubCheckRun(entry: Record<string, JsonValue>): ProviderCheck | undefined {
-	const name = entry["name"];
-	const status = entry["status"];
-	if (!isTextValue(name) || !isTextValue(status)) return undefined;
-	return {
-		kind: "check-run",
-		name: boundedText(name, MAX_PROVIDER_FIELD),
-		status: boundedText(status, MAX_PROVIDER_FIELD),
-		conclusion: boundedOptional(textField(entry, "conclusion"), MAX_PROVIDER_FIELD),
-		workflowName: boundedOptional(textField(entry, "workflowName"), MAX_PROVIDER_FIELD),
-		detailsUrl: boundedOptional(textField(entry, "detailsUrl"), MAX_PROVIDER_FIELD),
-		startedAt: boundedOptional(textField(entry, "startedAt"), MAX_PROVIDER_FIELD),
-		completedAt: boundedOptional(textField(entry, "completedAt"), MAX_PROVIDER_FIELD),
-	};
-}
-
-function githubStatusContext(entry: Record<string, JsonValue>): ProviderCheck | undefined {
-	const context = entry["context"];
-	const state = entry["state"];
-	if (!isTextValue(context) || !isTextValue(state)) return undefined;
-	return {
-		kind: "status-context",
-		name: boundedText(context, MAX_PROVIDER_FIELD),
-		status: boundedText(state, MAX_PROVIDER_FIELD),
-		detailsUrl: boundedOptional(textField(entry, "targetUrl"), MAX_PROVIDER_FIELD),
-	};
 }
 
 function textField(entry: Record<string, JsonValue>, key: string): string | undefined {
@@ -640,16 +603,19 @@ function githubDefaultStatus(current: ReviewRequest["status"]): ReviewRequest["s
 	return current === "draft" ? "draft" : "open";
 }
 
-function githubCheckStatus(
+function providerCiStatus(
 	reviewStatus: ReviewRequest["status"],
-	details: NonNullable<ProviderObservation["details"]>,
+	checks: readonly ProviderCheck[],
+	checksComplete: boolean,
 ): ProviderCiStatus {
-	return providerCiStatus(reviewStatus, details.checks);
+	const terminalStatus = terminalProviderCiStatus(reviewStatus);
+	if (terminalStatus !== undefined) return terminalStatus;
+	if (!checksComplete) return "checks-incomplete";
+	return checks.some(isFailedProviderCheck) ? "checks-failed" : reviewStatus;
 }
 
-function providerCiStatus(reviewStatus: ReviewRequest["status"], checks: readonly ProviderCheck[]): ProviderCiStatus {
-	if (reviewStatus === "merged" || reviewStatus === "closed") return reviewStatus;
-	return checks.some(isFailedProviderCheck) ? "checks-failed" : reviewStatus;
+function terminalProviderCiStatus(status: ReviewRequest["status"]): ProviderCiStatus | undefined {
+	return status === "merged" || status === "closed" ? status : undefined;
 }
 
 function providerCiObservationId(providerId: string, identity: ProviderCiObservationIdentity): string {
@@ -687,8 +653,4 @@ export function parseJsonPages(value: string): readonly Record<string, JsonValue
 		else entries.push(page);
 	}
 	return entries.filter(isJsonObject);
-}
-
-function isTextValue(value: JsonValue | undefined): value is string {
-	return value !== undefined && value === String(value);
 }

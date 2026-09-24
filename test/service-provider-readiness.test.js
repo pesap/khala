@@ -77,6 +77,12 @@ test("provider readiness uses publication order without weakening current CI gua
 	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, [{ kind: "check-run", name: "tests", status: "IN_PROGRESS" }]), publication(4)]), work, request), false);
 	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, [{ kind: "check-run", name: "tests", status: "COMPLETED" }]), publication(4)]), work, request), false);
 	assert.equal(providerEvidenceAllowsReady(archive([checks(5, "open", request.headCommit, request.repository, [{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }]), publication(4)]), work, request), true);
+	assert.equal(
+		providerEvidenceAllowsReady(archive([checks(5, "checks-incomplete", request.headCommit, request.repository, [
+			{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" },
+		]), publication(4)]), work, request),
+		false,
+	);
 });
 
 test("CI freshness matches GitLab reruns by pipeline identity rather than generated display name", () => {

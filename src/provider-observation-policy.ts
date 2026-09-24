@@ -12,6 +12,7 @@ import type {
 
 export type ProviderObservationClassification = Readonly<{
 	identityDrift: boolean;
+	checksIncomplete: boolean;
 	checksFailed: boolean;
 	evidenceReconciled: boolean;
 }>;
@@ -29,6 +30,10 @@ function isProviderIdentityError(error: ErrorEnvelope | undefined): boolean {
 	return error?.code === "integrity-failure" && error.summary === "Provider review identity changed after publication.";
 }
 
+function isProviderChecksIncompleteError(error: ErrorEnvelope | undefined): boolean {
+	return error?.code === "external-failure" && error.summary === "Provider check evidence is incomplete.";
+}
+
 function isProviderChecksError(error: ErrorEnvelope | undefined): boolean {
 	return error?.code === "external-failure" && error.summary === "Provider checks failed.";
 }
@@ -39,6 +44,16 @@ function providerIdentityError(work: WorkView, observation: ProviderObservation)
 		summary: "Provider review identity changed after publication.",
 		retryable: false,
 		remediation: "Reconcile the review request before sending ready evidence or recording an Outcome.",
+		evidenceRefs: providerObservationEvidence(work, observation),
+	};
+}
+
+function providerChecksIncompleteError(work: WorkView, observation: ProviderObservation): ErrorEnvelope {
+	return {
+		code: "external-failure",
+		summary: "Provider check evidence is incomplete.",
+		retryable: false,
+		remediation: "Refresh provider CI evidence and verify the complete check set before repair or handoff.",
 		evidenceRefs: providerObservationEvidence(work, observation),
 	};
 }
@@ -70,7 +85,10 @@ export function providerCheckIsVerified(check: ProviderCheck): boolean {
 }
 
 export function providerChecksAreSettled(observation: ProviderCiObservation): boolean {
-	const checks = observation.details?.checks;
+	return observation.status !== "checks-incomplete" && providerChecksHaveSettled(observation.details?.checks);
+}
+
+function providerChecksHaveSettled(checks: readonly ProviderCheck[] | undefined): boolean {
 	return checks !== undefined && checks.length > 0 && checks.every(providerCheckIsSettled);
 }
 
@@ -103,12 +121,23 @@ export function classifyProviderObservation(
 	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
 ): ProviderObservationClassification {
 	const identityDrift = providerObservationIdentityDrift(observation, reviewRequest);
+	const checksIncomplete = observation.kind === "ci-status" && observation.status === "checks-incomplete";
 	const checksFailed = providerObservationChecksFailed(observation);
 	return {
 		identityDrift,
+		checksIncomplete,
 		checksFailed,
-		evidenceReconciled: observation.kind === "ci-status" && !identityDrift && !checksFailed,
+		evidenceReconciled: reconciledProviderEvidence(observation, identityDrift, checksIncomplete, checksFailed),
 	};
+}
+
+function reconciledProviderEvidence(
+	observation: ProviderObservation,
+	identityDrift: boolean,
+	checksIncomplete: boolean,
+	checksFailed: boolean,
+): boolean {
+	return observation.kind === "ci-status" && !identityDrift && !checksIncomplete && !checksFailed;
 }
 
 function providerObservationIdentityDrift(
@@ -156,6 +185,7 @@ function providerObservationError(
 	classification: ProviderObservationClassification,
 ): ErrorEnvelope | undefined {
 	if (classification.identityDrift) return providerIdentityError(work, observation);
+	if (classification.checksIncomplete) return providerChecksIncompleteError(work, observation);
 	if (classification.checksFailed) return providerChecksError(work, observation);
 	return providerReconciledError(work.lastError, classification);
 }
@@ -222,6 +252,8 @@ function providerSpecialAction(
 function providerClassificationAction(classification: ProviderObservationClassification): string | undefined {
 	if (classification.identityDrift)
 		return "Provider review identity changed; Conclave must reconcile the review request.";
+	if (classification.checksIncomplete)
+		return "Provider CI check evidence is incomplete; Conclave must reconcile before repair or handoff.";
 	if (classification.checksFailed) return "Provider checks failed; Conclave must reconcile the Work.";
 	return undefined;
 }
@@ -290,7 +322,7 @@ function providerCiObservationNeedsWake(
 }
 
 function providerCiNeedsWake(classification: ProviderObservationClassification): boolean {
-	return classification.identityDrift || classification.checksFailed;
+	return classification.identityDrift || classification.checksIncomplete || classification.checksFailed;
 }
 
 function providerReviewStatusFromCi(
@@ -319,7 +351,7 @@ function providerCiWakeReason(
 	observation: ProviderCiObservation,
 	classification: ProviderObservationClassification,
 ): ConclaveWakeCause | undefined {
-	if (classification.identityDrift || classification.checksFailed) return "provider-ci";
+	if (providerCiNeedsWake(classification)) return "provider-ci";
 	return observation.status === "closed" ? "provider-closed" : undefined;
 }
 
@@ -339,7 +371,7 @@ export function validProviderOutcomeObservation(
 }
 
 function hasProviderReconciliationError(error: ErrorEnvelope | undefined): boolean {
-	return isProviderIdentityError(error) || isProviderChecksError(error);
+	return isProviderIdentityError(error) || isProviderChecksIncompleteError(error) || isProviderChecksError(error);
 }
 
 export function recoveredProviderObservation(

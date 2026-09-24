@@ -200,7 +200,9 @@ Failed Conclave effects retain durable attention and are not automatically repla
 
 Current payload limits are a serialized JSON length of 64,000 for each Archive payload and 128,000 for each projection.
 Record reads cap payloads at 16,000 characters, summaries at 500 characters, and evidence references at 20 entries of 500 characters each.
-Provider conversation details retain up to eight comments and eight checks; comment bodies are bounded to 500 characters in details and 2,000 in feedback delivery.
+Provider conversation details retain up to eight comments and checks; CI observations distinguish incomplete check sets.
+Rollups above the check cap or containing unrecognized entries fail closed; readiness and repair require complete provider check evidence.
+Comment bodies are bounded to 500 characters in details and 2,000 in feedback delivery.
 Oracle text fields are bounded to 16,000 characters.
 Role-visible Archive reads include authorized Signal diagnoses, validation output, preparation diagnostics, and selected record evidence in a 24 KB UTF-8 packet.
 Omissions and record continuation cursors are explicit; Work and record freshness are reported separately.
