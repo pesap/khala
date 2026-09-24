@@ -52,12 +52,19 @@ export class SQLiteArchive implements ArchivePort {
 	}
 
 	private validateIntegrity(): void {
-		const check = this.database.prepare("PRAGMA quick_check").get();
-		if (check === undefined || readString(check, "quick_check") !== "ok")
-			throw new Error("Archive SQLite integrity check failed.");
-		this.validateWorkProjections();
-		this.validateRecordPayloads();
-		this.validateOutboxPayloads();
+		this.database.exec("BEGIN");
+		try {
+			const check = this.database.prepare("PRAGMA quick_check").get();
+			if (check === undefined || readString(check, "quick_check") !== "ok")
+				throw new Error("Archive SQLite integrity check failed.");
+			this.validateWorkProjections();
+			this.validateRecordPayloads();
+			this.validateOutboxPayloads();
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	private validateWorkProjections(): void {
