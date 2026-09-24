@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { RunLedger } from "../dist/src/run-ledger.js";
-import { admitAndStart, makeService, meta, validateWork } from "./helpers/mvp-fixtures.mjs";
+import { admitAndStart, makeService, meta, validateWork, pollSuccessfulCi } from "./helpers/mvp-fixtures.mjs";
 
 function recovery(actions) {
 	return actions.find((action) => action.kind === "recover");
@@ -145,7 +145,7 @@ test("observed runtime state controls idle recovery without changing Conclave ac
 
 test("ready and blocked Signals disable idle recovery", async () => {
 	for (const kind of ["ready", "blocked"]) {
-		const { service, work } = await idleWork(`signal-${kind}`);
+		const { service, controls, work } = await idleWork(`signal-${kind}`);
 		let current = work;
 		if (kind === "ready") {
 			const review = await service.perform({
@@ -156,6 +156,7 @@ test("ready and blocked Signals disable idle recovery", async () => {
 			});
 			assert.equal("value" in review, true);
 			current = await validateWork(service, review.value, `signal-${kind}:validate`);
+			current = await pollSuccessfulCi(service, controls, current, `signal-${kind}:ci`);
 		}
 		const signaled = await service.perform({
 			action: "record-signal",

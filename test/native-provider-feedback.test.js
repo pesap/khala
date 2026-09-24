@@ -8,17 +8,27 @@ import { archivePath } from "../dist/src/config.js";
 import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
 
-function feedbackCompleted(work, firstHead, fixture) {
-	if (work === undefined) return false;
-	return [
-		work.state === "awaiting-review",
-		work.reviewRequest.headCommit !== firstHead,
-		work.budget.reservedTokens === 0,
-		fixture.steps.conclave >= 13,
-	].every(Boolean);
+function feedbackRepublished(work, firstHead, fixture) {
+	return workHasReviewAndValidation(work) && correctionIsValidated(work, firstHead) && repairTurnIsSettled(work, fixture);
 }
 
-test("native provider feedback is authorized before the same Executor corrects and republishes", { timeout: 120_000 }, async () => {
+function workHasReviewAndValidation(work) {
+	return work !== undefined && work.reviewRequest !== undefined && work.lastValidation !== undefined;
+}
+
+function correctionIsValidated(work, firstHead) {
+	return (
+		work.state === "active" &&
+		work.reviewRequest.headCommit !== firstHead &&
+		work.lastValidation.headCommit === work.reviewRequest.headCommit
+	);
+}
+
+function repairTurnIsSettled(work, fixture) {
+	return work.execution?.runtimeState === "idle" && work.budget.reservedTokens === 0 && fixture.steps.executor >= 22;
+}
+
+test("native provider feedback correction stays unhanded-off until current CI evidence is observed", { timeout: 120_000 }, async () => {
 	const feedback = "Remove the trailing blank line from greeting.txt.";
 	const fixture = await createNativeWorkflowFixture({ providerFeedback: true, greeting: "hello\n\n" });
 	const terminal = createNativeTerminal(fixture);
@@ -51,8 +61,12 @@ test("native provider feedback is authorized before the same Executor corrects a
 		assert.equal(terminal.readWork().revision, firstRevision, "provider text alone must not authorize Executor work");
 		assert.equal(readFileSync(join(firstReview.execution.sandbox.path, "greeting.txt"), "utf8"), "hello\n\n");
 		terminal.send("Poll the provider review and process its current feedback.");
-		const corrected = await waitUntil(terminal.readWork, (work) => feedbackCompleted(work, firstReview.reviewRequest.headCommit, fixture), diagnostic);
-		const evidence = records(["observation", "delivery", "verdict", "review-request", "error"]);
+		const corrected = await waitUntil(
+			terminal.readWork,
+			(work) => feedbackRepublished(work, firstReview.reviewRequest.headCommit, fixture),
+			diagnostic,
+		);
+		const evidence = records(["observation", "delivery", "signal", "verdict", "review-request", "error"]);
 		const observation = evidence.find((record) => record.kind === "observation" && record.payload.kind === "review-comment");
 		const deliveries = evidence.filter((record) => record.kind === "delivery" && record.payload.observationId === observation.payload.observationId);
 		const handoffs = evidence.filter((record) => record.kind === "verdict" && record.payload.decision === "handoff");
@@ -72,8 +86,11 @@ test("native provider feedback is authorized before the same Executor corrects a
 		assert.ok(observation.sequence < deliveries[0].sequence);
 		assert.equal(authorization.actor, "conclave");
 		assert.ok(authorization.sequence < correctedPublication.sequence);
-		assert.equal(handoffs.length, 2);
-		assert.equal(handoffs.at(-1).executionId, corrected.execution.executionId);
+		assert.equal(handoffs.length, 1);
+		const currentCi = evidence.filter((record) => record.kind === "observation" && record.payload.kind === "ci-status").at(-1);
+		assert.equal(currentCi.payload.headCommit, firstReview.reviewRequest.headCommit);
+		assert.notEqual(currentCi.payload.headCommit, corrected.reviewRequest.headCommit);
+		assert.equal(evidence.filter((record) => record.kind === "signal").length, 1);
 		assert.equal(readFileSync(join(corrected.execution.sandbox.path, "greeting.txt"), "utf8"), "hello\n");
 		assert.equal(corrected.lastValidation.headCommit, corrected.reviewRequest.headCommit);
 		assert.ok(corrected.lastValidation.results.every((result) => result.passed));

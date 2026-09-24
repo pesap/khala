@@ -88,6 +88,11 @@ async function mockSend(binding, message, options, controls) {
 	await wakeMockConclave(binding, message, controls);
 	const held = holdMockObserver(binding, controls) ?? holdMockExecutor(binding, controls);
 	if (held !== undefined) return held;
+	return completeMockSend(binding, message, controls);
+}
+
+async function completeMockSend(binding, message, controls) {
+	if (isMockSession(binding, "executor")) await controls.onExecutorTurn?.(message);
 	if (mockFeedbackFailureRequested(message, controls)) throw new Error("simulated feedback delivery failure");
 	return mockTurn(binding, controls);
 }
@@ -112,6 +117,7 @@ function makePorts(overrides = {}) {
 		sessions: [],
 		prompts: [],
 		onConclaveWake: undefined,
+		onExecutorTurn: undefined,
 		stopped: [],
 		cleaned: [],
 		...controlOverrides,
@@ -246,6 +252,8 @@ function makeService(path, overrides = {}) {
 		targetBranch: "main",
 		maxConcurrentExecutions: overrides.maxConcurrentExecutions ?? 2,
 		defaultWorkTokens: 100,
+		enableCiRepair: overrides.enableCiRepair === true,
+		requireProviderCi: false,
 		conclaveModel: "provider/conclave",
 		conclaveThinking: "medium",
 		executorModel: "provider/executor",
@@ -308,9 +316,35 @@ async function validateWork(service, work, commandId) {
 	return result.value;
 }
 
+async function pollSuccessfulCi(service, controls, work, commandId) {
+	const request = work.reviewRequest;
+	assert.ok(request);
+	controls.pollObservations = [{
+		observationId: `${commandId}:observation`,
+		kind: "ci-status",
+		providerId: request.providerId,
+		status: "open",
+		summary: "Provider checks passed.",
+		repository: request.repository,
+		sourceBranch: request.sourceBranch,
+		targetBranch: request.targetBranch,
+		baseCommit: request.baseCommit,
+		headCommit: request.headCommit,
+		details: {
+			pullRequest: { url: request.url, status: request.status, state: "OPEN", reviewDecision: "", mergedAt: null },
+			comments: [],
+			checks: [{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }],
+		},
+		changed: true,
+		observedAt: new Date().toISOString(),
+	}];
+	const current = service.inspectWork(work.workId);
+	return service.pollProvider(work.workId, meta("user", `${commandId}:poll`, current.revision));
+}
+
 function restorePath(value) {
 	if (value === undefined) delete process.env.PATH;
 	else process.env.PATH = value;
 }
 
-export { makeService, meta, admitAndStart, validateWork, restorePath, ZERO_USAGE, authority };
+export { makeService, meta, admitAndStart, validateWork, pollSuccessfulCi, restorePath, ZERO_USAGE, authority };

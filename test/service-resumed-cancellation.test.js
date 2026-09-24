@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { admitAndStart, makeService, meta, validateWork, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
+import { admitAndStart, makeService, meta, validateWork, pollSuccessfulCi, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
 
 async function waitUntil(predicate, message) {
 	const deadline = Date.now() + 2_000;
@@ -73,11 +73,12 @@ test("cancellation stops a held authorized feedback turn before it settles", asy
 			meta: meta("executor", "held-feedback:review", running.revision, running.workId, running.execution.executionId),
 		});
 		const validated = await validateWork(service, review.value, "held-feedback:validate");
+		const checked = await pollSuccessfulCi(service, controls, validated, "held-feedback:ci");
 		const ready = await service.perform({
 			action: "record-signal",
 			workId: running.workId,
 			input: { kind: "ready", summary: "Ready", evidence: ["head", "validation"] },
-			meta: meta("executor", "held-feedback:ready", validated.revision, running.workId, running.execution.executionId),
+			meta: meta("executor", "held-feedback:ready", checked.revision, running.workId, running.execution.executionId),
 		});
 		const handoff = await service.perform({
 			action: "verdict",
@@ -215,7 +216,7 @@ async function verifyIndependentStops(mode) {
 	const firstStopAcknowledged = new Promise((resolve) => {
 		releaseFirstStop = resolve;
 	});
-	const { service } = makeService(join(directory, "archive.sqlite"), {
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
 		maxConcurrentExecutions: 2,
 		ports: {
 			runtime: {
@@ -271,11 +272,12 @@ async function verifyIndependentStops(mode) {
 		});
 		assert.equal("value" in review, true, JSON.stringify(review));
 		const validated = await validateWork(service, review.value, "independent:validate");
+		const checked = await pollSuccessfulCi(service, controls, validated, "independent:ci");
 		const ready = await service.perform({
 			action: "record-signal",
 			workId: second.workId,
 			input: { kind: "ready", summary: "Ready", evidence: ["head", "validation"] },
-			meta: meta("executor", "independent:ready", validated.revision, second.workId, second.execution.executionId),
+			meta: meta("executor", "independent:ready", checked.revision, second.workId, second.execution.executionId),
 		});
 		const handoff = await service.perform({
 			action: "verdict",

@@ -55,6 +55,15 @@ test("Role settings persist without discarding other Khala configuration", async
 		assert.equal(loadedConfig.keybindings.help, "?");
 		assert.equal(loadedConfig.keybindings.history, "ctrl+h");
 		assert.equal(loadedConfig.conclaveUsdMax, 2.5);
+		assert.equal(loadedConfig.enableCiRepair, false);
+		assert.equal(loadedConfig.requireProviderCi, true);
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ enableCiRepair: true, requireProviderCi: false }));
+		assert.equal(loadConfig(directory, false, false).enableCiRepair, true);
+		assert.equal(loadConfig(directory, false, false).requireProviderCi, false);
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ enableCiRepair: "true" }));
+		assert.throws(() => loadConfig(directory, false, false), /enableCiRepair must be a boolean/);
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ requireProviderCi: "false" }));
+		assert.throws(() => loadConfig(directory, false, false), /requireProviderCi must be a boolean/);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ commentsKey: "   " }));
 		assert.throws(() => loadConfig(directory, false, false), /commentsKey must not be blank/);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ targetBranch: "feature/.hidden" }));

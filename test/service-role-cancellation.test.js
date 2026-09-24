@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { admitAndStart, makeService, meta, validateWork, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
+import { admitAndStart, makeService, meta, validateWork, pollSuccessfulCi, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
 
 function deferredRequest() {
 	let release;
@@ -115,7 +115,7 @@ test("failing Work aborts its pending Oracle request and preserves the failure",
 	const directory = await mkdtemp(join(tmpdir(), "khala-oracle-cancel-"));
 	const held = deferredRequest();
 	let aborted = false;
-	const { service, archive } = makeService(join(directory, "archive.sqlite"), {
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"), {
 		ports: {
 			oracle: {
 				review(_packet, _model, _thinking, _options, operation) {
@@ -144,6 +144,7 @@ test("failing Work aborts its pending Oracle request and preserves the failure",
 		});
 		work = review.value;
 		work = await validateWork(service, work, "oracle-stop:validate");
+		work = await pollSuccessfulCi(service, controls, work, "oracle-stop:ci");
 		const ready = await service.perform({
 			action: "record-signal",
 			workId: work.workId,

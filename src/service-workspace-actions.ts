@@ -131,6 +131,7 @@ export class ServiceWorkspaceActions {
 			executionId: execution.executionId,
 			payload: execution,
 			projection: next,
+			evidenceRefs: [headCommit],
 			summary: `Sandbox changes committed at ${headCommit}.`,
 		}).projection;
 	}
@@ -226,7 +227,7 @@ export class ServiceWorkspaceActions {
 				execution,
 				request,
 				head,
-				providerEvidenceAllowsReady(this.archive, work, request),
+				providerEvidenceAllowsReady(this.archive, work, request, this.getOptions().requireProviderCi),
 				this.workspace.runValidation,
 			)
 		)

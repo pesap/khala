@@ -10,11 +10,11 @@ import type { OperationContext } from "./ports.js";
 
 const execFileAsync = promisify(execFile);
 
-function isJsonObject(value: JsonValue | undefined): value is Record<string, JsonValue> {
+export function isJsonObject(value: JsonValue | undefined): value is Record<string, JsonValue> {
 	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
 }
 
-function isTextValue(value: JsonValue | undefined): value is string {
+export function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
 }
 const COMMAND_TIMEOUT_MS = 120_000;

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import { githubProviderChecks } from "./adapter-github-ci.js";
+import { gitlabProviderChecks } from "./adapter-gitlab-ci.js";
 import {
-	MAX_PROVIDER_CHECKS,
+	isJsonObject,
+	isTextValue,
 	MAX_PROVIDER_COMMENT_BODY,
 	MAX_PROVIDER_COMMENTS,
 	MAX_PROVIDER_FIELD,
@@ -19,6 +22,7 @@ import type {
 	ReviewRequest,
 } from "./model.js";
 import type { ReviewRequestInput } from "./ports.js";
+import { isFailedProviderCheck } from "./provider-observation-policy.js";
 
 export function parseJsonArray(value: string): readonly Record<string, JsonValue>[] {
 	const parsed: JsonValue = JSON.parse(value);
@@ -33,15 +37,21 @@ export function parseJsonArray(value: string): readonly Record<string, JsonValue
 	});
 }
 
-function isJsonObject(value: JsonValue | undefined): value is Record<string, JsonValue> {
-	return value !== null && value !== undefined && Object(value) === value && !Array.isArray(value);
-}
-
 export function requireProviderRow(data: string, message: string): Record<string, JsonValue> {
 	const row = parseJsonArray(`[${data}]`)[0];
 	if (row === undefined) throw new Error(message);
 	return row;
 }
+
+type ProviderCiObservationIdentity = Readonly<
+	Pick<
+		ProviderCiObservation,
+		"status" | "repository" | "sourceBranch" | "targetBranch" | "baseCommit" | "headCommit"
+	> & {
+		pullRequestUrl: string;
+		checks: readonly ProviderCheck[];
+	}
+>;
 
 export function githubCiObservation(
 	data: string,
@@ -50,16 +60,32 @@ export function githubCiObservation(
 	repository: string,
 	details: GithubProviderDetails,
 ): ProviderCiObservation {
+	const { checksComplete, ...providerDetails } = details;
+	const status = providerCiStatus(githubPollStatus(row, reviewRequest.status), details.checks, checksComplete);
+	const sourceBranch = readOptionalTextValue(row, "headRefName");
+	const targetBranch = readOptionalTextValue(row, "baseRefName");
+	const baseCommit = readOptionalTextValue(row, "baseRefOid");
+	const headCommit = readOptionalTextValue(row, "headRefOid");
 	return {
 		...providerObservationBase("ci-status", reviewRequest.providerId, data),
+		observationId: providerCiObservationId(reviewRequest.providerId, {
+			status,
+			repository,
+			sourceBranch,
+			targetBranch,
+			baseCommit,
+			headCommit,
+			pullRequestUrl: details.pullRequest.url,
+			checks: details.checks,
+		}),
 		kind: "ci-status",
-		status: githubCheckStatus(githubPollStatus(row, reviewRequest.status), details),
+		status,
 		repository,
-		sourceBranch: readOptionalTextValue(row, "headRefName"),
-		targetBranch: readOptionalTextValue(row, "baseRefName"),
-		baseCommit: readOptionalTextValue(row, "baseRefOid"),
-		headCommit: readOptionalTextValue(row, "headRefOid"),
-		details,
+		sourceBranch,
+		targetBranch,
+		baseCommit,
+		headCommit,
+		details: providerDetails,
 	};
 }
 
@@ -68,15 +94,45 @@ export function gitlabCiObservation(
 	row: Record<string, JsonValue>,
 	reviewRequest: ReviewRequest,
 ): ProviderCiObservation {
+	const reviewStatus = gitlabStatus(readValue(row, "state"), readBoolean(row, "draft"));
+	const { checks, checksComplete } = gitlabProviderChecks(row);
+	const status = providerCiStatus(reviewStatus, checks, checksComplete);
+	const repository = readRepository(row);
+	const sourceBranch = readOptionalTextValue(row, "source_branch");
+	const targetBranch = readOptionalTextValue(row, "target_branch");
+	const baseCommit = readNestedTextValue(row, "diff_refs", "base_sha");
+	const headCommit = readOptionalTextValue(row, "sha");
+	const pullRequestUrl = boundedText(readOptionalTextValue(row, "web_url") ?? "", MAX_PROVIDER_FIELD);
 	return {
 		...providerObservationBase("ci-status", reviewRequest.providerId, data),
+		observationId: providerCiObservationId(reviewRequest.providerId, {
+			status,
+			repository,
+			sourceBranch,
+			targetBranch,
+			baseCommit,
+			headCommit,
+			pullRequestUrl,
+			checks,
+		}),
 		kind: "ci-status",
-		status: gitlabStatus(readValue(row, "state"), readBoolean(row, "draft")),
-		repository: readRepository(row),
-		sourceBranch: readOptionalTextValue(row, "source_branch"),
-		targetBranch: readOptionalTextValue(row, "target_branch"),
-		baseCommit: readNestedTextValue(row, "diff_refs", "base_sha"),
-		headCommit: readOptionalTextValue(row, "sha"),
+		status,
+		repository,
+		sourceBranch,
+		targetBranch,
+		baseCommit,
+		headCommit,
+		details: {
+			pullRequest: {
+				url: pullRequestUrl,
+				status: reviewStatus,
+				state: boundedText(readOptionalTextValue(row, "state") ?? "", MAX_PROVIDER_FIELD),
+				reviewDecision: "",
+				mergedAt: boundedOptional(readOptionalTextValue(row, "merged_at"), MAX_PROVIDER_FIELD) ?? null,
+			},
+			comments: [],
+			checks,
+		},
 	};
 }
 
@@ -271,8 +327,7 @@ function providerObservationBase(
 		observedAt: new Date().toISOString(),
 	};
 }
-type GithubProviderDetails = NonNullable<ProviderObservation["details"]>;
-
+type GithubProviderDetails = NonNullable<ProviderObservation["details"]> & Readonly<{ checksComplete: boolean }>;
 type GithubCommentSource = Readonly<{
 	source: "issue-comment" | "review" | "inline";
 	entries: JsonValue | readonly Record<string, JsonValue>[] | undefined;
@@ -283,10 +338,12 @@ export function githubProviderDetails(
 	reviewRequest: ReviewRequest,
 	inlineComments: readonly Record<string, JsonValue>[],
 ): GithubProviderDetails {
+	const { checks, checksComplete } = githubProviderChecks(row);
 	return {
 		pullRequest: githubPullRequestDetails(row, reviewRequest),
 		comments: githubProviderComments(row, inlineComments),
-		checks: githubProviderChecks(row),
+		checksComplete,
+		checks,
 	};
 }
 
@@ -353,44 +410,6 @@ function githubCommentLocation(path: string | undefined, line: string | undefine
 	return boundedText(`${path}${line === undefined ? "" : `:${line}`}`, MAX_PROVIDER_FIELD);
 }
 
-function githubProviderChecks(row: Record<string, JsonValue>): readonly ProviderCheck[] {
-	const entries = Array.isArray(row["statusCheckRollup"]) ? row["statusCheckRollup"].filter(isJsonObject) : [];
-	return entries.map(githubProviderCheck).filter(isDefined).slice(0, MAX_PROVIDER_CHECKS);
-}
-
-function githubProviderCheck(entry: Record<string, JsonValue>): ProviderCheck | undefined {
-	const checkRun = githubCheckRun(entry);
-	return checkRun ?? githubStatusContext(entry);
-}
-
-function githubCheckRun(entry: Record<string, JsonValue>): ProviderCheck | undefined {
-	const name = entry["name"];
-	const status = entry["status"];
-	if (!isTextValue(name) || !isTextValue(status)) return undefined;
-	return {
-		kind: "check-run",
-		name: boundedText(name, MAX_PROVIDER_FIELD),
-		status: boundedText(status, MAX_PROVIDER_FIELD),
-		conclusion: boundedOptional(textField(entry, "conclusion"), MAX_PROVIDER_FIELD),
-		workflowName: boundedOptional(textField(entry, "workflowName"), MAX_PROVIDER_FIELD),
-		detailsUrl: boundedOptional(textField(entry, "detailsUrl"), MAX_PROVIDER_FIELD),
-		startedAt: boundedOptional(textField(entry, "startedAt"), MAX_PROVIDER_FIELD),
-		completedAt: boundedOptional(textField(entry, "completedAt"), MAX_PROVIDER_FIELD),
-	};
-}
-
-function githubStatusContext(entry: Record<string, JsonValue>): ProviderCheck | undefined {
-	const context = entry["context"];
-	const state = entry["state"];
-	if (!isTextValue(context) || !isTextValue(state)) return undefined;
-	return {
-		kind: "status-context",
-		name: boundedText(context, MAX_PROVIDER_FIELD),
-		status: boundedText(state, MAX_PROVIDER_FIELD),
-		detailsUrl: boundedOptional(textField(entry, "targetUrl"), MAX_PROVIDER_FIELD),
-	};
-}
-
 function textField(entry: Record<string, JsonValue>, key: string): string | undefined {
 	return isTextValue(entry[key]) ? entry[key] : undefined;
 }
@@ -400,7 +419,7 @@ function githubPullRequestDetails(
 	reviewRequest: ReviewRequest,
 ): GithubProviderDetails["pullRequest"] {
 	return {
-		url: boundedText(reviewRequest.url, MAX_PROVIDER_FIELD),
+		url: boundedText(readOptionalTextValue(row, "url") ?? "", MAX_PROVIDER_FIELD),
 		status: githubPollStatus(row, reviewRequest.status),
 		state: boundedText(githubState(row), MAX_PROVIDER_FIELD),
 		reviewDecision: boundedText(textField(row, "reviewDecision") ?? "", MAX_PROVIDER_FIELD),
@@ -583,19 +602,24 @@ function githubDefaultStatus(current: ReviewRequest["status"]): ReviewRequest["s
 	return current === "draft" ? "draft" : "open";
 }
 
-function githubCheckStatus(
+function providerCiStatus(
 	reviewStatus: ReviewRequest["status"],
-	details: NonNullable<ProviderObservation["details"]>,
+	checks: readonly ProviderCheck[],
+	checksComplete: boolean,
 ): ProviderCiStatus {
-	if (reviewStatus === "merged" || reviewStatus === "closed") return reviewStatus;
-	return details.checks.some(providerCheckFailed) ? "checks-failed" : reviewStatus;
+	const terminalStatus = terminalProviderCiStatus(reviewStatus);
+	if (terminalStatus !== undefined) return terminalStatus;
+	if (!checksComplete) return "checks-incomplete";
+	return checks.some(isFailedProviderCheck) ? "checks-failed" : reviewStatus;
 }
 
-function providerCheckFailed(check: ProviderCheck): boolean {
-	const value = `${check.status} ${check.conclusion ?? ""}`.toLowerCase();
-	return ["failure", "failed", "error", "cancelled", "timed_out", "action_required"].some((term) =>
-		value.includes(term),
-	);
+function terminalProviderCiStatus(status: ReviewRequest["status"]): ProviderCiStatus | undefined {
+	return status === "merged" || status === "closed" ? status : undefined;
+}
+
+function providerCiObservationId(providerId: string, identity: ProviderCiObservationIdentity): string {
+	const digest = createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
+	return `ci-status:${providerId}:${digest}`;
 }
 
 function githubCommentCommit(entry: Record<string, JsonValue>): string | undefined {
@@ -628,8 +652,4 @@ export function parseJsonPages(value: string): readonly Record<string, JsonValue
 		else entries.push(page);
 	}
 	return entries.filter(isJsonObject);
-}
-
-function isTextValue(value: JsonValue | undefined): value is string {
-	return value !== undefined && value === String(value);
 }

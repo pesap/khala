@@ -308,7 +308,7 @@ export type ProviderObservationDetails = Readonly<{
 	checks: readonly ProviderCheck[];
 }>;
 
-export const PROVIDER_CI_STATUSES = [...REVIEW_REQUEST_STATUSES, "checks-failed"] as const;
+export const PROVIDER_CI_STATUSES = [...REVIEW_REQUEST_STATUSES, "checks-failed", "checks-incomplete"] as const;
 export type ProviderCiStatus = (typeof PROVIDER_CI_STATUSES)[number];
 export const PROVIDER_REVIEW_COMMENT_STATUSES = ["changes-requested", "commented"] as const;
 export type ProviderReviewCommentStatus = (typeof PROVIDER_REVIEW_COMMENT_STATUSES)[number];
@@ -521,6 +521,7 @@ export const ACTION_KINDS = [
 	"run-oracle",
 	"verdict",
 	"deliver-feedback",
+	"repair-ci",
 	"record-review",
 	"record-outcome",
 	"cancel",

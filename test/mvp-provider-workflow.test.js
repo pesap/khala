@@ -5,6 +5,34 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { makeService, meta, admitAndStart, validateWork } from "./helpers/mvp-fixtures.mjs";
 
+function successfulCiObservation(reviewRequest, observationId) {
+	return {
+		observationId,
+		kind: "ci-status",
+		providerId: reviewRequest.providerId,
+		status: "open",
+		summary: "Provider checks passed.",
+		repository: reviewRequest.repository,
+		sourceBranch: reviewRequest.sourceBranch,
+		targetBranch: reviewRequest.targetBranch,
+		baseCommit: reviewRequest.baseCommit,
+		headCommit: reviewRequest.headCommit,
+		details: {
+			pullRequest: { url: reviewRequest.url, status: reviewRequest.status, state: "OPEN", reviewDecision: "", mergedAt: null },
+			comments: [],
+			checks: [{ kind: "check-run", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }],
+		},
+		changed: true,
+		observedAt: new Date().toISOString(),
+	};
+}
+
+async function pollSuccessfulCi(service, controls, workId, reviewRequest, commandId) {
+	controls.pollObservations = [successfulCiObservation(reviewRequest, commandId)];
+	const current = service.inspectWork(workId);
+	return service.pollProvider(workId, meta("user", commandId, current.revision));
+}
+
 test("Awaiting-review recovery reconciles an idle replacement runtime", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-awaiting-recovery-"));
 	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"), { recoverExecutor: true });
@@ -121,8 +149,9 @@ test("A late Conclave wake failure cannot overwrite a settled Outcome", async ()
 	});
 	const running = await admitAndStart(service, "terminal-wake");
 	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "terminal-wake:review", running.revision, running.workId, running.execution.executionId) });
-	const validated = await validateWork(service, review.value, "terminal-wake:validate");
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head"] }, meta: meta("executor", "terminal-wake:ready", validated.revision, running.workId, running.execution.executionId) });
+	await validateWork(service, review.value, "terminal-wake:validate");
+	const checked = await pollSuccessfulCi(service, controls, running.workId, review.value.reviewRequest, "terminal-wake:poll-ci");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head"] }, meta: meta("executor", "terminal-wake:ready", checked.revision, running.workId, running.execution.executionId) });
 	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "Review", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "terminal-wake:handoff", ready.value.revision, running.workId) });
 	const merged = await service.perform({ action: "record-review", workId: running.workId, input: { status: "merged" }, meta: meta("user", "terminal-wake:merged", handoff.value.revision) });
 	controls.outcome = true;
@@ -147,11 +176,12 @@ test("a Work reaches success through branch publication, handoff, polling, and o
 	assert.equal(controls.prompts.some((entry) => entry.message.includes("is bound")), true);
 
 	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "success:review", running.revision, running.workId, running.execution.executionId) });
-	const validated = await validateWork(service, review.value, "success:validate");
+	await validateWork(service, review.value, "success:validate");
 	assert.equal(review.value.reviewRequest.sourceBranch, running.execution.sandbox.branch);
 	assert.equal(review.value.reviewRequest.headCommit, "head");
 	assert.equal(controls.published.length, 1);
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready for review", evidence: ["head", "diff", "validation"] }, meta: meta("executor", "success:ready", validated.revision, running.workId, running.execution.executionId) });
+	const checked = await pollSuccessfulCi(service, controls, running.workId, review.value.reviewRequest, "success:poll-ci-ready");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready for review", evidence: ["head", "diff", "validation"] }, meta: meta("executor", "success:ready", checked.revision, running.workId, running.execution.executionId) });
 	const conclavesBeforeReadyWake = controls.sessions.filter((entry) => entry.input.role === "conclave").length;
 	await service.processPendingEffects();
 	assert.equal(controls.sessions.filter((entry) => entry.input.role === "conclave").length > conclavesBeforeReadyWake, true);
@@ -427,8 +457,9 @@ test("authorized review feedback resumes the same Execution instead of leaving i
 	const { service, controls } = makeService(join(directory, "archive.sqlite"));
 	const running = await admitAndStart(service, "feedback");
 	const review = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "feedback:review", running.revision, running.workId, running.execution.executionId) });
-	const validated = await validateWork(service, review.value, "feedback:validate");
-	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback:ready", validated.revision, running.workId, running.execution.executionId) });
+	await validateWork(service, review.value, "feedback:validate");
+	const checked = await pollSuccessfulCi(service, controls, running.workId, review.value.reviewRequest, "feedback:poll-ci-ready");
+	const ready = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] }, meta: meta("executor", "feedback:ready", checked.revision, running.workId, running.execution.executionId) });
 	const handoff = await service.perform({ action: "verdict", workId: running.workId, input: { decision: "handoff", reason: "Review it", signalId: ready.value.lastSignal.signalId }, meta: meta("conclave", "feedback:handoff", ready.value.revision, running.workId) });
 	const reviewed = await service.perform({ action: "record-review", workId: running.workId, input: { status: "changes-requested", feedback: ["Add the missing regression test."] }, meta: meta("user", "feedback:changes", handoff.value.revision) });
 	assert.equal(reviewed.value.state, "active");
@@ -446,8 +477,9 @@ test("authorized review feedback resumes the same Execution instead of leaving i
 	controls.head = "feedback-head";
 	const republished = await service.perform({ action: "create-review-request", workId: running.workId, input: {}, meta: meta("executor", "feedback:republish", resumed.revision, running.workId, running.execution.executionId) });
 	assert.equal(republished.value.reviewRequest.headCommit, "feedback-head");
-	const revalidated = await validateWork(service, republished.value, "feedback:revalidate");
-	const readyAgain = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Updated and validated", evidence: ["feedback-head", "validation"] }, meta: meta("executor", "feedback:ready-again", revalidated.revision, running.workId, running.execution.executionId) });
+	await validateWork(service, republished.value, "feedback:revalidate");
+	const checkedAgain = await pollSuccessfulCi(service, controls, running.workId, republished.value.reviewRequest, "feedback:poll-ci-ready-again");
+	const readyAgain = await service.perform({ action: "record-signal", workId: running.workId, input: { kind: "ready", summary: "Updated and validated", evidence: ["feedback-head", "validation"] }, meta: meta("executor", "feedback:ready-again", checkedAgain.revision, running.workId, running.execution.executionId) });
 	assert.equal(readyAgain.value.lastSignal.kind, "ready");
 	await service.close();
 });
@@ -623,12 +655,13 @@ test("A stale Executor stop effect does not stop a resumed Execution", async () 
 		input: {},
 		meta: meta("executor", "stale-stop:review", running.revision, running.workId, running.execution.executionId),
 	});
-	const validated = await validateWork(service, review.value, "stale-stop:validate");
+	await validateWork(service, review.value, "stale-stop:validate");
+	const checked = await pollSuccessfulCi(service, controls, running.workId, review.value.reviewRequest, "stale-stop:poll-ci");
 	const ready = await service.perform({
 		action: "record-signal",
 		workId: running.workId,
 		input: { kind: "ready", summary: "Ready", evidence: ["head", "diff"] },
-		meta: meta("executor", "stale-stop:ready", validated.revision, running.workId, running.execution.executionId),
+		meta: meta("executor", "stale-stop:ready", checked.revision, running.workId, running.execution.executionId),
 	});
 	const handoff = await service.perform({
 		action: "verdict",

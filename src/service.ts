@@ -28,6 +28,7 @@ import { RunLedger } from "./run-ledger.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
 import { ServiceActions } from "./service-actions.js";
 import { ArchiveCore } from "./service-archive-core.js";
+import { ServiceCiRepair } from "./service-ci-repair.js";
 import { runConclaveWake } from "./service-conclave.js";
 import { ServiceConfiguration } from "./service-configuration.js";
 import type { ServiceOptions } from "./service-contracts.js";
@@ -46,7 +47,12 @@ import {
 import { ServiceGovernance } from "./service-governance.js";
 import { InvocationCoordinator } from "./service-invocation-coordinator.js";
 import { reconcileInvocation } from "./service-invocation-recovery.js";
-import { closeRuntimeAfterDrain, conclaveWakeError, wakeErrorKindFor } from "./service-lifecycle-policy.js";
+import {
+	admissionWakeError,
+	closeRuntimeAfterDrain,
+	conclaveWakeError,
+	wakeErrorKindFor,
+} from "./service-lifecycle-policy.js";
 import { ServiceMonitoring } from "./service-monitoring.js";
 import { ServiceObserver } from "./service-observer.js";
 import { ServiceRecovery } from "./service-recovery.js";
@@ -54,7 +60,6 @@ import {
 	actionFingerprint,
 	cleanupFailureMatches,
 	cleanupLabel,
-	markAdmissionFailure,
 	oraclePayload,
 	restoreInvocationGateAttention,
 	throwIfOperationAborted,
@@ -66,26 +71,6 @@ import { ServiceWorkspaceActions } from "./service-workspace-actions.js";
 
 export type { ServiceOptions } from "./service-contracts.js";
 export { ActionInputError, ApplicationError, RunGateUnavailable, resultText } from "./service-contracts.js";
-
-function admissionWakeError(
-	error: ErrorEnvelope,
-	kind: ReturnType<typeof wakeErrorKindFor>,
-	work: WorkView,
-): ErrorEnvelope {
-	if (kind === "admission") return markAdmissionFailure(error);
-	if (work.state === "submitted" && work.mission === undefined) return markAdmissionFailure(error);
-	return error;
-}
-
-function wakeFailureCause(reason: ConclaveWakeCause | undefined): ConclaveWakeCause {
-	if (reason === undefined) return "admission";
-	return reason;
-}
-
-function wakeFailureEvidence(error: ErrorEnvelope, observationId: string | undefined): readonly string[] {
-	if (observationId === undefined) return error.evidenceRefs;
-	return [...error.evidenceRefs, observationId];
-}
 
 function reconciledExecutorBinding(work: WorkView, fact: ReturnType<RunLedger["find"]>): RuntimeBinding | undefined {
 	if (fact === undefined) return undefined;
@@ -123,6 +108,7 @@ export class ApplicationService {
 	private readonly monitoring: ServiceMonitoring;
 	private readonly invocations: InvocationCoordinator;
 	private readonly executorRuntime: ExecutorRuntimeCoordinator;
+	private readonly ciRepair: ServiceCiRepair;
 	private readonly actions: ServiceActions;
 	private readonly feedback: ServiceFeedback;
 	private readonly submission: ServiceSubmission;
@@ -144,6 +130,14 @@ export class ApplicationService {
 		this.completion = new WorkCompletion(this.core);
 		this.invocations = new InvocationCoordinator(archive, this.core, this.ledger, options);
 		this.executorRuntime = new ExecutorRuntimeCoordinator(archive, this.core, this.invocations, ports.runtime);
+		this.ciRepair = new ServiceCiRepair({
+			archive,
+			core: this.core,
+			runtime: ports.runtime,
+			invocations: this.invocations,
+			executorRuntime: this.executorRuntime,
+			enabled: this.configuration.options.enableCiRepair === true,
+		});
 		this.feedback = new ServiceFeedback(
 			archive,
 			this.core,
@@ -152,8 +146,10 @@ export class ApplicationService {
 			this.executorRuntime,
 			this.heartbeat,
 		);
-		this.actions = new ServiceActions(this.core, (work, observation) =>
-			this.feedback.canDeliverFeedback(work, observation),
+		this.actions = new ServiceActions(
+			this.core,
+			(work, observation) => this.feedback.canDeliverFeedback(work, observation),
+			(work) => this.ciRepair.canAuthorize(work),
 		);
 		this.submission = new ServiceSubmission(archive, this.core, () => this.configuration.options);
 		this.observer = new ServiceObserver(
@@ -217,6 +213,7 @@ export class ApplicationService {
 			archive,
 			core: this.core,
 			invocations: this.invocations,
+			ciRepair: this.ciRepair,
 			executorRuntime: this.executorRuntime,
 			feedback: this.feedback,
 			observer: this.observer,
@@ -376,6 +373,7 @@ export class ApplicationService {
 			model: this.configuration.options.conclaveModel,
 			thinking: this.configuration.options.conclaveThinking,
 			promptIdentity: this.configuration.options.conclavePromptIdentity,
+			enableCiRepair: this.configuration.options.enableCiRepair === true,
 			trustedSkillCatalog: this.configuration.options.trustedSkillCatalog,
 			runtime: this.ports.runtime,
 			invocations: this.invocations,
@@ -501,8 +499,8 @@ export class ApplicationService {
 			meta,
 			kind: "error",
 			workId,
-			payload: { ...error, dispatchEffectId, dispatchCause: wakeFailureCause(reason) },
-			evidenceRefs: wakeFailureEvidence(error, observationId),
+			payload: { ...error, dispatchEffectId, dispatchCause: reason ?? "admission" },
+			evidenceRefs: observationId === undefined ? error.evidenceRefs : [...error.evidenceRefs, observationId],
 			projection: next,
 			summary: error.summary,
 			// The original outbox effect remains pending. Creating another wake here
@@ -621,6 +619,7 @@ export class ApplicationService {
 			"run-oracle": async () => this.decisions.runOracle(work, command.meta, command.input, operation),
 			verdict: async () => this.decisions.verdict(work, command.meta, command.input, operation),
 			"deliver-feedback": async () => this.feedback.deliverFeedback(work, command.meta, command.input),
+			"repair-ci": async () => this.ciRepair.authorize(work, command.meta, command.input, operation),
 			"record-review": async () => this.governance.recordReview(work, command.meta, command.input),
 			"record-outcome": async () => this.completion.recordOutcome(work, command.meta),
 			cancel: async () => this.completion.cancel(work, command.meta),

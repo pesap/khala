@@ -27,14 +27,17 @@ import {
 } from "./service-runtime-policy.js";
 
 type FeedbackAvailability = (work: WorkView, observation: ProviderObservation) => boolean;
+type CiRepairAvailability = (work: WorkView) => boolean;
 
 export class ServiceActions {
 	private readonly core: ArchiveCore;
 	private readonly feedbackAvailable: FeedbackAvailability;
+	private readonly ciRepairAvailable: CiRepairAvailability;
 
-	constructor(core: ArchiveCore, feedbackAvailable: FeedbackAvailability) {
+	constructor(core: ArchiveCore, feedbackAvailable: FeedbackAvailability, ciRepairAvailable: CiRepairAvailability) {
 		this.core = core;
 		this.feedbackAvailable = feedbackAvailable;
+		this.ciRepairAvailable = ciRepairAvailable;
 	}
 
 	available(workId: string, actor: Actor, revision?: number, runtimeState?: RuntimeState): readonly Action[] {
@@ -117,6 +120,12 @@ export class ServiceActions {
 				disabledReason: "Provider-confirmed merge evidence is required for active or awaiting-review Work.",
 			},
 			this.feedbackActionSpec(work),
+			{
+				kind: "repair-ci",
+				enabled: this.ciRepairAvailable(work),
+				disabledReason:
+					"A current matching CI failure, unblocked validation, and an idle, budgeted Executor are required.",
+			},
 		];
 	}
 

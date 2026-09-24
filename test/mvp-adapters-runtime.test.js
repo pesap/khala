@@ -4,12 +4,179 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { codeHostForOrigin, CommandCodeHost, readPullRequestTemplate } from "../dist/src/adapters.js";
+import { githubCiObservation, githubProviderDetails, gitlabCiObservation } from "../dist/src/adapter-provider.js";
+import { providerChecksAreSettled } from "../dist/src/provider-observation-policy.js";
 import { SQLiteArchive } from "../dist/src/archive.js";
 import { openSqlite } from "../dist/src/sqlite.js";
 import { PiOracle } from "../dist/src/oracle.js";
 import { PiRpcRuntime } from "../dist/src/runtime.js";
 import { createRuntimeStorage } from "../dist/src/runtime-storage.js";
 import { authority, ZERO_USAGE, makeService, meta, admitAndStart, restorePath } from "./helpers/mvp-fixtures.mjs";
+
+test("GitLab pipeline status becomes bounded current CI check evidence", () => {
+	const reviewRequest = { providerId: "42", status: "draft", url: "https://gitlab.example/fixture/project/-/merge_requests/42" };
+	const observationFor = (status, hasPipeline = true, pipelineSha = "head") => {
+		const row = {
+			iid: 42,
+			state: "opened",
+			draft: true,
+			web_url: reviewRequest.url,
+			references: { full: "fixture/project!42" },
+			source_branch: "khala/work",
+			target_branch: "main",
+			diff_refs: { base_sha: "base" },
+			sha: "head",
+			head_pipeline: hasPipeline
+				? {
+						id: 73,
+						sha: pipelineSha,
+						status,
+						web_url: "https://gitlab.example/fixture/project/-/pipelines/73",
+						finished_at: "2026-09-09T00:00:00.000Z",
+					}
+				: null,
+		};
+		return gitlabCiObservation(JSON.stringify(row), row, reviewRequest);
+	};
+	const failed = observationFor("failed");
+	const running = observationFor("running");
+	const passed = observationFor("success");
+	assert.equal(failed.status, "checks-failed");
+	assert.equal(failed.details.checks[0].name, "GitLab pipeline 73");
+	assert.equal(failed.details.checks[0].completedAt, "2026-09-09T00:00:00.000Z");
+	assert.equal(failed.details.pullRequest.url, reviewRequest.url);
+	assert.equal(providerChecksAreSettled(failed), true);
+	assert.equal(running.status, "draft");
+	assert.equal(providerChecksAreSettled(running), false);
+	assert.equal(passed.details.checks[0].status, "success");
+	assert.equal(providerChecksAreSettled(passed), true);
+	const stalePipeline = observationFor("success", true, "older-head");
+	assert.equal(stalePipeline.headCommit, "head");
+	assert.equal(stalePipeline.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(stalePipeline), false);
+	const unidentifiedPipeline = observationFor("success", true, null);
+	assert.equal(unidentifiedPipeline.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(unidentifiedPipeline), false);
+	const missingPipeline = observationFor(undefined, false);
+	assert.equal(missingPipeline.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(missingPipeline), false);
+});
+
+test("GitHub CI identity includes the provider-reported PR URL", () => {
+	const reviewRequest = {
+		providerId: "42",
+		status: "draft",
+	};
+	const observationForUrl = (url) => {
+		const row = {
+			url,
+			state: "OPEN",
+			isDraft: true,
+			mergedAt: null,
+			reviewDecision: "",
+			statusCheckRollup: [],
+			headRefName: "khala/work",
+			baseRefName: "main",
+			headRefOid: "base",
+			baseRefOid: "head",
+		};
+		const details = githubProviderDetails(row, reviewRequest, []);
+		return githubCiObservation(JSON.stringify(row), row, reviewRequest, "fixture/project", details);
+	};
+	const first = observationForUrl("https://github.com/fixture/project/pull/42");
+	const second = observationForUrl("https://github.com/fixture/project/pull/43");
+	assert.notEqual(first.observationId, second.observationId);
+	assert.equal(first.details.pullRequest.url, "https://github.com/fixture/project/pull/42");
+});
+
+test("GitHub check rollups fail closed when bounded evidence omits provider checks", () => {
+	const reviewRequest = { providerId: "42", status: "draft", url: "https://github.com/fixture/project/pull/42" };
+	const row = {
+		url: reviewRequest.url,
+		state: "OPEN",
+		isDraft: true,
+		mergedAt: null,
+		reviewDecision: "",
+		statusCheckRollup: Array.from({ length: 9 }, (_, index) => ({
+			__typename: "CheckRun",
+			name: `check-${index + 1}`,
+			status: "COMPLETED",
+			conclusion: index === 8 ? "FAILURE" : "SUCCESS",
+		})),
+		headRefName: "khala/work",
+		baseRefName: "main",
+		headRefOid: "head",
+		baseRefOid: "base",
+	};
+	const details = githubProviderDetails(row, reviewRequest, []);
+	const observation = githubCiObservation(JSON.stringify(row), row, reviewRequest, "fixture/project", details);
+	assert.equal(details.checks.length, 8);
+	assert.equal(observation.status, "checks-incomplete");
+	assert.equal(providerChecksAreSettled(observation), false);
+});
+
+test("GitHub check fields are trimmed before bounding", () => {
+	const reviewRequest = { providerId: "42", status: "draft", url: "https://github.com/fixture/project/pull/42" };
+	const row = {
+		url: reviewRequest.url,
+		state: "OPEN",
+		isDraft: true,
+		mergedAt: null,
+		reviewDecision: "",
+		statusCheckRollup: [{
+			__typename: "CheckRun",
+			name: `${" ".repeat(200)}unit tests`,
+			status: `${" ".repeat(200)}COMPLETED`,
+			conclusion: "SUCCESS",
+		}],
+		headRefName: "khala/work",
+		baseRefName: "main",
+		headRefOid: "head",
+		baseRefOid: "base",
+	};
+	const details = githubProviderDetails(row, reviewRequest, []);
+	const observation = githubCiObservation(JSON.stringify(row), row, reviewRequest, "fixture/project", details);
+	assert.equal(observation.status, "draft");
+	assert.equal(observation.details.checks[0].name, "unit tests");
+	assert.equal(observation.details.checks[0].status, "COMPLETED");
+	assert.equal(providerChecksAreSettled(observation), true);
+});
+
+test("missing or unrecognized GitHub rollups are incomplete", () => {
+	const reviewRequest = { providerId: "42", status: "draft", url: "https://github.com/fixture/project/pull/42" };
+	const baseRow = {
+		url: reviewRequest.url,
+		state: "OPEN",
+		isDraft: true,
+		mergedAt: null,
+		reviewDecision: "",
+		headRefName: "khala/work",
+		baseRefName: "main",
+		headRefOid: "head",
+		baseRefOid: "base",
+	};
+	const rollups = [
+		["missing", {}],
+		["non-array", { statusCheckRollup: {} }],
+		["unrecognized", { statusCheckRollup: [{ __typename: "UnknownCheck" }] }],
+		["unknown type with check-shaped fields", {
+			statusCheckRollup: [{ __typename: "UnknownCheck", name: "unknown", status: "COMPLETED", conclusion: "SUCCESS" }],
+		}],
+		["blank check name", {
+			statusCheckRollup: [{ __typename: "CheckRun", name: " ", status: "COMPLETED", conclusion: "SUCCESS" }],
+		}],
+		["blank status context", {
+			statusCheckRollup: [{ __typename: "StatusContext", context: " ", state: "SUCCESS" }],
+		}],
+	];
+	for (const [name, extra] of rollups) {
+		const row = { ...baseRow, ...extra };
+		const details = githubProviderDetails(row, reviewRequest, []);
+		const observation = githubCiObservation(JSON.stringify(row), row, reviewRequest, "fixture/project", details);
+		assert.equal(observation.status, "checks-incomplete", name);
+		assert.equal(providerChecksAreSettled(observation), false, name);
+	}
+});
 
 test("a released project slot wakes the FIFO queued Mission", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-queue-wake-"));
@@ -391,6 +558,7 @@ function assertGithubChecks(observations) {
 	assert.ok(Array.isArray(ciObservation.details.checks));
 	assert.ok(ciObservation.details.checks.length >= 2);
 	assert.equal(ciObservation.status, "merged");
+	assert.equal(ciObservation.details.pullRequest.url, "https://github.com/example/project/pull/42");
 	assert.equal(ciObservation.details.pullRequest.status, "merged");
 	assert.equal(ciObservation.details.comments.length <= 8, true);
 	assert.equal(ciObservation.details.comments.some((comment) => comment.body === ""), false);
@@ -400,7 +568,9 @@ function assertGithubChecks(observations) {
 	assert.equal(ciObservation.details.comments.some((comment) => comment.location === "src/index.ts:3"), true);
 	assert.deepEqual(ciObservation.details.checks.map((check) => check.kind), ["check-run", "status-context"]);
 	assert.equal(ciObservation.details.checks[1].name, "coverage");
+	assert.equal(ciObservation.details.checks[0].completedAt, "2026-08-25T21:00:00Z");
 	assert.equal(ciObservation.details.checks[1].detailsUrl, "https://github.com/example/project/checks/coverage");
+	assert.equal(ciObservation.details.checks[1].completedAt, undefined);
 }
 
 function assertGithubCommands(commands) {
@@ -408,7 +578,7 @@ function assertGithubCommands(commands) {
 	assert.ok(create);
 	assert.equal(create.includes("--head"), true);
 	assert.equal(create[create.indexOf("--head") + 1], "khala/branch");
-	const pollingView = commands.find((args) => args[1] === "view" && args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid"));
+	const pollingView = commands.find((args) => args[1] === "view" && args.includes("url,state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid"));
 	assert.ok(pollingView);
 }
 
@@ -417,7 +587,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 	const commandDirectory = await mkdtemp(join(directory, "bin-"));
 	const log = join(directory, "commands.log");
 	const gh = join(commandDirectory, "gh");
-	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write(JSON.stringify([[{ id: 10, body: "Inline review note", path: "src/index.ts", line: 3, user: { login: "principal" }, author_association: "OWNER" }, ...Array.from({ length: 40 }, (_, index) => ({ id: index + 100, body: "x".repeat(4_000), user: { login: "principal" }, author_association: "OWNER" }))]]));\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }, { id: 10, state: "COMMENTED", body: "Stale review note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:13:06Z", commit_id: "old-head" }, { id: 11, state: "COMMENTED", body: "Public contributor note.", author: { login: "contributor" }, authorAssociation: "CONTRIBUTOR", submittedAt: "2026-08-25T21:14:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
+	await writeFile(gh, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nconst polling = args.includes("url,state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid");\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");\nif (args[0] === "api" && args[1] === "user") process.stdout.write("principal\\n");\nelse if (args[0] === "api") process.stdout.write(JSON.stringify([[{ id: 10, body: "Inline review note", path: "src/index.ts", line: 3, user: { login: "principal" }, author_association: "OWNER" }, ...Array.from({ length: 40 }, (_, index) => ({ id: index + 100, body: "x".repeat(4_000), user: { login: "principal" }, author_association: "OWNER" }))]]));\nelse if (args[0] === "repo") process.stdout.write("example/project\\n");\nelse if (args[1] === "list") process.stdout.write("[]");\nelse if (args[1] === "create") process.stdout.write("https://github.com/example/project/pull/42\\n");\nelse if (args[1] === "view") process.stdout.write(JSON.stringify({ number: 42, url: "https://github.com/example/project/pull/42", state: polling ? "MERGED" : "OPEN", mergedAt: polling ? "2026-08-26T00:00:00Z" : null, isDraft: true, headRefName: "khala/branch", baseRefName: "main", headRefOid: "head", comments: [{ id: 7, body: "Please add a regression test.", author: { login: "principal" }, authorAssociation: "OWNER", createdAt: "2026-08-25T21:11:06Z", url: "https://github.com/example/project/pull/42#issuecomment-7" }], reviews: [{ id: 8, state: "COMMENTED", body: "", author: { login: "principal" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:10:06Z" }, { id: 9, state: "CHANGES_REQUESTED", body: "Please add a review-level note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:12:06Z" }, { id: 10, state: "COMMENTED", body: "Stale review note.", author: { login: "reviewer" }, authorAssociation: "OWNER", submittedAt: "2026-08-25T21:13:06Z", commit_id: "old-head" }, { id: 11, state: "COMMENTED", body: "Public contributor note.", author: { login: "contributor" }, authorAssociation: "CONTRIBUTOR", submittedAt: "2026-08-25T21:14:06Z" }], statusCheckRollup: [{ __typename: "CheckRun", name: "validate", status: "COMPLETED", conclusion: "FAILURE", workflowName: "CI", completedAt: "2026-08-25T21:00:00Z" }, { __typename: "StatusContext", context: "coverage", state: "SUCCESS", targetUrl: "https://github.com/example/project/checks/coverage", createdAt: "2026-08-25T21:05:00Z" }] }));\nelse if (args[1] === "diff") process.stdout.write("diff");\n`);
 	await chmod(gh, 0o755);
 	const previousPath = process.env.PATH;
 	process.env.PATH = `${commandDirectory}:${previousPath ?? ""}`;

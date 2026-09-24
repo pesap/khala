@@ -106,7 +106,12 @@ export function staleConclaveWake(
 	work: WorkView,
 	reason: ConclaveWakeCause | undefined,
 ): boolean {
-	return effect.kind === "conclave-wake" && !conclaveWakeApplicable(work, reason);
+	if (effect.kind !== "conclave-wake") return false;
+	return !conclaveWakeApplicable(work, reason, {
+		observationId: readOptionalEffectText(effect.payload, "observationId"),
+		missionId: readOptionalEffectText(effect.payload, "missionId"),
+		executionId: readOptionalEffectText(effect.payload, "executionId"),
+	});
 }
 
 export function dispatchEligibilityAttention(

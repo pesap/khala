@@ -99,6 +99,7 @@ export const SUPPORTED_EFFECT_KINDS: ReadonlySet<string> = new Set([
 	"executor-recovery",
 	"observer-wake",
 	"feedback-wake",
+	"ci-repair-wake",
 	"workspace-cleanup",
 	"observer-cleanup",
 ]);

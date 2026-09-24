@@ -124,6 +124,17 @@ Current implementation does not provide local delivery.
 Target provider delivery creates a draft review request through a reconciled service action before ready.
 Current provider delivery creates draft GitHub Pull Requests or GitLab Merge Requests.
 The authorized sandbox branch and current head are passed to the provider adapter only after publication permission is verified.
+With `enableCiRepair` enabled, a current provider CI failure wakes Conclave with bounded repository, branch, PR-head, and failed-check evidence tied to the current Mission and Execution.
+CI repair is disabled by default, and no CI repair can be authorized without the opt-in.
+Conclave may authorize one bounded CI-repair continuation of the same Execution only when the observation and review identity match, the live runtime is provably idle with no active Executor turn, current validation is not blocked, invocations are settled, and the existing Work and Execution allowances permit it.
+A later failure observation cannot authorize another CI-repair turn on that Execution.
+When a matching CI failure arrives after a ready Signal or handoff, starting the authorized repair clears that stale Signal and reopens the same awaiting-review Work, Mission, and Execution as active and running; blocked Signals remain non-resumable.
+After a same-head failure, a successful CI observation supersedes it only when every previously failed check has one matching verified result with a later provider completion time; stale or timestamp-ambiguous snapshots are ignored.
+The Executor addresses only selected in-scope failures, commits through the governed action, validates in isolation, and reconciles the same draft review request to the exact validated commit.
+Unavailable isolation blocks the Executor; it does not trigger unrestricted validation.
+Readiness and handoff are blocked by current failures, stale observations, pending checks, or checks that cannot be verified as successful for the current published head.
+By default, a published review request requires matching CI success evidence recorded after the current publication.
+`requireProviderCi: false` explicitly declares that provider CI is not configured and permits absent CI evidence only; any observed failing, pending, stale, or unverified checks still block readiness.
 
 For provider delivery, Khala refreshes the stored target branch before Execution creation and publication.
 The target must still point to the Execution's base commit when publication begins.

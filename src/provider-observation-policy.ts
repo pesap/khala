@@ -3,6 +3,7 @@ import type {
 	ErrorEnvelope,
 	JsonObject,
 	JsonValue,
+	ProviderCheck,
 	ProviderCiObservation,
 	ProviderObservation,
 	ProviderOutcomeObservation,
@@ -11,6 +12,7 @@ import type {
 
 export type ProviderObservationClassification = Readonly<{
 	identityDrift: boolean;
+	checksIncomplete: boolean;
 	checksFailed: boolean;
 	evidenceReconciled: boolean;
 }>;
@@ -28,6 +30,10 @@ function isProviderIdentityError(error: ErrorEnvelope | undefined): boolean {
 	return error?.code === "integrity-failure" && error.summary === "Provider review identity changed after publication.";
 }
 
+function isProviderChecksIncompleteError(error: ErrorEnvelope | undefined): boolean {
+	return error?.code === "external-failure" && error.summary === "Provider check evidence is incomplete.";
+}
+
 function isProviderChecksError(error: ErrorEnvelope | undefined): boolean {
 	return error?.code === "external-failure" && error.summary === "Provider checks failed.";
 }
@@ -42,6 +48,16 @@ function providerIdentityError(work: WorkView, observation: ProviderObservation)
 	};
 }
 
+function providerChecksIncompleteError(work: WorkView, observation: ProviderObservation): ErrorEnvelope {
+	return {
+		code: "external-failure",
+		summary: "Provider check evidence is incomplete.",
+		retryable: false,
+		remediation: "Refresh provider CI evidence and verify the complete check set before repair or handoff.",
+		evidenceRefs: providerObservationEvidence(work, observation),
+	};
+}
+
 function providerChecksError(work: WorkView, observation: ProviderObservation): ErrorEnvelope {
 	return {
 		code: "external-failure",
@@ -52,17 +68,76 @@ function providerChecksError(work: WorkView, observation: ProviderObservation): 
 	};
 }
 
+export function failedProviderChecks(observation: ProviderCiObservation): readonly ProviderCheck[] {
+	return (observation.details?.checks ?? []).filter(isFailedProviderCheck).slice(0, 8);
+}
+
+export function isFailedProviderCheck(check: ProviderCheck): boolean {
+	const value = `${check.status} ${check.conclusion ?? ""}`.toLowerCase();
+	return ["failure", "failed", "error", "canceled", "cancelled", "timed_out", "action_required"].some((term) =>
+		value.includes(term),
+	);
+}
+
+export function providerCheckIsVerified(check: ProviderCheck): boolean {
+	if (check.kind === "status-context") return check.status.toLowerCase() === "success";
+	return check.status.toLowerCase() === "completed" && check.conclusion?.toLowerCase() === "success";
+}
+
+export function providerChecksAreSettled(observation: ProviderCiObservation): boolean {
+	return observation.status !== "checks-incomplete" && providerChecksHaveSettled(observation.details?.checks);
+}
+
+function providerChecksHaveSettled(checks: readonly ProviderCheck[] | undefined): boolean {
+	return checks !== undefined && checks.length > 0 && checks.every(providerCheckIsSettled);
+}
+
+const SETTLED_CHECK_CONCLUSIONS = new Set([
+	"success",
+	"failure",
+	"neutral",
+	"canceled",
+	"cancelled",
+	"timed_out",
+	"action_required",
+	"skipped",
+	"startup_failure",
+]);
+
+function providerCheckIsSettled(check: ProviderCheck): boolean {
+	if (check.kind === "status-context")
+		return ["success", "failure", "failed", "error", "canceled", "cancelled", "skipped"].includes(
+			check.status.toLowerCase(),
+		);
+	return (
+		check.status.toLowerCase() === "completed" &&
+		check.conclusion !== undefined &&
+		SETTLED_CHECK_CONCLUSIONS.has(check.conclusion.toLowerCase())
+	);
+}
+
 export function classifyProviderObservation(
 	observation: ProviderObservation,
 	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
 ): ProviderObservationClassification {
 	const identityDrift = providerObservationIdentityDrift(observation, reviewRequest);
+	const checksIncomplete = observation.kind === "ci-status" && observation.status === "checks-incomplete";
 	const checksFailed = providerObservationChecksFailed(observation);
 	return {
 		identityDrift,
+		checksIncomplete,
 		checksFailed,
-		evidenceReconciled: observation.kind === "ci-status" && !identityDrift && !checksFailed,
+		evidenceReconciled: reconciledProviderEvidence(observation, identityDrift, checksIncomplete, checksFailed),
 	};
+}
+
+function reconciledProviderEvidence(
+	observation: ProviderObservation,
+	identityDrift: boolean,
+	checksIncomplete: boolean,
+	checksFailed: boolean,
+): boolean {
+	return observation.kind === "ci-status" && !identityDrift && !checksIncomplete && !checksFailed;
 }
 
 function providerObservationIdentityDrift(
@@ -110,6 +185,7 @@ function providerObservationError(
 	classification: ProviderObservationClassification,
 ): ErrorEnvelope | undefined {
 	if (classification.identityDrift) return providerIdentityError(work, observation);
+	if (classification.checksIncomplete) return providerChecksIncompleteError(work, observation);
 	if (classification.checksFailed) return providerChecksError(work, observation);
 	return providerReconciledError(work.lastError, classification);
 }
@@ -176,6 +252,8 @@ function providerSpecialAction(
 function providerClassificationAction(classification: ProviderObservationClassification): string | undefined {
 	if (classification.identityDrift)
 		return "Provider review identity changed; Conclave must reconcile the review request.";
+	if (classification.checksIncomplete)
+		return "Provider CI check evidence is incomplete; Conclave must reconcile before repair or handoff.";
 	if (classification.checksFailed) return "Provider checks failed; Conclave must reconcile the Work.";
 	return undefined;
 }
@@ -204,16 +282,26 @@ export function providerObservationEffects(
 	revision: number,
 	observation: ProviderObservation,
 	classification: ProviderObservationClassification,
+	missionId?: string,
+	executionId?: string,
 ) {
 	if (!providerObservationNeedsWake(observation, classification)) return undefined;
-	return [
-		schedulerEffect(
-			workId,
-			revision,
-			observation.kind === "review-comment" ? observation.observationId : undefined,
-			providerWakeReason(observation, classification),
-		),
-	];
+	return [providerObservationWakeEffect(workId, revision, observation, classification, missionId, executionId)];
+}
+
+function providerObservationWakeEffect(
+	workId: string,
+	revision: number,
+	observation: ProviderObservation,
+	classification: ProviderObservationClassification,
+	missionId?: string,
+	executionId?: string,
+) {
+	const observationId =
+		observation.kind === "review-comment" || observation.kind === "ci-status" ? observation.observationId : undefined;
+	const effect = schedulerEffect(workId, revision, observationId, providerWakeReason(observation, classification));
+	if (observation.kind !== "ci-status") return effect;
+	return { ...effect, payload: { ...effect.payload, missionId, executionId } };
 }
 
 function providerObservationNeedsWake(
@@ -234,7 +322,7 @@ function providerCiObservationNeedsWake(
 }
 
 function providerCiNeedsWake(classification: ProviderObservationClassification): boolean {
-	return classification.identityDrift || classification.checksFailed;
+	return classification.identityDrift || classification.checksIncomplete || classification.checksFailed;
 }
 
 function providerReviewStatusFromCi(
@@ -263,7 +351,7 @@ function providerCiWakeReason(
 	observation: ProviderCiObservation,
 	classification: ProviderObservationClassification,
 ): ConclaveWakeCause | undefined {
-	if (classification.identityDrift || classification.checksFailed) return "provider-ci";
+	if (providerCiNeedsWake(classification)) return "provider-ci";
 	return observation.status === "closed" ? "provider-closed" : undefined;
 }
 
@@ -283,7 +371,7 @@ export function validProviderOutcomeObservation(
 }
 
 function hasProviderReconciliationError(error: ErrorEnvelope | undefined): boolean {
-	return isProviderIdentityError(error) || isProviderChecksError(error);
+	return isProviderIdentityError(error) || isProviderChecksIncompleteError(error) || isProviderChecksError(error);
 }
 
 export function recoveredProviderObservation(
@@ -395,6 +483,29 @@ export function reviewObservationMatchesRequest(
 			reviewRequest.baseCommit === undefined ||
 			observation.baseCommit === reviewRequest.baseCommit,
 	].every(Boolean);
+}
+
+export function providerObservationExactlyMatchesReview(
+	observation: ProviderObservation,
+	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	return [
+		observation.providerId === reviewRequest.providerId,
+		observation.repository === reviewRequest.repository,
+		observation.sourceBranch === reviewRequest.sourceBranch,
+		observation.targetBranch === reviewRequest.targetBranch,
+		observation.headCommit === reviewRequest.headCommit,
+		observation.baseCommit === reviewRequest.baseCommit,
+		providerPullRequestUrlMatches(observation, reviewRequest),
+	].every(Boolean);
+}
+
+function providerPullRequestUrlMatches(
+	observation: ProviderObservation,
+	reviewRequest: NonNullable<WorkView["reviewRequest"]>,
+): boolean {
+	if (observation.kind !== "ci-status") return true;
+	return observation.details?.pullRequest.url === reviewRequest.url;
 }
 
 export function providerObservationMatchesReview(

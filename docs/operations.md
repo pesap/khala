@@ -171,7 +171,7 @@ The current repository `origin` must be hosted on `github.com` or `gitlab.com` f
 The target stores the authorized provider repository and branch in the Mission instead of following later origin changes.
 
 GitHub supports draft requests, status, merge observation, and bounded eligible provider-comment feedback.
-GitLab supports draft requests, status, and merge observation without provider-comment normalization.
+GitLab supports draft requests, current merge-request and head-pipeline status, and merge observation without provider-comment normalization.
 The current adapter reads pull-request templates from root, `docs`, and `.github` locations; it does not read GitLab's `.gitlab/merge_request_templates` directory.
 Eligibility and credential boundaries are defined in [Security](security.md#provider-feedback), not inferred from publication ownership.
 Base drift requires the [approved successor path](lifecycle.md#publication-and-base-drift), not an implicit operator rebase.
@@ -206,10 +206,15 @@ Target settings and their implementation status must be updated here when the co
 | `maxConcurrentRuns` | `2` | Total reserved or uncertain role invocations in the project Archive |
 | `maxCorrections` | `3` | Replacement Verdict limit recorded with Work |
 | `defaultWorkTokens` | `20000` | Work token cap |
+| `enableCiRepair` | `false` | Opts into bounded Conclave-authorized CI repair behavior |
+| `requireProviderCi` | `true` | Requires verified provider CI evidence before ready or handoff; set `false` only for repositories explicitly configured without provider CI |
 | `piCommand` | `["pi"]` | Child launch command and arguments; the command must report Pi version `0.85.0` |
 
 Trusted project configuration may lower `maxConcurrentRuns` but cannot raise the global ceiling.
 The Archive enforces the effective ceiling across existing and newly submitted Works.
+When `requireProviderCi` is true, ready and handoff require verified successful checks for the current published PR head.
+After a same-head failure, a successful snapshot supersedes it only when each previously failed check has one matching verified result with a later provider completion timestamp; stale or timestamp-ambiguous snapshots are ignored.
+Set `requireProviderCi` to false only when provider CI is explicitly not configured; observed failing, pending, stale, or unverified checks still block readiness.
 
 Role models use `conclaveModel`, `executorModel`, `observerModel`, and `oracleModel`, with matching `*Thinking` settings.
 The Pi extension's base workflow requires Conclave and Executor models.
@@ -225,6 +230,9 @@ Incomplete receipts require explicit User reconciliation with cumulative usage a
 Prompt identities are persisted and passed to recovered sessions, but current recovery does not compare a persisted identity with the installed package.
 These implementation constraints do not authorize rewriting existing Work to fit the target.
 
+CI repair is disabled by default and must remain disabled until the required versioned held-out evaluation set and same-harness baseline satisfy the repository's LLM release gate.
+Enable `enableCiRepair` only after satisfying that gate; enabling it activates the bounded Conclave and Executor CI-repair prompts and action.
+
 The current [`KhalaConfig`](../src/config.ts) exposes total role-run capacity but not RPC frame/request limits.
 `PiRuntimeOptions.maxRpcFrameBytes` bounds each LF-delimited or unterminated RPC frame, including its delimiter, to a positive safe integer of bytes, defaulting to 8 MiB.
 Oversized frames and malformed consumed events fail the pending operation rather than accumulating unbounded input.
@@ -238,7 +246,9 @@ Failed Conclave effects retain durable attention and are not automatically repla
 
 Current payload limits are a serialized JSON length of 64,000 for each Archive payload and 128,000 for each projection.
 Record reads cap payloads at 16,000 characters, summaries at 500 characters, and evidence references at 20 entries of 500 characters each.
-Provider conversation details retain up to eight comments and eight checks; comment bodies are bounded to 500 characters in details and 2,000 in feedback delivery.
+Provider conversation details retain up to eight comments and checks; CI observations distinguish incomplete check sets.
+Rollups above the check cap or containing unrecognized entries fail closed; readiness and repair require complete provider check evidence.
+Comment bodies are bounded to 500 characters in details and 2,000 in feedback delivery.
 Oracle text fields are bounded to 16,000 characters.
 Role-visible Archive reads include authorized Signal diagnoses, validation output, preparation diagnostics, and selected record evidence in a 24 KB UTF-8 packet.
 Omissions and record continuation cursors are explicit; Work and record freshness are reported separately.
