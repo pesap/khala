@@ -10,6 +10,9 @@ Use [Getting started](getting-started.md) for the existing provider-review workf
 Global configuration is read from `~/.pi/agent/khala.json`, or the directory selected by `PI_CODING_AGENT_DIR`.
 A trusted repository may override it through `.pi/khala.json`; untrusted local configuration is ignored.
 Overrides apply only to Missions targeting that repository and cannot rewrite global defaults or unrelated Work.
+The global-only `trustedSkills` list defaults to empty and accepts Pi skill directory IDs from `PI_CODING_AGENT_DIR/skills/<id>/SKILL.md`.
+Project configuration cannot add to or replace this allowlist.
+Only explicitly listed global skills are read; `.agents/skills`, project skills, package skills, and Pi settings or CLI skill paths are not discovered.
 
 The target has one shared Archive and explicit Khala-owned state locations for child artifacts and managed worktrees outside active User checkouts.
 Repository identity remains an access boundary even though storage is shared.
@@ -255,6 +258,7 @@ Their attention records are deduplicated durably across polls and restarts, incl
 Held reservations request settlement or reconciliation, not an automatic budget increase.
 The scheduler skips ineligible queued Missions, and deferred model effects do not block cleanup.
 Explicit preparation recovery or a sufficient User budget amendment rechecks eligibility.
+A failed preparation retains the pending Execution's bounded skill guidance so explicit recovery does not silently discard Conclave's selection.
 Governed commit and validation use `npm ci --ignore-scripts --offline` against the prepared cache, without an implicit build.
 Dependency hydration and declared validation run inside Linux bubblewrap with a private network, PID namespace, temporary directory, and home.
 Bubblewrap must already be installed and user namespaces permitted; Khala does not install it or run validation unrestricted when isolation fails.
@@ -263,6 +267,10 @@ System runtime directories, Node, and the npm package for Node projects are read
 The host home, credential environment, and npm cache are not exposed.
 Offline dependency resolution failures are reported rather than retried with unrestricted network or host-cache access.
 Discovered Pi extensions, skills, prompt templates, and themes are disabled in role children; native repository context files remain enabled.
+When `trustedSkills` is nonempty, Conclave can inspect and read only those allowlisted `SKILL.md` files.
+Executor sessions remain launched with `--no-skills` and receive only a bounded Conclave instruction packet with selected skill IDs and content digests.
+Skill guidance does not change Mission terms, allowed paths, tool permissions, or repository-instruction priority.
+Keep the allowlist empty by default; do not default-enable skill guidance or claim quality improvement without the held-out evaluation gate in [MVP design](mvp-design.md#evidence-before-expanding).
 Failed Conclave effects retain their original identity rather than creating another wake for the same failure.
 A deferred model effect does not prevent later cleanup or unrelated Work effects from being drained.
 This does not isolate service-owned Git hooks or establish complete Pi child-process isolation.

@@ -46,6 +46,8 @@ A blocked attempt records its reason, including `budget-exhausted` when applicab
 A saved Execution is not proof of a live process and does not by itself occupy a child-run concurrency slot.
 Recovery may rebind that Execution rather than creating a replacement.
 An Executor's transient implementation plan is not another immutable agreement.
+An Execution records selected skill IDs, names, content digests, bounded task-specific instructions, and unavailable allowlisted skills when applicable.
+An empty selection records why no skill guidance was used and leaves the Executor under repository guidance.
 
 ### Record
 

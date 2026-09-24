@@ -131,6 +131,7 @@ export function isPreparation(value: JsonValue | undefined): boolean {
 		isOneOf(value["operation"], ["isolation", "dependencies", "validation"]),
 		isText(value["diagnostic"]),
 		isOneOf(value["recovery"], ["user", "prerequisite-change"]),
+		optional(value["skillGuidance"], isExecutorSkillGuidance),
 	].every(Boolean);
 }
 
@@ -207,8 +208,60 @@ export function isExecution(value: JsonValue | undefined): boolean {
 		optional(value["usage"], isTokenUsage),
 		isPromptIdentity(value["promptIdentity"]),
 		isSandbox(value["sandbox"]),
+		optional(value["skillGuidance"], isExecutorSkillGuidance),
 		optional(value["pi"], isPiBinding),
 	].every(Boolean);
+}
+
+export function isExecutorSkillGuidance(value: JsonValue | undefined): boolean {
+	if (!isJsonObject(value)) return false;
+	return [
+		isSkillReferenceList(value["selected"]),
+		isSkillInstructions(value["instructions"]),
+		isBoundedText(value["reason"], 500),
+		isUnavailableSkillList(value["unavailable"]),
+		guidanceMatchesSelection(value),
+	].every(Boolean);
+}
+
+function isSkillReferenceList(value: JsonValue | undefined): boolean {
+	return Array.isArray(value) && value.length <= 3 && value.every(isSkillReference);
+}
+
+function isSkillReference(value: JsonValue): boolean {
+	if (!isJsonObject(value)) return false;
+	return isTrustedSkillId(value["id"]) && isTrustedSkillId(value["name"]) && isSha256(value["sha256"]);
+}
+
+function isUnavailableSkillList(value: JsonValue | undefined): boolean {
+	return Array.isArray(value) && value.every(isUnavailableSkill);
+}
+
+function isUnavailableSkill(value: JsonValue): boolean {
+	if (!isJsonObject(value)) return false;
+	return isTrustedSkillId(value["id"]) && isBoundedText(value["reason"], 1_000);
+}
+
+function isTrustedSkillId(value: JsonValue | undefined): boolean {
+	return isText(value) && isSkillId(value);
+}
+
+function isSha256(value: JsonValue | undefined): boolean {
+	return isText(value) && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isSkillInstructions(value: JsonValue | undefined): boolean {
+	return isText(value) && value.length <= 4_000;
+}
+
+function isBoundedText(value: JsonValue | undefined, length: number): boolean {
+	return isNonBlankText(value) && isText(value) && value.length <= length;
+}
+
+function guidanceMatchesSelection(value: JsonObject): boolean {
+	const selected = value["selected"];
+	const instructions = value["instructions"];
+	return Array.isArray(selected) && selected.length > 0 ? isNonBlankText(instructions) : instructions === "";
 }
 
 export function isBlockReason(value: JsonValue | undefined): boolean {
@@ -538,6 +591,7 @@ import {
 	type Actor,
 	type ErrorEnvelope,
 	isActor,
+	isSkillId,
 	type JsonObject,
 	type JsonValue,
 	PROVIDER_CI_STATUSES,

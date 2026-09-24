@@ -256,6 +256,7 @@ function makeService(path, overrides = {}) {
 		observerThinking: "medium",
 		conclavePromptIdentity: { packageVersion: "1.1.0", promptSha256: "conclave" },
 		executorPromptIdentity: { packageVersion: "1.1.0", promptSha256: "executor" },
+		trustedSkillCatalog: overrides.trustedSkillCatalog,
 		observerPromptIdentity: { packageVersion: "1.1.0", promptSha256: "observer" },
 		oraclePromptIdentity: { packageVersion: "1.1.0", promptSha256: "oracle" },
 		rolePublicKey: ROLE_PUBLIC_KEY,

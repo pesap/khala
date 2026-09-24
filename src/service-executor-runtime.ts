@@ -21,6 +21,7 @@ import {
 	invocationAllowance,
 	preparedExecutorTurn,
 } from "./service-state-policy.js";
+import { executorSkillGuidanceMessage } from "./trusted-skills.js";
 
 export type ExecutorInvocationInput = Readonly<{
 	work: WorkView;
@@ -260,7 +261,7 @@ export class ExecutorRuntimeCoordinator {
 }
 
 function executorPrompt(work: WorkView, executionId: string, runId: string): string {
-	return `Work ${work.workId}, Execution ${executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${work.revision}.\nInvocation run ID: ${runId}.`;
+	return `Work ${work.workId}, Execution ${executionId} is bound. Read the Archive, inspect the sandbox, implement the Mission, validate it, publish the draft review request, and send evidence-bearing Signals. The current Work revision is ${work.revision}.${executorSkillGuidanceMessage(work.execution?.skillGuidance)}\nInvocation run ID: ${runId}.`;
 }
 
 function systemMeta(commandId: string, expectedWorkRevision: number): CommandMeta {

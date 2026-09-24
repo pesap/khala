@@ -121,6 +121,7 @@ export type PreparationState = Readonly<{
 	operation: "isolation" | "dependencies" | "validation";
 	diagnostic: string;
 	recovery: "user" | "prerequisite-change";
+	skillGuidance?: ExecutorSkillGuidance | undefined;
 }>;
 
 export type TokenUsage = Readonly<{
@@ -180,6 +181,19 @@ export type PromptIdentity = Readonly<{
 	promptSha256: string;
 }>;
 
+export type SkillReference = Readonly<{ id: string; name: string; sha256: string }>;
+export type UnavailableSkill = Readonly<{ id: string; reason: string }>;
+
+export function isSkillId(value: string): boolean {
+	return /^(?=.{1,64}$)(?!-)(?!.*--)[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value);
+}
+export type ExecutorSkillGuidance = Readonly<{
+	selected: readonly SkillReference[];
+	instructions: string;
+	reason: string;
+	unavailable: readonly UnavailableSkill[];
+}>;
+
 export type Sandbox = Readonly<{
 	path: string;
 	baseCommit: string;
@@ -209,6 +223,7 @@ export type Execution = Readonly<{
 	tokenAllowance: number;
 	promptIdentity: PromptIdentity;
 	sandbox: Sandbox;
+	skillGuidance?: ExecutorSkillGuidance | undefined;
 	pi?: PiBinding | undefined;
 	startedAt?: string | undefined;
 	endedAt?: string | undefined;
@@ -580,6 +595,9 @@ export type ActionInput = Readonly<{
 	maxTokens?: number | undefined;
 	runId?: string | undefined;
 	usage?: TokenUsage | undefined;
+	skillIds?: readonly string[] | undefined;
+	skillInstructions?: string | undefined;
+	skillSelectionReason?: string | undefined;
 }>;
 
 export type ActionCommand = Readonly<{
