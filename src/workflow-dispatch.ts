@@ -2,7 +2,7 @@ import type { ConclaveWakeCause, WorkBudget, WorkBudgetView, WorkView } from "./
 
 export type DispatchEligibility = "eligible" | "preparation-waiting" | "reservation-waiting" | "budget-exhausted";
 export type ReplacementEligibility = Readonly<{
-	eligibleByCorrectionAndWorkDispatch: boolean;
+	status: "eligible" | "blocked" | "unknown";
 	reason: string;
 }>;
 
@@ -47,12 +47,21 @@ export function replacementEligibility(work: WorkView): ReplacementEligibility {
 		preparationEligibilityReason(eligibility),
 	].filter((reason): reason is string => reason !== undefined);
 	const reason = reasons.join(" ");
+	const status = replacementEligibilityStatus(remaining, eligibility);
 	return {
-		eligibleByCorrectionAndWorkDispatch: remaining !== undefined && remaining > 0 && eligibility === "eligible",
+		status,
 		reason:
 			reason ||
 			"Current correction, Work-token, and Executor-preparation gates permit replacement; Work lifecycle, current Signal, FIFO, project invocation capacity, and concurrent Execution admission still apply.",
 	};
+}
+
+function replacementEligibilityStatus(
+	remaining: number | undefined,
+	eligibility: DispatchEligibility,
+): ReplacementEligibility["status"] {
+	if (remaining === undefined) return "unknown";
+	return remaining > 0 && eligibility === "eligible" ? "eligible" : "blocked";
 }
 
 function remainingCorrectionAllowance(work: WorkView): number | undefined {

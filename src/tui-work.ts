@@ -277,8 +277,9 @@ function correctionRows(work: WorkView): readonly (readonly [string, string])[] 
 
 function replacementRows(work: WorkView): readonly (readonly [string, string])[] {
 	const eligibility = replacementEligibility(work);
-	const status = eligibility.eligibleByCorrectionAndWorkDispatch ? "pass" : "blocked";
-	return [["Replacement eligibility (correction and Work dispatch gates)", `${status}: ${eligibility.reason}`]];
+	return [
+		["Replacement eligibility (correction and Work dispatch gates)", `${eligibility.status}: ${eligibility.reason}`],
+	];
 }
 
 function invocationRows(work: WorkView): readonly (readonly [string, string])[] {

@@ -114,8 +114,15 @@ test("decision evidence reports token capacity, held reservations, overrun, and 
 	});
 	assert.deepEqual(available.work.correctionAllowance, { used: 2, limit: 3, remaining: 1 });
 	assert.equal(available.work.dispatch.allowanceTokens, 1);
-	assert.equal(available.work.replacementEligibility.eligibleByCorrectionAndWorkDispatch, true);
+	assert.equal(available.work.replacementEligibility.status, "eligible");
 	assert.match(available.work.replacementEligibility.reason, /FIFO, project invocation capacity, and concurrent Execution admission/u);
+
+	const unknownCorrectionLimit = packetFor({
+		budget: { maxTokens: 100, consumedTokens: 0, reservedTokens: 0 },
+		correctionCount: 0,
+	});
+	assert.equal(unknownCorrectionLimit.work.replacementEligibility.status, "unknown");
+	assert.match(unknownCorrectionLimit.work.replacementEligibility.reason, /does not record a correction allowance/u);
 
 	const executionAllowance = packetFor({
 		budget: { maxTokens: 100, consumedTokens: 40, reservedTokens: 0 },
@@ -145,7 +152,7 @@ test("decision evidence reports token capacity, held reservations, overrun, and 
 	assert.equal(reservationWait.work.budget.availableTokens, 0);
 	assert.equal(reservationWait.work.dispatch.eligibility, "reservation-waiting");
 	assert.deepEqual(reservationWait.work.correctionAllowance, { used: 1, limit: 3, remaining: 2 });
-	assert.equal(reservationWait.work.replacementEligibility.eligibleByCorrectionAndWorkDispatch, false);
+	assert.equal(reservationWait.work.replacementEligibility.status, "blocked");
 	assert.match(reservationWait.work.replacementEligibility.reason, /reservation/u);
 	const invocationRecord = {
 		id: "held-invocation",
@@ -194,7 +201,7 @@ test("decision evidence reports token capacity, held reservations, overrun, and 
 	assert.equal(overrun.work.budget.availableTokens, -5);
 	assert.equal(overrun.work.budget.overrunTokens, 5);
 	assert.deepEqual(overrun.work.correctionAllowance, { used: 3, limit: 3, remaining: 0 });
-	assert.equal(overrun.work.replacementEligibility.eligibleByCorrectionAndWorkDispatch, false);
+	assert.equal(overrun.work.replacementEligibility.status, "blocked");
 	assert.match(overrun.work.replacementEligibility.reason, /correction allowance is exhausted/u);
 	assert.match(overrun.work.execution.dispatchReason, /another Executor turn cannot continue.*replacementEligibility/u);
 });

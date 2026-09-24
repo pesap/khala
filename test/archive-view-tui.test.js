@@ -73,7 +73,7 @@ test("read-only Khala archive display includes history without lifecycle actions
 	assert.match(overview, /Execution consumed input \+ output\s+45/);
 	assert.match(overview, /Execution tokens remaining\s+5/);
 	assert.match(overview, /Correction attempts\s+1 of 3 used; 2 remaining/);
-	assert.match(overview, /Replacement eligibility \(correction and Work dispatch gates\)\s+pass: Current correction,\s+Work-token/u);
+	assert.match(overview, /Replacement eligibility \(correction and Work dispatch gates\)\s+eligible: Current correction,\s+Work-token/u);
 	assert.match(overview, /oracle uncertain reservation held-run\s+30 allowance; usage reconciliation\s+pending/);
 	assert.doesNotMatch(overview, /Actions/);
 	screens[1].handleInput("\u001b");
