@@ -190,7 +190,8 @@ See the [CI workflow](.github/workflows/ci.yaml) for the automated validation se
 | `/review` | Report evidence-based code findings for the selected diff, commit, pull request, or snapshot. |
 | `/fresh-eyes` | Inspect the task and repository, then make the smallest justified code changes and validate them. |
 
-These prompts guide model behavior; they are not tool-enforced security boundaries.
+These prompts guide model behavior.
+They are not tool-enforced security boundaries.
 See [Pi extensions](docs/pi-extensions.md), [Role prompts](docs/role-prompts.md), and the [Git-history review reference](docs/references/git-review.md) for their owning details.
 
 ## Bundled extensions

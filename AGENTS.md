@@ -30,6 +30,7 @@
 - Never remove or downgrade code to fix type errors from outdated deps; upgrade the dep instead.
 - Use only erasable TypeScript syntax in this repository's checked TypeScript under `src/` and `extensions/`.
 - Always ask before removing functionality or code that appears intentional.
+- Keep Khala-specific UI key settings configurable through `keybindings` in `src/config.ts`. Use Pi's public `KeybindingsManager` API for standard Pi bindings.
 
 ## Testing
 
@@ -42,7 +43,8 @@
 
 - Run `prek run` before starting work and scoped `prek run --files <paths>` after each logical change.
 - Run `npm run check` and `npm run check:markdown` after code and documentation changes.
-- Use focused Node tests documented in `docs/development.md`; do not run `npm test` unless requested because it builds and runs the full native suite.
+- Use focused Node tests documented in `docs/development.md`. Do not run `npm run build` or `npm test` unless requested because they build the full project, and `npm test` runs the full native suite.
+- Resolve all errors, warnings, and infos reported by the required checks before committing.
 - Write ad-hoc scripts to a temporary file, run them, and remove them instead of embedding multi-line scripts in `bash` commands.
 
 ## Documentation
@@ -58,12 +60,11 @@
 
 ## Dependency and Install Security
 
-- Treat npm dep and lockfile changes as reviewed code. Direct external deps stay pinned to exact versions.
-- Hydrate/update locally with `npm install --ignore-scripts`; clean/CI-style with `npm ci --ignore-scripts`. Don't run lifecycle scripts unless the user asks.
-- Keep direct external dependencies pinned to exact versions and treat `package-lock.json` changes as reviewed code.
-- Refresh lock metadata with `npm install --package-lock-only --ignore-scripts` when dependency metadata changes. Hydrate with `npm ci --ignore-scripts`; do not run lifecycle scripts unless the user asks.
+- Pin direct external dependencies to exact versions and treat lockfiles as reviewed code.
+- Do not change a lockfile without explicit User approval.
+- Hydrate with `npm ci --ignore-scripts` and do not run lifecycle scripts unless the User asks.
+- When an approved dependency change requires lock metadata updates, use `npm install --package-lock-only --ignore-scripts`.
 - Review dependency lifecycle-script allowlisting in `package.json` when adding packages.
-- Pre-commit blocks lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1`. Do not bypass unless the user wants the lockfile change committed.
 
 ## Git
 

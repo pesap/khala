@@ -88,7 +88,8 @@ in every role prompt; link to the shared skill instead.
 Tune admission criteria, bounded-attempt authorization, Verdict handling, provider feedback assessment, runtime recovery judgment, and Outcome verification.
 The Conclave and Executor prompts require each change to stay within 500 added code lines.
 This remains prompt policy, not an application-service validation.
-Counts must cite actual evidence when available; if no measurement can be verified, report it as unverified rather than estimating or treating the missing count as approval.
+Counts must cite actual evidence when available.
+If no measurement can be verified, report it as unverified rather than estimating or treating the missing count as approval.
 Do not weaken scope, tests, safeguards, or intended behavior to meet the limit.
 Scheduling and process mechanics belong to application code under [Architecture](architecture.md#scheduling-and-child-runs), not the prompt.
 Keep the

@@ -7,19 +7,23 @@ import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 
 const prototypes = ["orient", "work-draft"];
 
-test("opt-in prototypes load through Pi's public prompt resource loader without default registration", async () => {
+test("package prompts load in another target cwd and prototypes remain opt-in", async () => {
 	const manifest = JSON.parse(await readFile("package.json", "utf8"));
 	assert.deepEqual(manifest.pi.prompts, ["./prompts"]);
-	assert.ok(prototypes.every((name) => `docs/prompt-prototypes/${name}.md` !== manifest.pi.prompts[0]));
+	const packagePromptPaths = manifest.pi.prompts.map((path) => resolve(path));
 	const directory = await mkdtemp(join(tmpdir(), "khala-prompt-contracts-"));
 	try {
-		const defaultLoader = new DefaultResourceLoader({ cwd: directory, agentDir: directory });
+		const defaultLoader = new DefaultResourceLoader({
+			cwd: directory,
+			agentDir: directory,
+			additionalPromptTemplatePaths: packagePromptPaths,
+		});
 		await defaultLoader.reload();
-		assert.deepEqual(
-			defaultLoader.getPrompts().prompts.map((prompt) => prompt.name),
-			[],
-			"prototypes must not appear in default prompt discovery",
-		);
+		const defaultCommands = defaultLoader.getPrompts().prompts.map((prompt) => prompt.name).sort();
+		assert.deepEqual(defaultCommands, ["fresh-eyes", "git-review"]);
+		for (const name of prototypes) {
+			assert.ok(!defaultCommands.includes(name), `${name} must not appear in package prompt discovery`);
+		}
 
 		const loader = new DefaultResourceLoader({
 			cwd: directory,

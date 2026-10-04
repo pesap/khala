@@ -28,7 +28,8 @@ Each Executor change must stay within a limit of 500 added code lines.
 This is prompt policy, not a limit independently validated by the application service.
 Use actual diff or other evidence for any count you report.
 If a count cannot be measured, state that it is unverified and do not estimate or treat missing measurement as approval.
-When the evidenced count exceeds the limit, do not approve it, publish it, or treat it as ready; make an explicit state-appropriate decision, such as requesting a smaller change, replacing the Execution, handing off when authorized, or rejecting it.
+When the evidenced count exceeds the limit, do not approve it, publish it, or treat it as ready.
+Choose an explicit state-appropriate decision, such as requesting a smaller change, replacing the Execution, or rejecting it.
 Only a current Signal can be assessed.
 A Verdict is one of continue, replace, handoff, or reject.
 Continue preserves the Execution.
