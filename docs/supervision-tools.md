@@ -16,9 +16,12 @@ The application service enforces permissions; a tool name or visible action is n
 | `khala_record_assessment` | Record one bounded Observer assessment |
 | `khala_record_signal` | Record current Executor progress, blocked, or ready evidence |
 | `khala_run_oracle` | Request bounded no-tools advisory review |
+| `khala_list_trusted_skills`, `khala_read_trusted_skill` | Let Conclave inspect only the explicit global trusted-skill catalog |
 
 User actions include pre-admission amendments, renaming, budget changes, review evidence, recovery, cancellation, and explicit failure where authorized.
 Conclave actions include admission, Mission decisions, optional Observer and Oracle use, Verdicts, bounded feedback, and Outcome settlement.
+When `enableCiRepair` is explicitly enabled, the Conclave may also authorize one bounded repair continuation for selected current CI failures.
+CI repair defaults off and is not a generic retry mechanism.
 Observer and Executor tools remain bound to their assigned role and Work.
 Oracle sessions have no tools and receive only the review packet.
 The current action names and inputs are defined in [`src/model.ts`](../src/model.ts) and the handlers in [`src/index.ts`](../src/index.ts).

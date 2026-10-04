@@ -28,24 +28,21 @@
 - Check node_modules for external API types; don't guess.
 - No inline imports (`await import()`, `import("pkg").Type`, dynamic type imports). Top-level imports only.
 - Never remove or downgrade code to fix type errors from outdated deps; upgrade the dep instead.
-- Use only erasable TypeScript syntax (Node strip-only mode) in code checked by the root config (`packages/*/src`, `packages/*/test`, `packages/coding-agent/examples`): no parameter properties, `enum`, `namespace`/`module`, `import =`, `export =`, or other constructs needing JS emit. Use explicit fields with constructor assignments.
+- Use only erasable TypeScript syntax in this repository's checked TypeScript under `src/` and `extensions/`.
 - Always ask before removing functionality or code that appears intentional.
-- Keep key checks configurable by adding defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` instead of hardcoding them.
-- Never modify `packages/ai/src/models.generated.ts` directly; update `packages/ai/scripts/generate-models.ts` instead, then regenerate. Including the resulting `models.generated.ts` diff is always OK, even if regeneration includes unrelated upstream model metadata changes.
 
 ## Testing
 
-- Write behavioral tests that verify observable behavior, not internal implementation details. Tests should survive refactoring.
-- For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
-- Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
-- Avoid running the full vitest suite directly because e2e tests activate with endpoint or auth variables; use `./test.sh` for non-e2e tests or the specific package test command.
+- Write Node behavioral tests under `test/` that verify observable behavior through public interfaces.
+- Use local adapters and deterministic fixtures. Do not make real provider calls or use paid tokens.
+- Follow `docs/development.md` and `package.json` for focused test and validation commands.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 
 ## Commands
 
-- Run `prek run` before starting work and after each code change, and fix all failures before continuing.
-- After code changes, run `npm run check` with full output and fix all errors, warnings, and infos before committing.
-- Never run `npm run build` or `npm test` unless requested by the user.
+- Run `prek run` before starting work and scoped `prek run --files <paths>` after each logical change.
+- Run `npm run check` and `npm run check:markdown` after code and documentation changes.
+- Use focused Node tests documented in `docs/development.md`; do not run `npm test` unless requested because it builds and runs the full native suite.
 - Write ad-hoc scripts to a temporary file, run them, and remove them instead of embedding multi-line scripts in `bash` commands.
 
 ## Documentation
@@ -63,9 +60,10 @@
 
 - Treat npm dep and lockfile changes as reviewed code. Direct external deps stay pinned to exact versions.
 - Hydrate/update locally with `npm install --ignore-scripts`; clean/CI-style with `npm ci --ignore-scripts`. Don't run lifecycle scripts unless the user asks.
-- If dep metadata changes, refresh `package-lock.json` with `npm install --package-lock-only --ignore-scripts`.
-- If `packages/coding-agent/npm-shrinkwrap.json` needs regen, run `node scripts/generate-coding-agent-shrinkwrap.mjs` (verify with `--check` or `npm run check`). New deps with lifecycle scripts require review and an explicit allowlist entry in that script; never add one silently.
-- Pre-commit blocks lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1`. Don't bypass unless the user wants the lockfile change committed.
+- Keep direct external dependencies pinned to exact versions and treat `package-lock.json` changes as reviewed code.
+- Refresh lock metadata with `npm install --package-lock-only --ignore-scripts` when dependency metadata changes. Hydrate with `npm ci --ignore-scripts`; do not run lifecycle scripts unless the user asks.
+- Review dependency lifecycle-script allowlisting in `package.json` when adding packages.
+- Pre-commit blocks lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1`. Do not bypass unless the user wants the lockfile change committed.
 
 ## Git
 
@@ -79,8 +77,7 @@ Committing:
 - Only commit files YOU changed in THIS session.
 - Stage explicit paths (`git add <path1> <path2>`); never `git add -A` / `git add .`.
 - Before committing, run `git status` and verify you are only staging your files.
-- `packages/ai/src/models.generated.ts` may always be included alongside your files.
-- Message format: `{feat,fix,docs}[(ai,tui,agent,coding-agent)]: <commit message> (optionally multiple lines)`. Message is informative and concise.
+- Use scoped commit messages in this repository's established format, such as `fix(agent): <message>`.
 
 Never run (destroys other agents' work or bypasses checks):
 
@@ -92,24 +89,10 @@ If rebase conflicts occur:
 - If a conflict is in a file you did not modify, abort and ask the user.
 - Never force push.
 
-## Testing pi Interactive Mode with tmux
+## Runtime launches
 
-Run the TUI in a controlled terminal (from the repo root):
-
-```bash
-tmux new-session -d -s pi-test -x 80 -y 24
-tmux send-keys -t pi-test "./pi-test.sh" Enter
-sleep 3 && tmux capture-pane -t pi-test -p     # capture after startup
-tmux send-keys -t pi-test "your prompt here" Enter
-tmux send-keys -t pi-test Escape               # special keys (also C-o for ctrl+o, etc.)
-tmux kill-session -t pi-test
-```
-
-## Khala Launcher Options
-
-The setup CLI accepts `zellij`, `tmux`, and `herdr` for the `launcher` setting.
-Herdr launches require Khala to run inside a Herdr-managed pane with `HERDR_ENV=1`; the launcher creates a sibling pane without taking focus.
-Keep this option reflected in the setup wizard, configuration validation, executor launcher registry, README, and package skill registration when changing launcher support.
+Child launch behavior and supported environment constraints are documented in [Operations](docs/operations.md#startup-and-recovery) and implemented in `src/runtime-launch.ts`.
+Do not assume a setup wizard or configurable launcher registry exists.
 
 ## User Override
 

@@ -58,12 +58,12 @@ These tests use temporary model settings, Archive storage, local Git transport, 
 They require `tmux` and the validation isolation runtime, and make no paid model or external code-host calls.
 `npm pack --dry-run` verifies the package contents without publishing.
 
-For a focused test run after building:
+For the focused content-audit checks, compile the extension, copy its runtime assets, and run the affected Node tests:
 
 ```sh
-npx tsc
+npx --no-install tsc
 node scripts/copy-runtime-assets.mjs
-node --test test/mvp.test.js
+node --test test/pi-review.test.js test/prompt-contracts.test.js test/package-content.test.js
 ```
 
 The GitHub Actions workflow runs `npm run lint`, `npm run typecheck:tools`, `npm run check:markdown`, `npm run test`, and `npm pack --dry-run`: [CI workflow](../.github/workflows/ci.yaml).
@@ -100,8 +100,8 @@ than private implementation details.
 ## Packaging
 
 The package exposes `src/index.ts` as its Pi extension entry point and includes
-extensions, prompts, system prompts, templates, themes, assets, and packaged
-skill.
+extensions, prompts, system prompts, templates, themes, assets, documentation,
+and the packaged skill.
 Validate the package file list without publishing it:
 
 ```sh
