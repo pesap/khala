@@ -86,7 +86,11 @@ in every role prompt; link to the shared skill instead.
 ### Conclave
 
 Tune admission criteria, bounded-attempt authorization, Verdict handling, provider feedback assessment, runtime recovery judgment, and Outcome verification.
-The current prompt asks for at most 500 added code lines per change; the application service does not independently validate that prompt rule.
+The Conclave and Executor prompts require each change to stay within 500 added code lines.
+This remains prompt policy, not an application-service validation.
+Counts must cite actual evidence when available.
+If no measurement can be verified, report it as unverified rather than estimating or treating the missing count as approval.
+Do not weaken scope, tests, safeguards, or intended behavior to meet the limit.
 Scheduling and process mechanics belong to application code under [Architecture](architecture.md#scheduling-and-child-runs), not the prompt.
 Keep the
 Conclave read-only with respect to the repository and require Archive evidence

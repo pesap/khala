@@ -12,7 +12,7 @@ const REVIEW_OPTIONS = [
 const REVIEW_WIDGET = ["Review active  /end-review returns to coding"];
 let active = false;
 
-const REVIEW_RUBRIC = `Review only the requested scope. Report actionable findings introduced by the change, ordered by priority [P0] through [P3]. Each finding must include a short title, exact path and line, concrete impact, evidence, and a fix direction. Do not edit files, commit, push, or claim acceptance. End with a Human Reviewer Callouts (Non-Blocking) section and include only applicable callouts.`;
+const REVIEW_RUBRIC = `Review only the requested scope. Report actionable findings in scope, ordered by priority [P0] through [P3]. For change reviews, report only findings introduced by the requested change. For snapshots, report concrete problems present in the snapshot without assuming a change baseline. Each finding must include a short title, exact path and line, concrete impact, evidence, and a fix direction. No findings is an acceptable result. Do not edit files, commit, push, or claim acceptance. End with a Human Reviewer Callouts (Non-Blocking) section and include only applicable callouts.`;
 
 export default function reviewExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("review", {

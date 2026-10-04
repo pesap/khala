@@ -181,6 +181,19 @@ npm pack --dry-run
 See [Development](docs/development.md) for targeted checks, test coverage, packaging, and troubleshooting.
 See the [CI workflow](.github/workflows/ci.yaml) for the automated validation sequence.
 
+## Prompt workflows
+
+| Entry point | Use |
+| --- | --- |
+| `/clarify` | Rewrite a rough request for User review before sending it. |
+| `/git-review` | Inspect local Git history and suggest an implementation-code reading plan without reading implementation code. |
+| `/review` | Report evidence-based code findings for the selected diff, commit, pull request, or snapshot. |
+| `/fresh-eyes` | Inspect the task and repository, then make the smallest justified code changes and validate them. |
+
+These prompts guide model behavior.
+They are not tool-enforced security boundaries.
+See [Pi extensions](docs/pi-extensions.md), [Role prompts](docs/role-prompts.md), and the [Git-history review reference](docs/references/git-review.md) for their owning details.
+
 ## Bundled extensions
 
 - [`pi-review`](extensions/pi-review/README.md) provides `/review` and `/end-review` for scoped code reviews.

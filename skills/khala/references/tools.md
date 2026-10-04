@@ -89,14 +89,15 @@ The current session role and Work state determine which actions are accepted.
 | `amend-mission` | Conclave | changed terms, `reason`, optional `evidence` |
 | `launch-observer` | Conclave | none |
 | `record-assessment` | Observer | `summary`, `evidence` |
-| `start-execution` | Conclave | none |
+| `start-execution` | Conclave | none, plus optional skill-selection fields |
 | `record-signal` | Executor | `kind`, `summary`, `evidence` |
 | `commit-sandbox` | Executor | none |
 | `run-validation` | Executor | none |
 | `create-review-request` | Executor | none |
 | `run-oracle` | Conclave | `subject` |
-| `verdict` | Conclave | `decision`, `reason`, `signalId` |
+| `verdict` | Conclave | `decision`, `reason`, `signalId`, plus optional skill-selection fields for `replace` |
 | `deliver-feedback` | Conclave | optional `observationId` |
+| `repair-ci` | Conclave | `observationId`, `evidence` with one-based failed-check indexes |
 | `record-review` | User | `status`, optional `feedback` |
 | `record-outcome` | Conclave | none |
 | `cancel` | User | none |
@@ -107,6 +108,9 @@ The current session role and Work state determine which actions are accepted.
 | `fail-work` | User or Conclave | `reason` when required by the schema |
 
 `verdict.decision` is one of `continue`, `replace`, `handoff`, or `reject`.
+The optional `skillIds` accepts at most three IDs from the trusted-skill catalog.
+`skillInstructions` is limited to 4,000 characters, and `skillSelectionReason` is limited to 500 characters.
+These fields apply to `start-execution` and replacement Verdicts only.
 Use `signalId: "budget-exhausted"` for a budget-exhausted Execution.
 A `continue` decision is rejected when the Execution has exhausted its allowance.
 
@@ -115,6 +119,20 @@ Provider feedback is delivered by observation ID.
 The role prompt supplies decision policy, but the application service remains authoritative.
 
 Do not invent or paste a provider comment into a different Work.
+
+## Trusted-skill catalog
+
+`khala_list_trusted_skills` and `khala_read_trusted_skill` are Conclave-only tools.
+They expose only the global `trustedSkills` allowlist of Pi skills under `PI_CODING_AGENT_DIR/skills`.
+The list defaults to empty, and project skills are not discovered.
+Read selected catalog entries before passing their IDs and bounded, task-specific guidance with `start-execution` or a replacement Verdict.
+Skill guidance is advisory and cannot change Mission terms, authority, permissions, or allowed paths.
+See [Operations](../../../docs/operations.md#configuration-and-state-locations) for the catalog boundary.
+
+`repair-ci` is available to the Conclave action schema but remains opt-in through global or trusted project configuration `enableCiRepair`, which defaults to `false`.
+It authorizes one bounded continuation of the same idle Execution for selected current CI failures, using evidence indexes from the matching observation.
+It is not a default retry path or permission to broaden the repair scope.
+The application service remains authoritative for eligibility.
 
 `reconcile-invocation.usage` contains nonnegative whole-number `inputTokens`, `outputTokens`, `cacheHitTokens`, and `cacheMissTokens` from final usage evidence.
 Incomplete runtime receipts require all four counts and a nonblank evidence reference.

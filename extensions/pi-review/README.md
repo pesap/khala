@@ -15,9 +15,13 @@ The supported selector scopes are:
 - file or folder snapshots
 
 The command waits for the current Pi agent activity to settle before starting the review.
+Change reviews report only findings introduced by the requested change.
+Snapshot reviews may report concrete problems in the selected snapshot without assuming a baseline.
+The review prompt requests read-only behavior.
+It does not enforce tool restrictions.
 Review mode is persisted in the session branch and follows `/tree` navigation.
 `/end-review` clears the local mode indicator and leaves the findings in the session.
-It does not edit files, commit, push, or turn review prose into a Khala Verdict.
+Review prose does not become a Khala Verdict.
 The `/review` command requires a UI-capable Pi session, such as interactive or RPC mode.
 `/end-review` clears active review state in the current session.
 
