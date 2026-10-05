@@ -1,8 +1,10 @@
 ---
 name: khala
 description: >
-  Use only when the user explicitly requests Khala, a Khala Work, Archive inspection, or Khala supervision.
-  Do not use for ordinary coding requests or intent inferred from context.
+  Operate Khala Works through submission, Archive inspection, runtime supervision, provider review, and recovery.
+  Use only when the user explicitly requests Khala or a Khala-specific operation, such as submitting a Work,
+  checking its status, diagnosing token reservations, recovering an Executor, or recording review evidence.
+  Do not use for ordinary coding requests, generic Work or Mission terminology, or intent inferred from context.
 ---
 
 # Khala tool usage
@@ -26,6 +28,31 @@ Role prompts define the User, Conclave, Executor, Observer, and Oracle responsib
 - The Executor may change only files under the Mission's `allowedPaths`.
 - Do not merge provider requests, change Mission terms, top up tokens, or bypass the application service.
 
+## Safe tool calls
+
+| Operation | Always | Never |
+| --- | --- | --- |
+| First Archive read | Start with only the known `workId`. | Fill optional fields with placeholders, empty dates, or invented IDs. |
+| Archive continuation | Copy a returned token exactly and keep the same filters. | Construct, repair, or reuse a cursor for different filters. |
+| Existing Work mutation or runtime inspection | Read the current Work and use its `revision`. | Reuse a submission revision or retry a revision conflict unchanged. |
+| New Work submission | Confirm repository commands, permitted paths, and Linux bubblewrap support first. | Submit prose as `validation` or bypass isolation on an unsupported host. |
+| Budget diagnosis | Read invocation and decision evidence using the recovery reference. | Treat held reservations as consumed budget or top up tokens without User authorization. |
+
+## First Archive read
+
+Start with only the known Work ID, replacing `example-work` below with that ID:
+
+```json
+{"workId":"example-work"}
+```
+
+Omit unused optional fields.
+Do not fill them with `?`, `x`, `*`, empty dates, or invented IDs.
+Treat cursors as opaque tokens supplied by the tool, never as something to decode, construct, or repair.
+After an invalid cursor or filter error, start a new minimal read without a cursor.
+Do not repeat unchanged failed calls or inspect private storage to work around the public tool contract.
+If the minimal read fails, report the error instead of guessing another cursor.
+
 ## Authority and revisions
 
 For a mutation to an existing Work:
@@ -37,34 +64,25 @@ For a mutation to an existing Work:
 
 For a new Work, the explicitly requested `khala_submit_work` call is the initial mutation because no Work revision exists to read.
 For an explicit resubmission or any later mutation, read the existing Work first.
+Use a fresh Archive revision for `khala_inspect_runtime` too, not the revision from an earlier submission or conversation turn.
 
-The application service supplies idempotency metadata for tool calls.
-Repeating a completed tool call returns its prior result when the same command identity is available; it does not make a second lifecycle decision.
+## Report evidence, not assumptions
 
-## Minimal workflow
-
-1. After an explicit Khala request, submit complete intent with `khala_submit_work` when a new Work is requested.
-2. Read the Work and Archive records with `khala_read_archive`.
-3. Let the Conclave admit the Mission and schedule an Execution.
-4. Let the Executor work in its dedicated Git sandbox, commit through the governed workspace action, run declared validation, create or reconcile the draft review request, and record a `ready` Signal.
-5. Record User review evidence or poll the provider with `khala_poll_provider`.
-6. Let the Conclave assess bounded provider observations and record the explicit Outcome only after verified merge evidence.
-
+Submission is asynchronous.
+Reread before reporting current admission or Execution state, or state that only submission was acknowledged.
+Missing validation or a checked head does not prove that no files were edited.
+If a tool does not expose runtime liveness in its returned content, report that evidence gap rather than inferring liveness from Work state.
 A ready Signal, handoff, provider approval, or provider merge is not acceptance.
 Current provider delivery reaches `succeeded` only through a Conclave `record-outcome` backed by provider-confirmed merge evidence.
 
-## Current limits
+## Task-specific references
 
-The current extension does not provide local acceptance or a shared background supervisor.
-Autonomous provider polling belongs to the hosting User session and stops when that session closes.
-Declared validation and dependency hydration require Linux bubblewrap and run without host credentials, host cache, or network access.
-Pi child launches and service-owned Git hooks do not yet have complete OS isolation.
-Do not treat provider credential files as inaccessible to an Executor child.
+Open the reference whose trigger matches the task before acting.
+Do not preload all references.
 
-## Load references only when needed
+- [`references/tools.md`](references/tools.md): read before selecting an action, adding Archive filters, or correcting a tool argument error.
+- [`references/workflows.md`](references/workflows.md): read before submitting a Work, choosing recovery, diagnosing a budget failure, or coordinating the full delivery workflow.
+- [`references/boundaries.md`](references/boundaries.md): read before launching implementation, arranging validation or provider delivery, or explaining isolation and supervision limits.
 
-- [`references/tools.md`](references/tools.md) describes tool contracts, action inputs, and role-bound shortcuts.
-- [`references/workflows.md`](references/workflows.md) describes normal operation, failure handling, and recovery.
-- [`references/boundaries.md`](references/boundaries.md) describes current implementation limits, provider requirements, and security boundaries.
-
-Do not preload every reference for an ordinary coding task.
+Khala has no local acceptance or shared background supervisor.
+Do not assume that child launches isolate provider credentials or that autonomous polling survives the hosting User session.

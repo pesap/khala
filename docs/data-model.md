@@ -182,6 +182,7 @@ Current projection parsing validates Work/Mission/Execution relationships, budge
 Stored command replay uses its original projection snapshot rather than substituting the latest Work.
 Opening an Archive validates stored projections, while ordinary Work inspection selects the requested projection.
 A writable Archive currently applies explicit migrations for command and projection columns, legacy Work terms and states, and missing record numbers before integrity validation.
+Untracked token reservations fail integrity validation rather than being cleared during startup.
 Current Work terms do not include the target delivery mode, provider repository target, or review snapshot identity.
 `RunLedger` and `SQLiteArchive` implement workflow-wide invocation accounting for Conclave, Executor, Observer, and Oracle runs, including reservation, settled or uncertain usage, cumulative settlement, and User reconciliation.
 The target child-run contract is richer than this current invocation ledger and requires additional durable run facts, including complete per-run prompt identity coverage.

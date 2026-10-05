@@ -13,6 +13,7 @@ Overrides apply only to Missions targeting that repository and cannot rewrite gl
 The global-only `trustedSkills` list defaults to empty and accepts Pi skill directory IDs from `PI_CODING_AGENT_DIR/skills/<id>/SKILL.md`.
 Project configuration cannot add to or replace this allowlist.
 Only explicitly listed global skills are read; `.agents/skills`, project skills, package skills, and Pi settings or CLI skill paths are not discovered.
+A leading UTF-8 byte order mark is ignored only when parsing skill metadata, while the original text and its byte digest remain unchanged.
 
 The target has one shared Archive and explicit Khala-owned state locations for child artifacts and managed worktrees outside active User checkouts.
 Repository identity remains an access boundary even though storage is shared.

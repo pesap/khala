@@ -3,8 +3,16 @@
 Tool schemas exposed by the current Pi session are authoritative for argument shape.
 Use the tools only in the session role that exposes them.
 Application permissions, Work state, and revision checks remain authoritative even when a tool is visible.
+The application service supplies idempotency metadata for tool calls.
+Repeating a completed tool call returns its prior result when the same command identity is available, not a second lifecycle decision.
 
-## User-session tools
+## Contents
+
+- [Tool contracts by session role](#tool-contracts-by-session-role)
+- [Action reference](#action-reference)
+- [Trusted-skill catalog](#trusted-skill-catalog)
+
+## Tool contracts by session role
 
 ### `khala_submit_work`
 
@@ -16,14 +24,35 @@ It does not admit a Mission, start an Executor, create a review request, or acce
 
 Call this only after the user explicitly requests a new Khala Work or an explicit resubmission.
 If an explicit Work request lacks required terms, ask the user instead of inventing them.
+`validation` contains literal shell commands executed in the sandbox, not instructions for the Executor to translate.
+Use exact repository commands and explicit paths where needed, without Markdown backticks or prose prefixes.
+Read the Work again before claiming that admission is pending, an Executor has started, or no code has changed.
 
 ### `khala_read_archive`
 
 Read the current Work and Mission terms plus at most ten recent authorized decision-evidence records.
 Filter by `workId`, `missionId`, `executionId`, `kinds`, `states`, or time range.
 Selected payload fields include Signal diagnoses, validation failures, preparation diagnostics, and assessments.
-Use the returned continuation cursor when more evidence is needed.
 Inspect explicit omissions before deciding.
+Start a new query with only the known Work ID:
+
+```json
+{"workId":"example-work"}
+```
+
+Replace `example-work` with the actual Work ID.
+Every other field is optional.
+Add only filters whose values are known and relevant.
+Mission and Execution IDs are exact matches, not wildcard patterns.
+Omit unused `from` and `to` fields instead of supplying empty strings.
+Use complete timestamp bounds only when the investigation needs a time range.
+
+When the packet provides an `omissions[].continuation`, copy that token exactly into `cursor` and preserve the same filters.
+If the token is omitted or truncated, report the gap or use a narrower new query without a cursor.
+Never manufacture a cursor, change its sequence numbers, or reuse it for another Work or filter set.
+A cursor parse or filter mismatch is an argument error, not a reason to repeat the same call or create a fake initial cursor.
+Restart with the minimal query without a cursor.
+An empty record list is evidence only for the selected filters, not proof that the Work has no history.
 
 The packet includes the Work `revision` and record `asOfSequence`.
 These are separate reads, not an atomic snapshot.
@@ -43,6 +72,8 @@ The hosting User session also polls active review requests autonomously while th
 
 Inspect runtime liveness without changing Archive state.
 It requires `workId` and `expectedWorkRevision`.
+Read the Archive immediately before inspection and use its current Work revision.
+On a conflict, reread rather than reusing an old revision.
 It can refresh displayed runtime state without writing an Archive record.
 `idle` can mean that an active Execution is between turns.
 `unreachable` requires the authorized `recover` action by the owning User or bound Conclave.

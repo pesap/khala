@@ -3,6 +3,23 @@
 Use this reference after the user has explicitly requested Khala and the relevant Work is known.
 Read the current Archive before every consequential decision.
 
+## Contents
+
+- [Before submission](#before-submission)
+- [Normal workflow](#normal-workflow)
+- [Diagnose before recovering](#diagnose-before-recovering)
+- [Failure and recovery](#failure-and-recovery)
+
+## Before submission
+
+Inspect the repository's actual validation commands and permitted paths before declaring them.
+Supply literal executable shell commands in `validation`, not prose or instructions to check unspecified touched files.
+For example, use `"validation": ["npm run check"]` only when that command exists in the target repository.
+Confirm that the configured execution environment supports governed validation before launching implementation.
+The current adapter requires Linux bubblewrap.
+On an unsupported host, explain the blocker and ask the User how to proceed rather than submitting a Work that cannot validate.
+Never bypass isolation with unrestricted host validation or increase a budget without explicit User authorization.
+
 ## Normal workflow
 
 1. Submit complete User intent with `khala_submit_work` for a new Work.
@@ -17,6 +34,35 @@ Read the current Archive before every consequential decision.
 A ready Signal, handoff, provider approval, or provider merge is not acceptance.
 Current provider delivery reaches `succeeded` only through a Conclave `record-outcome` backed by provider-confirmed merge evidence.
 
+## Diagnose before recovering
+
+In a User or Conclave session, start with a Work-scoped read before narrowing to one Mission or Execution.
+Stay within the current role's authorized record visibility.
+For example, replace `example-work` with the known Work ID:
+
+```json
+{
+  "workId": "example-work",
+  "kinds": ["execution", "invocation", "verdict", "error", "work-amended"]
+}
+```
+
+Starting with an Execution filter can hide Conclave reservations, budget amendments, and earlier replacement history.
+Compare record sequences and timestamps with the current projection before treating a Verdict's prose as a verified diagnosis.
+Distinguish an exhausted Execution allowance, consumed Work budget, held invocation reservations, and the correction allowance.
+A reservation wait is not consumed-budget exhaustion, and the deciding Conclave can itself hold a reservation.
+Do not reject a Mission or recommend a budget increase solely because tokens are temporarily reserved.
+An already-running token-exhaustion wake requires `replace` or `reject` before returning, but has no supported durable replacement-deferral outcome for reservation-only blocking.
+If replacement is unavailable and rejection has no independent justification, report this lifecycle conflict rather than inventing an action or diagnosis.
+Waiting does not satisfy that wake's decision contract.
+If the necessary invocation or amendment records are unavailable, state that limitation rather than inventing a cause.
+
+`replacementEligibility` reports only some gates.
+Inspect Mission state, the current Signal, and the other stated lifecycle and capacity requirements before deciding that replacement can start.
+A rejected Mission is not permission to restart its Execution, even when token and correction gates show eligibility.
+Mission reconciliation belongs to the Conclave, and Work closure still requires an explicit actor-authorized decision.
+Report missing validation as missing recorded evidence, not as proof that no implementation edits exist.
+
 ## Failure and recovery
 
 - `needs-input`: reread the Work and provide missing intent or repository facts.
@@ -30,7 +76,10 @@ Current provider delivery reaches `succeeded` only through a Conclave `record-ou
   Incomplete receipts require User `reconcile-invocation` with actual cumulative usage and evidence.
 - Work budget exhausted: only an explicit User budget amendment can permit another invocation.
   Changing models or repeatedly recovering does not restore consumed tokens.
-- `budget-exhausted`: replace the Execution or amend the Work budget before continuing.
+- Execution `budget-exhausted`: the same Execution cannot continue under its exhausted allowance.
+  The Conclave must inspect replacement gates, including held reservations, before selecting a permitted, evidence-backed decision.
+  Replace only when the current gates permit it, or reject for independently supported reasons.
+  Do not equate this condition with exhaustion of the overall Work budget.
 - `unreachable` runtime: inspect it, then use `recover` as the owning User or bound Conclave.
   User-initiated recovery must run in the owning User session.
   Use `/khala-recover` there to reread the project Archive and reconcile runtime bindings.

@@ -47,6 +47,60 @@ function createArchive(path, workId = "work-1") {
 	return archive;
 }
 
+function installLegacyExecutionProjection(
+	path,
+	{ allowance, usage, reservedTokens, consumedTokens = 0, executionState = "running" },
+) {
+	const database = openSqlite(path);
+	try {
+		const row = database.prepare("SELECT view_json FROM work_projection WHERE work_id = ?").get("work-1");
+		const current = JSON.parse(String(row.view_json));
+		const execution = {
+			executionId: "execution-1",
+			workId: "work-1",
+			missionId: "mission-1",
+			state: executionState,
+			model: "model",
+			thinking: "high",
+			tokenAllowance: allowance,
+			promptIdentity: { packageVersion: "1.0.0", promptSha256: "digest" },
+			sandbox: { path: "/tmp/sandbox", baseCommit: "base", branch: "branch" },
+		};
+		if (usage !== undefined) execution.usage = usage;
+		const legacy = {
+			...current,
+			revision: current.revision + 1,
+			state: "active",
+			missionState: "active",
+			mission: {
+				missionId: "mission-1",
+				workId: "work-1",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				assignment: current.terms,
+				mandateRevision: 1,
+			},
+			execution,
+			budget: { ...current.budget, reservedTokens, consumedTokens },
+		};
+		delete legacy.activeInvocations;
+		database
+			.prepare("UPDATE work_projection SET revision = ?, view_json = ? WHERE work_id = ?")
+			.run(legacy.revision, JSON.stringify(legacy), "work-1");
+	} finally {
+		database.close();
+	}
+}
+
+function storedWorkProjection(path, workId = "work-1") {
+	const database = openSqlite(path, { readOnly: true });
+	try {
+		const row = database.prepare("SELECT view_json FROM work_projection WHERE work_id = ?").get(workId);
+		return String(row.view_json);
+	} finally {
+		database.close();
+	}
+}
+
 function appendProjection(archive, current, projection, commandId) {
 	return archive.append({
 		commandId,
@@ -141,6 +195,189 @@ test("Archive rejects a persisted phantom active invocation on restart", async (
 	}
 	assert.throws(() => new SQLiteArchive(path), /durable invocation fact/);
 	await rm(directory, { recursive: true, force: true });
+});
+
+test("Archive rejects untracked Execution reservations without rewriting them", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-untracked-reservation-"));
+	const path = join(directory, "archive.sqlite");
+	const initial = createArchive(path);
+	initial.close();
+	installLegacyExecutionProjection(path, {
+		allowance: 50,
+		usage: { inputTokens: 10, outputTokens: 5, cacheHitTokens: 0, cacheMissTokens: 0 },
+		reservedTokens: 35,
+		consumedTokens: 15,
+	});
+	const before = storedWorkProjection(path);
+
+	try {
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			assert.throws(() => new SQLiteArchive(path), /reservation accounting/);
+			assert.equal(storedWorkProjection(path), before);
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Archive rejects held tokens with an empty active invocation list", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-active-invocations-"));
+	const path = join(directory, "archive.sqlite");
+	const archive = createArchive(path);
+	archive.close();
+	installLegacyExecutionProjection(path, { allowance: 20, reservedTokens: 20 });
+	const database = openSqlite(path);
+	try {
+		const row = database.prepare("SELECT view_json FROM work_projection WHERE work_id = ?").get("work-1");
+		const legacy = JSON.parse(String(row.view_json));
+		legacy.activeInvocations = [];
+		database
+			.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?")
+			.run(JSON.stringify(legacy), "work-1");
+	} finally {
+		database.close();
+	}
+
+	try {
+		assert.throws(() => new SQLiteArchive(path), /reservation accounting/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Archive rejects untracked reservations even with invocation history", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-invocation-history-"));
+	const path = join(directory, "archive.sqlite");
+	const archive = createArchive(path);
+	new RunLedger(archive).reserve({ workId: "work-1", role: "executor", allowance: 20, runId: "durable-run" });
+	archive.close();
+	installLegacyExecutionProjection(path, { allowance: 20, reservedTokens: 20 });
+
+	try {
+		assert.throws(() => new SQLiteArchive(path), /reservation accounting/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Archive rejects untracked reservations and incomplete Execution usage", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-invalid-legacy-reservation-"));
+	try {
+		for (const scenario of [
+			{
+				name: "mismatched-reservation",
+				usage: { inputTokens: 10, outputTokens: 5, cacheHitTokens: 0, cacheMissTokens: 0 },
+				reservedTokens: 34,
+				error: /reservation accounting/,
+			},
+			{
+				name: "underreported-consumption",
+				usage: { inputTokens: 10, outputTokens: 5, cacheHitTokens: 0, cacheMissTokens: 0 },
+				reservedTokens: 35,
+				consumedTokens: 0,
+				error: /reservation accounting/,
+			},
+			{
+				name: "partial-usage",
+				usage: { inputTokens: 10, outputTokens: 5, cacheHitTokens: 0 },
+				reservedTokens: 35,
+				error: /Work projection is invalid/,
+			},
+		]) {
+			const path = join(directory, scenario.name, "archive.sqlite");
+			const archive = createArchive(path);
+			archive.close();
+			installLegacyExecutionProjection(path, {
+				allowance: 50,
+				usage: scenario.usage,
+				reservedTokens: scenario.reservedTokens,
+				consumedTokens: scenario.consumedTokens ?? 15,
+			});
+			const before = storedWorkProjection(path);
+			assert.throws(() => new SQLiteArchive(path), scenario.error, scenario.name);
+			assert.equal(storedWorkProjection(path), before, scenario.name);
+		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Archive preserves queued Executions without invocation reservations", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-queued-execution-"));
+	const path = join(directory, "archive.sqlite");
+	const initial = createArchive(path);
+	initial.close();
+	installLegacyExecutionProjection(path, { allowance: 50, reservedTokens: 0, executionState: "queued" });
+
+	let archive;
+	try {
+		archive = new SQLiteArchive(path);
+		const work = archive.project("work-1");
+		assert.equal(work.execution.state, "queued");
+		assert.equal(work.budget.reservedTokens, 0);
+		assert.equal(work.activeInvocations, undefined);
+	} finally {
+		archive?.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Archive rejects untracked Execution reservations without usage evidence", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-untracked-no-usage-"));
+	const path = join(directory, "archive.sqlite");
+	const initial = createArchive(path);
+	initial.close();
+	installLegacyExecutionProjection(path, { allowance: 50, reservedTokens: 50 });
+	const before = storedWorkProjection(path);
+
+	try {
+		assert.throws(() => new SQLiteArchive(path), /reservation accounting/);
+		assert.equal(storedWorkProjection(path), before);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Failed Archive startup preserves another Work's reservations", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-archive-integrity-failed-startup-"));
+	const path = join(directory, "archive.sqlite");
+	const initial = createArchive(path);
+	initial.append({
+		commandId: "submission:work-2",
+		expectedWorkRevision: 0,
+		kind: "submission",
+		actor: "user",
+		workId: "work-2",
+		payloadVersion: 1,
+		summary: "submitted",
+		payload: {},
+		projection: view("work-2", 1),
+	});
+	initial.close();
+	installLegacyExecutionProjection(path, {
+		allowance: 50,
+		usage: { inputTokens: 10, outputTokens: 5, cacheHitTokens: 0, cacheMissTokens: 0 },
+		reservedTokens: 35,
+		consumedTokens: 15,
+	});
+	const other = JSON.parse(storedWorkProjection(path, "work-2"));
+	other.budget.consumedTokens = -1;
+	const database = openSqlite(path);
+	try {
+		database
+			.prepare("UPDATE work_projection SET view_json = ? WHERE work_id = ?")
+			.run(JSON.stringify(other), "work-2");
+	} finally {
+		database.close();
+	}
+	const before = storedWorkProjection(path);
+
+	try {
+		assert.throws(() => new SQLiteArchive(path), /Work projection is invalid/);
+		assert.equal(storedWorkProjection(path), before);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 test("Archive accepts reserved and uncertain invocations across Works and restart", async () => {

@@ -132,6 +132,11 @@ test("the catalog accepts Pi frontmatter with a BOM and folded or block descript
 			? { id: skill.id, name: skill.name, description: skill.description }
 			: { id: skill.id, reason: skill.reason },
 	), samples.map(({ id, description }) => ({ id, name: id, description })));
+	for (const sample of samples) {
+		const skill = readTrustedSkill(catalog, sample.id);
+		assert.equal(skill.content, sample.content);
+		assert.equal(skill.sha256, createHash("sha256").update(sample.content, "utf8").digest("hex"));
+	}
 });
 
 test("the catalog requires Pi skill names but allows names independent of directory IDs", async (t) => {

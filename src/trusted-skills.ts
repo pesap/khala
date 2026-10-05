@@ -249,7 +249,8 @@ function readBoundedBytes(path: string): Buffer | undefined {
 
 function skillMetadata(content: string): Readonly<{ name: string; description: string }> | undefined {
 	try {
-		const parsed = parseFrontmatter(content).frontmatter;
+		// Normalize the encoding marker only for parsing so stored content and its byte digest remain unchanged.
+		const parsed = parseFrontmatter(content.replace(/^\uFEFF/, "")).frontmatter;
 		const frontmatter: SkillFrontmatter = Value.Parse(skillFrontmatterSchema, parsed);
 		const { name, description } = frontmatter;
 		if (!validSkillMetadata(name, description)) return;
