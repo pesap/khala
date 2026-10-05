@@ -9,6 +9,8 @@
     "sourceMap": true,
     "noEmitOnError": true,
     "strict": true,
+    "allowJs": true,
+    "checkJs": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noUncheckedIndexedAccess": true,
@@ -27,6 +29,6 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "extensions/**/*.ts"],
+  "include": ["src/**/*.ts", "src/validation-worker.js", "extensions/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

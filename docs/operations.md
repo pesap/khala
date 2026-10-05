@@ -255,7 +255,7 @@ Role-visible Archive reads include authorized Signal diagnoses, validation outpu
 Omissions and record continuation cursors are explicit; Work and record freshness are reported separately.
 Capabilities, private runtime bindings, and raw transcripts are not model-facing decision evidence.
 
-The workspace adapter prepares dependency artifacts before launching an Executor.
+The workspace adapter verifies validation isolation with a sandboxed empty Node command and prepares dependency artifacts before launching an Executor.
 Remote acquisition permits only HTTPS artifacts from `registry.npmjs.org` with pinned SHA-512 integrity and rejects redirects.
 Local `file:` artifacts are allowed only when they remain inside the authorized workspace and pass the same integrity and size checks.
 Both paths use a private cache under the configured worktree root.
@@ -271,11 +271,31 @@ The scheduler skips ineligible queued Missions, and deferred model effects do no
 Explicit preparation recovery or a sufficient User budget amendment rechecks eligibility.
 A failed preparation retains the pending Execution's bounded skill guidance so explicit recovery does not silently discard Conclave's selection.
 Governed commit and validation use `npm ci --ignore-scripts --offline` against the prepared cache, without an implicit build.
-Dependency hydration and declared validation run inside Linux bubblewrap with a private network, PID namespace, temporary directory, and home.
-Bubblewrap must already be installed and user namespaces permitted; Khala does not install it or run validation unrestricted when isolation fails.
-The validation path must resolve inside the configured worktree root.
-System runtime directories, Node, and the npm package for Node projects are read-only; the selected workspace and private dependency cache are persistently writable.
+Dependency hydration and declared validation use `@anthropic-ai/sandbox-runtime` on Linux and macOS.
+Linux requires bubblewrap (`bwrap`), `socat`, ripgrep (`rg`), and permitted user namespaces, with the SDK's bundled seccomp helper available.
+macOS uses the system Seatbelt sandbox through `/usr/bin/sandbox-exec` and requires no bubblewrap installation.
+Windows validation is unsupported.
+Khala does not install system prerequisites or run validation unrestricted when isolation fails or the SDK reports degraded isolation.
+The validation path must resolve inside the configured worktree root, and policy paths must not contain glob characters.
+System runtime directories, Node, and the npm package for Node projects are read-only.
+On Linux, the resolved sandbox runtime package is also read-only so its bundled seccomp helper remains executable inside the sandbox.
+Invocation-private npm and npx aliases select the configured npm installation without exposing its host executable directory.
+Inherited resolver PATH entries are anchored to the service directory before helpers enter the workspace.
+Inherited `node_modules/.bin` entries are excluded from resolver PATH before and after resolving symlinks.
+An empty effective resolver PATH blocks preparation instead of searching the workspace.
+Resolved directories containing the platform's PATH separator also block preparation because they cannot be represented unambiguously.
+Workspace-local executables retain precedence over these aliases.
+The selected workspace and private dependency cache are persistently writable, with invocation-private temporary storage and HOME.
+Commands receive only PATH, LANG, HOME, and temporary-directory variables from Khala, plus SDK isolation settings.
 The host home, credential environment, and npm cache are not exposed.
+Network destinations and host Unix sockets are blocked.
+Each command runs in a separate SDK helper with a 120-second deadline, so concurrent validations do not share SDK policy or cleanup state.
+Bounded command stdout and stderr remain available in failure diagnostics when the helper deadline terminates it.
+Normal completion, cancellation, and timeout stop the helper's owned process group.
+Linux additionally uses PID namespaces and bubblewrap's parent-death behavior.
+On macOS, descendants that deliberately create another session can outlive validation and continue writing inside the authorized workspace while remaining sandboxed.
+macOS support does not guarantee complete descendant termination.
+Existing source and HEAD checks before and after validation, at ready, and at handoff remain in force, but they do not eliminate that lifetime gap.
 Offline dependency resolution failures are reported rather than retried with unrestricted network or host-cache access.
 Discovered Pi extensions, skills, prompt templates, and themes are disabled in role children; native repository context files remain enabled.
 When `trustedSkills` is nonempty, Conclave can inspect and read only those allowlisted `SKILL.md` files.
@@ -286,6 +306,7 @@ Failed Conclave effects retain their original identity rather than creating anot
 A deferred model effect does not prevent later cleanup or unrelated Work effects from being drained.
 This does not isolate service-owned Git hooks or establish complete Pi child-process isolation.
 
+Process probes that require `ps` use `/bin/ps`, a one-second timeout, and only PATH, locale, and timezone environment variables.
 Runtime stop waits for the owned process group to have no live members before removing its lease.
 Cancellation and explicit failure request Executor stopping even when a resumed feedback or continuation turn occupies the effect pump.
 Stop requests for independent Works proceed independently; one refusal does not prevent another stopped Work from receiving its stop request.

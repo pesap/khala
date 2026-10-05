@@ -16,7 +16,10 @@ Inspect the repository's actual validation commands and permitted paths before d
 Supply literal executable shell commands in `validation`, not prose or instructions to check unspecified touched files.
 For example, use `"validation": ["npm run check"]` only when that command exists in the target repository.
 Confirm that the configured execution environment supports governed validation before launching implementation.
-The current adapter requires Linux bubblewrap.
+The current adapter uses the Anthropic sandbox runtime on Linux and macOS.
+Linux requires `bwrap`, `socat`, `rg`, and permitted user namespaces.
+macOS uses `/usr/bin/sandbox-exec`, with the descendant-cleanup limitation described in [boundaries](boundaries.md#current-implementation-boundary).
+Preparation checks an actual isolated launch before the Executor starts.
 On an unsupported host, explain the blocker and ask the User how to proceed rather than submitting a Work that cannot validate.
 Never bypass isolation with unrestricted host validation or increase a budget without explicit User authorization.
 

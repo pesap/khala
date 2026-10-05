@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -230,8 +230,8 @@ test("GitWorkspace commits with its receiver and returns the committed head", as
 });
 
 test("GitWorkspace hydrates sandbox dependencies for commit and validation", async (t) => {
-	if (process.platform !== "linux") return t.skip("Dependency hydration and isolated validation require Linux bubblewrap.");
-	const directory = await mkdtemp(join(tmpdir(), "khala-commit-toolchain-"));
+	if (!["linux", "darwin"].includes(process.platform)) return t.skip("Dependency hydration and isolated validation require Linux or macOS.");
+	const directory = await mkdtemp(join(await realpath(tmpdir()), "khala-commit-toolchain-"));
 	const parent = join(directory, "parent");
 	const remote = join(directory, "remote.git");
 	const worktreeRoot = join(directory, "worktrees");
@@ -253,7 +253,7 @@ test("GitWorkspace hydrates sandbox dependencies for commit and validation", asy
 	await writeFile(join(dependency, "git.mjs"), "#!/usr/bin/env node\nprocess.exit(97);\n");
 	await writeFile(join(parent, "file.txt"), "before\n");
 	await writeFile(join(parent, "hook-config.mjs"), 'import { loaded } from "parent-hook-dependency";\nif (!loaded) process.exit(1);\n');
-	execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts"], { cwd: parent });
+	execFileSync("npm", ["install", "--package-lock-only", "--ignore-scripts", "--offline"], { cwd: parent });
 	execFileSync("git", ["-C", parent, "add", "."]);
 	execFileSync("git", ["-C", parent, "commit", "-m", "initial"]);
 	const baseCommit = execFileSync("git", ["-C", parent, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -347,7 +347,7 @@ test("GitWorkspace hydrates sandbox dependencies for commit and validation", asy
 });
 
 test("Failed validation retains stdout and stderr diagnostics", async (t) => {
-	if (process.platform !== "linux") return t.skip("Isolated validation requires Linux bubblewrap.");
+	if (!["linux", "darwin"].includes(process.platform)) return t.skip("Isolated validation requires Linux or macOS.");
 	const directory = await mkdtemp(join(tmpdir(), "khala-validation-output-"));
 	const fakeBin = join(directory, "bin");
 	await mkdir(fakeBin);

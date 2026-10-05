@@ -92,7 +92,7 @@ stages = [
 # ---------------------------------------------------------------------------
 # Biome
 #
-# Runs only against TypeScript files covered by biome.json.
+# Runs only against source files covered by biome.json.
 #
 # `npm run lint:fix --` allows prek to append the filenames being checked.
 # ---------------------------------------------------------------------------
@@ -106,6 +106,7 @@ language = "system"
 files = '''
 (?x)^(
   src/.*\.(ts|tsx|mts|cts)|
+  src/validation-worker\.js|
   extensions/pi-review/.*\.(ts|tsx|mts|cts)
 )$
 '''

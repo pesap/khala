@@ -9,8 +9,12 @@ The current extension does not provide local acceptance or a shared background s
 Autonomous provider polling belongs to the hosting User session and stops when that session closes.
 Independent background continuation remains a target requirement.
 
-Declared validation and dependency hydration require Linux bubblewrap.
-They run without host credentials, host cache, or network access.
+Declared validation and dependency hydration use the Anthropic sandbox runtime on Linux and macOS.
+They run without host credentials, host cache, or network destinations.
+Windows validation is unsupported.
+On macOS, deliberately detached descendants remain sandboxed but may outlive validation and keep writing the authorized workspace.
+Source and HEAD checks do not prove complete descendant termination.
+See [Operations](../../../docs/operations.md#current-configuration-reference) for prerequisites and cleanup limits.
 Service-owned dependency preparation may acquire integrity-checked artifacts from the approved npm registry into its private cache before child launch.
 An isolation or offline dependency failure is not permission to substitute unrestricted commands or expose the host cache.
 

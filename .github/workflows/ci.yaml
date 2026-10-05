@@ -19,10 +19,12 @@ jobs:
       - name: Install validation and terminal test runtimes
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap tmux
+          sudo apt-get install --yes --no-install-recommends bubblewrap socat ripgrep tmux
           sudo install --mode=0644 .github/bwrap.apparmor /etc/apparmor.d/khala-ci-bwrap
           sudo apparmor_parser --replace /etc/apparmor.d/khala-ci-bwrap
           bwrap --version
+          socat -V
+          rg --version
       - run: npm ci --ignore-scripts
       # Lint here; the test step's build (clean + tsc) is the authoritative type gate,
       # so a separate --noEmit typecheck pass would be redundant build work.
@@ -32,3 +34,18 @@ jobs:
       - run: npm run test
       # Package artifact validation moved from the pre-push hook to the CI gate.
       - run: npm pack --dry-run
+  macos-isolation:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Compile focused validation fixtures
+        run: |
+          npx --no-install tsc
+          node scripts/copy-runtime-assets.mjs
+      - name: Check native macOS isolation and workspace behavior
+        run: node --test test/validation-isolation.test.js test/validation-package.test.js test/dependency-preparation.test.js test/mvp.test.js test/validation-correspondence.test.js test/runtime-cleanup.test.js

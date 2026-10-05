@@ -52,8 +52,11 @@ Prove a supported isolation mechanism before relying on autonomous execution rat
 > Current Pi child launches do not establish the target OS isolation boundary.
 > [`runtime-launch.ts`](../src/runtime-launch.ts) directly spawns Pi child processes.
 > [`runtime-process.ts`](../src/runtime-process.ts) filters environment variable names that match sensitive patterns, but it does not sandbox child filesystem or network access.
-> The current bubblewrap boundary is used for offline dependency hydration and declared validation, not for Pi child launches or service-owned Git hooks.
-> CI configures AppArmor for the bubblewrap launcher; that profile does not isolate Pi child sessions.
+> The Anthropic sandbox runtime isolates offline dependency hydration and declared validation on Linux and macOS, not Pi child launches or service-owned Git hooks.
+> On macOS, deliberately detached descendants remain sandboxed but may continue writing the authorized workspace after validation ends.
+> Source checks do not establish complete descendant termination.
+> See [Operations](operations.md#current-configuration-reference) for prerequisites and cleanup limits.
+> CI configures AppArmor for the Linux bubblewrap launcher, not Pi child sessions.
 
 ## Validation and privileged effects
 

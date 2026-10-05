@@ -26,7 +26,7 @@ The current provider workflow requires:
 
 - Node.js 22.19 or newer.
 - A Pi installation whose configured child command reports version `0.85.0`.
-- Linux and bubblewrap (`bwrap`) with the required user-namespace support.
+- Linux with bubblewrap (`bwrap`), `socat`, ripgrep (`rg`), and permitted user namespaces, or macOS with `/usr/bin/sandbox-exec`.
 - Git.
 - Git credentials with write access to `origin`; current delivery pushes the Executor branch before creating a review request.
 - An authenticated `gh` or `glab` session.
@@ -131,7 +131,9 @@ See the packaged [tool-usage skill](skills/khala/SKILL.md) for the complete tool
 > The hosting User Pi session owns the current service and provider polling; closing it stops child runtimes.
 > Independent background continuation remains a target requirement.
 > Current Pi child launches do not provide OS filesystem isolation.
-> Bubblewrap applies to dependency hydration and declared validation, not Pi child launches or service-owned Git hooks.
+> The Anthropic sandbox runtime isolates dependency hydration and declared validation on Linux and macOS, not Pi child launches or service-owned Git hooks.
+> On macOS, deliberately detached descendants can outlive validation and continue writing the authorized workspace.
+> See [Operations](docs/operations.md#current-configuration-reference) for isolation prerequisites and cleanup limits.
 > Do not treat provider credential files as inaccessible to an Executor child.
 
 ### Defaults
@@ -167,7 +169,8 @@ Use the guide that matches your task:
 
 ## Development
 
-The native workflow tests require Linux, bubblewrap (`bwrap`), and `tmux`.
+The native Pi workflow tests run on Linux with bubblewrap (`bwrap`), `socat`, ripgrep (`rg`), and `tmux`.
+Focused validation-isolation and dependency-preparation tests also run natively on macOS.
 Install dependencies and run the repository checks:
 
 ```sh

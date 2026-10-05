@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { type ExecFileSyncOptionsWithStringEncoding, execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import process from "node:process";
 import type { RuntimeBinding } from "./ports.js";
@@ -36,14 +36,31 @@ function readLinuxProcessStartTime(processId: number): string | undefined {
 
 function readPsProcessStartTime(processId: number): string | undefined {
 	try {
-		const value = execFileSync("ps", ["-o", "lstart=", "-p", String(processId)], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		}).trim();
+		const value = execFileSync(
+			"/bin/ps",
+			["-o", "lstart=", "-p", String(processId)],
+			processInspectionOptions(),
+		).trim();
 		return value.length === 0 ? undefined : value;
 	} catch {
 		return undefined;
 	}
+}
+function processInspectionOptions(): ExecFileSyncOptionsWithStringEncoding {
+	return {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+		timeout: 1_000,
+		killSignal: "SIGKILL",
+		// Preserve persisted timestamp formatting without exposing resolver paths or credentials to the probe.
+		env: {
+			PATH: "/usr/bin:/bin",
+			LANG: process.env["LANG"],
+			LC_ALL: process.env["LC_ALL"],
+			LC_TIME: process.env["LC_TIME"],
+			TZ: process.env["TZ"],
+		},
+	};
 }
 const PROCESS_TERMINATION_TIMEOUT_MS = 5_000;
 const PROCESS_TERMINATION_POLL_MS = 25;
@@ -216,10 +233,7 @@ function processSignalDidNotFindGroup(error: Error): boolean {
 
 function darwinProcessGroupExists(processGroupId: number): boolean {
 	try {
-		const output = execFileSync("ps", ["-axo", "pid=,pgid="], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		});
+		const output = execFileSync("/bin/ps", ["-axo", "pid=,pgid="], processInspectionOptions());
 		return output.split("\n").some((line) => {
 			const fields = line.trim().split(/\s+/);
 			return fields.length >= 2 && Number(fields[0]) > 0 && Number(fields[1]) === processGroupId;

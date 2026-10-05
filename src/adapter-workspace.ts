@@ -23,6 +23,7 @@ import {
 	validateSandboxPath,
 	validationIsolationFailure,
 	validationPath,
+	verifyValidationIsolation,
 } from "./adapter-shared.js";
 import {
 	assertContainedWorkspace,
@@ -77,8 +78,10 @@ export class GitWorkspace implements WorkspacePort {
 	}
 
 	async prepareSandbox(sandbox: Execution["sandbox"], operation?: OperationContext): Promise<PreparationReceipt> {
+		const signal = operation?.signal;
 		assertContainedWorkspace(this.worktreeRoot, sandbox.path);
 		const path = await validationPath(this.worktreeRoot, sandbox.path);
+		await verifyValidationIsolation(path, signal);
 		const files = await readdir(path);
 		if (!files.includes("package.json") && !files.includes("package-lock.json"))
 			return {
@@ -96,7 +99,7 @@ export class GitWorkspace implements WorkspacePort {
 			store: this.artifactStore,
 			npmExecutable: npm,
 			environment,
-			signal: operation?.signal,
+			signal,
 		};
 		return prepareDependencyArtifacts(preparationInput);
 	}

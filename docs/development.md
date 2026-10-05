@@ -13,8 +13,10 @@ pi -e .
 
 ## Local validation
 
-The native workflow tests require Linux, bubblewrap (`bwrap`), and `tmux`.
+The native Pi workflow tests run on Linux with bubblewrap (`bwrap`), `socat`, ripgrep (`rg`), and `tmux`.
+Validation-isolation, dependency-preparation, and governed workspace tests also run natively on macOS through the system `/usr/bin/sandbox-exec`.
 On systems where AppArmor blocks bwrap user namespaces, apply a profile equivalent to [`.github/bwrap.apparmor`](../.github/bwrap.apparmor).
+See [Operations](operations.md#current-configuration-reference) for the macOS descendant-cleanup limitation.
 
 Install dependencies and run the local validation and packaging checks:
 
@@ -32,7 +34,7 @@ Oxlint limits checked JavaScript and TypeScript files to 700 lines, including co
 `tsconfig.tools.json` inherits the application’s strict compiler checks for `tools/**/*.ts`.
 `npm run check:markdown` checks paragraph sentence boundaries and bullet length.
 `npm run test` builds `dist` and runs every Node test in `test/` on Linux.
-On other platforms it skips the native workflow tests because they require Linux bubblewrap.
+On other platforms it skips the Linux-only native Pi workflow fixtures, while macOS still runs the validation and workspace tests.
 `scripts/copy-runtime-assets.mjs` copies package metadata, role prompts, and the demo fixture beside compiled entry points.
 Tests use local port adapters and do not require provider credentials.
 `test/native-role-workflow.test.js` runs real Pi child processes against a deterministic localhost model endpoint.
@@ -66,7 +68,14 @@ node scripts/copy-runtime-assets.mjs
 node --test test/pi-review.test.js test/prompt-contracts.test.js test/package-content.test.js
 ```
 
-The GitHub Actions workflow runs `npm run lint`, `npm run typecheck:tools`, `npm run check:markdown`, `npm run test`, and `npm pack --dry-run`: [CI workflow](../.github/workflows/ci.yaml).
+For focused sandbox and workspace checks, compile and copy assets as above, then run:
+
+```sh
+node --test test/validation-isolation.test.js test/validation-package.test.js test/dependency-preparation.test.js test/mvp.test.js test/validation-correspondence.test.js test/runtime-cleanup.test.js
+```
+
+The GitHub Actions workflow runs `npm run lint`, `npm run typecheck:tools`, `npm run check:markdown`, `npm run test`, and `npm pack --dry-run` on Linux: [CI workflow](../.github/workflows/ci.yaml).
+A separate macOS job runs the focused isolation and workspace tests above.
 
 ## Repository layout
 
@@ -102,6 +111,8 @@ than private implementation details.
 The package exposes `src/index.ts` as its Pi extension entry point and includes
 extensions, prompts, system prompts, templates, themes, assets, documentation,
 and the packaged skill.
+The validation worker is a JavaScript entry point checked by TypeScript and the source linters, because Node cannot directly strip TypeScript under `node_modules`.
+`test/validation-package.test.js` extracts the npm artifact and runs source-based validation through Pi's public resource loader without model calls.
 Validate the package file list without publishing it:
 
 ```sh

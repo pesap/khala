@@ -10,11 +10,15 @@ Install:
 
 - Node.js 22.19 or newer.
 - A Pi installation whose configured child command reports version `0.85.0` (the default command is `pi`).
-- Linux.
-- Bubblewrap, available as `bwrap`, with the required user-namespace support for dependency hydration and declared validation.
+- Linux or macOS.
+- On Linux, bubblewrap (`bwrap`), `socat`, ripgrep (`rg`), and permitted user namespaces.
+- On macOS, the system `/usr/bin/sandbox-exec`.
 - Git.
 - An authenticated `gh` or `glab` session if the Work will publish a review request.
 - A repository whose `origin` is hosted on `github.com` or `gitlab.com` if the Work will publish a review request.
+
+macOS validation cannot guarantee termination of deliberately detached descendants.
+Read the [isolation and cleanup limits](operations.md#current-configuration-reference) before relying on autonomous execution.
 
 ## Install and configure
 

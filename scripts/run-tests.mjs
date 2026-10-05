@@ -12,7 +12,7 @@ const testFiles = readdirSync(testDirectory, { withFileTypes: true })
 	.sort();
 
 if (!runNativeTests) {
-	process.stderr.write("Skipping native workflow tests because they require Linux bubblewrap.\n");
+	process.stderr.write("Skipping native Pi workflow fixtures because they are Linux-only.\n");
 }
 
 const result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", ...testFiles], { stdio: "inherit" });

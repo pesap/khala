@@ -35,7 +35,7 @@ Role prompts define the User, Conclave, Executor, Observer, and Oracle responsib
 | First Archive read | Start with only the known `workId`. | Fill optional fields with placeholders, empty dates, or invented IDs. |
 | Archive continuation | Copy a returned token exactly and keep the same filters. | Construct, repair, or reuse a cursor for different filters. |
 | Existing Work mutation or runtime inspection | Read the current Work and use its `revision`. | Reuse a submission revision or retry a revision conflict unchanged. |
-| New Work submission | Confirm repository commands, permitted paths, and Linux bubblewrap support first. | Submit prose as `validation` or bypass isolation on an unsupported host. |
+| New Work submission | Confirm repository commands, permitted paths, and supported validation isolation first. | Submit prose as `validation` or bypass isolation on an unsupported host. |
 | Budget diagnosis | Read invocation and decision evidence using the recovery reference. | Treat held reservations as consumed budget or top up tokens without User authorization. |
 
 ## First Archive read
