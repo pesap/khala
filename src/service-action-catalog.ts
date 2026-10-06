@@ -121,8 +121,8 @@ const actionDescriptors = {
 	},
 	"commit-sandbox": {
 		label: "Commit sandbox changes",
-		effect: "Commits the sandbox worktree to its Execution branch.",
-		fields: [],
+		effect: "Commits the sandbox worktree with a Conventional Commit title and records it for review publication.",
+		fields: [requiredText("title", "Commit title", "Use the Conventional Commit type required by the repository CI")],
 	},
 	"run-validation": {
 		label: "Run validation",

@@ -27,6 +27,8 @@ prompt:
 The Conclave skill catalog tools are exposed only when the global `trustedSkills` allowlist is nonempty.
 When those tools are available, Conclave is instructed to inspect the catalog, read selected `SKILL.md` files, and include bounded task-specific guidance and skill identities when starting or replacing an Execution.
 Executor sessions still use `--no-skills` and receive only the selected references and Conclave's bounded instruction packet, never unrelated skill files.
+At commit time, the Executor selects a title accepted by the target repository's CI, and the service validates Conventional Commit syntax, records the exact title on the Execution, and reuses it for a new review request.
+The service does not infer the repository's allowed type list, so the Executor must inspect the repository's CI or contribution guidance.
 
 The ordinary User session is not assigned a child role.
 [`user.md`](../system-prompts/user.md)

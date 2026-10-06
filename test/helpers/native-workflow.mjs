@@ -46,7 +46,11 @@ function finish(response, content = "Recorded.") {
 function executorCall(step, work, greeting, idle) {
 	if (idle === true) return undefined;
 	const read = () => ["khala_read_archive", { workId: "native-execution" }];
-	const action = (name) => ["khala_perform_action", { action: name, workId: work.workId, expectedWorkRevision: work.revision }];
+	const action = (name) => {
+		const command = { action: name, workId: work.workId, expectedWorkRevision: work.revision };
+		if (name === "commit-sandbox") command.input = { title: "feat: add native greeting" };
+		return ["khala_perform_action", command];
+	};
 	const calls = [read, () => ["write", { path: "greeting.txt", content: greeting ?? "hello\n" }], read, () => action("commit-sandbox"), read, () => action("run-validation"), read, () => action("create-review-request"), read, () => ["khala_perform_action", { ...action("record-signal")[1], input: { kind: "ready", summary: "Native edit committed, validated, and published.", evidence: ["greeting.txt", "validation passed", "draft review 42"] } }]];
 	return calls[step]?.();
 }
@@ -54,7 +58,11 @@ function executorCall(step, work, greeting, idle) {
 function feedbackExecutorCall(step, work, options) {
 	if (step <= 10) return executorCall(step, work, options.greeting, options.idleExecutor);
 	const read = () => ["khala_read_archive", { workId: "native-execution" }];
-	const action = (name) => ["khala_perform_action", { action: name, workId: work.workId, expectedWorkRevision: work.revision }];
+	const action = (name) => {
+		const command = { action: name, workId: work.workId, expectedWorkRevision: work.revision };
+		if (name === "commit-sandbox") command.input = { title: "fix: correct native greeting" };
+		return ["khala_perform_action", command];
+	};
 	const calls = new Map([
 		[11, read],
 		[12, () => ["write", { path: "greeting.txt", content: options.feedbackGreeting ?? "hello\n" }]],

@@ -148,15 +148,17 @@ test("Sandbox creation rejects symlinked worktree parents", async () => {
 test("Executors commit and validate through governed workspace actions", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-governed-tools-"));
 	let committed = false;
+	let committedMessage;
 	let validated = false;
 	let commitReceiverPreserved = false;
 	let validationReceiverPreserved = false;
-	const { service, controls } = makeService(join(directory, "archive.sqlite"), {
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"), {
 		ports: {
 			workspace: {
 				receiverMarker: "governed-workspace",
-				async commitSandbox() {
+				async commitSandbox(input) {
 					committed = true;
+					committedMessage = input.message;
 					commitReceiverPreserved = this.receiverMarker === "governed-workspace";
 					return "head";
 				},
@@ -174,11 +176,17 @@ test("Executors commit and validate through governed workspace actions", async (
 	const commit = await service.perform({
 		action: "commit-sandbox",
 		workId: running.workId,
-		input: {},
+		input: { title: "feat: govern sandbox commits" },
 		meta: meta("executor", "governed-tools:commit", running.revision, running.workId, running.execution.executionId),
 	});
 	assert.equal("error" in commit, false);
 	assert.equal(committed, true);
+	assert.equal(committedMessage, "feat: govern sandbox commits");
+	assert.equal(commit.value.execution.commitTitle, committedMessage);
+	assert.equal(
+		archive.query({ workId: running.workId, kinds: ["execution"] }).items.some(({ payload }) => payload.commitTitle === committedMessage),
+		true,
+	);
 	assert.equal(commitReceiverPreserved, true);
 	const validation = await service.perform({
 		action: "run-validation",
@@ -203,6 +211,32 @@ test("Executors commit and validate through governed workspace actions", async (
 		meta: meta("executor", "governed-tools:ready", review.value.revision, running.workId, running.execution.executionId),
 	});
 	assert.equal("error" in ready, false);
+	await service.close();
+});
+
+test("commit-sandbox rejects a non-Conventional title before changing the sandbox", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-invalid-commit-title-"));
+	let commitCalls = 0;
+	const { service } = makeService(join(directory, "archive.sqlite"), {
+		ports: {
+			workspace: {
+				async commitSandbox() {
+					commitCalls += 1;
+					return "head";
+				},
+			},
+		},
+	});
+	const running = await admitAndStart(service, "invalid-commit-title");
+	const result = await service.perform({
+		action: "commit-sandbox",
+		workId: running.workId,
+		input: { title: "Khala: invalid title" },
+		meta: meta("executor", "invalid-commit-title:commit", running.revision, running.workId, running.execution.executionId),
+	});
+	assert.equal("error" in result, true);
+	assert.match(result.error.summary, /Conventional Commit/);
+	assert.equal(commitCalls, 0);
 	await service.close();
 });
 

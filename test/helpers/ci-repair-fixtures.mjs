@@ -65,12 +65,18 @@ async function performCurrent(service, actor, action, commandId, input = {}) {
 	const summary = service.listWork()[0];
 	const work = service.inspectWork(summary.workId);
 	const executionId = actor === "executor" ? work.execution.executionId : undefined;
+	const actionInput = commitInput(action, input);
 	return service.perform({
 		action,
 		workId: work.workId,
-		input,
+		input: actionInput,
 		meta: meta(actor, commandId, work.revision, work.workId, executionId),
 	});
+}
+
+function commitInput(action, input) {
+	if (action !== "commit-sandbox") return input;
+	return { ...input, title: input.title ?? "fix: repair CI" };
 }
 
 function repairAction(service, workId) {

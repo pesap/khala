@@ -1,3 +1,5 @@
+import { isConventionalCommitTitle } from "./commit-title.js";
+
 export function parseJson(value: string): JsonValue {
 	// SAFETY: the archive only writes JSON values and this function validates the parsed tree at the boundary.
 	const parsed: JsonValue = JSON.parse(value);
@@ -208,6 +210,7 @@ export function isExecution(value: JsonValue | undefined): boolean {
 		optional(value["usage"], isTokenUsage),
 		isPromptIdentity(value["promptIdentity"]),
 		isSandbox(value["sandbox"]),
+		optional(value["commitTitle"], (title) => isText(title) && isConventionalCommitTitle(title)),
 		optional(value["skillGuidance"], isExecutorSkillGuidance),
 		optional(value["pi"], isPiBinding),
 	].every(Boolean);

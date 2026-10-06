@@ -1,9 +1,10 @@
 import { nanoid } from "nanoid";
 import type { ArchivePort } from "./archive.js";
+import { isConventionalCommitTitle } from "./commit-title.js";
 import type { ActionInput, CommandMeta, Execution, Mission, Signal, WorkView } from "./model.js";
 import type { CodeHostPort, OperationContext, ServicePorts, WorkspacePort } from "./ports.js";
 import { ArchiveCore } from "./service-archive-core.js";
-import type { ServiceOptions } from "./service-contracts.js";
+import { ActionInputError, type ServiceOptions } from "./service-contracts.js";
 import { readTextList, readyReviewEvidence } from "./service-dispatch-policy.js";
 import { publishedReviewMatches, signalExecution, validationResultsPassed } from "./service-foundation-policy.js";
 import { isCurrentReadySignal, readSignalKind } from "./service-lifecycle-policy.js";
@@ -96,30 +97,22 @@ export class ServiceWorkspaceActions {
 		}).projection;
 	}
 
-	async commitSandbox(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
+	async commitSandbox(
+		work: WorkView,
+		meta: CommandMeta,
+		input: ActionInput | undefined,
+		operation?: OperationContext,
+	): Promise<WorkView> {
 		this.core.requireActor(meta, "executor");
 		const execution = this.core.requireExecution(work, "running");
-		const commitSandbox = this.workspace.commitSandbox?.bind(this.workspace);
-		if (commitSandbox === undefined)
-			throw this.core.error(
-				"external-failure",
-				"The configured workspace cannot commit sandbox changes.",
-				false,
-				"Use a workspace adapter that supports governed sandbox commits.",
-			);
-		await this.ensureAllowedPaths(work, execution, operation);
-		const headCommit = await commitSandbox(
-			{
-				sandbox: execution.sandbox,
-				allowedPaths: work.terms.allowedPaths,
-				message: `Khala: ${work.terms.title}`,
-			},
-			operation,
-		);
+		const commitTitle = requiredCommitTitle(input);
+		const headCommit = await this.commitSandboxHead(work, execution, commitTitle, operation);
 		throwIfOperationAborted(operation);
+		const committedExecution: Execution = { ...execution, commitTitle };
 		const next: WorkView = {
 			...work,
 			revision: work.revision + 1,
+			execution: committedExecution,
 			lastValidation: undefined,
 			nextAction: `Sandbox committed at ${headCommit}; run validation before handoff.`,
 		};
@@ -129,11 +122,32 @@ export class ServiceWorkspaceActions {
 			workId: work.workId,
 			missionId: work.mission?.missionId,
 			executionId: execution.executionId,
-			payload: execution,
+			payload: committedExecution,
 			projection: next,
 			evidenceRefs: [headCommit],
 			summary: `Sandbox changes committed at ${headCommit}.`,
 		}).projection;
+	}
+
+	private async commitSandboxHead(
+		work: WorkView,
+		execution: Execution,
+		commitTitle: string,
+		operation?: OperationContext,
+	): Promise<string> {
+		const commitSandbox = this.workspace.commitSandbox?.bind(this.workspace);
+		if (commitSandbox === undefined)
+			throw this.core.error(
+				"external-failure",
+				"The configured workspace cannot commit sandbox changes.",
+				false,
+				"Use a workspace adapter that supports governed sandbox commits.",
+			);
+		await this.ensureAllowedPaths(work, execution, operation);
+		return commitSandbox(
+			{ sandbox: execution.sandbox, allowedPaths: work.terms.allowedPaths, message: commitTitle },
+			operation,
+		);
 	}
 
 	async runValidation(work: WorkView, meta: CommandMeta, operation?: OperationContext): Promise<WorkView> {
@@ -477,4 +491,13 @@ export class ServiceWorkspaceActions {
 			summary: `Draft ${request.provider} review request ${request.providerId} is ready.`,
 		}).projection;
 	}
+}
+
+function requiredCommitTitle(input: ActionInput | undefined): string {
+	const title = requiredNonBlank(requiredText(input?.title, "title"), "title");
+	if (!isConventionalCommitTitle(title))
+		throw new ActionInputError(
+			"Commit title must follow Conventional Commit syntax. Check repository CI for allowed types.",
+		);
+	return title;
 }

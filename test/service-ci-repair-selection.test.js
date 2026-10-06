@@ -401,7 +401,7 @@ test("a PR reported open during repair publication is not marked completed", asy
 			return service.perform({
 				action,
 				workId: work.workId,
-				input: {},
+				input: action === "commit-sandbox" ? { title: "fix: repair provider check" } : {},
 				meta: meta("executor", commandId, current.revision, work.workId, current.execution.executionId),
 			});
 		};

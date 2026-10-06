@@ -578,6 +578,7 @@ function assertGithubCommands(commands) {
 	assert.ok(create);
 	assert.equal(create.includes("--head"), true);
 	assert.equal(create[create.indexOf("--head") + 1], "khala/branch");
+	assert.equal(create[create.indexOf("--title") + 1], "feat: implement the feature");
 	const pollingView = commands.find((args) => args[1] === "view" && args.includes("url,state,isDraft,mergedAt,reviewDecision,statusCheckRollup,comments,reviews,headRefName,baseRefName,headRefOid,baseRefOid"));
 	assert.ok(pollingView);
 }
@@ -596,7 +597,7 @@ test("GitHub publication uses the sandbox branch and current head", async () => 
 		const request = await host.ensureReviewRequest({
 			workId: "work-1",
 			mission: { missionId: "mission-1", workId: "work-1", assignment: { title: "Feature", objective: "Implement", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["npm test"], allowedPaths: ["."], maxTokens: 100 }, mandateRevision: 1, createdAt: new Date().toISOString() },
-			execution: { executionId: "execution-1", workId: "work-1", missionId: "mission-1", state: "running", model: "model", thinking: "high", tokenAllowance: 50, promptIdentity: { packageVersion: "1", promptSha256: "hash" }, sandbox: { path: directory, baseCommit: "base", branch: "khala/branch" } },
+			execution: { executionId: "execution-1", workId: "work-1", missionId: "mission-1", state: "running", model: "model", thinking: "high", tokenAllowance: 50, promptIdentity: { packageVersion: "1", promptSha256: "hash" }, sandbox: { path: directory, baseCommit: "base", branch: "khala/branch" }, commitTitle: "feat: implement the feature" },
 			terms: { title: "Feature", objective: "Implement", context: "", scope: "scope", acceptanceCriteria: ["works"], constraints: [], validation: ["npm test"], allowedPaths: ["."], maxTokens: 100 },
 			sandbox: { path: directory, baseCommit: "base", branch: "khala/branch" },
 			headCommit: "head",

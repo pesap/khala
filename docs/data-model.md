@@ -48,6 +48,7 @@ Recovery may rebind that Execution rather than creating a replacement.
 An Executor's transient implementation plan is not another immutable agreement.
 An Execution records selected skill IDs, names, content digests, bounded task-specific instructions, and unavailable allowlisted skills when applicable.
 An empty selection records why no skill guidance was used and leaves the Executor under repository guidance.
+After a governed commit, the Execution records its Conventional Commit title, which is reused as the title of a newly created review request.
 
 ### Record
 

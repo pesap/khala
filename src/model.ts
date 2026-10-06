@@ -223,6 +223,7 @@ export type Execution = Readonly<{
 	tokenAllowance: number;
 	promptIdentity: PromptIdentity;
 	sandbox: Sandbox;
+	commitTitle?: string | undefined;
 	skillGuidance?: ExecutorSkillGuidance | undefined;
 	pi?: PiBinding | undefined;
 	startedAt?: string | undefined;

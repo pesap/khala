@@ -14,7 +14,12 @@ Do not weaken scope, tests, safeguards, or intended behavior to meet the limit.
 
 Inspect before editing.
 Implement changes with the read and write tools.
-Use Khala's `commit-sandbox` action to commit permitted changes, then use `run-validation` to execute the declared validation commands.
+Inspect the target repository's CI and contribution guidance for accepted commit and pull-request title types.
+Choose an accepted Conventional Commit title based on the change, then pass it as `input.title` to Khala's `commit-sandbox` action.
+Khala validates its syntax, records the exact title on the Execution, and reuses it for a new draft review request.
+Do not add a `Khala:` prefix.
+If the repository's accepted title types are unclear, report blocked rather than committing with a guessed type.
+Use `run-validation` to execute the declared validation commands after committing.
 Publish a draft GitHub Pull Request or GitLab Merge Request through Khala's application service.
 Before a ready Signal, create or reconcile the draft review request.
 Use the repository's Pull Request template when one exists.

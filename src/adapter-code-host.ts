@@ -15,6 +15,7 @@ import {
 } from "./adapter-provider.js";
 import { run } from "./adapter-shared.js";
 import { readPullRequestTemplate } from "./adapter-template.js";
+import { isConventionalCommitTitle } from "./commit-title.js";
 import type { JsonValue, ProviderObservation, ProviderOutcomeObservation, ReviewRequest } from "./model.js";
 import type { CodeHostPort, OperationContext, ReviewRequestInput } from "./ports.js";
 
@@ -97,7 +98,7 @@ export class CommandCodeHost implements CodeHostPort {
 		repository: string,
 		operation: OperationContext | undefined,
 	): Promise<ReviewRequest> {
-		const title = `Khala: ${input.terms.title}`;
+		const title = requireCommitTitle(input.execution.commitTitle);
 		const url = (
 			await run(
 				"gh",
@@ -165,7 +166,7 @@ export class CommandCodeHost implements CodeHostPort {
 		principalId: string,
 		operation: OperationContext | undefined,
 	): Promise<ReviewRequest> {
-		const title = `Khala: ${input.terms.title}`;
+		const title = requireCommitTitle(input.execution.commitTitle);
 		const created = await run(
 			"glab",
 			[
@@ -301,6 +302,12 @@ export class CommandCodeHost implements CodeHostPort {
 		if (readValue(row, "state").toLowerCase() !== "merged") return undefined;
 		return gitlabOutcomeObservation(row, reviewRequest);
 	}
+}
+
+function requireCommitTitle(value: string | undefined): string {
+	if (value === undefined || !isConventionalCommitTitle(value))
+		throw new Error("A Conventional Commit title is required before creating a review request.");
+	return value;
 }
 
 function requireReviewUrl(output: string): string {

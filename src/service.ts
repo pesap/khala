@@ -613,7 +613,7 @@ export class ApplicationService {
 			"record-assessment": async () => this.observer.recordAssessment(work, command.meta, command.input),
 			"start-execution": async () => this.execution.start(work, command.meta, command.input, operation),
 			"record-signal": async () => this.workspaceActions.recordSignal(work, command.meta, command.input, operation),
-			"commit-sandbox": async () => this.workspaceActions.commitSandbox(work, command.meta, operation),
+			"commit-sandbox": async () => this.workspaceActions.commitSandbox(work, command.meta, command.input, operation),
 			"run-validation": async () => this.workspaceActions.runValidation(work, command.meta, operation),
 			"create-review-request": async () => this.workspaceActions.createReviewRequest(work, command.meta, operation),
 			"run-oracle": async () => this.decisions.runOracle(work, command.meta, command.input, operation),
