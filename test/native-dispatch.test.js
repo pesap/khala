@@ -77,7 +77,7 @@ setInterval(() => {}, 1000);
 				promptIdentity: { packageVersion: "test", promptSha256: "test" },
 				tools: [],
 			}),
-			/Unsupported Pi native version: expected 0\.85\.0, received 0\.84\.0/,
+			/Unsupported Pi native version: expected 1\.1\.0, received 0\.84\.0/,
 		);
 		assert.equal(await readFile(roleSpawn, "utf8").catch(() => undefined), undefined);
 		assert.equal((await readFile(invocation, "utf8")).trim(), "--version");

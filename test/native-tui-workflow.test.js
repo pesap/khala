@@ -56,7 +56,7 @@ test("Pi terminal submits native Work, recovers after restart, and records succe
 			() => JSON.stringify({ screen: screen(), work: readWork(path), failures: fixture.failures.map(String) }),
 		);
 		send("/khala");
-		await waitUntil(screen, (value) => value.includes("Native greeting"), screen);
+		await waitUntil(screen, (value) => value.includes("Native greeting") && value.includes("left/right filters"), screen);
 		tmux("send-keys", "-t", session, "Escape");
 		await waitUntil(screen, (value) => !value.includes("left/right filters"), screen);
 		const completedSteps = { ...fixture.steps };

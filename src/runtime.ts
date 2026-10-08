@@ -213,6 +213,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		operation?: OperationContext,
 	): Promise<RuntimeTurn> {
 		const child = this.requireChild(binding);
+		if (child.stopping) throw new Error(`Pi session ${binding.sessionId} is stopping.`);
 		if (child.sending) throw new Error(`Pi session ${binding.sessionId} is already processing a prompt.`);
 		throwIfAborted(operation);
 		const allowance = readRuntimeTokenAllowance(options);
