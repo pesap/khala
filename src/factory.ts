@@ -10,6 +10,7 @@ import type { GovernedRole, JsonObject, JsonValue, RoleSetting } from "./model.j
 import { PiOracle } from "./oracle.js";
 import type { CodeHostPort, ModelCatalogPort, ServicePorts } from "./ports.js";
 import { PiRpcRuntime, promptIdentity } from "./runtime.js";
+import { issueConclaveCapability } from "./runtime-launch.js";
 import { ApplicationService, type ServiceOptions } from "./service.js";
 import { createTrustedSkillCatalog, type TrustedSkillCatalog } from "./trusted-skills.js";
 
@@ -22,6 +23,7 @@ export type ApplicationRuntime = Readonly<{
 	config: KhalaConfig;
 	trustedSkillCatalog: TrustedSkillCatalog;
 	updateRoleSetting: (role: GovernedRole, setting: RoleSetting, value: string) => void;
+	createConclaveCapability: (workId: string) => Readonly<{ roleToken: string; roleNonce: string; workId: string }>;
 }>;
 
 export function createApplication(
@@ -47,7 +49,7 @@ export function createApplication(
 		ports,
 		createServiceOptions(config, context, prompts, trustedSkillCatalog),
 	);
-	return createApplicationRuntime(service, config, models, trustedSkillCatalog);
+	return createApplicationRuntime(service, config, models, trustedSkillCatalog, context.authorityPrivateKey);
 }
 
 type ApplicationContext = Readonly<{
@@ -174,6 +176,7 @@ function createServiceOptions(
 		conclaveModel: config.conclaveModel,
 		conclaveThinking: config.conclaveThinking,
 		conclaveUsdMax: config.conclaveUsdMax,
+		conclaveMode: config.conclaveMode,
 		executorModel: config.executorModel,
 		executorThinking: config.executorThinking,
 		executorUsdMax: config.executorUsdMax,
@@ -199,11 +202,13 @@ function createApplicationRuntime(
 	config: KhalaConfig,
 	models: ConfiguredModels,
 	trustedSkillCatalog: TrustedSkillCatalog,
+	authorityPrivateKey: KeyObject | undefined,
 ): ApplicationRuntime {
 	return {
 		service,
 		config,
 		trustedSkillCatalog,
+		createConclaveCapability: (workId) => issueConclaveCapability(authorityPrivateKey, workId),
 		updateRoleSetting: (role, setting, value) => {
 			if (setting === "model") models.updateRoleModel(role, value);
 			service.updateRoleSetting(role, setting, value);

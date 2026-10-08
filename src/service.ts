@@ -223,8 +223,8 @@ export class ApplicationService {
 			heartbeat: this.heartbeat,
 			callbacks: {
 				acquireSupervision: () => this.acquireSupervision(),
-				wakeConclave: (workId, commandId, observationId, reason) =>
-					this.wakeConclave(workId, commandId, observationId, reason),
+				wakeConclave: (workId, commandId, observationId, reason, operation) =>
+					this.wakeConclave(workId, commandId, observationId, reason, operation),
 				processOracleWake: (effect, work) => this.processOracleWake(effect, work),
 				recordCleanupSuccess: (workId, effectId, kind) => this.recordCleanupSuccess(workId, effectId, kind),
 				recordCleanupFailure: (work, effectId, failure, kind) =>
@@ -356,6 +356,7 @@ export class ApplicationService {
 		commandId: string,
 		observationId?: string,
 		reason: ConclaveWakeCause = "admission",
+		operation?: OperationContext,
 	): Promise<void> {
 		const work = this.inspectWork(workId);
 		this.core.validateModel(
@@ -366,6 +367,8 @@ export class ApplicationService {
 		await runConclaveWake({
 			work,
 			workId,
+			mode: this.configuration.options.conclaveMode ?? "headless",
+			operation,
 			observationId,
 			reason,
 			allowance: invocationAllowance(work),
@@ -382,8 +385,12 @@ export class ApplicationService {
 		this.heartbeat.set(commandId, `Conclave wake sent for Work ${work.workId}.`);
 	}
 
-	async processPendingEffects(): Promise<void> {
-		return this.effectPump.processPendingEffects();
+	get conclaveWaitingForUserSession(): boolean {
+		return this.effectPump.conclaveWaitingForUserSession;
+	}
+
+	async processPendingEffects(operation?: OperationContext): Promise<void> {
+		return this.effectPump.processPendingEffects(operation);
 	}
 
 	private async processOracleWake(effect: PendingArchiveEffect, work: WorkView): Promise<void> {

@@ -1,3 +1,4 @@
+import { type Usage } from "@earendil-works/pi-ai";
 import { type AgentToolUpdateCallback, keyHint, type Theme, truncateHead } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 import type { JsonObject, JsonValue, WorkView } from "./model.js";
@@ -10,22 +11,26 @@ const MISSING_EXECUTABLE_MARKERS = [
 	"is not recognized as an internal or external command",
 	"cannot find the path specified",
 ] as const;
-export type ToolResult = { content: [{ type: "text"; text: string }]; details: JsonValue };
+export type ToolResult = { content: [{ type: "text"; text: string }]; details: JsonValue; usage?: Usage };
 
-export function toolResult(value: JsonValue): ToolResult {
-	return {
+export function toolResult(value: JsonValue, usage?: Usage): ToolResult {
+	const result: ToolResult = {
 		content: [{ type: "text", text: boundedToolText(summarizeToolValue(value), value) }],
 		details: value,
 	};
+	if (usage !== undefined) result.usage = usage;
+	return result;
 }
 
-export function archiveToolResult(value: JsonValue): ToolResult {
+export function archiveToolResult(value: JsonValue, usage?: Usage): ToolResult {
 	const recordCount = isArchiveSummary(value) ? value["items"].length : 0;
 	const text = `Archive records: ${recordCount}\n${JSON.stringify(value)}`;
-	return {
+	const result: ToolResult = {
 		content: [{ type: "text", text: boundedToolText(text, value) }],
 		details: value,
 	};
+	if (usage !== undefined) result.usage = usage;
+	return result;
 }
 
 export function renderArchiveToolResult(

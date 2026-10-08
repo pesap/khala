@@ -9,14 +9,17 @@ import { TRUSTED_SKILL_TOOLS } from "./trusted-skills.js";
 export const ROLE_FLAG = "khala-role";
 type SessionRole = "user" | "conclave" | "observer" | "executor" | "oracle";
 type RestrictedSessionRole = Exclude<SessionRole, "user">;
+export const CONCLAVE_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"khala_read_archive",
+	"khala_perform_action",
+	"khala_run_oracle",
+	"khala_inspect_runtime",
+	...TRUSTED_SKILL_TOOLS,
+]);
+type NestedConclaveCapability = Readonly<{ roleToken: string; roleNonce: string; workId: string }>;
+const nestedConclaveScopes = new Map<string, NestedConclaveCapability>();
 const RESTRICTED_ROLE_TOOLS = {
-	conclave: new Set([
-		"khala_read_archive",
-		"khala_perform_action",
-		"khala_run_oracle",
-		"khala_inspect_runtime",
-		...TRUSTED_SKILL_TOOLS,
-	]),
+	conclave: CONCLAVE_TOOL_NAMES,
 	executor: new Set([
 		"read",
 		"edit",
@@ -51,7 +54,7 @@ export function sessionRole(pi: ExtensionAPI): SessionRole {
 }
 
 export function restrictedToolViolation(pi: ExtensionAPI, event: ToolCallEvent): string | undefined {
-	const role = sessionRole(pi);
+	const role = sessionRoleForTool(pi, event.toolCallId);
 	const allowed = roleToolNames(role);
 	if (allowed === undefined) return;
 	if (!allowed.has(event.toolName)) return `The ${role} session cannot use the ${event.toolName} tool.`;
@@ -66,8 +69,12 @@ function isSessionRole(value: string | boolean | undefined): value is "conclave"
 	return value !== undefined && SESSION_ROLES.get(String(value)) === value;
 }
 
-export function requireSessionRole(pi: ExtensionAPI, expected: Exclude<Actor, "monitor" | "system">): void {
-	const actual = sessionRole(pi);
+export function requireSessionRole(
+	pi: ExtensionAPI,
+	expected: Exclude<Actor, "monitor" | "system">,
+	toolCallId?: string,
+): void {
+	const actual = sessionRoleForTool(pi, toolCallId);
 	if (actual !== expected)
 		throw new ApplicationError({
 			code: "forbidden",
@@ -76,6 +83,36 @@ export function requireSessionRole(pi: ExtensionAPI, expected: Exclude<Actor, "m
 			remediation: "Use the tool from its bound Khala role session.",
 			evidenceRefs: [],
 		});
+}
+
+export function sessionRoleForTool(pi: ExtensionAPI, toolCallId?: string): SessionRole {
+	return nestedConclaveScope(toolCallId) === undefined ? sessionRole(pi) : "conclave";
+}
+
+export function nestedConclaveWorkId(toolCallId: string): string | undefined {
+	return nestedConclaveScope(toolCallId)?.workId;
+}
+
+export async function withNestedConclaveScope<T>(
+	parentToolCallId: string,
+	capability: NestedConclaveCapability,
+	operation: () => Promise<T>,
+): Promise<T> {
+	if (nestedConclaveScopes.has(parentToolCallId))
+		throw new Error("A Conclave subagent scope is already active for this tool call.");
+	nestedConclaveScopes.set(parentToolCallId, capability);
+	try {
+		return await operation();
+	} finally {
+		if (nestedConclaveScopes.get(parentToolCallId) === capability) nestedConclaveScopes.delete(parentToolCallId);
+	}
+}
+
+function nestedConclaveScope(toolCallId: string | undefined): NestedConclaveCapability | undefined {
+	if (toolCallId === undefined) return;
+	return [...nestedConclaveScopes.entries()]
+		.filter(([parentToolCallId]) => toolCallId.startsWith(`${parentToolCallId}/`))
+		.sort(([left], [right]) => right.length - left.length)[0]?.[1];
 }
 
 export function setRoleTools(pi: ExtensionAPI): void {
@@ -233,15 +270,38 @@ function removeRoleTokenFile(path: string): void {
 	}
 }
 
-export function meta(actor: Actor, commandId: string, expectedWorkRevision: number): CommandMeta {
+export function meta(actor: Actor, commandId: string, expectedWorkRevision: number, toolCallId?: string): CommandMeta {
+	const capability = nestedRoleCapability(actor, toolCallId);
 	return {
 		actor,
 		commandId,
 		expectedWorkRevision,
-		roleToken: actor === "user" ? undefined : roleToken,
-		roleNonce: actor === "user" ? undefined : process.env["KHALA_ROLE_NONCE"],
-		boundWorkId: process.env["KHALA_BOUND_WORK_ID"],
+		roleToken: roleTokenFor(actor, capability),
+		roleNonce: roleNonceFor(actor, capability),
+		boundWorkId: boundWorkFor(capability),
 		boundExecutionId: process.env["KHALA_BOUND_EXECUTION_ID"],
 		schemaVersion: 1,
 	};
+}
+
+function nestedRoleCapability(actor: Actor, toolCallId: string | undefined): NestedConclaveCapability | undefined {
+	if (actor !== "conclave") return;
+	return nestedConclaveScope(toolCallId);
+}
+
+function roleTokenFor(actor: Actor, capability: NestedConclaveCapability | undefined): string | undefined {
+	if (actor === "user") return;
+	if (capability !== undefined) return capability.roleToken;
+	return roleToken;
+}
+
+function roleNonceFor(actor: Actor, capability: NestedConclaveCapability | undefined): string | undefined {
+	if (actor === "user") return;
+	if (capability !== undefined) return capability.roleNonce;
+	return process.env["KHALA_ROLE_NONCE"];
+}
+
+function boundWorkFor(capability: NestedConclaveCapability | undefined): string | undefined {
+	if (capability !== undefined) return capability.workId;
+	return process.env["KHALA_BOUND_WORK_ID"];
 }

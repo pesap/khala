@@ -119,6 +119,7 @@ function makePorts(overrides = {}) {
 		onConclaveWake: undefined,
 		onExecutorTurn: undefined,
 		stopped: [],
+		nestedInvocations: [],
 		cleaned: [],
 		...controlOverrides,
 	};
@@ -131,6 +132,26 @@ function makePorts(overrides = {}) {
 		},
 		async getState() {
 			return controls.runtimeState;
+		},
+		async beginNestedInvocation(runId, sessionId) {
+			const record = { runId, sessionId, complete: false, usage: undefined };
+			controls.nestedInvocations.push(record);
+			let settled = false;
+			return {
+				reportUsage(usage) {
+					assert.equal(settled, false);
+					record.usage = usage;
+				},
+				complete(usage) {
+					assert.equal(settled, false);
+					record.complete = true;
+					record.usage = usage;
+					settled = true;
+				},
+				stop() {
+					settled = true;
+				},
+			};
 		},
 		async requestStop(binding) {
 			controls.stopped.push(binding);
@@ -256,6 +277,7 @@ function makeService(path, overrides = {}) {
 		requireProviderCi: false,
 		conclaveModel: "provider/conclave",
 		conclaveThinking: "medium",
+		conclaveMode: overrides.conclaveMode,
 		executorModel: "provider/executor",
 		executorThinking: "high",
 		oracleModel: "provider/oracle",

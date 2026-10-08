@@ -11,6 +11,7 @@ type ReadTrustedSkillParams = Static<typeof readTrustedSkillSchema>;
 export function registerTrustedSkillTools(
 	pi: ExtensionAPI,
 	getRuntime: (context: ExtensionContext) => Promise<ApplicationRuntime>,
+	exposure: "codemode" | "direct",
 ): void {
 	pi.registerTool({
 		name: "khala_list_trusted_skills",
@@ -18,11 +19,12 @@ export function registerTrustedSkillTools(
 		description:
 			"Inspect only explicitly allowlisted global Pi skills. Project skills are never discovered or included.",
 		promptSnippet: "Inspect the approved skill catalog and select relevant guidance only",
+		exposure,
 		parameters: Type.Object({}),
-		async execute(_toolCallId, _params, signal, _onUpdate, context) {
+		async execute(toolCallId, _params, signal, _onUpdate, context) {
 			try {
 				throwIfAborted(signal);
-				requireSessionRole(pi, "conclave");
+				requireSessionRole(pi, "conclave", toolCallId);
 				const application = await getRuntime(context);
 				throwIfAborted(signal);
 				return toolResult(listTrustedSkills(application.trustedSkillCatalog));
@@ -41,11 +43,12 @@ export function registerTrustedSkillTools(
 		label: "Read Approved Skill",
 		description: "Read a selected SKILL.md only when its ID appears in the explicit trusted catalog.",
 		promptSnippet: "Read selected approved skill guidance before starting an Executor",
+		exposure,
 		parameters: readTrustedSkillSchema,
-		async execute(_toolCallId, params: ReadTrustedSkillParams, signal, _onUpdate, context) {
+		async execute(toolCallId, params: ReadTrustedSkillParams, signal, _onUpdate, context) {
 			try {
 				throwIfAborted(signal);
-				requireSessionRole(pi, "conclave");
+				requireSessionRole(pi, "conclave", toolCallId);
 				const application = await getRuntime(context);
 				throwIfAborted(signal);
 				const skill = readTrustedSkill(application.trustedSkillCatalog, params.skillId);

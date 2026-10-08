@@ -8,6 +8,7 @@ import {
 	type ConclaveWakeCause,
 	type ErrorEnvelope,
 	type Execution,
+	type GeneralRoleSetting,
 	type GovernedRole,
 	type Mission,
 	type MissionState,
@@ -15,7 +16,6 @@ import {
 	type ProviderOutcomeObservation,
 	type RecordQuery,
 	type RecoveryUpdate,
-	type RoleSetting,
 	type Signal,
 	type SubmitWorkInput,
 	type WorkState,
@@ -519,7 +519,7 @@ export const ROLE_SETTING_CHANGES = {
 		thinking: (value) => ({ oracleThinking: value }),
 		usdMax: (value) => ({ oracleUsdMax: Number(value) }),
 	},
-} satisfies Record<GovernedRole, Readonly<Record<RoleSetting, (value: string) => Partial<ServiceOptions>>>>;
+} satisfies Record<GovernedRole, Readonly<Record<GeneralRoleSetting, (value: string) => Partial<ServiceOptions>>>>;
 
 export function normalizeCaughtError(error: Error | string): Error {
 	return error instanceof Error ? error : new Error(error);

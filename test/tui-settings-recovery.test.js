@@ -10,7 +10,7 @@ test("Role settings open with r, show a comparison table, and use the native mod
 	const selections = ["Model: provider/conclave", "Thinking: medium", "low"];
 	const userSettings = Object.freeze({ defaultModel: "provider/conclave" });
 	const settings = {
-		conclave: { model: "provider/conclave", thinking: "medium" },
+		conclave: { model: "provider/conclave", thinking: "medium", mode: "headless" },
 		executor: { model: "provider/executor", thinking: "high" },
 		observer: { model: "provider/observer", thinking: "medium" },
 		oracle: { model: "provider/oracle", thinking: "high" },
@@ -82,6 +82,58 @@ test("Role settings open with r, show a comparison table, and use the native mod
 		{ role: "conclave", setting: "thinking", value: "low" },
 	]);
 	assert.deepEqual(userSettings, { defaultModel: "provider/conclave" });
+});
+
+test("Conclave role settings persist the headless or subagent invocation mode", async () => {
+	const screens = [];
+	const selections = ["Invocation mode: Headless (separate process)", "Subagent (current session)"];
+	const selectCalls = [];
+	const settings = {
+		conclave: { model: "provider/conclave", thinking: "medium", mode: "headless" },
+		executor: { model: "provider/executor", thinking: "high" },
+		observer: { model: "provider/observer", thinking: "medium" },
+		oracle: { model: "provider/oracle", thinking: "high" },
+	};
+	const updates = [];
+	const controller = {
+		get: () => settings,
+		set: (role, setting, value) => {
+			settings[role][setting] = value;
+			updates.push({ role, setting, value });
+		},
+	};
+	const context = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			notify: () => {},
+			onTerminalInput: () => () => {},
+			select: async (title, options) => {
+				selectCalls.push({ title, options });
+				return selections.shift();
+			},
+			custom: (factory) =>
+				new Promise((resolve) => {
+					const done = (value) => resolve(value);
+					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+				}),
+		},
+	};
+	const result = showKhala({ listWork: () => [] }, context, "user", undefined, controller);
+	await nextTurn();
+	screens[0].handleInput("r");
+	await nextTurn();
+	screens[1].handleInput("\r");
+	await nextTurn();
+	await nextTurn();
+	await nextTurn();
+	assert.deepEqual(selectCalls[1].options, ["Headless (separate process)", "Subagent (current session)"]);
+	assert.equal(settings.conclave.mode, "subagent");
+	assert.deepEqual(updates, [{ role: "conclave", setting: "mode", value: "subagent" }]);
+	screens[2].handleInput("\u001b");
+	await nextTurn();
+	screens[3].handleInput("\u001b");
+	await result;
 });
 
 test("Backspace from Role settings returns to the Work picker", async () => {

@@ -16,11 +16,12 @@ Repeating a completed tool call returns its prior result when the same command i
 
 ### `khala_submit_work`
 
-Record complete User intent without waiting for admission.
+Record complete User intent for Conclave admission.
 Required fields are `title`, `objective`, and `acceptanceCriteria`.
 Optional fields include `workId`, `context`, `scope`, `constraints`, `validation`, `allowedPaths`, and `maxTokens`.
-Submission persists immediately and schedules Conclave processing asynchronously.
-It does not admit a Mission, start an Executor, create a review request, or accept the Work.
+Submission persists immediately and schedules a Conclave wake.
+Headless mode processes the wake asynchronously; Subagent mode may wait for Conclave to process it before returning.
+It does not itself admit a Mission, start an Executor, create a review request, or accept the Work.
 
 Call this only after the user explicitly requests a new Khala Work or an explicit resubmission.
 If an explicit Work request lacks required terms, ask the user instead of inventing them.

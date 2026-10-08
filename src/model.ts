@@ -92,9 +92,22 @@ export function isActor(value: string): value is Actor {
 
 export const GOVERNED_ROLES = ["conclave", "executor", "observer", "oracle"] as const;
 export type GovernedRole = (typeof GOVERNED_ROLES)[number];
-export type RoleSetting = "model" | "thinking" | "usdMax";
+export const CONCLAVE_MODES = ["headless", "subagent"] as const;
+export type ConclaveMode = (typeof CONCLAVE_MODES)[number];
+
+export function isConclaveMode(value: string): value is ConclaveMode {
+	// SAFETY: the cast adapts the broad input to the literal-union argument required by includes.
+	return CONCLAVE_MODES.includes(value as ConclaveMode);
+}
+export type RoleSetting = "model" | "thinking" | "usdMax" | "mode";
+export type GeneralRoleSetting = Exclude<RoleSetting, "mode">;
 export type RoleSettings = Readonly<{ model: string; thinking: string; usdMax: number }>;
-export type RoleSettingsMap = Readonly<Record<GovernedRole, RoleSettings>>;
+export type RoleSettingsMap = Readonly<{
+	conclave: RoleSettings & Readonly<{ mode: ConclaveMode }>;
+	executor: RoleSettings;
+	observer: RoleSettings;
+	oracle: RoleSettings;
+}>;
 
 export type WorkBudget = Readonly<{
 	maxTokens: number;

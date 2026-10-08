@@ -6,10 +6,19 @@ import {
 	type AgentToolUpdateCallback,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { persistRoleSetting } from "./config.js";
 import { createDecisionEvidencePacket } from "./decision-evidence.js";
+import { readArchiveQuery } from "./extension-archive-tools.js";
+import {
+	type ConclaveToolOperation,
+	createToolOperation,
+	finishUserTool,
+	processUserToolEffects,
+	schedulePendingEffects,
+} from "./extension-conclave-subagent.js";
 import { type RecoveryReport, recoverUserWork } from "./extension-recovery.js";
 import {
 	archiveToolResult,
@@ -30,6 +39,7 @@ import {
 	restrictedToolViolation,
 	rolePromptFiles,
 	sessionRole,
+	sessionRoleForTool,
 	setRoleTools,
 } from "./extension-role.js";
 import { registerTrustedSkillTools } from "./extension-trusted-skills.js";
@@ -38,9 +48,7 @@ import {
 	type Actor,
 	type JsonValue,
 	type MutableRecordQuery,
-	parseRecordKind,
 	RECORD_KINDS,
-	type RecordKind,
 	type ServiceResult,
 	WORK_STATES,
 	type WorkView,
@@ -210,18 +218,19 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "khala_submit_work",
 		label: "Submit Work",
-		description: "Submit complete User intent to the project Conclave without waiting for admission.",
+		description: "Submit complete User intent to the project Conclave for admission.",
 		promptSnippet: "Submit complete User intent for Conclave admission",
 		parameters: submitSchema,
-		async execute(toolCallId, params: SubmitParams, signal, _onUpdate, context) {
+		async execute(toolCallId, params: SubmitParams, signal, onUpdate, context) {
 			try {
 				throwIfAborted(signal);
-				requireSessionRole(pi, "user");
-				const service = (await getRuntime(context)).service;
+				requireSessionRole(pi, "user", toolCallId);
+				const application = await getRuntime(context);
+				const operation = createToolOperation(application, pi, toolCallId, context, signal, onUpdate);
 				throwIfAborted(signal);
-				const work = service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
-				schedulePendingEffects(service);
-				return toolResult(work);
+				const work = application.service.submitWork(params, meta("user", `tool:submit:${toolCallId}`, 0));
+				await finishUserTool(application, operation, "user");
+				return toolResult(work, operation.usage());
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) {
@@ -239,17 +248,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 			"Read one bounded, scoped decision-evidence packet with current Work facts and selected Archive records.",
 		promptSnippet: "Read authoritative Work decision evidence and bounded records before making decisions",
 		parameters: readArchiveSchema,
-		async execute(toolCallId, params: ReadArchiveParams, signal, _onUpdate, context) {
+		async execute(toolCallId, params: ReadArchiveParams, signal, onUpdate, context) {
 			try {
 				throwIfAborted(signal);
-				const actor = sessionRole(pi);
-				const query = readArchiveQuery(params, actor);
-				const service = (await getRuntime(context)).service;
+				const actor = sessionRoleForTool(pi, toolCallId);
+				const application = await getRuntime(context);
+				const operation = createToolOperation(application, pi, toolCallId, context, signal, onUpdate);
+				await processUserToolEffects(application, operation, actor);
+				const query = readArchiveQuery(params, actor, toolCallId);
 				throwIfAborted(signal);
-				const commandMeta = meta(actor, `tool:archive:${toolCallId}`, 0);
-				const page = service.readRecords(query, commandMeta, params.cursor);
+				const commandMeta = meta(actor, `tool:archive:${toolCallId}`, 0, toolCallId);
+				const page = application.service.readRecords(query, commandMeta, params.cursor);
 				return archiveToolResult(
-					createDecisionEvidencePacket({ works: decisionWorks(service, query, page), records: page }),
+					createDecisionEvidencePacket({ works: decisionWorks(application.service, query, page), records: page }),
+					operation.usage(),
 				);
 			} catch (error) {
 				throwIfAborted(signal);
@@ -264,7 +276,8 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	if (sessionRole(pi) === "conclave") registerTrustedSkillTools(pi, getRuntime);
+	if (sessionRole(pi) === "conclave") registerTrustedSkillTools(pi, getRuntime, "direct");
+	else if (sessionRole(pi) === "user") registerTrustedSkillTools(pi, getRuntime, "codemode");
 
 	pi.registerTool({
 		name: "khala_poll_provider",
@@ -277,16 +290,17 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
-				requireSessionRole(pi, "user");
-				const service = (await getRuntime(context)).service;
+				requireSessionRole(pi, "user", toolCallId);
+				const application = await getRuntime(context);
+				const operation = createToolOperation(application, pi, toolCallId, context, signal, onUpdate);
 				throwIfAborted(signal);
-				const work = await service.pollProvider(
+				const work = await application.service.pollProvider(
 					params.workId,
 					meta("user", `tool:poll:${toolCallId}`, params.expectedWorkRevision),
-					toolOperation(signal, onUpdate),
+					operation.operation,
 				);
-				schedulePendingEffects(service);
-				return toolResult(work);
+				await finishUserTool(application, operation, "user");
+				return toolResult(work, operation.usage());
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) return toolError(error.envelope);
@@ -303,16 +317,20 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		parameters: inspectRuntimeSchema,
 		async execute(toolCallId, params: InspectRuntimeParams, signal, onUpdate, context) {
 			try {
-				const actor = sessionRole(pi);
-				const service = (await getRuntime(context)).service;
+				const actor = sessionRoleForTool(pi, toolCallId);
+				const application = await getRuntime(context);
+				const operation = createToolOperation(application, pi, toolCallId, context, signal, onUpdate);
 				throwIfAborted(signal);
-				const work = await service.inspectRuntime(
+				let work = await application.service.inspectRuntime(
 					params.workId,
-					meta(actor, `tool:inspect-runtime:${toolCallId}`, params.expectedWorkRevision),
-					toolOperation(signal, onUpdate),
+					meta(actor, `tool:inspect-runtime:${toolCallId}`, params.expectedWorkRevision, toolCallId),
+					operation.operation,
 				);
 				throwIfAborted(signal);
-				return toolResult(work);
+				await processUserToolEffects(application, operation, actor);
+				throwIfAborted(signal);
+				work = await refreshInspectedRuntime(application.service, params.workId, actor, toolCallId, work, operation);
+				return toolResult(work, operation.usage());
 			} catch (error) {
 				throwIfAborted(signal);
 				if (error instanceof ApplicationError) return toolError(error.envelope);
@@ -325,7 +343,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		name: "khala_perform_action",
 		label: "Perform Khala Action",
 		description:
-			"Perform one actor-authorized, revision-checked Khala application action. User actions include review, recovery, cancellation, renaming, budget, and failure decisions; Executor and Conclave actions run only in their bound child sessions. Provider comments enter through khala_poll_provider.",
+			"Perform one actor-authorized, revision-checked Khala application action. User actions include review, recovery, cancellation, renaming, budget, and failure decisions. Executor actions require the bound Executor session. Conclave actions require bound Conclave authority, provided by its child session or a Work-scoped Subagent call. Provider comments enter through khala_poll_provider.",
 		promptSnippet: "Perform one actor-authorized, revision-checked Khala lifecycle action",
 		parameters: performSchema,
 		async execute(toolCallId, params: PerformParams, signal, onUpdate, context) {
@@ -347,7 +365,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
-				requireSessionRole(pi, "executor");
+				requireSessionRole(pi, "executor", toolCallId);
 				const result = await (await getRuntime(context)).service.perform(
 					{
 						action: "record-signal",
@@ -381,7 +399,7 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
-				requireSessionRole(pi, "observer");
+				requireSessionRole(pi, "observer", toolCallId);
 				const result = await (await getRuntime(context)).service.perform(
 					{
 						action: "record-assessment",
@@ -414,13 +432,13 @@ export default function khalaExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(toolCallId, params, signal, onUpdate, context) {
 			try {
-				requireSessionRole(pi, "conclave");
+				requireSessionRole(pi, "conclave", toolCallId);
 				const result = await (await getRuntime(context)).service.perform(
 					{
 						action: "run-oracle",
 						workId: params.workId,
 						input: { subject: params.subject },
-						meta: meta("conclave", `tool:oracle:${toolCallId}`, params.expectedWorkRevision),
+						meta: meta("conclave", `tool:oracle:${toolCallId}`, params.expectedWorkRevision, toolCallId),
 					},
 					toolOperation(signal, onUpdate),
 				);
@@ -548,6 +566,23 @@ function notifyRecoveryComplete(context: ExtensionContext, report: RecoveryRepor
 	}
 }
 
+async function refreshInspectedRuntime(
+	service: ApplicationRuntime["service"],
+	workId: string,
+	actor: Actor,
+	toolCallId: string,
+	inspected: WorkView,
+	operation: ConclaveToolOperation,
+): Promise<WorkView> {
+	const current = service.inspectWork(workId);
+	if (current.revision === inspected.revision) return inspected;
+	return service.inspectRuntime(
+		workId,
+		meta(actor, `tool:inspect-runtime:${toolCallId}`, current.revision, toolCallId),
+		operation.operation,
+	);
+}
+
 async function executeActionTool(
 	pi: ExtensionAPI,
 	getRuntime: (context: ExtensionContext) => Promise<ApplicationRuntime>,
@@ -555,21 +590,22 @@ async function executeActionTool(
 	params: PerformParams,
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<JsonValue> | undefined,
-	context: ExtensionContext,
+	context: ExtensionToolContext,
 ): Promise<ToolResult> {
 	try {
-		const actor = sessionRole(pi);
-		const service = (await getRuntime(context)).service;
-		const result = await service.perform(
+		const actor = sessionRoleForTool(pi, toolCallId);
+		const application = await getRuntime(context);
+		const operation = createToolOperation(application, pi, toolCallId, context, signal, onUpdate);
+		const result = await application.service.perform(
 			{
 				action: params.action,
 				workId: params.workId,
 				input: params.input,
-				meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision),
+				meta: meta(actor, `tool:action:${toolCallId}`, params.expectedWorkRevision, toolCallId),
 			},
-			toolOperation(signal, onUpdate),
+			operation.operation,
 		);
-		return actionToolResult(result, actor, service);
+		return await actionToolResult(result, actor, application, operation);
 	} catch (error) {
 		throwIfAborted(signal);
 		const normalized = error instanceof Error ? error : new Error(String(error));
@@ -577,14 +613,15 @@ async function executeActionTool(
 	}
 }
 
-function actionToolResult(
+async function actionToolResult(
 	result: ServiceResult<WorkView>,
 	actor: Actor,
-	service: ApplicationRuntime["service"],
-): ToolResult {
+	application: ApplicationRuntime,
+	operation: ConclaveToolOperation,
+): Promise<ToolResult> {
 	if ("error" in result) throw new ApplicationError(result.error);
-	if (actor === "user") schedulePendingEffects(service);
-	return toolResult(result.value);
+	await finishUserTool(application, operation, actor);
+	return toolResult(result.value, operation.usage());
 }
 
 function actionToolError(error: Error): never {
@@ -592,52 +629,16 @@ function actionToolError(error: Error): never {
 	return toolErrorText(error.message || "Khala action failed.");
 }
 
-function schedulePendingEffects(service: ApplicationRuntime["service"]): void {
-	queueMicrotask(() => {
-		// Effects write durable Archive evidence. Do not retain a tool/session UI
-		// context across the asynchronous worker pass; Pi may replace that session.
-		void service.processPendingEffects().catch(() => undefined);
-	});
-}
-
 function updateExecutorStatus(service: ApplicationRuntime["service"], context: ExtensionContext): void {
 	const running = service
 		.listWork()
 		.filter((item) => item.state === "active" && item.executionState === "running").length;
-	const status = running === 0 ? "khala: idle" : `khala: ◈ ${running}`;
+	const status = service.conclaveWaitingForUserSession
+		? `khala: ${running === 0 ? "idle" : `◈ ${running}`} · Conclave queued`
+		: running === 0
+			? "khala: idle"
+			: `khala: ◈ ${running}`;
 	context.ui.setStatus("khala-executors", context.ui.theme.fg("dim", status));
-}
-
-function readArchiveQuery(params: ReadArchiveParams, actor: Actor): MutableRecordQuery {
-	const scopedWorkId = boundWorkId(actor);
-	assertArchiveWorkScope(params.workId, scopedWorkId);
-	return {
-		order: "desc",
-		workId: scopedWorkId ?? params.workId,
-		missionId: params.missionId,
-		executionId: params.executionId,
-		kinds: params.kinds === undefined ? undefined : readRecordKinds(params.kinds),
-		states: params.states,
-		from: params.from,
-		to: params.to,
-	};
-}
-
-function assertArchiveWorkScope(workId: string | undefined, bound: string | undefined): void {
-	if (bound === undefined) return;
-	if (workId === undefined) return;
-	if (workId === bound) return;
-	throw new ApplicationError({
-		code: "forbidden",
-		summary: "A bound role may only read its assigned Work.",
-		retryable: false,
-		remediation: "Omit workId or use the Work ID from the role binding.",
-		evidenceRefs: [],
-	});
-}
-
-function boundWorkId(actor: Actor): string | undefined {
-	return actor === "observer" || actor === "executor" ? process.env["KHALA_BOUND_WORK_ID"] : undefined;
 }
 
 function decisionWorks(
@@ -656,19 +657,6 @@ function decisionWorks(
 			throw error;
 		}
 	});
-}
-function readRecordKinds(values: readonly string[]): readonly RecordKind[] {
-	try {
-		return values.map(parseRecordKind);
-	} catch (error) {
-		throw new ApplicationError({
-			code: "invalid-input",
-			summary: error instanceof Error ? error.message : "Archive record kind is invalid.",
-			retryable: false,
-			remediation: "Use one of the supported Archive record kinds.",
-			evidenceRefs: [],
-		});
-	}
 }
 
 export { SQLiteArchive } from "./archive.js";

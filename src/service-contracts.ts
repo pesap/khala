@@ -1,4 +1,4 @@
-import { type ErrorEnvelope, type ServiceResult, type TokenUsage } from "./model.js";
+import { type ConclaveMode, type ErrorEnvelope, type ServiceResult, type TokenUsage } from "./model.js";
 import type { TrustedSkillCatalog } from "./trusted-skills.js";
 
 export type ServiceOptions = Readonly<{
@@ -11,6 +11,7 @@ export type ServiceOptions = Readonly<{
 	conclaveModel: string;
 	conclaveThinking: string;
 	conclaveUsdMax: number;
+	conclaveMode?: ConclaveMode | undefined;
 	executorModel: string;
 	executorThinking: string;
 	executorUsdMax: number;
@@ -44,6 +45,13 @@ export class RunGateUnavailable extends Error {
 	constructor() {
 		super("The shared model-run gate is full.");
 		this.name = "RunGateUnavailable";
+	}
+}
+
+export class ConclaveSessionUnavailable extends Error {
+	constructor() {
+		super("Subagent Conclave is waiting for an active User-session Khala tool call.");
+		this.name = "ConclaveSessionUnavailable";
 	}
 }
 

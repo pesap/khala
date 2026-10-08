@@ -54,8 +54,9 @@ scope, constraints, repository context, validation commands, and a token cap
 when they are known.
 If validation is omitted, the current implementation defaults it to `npm run check`.
 Provide explicit validation commands for repositories that use another check.
-Submission is persisted immediately; Conclave processing
-runs asynchronously.
+Submission is persisted immediately.
+Headless mode processes the Conclave wake asynchronously.
+Subagent mode may wait for Conclave to process the wake before returning.
 
 Reopen `/khala` to inspect the Work.
 The picker hides succeeded and cancelled Work by default and keeps failed Work visible for attention.

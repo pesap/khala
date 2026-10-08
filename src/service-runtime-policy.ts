@@ -7,13 +7,13 @@ import {
 	type ConclaveWakeCause,
 	type ErrorEnvelope,
 	type Execution,
+	type GeneralRoleSetting,
 	type GovernedRole,
 	type JsonObject,
 	type JsonValue,
 	type ProviderObservation,
 	type ProviderReviewCommentObservation,
 	type RecordQuery,
-	type RoleSetting,
 	type Signal,
 	type SubmitWorkInput,
 	type WorkView,
@@ -624,7 +624,11 @@ export function verdictReason(work: WorkView): string {
 		: "No current Signal is available.";
 }
 
-export function roleSettingChange(role: GovernedRole, setting: RoleSetting, value: string): Partial<ServiceOptions> {
+export function roleSettingChange(
+	role: GovernedRole,
+	setting: GeneralRoleSetting,
+	value: string,
+): Partial<ServiceOptions> {
 	return ROLE_SETTING_CHANGES[role][setting](value);
 }
 

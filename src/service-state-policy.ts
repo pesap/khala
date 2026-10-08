@@ -19,7 +19,7 @@ import {
 } from "./model.js";
 import { type RuntimeBinding, type RuntimeState } from "./ports.js";
 import { isTextValue, schedulerEffect } from "./provider-observation-policy.js";
-import { ActionInputError, RunGateUnavailable } from "./service-contracts.js";
+import { ActionInputError, ConclaveSessionUnavailable, RunGateUnavailable } from "./service-contracts.js";
 import {
 	type DispatchEligibility,
 	DispatchEligibilityError,
@@ -111,7 +111,7 @@ export function roleActionRemediation(actor: Actor, expected: Actor): string {
 			"user:executor":
 				"Executor Signals and review requests come from the bound Executor session. Read the Archive or poll the provider instead of recording Executor evidence as the User.",
 			"user:conclave":
-				"Conclave actions run in the bound Conclave session. Read the Archive and wait for the autonomous Conclave wake.",
+				"Conclave actions require bound Conclave authority. Read the Archive and let the configured Conclave mode process any pending wake.",
 		}[key] ?? "Use the role-bound application adapter."
 	);
 }
@@ -326,6 +326,7 @@ export function invocationAllowance(work: WorkView): number {
 
 export function isDispatchDeferral(failure: Error): boolean {
 	return (
+		failure instanceof ConclaveSessionUnavailable ||
 		failure instanceof DispatchEligibilityError ||
 		failure instanceof RunGateUnavailable ||
 		failure instanceof InvocationCapacityExceeded

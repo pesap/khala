@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { InvocationCapacityExceeded } from "../dist/src/archive.js";
 import { RunGateUnavailable } from "../dist/src/service-contracts.js";
 import { DispatchEligibilityError } from "../dist/src/workflow-dispatch.js";
-import { makeService, meta } from "./helpers/mvp-fixtures.mjs";
+import { makeService, meta, ZERO_USAGE } from "./helpers/mvp-fixtures.mjs";
 
 function terms() {
 	return {
@@ -182,6 +182,170 @@ test("executor, feedback, and observer dispatch gates remain retryable", async (
 			await service.close();
 			await rm(directory, { recursive: true, force: true });
 		}
+	}
+});
+
+test("subagent Conclave wakes remain queued until a user-session operation can run them", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-subagent-wake-deferral-"));
+	const { service, controls, archive } = makeService(join(directory, "archive.sqlite"), { conclaveMode: "subagent" });
+	const work = service.submitWork(
+		{
+			title: "Queued Conclave wake",
+			objective: "Wait for an active Pi tool call",
+			acceptanceCriteria: ["The wake runs in the user session"],
+			scope: "Test scope",
+			validation: ["node --test"],
+		},
+		meta("user", "subagent-wake:submit", 0),
+	);
+	try {
+		await service.processPendingEffects();
+		assert.equal(controls.prompts.length, 0);
+		assert.deepEqual(service.inspectWork(work.workId).activeInvocations ?? [], []);
+		assert.equal(service.inspectWork(work.workId).budget.reservedTokens, 0);
+		assert.deepEqual(archive.pendingEffects("assertion").map(({ effectId }) => effectId), [`conclave-wake:${work.workId}`]);
+		assert.equal(service.conclaveWaitingForUserSession, true);
+	} finally {
+		await service.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("subagent Conclave runs inside the active Khala tool operation and completes its receipt", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-subagent-active-session-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { conclaveMode: "subagent" });
+	service.submitWork(
+		{
+			title: "Active Conclave subagent",
+			objective: "Run Conclave from the current Khala tool call",
+			acceptanceCriteria: ["Conclave executes in the parent Pi session"],
+			scope: "Test scope",
+			validation: ["node --test"],
+		},
+		meta("user", "active-subagent:submit", 0),
+	);
+	const calls = [];
+	try {
+		await service.processPendingEffects({
+			sessionId: "parent-session",
+			runConclaveSubagent: async (request) => {
+				calls.push(request);
+				const current = service.inspectWork(request.workId);
+				const action = current.mission === undefined ? "admit" : "start-execution";
+				const result = await service.perform({
+					action,
+					workId: request.workId,
+					input: {},
+					meta: meta("conclave", `active-subagent:${request.runId}`, current.revision, request.workId),
+				});
+				assert.equal("error" in result, false);
+				return { output: "Conclave decision recorded.", usage: ZERO_USAGE };
+			},
+		});
+		assert.ok(calls.length > 0);
+		assert.equal(calls.every((call) => call.sessionId === "parent-session"), true);
+		assert.equal(controls.nestedInvocations.length, calls.length);
+		assert.equal(controls.nestedInvocations.every((invocation) => invocation.complete), true);
+		assert.equal(service.conclaveWaitingForUserSession, false);
+	} finally {
+		await service.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a User-session drain retries a wake deferred by a concurrent background drain", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-concurrent-subagent-wake-"));
+	const { service } = makeService(join(directory, "archive.sqlite"), { conclaveMode: "subagent" });
+	const work = service.submitWork(
+		{
+			workId: "concurrent-subagent-wake",
+			title: "Concurrent Subagent wake",
+			objective: "Run a queued wake from the active User session",
+			acceptanceCriteria: ["The pending wake runs in the User session"],
+			scope: "Test scope",
+			validation: ["node --test"],
+		},
+		meta("user", "concurrent-subagent:submit", 0),
+	);
+	let notifyStopWaiter;
+	const stopWaiterStarted = new Promise((resolve) => {
+		notifyStopWaiter = resolve;
+	});
+	let releaseStopWaiter;
+	const stopWaiter = new Promise((resolve) => {
+		releaseStopWaiter = resolve;
+	});
+	service.executorRuntime.stopStoppedTurns = async () => {
+		notifyStopWaiter();
+		await stopWaiter;
+	};
+	const calls = [];
+	const operation = {
+		sessionId: "parent-session",
+		runConclaveSubagent: async (request) => {
+			calls.push(request);
+			const current = service.inspectWork(work.workId);
+			const result = await service.perform({
+				action: "request-input",
+				workId: work.workId,
+				input: { reason: "Clarify the task." },
+				meta: meta("conclave", `concurrent-subagent:${request.runId}`, current.revision, work.workId),
+			});
+			assert.equal("error" in result, false);
+			return { output: "Requested clarification.", usage: ZERO_USAGE };
+		},
+	};
+	const backgroundRun = service.processPendingEffects();
+	const userRun = service.processPendingEffects(operation);
+	try {
+		await stopWaiterStarted;
+		await backgroundRun;
+		releaseStopWaiter();
+		await userRun;
+		assert.equal(calls.length, 1);
+		assert.equal(service.inspectWork(work.workId).state, "needs-input");
+	} finally {
+		releaseStopWaiter();
+		await Promise.allSettled([backgroundRun, userRun]);
+		await service.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("headless processing clears the queued Subagent status after draining its wake", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "khala-headless-clears-subagent-queue-"));
+	const { service, controls } = makeService(join(directory, "archive.sqlite"), { conclaveMode: "subagent" });
+	const work = service.submitWork(
+		{
+			workId: "headless-clears-subagent-queue",
+			title: "Deferred Subagent wake",
+			objective: "Switch the queued wake to Headless",
+			acceptanceCriteria: ["Headless handles the pending wake"],
+			scope: "Test scope",
+			validation: ["node --test"],
+		},
+		meta("user", "headless-clears-queue:submit", 0),
+	);
+	try {
+		await service.processPendingEffects();
+		assert.equal(service.conclaveWaitingForUserSession, true);
+		service.updateRoleSetting("conclave", "mode", "headless");
+		controls.onConclaveWake = async () => {
+			const current = service.inspectWork(work.workId);
+			const result = await service.perform({
+				action: "request-input",
+				workId: work.workId,
+				input: { reason: "Clarify the task." },
+				meta: meta("conclave", `headless-decision:${current.revision}`, current.revision, work.workId),
+			});
+			assert.equal("error" in result, false);
+		};
+		await service.processPendingEffects();
+		assert.equal(service.inspectWork(work.workId).state, "needs-input");
+		assert.equal(service.conclaveWaitingForUserSession, false);
+	} finally {
+		await service.close();
+		await rm(directory, { recursive: true, force: true });
 	}
 });
 

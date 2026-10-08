@@ -39,12 +39,14 @@ test("Role settings persist without discarding other Khala configuration", async
 		persistRoleSetting("conclave", "model", "new/model");
 		persistRoleSetting("conclave", "thinking", "low");
 		persistRoleSetting("conclave", "usdMax", "2.5");
+		persistRoleSetting("conclave", "mode", "subagent");
 		const config = JSON.parse(await readFile(join(directory, "khala.json"), "utf8"));
 		assert.deepEqual(config, {
 			targetBranch: "develop",
 			conclaveModel: "new/model",
 			conclaveThinking: "low",
 			conclaveUsdMax: 2.5,
+			conclaveMode: "subagent",
 			roleSettingsKey: "s",
 			commentsKey: "c",
 		});
@@ -55,6 +57,9 @@ test("Role settings persist without discarding other Khala configuration", async
 		assert.equal(loadedConfig.keybindings.help, "?");
 		assert.equal(loadedConfig.keybindings.history, "ctrl+h");
 		assert.equal(loadedConfig.conclaveUsdMax, 2.5);
+		assert.equal(loadedConfig.conclaveMode, "subagent");
+		await writeFile(join(directory, "khala.json"), JSON.stringify({}));
+		assert.equal(loadConfig(join(directory, "other-project"), false, false).conclaveMode, "headless");
 		assert.equal(loadedConfig.enableCiRepair, false);
 		assert.equal(loadedConfig.requireProviderCi, true);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ enableCiRepair: true, requireProviderCi: false }));
@@ -64,6 +69,8 @@ test("Role settings persist without discarding other Khala configuration", async
 		assert.throws(() => loadConfig(directory, false, false), /enableCiRepair must be a boolean/);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ requireProviderCi: "false" }));
 		assert.throws(() => loadConfig(directory, false, false), /requireProviderCi must be a boolean/);
+		await writeFile(join(directory, "khala.json"), JSON.stringify({ conclaveMode: "interactive" }));
+		assert.throws(() => loadConfig(directory, false, false), /conclaveMode must be headless or subagent/);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ commentsKey: "   " }));
 		assert.throws(() => loadConfig(directory, false, false), /commentsKey must not be blank/);
 		await writeFile(join(directory, "khala.json"), JSON.stringify({ targetBranch: "feature/.hidden" }));

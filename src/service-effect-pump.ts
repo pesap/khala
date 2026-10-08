@@ -1,11 +1,10 @@
 import { nanoid } from "nanoid";
 import { type ArchivePort, InvocationCapacityExceeded, type PendingArchiveEffect } from "./archive.js";
-import type { CommandMeta, ConclaveWakeCause, ErrorEnvelope, JsonObject, WorkView } from "./model.js";
-import type { ServicePorts } from "./ports.js";
-import { isTextValue } from "./provider-observation-policy.js";
+import type { CommandMeta, ConclaveWakeCause, WorkView } from "./model.js";
+import type { OperationContext, ServicePorts } from "./ports.js";
 import { ArchiveCore } from "./service-archive-core.js";
 import { ServiceCiRepair } from "./service-ci-repair.js";
-import { RunGateUnavailable } from "./service-contracts.js";
+import { ConclaveSessionUnavailable, RunGateUnavailable } from "./service-contracts.js";
 import {
 	dispatchEligibilityAttention,
 	readEffectBinding,
@@ -45,6 +44,7 @@ import {
 	readEffectWorkId,
 	sameDispatchAttention,
 } from "./service-state-policy.js";
+import { recordUnsupportedEffect } from "./service-unsupported-effect.js";
 import { type DispatchEligibility, DispatchEligibilityError, dispatchEligibility } from "./workflow-dispatch.js";
 
 type EffectPumpCallbacks = Readonly<{
@@ -54,6 +54,7 @@ type EffectPumpCallbacks = Readonly<{
 		commandId: string,
 		observationId?: string,
 		reason?: ConclaveWakeCause,
+		operation?: OperationContext,
 	) => Promise<void>;
 	processOracleWake: (effect: PendingArchiveEffect, work: WorkView) => Promise<void>;
 	recordCleanupSuccess: (workId: string, effectId: string, kind: string) => void;
@@ -67,6 +68,10 @@ type EffectPumpCallbacks = Readonly<{
 		dispatchEffectId: string,
 	) => WorkView;
 }>;
+
+function canRunSubagent(operation: OperationContext | undefined): boolean {
+	return operation?.runConclaveSubagent !== undefined;
+}
 
 export class ServiceEffectPump {
 	private readonly archive: ArchivePort;
@@ -84,6 +89,8 @@ export class ServiceEffectPump {
 	private pendingRun: Promise<void> | undefined;
 	private requested = false;
 	private closing = false;
+	private activeOperation: OperationContext | undefined;
+	private waitingForConclaveSession = false;
 	constructor(input: {
 		archive: ArchivePort;
 		core: ArchiveCore;
@@ -114,19 +121,35 @@ export class ServiceEffectPump {
 	get activeRun(): Promise<void> | undefined {
 		return this.pendingRun;
 	}
+	get conclaveWaitingForUserSession(): boolean {
+		return this.waitingForConclaveSession;
+	}
 	stop(): void {
 		this.closing = true;
 	}
-	async processPendingEffects(): Promise<void> {
+	async processPendingEffects(operation?: OperationContext): Promise<void> {
 		if (!this.callbacks.acquireSupervision()) return;
 		// Stop requests must reach a role even while its turn occupies the serialized pump.
 		this.invocations.abortStoppedWork();
 		if (this.pendingRun !== undefined) {
-			this.requested = true;
-			await this.executorRuntime.stopStoppedTurns();
-			return this.pendingRun;
+			await this.waitForPendingRun(operation);
+			return;
 		}
-		const run = this.drainPendingEffectsUntilIdle();
+		await this.startPendingRun(operation);
+	}
+
+	private async waitForPendingRun(operation: OperationContext | undefined): Promise<void> {
+		const pendingRun = this.pendingRun;
+		this.requested = true;
+		await this.executorRuntime.stopStoppedTurns();
+		if (pendingRun === undefined) return;
+		await pendingRun;
+		if (canRunSubagent(operation) && this.waitingForConclaveSession) await this.processPendingEffects(operation);
+	}
+
+	private async startPendingRun(operation: OperationContext | undefined): Promise<void> {
+		this.waitingForConclaveSession = false;
+		const run = this.drainPendingEffectsUntilIdle(operation);
 		this.pendingRun = run;
 		try {
 			await run;
@@ -135,14 +158,19 @@ export class ServiceEffectPump {
 		}
 	}
 
-	private async drainPendingEffectsUntilIdle(): Promise<void> {
+	private async drainPendingEffectsUntilIdle(operation: OperationContext | undefined): Promise<void> {
+		this.activeOperation = operation;
 		// Nested wake requests may add work, but cannot immediately retry an effect
 		// that already failed during this supervisor activation.
 		const deferred = new Set<string>();
-		do {
-			this.requested = false;
-			await this.drainPendingEffects(deferred);
-		} while (this.requested && !this.closing);
+		try {
+			do {
+				this.requested = false;
+				await this.drainPendingEffects(deferred);
+			} while (this.requested && !this.closing);
+		} finally {
+			this.activeOperation = undefined;
+		}
 	}
 	private async drainPendingEffects(deferred: Set<string>): Promise<void> {
 		const owner = `khala-worker:${nanoid()}`;
@@ -175,7 +203,7 @@ export class ServiceEffectPump {
 		if (this.deferDuplicateConclaveWake(effect, owner, dispatchedConclaveWakes)) return true;
 		if (!SUPPORTED_EFFECT_KINDS.has(effect.kind)) {
 			this.archive.releaseEffect(effect.effectId, owner);
-			this.recordUnsupportedEffect(effect);
+			recordUnsupportedEffect(this.archive, this.core, this.heartbeat, effect);
 			return true;
 		}
 		// A blocked model decision must not strand already-claimed cleanup or other Works.
@@ -188,57 +216,6 @@ export class ServiceEffectPump {
 		if (isTerminalWork(this.core.inspectWork(failure.record.workId))) return false;
 		this.archive.releaseEffect(effect.effectId, owner);
 		return true;
-	}
-
-	private recordUnsupportedEffect(effect: Readonly<{ effectId: string; kind: string; payload: JsonObject }>): void {
-		const workId = effect.payload["workId"];
-		if (!isTextValue(workId)) return;
-		const work = this.archive.project(workId);
-		if (work === undefined) return;
-		const marker = `unsupported-effect:${effect.effectId}`;
-		if (this.heartbeat.has(marker)) return;
-		this.appendUnsupportedEffect(work, effect, marker);
-	}
-
-	private appendUnsupportedEffect(
-		work: WorkView,
-		effect: Readonly<{ effectId: string; kind: string; payload: JsonObject }>,
-		marker: string,
-	): void {
-		const failure: ErrorEnvelope = {
-			code: "integrity-failure",
-			summary: `Unsupported Archive effect ${effect.kind} was retained for inspection.`,
-			retryable: false,
-			remediation: "Upgrade Khala to a version that supports this effect before retrying the worker.",
-			evidenceRefs: [effect.effectId],
-		};
-		const next: WorkView = {
-			...work,
-			revision: work.revision + 1,
-			lastError: failure,
-			nextAction: "An unsupported Archive effect requires operator reconciliation.",
-		};
-		try {
-			this.core.append({
-				meta: {
-					actor: "system",
-					commandId: `${marker}:${work.revision}`,
-					expectedWorkRevision: work.revision,
-					schemaVersion: 1,
-				},
-				kind: "error",
-				workId: work.workId,
-				missionId: work.mission?.missionId,
-				executionId: work.execution?.executionId,
-				payload: { effectId: effect.effectId, kind: effect.kind, error: failure },
-				projection: next,
-				evidenceRefs: failure.evidenceRefs,
-				summary: failure.summary,
-			});
-			this.heartbeat.set(marker, failure.summary);
-		} catch {
-			// Leave both the effect and diagnostic available for the next pass.
-		}
 	}
 
 	private deferDuplicateConclaveWake(
@@ -356,7 +333,13 @@ export class ServiceEffectPump {
 			})
 		)
 			return;
-		await this.callbacks.wakeConclave(workId, `outbox:${effect.effectId}:${work.revision}`, observationId, wakeReason);
+		await this.callbacks.wakeConclave(
+			workId,
+			`outbox:${effect.effectId}:${work.revision}`,
+			observationId,
+			wakeReason,
+			this.activeOperation,
+		);
 	}
 
 	private async processSchedulerWake(
@@ -380,7 +363,13 @@ export class ServiceEffectPump {
 
 	private async wakeScheduledConclave(effect: PendingArchiveEffect, work: WorkView): Promise<void> {
 		try {
-			await this.callbacks.wakeConclave(work.workId, `outbox:${effect.effectId}:${work.revision}`);
+			await this.callbacks.wakeConclave(
+				work.workId,
+				`outbox:${effect.effectId}:${work.revision}`,
+				undefined,
+				undefined,
+				this.activeOperation,
+			);
 		} catch (error) {
 			const failure = error instanceof Error ? error : new Error(String(error));
 			this.recordScheduledWakeFailure(effect, work.workId, failure);
@@ -534,6 +523,11 @@ export class ServiceEffectPump {
 		wakeReason: ConclaveWakeCause | undefined,
 		error: ServiceFailure,
 	): Promise<boolean> {
+		if (error instanceof ConclaveSessionUnavailable) {
+			this.waitingForConclaveSession = true;
+			this.archive.releaseEffect(effect.effectId, owner);
+			return true;
+		}
 		if (error instanceof DispatchEligibilityError)
 			return this.handleDispatchEligibilityFailure(effect, owner, workId, error.eligibility);
 		return this.handleOrdinaryPendingEffectFailure(effect, owner, workId, observationId, wakeReason, error);
