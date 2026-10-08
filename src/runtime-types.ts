@@ -80,6 +80,7 @@ export type MutableChild = {
 	rpcTimeoutMs: number;
 	lastError: string;
 	closed: boolean;
+	stopping: boolean;
 	sending: boolean;
 	lastAgentEnd: Promise<string> | undefined;
 	resolveAgentEnd: ((output: string) => void) | undefined;

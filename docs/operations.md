@@ -151,6 +151,9 @@ It rereads the project Archive, drains pending effects, and reconciles runtime b
 Recovery continues across individual Work failures and reports each failed Work with its diagnostic and next step.
 An unconfirmed Executor restoration is reported as a failure rather than a completed recovery.
 Completed durable invocation receipts settle held usage automatically during recovery.
+An explicit stop that receives Pi's aborted settlement records complete observed usage.
+Stopping sessions reject new prompts before dispatch.
+An abort acknowledgement without settlement leaves an incomplete receipt.
 An incomplete receipt keeps its reservation and reports the invocation that needs cumulative usage evidence.
 In `/khala`, open the Work's Actions and choose Reconcile held usage.
 Choose the Held invocation field, select the invocation from the Work's active invocations, and enter the four cumulative usage fields and Usage evidence in the native editor.
