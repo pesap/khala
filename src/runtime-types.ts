@@ -48,6 +48,7 @@ export type RpcEvent = Readonly<{
 	data?: RpcData | undefined;
 	error?: string | undefined;
 	message?: RpcMessage | undefined;
+	aborted?: boolean | undefined;
 }>;
 
 export type RpcResponse = Readonly<{

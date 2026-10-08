@@ -92,12 +92,16 @@ export class GitWorkspace implements WorkspacePort {
 				preparedAt: new Date().toISOString(),
 			};
 		const environment = await filteredInheritedEnvironment();
-		const npm = await inheritedExecutable("npm", environment);
+		const [npmExecutable, nodeExecutable] = await Promise.all([
+			inheritedExecutable("npm", environment),
+			inheritedExecutable("node", environment),
+		]);
 		const preparationInput = {
 			sandboxPath: sandbox.path,
 			baseCommit: sandbox.baseCommit,
 			store: this.artifactStore,
-			npmExecutable: npm,
+			npmExecutable,
+			nodeExecutable,
 			environment,
 			signal,
 		};

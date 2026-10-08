@@ -12,7 +12,7 @@ test("a late prompt acknowledgement does not terminate a completed child turn", 
 		script,
 		`import readline from "node:readline";
 let prompts = 0;
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
@@ -26,7 +26,7 @@ input.on("line", (line) => {
 			respond();
 			process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "completed" }] } }) + "\\n");
 			process.stdout.write(JSON.stringify({ type: "agent_end" }) + "\\n");
-			setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n"), 50);
+			setTimeout(() => process.stdout.write(JSON.stringify({ type: "agent_settled", aborted: false }) + "\\n"), 50);
 		};
 		if (prompts === 1) setTimeout(complete, 250);
 		else complete();
@@ -59,7 +59,7 @@ test("cancelling a child turn aborts the Pi process and rejects the turn", async
 	await writeFile(
 		script,
 		`import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
@@ -104,7 +104,7 @@ test("rejects an oversized RPC frame and cleans up the child", async () => {
 	await writeFile(
 		script,
 		`import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
 	const request = JSON.parse(line);
@@ -127,7 +127,7 @@ test("rejects an active turn when a later RPC frame is oversized", async () => {
 	await writeFile(
 		script,
 		`import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + "x".repeat(300000)); });
 `,
@@ -142,7 +142,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => { const 
 test("rejects a malformed JSON RPC frame", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-malformed-frame-"));
 	const script = join(directory, "rpc-stub.mjs");
-	await writeFile(script, `if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }\nprocess.stdout.write("{not-json}\\n");`);
+	await writeFile(script, `if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }\nprocess.stdout.write("{not-json}\\n");`);
 	await chmod(script, 0o755);
 	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500 });
 	await assert.rejects(
@@ -155,7 +155,7 @@ test("rejects a malformed JSON RPC frame", async () => {
 test("rejects an unterminated oversized RPC frame", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-unterminated-frame-"));
 	const script = join(directory, "rpc-stub.mjs");
-	await writeFile(script, `if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }\nprocess.stdout.write("x".repeat(300000));`);
+	await writeFile(script, `if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }\nprocess.stdout.write("x".repeat(300000));`);
 	await chmod(script, 0o755);
 	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500, maxRpcFrameBytes: 256_000 });
 	await assert.rejects(
@@ -174,9 +174,9 @@ test("rejects malformed RPC event shapes and pending turns", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "khala-rpc-malformed-event-"));
 	const script = join(directory, "rpc-stub.mjs");
 	await writeFile(script, `import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
-readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + JSON.stringify({ type: "message_end", message: { role: "assistant", content: "not-an-array" } }) + "\\n" + JSON.stringify({ type: "agent_settled" }) + "\\n"); });`);
+readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + JSON.stringify({ type: "message_end", message: { role: "assistant", content: "not-an-array" } }) + "\\n" + JSON.stringify({ type: "agent_settled", aborted: false }) + "\\n"); });`);
 	await chmod(script, 0o755);
 	const runtime = new PiRpcRuntime({ projectPath: directory, command: [process.execPath, script], rpcTimeoutMs: 500, agentTimeoutMs: 500 });
 	const binding = await runtime.ensureSession({ cwd: directory, model: "model", thinking: "medium", role: "executor", promptIdentity: { packageVersion: "1", promptSha256: "hash" }, tools: [] });
@@ -190,7 +190,7 @@ test("preserves fragmented Unicode and multiple LF-delimited RPC lines", async (
 	await writeFile(
 		script,
 		`import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
@@ -203,7 +203,7 @@ input.on("line", (line) => {
 			{ type: "message_end", message: { role: "user", content: "native string content" } },
 			{ type: "message_end", message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] } },
 			{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "héllo\\u2028world" }] } },
-			{ type: "agent_settled" },
+			{ type: "agent_settled", aborted: false },
 		];
 		const bytes = Buffer.from(events.map((event) => JSON.stringify(event)).join("\\n") + "\\n");
 		const split = bytes.indexOf(Buffer.from("é")) + 1;
@@ -226,9 +226,9 @@ test("bounds retained assistant output with a truncation indicator", async () =>
 	await writeFile(
 		script,
 		`import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
-readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "a".repeat(100000) }] } }) + "\\n" + JSON.stringify({ type: "agent_settled" }) + "\\n"); });
+readline.createInterface({ input: process.stdin }).on("line", (line) => { const request = JSON.parse(line); if (request.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true, data: { sessionId: "stub-session", sessionFile: sessionPath, isStreaming: false } }) + "\\n"); else if (request.type === "prompt") process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n" + JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "a".repeat(100000) }] } }) + "\\n" + JSON.stringify({ type: "agent_settled", aborted: false }) + "\\n"); });
 `,
 	);
 	await chmod(script, 0o755);
@@ -246,7 +246,7 @@ test("child runtimes do not inherit credential-shaped environment variables", as
 	await writeFile(
 		script,
 		`import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
@@ -256,7 +256,7 @@ input.on("line", (line) => {
 	} else if (request.type === "prompt") {
 		process.stdout.write(JSON.stringify({ type: "response", id: request.id, command: request.type, success: true }) + "\\n");
 		process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: process.env.OPENAI_API_KEY ?? "missing" }] } }) + "\\n");
-		process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+		process.stdout.write(JSON.stringify({ type: "agent_settled", aborted: false }) + "\\n");
 	}
 });
 `,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -27,9 +27,12 @@ function npmOptions(fixture, prefix, cache = fixture.cache) {
 	return ["--cache", cache, "--userconfig", fixture.userConfig, "--globalconfig", fixture.globalConfig, "--prefix", prefix];
 }
 
-dependencyTest("prepares a cold local tarball for offline script-free validation", async (t) => {
+dependencyTest("prepares a cold local tarball for offline script-free validation without host preloads", async (t) => {
 	const root = await mkdtemp(join(temporaryRoot, "khala-dependency-preparation-"));
 	const fixture = join(root, "fixture");
+	const preload = join(root, "preload.cjs");
+	const marker = join(root, "preloaded");
+	const previousOptions = process.env.NODE_OPTIONS;
 	const npmFixture = await createNpmFixture(root);
 	try {
 		await mkdir(fixture);
@@ -48,10 +51,15 @@ dependencyTest("prepares a cold local tarball for offline script-free validation
 			stdio: "pipe",
 		});
 		await rm(join(root, "node_modules"), { recursive: true, force: true });
+		const selectedNodeVersion = execFileSync("node", ["-p", "process.versions.node"], { encoding: "utf8" }).trim();
+		await writeFile(preload, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "loaded");`);
+		process.env.NODE_OPTIONS = `--require=${preload}`;
 
 		const workspace = new GitWorkspace(root, "test/");
 		const receipt = await workspace.prepareSandbox({ path: root, baseCommit: "base", branch: "test" });
+		await assert.rejects(access(marker), { code: "ENOENT" });
 		assert.equal(receipt.schemaVersion, 1);
+		assert.equal(receipt.runtime.node, selectedNodeVersion);
 		assert.deepEqual(receipt.policy.registries, ["registry.npmjs.org"]);
 		assert.deepEqual(receipt.artifactDigests, [createHash("sha256").update(await readFile(join(root, "fixture.tgz"))).digest("hex")]);
 
@@ -70,7 +78,10 @@ dependencyTest("prepares a cold local tarball for offline script-free validation
 		assert.notEqual(validationHome, process.env.HOME);
 		assert.match(validationHome, /khala-validation-[^/]+\/home$/);
 		assert.equal(await readFile(join(root, "lifecycle-ran"), "utf8").catch(() => undefined), undefined);
+		await assert.rejects(access(marker), { code: "ENOENT" });
 	} finally {
+		if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+		else process.env.NODE_OPTIONS = previousOptions;
 		await rm(root, { recursive: true, force: true });
 	}
 });
@@ -127,6 +138,7 @@ dependencyTest("prepares a remote-shaped tarball with npm12 while isolating host
 			baseCommit: "base",
 			store,
 			npmExecutable: npm,
+			nodeExecutable: process.execPath,
 			environment: { PATH: process.env.PATH },
 			signal: undefined,
 		});
@@ -136,6 +148,7 @@ dependencyTest("prepares a remote-shaped tarball with npm12 while isolating host
 			baseCommit: "base",
 			store,
 			npmExecutable: npm,
+			nodeExecutable: process.execPath,
 			environment: { PATH: process.env.PATH },
 			signal: undefined,
 		});
@@ -244,7 +257,7 @@ dependencyTest("interrupted artifact streams fail without publishing partial cac
 			return new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); controller.error(new Error("interrupted stream")); } }));
 		});
 		const store = join(root, "store");
-		await assert.rejects(prepareDependencyArtifacts({ sandboxPath: root, baseCommit: "base", store, npmExecutable: npm, environment: { PATH: process.env.PATH }, signal: undefined }), /could not be acquired/);
+		await assert.rejects(prepareDependencyArtifacts({ sandboxPath: root, baseCommit: "base", store, npmExecutable: npm, nodeExecutable: process.execPath, environment: { PATH: process.env.PATH }, signal: undefined }), /could not be acquired/);
 		assert.deepEqual(await readdir(join(store, "downloads")), []);
 		assert.equal(await readPreparationReceipt(store, root), undefined);
 	} finally {
@@ -279,7 +292,7 @@ for (const scenario of [
 			});
 			await assert.rejects(prepareDependencyArtifacts({
 				sandboxPath: root, baseCommit: "base", store, npmExecutable: npm,
-				environment: { PATH: process.env.PATH }, signal: undefined,
+				nodeExecutable: process.execPath, environment: { PATH: process.env.PATH }, signal: undefined,
 			}), scenario.error);
 			assert.equal(fetchCount, scenario.fetches);
 			assert.deepEqual(await readdir(join(store, "downloads")), scenario.cached ? [downloadName] : []);

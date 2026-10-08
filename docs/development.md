@@ -37,9 +37,12 @@ Oxlint limits checked JavaScript and TypeScript files to 700 lines, including co
 On other platforms it skips the Linux-only native Pi workflow fixtures, while macOS still runs the validation and workspace tests.
 `scripts/copy-runtime-assets.mjs` copies package metadata, role prompts, and the demo fixture beside compiled entry points.
 Tests use local port adapters and do not require provider credentials.
-`test/native-role-workflow.test.js` runs real Pi child processes against a deterministic localhost model endpoint.
-It exercises the registered Archive and action tools, signed Conclave authority, durable input requests, and supervisor restart without paid model calls.
-`test/native-execution-workflow.test.js` exercises a real Executor edit, Git commit, isolated validation, review publication, supervisor restart, and successful outcome recording.
+`test/native-role-workflow.test.js` and `test/native-execution-workflow.test.js` use the npm-installed Pi CLI by default and exercise real child workflows against deterministic localhost model and code-host fixtures.
+They cover signed Conclave authority, durable input, Executor edits, Git commits, isolated validation, review publication, supervisor restart, and recovery without paid model calls.
+The default Node-hosted CLI tests do not prove that a separately compiled native Pi executable works.
+Run those same workflows against an explicitly selected native Pi 1.1.0 executable with `KHALA_NATIVE_PI=/absolute/path/to/pi node --test test/native-role-workflow.test.js test/native-execution-workflow.test.js`.
+Keep the default invocation as separate coverage for the npm-installed CLI.
+Both modes require an installed supported Node executable on the trusted inherited `PATH`; Khala uses that Node for its JavaScript validation helper independently of the Pi launch executable.
 `test/native-tui-workflow.test.js` drives Pi in `tmux`, submits Work through the registered tool, opens the Work list, restarts Pi, runs `/khala-recover`, and verifies success in History after merge polling.
 `test/native-crash-recovery.test.js` kills Pi during an Executor request, reconciles held usage through native selection, editor, and confirmation dialogs, then recovers the same Execution through review publication.
 `test/native-cancellation.test.js` declines and confirms cancellation in Pi, verifies that the held model request stops, and checks that project recovery leaves Work cancelled.

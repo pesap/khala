@@ -18,7 +18,7 @@ const usage = { inputTokens: 11, outputTokens: 7, cacheHitTokens: 13, cacheMissT
 async function writeRuntimeStub(directory, body) {
 	const script = join(directory, "runtime-stub.mjs");
 	await writeFile(script, `import readline from "node:readline";
-if (process.argv.includes("--version")) { process.stdout.write("0.85.0\\n"); process.exit(0); }
+if (process.argv.includes("--version")) { process.stdout.write("1.1.0\\n"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
  const request = JSON.parse(line);

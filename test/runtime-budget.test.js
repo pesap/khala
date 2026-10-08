@@ -12,7 +12,7 @@ async function fixture(t) {
 	const aborts = join(directory, "aborts");
 	await writeFile(script, `import readline from "node:readline";
 import { appendFileSync } from "node:fs";
-if (process.argv.includes("--version")) { console.log("0.85.0"); process.exit(0); }
+if (process.argv.includes("--version")) { console.log("1.1.0"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 const emit = event => process.stdout.write(JSON.stringify(event) + "\\n");
 const message = (text, input, output = 0) => emit({ type: "message_end", message: {
@@ -31,11 +31,13 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
  if (request.type === "prompt") {
   scenario = request.message;
   reply();
-  if (scenario === "below") { message("below", 4, 5); emit({ type: "agent_settled" }); return; }
+  if (scenario === "below") { message("below", 4, 5); emit({ type: "agent_settled", aborted: false }); return; }
+  if (scenario === "aborted") { message("partial", 4, 3); emit({ type: "agent_settled", aborted: true }); return; }
+  if (scenario === "missing-aborted") { message("partial", 4, 3); emit({ type: "agent_settled" }); return; }
   if (scenario === "cumulative") { message("first", 4, 1); message("boundary", 3, 2); return; }
   if (scenario === "overshoot") { message("boundary", 8, 7); message("already in flight", 2); return; }
   message("boundary", 5, 5);
-  if (scenario === "settled-before-ack") { emit({ type: "agent_settled" }); return; }
+  if (scenario === "settled-before-ack") { emit({ type: "agent_settled", aborted: true }); return; }
   if (scenario === "exit") { process.exit(1); return; }
   next = setTimeout(() => message("unbounded continuation", 100), 2000);
  }
@@ -50,7 +52,7 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
   reply();
   if (scenario === "ack-without-settlement") return;
   clearTimeout(next);
-  emit({ type: "agent_settled" });
+  emit({ type: "agent_settled", aborted: true });
  }
 });
 `);
@@ -73,6 +75,36 @@ test("a completed message reaching its allowance requests abort and retains exac
 	assert.equal(turn.output, "boundary");
 	assert.deepEqual(turn.usage, usage(5, 5));
 	assert.equal(await readFile(aborts, "utf8"), "abort\n");
+});
+
+test("an unexpected aborted settlement fails with partial usage and keeps an incomplete receipt", async (t) => {
+	const { runtime, binding } = await fixture(t);
+	await assert.rejects(
+		runtime.send(binding, "aborted", { tokenAllowance: 100, runId: "unexpected-abort" }),
+		(error) => {
+			assert.ok(error instanceof RuntimeTurnError);
+			assert.deepEqual(error.usage, usage(4, 3));
+			return true;
+		},
+	);
+	assert.deepEqual(await runtime.reconcileInvocation("unexpected-abort"), {
+		complete: false,
+		usage: usage(4, 3),
+	});
+	assert.equal(await runtime.getState(binding), "unreachable");
+});
+
+test("an agent_settled event without its 1.1.0 aborted field fails closed", async (t) => {
+	const { runtime, binding } = await fixture(t);
+	await assert.rejects(
+		runtime.send(binding, "missing-aborted", { tokenAllowance: 100, runId: "missing-aborted" }),
+		/Pi RPC event field aborted is invalid/,
+	);
+	assert.deepEqual(await runtime.reconcileInvocation("missing-aborted"), {
+		complete: false,
+		usage: usage(4, 3),
+	});
+	assert.equal(await runtime.getState(binding), "unreachable");
 });
 
 test("cache metadata is not charged and each send starts a new allowance", async (t) => {

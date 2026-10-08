@@ -19,6 +19,7 @@ export function isTextValue(value: JsonValue | undefined): value is string {
 	return value !== undefined && value === String(value);
 }
 const COMMAND_TIMEOUT_MS = 120_000;
+const NODE_RESOLUTION_TIMEOUT_MS = 10_000;
 const MAX_COMMAND_BUFFER = 8_000_000;
 const SENSITIVE_ENVIRONMENT_KEY = /(API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL)/i;
 export const MAX_PROVIDER_COMMENTS = 8;
@@ -55,11 +56,18 @@ function commandOptions(cwd: string, environment?: NodeJS.ProcessEnv, signal?: A
 }
 
 export async function sandboxToolchain(sandboxPath: string): Promise<GitToolchain> {
-	const toolchain = await inheritedGitToolchain();
-	const npmExecutable = await inheritedExecutable("npm", await filteredInheritedEnvironment());
+	const resolverEnvironment = await filteredInheritedEnvironment();
+	const toolchain = {
+		gitExecutable: await inheritedExecutable("git", resolverEnvironment),
+		environment: resolverEnvironment,
+	};
+	const [nodeExecutable, npmExecutable] = await Promise.all([
+		inheritedExecutable("node", resolverEnvironment),
+		inheritedExecutable("npm", resolverEnvironment),
+	]);
 	toolchain.environment["PATH"] = [
 		join(sandboxPath, "node_modules", ".bin"),
-		dirname(process.execPath),
+		dirname(nodeExecutable),
 		dirname(npmExecutable),
 		"/usr/bin",
 		"/bin",
@@ -101,17 +109,38 @@ function removePathValues(environment: NodeJS.ProcessEnv): void {
 	}
 }
 
-export async function inheritedExecutable(command: "git" | "npm", environment: NodeJS.ProcessEnv): Promise<string> {
+export async function inheritedExecutable(
+	command: "git" | "npm" | "node",
+	environment: NodeJS.ProcessEnv,
+): Promise<string> {
+	const executable = await locateExecutable(command, environment);
+	if (executable === undefined || !isAbsolute(executable))
+		throw new Error(`${command} executable was not found in inherited PATH.`);
+	const resolved = await realpath(executable);
+	return command === "node" ? resolveNodeExecutable(resolved, environment) : resolved;
+}
+
+async function locateExecutable(command: string, environment: NodeJS.ProcessEnv): Promise<string | undefined> {
 	const [locator, args] =
 		process.platform === "win32" ? ["where.exe", [command]] : ["sh", ["-c", `command -v ${command}`]];
 	const output = (await execFileAsync(locator, args, commandOptions(process.cwd(), environment))).stdout;
-	const executable = output
+	return output
 		.split(/\r?\n/)
 		.map((line) => line.trim())
 		.find(Boolean);
-	if (executable === undefined || !isAbsolute(executable))
-		throw new Error(`${command} executable was not found in inherited PATH.`);
-	return realpath(executable);
+}
+
+async function resolveNodeExecutable(executable: string, environment: NodeJS.ProcessEnv): Promise<string> {
+	const nodeEnvironment = { ...environment };
+	delete nodeEnvironment["NODE_OPTIONS"];
+	const nodePath = (
+		await execFileAsync(executable, ["-p", "process.execPath"], {
+			...commandOptions(process.cwd(), nodeEnvironment),
+			timeout: NODE_RESOLUTION_TIMEOUT_MS,
+		})
+	).stdout.trim();
+	if (!isAbsolute(nodePath)) throw new Error("Node executable did not report an absolute process.execPath.");
+	return realpath(nodePath);
 }
 
 async function normalizePathEntry(path: string): Promise<string> {
@@ -256,14 +285,18 @@ async function runIsolated(
 	environment: NodeJS.ProcessEnv,
 	signal?: AbortSignal,
 	npmCache?: string,
+	nodeExecutable?: string,
 ): Promise<{ stdout: string; stderr: string }> {
+	const resolverEnvironment = await filteredInheritedEnvironment();
+	const selectedNodeExecutable = nodeExecutable ?? (await inheritedExecutable("node", resolverEnvironment));
 	return executeIsolatedCommand(
 		{
 			command,
 			args,
 			cwd,
 			environment,
-			resolverEnvironment: await filteredInheritedEnvironment(),
+			resolverEnvironment,
+			nodeExecutable: selectedNodeExecutable,
 			npmPackageRoot: await validationNpmRoot(command, cwd),
 			npmCache,
 		},
@@ -272,7 +305,9 @@ async function runIsolated(
 }
 
 export async function verifyValidationIsolation(path: string, signal?: AbortSignal): Promise<void> {
-	await runIsolated(process.execPath, ["-e", ""], path, await filteredInheritedEnvironment(), signal);
+	const resolverEnvironment = await filteredInheritedEnvironment();
+	const nodeExecutable = await inheritedExecutable("node", resolverEnvironment);
+	await runIsolated(nodeExecutable, ["-e", ""], path, resolverEnvironment, signal, undefined, nodeExecutable);
 }
 
 async function validationNpmRoot(command: string, cwd: string): Promise<string | undefined> {

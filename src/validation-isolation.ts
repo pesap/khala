@@ -1,6 +1,6 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
-import { findPackageJSON } from "node:module";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
@@ -26,6 +26,7 @@ export type IsolatedCommandInput = Readonly<{
 	command: string;
 	args: readonly string[];
 	cwd: string;
+	nodeExecutable: string;
 	path: string;
 	lang: string;
 	home: string;
@@ -42,6 +43,7 @@ type IsolatedCommandOptions = Readonly<{
 	cwd: string;
 	environment: NodeJS.ProcessEnv;
 	resolverEnvironment: NodeJS.ProcessEnv;
+	nodeExecutable: string;
 	npmPackageRoot: string | undefined;
 	npmCache: string | undefined;
 }>;
@@ -116,12 +118,13 @@ async function validationRequest(
 		command: input.command,
 		args: input.args,
 		cwd: input.cwd,
+		nodeExecutable: input.nodeExecutable,
 		path: validationExecutablePath(input, npmBin),
 		lang: input.environment["LANG"] ?? "C",
 		home,
 		temporary,
 		readonlyPaths: [
-			...(await readonlyRuntimePaths()),
+			...(await readonlyRuntimePaths(input.nodeExecutable)),
 			...(input.npmPackageRoot === undefined ? [] : [input.npmPackageRoot]),
 			...(npmBin === undefined ? [] : [npmBin]),
 		],
@@ -130,18 +133,22 @@ async function validationRequest(
 	};
 }
 
-async function readonlyRuntimePaths(): Promise<readonly string[]> {
+async function readonlyRuntimePaths(nodeExecutable: string): Promise<readonly string[]> {
 	const paths =
 		process.platform === "darwin"
 			? ["/usr", "/bin", "/sbin", "/System/Library", "/private/var/select/sh"]
 			: ["/usr", "/bin", "/sbin", "/lib", "/lib64"];
 	if (process.platform === "linux") {
 		// The SDK executes its bundled seccomp helper inside the denied host filesystem.
-		const manifest = findPackageJSON("@anthropic-ai/sandbox-runtime", import.meta.url);
-		if (manifest === undefined) throw new Error("Validation isolation runtime package was not found.");
+		let manifest: string;
+		try {
+			manifest = createRequire(import.meta.url).resolve("@anthropic-ai/sandbox-runtime/package.json");
+		} catch {
+			throw new Error("Validation isolation runtime package was not found.");
+		}
 		paths.push(await realpath(dirname(manifest)));
 	}
-	return [...paths, process.execPath];
+	return [...paths, nodeExecutable];
 }
 
 function requireLiteralPaths(input: IsolatedCommandInput): void {
@@ -178,7 +185,7 @@ function createWorker(
 	const worker = new URL("./validation-worker.js", import.meta.url);
 	return fork(fileURLToPath(worker), [], {
 		cwd: input.cwd,
-		execPath: process.execPath,
+		execPath: input.nodeExecutable,
 		execArgv: [],
 		detached: true,
 		silent: true,

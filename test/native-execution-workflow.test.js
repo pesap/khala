@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createApplication } from "../dist/src/factory.js";
-import { createNativeWorkflowFixture, git, packageRoot } from "./helpers/native-workflow.mjs";
+import { readPreparationReceipt } from "../dist/src/dependency-artifacts.js";
+import { createNativeWorkflowFixture, git, nativeSubmission, packageRoot } from "./helpers/native-workflow.mjs";
 
 async function waitForState(service, state) {
 	for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -26,16 +28,29 @@ test("native workflow with local model and code-host fixtures survives recovery 
 	process.env.PATH = `${bin}:${oldPath}`;
 	let application;
 	try {
+		const manifest = { name: "native-node-fixture", version: "1.0.0", private: true };
+		await writeFile(join(project, "package.json"), JSON.stringify(manifest));
+		await writeFile(join(project, "package-lock.json"), JSON.stringify({ ...manifest, lockfileVersion: 3, requires: true, packages: { "": { name: manifest.name, version: manifest.version } } }));
+		git("-C", project, "add", "package.json", "package-lock.json");
+		git("-C", project, "commit", "-m", "test: add empty Node project");
+		git("-C", project, "push", "origin", "main");
+		const expectedNode = await realpath(execFileSync("node", ["-p", "process.execPath"], { encoding: "utf8" }).trim());
+		const selectedNodeVersion = execFileSync("node", ["-p", "process.versions.node"], { encoding: "utf8" }).trim();
 		const runtime = await ModelRuntime.create({ modelsPath, authPath: join(agent, "auth.json"), allowModelNetwork: false });
 		const modelRegistry = new ModelRegistry(runtime);
 		application = createApplication(project, true, packageRoot, { modelRegistry });
-		application.service.submitWork({ workId: "native-execution", title: "Native greeting", objective: "Create greeting.txt containing hello", scope: "Create only greeting.txt.", acceptanceCriteria: ["greeting.txt contains hello"], allowedPaths: ["greeting.txt"], validation: ["test \"$(cat greeting.txt)\" = hello"] }, { actor: "user", commandId: "native-submit", expectedWorkRevision: 0, schemaVersion: 1 });
+		application.service.submitWork({ workId: "native-execution", title: "Native greeting", objective: "Create greeting.txt containing hello", scope: "Create only greeting.txt.", acceptanceCriteria: ["greeting.txt contains hello"], allowedPaths: ["greeting.txt"], validation: [...nativeSubmission.validation, "node -p process.versions.node", "node -p 'require(\"node:fs\").realpathSync(process.execPath)'"] }, { actor: "user", commandId: "native-submit", expectedWorkRevision: 0, schemaVersion: 1 });
 		await application.service.processPendingEffects();
 		const current = await waitForState(application.service, "awaiting-review");
-		assert.equal(current.state, "awaiting-review", JSON.stringify({ state: current.state, error: current.lastError, failures: failures.map(String), toolResults: toolResults.filter((text) => !text.startsWith("Archive records:")) }));
+		const errors = application.service.readRecords({ workId: "native-execution", kinds: ["error"] }, { actor: "user", commandId: "inspect-native-error", expectedWorkRevision: current.revision, schemaVersion: 1 });
+		assert.equal(current.state, "awaiting-review", JSON.stringify({ state: current.state, error: current.lastError, records: errors.items.map((record) => record.payload), failures: failures.map(String), toolResults: toolResults.filter((text) => !text.startsWith("Archive records:")) }));
 		assert.equal(current.reviewRequest.providerId, "42");
 		assert.equal(await readFile(join(current.execution.sandbox.path, "greeting.txt"), "utf8"), "hello\n");
 		assert.equal(current.lastValidation.results.every((result) => result.passed), true);
+		assert.equal(current.lastValidation.results.at(-1)?.output.trim(), expectedNode, JSON.stringify(current.lastValidation.results));
+		const preparation = await readPreparationReceipt(join(root, "worktrees", ".khala-artifacts"), current.execution.sandbox.path);
+		assert.ok(preparation);
+		assert.equal(preparation.runtime.node, selectedNodeVersion, JSON.stringify(preparation.runtime));
 		assert.notEqual(current.reviewRequest.headCommit, current.execution.sandbox.baseCommit);
 		const completedSteps = { ...steps };
 		await application.service.close();

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createApplication } from "../dist/src/factory.js";
+import { fixturePiCommand } from "./helpers/native-workflow.mjs";
 
 const packageRoot = new URL("..", import.meta.url).pathname;
 
@@ -79,7 +80,7 @@ test("native Conclave reads its Archive and records a signed decision across a s
 	} } }));
 	await writeFile(join(agentDirectory, "khala.json"), JSON.stringify({
 		archiveRoot: join(directory, "archive"), worktreeRoot: join(directory, "worktrees"),
-		piCommand: [join(packageRoot, "node_modules", ".bin", "pi"), "--offline"],
+		piCommand: fixturePiCommand(),
 		conclaveModel: "fixture/conclave", conclaveThinking: "off",
 		executorModel: "fixture/conclave", executorThinking: "off",
 		oracleModel: "fixture/conclave", oracleThinking: "off",

@@ -209,7 +209,7 @@ Target settings and their implementation status must be updated here when the co
 | `defaultWorkTokens` | `20000` | Work token cap |
 | `enableCiRepair` | `false` | Opts into bounded Conclave-authorized CI repair behavior |
 | `requireProviderCi` | `true` | Requires verified provider CI evidence before ready or handoff; set `false` only for repositories explicitly configured without provider CI |
-| `piCommand` | `["pi"]` | Child launch command and arguments; the command must report Pi version `0.85.0` |
+| `piCommand` | `["pi"]` | Child launch command and arguments; the command must report Pi version `1.1.0` |
 
 Trusted project configuration may lower `maxConcurrentRuns` but cannot raise the global ceiling.
 The Archive enforces the effective ceiling across existing and newly submitted Works.
@@ -261,6 +261,7 @@ Local `file:` artifacts are allowed only when they remain inside the authorized 
 Both paths use a private cache under the configured worktree root.
 Downloaded tarballs use npm-recognized `.tgz` paths.
 Preparation pins npm's project prefix, home, user configuration, and global configuration to private directories so ancestor project configuration cannot affect cache preparation.
+Preparation strips inherited `NODE_OPTIONS` from Node and npm subprocesses so startup preloads cannot execute outside validation isolation.
 Preparation permits two concurrent downloads, 50 MiB per artifact, 500 MiB per preparation, and a 120-second deadline.
 Workspace dependency links must remain inside the authorized workspace.
 A failed prerequisite records waiting attention and requires explicit User recovery instead of another replacement Executor.
@@ -277,7 +278,10 @@ macOS uses the system Seatbelt sandbox through `/usr/bin/sandbox-exec` and requi
 Windows validation is unsupported.
 Khala does not install system prerequisites or run validation unrestricted when isolation fails or the SDK reports degraded isolation.
 The validation path must resolve inside the configured worktree root, and policy paths must not contain glob characters.
-System runtime directories, Node, and the npm package for Node projects are read-only.
+System runtime directories, the separately selected Node executable, and the npm package for Node projects are read-only.
+The validation worker always runs through Node resolved from the filtered inherited `PATH`, independently of the Pi executable configured by `piCommand`.
+Its executable directory is added to the sandbox toolchain, and the host Pi executable is never treated as the Node helper.
+Dependency-preparation receipts and cache identities record the selected Node executable's reported version alongside npm's version.
 On Linux, the resolved sandbox runtime package is also read-only so its bundled seccomp helper remains executable inside the sandbox.
 Invocation-private npm and npx aliases select the configured npm installation without exposing its host executable directory.
 Inherited resolver PATH entries are anchored to the service directory before helpers enter the workspace.

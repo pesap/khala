@@ -71,6 +71,7 @@ export async function prepareDependencyArtifacts(
 		baseCommit: string;
 		store: string;
 		npmExecutable: string;
+		nodeExecutable: string;
 		environment: NodeJS.ProcessEnv;
 		signal: AbortSignal | undefined;
 	}>,
@@ -86,7 +87,13 @@ export async function prepareDependencyArtifacts(
 	const manifestSha256 = digest(manifest);
 	const lockfileSha256 = digest(lockfileText);
 	const runtimeIsolation = await createNpmIsolation(join(input.store, ".npm-runtime"));
-	const runtime = await npmRuntime(input.npmExecutable, input.environment, deadline, runtimeIsolation);
+	const runtime = await npmRuntime(
+		input.npmExecutable,
+		input.nodeExecutable,
+		input.environment,
+		deadline,
+		runtimeIsolation,
+	);
 	const identity = createHash("sha256")
 		.update(`${manifestSha256}:${lockfileSha256}:${runtime.node}:${runtime.npm}:${JSON.stringify(DEPENDENCY_POLICY)}`)
 		.digest("hex");
@@ -440,14 +447,36 @@ async function npmCacheVerify(
 }
 async function npmRuntime(
 	npm: string,
+	node: string,
 	environment: NodeJS.ProcessEnv,
 	signal: AbortSignal,
 	isolation: NpmIsolation,
 ): Promise<{ node: string; npm: string }> {
 	return {
-		node: process.versions.node,
+		node: await nodeVersion(node, environment, signal, isolation),
 		npm: (await npmCommand(npm, ["--version", "--offline", "--ignore-scripts"], environment, signal, isolation)).trim(),
 	};
+}
+
+async function nodeVersion(
+	node: string,
+	environment: NodeJS.ProcessEnv,
+	signal: AbortSignal,
+	isolation: NpmIsolation,
+): Promise<string> {
+	try {
+		return (
+			await execFileAsync(node, ["-p", "process.versions.node"], {
+				cwd: isolation.cwd,
+				env: npmEnvironment(environment, isolation),
+				signal,
+				maxBuffer: 2_000_000,
+				encoding: "utf8",
+			})
+		).stdout.trim();
+	} catch (error) {
+		throw new PreparationError("node", error instanceof Error ? error.message : String(error));
+	}
 }
 async function npmCommand(
 	npm: string,
@@ -472,6 +501,8 @@ async function npmCommand(
 }
 function npmEnvironment(environment: NodeJS.ProcessEnv, isolation: NpmIsolation): NodeJS.ProcessEnv {
 	const clean = { ...environment };
+	// npm's --ignore-scripts does not disable Node startup preloads outside the sandbox.
+	delete clean["NODE_OPTIONS"];
 	for (const key of Object.keys(clean)) if (key.toLowerCase().startsWith("npm_config_")) delete clean[key];
 	return {
 		...clean,

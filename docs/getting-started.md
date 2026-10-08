@@ -9,7 +9,7 @@ See [Foundations](foundations.md) for the intent and guarantees.
 Install:
 
 - Node.js 22.19 or newer.
-- A Pi installation whose configured child command reports version `0.85.0` (the default command is `pi`).
+- A Pi installation whose configured child command reports version `1.1.0` (the default command is `pi`).
 - Linux or macOS.
 - On Linux, bubblewrap (`bwrap`), `socat`, ripgrep (`rg`), and permitted user namespaces.
 - On macOS, the system `/usr/bin/sandbox-exec`.

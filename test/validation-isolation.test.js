@@ -33,7 +33,7 @@ test("missing Linux isolation prerequisites fail closed with an actionable diagn
 	const root = await mkdtemp(join(tmpdir(), "khala-no-bwrap-"));
 	const bin = join(root, "bin");
 	await mkdir(bin);
-	for (const command of ["sh", "git", "npm", "ps"]) {
+	for (const command of ["sh", "git", "npm", "node", "ps"]) {
 		const path = execFileSync("/bin/sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).trim();
 		await symlink(path, join(bin, command));
 	}
@@ -123,6 +123,25 @@ test("validation only writes its workspace and has no host credentials or networ
 		server.close();
 		if (previousSecret === undefined) delete process.env.AWS_SECRET_ACCESS_KEY;
 		else process.env.AWS_SECRET_ACCESS_KEY = previousSecret;
+	}
+});
+
+test("Node selection does not execute host NODE_OPTIONS", { skip: !["linux", "darwin"].includes(process.platform) }, async () => {
+	const root = await mkdtemp(join(tmpdir(), "khala-node-resolution-"));
+	const preload = join(root, "preload.cjs");
+	const marker = join(root, "preloaded");
+	const previousOptions = process.env.NODE_OPTIONS;
+	try {
+		await writeFile(preload, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "loaded");`);
+		process.env.NODE_OPTIONS = `--require=${preload}`;
+		const [result] = await new GitWorkspace(root, "test/").runValidation({ path: root, commands: ["printf isolated"] });
+		assert.equal(result.passed, true, result.output);
+		assert.equal(result.output, "isolated");
+		await assert.rejects(access(marker), { code: "ENOENT" });
+	} finally {
+		if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+		else process.env.NODE_OPTIONS = previousOptions;
+		await rm(root, { recursive: true, force: true });
 	}
 });
 

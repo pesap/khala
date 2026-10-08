@@ -14,7 +14,7 @@ async function makeFixture(t) {
 	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-invocation-"));
 	const rpc = join(directory, "rpc.mjs");
 	await writeFile(rpc, `import readline from "node:readline";
-if (process.argv.includes("--version")) { console.log("0.85.0"); process.exit(0); }
+if (process.argv.includes("--version")) { console.log("1.1.0"); process.exit(0); }
 const sessionPath = process.argv[process.argv.indexOf("--session") + 1];
 const emit = value => process.stdout.write(JSON.stringify(value) + "\\n");
 let abortCount = 0;
@@ -24,7 +24,7 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
  if (request.type === "prompt") {
   emit({ type: "response", id: request.id, command: request.type, success: true });
   emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: request.message }], usage: { input: 7, output: 3, cacheRead: 11, cacheWrite: 13 } } });
-  if (request.message !== "partial") setTimeout(() => emit({ type: "agent_settled" }), 150);
+  if (request.message !== "partial") setTimeout(() => emit({ type: "agent_settled", aborted: false }), 150);
  }
  if (request.type === "abort") {
   abortCount += 1;

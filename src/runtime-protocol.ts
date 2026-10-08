@@ -26,12 +26,6 @@ import type {
 
 const MAX_ASSISTANT_TEXT_LENGTH = 16_000;
 const ASSISTANT_TRUNCATION_INDICATOR = "[assistant output truncated]";
-type RpcEventType = "response" | "message_end" | "agent_settled";
-const RPC_EVENT_TYPES: ReadonlyMap<string, RpcEventType> = new Map([
-	["response", "response"],
-	["message_end", "message_end"],
-	["agent_settled", "agent_settled"],
-]);
 export function removeEphemeralSession(child: MutableChild): void {
 	if (!child.ephemeralSession || child.binding.sessionPath.length === 0) return;
 	try {
@@ -108,15 +102,17 @@ function consumeBufferedLine(child: MutableChild): void {
 
 function consumeLine(child: MutableChild, line: string): void {
 	const event = parseRpcEvent(line);
-	const type = RPC_EVENT_TYPES.get(event.type ?? "");
-	if (type === undefined) return;
-	dispatchRpcEvent(child, event, type);
-}
-
-function dispatchRpcEvent(child: MutableChild, event: RpcEvent, type: RpcEventType): void {
-	if (type === "response") consumeResponse(child, event);
-	if (type === "message_end") consumeMessage(child, event);
-	if (type === "agent_settled") resolveAgentEnd(child);
+	switch (event.type) {
+		case "response":
+			consumeResponse(child, event);
+			break;
+		case "message_end":
+			consumeMessage(child, event);
+			break;
+		case "agent_settled":
+			settleAgent(child, event.aborted === true);
+			break;
+	}
 }
 
 function parseRpcEvent(line: string): RpcEvent {
@@ -124,6 +120,7 @@ function parseRpcEvent(line: string): RpcEvent {
 	const type = requiredRpcText(parsed, "type");
 	if (type === "response") return readRpcResponseEvent(parsed);
 	if (type === "message_end") return readRpcMessageEvent(parsed);
+	if (type === "agent_settled") return { type, aborted: requiredRpcBoolean(parsed, "aborted") };
 	return { type };
 }
 
@@ -535,6 +532,12 @@ export function waitForAgentSettled(child: MutableChild, timeoutMs: number): Pro
 		);
 	});
 	return child.lastAgentEnd;
+}
+
+function settleAgent(child: MutableChild, aborted: boolean): void {
+	return aborted && child.allowanceStop === undefined
+		? rejectAgentEnd(child, new Error("Pi agent turn was aborted."))
+		: resolveAgentEnd(child);
 }
 
 function resolveAgentEnd(child: MutableChild): void {

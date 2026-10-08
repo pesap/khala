@@ -18,7 +18,7 @@ import type {
 } from "./runtime-types.js";
 
 const DEFAULT_MAX_RPC_FRAME_BYTES = 8 * 1024 * 1024;
-export const SUPPORTED_NATIVE_PI_VERSION = "0.85.0";
+export const SUPPORTED_NATIVE_PI_VERSION = "1.1.0";
 const VERSION_CHECK_TIMEOUT_MS = 10_000;
 const nativeVersionChecks = new Map<string, Promise<void>>();
 

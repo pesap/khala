@@ -61,9 +61,9 @@
   },
   "overrides": {
     "@earendil-works/pi-coding-agent": {
-      "brace-expansion": "5.0.9"
+      "brace-expansion": "5.0.12"
     },
-    "brace-expansion": "5.0.9"
+    "brace-expansion": "5.0.12"
   },
   "allowScripts": {
     "@google/genai@1.52.0": true,
@@ -75,10 +75,10 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.4",
-    "@earendil-works/pi-ai": "0.85.0",
-    "@earendil-works/pi-coding-agent": "0.85.0",
-    "@earendil-works/pi-server": "0.85.0",
-    "@earendil-works/pi-tui": "0.85.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-server": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
     "@oxlint/plugins": "1.79.0",
     "@types/node": "26.2.0",
     "oxlint": "1.79.0",
