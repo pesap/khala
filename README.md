@@ -161,6 +161,7 @@ Use the guide that matches your task:
 | Configure and operate Khala | [Operations](docs/operations.md) |
 | Understand the application boundary | [Architecture](docs/architecture.md) |
 | Inspect records and projections | [Data model](docs/data-model.md) |
+| Review the proposed memory MVP | [Expandable evidence memory](docs/memory-mvp.md) |
 | Review authority and isolation | [Security](docs/security.md) |
 | Use the current Pi interface | [TUI navigation](docs/tui-navigation.md) and [Application actions](docs/supervision-tools.md) |
 | Extend Pi integration | [Pi extensions](docs/pi-extensions.md) and [Role prompts](docs/role-prompts.md) |

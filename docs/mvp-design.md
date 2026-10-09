@@ -99,6 +99,9 @@ Other documents link to that home rather than maintaining competing specificatio
 [Getting started](getting-started.md) and [Application actions](supervision-tools.md) describe use of the current tools, not proof that the design is complete.
 [Development](development.md) owns repository validation commands; [Role prompts](role-prompts.md) covers prompt maintenance, not lifecycle authority.
 
+The proposed [expandable evidence memory MVP](memory-mvp.md) applies these boundaries to source retention, hierarchical retrieval, and Pi durable integration.
+Its [storage contract](memory-storage.md) and [validation plan](memory-validation.md) describe proposed work, not implemented behavior or approval for broader context sharing.
+
 ## Evidence before expanding
 
 Do not call work complete from document review or a worker's final message.
