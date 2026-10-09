@@ -296,6 +296,7 @@ export function createStartingChild(
 		rpcTimeoutMs: options.rpcTimeoutMs ?? 10_000,
 		lastError: "",
 		closed: false,
+		stopping: false,
 		sending: false,
 		lastAgentEnd: undefined,
 		resolveAgentEnd: undefined,

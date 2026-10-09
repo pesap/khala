@@ -10,7 +10,7 @@ import { RuntimeStorage } from "../dist/src/runtime-storage.js";
 
 const EXPECTED_USAGE = { inputTokens: 7, outputTokens: 3, cacheHitTokens: 11, cacheMissTokens: 20 };
 
-async function makeFixture(t) {
+async function makeFixture(t, { settlesOnAbort = false, abortDelayMs = 300 } = {}) {
 	const directory = await mkdtemp(join(tmpdir(), "khala-runtime-invocation-"));
 	const rpc = join(directory, "rpc.mjs");
 	await writeFile(rpc, `import readline from "node:readline";
@@ -28,7 +28,8 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
  }
  if (request.type === "abort") {
   abortCount += 1;
-  setTimeout(() => emit({ type: "response", id: request.id, command: request.type, success: true }), abortCount === 1 ? 300 : 0);
+  if (${JSON.stringify(settlesOnAbort)}) emit({ type: "agent_settled", aborted: true });
+  setTimeout(() => emit({ type: "response", id: request.id, command: request.type, success: true }), abortCount === 1 ? ${JSON.stringify(abortDelayMs)} : 0);
  }
 });
 setInterval(() => undefined, 1000);
@@ -159,6 +160,62 @@ test("cleanup accepts a completed receipt while allowance acknowledgement is pen
 		complete: true,
 		usage: EXPECTED_USAGE,
 	});
+});
+
+for (const { label, settlesOnAbort } of [
+	{ label: "an aborted settlement", settlesOnAbort: true },
+	{ label: "only an abort acknowledgement", settlesOnAbort: false },
+]) {
+	test(`a requested stop with ${label} retains exact usage`, async (t) => {
+		const { directory, rpc, storage } = await makeFixture(t, { settlesOnAbort, abortDelayMs: 0 });
+		const runtime = new PiRpcRuntime(runtimeOptions(directory, rpc));
+		t.after(async () => runtime.close());
+		const binding = await runtime.ensureSession({
+			cwd: directory,
+			model: "model",
+			thinking: "low",
+			role: "executor",
+			promptIdentity: { packageVersion: "1", promptSha256: "requested-stop" },
+			tools: [],
+			sessionPath: storage.persistentSessionPath("executor", "requested-stop"),
+		});
+		const turn = runtime.send(binding, "partial", { tokenAllowance: 100, runId: "requested-stop-run" });
+		void turn.catch(() => undefined);
+		await waitForUsage(storage.invocationPath("requested-stop-run"));
+		await runtime.requestStop(binding);
+		await turn.catch(() => undefined);
+		assert.deepEqual(await runtime.reconcileInvocation("requested-stop-run"), {
+			complete: settlesOnAbort,
+			usage: EXPECTED_USAGE,
+		});
+		assert.equal(await runtime.getState(binding), "unreachable");
+	});
+}
+
+test("stopping sessions reject new prompts before abort acknowledgement and cleanup", async (t) => {
+	const { directory, rpc, storage } = await makeFixture(t, { settlesOnAbort: true, abortDelayMs: 200 });
+	const runtime = new PiRpcRuntime(runtimeOptions(directory, rpc));
+	t.after(async () => runtime.close());
+	const binding = await runtime.ensureSession({
+		cwd: directory,
+		model: "model",
+		thinking: "low",
+		role: "executor",
+		promptIdentity: { packageVersion: "1", promptSha256: "stopping-reuse" },
+		tools: [],
+		sessionPath: storage.persistentSessionPath("executor", "stopping-reuse"),
+	});
+	const turn = runtime.send(binding, "partial", { tokenAllowance: 100, runId: "stopping-run" });
+	await waitForUsage(storage.invocationPath("stopping-run"));
+	const stopped = runtime.requestStop(binding);
+	t.after(async () => stopped);
+	assert.equal((await turn).output, "partial");
+	await assert.rejects(
+		runtime.send(binding, "partial", { tokenAllowance: 100, runId: "stopping-reuse-run" }),
+		/Pi session .* is stopping/,
+	);
+	await assert.rejects(readFile(storage.invocationPath("stopping-reuse-run")), { code: "ENOENT" });
+	await stopped;
 });
 
 test("missing and malformed invocation receipts fail closed", async (t) => {

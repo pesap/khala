@@ -298,10 +298,11 @@ export function readRuntimeTokenAllowance(options: RuntimeSendOptions): number {
 
 let requestCounter = 0;
 export async function requestAbortBestEffort(child: MutableChild, timeoutMs: number): Promise<void> {
+	child.stopping = true;
 	try {
 		await request(child, "abort", {}, timeoutMs);
 	} catch {
-		// Termination confirmation below is the authoritative stop result.
+		// Settlement, not acknowledgement, completes usage. Termination below confirms stopping.
 	}
 }
 
@@ -535,7 +536,7 @@ export function waitForAgentSettled(child: MutableChild, timeoutMs: number): Pro
 }
 
 function settleAgent(child: MutableChild, aborted: boolean): void {
-	return aborted && child.allowanceStop === undefined
+	return aborted && child.allowanceStop === undefined && !child.stopping
 		? rejectAgentEnd(child, new Error("Pi agent turn was aborted."))
 		: resolveAgentEnd(child);
 }
