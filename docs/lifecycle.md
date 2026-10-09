@@ -47,8 +47,17 @@ One structured clarification request serves both pre-admission and admitted Work
 Before admission, `request-input` places Work in `needs-input`.
 The User answers through `amend-terms`, returning Work to `submitted` before admission.
 After admission, clarification is an unresolved attention item on the existing Work, not a return to submission.
-An answer within existing terms permits bounded continuation; changed terms require approval of the exact successor agreement.
+The Conclave records the request against the current Mission and, when present, Execution.
+Only the User may record an answer through the authorized application interface, bound to the request, Work, Mission, Execution when present, and expected Work revision.
+A factual correction appends an attributed Record containing the corrected fact, reason, and references to superseded evidence without rewriting that evidence or Mission terms.
+New answers with stale or mismatched bindings, to resolved requests, or for terminal Work are rejected.
+Replaying the original answer command returns its recorded result rather than appending another correction.
+The Conclave checks an answer against existing terms before authorizing the next bounded action.
+Changed terms require approval of the exact successor agreement.
 An action depending on an unanswered request cannot proceed.
+
+Current `request-input` and `amend-terms` support only pre-admission Work.
+Post-admission clarification request and User-answer actions remain target requirements, not registered capabilities.
 
 Missing repository facts may launch one read-only Observer.
 It reads only resolved permitted context, records one bounded evidence-backed assessment, and stops.

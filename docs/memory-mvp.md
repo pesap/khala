@@ -25,11 +25,13 @@ The desired improvement is better evidence retrieval and use, not model training
 The first end-to-end scenario stays within one Work and one Execution:
 
 1. The Executor investigates a failure and records an evidence-bearing checkpoint describing the attempted approach, observed outcome, and unresolved question.
-2. The User corrects a factual assumption without changing the Mission terms.
+2. The Conclave requests clarification of a factual assumption, and the User answers that request without changing the Mission terms.
 3. The runtime is interrupted after those facts are saved.
 4. An authorized recovery prepares the corrected context and the prior investigation outcome before another model request.
 5. The Executor can expand both references to complete permitted evidence and validate its next change against the current head.
 
+The correction enters through the target [post-admission clarification flow](lifecycle.md#submission-and-clarification), not an Executor Signal, Observer assessment, or review action.
+Its authorized request and User-answer actions are a prerequisite for Slice 3, not existing memory capabilities.
 This scenario tests useful continuity without granting access to another Execution's private history.
 Changed Mission terms remain governed by the [lifecycle amendment contract](lifecycle.md#admission-and-amendment).
 

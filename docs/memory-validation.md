@@ -42,11 +42,12 @@ Current RPC behavior is not silently substituted when the durable trial fails.
 
 ### Slice 3: Restart-safe evidence recall
 
+First implement or verify the target [post-admission clarification request and User-answer actions](lifecycle.md#submission-and-clarification) through the authorized application interface.
 Implement the first [user scenario](memory-mvp.md#user-outcome) with exact retained sources, investigation checkpoints, deterministic search, and prepared recovery context.
 Restore the same authorized Execution after interruption and make its previous observations and factual corrections discoverable.
 Keep this slice within the current Work and its existing visibility restrictions.
 
-Exit evidence must show source reassembly, correct currentness, and bounded reads after a process restart.
+Exit evidence must show the attributed correction and superseded evidence, unchanged Mission terms, source reassembly, correct currentness, and bounded reads after a process restart.
 Deterministic success establishes recoverability, not improved model recall.
 Real-source retention remains blocked until the policy decisions are approved.
 
@@ -83,6 +84,7 @@ Do not depend on real providers or paid tokens for these tests.
 | Summary inputs | Restricted contextual evidence, malicious source text, false completion claims | Inputs stay in scope and output cannot become authority or execute tools |
 | Tree structure | Sparse backing IDs, sibling alignment, equal due values, unfinished nodes | Dense local coverage has no gaps or duplicates and only eligible reducing merges fit the view |
 | View persistence | Restart before and after batch publication, renderer change | The recorded generation reopens exactly or is explicitly replaced |
+| User correction intake | Active investigation, wrong actor or bindings, stale revision, resolved request, terminal Work, command replay, restart after answer commit | The authorized correction survives in the same Execution without amending terms, invalid new answers are rejected, and replay preserves one Record |
 | Corrections and privacy | Correction during summary generation, withdrawal, expiry, historical snapshot access after redaction or erasure | A stale result cannot reintroduce superseded or forbidden content |
 | Cross-store publication | Crash before and after source, reference, node, and receipt commits | Reconciliation preserves one identity without inventing an atomic transaction |
 | Replay | Lost submission response, changed input with the same ID, effect before result commit | Deduplication checks original input and uncertain effects are reconciled before retry |
