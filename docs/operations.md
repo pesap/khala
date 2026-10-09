@@ -22,6 +22,16 @@ No automatic migration, consolidation, or deletion of existing Archives is autho
 
 Role settings affect future launches and never change the User's active model or settings.
 Existing Executions retain their recorded model, thinking level, and prompt identity.
+In `/khala`, open role settings with `r`, select Conclave, then choose `Headless (separate process)` or `Subagent (current session)`.
+Headless uses the existing RPC-mode Pi child.
+Subagent runs a separate Conclave model-and-tool loop inside the active User-session Khala tool callback.
+It uses the hosting Pi session's model registry and nested tool API without creating another Pi process or saved session.
+The Conclave starts from its governed Work prompt rather than the parent's conversation history.
+Nested calls are retained as bounded data on the outer tool result, not as additional conversation turns.
+A queued Conclave wake waits until the next User-session Khala tool call in Subagent mode, and that call can wait for Conclave to finish.
+Both modes retain the same Conclave outbox, token reservations, signed role capability, and Archive actions.
+Subagent model usage is included in the Khala tool result and durable invocation receipt.
+Executor lifecycle and runtime remain unchanged.
 In the Pi extension, Observer and Oracle configuration is optional.
 The base Pi workflow uses Conclave and Executor models; configure Observer or Oracle models only when those roles run.
 Starting Work does not install global tools or open unsolicited terminal panes.
@@ -98,10 +108,12 @@ Do not treat it as a hard USD limit or as permission to increase any token allow
 ### Overshoot and resource limits
 
 The token allowance is a stopping threshold, not a hard cap.
-The runtime accumulates usage from completed messages and requests an RPC abort when observed input plus output reaches the allowance.
-Usage arrives after a message completes, and another in-flight response may continue before abort acknowledgement.
-Settlement waits for the invocation's abort acknowledgement before allowing another prompt.
-If Pi does not settle after the allowance stop, the RPC deadline fails the turn rather than waiting for the ordinary turn timeout.
+Conclave invocations accumulate usage from completed model messages and stop further work when observed input plus output reaches the allowance.
+Headless mode requests an RPC abort.
+Subagent mode stops issuing nested tool calls after a completed model response reaches the allowance.
+A provider response can exceed the allowance before its usage is reported, and the in-session loop does not interrupt that response mid-stream.
+Settlement is required before the runtime releases the invocation.
+If a Headless child does not settle after the allowance stop, the RPC deadline fails the turn rather than waiting for the ordinary turn timeout.
 The invocation can therefore exceed its allowance and the Work cap.
 Khala charges the full observed input and output, including overshoot, and does not enlarge the cap automatically.
 The Work view and Conclave decision evidence show available tokens, observed overrun, held reservations, remaining correction count, and the computed Work dispatch reason.
@@ -211,6 +223,7 @@ Target settings and their implementation status must be updated here when the co
 | `maxCorrections` | `3` | Replacement Verdict limit recorded with Work |
 | `defaultWorkTokens` | `20000` | Work token cap |
 | `enableCiRepair` | `false` | Opts into bounded Conclave-authorized CI repair behavior |
+| `conclaveMode` | `headless` | Selects the RPC child or a nested Conclave loop in the active User-session Khala tool call |
 | `requireProviderCi` | `true` | Requires verified provider CI evidence before ready or handoff; set `false` only for repositories explicitly configured without provider CI |
 | `piCommand` | `["pi"]` | Child launch command and arguments; the command must report Pi version `1.1.0` |
 

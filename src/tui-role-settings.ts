@@ -9,7 +9,7 @@ import {
 	Spacer,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type { GovernedRole, RoleSetting, RoleSettingsMap } from "./model.js";
+import { type GovernedRole, isConclaveMode, type RoleSetting, type RoleSettingsMap } from "./model.js";
 import { selectRoleModel } from "./role-model-selector.js";
 import { addHeading, addPanelKeybindings, selectableComponent, selectorTheme } from "./tui-pages.js";
 import { selectionMarker, tableCell } from "./tui-work-table.js";
@@ -45,20 +45,46 @@ async function selectRoleOption(
 		unsubscribe();
 	}
 }
-type RoleSettingsSnapshot = Readonly<{ role: GovernedRole; current: RoleSettingsMap[GovernedRole] }>;
+type RoleSettingsSnapshot = {
+	[Role in GovernedRole]: Readonly<{ role: Role; current: RoleSettingsMap[Role] }>;
+}[GovernedRole];
 
-function selectedRoleSetting(value: string): RoleSetting {
-	return value.startsWith("Model") ? "model" : value.startsWith("Thinking") ? "thinking" : "usdMax";
+function roleSettingsSnapshot(settings: RoleSettingsMap, role: GovernedRole): RoleSettingsSnapshot {
+	const snapshots = {
+		conclave: { role: "conclave", current: settings.conclave },
+		executor: { role: "executor", current: settings.executor },
+		observer: { role: "observer", current: settings.observer },
+		oracle: { role: "oracle", current: settings.oracle },
+	} satisfies Record<GovernedRole, RoleSettingsSnapshot>;
+	return snapshots[role];
 }
 
-function validateRoleSettingValue(setting: RoleSetting, value: string): void {
-	if (setting !== "usdMax") return;
+function selectedRoleSetting(value: string): RoleSetting {
+	return value.startsWith("Model")
+		? "model"
+		: value.startsWith("Thinking")
+			? "thinking"
+			: value.startsWith("Invocation mode")
+				? "mode"
+				: "usdMax";
+}
+
+function validateRoleSettingValue(role: GovernedRole, setting: RoleSetting, value: string): void {
+	if (setting === "mode") return validateConclaveMode(role, value);
+	if (setting === "usdMax") validateUsdMax(value);
+}
+
+function validateConclaveMode(role: GovernedRole, value: string): void {
+	if (role !== "conclave" || !isConclaveMode(value)) throw new Error("Conclave mode must be headless or subagent.");
+}
+
+function validateUsdMax(value: string): void {
 	const usdMax = Number(value);
 	if (!Number.isFinite(usdMax) || usdMax <= 0) throw new Error("USD max must be a positive number.");
 }
 
 function roleSettingLabel(setting: RoleSetting): string {
-	return setting === "usdMax" ? "USD max" : setting;
+	return setting === "usdMax" ? "USD max" : setting === "mode" ? "invocation mode" : setting;
 }
 
 function roleFromSelection(value: string | undefined): GovernedRole | undefined {
@@ -132,20 +158,33 @@ async function selectRoleTable(
 	});
 }
 
+function roleSettingOptions(snapshot: RoleSettingsSnapshot): string[] {
+	const { role, current } = snapshot;
+	const options = [
+		`Model: ${current.model || "not configured"}`,
+		`Thinking: ${current.thinking}`,
+		`USD max: $${(current.usdMax ?? 5).toFixed(2)}`,
+	];
+	if (role === "conclave") options.push(conclaveModeOption(current.mode));
+	return options;
+}
+
+function conclaveModeOption(mode: RoleSettingsMap["conclave"]["mode"]): string {
+	return `Invocation mode: ${mode === "subagent" ? "Subagent (current session)" : "Headless (separate process)"}`;
+}
+
 async function editRoleSetting(
 	controller: RoleSettingsController,
 	context: ExtensionContext,
 	snapshot: RoleSettingsSnapshot,
 ): Promise<void> {
-	const { role, current } = snapshot;
-	const selectedSetting = await selectRoleOption(context, `${ROLE_LABELS[role]} settings:`, [
-		`Model: ${current.model || "not configured"}`,
-		`Thinking: ${current.thinking}`,
-		`USD max: $${(current.usdMax ?? 5).toFixed(2)}`,
-	]);
-	if (selectedSetting === undefined) return;
-	const setting = selectedRoleSetting(selectedSetting);
-	await saveSelectedRoleSetting(controller, context, role, current, setting);
+	const selected = await selectRoleOption(
+		context,
+		`${ROLE_LABELS[snapshot.role]} settings:`,
+		roleSettingOptions(snapshot),
+	);
+	if (selected === undefined) return;
+	await saveSelectedRoleSetting(controller, context, snapshot.role, snapshot.current, selectedRoleSetting(selected));
 }
 
 async function saveSelectedRoleSetting(
@@ -160,22 +199,45 @@ async function saveSelectedRoleSetting(
 	await saveRoleSetting(controller, context, role, setting, value);
 }
 
-async function roleSettingValue(
+function roleSettingValue(
 	context: ExtensionContext,
 	role: GovernedRole,
 	current: RoleSettingsMap[GovernedRole],
 	setting: RoleSetting,
 ): Promise<string | undefined> {
 	const editors = {
-		model: async () => {
-			const selectedModel = await selectRoleModel(context, current.model);
-			return selectedModel === undefined ? undefined : `${selectedModel.provider}/${selectedModel.id}`;
-		},
+		model: () => selectRoleModelValue(context, current.model),
 		thinking: () => selectRoleThinking(context, role, current),
-		usdMax: async () =>
-			(await context.ui.input(`${ROLE_LABELS[role]} USD max:`, (current.usdMax ?? 5).toFixed(2)))?.trim(),
+		usdMax: () => selectUsdMax(context, role, current.usdMax),
+		mode: () => selectConclaveMode(context, role),
 	} satisfies Record<RoleSetting, () => Promise<string | undefined>>;
 	return editors[setting]();
+}
+
+async function selectRoleModelValue(context: ExtensionContext, current: string): Promise<string | undefined> {
+	const selectedModel = await selectRoleModel(context, current);
+	return selectedModel === undefined ? undefined : `${selectedModel.provider}/${selectedModel.id}`;
+}
+
+async function selectUsdMax(
+	context: ExtensionContext,
+	role: GovernedRole,
+	current: number,
+): Promise<string | undefined> {
+	return (await context.ui.input(`${ROLE_LABELS[role]} USD max:`, (current ?? 5).toFixed(2)))?.trim();
+}
+
+async function selectConclaveMode(context: ExtensionContext, role: GovernedRole): Promise<string | undefined> {
+	if (role !== "conclave") throw new Error("Only Conclave supports an invocation mode.");
+	const selected = await selectRoleOption(context, "Conclave invocation mode:", [
+		"Headless (separate process)",
+		"Subagent (current session)",
+	]);
+	return selected === "Headless (separate process)"
+		? "headless"
+		: selected === "Subagent (current session)"
+			? "subagent"
+			: undefined;
 }
 
 async function selectRoleThinking(
@@ -201,7 +263,7 @@ async function saveRoleSetting(
 	value: string,
 ): Promise<void> {
 	try {
-		validateRoleSettingValue(setting, value);
+		validateRoleSettingValue(role, setting, value);
 		await controller.set(role, setting, value);
 		context.ui.notify(`${ROLE_LABELS[role]} ${roleSettingLabel(setting)} updated.`, "info");
 	} catch (error) {
@@ -214,6 +276,6 @@ export async function showRoleSettings(controller: RoleSettingsController, conte
 		const settings = controller.get();
 		const role = await selectRoleTable(context, settings);
 		if (role === undefined) return;
-		await editRoleSetting(controller, context, { role, current: settings[role] });
+		await editRoleSetting(controller, context, roleSettingsSnapshot(settings, role));
 	}
 }

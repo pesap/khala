@@ -46,6 +46,15 @@ export class RuntimeStorage {
 		return this.ownedPath(join(this.root, "invocations", `${key}.json`));
 	}
 
+	nestedInvocationPath(runId: string): string {
+		const key = createHash("sha256").update(runId).digest("hex");
+		return this.ownedPath(join(this.root, "nested-invocations", `${key}.json`));
+	}
+
+	nestedInvocationTemporaryPath(runId: string): string {
+		return this.ownedPath(`${this.nestedInvocationPath(runId)}.${nanoid()}.tmp`);
+	}
+
 	invocationTemporaryPath(runId: string): string {
 		return this.ownedPath(`${this.invocationPath(runId)}.${nanoid()}.tmp`);
 	}
@@ -57,6 +66,7 @@ export class RuntimeStorage {
 			join(this.root, "sessions"),
 			join(this.root, "capabilities"),
 			join(this.root, "invocations"),
+			join(this.root, "nested-invocations"),
 		])
 			await this.ensurePrivateDirectory(path);
 	}

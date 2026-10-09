@@ -24,6 +24,7 @@ import {
 	writePersistentLaunchLease,
 } from "./runtime-launch.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
+import { beginNestedInvocation, reconcileNestedInvocation } from "./runtime-subagent-invocation.js";
 
 export { SUPPORTED_NATIVE_PI_VERSION } from "./runtime-launch.js";
 
@@ -273,10 +274,43 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	async reconcileInvocation(runId: string, operation?: OperationContext): Promise<RuntimeInvocationEvidence> {
 		throwIfAborted(operation);
 		if (this.activeRunIds.has(runId)) throw new Error(`Runtime invocation ${runId} is still active in this runtime.`);
-		const evidence = await reconcilePersistedInvocation(runId, this.storage);
+		const nestedEvidence = await reconcileNestedInvocation(runId, this.storage);
+		const evidence = nestedEvidence ?? (await reconcilePersistedInvocation(runId, this.storage));
 		throwIfAborted(operation);
 		return evidence;
 	}
+
+	async beginNestedInvocation(runId: string, sessionId: string) {
+		if (this.closing) throw new Error("Pi runtime is closed.");
+		this.assertRunAvailable(runId);
+		this.activeRunIds.add(runId);
+		try {
+			const recorder = await beginNestedInvocation(runId, sessionId, this.storage);
+			let settled = false;
+			return {
+				reportUsage: (usage: Parameters<typeof recorder.reportUsage>[0]) => {
+					if (settled) throw new Error(`Runtime invocation ${runId} is already settled.`);
+					recorder.reportUsage(usage);
+				},
+				complete: (usage: Parameters<typeof recorder.complete>[0]) => {
+					if (settled) throw new Error(`Runtime invocation ${runId} is already settled.`);
+					recorder.complete(usage);
+					settled = true;
+					this.activeRunIds.delete(runId);
+				},
+				stop: () => {
+					if (settled) return;
+					recorder.stop();
+					settled = true;
+					this.activeRunIds.delete(runId);
+				},
+			};
+		} catch (error) {
+			this.activeRunIds.delete(runId);
+			throw error;
+		}
+	}
+
 	async getState(binding: RuntimeBinding, operation?: OperationContext): Promise<RuntimeState> {
 		throwIfAborted(operation);
 		const child = this.children.get(binding.sessionId);

@@ -68,7 +68,8 @@ Use a fresh Archive revision for `khala_inspect_runtime` too, not the revision f
 
 ## Report evidence, not assumptions
 
-Submission is asynchronous.
+Submission is persisted immediately.
+Headless mode processes the Conclave wake asynchronously; Subagent mode may wait for Conclave to process it before returning.
 Reread before reporting current admission or Execution state, or state that only submission was acknowledged.
 Missing validation or a checked head does not prove that no files were edited.
 If a tool does not expose runtime liveness in its returned content, report that evidence gap rather than inferring liveness from Work state.

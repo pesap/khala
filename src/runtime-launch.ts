@@ -237,6 +237,13 @@ export async function spawnSessionSafely(
 	}
 }
 
+export function issueConclaveCapability(privateKey: KeyObject | undefined, workId: string) {
+	const roleNonce = nanoid();
+	const roleToken = createCapability(privateKey, "conclave", { workId, nonce: roleNonce });
+	if (roleToken === undefined) throw new Error("This runtime cannot sign a Conclave subagent capability.");
+	return { roleToken, roleNonce, workId };
+}
+
 export function startupSessionId(state: RpcResponse, sessionPath: string, storage: RuntimeStorage): string {
 	if (!state.success) throw new Error(state.error ?? "Pi did not return its session state.");
 	const sessionId = readSessionText(state.data, "sessionId");

@@ -8,7 +8,7 @@ The application service enforces permissions; a tool name or visible action is n
 
 | Tool | Purpose |
 | --- | --- |
-| `khala_submit_work` | Record complete User intent without waiting for admission |
+| `khala_submit_work` | Persist complete User intent; Subagent mode may wait for Conclave processing |
 | `khala_read_archive` | Read bounded, role-authorized Work facts and record summaries |
 | `khala_inspect_runtime` | Inspect runtime liveness without writing lifecycle state |
 | `khala_poll_provider` | Record changed provider observations and merge evidence |

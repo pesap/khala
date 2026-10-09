@@ -92,7 +92,9 @@ A first request can look like this:
 ```
 
 Call `khala_submit_work` with these fields from Pi.
-The tool returns immediately; Conclave processing runs asynchronously.
+Submission is persisted immediately.
+Headless mode processes the Conclave wake asynchronously.
+Subagent mode may wait for Conclave to process the wake before returning.
 
 ## Core boundaries
 
@@ -111,7 +113,7 @@ The tool returns immediately; Conclave processing runs asynchronously.
 | `/khala` | Open the Work view and Role settings. |
 | `/khala-recover` | Reconcile project state and persisted runtime bindings from the owning User session. |
 | `/khala-demo` | Browse a packaged read-only Archive fixture. |
-| `khala_submit_work` | Record complete User intent without waiting for admission. |
+| `khala_submit_work` | Persist complete User intent; Subagent mode may wait for Conclave processing. |
 | `khala_read_archive` | Read bounded, role-authorized Work facts and records. |
 | `khala_inspect_runtime` | Inspect runtime liveness without changing Archive state. |
 | `khala_poll_provider` | Record changed provider observations and merge evidence. |

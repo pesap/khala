@@ -9,9 +9,25 @@ import type {
 	WorkTerms,
 } from "./model.js";
 
+export type ConclaveSubagentRequest = Readonly<{
+	workId: string;
+	runId: string;
+	sessionId: string;
+	model: string;
+	thinking: string;
+	message: string;
+	tokenAllowance: number;
+	signal?: AbortSignal | undefined;
+	onUsage: (usage: TokenUsage) => void | Promise<void>;
+}>;
+
+export type ConclaveSubagent = (request: ConclaveSubagentRequest) => Promise<RuntimeTurn>;
+
 export type OperationContext = Readonly<{
 	signal?: AbortSignal | undefined;
 	onUpdate?: ((message: string) => void) | undefined;
+	runConclaveSubagent?: ConclaveSubagent | undefined;
+	sessionId?: string | undefined;
 }>;
 
 export type RuntimeSendOptions = Readonly<{
@@ -127,6 +143,12 @@ export type RuntimeInvocationEvidence = Readonly<{
 	complete: boolean;
 }>;
 
+export type RuntimeInvocationRecorder = Readonly<{
+	reportUsage: (usage: TokenUsage) => void;
+	complete: (usage: TokenUsage) => void;
+	stop: () => void;
+}>;
+
 export type RuntimeBinding = Readonly<{
 	sessionId: string;
 	sessionPath: string;
@@ -166,6 +188,7 @@ export interface AgentRuntimePort {
 	) => Promise<RuntimeTurn>;
 	getState: (binding: RuntimeBinding, operation?: OperationContext) => Promise<RuntimeState>;
 	reconcileInvocation?: (runId: string, operation?: OperationContext) => Promise<RuntimeInvocationEvidence>;
+	beginNestedInvocation: (runId: string, sessionId: string) => Promise<RuntimeInvocationRecorder>;
 	requestStop: (binding: RuntimeBinding) => Promise<void>;
 	close: () => Promise<void>;
 }

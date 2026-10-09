@@ -4,7 +4,16 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { nanoid } from "nanoid";
-import { type GovernedRole, isSkillId, type JsonObject, type JsonValue, type RoleSetting } from "./model.js";
+import {
+	type ConclaveMode,
+	type GeneralRoleSetting,
+	type GovernedRole,
+	isConclaveMode,
+	isSkillId,
+	type JsonObject,
+	type JsonValue,
+	type RoleSetting,
+} from "./model.js";
 
 export type KhalaConfig = Readonly<{
 	archiveRoot: string;
@@ -22,6 +31,7 @@ export type KhalaConfig = Readonly<{
 	conclaveModel: string;
 	conclaveThinking: string;
 	conclaveUsdMax: number;
+	conclaveMode: ConclaveMode;
 	executorModel: string;
 	executorThinking: string;
 	executorUsdMax: number;
@@ -57,6 +67,7 @@ const DEFAULTS: KhalaConfig = {
 	conclaveModel: "",
 	conclaveThinking: "medium",
 	conclaveUsdMax: 5,
+	conclaveMode: "headless",
 	executorModel: "",
 	executorThinking: "high",
 	executorUsdMax: 5,
@@ -177,7 +188,15 @@ function removeStaleConfigLock(path: string): void {
 }
 
 function storedRoleSetting(role: GovernedRole, setting: RoleSetting, value: string): string | number {
-	return setting === "usdMax" ? parsePositiveNumber(value, role) : value;
+	if (setting === "usdMax") return parsePositiveNumber(value, role);
+	if (setting === "mode") return parseConclaveMode(role, value);
+	return value;
+}
+
+function parseConclaveMode(role: GovernedRole, value: string): ConclaveMode {
+	if (role !== "conclave") throw new ConfigError("Only Conclave supports an invocation mode.");
+	if (!isConclaveMode(value)) throw new ConfigError("Conclave mode must be headless or subagent.");
+	return value;
 }
 
 function parsePositiveNumber(value: string, role: GovernedRole): number {
@@ -187,7 +206,23 @@ function parsePositiveNumber(value: string, role: GovernedRole): number {
 }
 
 function roleConfigKey(role: GovernedRole, setting: RoleSetting): string {
-	return `${role}${setting === "model" ? "Model" : setting === "thinking" ? "Thinking" : "UsdMax"}`;
+	return setting === "mode" ? conclaveModeConfigKey(role) : `${role}${roleSettingSuffix(setting)}`;
+}
+
+function conclaveModeConfigKey(role: GovernedRole): string {
+	if (role !== "conclave") throw new ConfigError("Only Conclave supports an invocation mode.");
+	return "conclaveMode";
+}
+
+function roleSettingSuffix(setting: GeneralRoleSetting): string {
+	switch (setting) {
+		case "model":
+			return "Model";
+		case "thinking":
+			return "Thinking";
+		case "usdMax":
+			return "UsdMax";
+	}
 }
 
 function readConfig(path: string): JsonObject | undefined {
@@ -234,6 +269,7 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 		conclaveModel: readText(values, "conclaveModel", base.conclaveModel),
 		conclaveThinking: readText(values, "conclaveThinking", base.conclaveThinking),
 		conclaveUsdMax: readPositiveNumber(values, "conclaveUsdMax", base.conclaveUsdMax),
+		conclaveMode: readConclaveMode(values, "conclaveMode", base.conclaveMode),
 		executorModel: readText(values, "executorModel", base.executorModel),
 		executorThinking: readText(values, "executorThinking", base.executorThinking),
 		executorUsdMax: readPositiveNumber(values, "executorUsdMax", base.executorUsdMax),
@@ -251,6 +287,12 @@ function apply(base: KhalaConfig, values: JsonObject | undefined): KhalaConfig {
 			history: readKeybinding(values, "historyKey", base.keybindings.history),
 		},
 	};
+}
+
+function readConclaveMode(values: JsonObject, key: string, fallback: ConclaveMode): ConclaveMode {
+	const value = readText(values, key, fallback);
+	if (isConclaveMode(value)) return value;
+	throw new ConfigError(`${key} must be headless or subagent.`);
 }
 
 function readBoolean(values: JsonObject, key: string, fallback: boolean): boolean {
