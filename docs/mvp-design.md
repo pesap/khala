@@ -6,9 +6,8 @@ Khala is a quiet forge for bounded coding work that continues while the User foc
 The normal experience is assign, work, review: validated commits or an explicit reason progress stopped, with useful work preserved.
 It extends Pi rather than creating another conversation or dashboard to supervise.
 
-This design describes where Khala is going and the boundaries that must hold, not a claim that every requirement is implemented.
-The detailed documents below own their respective contracts; sections explicitly labelled current implementation describe the existing tools rather than the target.
-Implementation changes must update the corresponding contract and verification evidence together.
+This design establishes scope, responsibilities, technical decisions, and acceptance gates.
+The detailed documents below own their respective contracts.
 
 ## Non-negotiables
 
@@ -24,12 +23,11 @@ Each part of the work must preserve these guarantees:
 - Pi interaction stays quiet, keyboard-first, draft-preserving, and honest about pending or disconnected operations.
 
 These guarantees apply from the first working loop, not as later hardening.
-The target design does not authorize Archive migrations, automatic consolidation, deletion of existing Work, or a weaker isolation mode.
-Current writable Archive opening still applies explicit migrations for command and projection columns, legacy Work terms and states, and missing record numbers.
+The design excludes Archive migrations, automatic consolidation, unauthorized deletion of Work, and weaker isolation modes.
 
 ## Scope and responsibilities
 
-The target has one shared Archive and one logical Conclave per User installation, supporting independent Missions across assigned repositories.
+Use one shared Archive and one logical Conclave per User installation, supporting independent Missions across assigned repositories.
 Each Mission targets one repository and has at most one active Execution.
 The [glossary](glossary.md) defines the vocabulary without prescribing implementation.
 
@@ -48,18 +46,17 @@ Roles support delegation; they do not create a hierarchy the User must administe
 
 ## Delivery and acceptance
 
-The delivery modes in this section are target requirements.
-Current implementation supports provider delivery only through draft GitHub Pull Requests and GitLab Merge Requests.
-Current Work has no local-accept action and reaches `succeeded` only after provider merge evidence and Conclave Outcome settlement.
+Support local and provider delivery under explicit acceptance policies.
 
-Target local delivery requires neither code-host credentials nor publication.
-The target User accepts the exact reviewed head in Pi; acceptance does not merge or modify the User's checkout.
+Local delivery requires neither code-host credentials nor publication.
+The User accepts the exact reviewed head in Pi.
+Acceptance does not merge or modify the User's checkout.
 
-Target provider delivery records permission to publish and explicitly delegates acceptance to the repository's merge process, including its permitted maintainers and automation.
+Provider delivery records permission to publish and explicitly delegates acceptance to the repository's merge process, including its permitted maintainers and automation.
 Verified merge evidence represents acceptance without a second confirmation in Pi.
 It does not authorize Khala to merge code.
 
-Both target modes retain Conclave Outcome settlement before Work becomes `succeeded`.
+Both modes require Conclave Outcome settlement before Work becomes `succeeded`.
 The [lifecycle contract](lifecycle.md#acceptance-and-settlement) owns the evidence, state, and insufficient-budget rules.
 
 ## Build from one working loop
@@ -96,11 +93,11 @@ Other documents link to that home rather than maintaining competing specificatio
 | [Operations](operations.md) | Configuration, allowances, concurrency, state locations, startup, backup, and troubleshooting |
 | [Security](security.md) | Role authority, process isolation, resource access, validation, provider trust, and publication permissions |
 
-[Getting started](getting-started.md) and [Application actions](supervision-tools.md) describe use of the current tools, not proof that the design is complete.
+[Getting started](getting-started.md) and [Application actions](supervision-tools.md) cover user workflows and tool usage.
 [Development](development.md) owns repository validation commands; [Role prompts](role-prompts.md) covers prompt maintenance, not lifecycle authority.
 
-The proposed [expandable evidence memory MVP](memory-mvp.md) applies these boundaries to source retention, hierarchical retrieval, and Pi durable integration.
-Its [storage contract](memory-storage.md) and [validation plan](memory-validation.md) describe proposed work, not implemented behavior or approval for broader context sharing.
+The [expandable evidence memory MVP](mvp-memory.md) defines scope and policy boundaries for source retention, hierarchical retrieval, and Pi durable integration.
+Its [storage contract](mvp-memory-storage.md) owns technical decisions, and its [validation plan](mvp-memory-validation.md) owns acceptance and evaluation gates.
 
 ## Evidence before expanding
 

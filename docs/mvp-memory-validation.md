@@ -1,23 +1,21 @@
 # Memory delivery and validation
 
-## Status
+## Purpose and gates
 
-This is the delivery and evidence plan for the proposed [memory MVP](memory-mvp.md).
-It is not a test report, an implementation authorization, or a claim that memory quality has improved.
-The [storage contract](memory-storage.md) defines the behavior under test.
+This MVP defines delivery slices and acceptance criteria for [expandable evidence memory](mvp-memory.md).
+The [storage contract](mvp-memory-storage.md) defines the behavior under test.
 [Development](development.md) owns repository commands, and the [LLM release gate](mvp-design.md#evidence-before-expanding) remains mandatory.
 
 ## Delivery slices
 
 Each slice must leave a usable, independently testable path before the next one expands behavior.
-Dependency and lockfile changes require their normal approval rather than being implied by this plan.
-No slice migrates existing Archives or transcripts automatically.
+Dependency changes require explicit approval, and no slice migrates Archives or transcripts automatically.
 
 ### Slice 1: Complete authorized retrieval
 
-Repair pagination through the registered Archive tool, provide exact permitted source and Mission-term paging, and remove redundant packet serialization.
-Keep existing Work, Execution, and private-field restrictions.
-This slice needs no LLM summarizer or new durable runtime.
+Provide complete pagination, exact permitted source and Mission-term paging, and nonduplicated packet content through the authorized application interface.
+Enforce Work, Execution, and private-field restrictions.
+This path requires no LLM summarizer.
 
 Exit evidence is complete retrieval of retained sources under item and byte bounds, with rejection of forged or stale-scope continuations.
 It becomes the deterministic baseline for every later comparison.
@@ -37,24 +35,23 @@ The trial must resolve:
 - Retention and required erasure through public interfaces, without private Pi-table edits.
 - A single context-replacement policy with correct token estimation and bounded active history.
 
-An unmet public-API requirement blocks the affected integration rather than authorizing a private interface or weaker guarantee.
-Current RPC behavior is not silently substituted when the durable trial fails.
+An unmet public-API requirement blocks the affected integration rather than authorizing a private interface, weaker guarantee, or alternative execution path.
 
 ### Slice 3: Restart-safe evidence recall
 
-First implement or verify the target [post-admission clarification request and User-answer actions](lifecycle.md#submission-and-clarification) through the authorized application interface.
-Implement the first [user scenario](memory-mvp.md#user-outcome) with exact retained sources, investigation checkpoints, deterministic search, and prepared recovery context.
+Provide [post-admission clarification request and User-answer actions](lifecycle.md#submission-and-clarification) through the authorized application interface.
+Implement the [user scenario](mvp-memory.md#user-outcome) with exact retained sources, investigation checkpoints, deterministic search, and prepared recovery context.
 Restore the same authorized Execution after interruption and make its previous observations and factual corrections discoverable.
-Keep this slice within the current Work and its existing visibility restrictions.
+Keep this slice within the bound Work and its declared visibility restrictions.
 
 Exit evidence must show the attributed correction and superseded evidence, unchanged Mission terms, source reassembly, correct currentness, and bounded reads after a process restart.
 Deterministic success establishes recoverability, not improved model recall.
-Real-source retention remains blocked until the policy decisions are approved.
+Private-source capture requires an approved retention policy.
 
 ### Slice 4: Hierarchical context experiment
 
 Add immutable summary-node generations, ready-node queues, a persisted view, and batched merges as a separately selected experimental policy.
-Bound every summary request by existing Work accounting and capacity.
+Bound every summary request by Work invocation accounting and capacity.
 Retain exact source expansion and deterministic search rather than forcing zoom-only retrieval.
 
 Exit evidence includes deterministic tree and restart invariants plus the held-out comparison below.
@@ -63,10 +60,9 @@ A summary failure, stale result, or exhausted allowance must produce a truthful 
 
 ### Slice 5: Explicitly approved reuse
 
-Repository-wide recall and reusable guidance follow a separate approval after the current-Work slice is validated.
+Repository-wide recall and reusable guidance require separate approval after Work-scoped recall is validated.
 Record exactly what may cross Work or Execution scope and who authorized that promotion.
 Test new-Mission selection and withdrawal without changing already-pinned agreements.
-This slice is not enabled by the User's request to document the MVP.
 
 ## Deterministic acceptance
 
@@ -76,8 +72,8 @@ Do not depend on real providers or paid tokens for these tests.
 
 | Area | Required cases | Observable result |
 | --- | --- | --- |
-| Record pagination | 201 records, byte-trimmed pages, intervening appends, restart | Every authorized body appears exactly once within the pinned snapshot |
-| Terms and source fields | Text past byte 600, an eleventh criterion, payloads above 16,000 characters | Complete permitted content remains retrievable and is never labelled complete when clipped |
+| Record pagination | Multiple storage pages, byte-trimmed responses, intervening appends, restart | Every authorized body appears exactly once within the pinned snapshot |
+| Terms and source fields | Text, arrays, and payloads spanning response budgets | Complete permitted content remains retrievable and is never labelled complete when clipped |
 | UTF-8 and large sources | Multibyte text, long lines, paged arrays, artifact limits | Reassembled pages match the retained permitted-source digest |
 | Visibility | Other Works, other Executions, fork ancestors, search snippets, counts, cached views | No forbidden content or existence detail is disclosed |
 | Provenance | Mutable file paths, changed Git head, superseded claims | Source identity and historical applicability remain distinct from current validation |
@@ -93,9 +89,10 @@ Do not depend on real providers or paid tokens for these tests.
 | Cancellation | Background summaries, queued writes, non-cooperative code, competing writer | Cancelled Work cannot resume through pending memory work and ownership is not released prematurely |
 | Retrieval cost | Many records, large permitted payloads, stale search projection | Reads and retained process memory stay bounded without loading the complete history |
 
-The rollback-order regression compares 20,001 append steps against the reference push algorithm.
+Compare minimal-budget merge ordering against the reference push algorithm across long append sequences.
+Test larger view budgets separately for coverage, sibling alignment, and stable merge priority.
 Measure pair age from its last ordinal and exercise oldest-first tie breaking.
-This test validates ordering only, not cache savings or recall.
+These tests validate ordering and coverage, not cache savings or recall.
 
 An erasure test must verify the declared physical disposition, including derived indexes and the approved backup policy.
 Hiding a source, retiring a view, or resetting context is not a passing erasure test.
@@ -110,22 +107,21 @@ Small exploratory runs cannot establish release readiness.
 
 ### Comparisons
 
-| Arm | Purpose |
+| Arm | Context policy |
 | --- | --- |
-| A0. Current RPC | Quantify existing retrieval defects as diagnostic evidence, not the only baseline |
-| A1. Repaired RPC | Measure complete retrieval and evidence preparation without changing the runtime |
-| B. Repaired durable | Establish the same-harness memory baseline with the sources, search, tools, and preparation used by A1 |
-| C. B with cache-stable context layout | Isolate rendering effects from summarization |
-| D. C with hierarchical summaries | Measure the hierarchy's additional recall, cost, and latency effects |
+| A. Deterministic evidence baseline | Complete sources, deterministic search and evidence preparation, with native compaction |
+| B. Cache-stable layout | A with stable context ordering and rendering |
+| C. Hierarchical summaries | B with hierarchical context selection replacing native compaction |
 
+Run all three arms on the same durable harness.
 Keep models, tools, task allowances, datasets, sampling, and grading fixed for each paired comparison except for the named policy change.
-Compare A1 and B separately on uninterrupted and forced-restart cases with identical prepared requests and compaction disabled.
-Keep those runtime-only fixtures within the model window so native compactor differences cannot explain the result.
+A and B use identical, recorded native-compaction settings, including summarizer model, prompt, thresholds, and usage attribution.
+C owns bounded handling of long tool rounds and overflow rather than running two policies against the same active context.
+All arms receive the same eligible evidence, so hierarchy is not credited merely for receiving sources its baseline never got.
 
-For the B/C/D memory comparison, B and C use identical, recorded native-compaction settings, including summarizer model, prompt, thresholds, and usage attribution.
-D replaces native compaction with the tested hierarchical context policy, including bounded handling of long tool rounds and overflow.
-It must not run both policies against the same active context.
-B already includes deterministic evidence preparation, so D is not credited merely for receiving evidence its baseline never got.
+Evaluate runtime recovery separately on uninterrupted and forced-restart cases with identical prepared requests and compaction disabled.
+When comparing runtime adapters, hold evidence preparation, tools, allowances, and request content fixed.
+Keep those runtime-only fixtures within the model window so compactor differences cannot explain the result.
 
 Include cases covering:
 
@@ -136,8 +132,8 @@ Include cases covering:
 - Interrupted builds, duplicate delivery attempts, exhausted reservations, and concurrency one.
 - Warm, cold, and expired provider caches, long pauses, long tool rounds, and configured model changes.
 
-Cross-Work cases remain denial cases until the context-sharing policy is approved.
-Guidance cases require an implementation of the approved version-pinning contract rather than assuming it already exists.
+Cross-Work cases must reject access without explicit sharing approval.
+Guidance cases verify approved version pinning, new-Mission selection, and withdrawal semantics.
 
 ### Measurements and grading
 
@@ -163,7 +159,7 @@ A passing design review, compilation, or deterministic fixture is not evidence t
 ## Validation reporting
 
 Each slice reports changed behavior, exact commands, environments exercised, results, and unresolved requirements.
-Follow [Development](development.md) for focused checks and repository validation rather than introducing another test runner for this proposal.
+Follow [Development](development.md) for focused checks and repository validation rather than introducing another test runner.
 Run an independent review after a significant slice and verify its findings locally before accepting them.
 Keep design-review results separate from implementation tests and held-out model evaluation.
-Update the owning contract when behavior is implemented, without describing this proposal as already available.
+Record evidence for each acceptance criterion without treating documentation or design review as release validation.

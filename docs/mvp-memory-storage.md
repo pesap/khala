@@ -1,8 +1,8 @@
 # Memory storage and runtime design
 
-## Status
+## Design boundaries
 
-This is the proposed storage and retrieval contract for the [memory MVP](memory-mvp.md), not an implemented API.
+This MVP defines source retention, retrieval, and durable execution for [expandable evidence memory](mvp-memory.md).
 The [data model](data-model.md) owns domain facts, [security](security.md) owns authorization, and [operations](operations.md#allowances-and-limits) owns resource policy.
 The structures below are internal representations, not new domain primitives or model-callable tools.
 
@@ -96,9 +96,9 @@ Search indexes point to sources rather than retaining another transcript or infe
 Start with deterministic lexical, path, symbol, and error indexing over approved evidence fields.
 A query returns bounded source references and authorized snippets, followed by exact expansion when needed.
 
-Prefer the existing SQLite tooling where it meets the bounded query and deletion requirements.
-The first slice must establish the physical index layout and supported runtime capabilities before making them part of the contract.
-A separate database, contentless full-text table, embedding service, or semantic ranking model is not assumed.
+Use a Khala-owned SQLite search projection with source and visibility metadata.
+Choose its index layout against bounded query, rebuild, and deletion requirements.
+An additional database, embedding service, or semantic ranking model requires a demonstrated need.
 
 Index updates consume committed source watermarks through bounded scans.
 Rebuilding search is an explicit derived-data operation and does not regenerate the persisted context view or launch an LLM.
@@ -106,8 +106,8 @@ Pi watches may collapse intermediate updates and therefore cannot be the sole au
 
 ## Retrieval contract
 
-Expose these capabilities through the existing authorized application interface before adding convenience tools.
-Their names below describe behavior, not currently registered methods.
+The application service owns authorized overview, search, expansion, source reading, and Mission retrieval.
+Convenience tools use the same contracts rather than introducing another access path.
 
 | Capability | Required result |
 | --- | --- |
@@ -138,7 +138,7 @@ Historical evidence remains paged and selected on demand.
 
 A correction appends evidence that identifies what it supersedes and why.
 It changes applicability without rewriting an immutable Mission or pretending that historical observations never occurred.
-Guidance promotion, version pinning, and withdrawal follow the existing [guidance contract](data-model.md#guidance-and-context).
+Guidance promotion, version pinning, and withdrawal follow the [guidance contract](data-model.md#guidance-and-context).
 
 A summary based on superseded evidence remains historical only when its status is explicit and its audience remains permitted.
 An affected active view is invalidated or replaced before reuse.
@@ -151,12 +151,12 @@ Missing required evidence blocks the dependent action instead of allowing a summ
 
 Redaction must remove access to the source and every derived node, snippet, and cached view that could disclose it.
 Withholding content is not a claim that its bytes have been erased.
-The reviewed Pi durable interface has context omission and document retirement, but no public individual transcript-entry erasure operation.
-Reset and compaction retain older entries.
-Required erasure, including backups and descendant summaries, is a feasibility gate for the chosen storage layout.
-Do not bypass that gate by editing Pi's private tables.
+Context omission, document retirement, reset, and compaction are not substitutes for physical erasure.
+Select the storage layout and retention policy together, including required erasure of backups and descendant summaries.
+Reject source capture when those obligations cannot be met through public interfaces.
+Do not bypass that requirement by editing Pi's private tables.
 
-Automatic cross-Work retrieval remains excluded until the [scope decision](memory-mvp.md#approval-decisions) is approved.
+Cross-Work retrieval requires the explicit sharing approval defined by the [policy boundaries](mvp-memory.md#policy-boundaries).
 Sharing a database, repository, conversation owner, or summary ancestor grants no additional access.
 
 ## Hierarchical view experiment
@@ -180,17 +180,16 @@ Persist the queue of unfinished node builds and their inputs instead of rescanni
 If incomplete nodes prevent a fit, expose the backlog and stop context dispatch when mandatory bounds cannot be met.
 Never send half a source or a fabricated summary as a substitute.
 
-The reference's 512-byte nodes, 64–128 KB view, 16–32 KB compactor context, and eight workers are experimental reference values, not Khala defaults.
-Choose sizes and concurrency against the Work allowance, model context window, output reserve, and measured retrieval quality.
+Choose node sizes, view watermarks, summarizer context, and concurrency against the Work allowance, model context window, output reserve, and measured retrieval quality.
+Do not copy another workload's byte budgets or worker count without evaluation.
 Measure bytes for encoded storage and actual request tokens for model capacity and spending.
 Account for any summarizer context as well as the summarized input in privacy and cost checks.
 
 ## Pi durable integration
 
-The pinned reference is [Pi durable 1.1.0](https://github.com/earendil-works/pi/blob/v1.1.0/packages/durable/README.md).
-Its [public types](https://github.com/earendil-works/pi/blob/v1.1.0/packages/durable/src/harness/types.ts) and [specification](https://github.com/earendil-works/pi/blob/v1.1.0/packages/durable/docs/spec.md) govern the integration.
-The ordinary coding-agent extension API and JSONL `SessionManager` are not the new durable Harness.
-Adoption requires an explicit runtime adapter behind [AgentRuntimePort](../src/ports.ts), not a launcher flag or a private SDK hook.
+Use [Pi durable 1.1.0](https://github.com/earendil-works/pi/blob/v1.1.0/packages/durable/README.md) through its [public types](https://github.com/earendil-works/pi/blob/v1.1.0/packages/durable/src/harness/types.ts) and [specification](https://github.com/earendil-works/pi/blob/v1.1.0/packages/durable/docs/spec.md).
+Keep durable execution behind the application's [runtime interface](architecture.md#boundaries), separate from role policy and evidence retrieval.
+Do not depend on private SDK hooks or storage schemas.
 
 | Public mechanism | Intended use |
 | --- | --- |
@@ -227,8 +226,8 @@ Neither store may claim a source or completion that the other has not durably su
 
 ### Accounting and shutdown
 
-Every summary request and retry must have a Work-attributed reservation, invocation identity, purpose, and usage evidence through the existing accounting boundary.
-The runtime spike must establish per-request attribution before background summaries are enabled.
+Every summary request and retry must have a Work-attributed reservation, invocation identity, purpose, and usage evidence through the accounting boundary.
+Per-request attribution is required before background summaries may dispatch.
 Pi usage totals are observations for Khala's ledger, not a second budget authority.
 Do not charge a child's usage again through its parent's tool result.
 Unknown provider spend remains uncertain until reconciled, even when a task can resume.
@@ -243,10 +242,10 @@ Ordinary conversation abort preserves background subtrees and queued writes, whi
 A stale queued result must not restore revoked context after cancellation or scope change.
 Termination confirmation and workspace release still follow the [lifecycle](lifecycle.md#cancellation-recovery-and-retention).
 
-Pi durable supplies no cross-process writer lock.
-Its Node SQLite preset uses `synchronous = NORMAL`, unlike the Archive's current `FULL` setting.
-The runtime spike must choose and verify a durability setting through public APIs and state whether it covers process crash or host and power failure.
-A persistent Harness alone does not implement a detached Khala supervisor or OS process isolation.
+The supervisor must enforce exclusive writer ownership for each runtime store.
+Select and verify persistence settings through public APIs, with explicit guarantees for process crashes and for host or power failure.
+Keep interface attachment, supervisor lifetime, and OS process isolation as separate responsibilities.
+Persisting a Harness does not replace those controls.
 
 ## Context preparation and cache behavior
 
