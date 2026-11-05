@@ -40,6 +40,9 @@ Tests use local port adapters and do not require provider credentials.
 `test/native-role-workflow.test.js` and `test/native-execution-workflow.test.js` use the npm-installed Pi CLI by default and exercise real child workflows against deterministic localhost model and code-host fixtures.
 They cover signed Conclave authority, durable input, Executor edits, Git commits, isolated validation, review publication, supervisor restart, and recovery without paid model calls.
 The default Node-hosted CLI tests do not prove that a separately compiled native Pi executable works.
+`test/native-executor-activity.test.js` uses a local deterministic service fixture and `tmux` to check the Work activity panel, narrow layout, and Pi prompt draft and cursor.
+It requires no model or provider calls and can also run directly on macOS after compilation.
+Set `KHALA_NATIVE_PI` to test an explicitly selected Pi executable.
 Run those same workflows against an explicitly selected native Pi 1.1.0 executable with `KHALA_NATIVE_PI=/absolute/path/to/pi node --test test/native-role-workflow.test.js test/native-execution-workflow.test.js`.
 Keep the default invocation as separate coverage for the npm-installed CLI.
 Both modes require an installed supported Node executable on the trusted inherited `PATH`; Khala uses that Node for its JavaScript validation helper independently of the Pi launch executable.
@@ -79,6 +82,22 @@ node --test test/validation-isolation.test.js test/validation-package.test.js te
 
 The GitHub Actions workflow runs `npm run lint`, `npm run typecheck:tools`, `npm run check:markdown`, `npm run test`, and `npm pack --dry-run` on Linux: [CI workflow](../.github/workflows/ci.yaml).
 A separate macOS job runs the focused isolation and workspace tests above.
+
+### Bend activity model
+
+The optional Bend check requires Bun, Lean 4.34.0 with `leanc`, and a Bend 2 source checkout.
+It was run with Bend 2.0.39 at commit `b5e6b2ef0ff382cfca59033be3c76e91713da60b` and Bun 1.3.14.
+After compiling TypeScript, point `KHALA_BEND_SOURCE` at that checkout's `bend2/main.ts` and run:
+
+```sh
+npx --no-install tsc
+KHALA_BEND_SOURCE=/absolute/path/to/bend/bend2/main.ts node --test test/formal/runtime-activity-conformance.mjs
+```
+
+The check runs Bend's `--verdict` and compares eight delivery-gate cases with the TypeScript runtime through a deterministic Pi RPC fixture.
+The model addresses only whether new activity is delivered for an attached session, an open subscription, and a matching binding.
+The conformance cases are tests, not a proof of the TypeScript implementation, Pi I/O, steering, or the Work lifecycle.
+The standard CI workflow does not run this optional check.
 
 ## Repository layout
 

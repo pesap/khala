@@ -102,7 +102,8 @@ function consumeBufferedLine(child: MutableChild): void {
 }
 
 function consumeLine(child: MutableChild, line: string): void {
-	const event = parseRpcEvent(line);
+	const parsed = parseRpcObject(line);
+	const event = parseRpcEvent(parsed);
 	switch (event.type) {
 		case "response":
 			consumeResponse(child, event);
@@ -114,10 +115,18 @@ function consumeLine(child: MutableChild, line: string): void {
 			settleAgent(child, event.aborted === true);
 			break;
 	}
+	observeActivity(child, parsed);
 }
 
-function parseRpcEvent(line: string): RpcEvent {
-	const parsed = parseRpcObject(line);
+function observeActivity(child: MutableChild, parsed: JsonObject): void {
+	try {
+		child.activity?.accept(parsed);
+	} catch {
+		// Activity is advisory and must never change RPC settlement or usage accounting.
+	}
+}
+
+function parseRpcEvent(parsed: JsonObject): RpcEvent {
 	const type = requiredRpcText(parsed, "type");
 	if (type === "response") return readRpcResponseEvent(parsed);
 	if (type === "message_end") return readRpcMessageEvent(parsed);
@@ -317,6 +326,7 @@ export function cleanupChild(child: MutableChild): Promise<void> {
 	if (child.cleanupPromise !== undefined) return child.cleanupPromise;
 	const cleanup = (async () => {
 		await terminateChild(child);
+		child.activity?.end();
 		persistInvocationWriterStopped(child.invocationWriter);
 		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, child.storage);
 		removeEphemeralSession(child);

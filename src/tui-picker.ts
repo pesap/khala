@@ -8,6 +8,7 @@ import {
 	type KeyId,
 	matchesKey,
 	parseKey,
+	ScrollView,
 	Spacer,
 	Text,
 	truncateToWidth,
@@ -17,7 +18,7 @@ import type { KhalaConfig } from "./config.js";
 import type { Actor, WorkSummary } from "./model.js";
 import type { ApplicationService } from "./service.js";
 import { type ActionRunner, createActionRunner } from "./tui-actions.js";
-import { addPanelKeybindings, showTextPage } from "./tui-pages.js";
+import { addPanelKeybindings, scrollOverlay, showTextPage } from "./tui-pages.js";
 import { type RoleSettingsController, showRoleSettings } from "./tui-role-settings.js";
 import { showArchiveWork, showWork } from "./tui-work.js";
 import { hasWorkFailure, isHiddenWork, workTableHeader, workTableLayout, workTableRow } from "./tui-work-table.js";
@@ -156,8 +157,7 @@ type PickerInputHandlers = Readonly<{
 }>;
 type PickerListSnapshot = Readonly<{ rows: readonly WorkPickerRow[]; messages: readonly string[] }>;
 
-function pickerWindow(selectedIndex: number, length: number): PickerWindow {
-	const maxVisible = 10;
+function pickerWindow(selectedIndex: number, length: number, maxVisible: number): PickerWindow {
 	const start = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), length - maxVisible));
 	return { start, end: Math.min(start + maxVisible, length) };
 }
@@ -196,8 +196,9 @@ function pickerListSnapshot(
 	filtered: readonly WorkSummary[],
 	selectedIndex: number,
 	showHistory: boolean | undefined,
+	maxVisible: number,
 ): PickerListSnapshot {
-	const window = pickerWindow(selectedIndex, filtered.length);
+	const window = pickerWindow(selectedIndex, filtered.length, maxVisible);
 	return {
 		rows: pickerRows(filtered, window, selectedIndex),
 		messages: pickerMessages(theme, availableWork, filtered, window, selectedIndex, showHistory),
@@ -206,16 +207,16 @@ function pickerListSnapshot(
 
 function pickerListContainer(
 	theme: Theme,
-	getRows: () => readonly WorkPickerRow[],
-	getMessages: () => readonly string[],
+	getRows: (width: number) => readonly WorkPickerRow[],
+	getMessages: (width: number) => readonly string[],
 ): Component {
 	return {
 		render: (width: number) => {
 			const layout = workTableLayout(width);
 			return [
 				workTableHeader(theme, layout),
-				...getRows().map(({ item, selected }) => workTableRow(theme, item, selected, layout)),
-				...getMessages(),
+				...getRows(width).map(({ item, selected }) => workTableRow(theme, item, selected, layout)),
+				...getMessages(width),
 			].map((line) => truncateToWidth(line, width, ""));
 		},
 		invalidate: () => {},
@@ -298,23 +299,25 @@ class WorkPickerController {
 		this.setScopeHeading(this.pickerState.scope);
 	}
 
-	rows(): readonly WorkPickerRow[] {
+	rows(maxVisible: number): readonly WorkPickerRow[] {
 		return pickerListSnapshot(
 			this.theme,
 			this.availableWork,
 			this.filtered,
 			this.selectedIndex,
 			this.pickerState.showHistory,
+			maxVisible,
 		).rows;
 	}
 
-	messages(): readonly string[] {
+	messages(maxVisible: number): readonly string[] {
 		return pickerListSnapshot(
 			this.theme,
 			this.availableWork,
 			this.filtered,
 			this.selectedIndex,
 			this.pickerState.showHistory,
+			maxVisible,
 		).messages;
 	}
 
@@ -380,7 +383,7 @@ type FocusableComponent = Component & { focused: boolean };
 
 function workPickerComponent(
 	filterInput: Input,
-	container: Container,
+	container: Component,
 	keybindings: KhalaConfig["keybindings"],
 	piKeybindings: KeybindingsManager,
 	controller: WorkPickerController,
@@ -436,38 +439,49 @@ async function pickWork(
 	pickerState: WorkPickerState,
 	options: WorkPickerOptions,
 ): Promise<WorkPickerResult> {
-	return context.ui.custom<WorkPickerResult>((tui, theme, piKeybindings, done) => {
-		const filterInput = new Input();
-		filterInput.focused = true;
-		filterInput.setValue(pickerState.filter ?? "");
-		const controller = new WorkPickerController(getWork, theme, () => tui.requestRender(), pickerState, done);
-		const listContainer = pickerListContainer(
-			theme,
-			() => controller.rows(),
-			() => controller.messages(),
-		);
-		const container = new Container();
-		const scopeLabel = new Text(scopeLabelText(theme, pickerState.scope ?? "Work"), 1, 0);
-		const scopeHint = new Text(theme.fg("muted", scopeHintText(piKeybindings)), 1, 0);
-		container.addChild(new Spacer(1));
-		container.addChild(scopeLabel);
-		container.addChild(scopeHint);
-		controller.setHeading((scope) => scopeLabel.setText(scopeLabelText(theme, scope)));
-		container.addChild(new Spacer(1));
-		container.addChild(filterInput);
-		container.addChild(new Spacer(1));
-		container.addChild(listContainer);
-		container.addChild(new Spacer(1));
-		const selectedDetails = new Text("", 0, 0);
-		container.addChild(selectedDetails);
-		controller.setDetails((item) =>
-			selectedDetails.setText(item === undefined ? "" : theme.fg("muted", `  Work: ${item.title}`)),
-		);
-		container.addChild(new Spacer(1));
-		addPanelKeybindings(container, theme, workPickerKeybindings(keybindings, piKeybindings, options.showSettings));
-		controller.updateList();
-		return workPickerComponent(filterInput, container, keybindings, piKeybindings, controller, options.showSettings);
-	});
+	return context.ui.custom<WorkPickerResult>(
+		(tui, theme, piKeybindings, done) => {
+			const filterInput = new Input();
+			filterInput.focused = true;
+			filterInput.setValue(pickerState.filter ?? "");
+			const controller = new WorkPickerController(getWork, theme, () => tui.requestRender(), pickerState, done);
+			const header = new Container();
+			const scopeLabel = new Text(scopeLabelText(theme, pickerState.scope ?? "Work"), 1, 0);
+			const scopeHint = new Text(theme.fg("muted", scopeHintText(piKeybindings)), 1, 0);
+			header.addChild(scopeLabel);
+			header.addChild(scopeHint);
+			controller.setHeading((scope) => scopeLabel.setText(scopeLabelText(theme, scope)));
+			header.addChild(new Spacer(1));
+			header.addChild(filterInput);
+			const footer = new Container();
+			addPanelKeybindings(footer, theme, workPickerKeybindings(keybindings, piKeybindings, options.showSettings));
+			const maxVisible = (width: number): number =>
+				Math.max(1, Math.min(10, tui.terminal.rows - header.render(width).length - footer.render(width).length - 4));
+			const listContainer = pickerListContainer(
+				theme,
+				(width) => controller.rows(maxVisible(width)),
+				(width) => controller.messages(maxVisible(width)),
+			);
+			const content = new Container();
+			content.addChild(listContainer);
+			const selectedDetails = new Text("", 0, 0);
+			content.addChild(selectedDetails);
+			controller.setDetails((item) =>
+				selectedDetails.setText(item === undefined ? "" : theme.fg("muted", `  Work: ${item.title}`)),
+			);
+			controller.updateList();
+			const scroll = new ScrollView(content, { overscroll: "contain" });
+			return workPickerComponent(
+				filterInput,
+				scrollOverlay(tui, scroll, footer, header),
+				keybindings,
+				piKeybindings,
+				controller,
+				options.showSettings,
+			);
+		},
+		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" } },
+	);
 }
 
 type PickerInputAction =

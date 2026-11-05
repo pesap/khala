@@ -138,6 +138,21 @@ export class RuntimeTurnError extends Error {
 
 export type RuntimeTurn = Readonly<{ output: string; usage?: TokenUsage | undefined }>;
 
+export type RuntimeActivityEntry =
+	| Readonly<{ kind: "message"; text: string; truncated: boolean }>
+	| Readonly<{ kind: "tool"; callId: string; name: string; phase: "started" | "succeeded" | "failed" | "finished" }>;
+
+export type RuntimeActivitySnapshot = Readonly<{
+	state: "attached" | "ended";
+	entries: readonly RuntimeActivityEntry[];
+	discarded: number;
+}>;
+
+export type RuntimeActivitySubscription = Readonly<{
+	snapshot: () => RuntimeActivitySnapshot;
+	close: () => void;
+}>;
+
 export type RuntimeInvocationEvidence = Readonly<{
 	usage?: TokenUsage | undefined;
 	complete: boolean;
@@ -187,6 +202,7 @@ export interface AgentRuntimePort {
 		operation?: OperationContext,
 	) => Promise<RuntimeTurn>;
 	getState: (binding: RuntimeBinding, operation?: OperationContext) => Promise<RuntimeState>;
+	observe: (binding: RuntimeBinding, onChange: () => void) => RuntimeActivitySubscription;
 	reconcileInvocation?: (runId: string, operation?: OperationContext) => Promise<RuntimeInvocationEvidence>;
 	beginNestedInvocation: (runId: string, sessionId: string) => Promise<RuntimeInvocationRecorder>;
 	requestStop: (binding: RuntimeBinding) => Promise<void>;

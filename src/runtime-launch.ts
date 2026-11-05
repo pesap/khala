@@ -4,6 +4,7 @@ import { unlink } from "node:fs/promises";
 import process from "node:process";
 import { nanoid } from "nanoid";
 import type { RuntimeBinding } from "./ports.js";
+import { RuntimeActivityLog } from "./runtime-activity.js";
 import { removeLaunchLeaseSync, reserveLaunch, writeCapabilityFile, writeLaunchLease } from "./runtime-lease.js";
 import { childEnvironment, readProcessStartTime } from "./runtime-process.js";
 import { readSessionText, removeEphemeralSession, terminateChild } from "./runtime-protocol.js";
@@ -292,6 +293,7 @@ export function createStartingChild(
 	return {
 		process,
 		pending: new Map(),
+		activity: input.role === "executor" ? new RuntimeActivityLog() : undefined,
 		binding,
 		agentTimeoutMs: input.agentTimeoutMs,
 		maxRpcFrameBytes: options.maxRpcFrameBytes ?? DEFAULT_MAX_RPC_FRAME_BYTES,

@@ -112,6 +112,15 @@ Selecting an enabled action opens one native panel with its effect, fields, visi
 Retry admission is available for submitted Work with a recorded admission failure.
 Changing the Conclave model may be needed for the retry to succeed.
 Refresh runtime is an explicit action in that chooser and is not run when Work is opened.
+For a nonterminal Work with a bound Executor, the User can open Executor activity from the Work overview.
+This read-only panel shows recent assistant text and tool names and reported status from the attached child session.
+It does not show thinking, tool arguments, or tool results.
+The in-memory feed retains up to 100 entries and truncates each assistant message to 4,000 UTF-16 code units.
+Older entries can be missing, including after a session restart or an abrupt exit.
+The panel reports discarded entries and detaches if the Work closes or its Executor binding changes.
+The attached label identifies the in-process session connection and is not a runtime liveness check.
+A control character in streamed text defers the rest of that message until its completed text arrives.
+Leaving the panel closes only the observation and does not stop the Executor or cancel the Work.
 Page Up and Page Down scroll overview details while action navigation stays visible on short terminals.
 These entry points also support the [current getting-started workflow](getting-started.md).
 Current configurable shortcut names and defaults are listed in [Operations](operations.md#current-configuration-reference).

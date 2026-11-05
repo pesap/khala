@@ -56,6 +56,7 @@ import {
 import { ServiceMonitoring } from "./service-monitoring.js";
 import { ServiceObserver } from "./service-observer.js";
 import { ServiceRecovery } from "./service-recovery.js";
+import { observeWorkExecutor } from "./service-runtime-activity.js";
 import {
 	actionFingerprint,
 	cleanupFailureMatches,
@@ -286,6 +287,9 @@ export class ApplicationService {
 	}
 	async inspectRuntime(workId: string, meta?: CommandMeta, operation?: OperationContext): Promise<WorkView> {
 		return this.monitoring.inspectRuntime(workId, meta, operation);
+	}
+	observeExecutor(workId: string, meta: CommandMeta, onChange: () => void) {
+		return observeWorkExecutor(this.core, this.archive, this.ports.runtime, workId, meta, onChange);
 	}
 
 	async runAutonomousCycle(): Promise<void> {

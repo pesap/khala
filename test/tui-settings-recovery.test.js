@@ -46,7 +46,7 @@ test("Role settings open with r, show a comparison table, and use the native mod
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, keybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, keybindings, done));
 				}),
 		},
 	};
@@ -155,7 +155,7 @@ test("Backspace from Role settings returns to the Work picker", async () => {
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -181,7 +181,7 @@ test("empty Work lists explain their state inside the TUI", async () => {
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -235,7 +235,7 @@ test("TUI schedules runtime recovery effects and refreshes the view", async () =
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};

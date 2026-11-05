@@ -98,6 +98,10 @@ Khala never silently writes lessons into `AGENTS.md`, global Pi settings, or rep
 ## Privacy and failure behavior
 
 Raw child transcripts are not copied into the Archive or User conversation.
+Executor sessions retain a bounded in-memory activity feed of assistant text and tool names and reported status while the child is attached.
+The User can inspect this potentially sensitive text on demand in the Work view.
+The feed excludes thinking, tool arguments, and tool results, and is not an Archive record.
+Other child roles do not collect this activity feed.
 Retained context, logs, provider text, validation output, and artifact reads are bounded and role-scoped.
 Process bindings and capability material are not ordinary user-facing technical metadata.
 Untrusted project-local configuration is ignored; trusted overrides cannot grant unrelated repository authority.

@@ -259,7 +259,7 @@ test("Work picker stays minimal, shows active Work, and marks failures", async (
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -387,7 +387,7 @@ test("Blocked Executions are prominent while Signal details stay available in Ar
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -488,7 +488,7 @@ test("Blocking Signal is hidden unless the current Execution is blocked", async 
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -529,7 +529,7 @@ test("Work overview hides runtime state for terminal Executions", async () => {
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
