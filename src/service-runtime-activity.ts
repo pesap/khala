@@ -2,6 +2,8 @@ import type { ArchivePort } from "./archive.js";
 import type { CommandMeta, WorkView } from "./model.js";
 import type { AgentRuntimePort, RuntimeActivitySnapshot, RuntimeBinding } from "./ports.js";
 import type { ArchiveCore } from "./service-archive-core.js";
+import { isTerminalWork } from "./service-foundation-policy.js";
+import type { InvocationCoordinator } from "./service-invocation-coordinator.js";
 import { sameRuntimeBinding } from "./service-state-policy.js";
 
 export type WorkActivitySnapshot =
@@ -12,8 +14,7 @@ export type WorkActivitySubscription = Readonly<{ snapshot: () => WorkActivitySn
 function currentExecution(work: WorkView | undefined, executionId: string, binding: RuntimeBinding): boolean {
 	if (work === undefined) return false;
 	return [
-		work.state !== "succeeded",
-		work.state !== "stopped",
+		!isTerminalWork(work),
 		work.execution?.executionId === executionId,
 		sameRuntimeBinding(work.execution?.pi, binding),
 	].every(Boolean);
@@ -25,6 +26,37 @@ function notifyViewer(onChange: () => void): void {
 	} catch {
 		// A viewer must not interrupt the governed runtime.
 	}
+}
+
+export function steerWork(
+	core: ArchiveCore,
+	invocations: InvocationCoordinator,
+	requireSupervision: () => void,
+	workId: string,
+	runId: string,
+	text: string,
+	meta: CommandMeta,
+) {
+	core.requireActor(meta, "user");
+	requireSupervision();
+	const work = core.inspectWork(workId);
+	core.checkRevision(work, meta);
+	return invocations.steer(workId, runId, text);
+}
+
+export function readWorkSteering(
+	core: ArchiveCore,
+	invocations: InvocationCoordinator,
+	requireSupervision: () => void,
+	workId: string,
+	runId: string,
+	meta: CommandMeta,
+) {
+	core.requireActor(meta, "user");
+	requireSupervision();
+	const work = core.inspectWork(workId);
+	core.checkRevision(work, meta);
+	return invocations.readSteering(workId, runId);
 }
 
 export function observeWorkExecutor(

@@ -70,7 +70,7 @@ export type PendingResponse = Readonly<{
 export type MutableChild = {
 	process: ChildProcessWithoutNullStreams;
 	pending: Map<string, PendingResponse>;
-	activity: RuntimeActivityLog | undefined;
+	activity: RuntimeActivityLog;
 	binding: RuntimeBinding;
 	agentTimeoutMs: number | undefined;
 	maxRpcFrameBytes: number;

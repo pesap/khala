@@ -120,7 +120,7 @@ function consumeLine(child: MutableChild, line: string): void {
 
 function observeActivity(child: MutableChild, parsed: JsonObject): void {
 	try {
-		child.activity?.accept(parsed);
+		child.activity.accept(parsed);
 	} catch {
 		// Activity is advisory and must never change RPC settlement or usage accounting.
 	}
@@ -326,7 +326,7 @@ export function cleanupChild(child: MutableChild): Promise<void> {
 	if (child.cleanupPromise !== undefined) return child.cleanupPromise;
 	const cleanup = (async () => {
 		await terminateChild(child);
-		child.activity?.end();
+		child.activity.end();
 		persistInvocationWriterStopped(child.invocationWriter);
 		removeLaunchLeaseSync(child.binding.sessionPath, child.binding.processMarker, child.storage);
 		removeEphemeralSession(child);

@@ -1,3 +1,4 @@
+import type { InvocationSteering } from "./invocation-steering.js";
 import type {
 	Execution,
 	Mission,
@@ -17,6 +18,7 @@ export type ConclaveSubagentRequest = Readonly<{
 	thinking: string;
 	message: string;
 	tokenAllowance: number;
+	steering: Pick<InvocationSteering, "pending" | "markInserted" | "close">;
 	signal?: AbortSignal | undefined;
 	onUsage: (usage: TokenUsage) => void | Promise<void>;
 }>;
@@ -27,6 +29,7 @@ export type OperationContext = Readonly<{
 	signal?: AbortSignal | undefined;
 	onUpdate?: ((message: string) => void) | undefined;
 	runConclaveSubagent?: ConclaveSubagent | undefined;
+	attachSteering?: ((signal?: AbortSignal) => InvocationSteering) | undefined;
 	sessionId?: string | undefined;
 }>;
 

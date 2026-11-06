@@ -8,7 +8,6 @@ import {
 	type CommandMeta,
 	type ConclaveWakeCause,
 	type ErrorEnvelope,
-	type Execution,
 	type GovernedRole,
 	type Page,
 	type RecordQuery,
@@ -22,7 +21,7 @@ import {
 	type WorkSummary,
 	type WorkView,
 } from "./model.js";
-import { type OperationContext, type RuntimeBinding, type RuntimeState, type ServicePorts } from "./ports.js";
+import { type OperationContext, type RuntimeState, type ServicePorts } from "./ports.js";
 import { schedulerEffect } from "./provider-observation-policy.js";
 import { RunLedger } from "./run-ledger.js";
 import { createRuntimeStorage, type RuntimeStorage } from "./runtime-storage.js";
@@ -46,7 +45,7 @@ import {
 } from "./service-foundation-policy.js";
 import { ServiceGovernance } from "./service-governance.js";
 import { InvocationCoordinator } from "./service-invocation-coordinator.js";
-import { reconcileInvocation } from "./service-invocation-recovery.js";
+import { reconciledExecutorBinding, reconcileInvocation } from "./service-invocation-recovery.js";
 import {
 	admissionWakeError,
 	closeRuntimeAfterDrain,
@@ -56,7 +55,7 @@ import {
 import { ServiceMonitoring } from "./service-monitoring.js";
 import { ServiceObserver } from "./service-observer.js";
 import { ServiceRecovery } from "./service-recovery.js";
-import { observeWorkExecutor } from "./service-runtime-activity.js";
+import { observeWorkExecutor, readWorkSteering, steerWork } from "./service-runtime-activity.js";
 import {
 	actionFingerprint,
 	cleanupFailureMatches,
@@ -72,27 +71,6 @@ import { ServiceWorkspaceActions } from "./service-workspace-actions.js";
 
 export type { ServiceOptions } from "./service-contracts.js";
 export { ActionInputError, ApplicationError, RunGateUnavailable, resultText } from "./service-contracts.js";
-
-function reconciledExecutorBinding(work: WorkView, fact: ReturnType<RunLedger["find"]>): RuntimeBinding | undefined {
-	if (fact === undefined) return undefined;
-	return matchingExecutorBinding(work, fact.role, fact.executionId);
-}
-
-function matchingExecutorBinding(
-	work: WorkView,
-	role: string,
-	executionId: string | undefined,
-): RuntimeBinding | undefined {
-	if (role !== "executor") return undefined;
-	const execution = work.execution;
-	if (execution === undefined) return undefined;
-	return matchingExecutionBinding(execution, executionId);
-}
-
-function matchingExecutionBinding(execution: Execution, executionId: string | undefined): RuntimeBinding | undefined {
-	if (execution.pi === undefined) return undefined;
-	return executionId === execution.executionId ? execution.pi : undefined;
-}
 
 export class ApplicationService {
 	private readonly heartbeat = new Map<string, string>();
@@ -262,9 +240,9 @@ export class ApplicationService {
 		if (this.acquireSupervision()) return;
 		throw this.core.error(
 			"invalid-state",
-			"Runtime recovery requires the owning Archive supervisor.",
+			"This action requires the owning Archive supervisor.",
 			false,
-			"Use the owning User Pi session, or wait for its shutdown before recovering this Work.",
+			"Use the owning User Pi session, or wait for its shutdown before taking supervision.",
 		);
 	}
 
@@ -290,6 +268,13 @@ export class ApplicationService {
 	}
 	observeExecutor(workId: string, meta: CommandMeta, onChange: () => void) {
 		return observeWorkExecutor(this.core, this.archive, this.ports.runtime, workId, meta, onChange);
+	}
+
+	steerWork(workId: string, runId: string, text: string, meta: CommandMeta) {
+		return steerWork(this.core, this.invocations, () => this.requireSupervision(), workId, runId, text, meta);
+	}
+	readWorkSteering(workId: string, runId: string, meta: CommandMeta) {
+		return readWorkSteering(this.core, this.invocations, () => this.requireSupervision(), workId, runId, meta);
 	}
 
 	async runAutonomousCycle(): Promise<void> {

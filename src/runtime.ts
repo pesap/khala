@@ -315,7 +315,6 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	observe(binding: RuntimeBinding, onChange: () => void) {
 		const child = this.requireChild(binding);
 		if (child.closed || this.closing) throw new Error(`Pi session ${binding.sessionId} is not attached.`);
-		if (child.activity === undefined) throw new Error("Activity is available only for Executor sessions.");
 		return child.activity.observe(onChange);
 	}
 

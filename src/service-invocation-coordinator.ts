@@ -1,13 +1,39 @@
 import type { ArchivePort } from "./archive.js";
 import { dispatchInvocation, type InvocationSender } from "./dispatch.js";
+import { InvocationSteering, type SteeringReceipt } from "./invocation-steering.js";
 import type { TokenUsage, WorkView } from "./model.js";
 import type { OperationContext } from "./ports.js";
 import type { InvocationRole, RunLedger } from "./run-ledger.js";
 import { ArchiveCore } from "./service-archive-core.js";
 import { RunGateUnavailable, type ServiceOptions } from "./service-contracts.js";
+import { isTerminalWork } from "./service-foundation-policy.js";
 import { workMaxConcurrentRuns } from "./service-runtime-policy.js";
 import { isDispatchBudgetAttention } from "./service-state-policy.js";
 import { DispatchEligibilityError, dispatchEligibility } from "./workflow-dispatch.js";
+
+function sameMission(left: WorkView, right: WorkView): boolean {
+	const missionId = left.mission?.missionId;
+	return missionId === right.mission?.missionId;
+}
+
+function sameExecution(left: WorkView, right: WorkView): boolean {
+	const executionId = left.execution?.executionId;
+	return executionId === right.execution?.executionId;
+}
+
+function hasReservedRun(work: WorkView, runId: string, role: InvocationRole): boolean {
+	const run = work.activeInvocations?.find((candidate) => candidate.runId === runId);
+	return run?.state === "reserved" && run.role === role;
+}
+
+const MAX_RETAINED_STEERING_RUNS = 16;
+
+type ActiveInvocation = {
+	workId: string;
+	role: InvocationRole;
+	controller: AbortController;
+	steering: InvocationSteering | undefined;
+};
 
 type GovernedInvocationSender<T extends { usage?: TokenUsage | undefined }> = (
 	reservation: Parameters<InvocationSender<T>>[0],
@@ -15,9 +41,10 @@ type GovernedInvocationSender<T extends { usage?: TokenUsage | undefined }> = (
 ) => Promise<T>;
 
 export class InvocationCoordinator {
-	private readonly activeInvocations = new Map<
+	private readonly activeInvocations = new Map<string, ActiveInvocation>();
+	private readonly completedSteering = new Map<
 		string,
-		Readonly<{ workId: string; role: InvocationRole; controller: AbortController }>
+		Readonly<{ workId: string; receipts: readonly SteeringReceipt[] }>
 	>();
 	private readonly archive: ArchivePort;
 	private readonly core: ArchiveCore;
@@ -50,6 +77,29 @@ export class InvocationCoordinator {
 		return this.activeInvocations.has(runId);
 	}
 
+	steer(workId: string, runId: string, text: string) {
+		const invocation = this.activeInvocations.get(runId);
+		if (invocation === undefined || invocation.workId !== workId)
+			throw new Error("The Work has no matching active invocation.");
+		if (invocation.steering === undefined) throw new Error("Steering is unavailable until the receiver is attached.");
+		return invocation.steering.enqueue(text);
+	}
+
+	readSteering(workId: string, runId: string): readonly SteeringReceipt[] {
+		const active = this.matchingSteering(workId, runId);
+		if (active !== undefined) return active.snapshot();
+		const completed = this.completedSteering.get(runId);
+		if (completed === undefined || completed.workId !== workId)
+			throw new Error("The Work has no retained steering for this invocation.");
+		return completed.receipts.map((receipt) => ({ ...receipt }));
+	}
+
+	private matchingSteering(workId: string, runId: string): InvocationSteering | undefined {
+		const active = this.activeInvocations.get(runId);
+		if (active?.workId !== workId) return;
+		return active.steering;
+	}
+
 	get activeRuns(): Pick<ReadonlySet<string>, "has"> {
 		return this.activeInvocations;
 	}
@@ -79,12 +129,69 @@ export class InvocationCoordinator {
 		reservation: Parameters<InvocationSender<T>>[0],
 	): Promise<T> {
 		const controller = new AbortController();
-		this.activeInvocations.set(reservation.runId, { workId, role, controller });
+		const initial = this.archive.project(workId);
+		const invocation: ActiveInvocation = { workId, role, controller, steering: undefined };
+		this.activeInvocations.set(reservation.runId, invocation);
 		try {
-			return await send(reservation, { signal: controller.signal });
+			return await send(reservation, {
+				signal: controller.signal,
+				attachSteering: (signal) => this.attachSteering(reservation.runId, invocation, initial, signal),
+			});
 		} finally {
+			const steering = invocation.steering;
+			steering?.close();
+			if (steering !== undefined) this.retainSteering(workId, reservation.runId, steering.snapshot());
 			this.activeInvocations.delete(reservation.runId);
 		}
+	}
+
+	private attachSteering(
+		runId: string,
+		invocation: ActiveInvocation,
+		initial: WorkView | undefined,
+		signal: AbortSignal | undefined,
+	): InvocationSteering {
+		if (this.activeInvocations.get(runId) !== invocation) throw new Error("The invocation has settled.");
+		if (invocation.steering !== undefined) throw new Error("The invocation already has a steering receiver.");
+		const steering = new InvocationSteering(
+			() => this.canSteer(invocation.workId, runId, invocation.role, initial, invocation.controller.signal),
+			signal,
+		);
+		invocation.steering = steering;
+		return steering;
+	}
+
+	private retainSteering(workId: string, runId: string, receipts: readonly SteeringReceipt[]): void {
+		if (receipts.length === 0) return;
+		if (this.completedSteering.size >= MAX_RETAINED_STEERING_RUNS) {
+			const oldest = this.completedSteering.keys().next().value;
+			if (oldest !== undefined) this.completedSteering.delete(oldest);
+		}
+		this.completedSteering.set(runId, { workId, receipts });
+	}
+
+	private canSteer(
+		workId: string,
+		runId: string,
+		role: InvocationRole,
+		initial: WorkView | undefined,
+		signal: AbortSignal,
+	): boolean {
+		const work = this.archive.project(workId);
+		if (initial === undefined) return false;
+		if (work === undefined) return false;
+		if (signal.aborted) return false;
+		return [
+			this.ownsSupervision(),
+			!isTerminalWork(work),
+			sameMission(work, initial),
+			sameExecution(work, initial),
+			hasReservedRun(work, runId, role),
+		].every(Boolean);
+	}
+
+	private ownsSupervision(): boolean {
+		return this.options.supervision === "candidate" && this.archive.acquireSupervision();
 	}
 
 	private clearResolvedDispatchAttention(work: WorkView): void {

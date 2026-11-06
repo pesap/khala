@@ -293,7 +293,7 @@ export function createStartingChild(
 	return {
 		process,
 		pending: new Map(),
-		activity: input.role === "executor" ? new RuntimeActivityLog() : undefined,
+		activity: new RuntimeActivityLog(),
 		binding,
 		agentTimeoutMs: input.agentTimeoutMs,
 		maxRpcFrameBytes: options.maxRpcFrameBytes ?? DEFAULT_MAX_RPC_FRAME_BYTES,

@@ -195,12 +195,17 @@ test("runtime shutdown ends existing observation and rejects new subscribers", a
 	subscription.close();
 });
 
-test("non-Executor child activity is not collected or exposed", async (t) => {
-	const { runtime, binding } = await fixture(t, "observer");
-	assert.throws(() => runtime.observe(binding, () => {}), /executor/i);
-	const turn = await runtime.send(binding, "work", { tokenAllowance: 100 });
-	assert.equal(turn.output, "Hello 🌱!");
-});
+for (const role of ["conclave", "observer", "oracle"]) {
+	test(`${role} child activity is available through its bound session`, async (t) => {
+		const { runtime, binding } = await fixture(t, role);
+		const subscription = runtime.observe(binding, () => {});
+		const turn = await runtime.send(binding, "work", { tokenAllowance: 100 });
+		assert.equal(turn.output, "Hello 🌱!");
+		assert.equal(subscription.snapshot().entries[0].text, "Hello 🌱!");
+		assert.doesNotMatch(JSON.stringify(subscription.snapshot()), /PRIVATE_THINKING|PRIVATE_ARGUMENT|PRIVATE_RESULT/);
+		subscription.close();
+	});
+}
 
 test("activity cannot be observed through a stale runtime binding", async (t) => {
 	const { runtime, binding } = await fixture(t);
