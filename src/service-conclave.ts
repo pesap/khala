@@ -104,7 +104,8 @@ async function sendNestedConclaveInvocation(
 ): Promise<RuntimeTurn> {
 	const runConclaveSubagent = operation.runConclaveSubagent;
 	const sessionId = operation.sessionId;
-	if (runConclaveSubagent === undefined || sessionId === undefined) throw new ConclaveSessionUnavailable();
+	if (runConclaveSubagent === undefined || sessionId === undefined || operation.attachSteering === undefined)
+		throw new ConclaveSessionUnavailable();
 	const recorder = await beginNestedRecorder(input.runtime, reservation.runId, sessionId);
 	return executeNestedConclaveInvocation(
 		runConclaveSubagent,
@@ -135,7 +136,10 @@ async function executeNestedConclaveInvocation(
 	sessionId: string,
 	message: string,
 ): Promise<RuntimeTurn> {
+	const attachSteering = operation.attachSteering;
+	if (attachSteering === undefined) throw new ConclaveSessionUnavailable();
 	try {
+		const steering = attachSteering(operation.signal);
 		const turn = await runConclaveSubagent({
 			workId: input.workId,
 			runId: reservation.runId,
@@ -144,6 +148,7 @@ async function executeNestedConclaveInvocation(
 			thinking: input.thinking,
 			message,
 			tokenAllowance: reservation.allowance,
+			steering,
 			signal: operation.signal,
 			onUsage: (usage) => recorder.reportUsage(usage),
 		});
@@ -223,6 +228,7 @@ function combineOperation(outer: OperationContext | undefined, invocation: Opera
 		signal: combineSignals(parent.signal, invocation.signal),
 		onUpdate: parent.onUpdate,
 		runConclaveSubagent: parent.runConclaveSubagent,
+		attachSteering: invocation.attachSteering,
 		sessionId: parent.sessionId,
 	};
 }

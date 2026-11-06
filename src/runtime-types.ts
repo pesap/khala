@@ -2,6 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { KeyObject } from "node:crypto";
 import type { TokenUsage } from "./model.js";
 import type { AgentRuntimePort, RuntimeBinding } from "./ports.js";
+import type { RuntimeActivityLog } from "./runtime-activity.js";
 import type { RuntimeInvocationWriter } from "./runtime-invocation.js";
 import type { RuntimeStorage } from "./runtime-storage.js";
 
@@ -69,6 +70,7 @@ export type PendingResponse = Readonly<{
 export type MutableChild = {
 	process: ChildProcessWithoutNullStreams;
 	pending: Map<string, PendingResponse>;
+	activity: RuntimeActivityLog;
 	binding: RuntimeBinding;
 	agentTimeoutMs: number | undefined;
 	maxRpcFrameBytes: number;

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { runConclaveSubagent } from "../dist/src/conclave-subagent.js";
+import { InvocationSteering } from "../dist/src/invocation-steering.js";
 import {
 	createToolOperation,
 	finishUserTool,
@@ -84,6 +85,7 @@ function makeContext(streams, overrides = {}) {
 }
 
 function request(input, toolContext, onUsage, onProviderUsage = () => {}) {
+	const steering = input.steering ?? new InvocationSteering();
 	return {
 		workId: "work-1",
 		runId: "run-1",
@@ -93,6 +95,7 @@ function request(input, toolContext, onUsage, onProviderUsage = () => {}) {
 		systemPrompt: "Conclave system instructions",
 		message: "Inspect Work and make an admission decision.",
 		tokenAllowance: 100,
+		steering,
 		signal: new AbortController().signal,
 		onUsage,
 		onProviderUsage,
@@ -224,6 +227,124 @@ test("Conclave subagent does not dispatch tool calls after reaching its token al
 	assert.equal(result.usage.inputTokens + result.usage.outputTokens, 11);
 	assert.equal(fixture.calls.length, 0);
 	assert.equal(fixture.requests.length, 1);
+});
+
+test("nested Conclave inserts queued guidance only after the current tool batch", async () => {
+	const steering = new InvocationSteering();
+	const first = assistantMessage([toolCall("khala_read_archive", { workId: "work-1" })], "toolUse", usage(3, 2));
+	const second = assistantMessage([text("Decision complete.")], "stop", usage(5, 1));
+	let releaseTool;
+	let toolStarted;
+	const waiting = new Promise((resolve) => { releaseTool = resolve; });
+	const started = new Promise((resolve) => { toolStarted = resolve; });
+	const fixture = makeContext([responseStream(first), responseStream(second)], {
+		executeTool: async () => {
+			toolStarted();
+			await waiting;
+			return { result: { content: [text("Archive evidence")] }, isError: false };
+		},
+	});
+	const turn = runConclaveSubagent(request({ steering }, fixture.context, () => {}));
+	await started;
+	const receipt = steering.enqueue("Use the public API.");
+	assert.equal(receipt.status, "queued");
+	assert.equal(fixture.requests.length, 1);
+	releaseTool();
+	await turn;
+	assert.deepEqual(fixture.requests[1].request.messages.map(({ role }) => role), ["user", "assistant", "toolResult", "user"]);
+	assert.equal(fixture.requests[1].request.messages.at(-1).content, "Use the public API.");
+	assert.equal(steering.snapshot()[0].status, "inserted");
+	assert.throws(() => steering.enqueue("too late"), /settled/i);
+});
+
+test("guidance queued during a tool-free Conclave response starts the next bounded turn", async () => {
+	const steering = new InvocationSteering();
+	const first = createAssistantMessageEventStream();
+	const second = assistantMessage([text("Guidance considered.")], "stop", usage(3, 1));
+	const fixture = makeContext([first, responseStream(second)]);
+	const turn = runConclaveSubagent(request({ steering }, fixture.context, () => {}));
+	assert.equal(fixture.requests.length, 1);
+	steering.enqueue("Consider the public API.");
+	first.end(assistantMessage([text("Initial answer.")], "stop", usage(2, 1)));
+	assert.equal((await turn).output, "Guidance considered.");
+	assert.deepEqual(fixture.requests[1].request.messages.map(({ role }) => role), ["user", "assistant", "user"]);
+	assert.equal(fixture.requests[1].request.messages.at(-1).content, "Consider the public API.");
+	assert.equal(steering.snapshot()[0].status, "inserted");
+});
+
+test("nested Conclave does not use queued guidance after exhausting its reservation", async () => {
+	const steering = new InvocationSteering();
+	steering.enqueue("Do more work.");
+	const response = assistantMessage([text("Done")], "stop", usage(8, 3));
+	const fixture = makeContext([responseStream(response)]);
+	await runConclaveSubagent(request({ tokenAllowance: 10, steering }, fixture.context, () => {}));
+	assert.equal(fixture.requests.length, 1);
+	assert.equal(steering.snapshot()[0].status, "not-inserted");
+});
+
+test("a failed usage callback retains the just-consumed provider usage", async () => {
+	const response = assistantMessage([text("Done")], "stop", usage(8, 3));
+	const fixture = makeContext([responseStream(response)]);
+	await assert.rejects(
+		runConclaveSubagent(request({}, fixture.context, () => { throw new Error("receipt failed"); })),
+		(error) => {
+			assert.equal(error.message, "receipt failed");
+			assert.equal(error.usage.inputTokens, 8);
+			assert.equal(error.usage.outputTokens, 3);
+			return true;
+		},
+	);
+});
+
+test("cancellation after a tool does not dispatch its siblings or insert queued guidance", async () => {
+	const steering = new InvocationSteering();
+	const abort = new AbortController();
+	const secondCall = { ...toolCall("khala_read_archive", { workId: "work-1" }), id: "call-2" };
+	const response = assistantMessage([toolCall("khala_read_archive", {}), secondCall], "toolUse", usage(2, 1));
+	let calls = 0;
+	const fixture = makeContext([responseStream(response)], {
+		executeTool: async () => {
+			calls += 1;
+			steering.enqueue("Please reconsider.");
+			abort.abort(new Error("stopped"));
+			return { result: { content: [text("Evidence")] }, isError: false };
+		},
+	});
+	await assert.rejects(runConclaveSubagent(request({ steering, signal: abort.signal }, fixture.context, () => {})), /stopped/);
+	assert.equal(calls, 1);
+	assert.equal(steering.snapshot()[0].status, "not-inserted");
+	assert.equal(fixture.requests.length, 1);
+});
+
+test("guidance is not marked inserted when the next provider request cannot start", async () => {
+	const steering = new InvocationSteering();
+	const first = assistantMessage([toolCall("khala_read_archive", {})], "toolUse", usage(2, 1));
+	const fixture = makeContext([responseStream(first)], {
+		executeTool: async () => {
+			steering.enqueue("Use the public API.");
+			return { result: { content: [text("Evidence")] }, isError: false };
+		},
+	});
+	await assert.rejects(runConclaveSubagent(request({ steering }, fixture.context, () => {})), /deterministic fixture/);
+	assert.equal(steering.snapshot()[0].status, "not-inserted");
+});
+
+test("Conclave fails closed when usage is missing before a tool-bearing continuation", async () => {
+	const response = assistantMessage([toolCall("khala_read_archive", {})], "toolUse", undefined);
+	const fixture = makeContext([responseStream(response)]);
+	await assert.rejects(runConclaveSubagent(request({}, fixture.context, () => {})), /usage/i);
+	assert.equal(fixture.calls.length, 0);
+	assert.equal(fixture.requests.length, 1);
+});
+
+test("Conclave does not complete successfully after cancellation during usage reporting", async () => {
+	const controller = new AbortController();
+	const response = assistantMessage([text("Done")], "stop", usage(2, 1));
+	const fixture = makeContext([responseStream(response)]);
+	await assert.rejects(
+		runConclaveSubagent(request({ signal: controller.signal }, fixture.context, () => controller.abort(new Error("stopped")))),
+		/stopped/,
+	);
 });
 
 test("Conclave subagent rejects model tool calls outside its allowlist", async () => {

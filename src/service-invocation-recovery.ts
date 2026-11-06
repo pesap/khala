@@ -1,7 +1,23 @@
 import type { CommandMeta, TokenUsage, WorkView } from "./model.js";
-import type { OperationContext, RuntimeInvocationEvidence } from "./ports.js";
+import type { OperationContext, RuntimeBinding, RuntimeInvocationEvidence } from "./ports.js";
 import type { InvocationFact, RunLedger } from "./run-ledger.js";
 import { ActionInputError } from "./service-contracts.js";
+
+export function reconciledExecutorBinding(
+	work: WorkView,
+	fact: InvocationFact | undefined,
+): RuntimeBinding | undefined {
+	if (fact === undefined) return undefined;
+	if (fact.role !== "executor") return undefined;
+	const execution = work.execution;
+	if (execution === undefined) return undefined;
+	return matchingExecutionBinding(execution, fact.executionId);
+}
+
+function matchingExecutionBinding(execution: NonNullable<WorkView["execution"]>, executionId: string | undefined) {
+	if (execution.pi === undefined) return undefined;
+	return executionId === execution.executionId ? execution.pi : undefined;
+}
 
 export type InvocationRecoveryRuntime = Readonly<{
 	reconcileInvocation?: (runId: string, operation?: OperationContext) => Promise<RuntimeInvocationEvidence>;

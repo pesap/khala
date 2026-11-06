@@ -80,7 +80,7 @@ test("Khala keeps mission information and navigation inside the small TUI", asyn
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					const screen = factory({ requestRender() {} }, theme, tuiKeybindings, done);
+					const screen = factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done);
 					screens.push(screen);
 				}),
 		},
@@ -240,7 +240,7 @@ test("Work picker refreshes, exposes history, and opens complete help", async ()
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -327,7 +327,7 @@ test("Provider observation archive entries show feedback and evidence", async ()
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};
@@ -550,7 +550,7 @@ test("Peer-Review lists provider comments separately from Evidence", async () =>
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};

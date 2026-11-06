@@ -31,18 +31,20 @@ type ConclaveTurnState = {
 type ConclaveTurnResult = Readonly<{ kind: "continue" }> | Readonly<{ kind: "complete"; turn: RuntimeTurn }>;
 
 export async function runConclaveSubagent(input: ConclaveSubagentInput): Promise<RuntimeTurn> {
-	const model = findConclaveModel(input.toolContext, input.model);
-	const tools = conclaveTools(input.toolContext.tools);
 	const state: ConclaveTurnState = {
 		messages: [{ role: "user", content: input.message, timestamp: Date.now() }],
 		usage: undefined,
 	};
-	const reasoning = readThinkingLevel(input.thinking);
 	try {
+		const model = findConclaveModel(input.toolContext, input.model);
+		const tools = conclaveTools(input.toolContext.tools);
+		const reasoning = readThinkingLevel(input.thinking);
 		return await runConclaveTurns(input, model, tools, state, reasoning);
 	} catch (error) {
 		if (error instanceof RuntimeTurnError) throw error;
 		throw new RuntimeTurnError(error instanceof Error ? error.message : String(error), state.usage);
+	} finally {
+		input.steering.close();
 	}
 }
 
@@ -55,7 +57,7 @@ async function runConclaveTurns(
 ): Promise<RuntimeTurn> {
 	for (let turn = 0; turn < MAX_CONCLAVE_SUBAGENT_TURNS; turn += 1) {
 		throwIfAborted(input.signal);
-		const result = await runConclaveTurn(input, model, tools, state, reasoning);
+		const result = await runConclaveTurn(input, model, tools, state, reasoning, turn > 0);
 		if (result.kind === "complete") return result.turn;
 	}
 	throw new Error(`Conclave exceeded its ${MAX_CONCLAVE_SUBAGENT_TURNS}-turn limit.`);
@@ -67,16 +69,27 @@ async function runConclaveTurn(
 	tools: Tool[],
 	state: ConclaveTurnState,
 	reasoning: ThinkingLevel | undefined,
+	includeSteering: boolean,
 ): Promise<ConclaveTurnResult> {
-	const assistant = await streamConclaveTurn(input, model, tools, state.messages, reasoning);
-	state.usage = await accumulateConclaveUsage(input, assistant, state.usage);
+	const assistant = await streamConclaveTurn(input, model, tools, state.messages, reasoning, includeSteering);
+	await accumulateConclaveUsage(input, assistant, state);
+	throwIfAborted(input.signal);
 	assertAssistantCompleted(assistant);
 	state.messages.push(assistant);
 	if (tokenAllowanceReached(state.usage, input.tokenAllowance))
 		return { kind: "complete", turn: resultTurn(assistant, state.usage) };
 	const calls = toolCalls(assistant);
-	if (calls.length === 0) return { kind: "complete", turn: resultTurn(assistant, state.usage) };
 	await appendConclaveToolResults(input, calls, state.messages);
+	return nextConclaveTurn(calls, input.steering.pending().length, assistant, state.usage);
+}
+
+function nextConclaveTurn(
+	calls: readonly ToolCall[],
+	pending: number,
+	assistant: AssistantMessage,
+	usage: RuntimeTurn["usage"],
+): ConclaveTurnResult {
+	if (calls.length === 0 && pending === 0) return { kind: "complete", turn: resultTurn(assistant, usage) };
 	return { kind: "continue" };
 }
 
@@ -86,30 +99,34 @@ async function streamConclaveTurn(
 	tools: Tool[],
 	messages: Message[],
 	reasoning: ThinkingLevel | undefined,
+	includeSteering: boolean,
 ): Promise<AssistantMessage> {
 	const options: SimpleStreamOptions = {};
 	if (reasoning !== undefined) options.reasoning = reasoning;
 	if (input.signal !== undefined) options.signal = input.signal;
+	const guidance = includeSteering ? input.steering.pending() : [];
+	const additions: Message[] = guidance.map(({ text }) => ({ role: "user", content: text, timestamp: Date.now() }));
 	const stream = input.toolContext.modelRegistry.streamSimple(
 		model,
-		{ systemPrompt: input.systemPrompt, messages: [...messages], tools },
+		{ systemPrompt: input.systemPrompt, messages: [...messages, ...additions], tools },
 		options,
 	);
+	messages.push(...additions);
+	input.steering.markInserted(guidance.map(({ id }) => id));
 	return stream.result();
 }
 
 async function accumulateConclaveUsage(
 	input: ConclaveSubagentInput,
 	assistant: AssistantMessage,
-	previous: RuntimeTurn["usage"],
-): Promise<RuntimeTurn["usage"]> {
-	if (assistant.usage === undefined) return previous;
-	input.onProviderUsage(assistant.usage);
+	state: ConclaveTurnState,
+): Promise<void> {
+	if (assistant.usage === undefined) throw new Error("Conclave provider did not report token usage.");
 	const current = readTokenUsage(assistantUsage(assistant));
-	if (current === undefined) return previous;
-	const usage = addTokenUsage(previous, current);
-	await input.onUsage(usage);
-	return usage;
+	if (current === undefined) throw new Error("Conclave provider reported invalid token usage.");
+	state.usage = addTokenUsage(state.usage, current);
+	input.onProviderUsage(assistant.usage);
+	await input.onUsage(state.usage);
 }
 
 function findConclaveModel(context: ExtensionToolContext, reference: string) {
@@ -168,7 +185,10 @@ async function appendConclaveToolResults(
 	calls: readonly ToolCall[],
 	messages: Message[],
 ): Promise<void> {
-	for (const call of calls) messages.push(await executeConclaveTool(input, call));
+	for (const call of calls) {
+		throwIfAborted(input.signal);
+		messages.push(await executeConclaveTool(input, call));
+	}
 }
 
 async function executeConclaveTool(input: ConclaveSubagentInput, call: ToolCall): Promise<ToolResultMessage> {

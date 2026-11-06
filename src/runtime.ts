@@ -67,6 +67,7 @@ export class PiRpcRuntime implements AgentRuntimePort {
 	private readonly options: PiRuntimeOptions;
 	private readonly storage: RuntimeStorage;
 	private closing = false;
+	private closeOperation: Promise<void> | undefined;
 
 	constructor(options: PiRuntimeOptions) {
 		validateMaxRpcFrameBytes(options.maxRpcFrameBytes);
@@ -311,6 +312,12 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		}
 	}
 
+	observe(binding: RuntimeBinding, onChange: () => void) {
+		const child = this.requireChild(binding);
+		if (child.closed || this.closing) throw new Error(`Pi session ${binding.sessionId} is not attached.`);
+		return child.activity.observe(onChange);
+	}
+
 	async getState(binding: RuntimeBinding, operation?: OperationContext): Promise<RuntimeState> {
 		throwIfAborted(operation);
 		const child = this.children.get(binding.sessionId);
@@ -342,9 +349,18 @@ export class PiRpcRuntime implements AgentRuntimePort {
 		await cleanupChild(child);
 	}
 
-	async close(): Promise<void> {
-		if (this.closing) return;
+	close(): Promise<void> {
+		if (this.closeOperation !== undefined) return this.closeOperation;
 		this.closing = true;
+		const operation = this.closeChildren();
+		this.closeOperation = operation;
+		void operation.catch(() => {
+			if (this.closeOperation === operation) this.closeOperation = undefined;
+		});
+		return operation;
+	}
+
+	private async closeChildren(): Promise<void> {
 		await Promise.allSettled(this.launches);
 		const failures = await cleanupRuntimeChildren(this.children.values());
 		if (failures.length > 0) throw failures[0];

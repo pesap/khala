@@ -9,7 +9,6 @@ import {
 	Spacer,
 	Text,
 	truncateToWidth,
-	VStack,
 } from "@earendil-works/pi-tui";
 import type { KhalaArchiveView } from "./archive-view.js";
 import type { KhalaConfig } from "./config.js";
@@ -18,6 +17,7 @@ import type { ApplicationService } from "./service.js";
 import type { ActionRunner } from "./tui-actions.js";
 import { showArchive, showEvidence } from "./tui-archive.js";
 import { hasCurrentBlockedSignal, showBlockingSignal, showPeerReview } from "./tui-evidence.js";
+import { showExecutorActivity } from "./tui-executor-activity.js";
 import {
 	addHeading,
 	addKeyValueRows,
@@ -27,6 +27,7 @@ import {
 	NAVIGATION_FOOTER,
 	PANEL_BACK_FOOTER,
 	presentEvidenceText,
+	scrollOverlay,
 	scrollPage,
 	selectableComponent,
 	selectorTheme,
@@ -34,6 +35,7 @@ import {
 	showTextPage,
 } from "./tui-pages.js";
 import { formatErrorSections } from "./tui-record-detail.js";
+import { executorActivityItems, WORK_SECTIONS, type WorkSection } from "./tui-work-sections.js";
 import { truncateWorkName } from "./tui-work-table.js";
 import {
 	dispatchEligibility,
@@ -42,8 +44,6 @@ import {
 	workBudgetView,
 } from "./workflow-dispatch.js";
 
-type WorkSection = "actions" | "evidence" | "peer-review" | "archive" | "blocking-signal";
-type WorkSelection = Readonly<{ kind: "section"; section: WorkSection }>;
 type RuntimeRefreshAction = Readonly<{
 	id: "refresh-runtime";
 	kind: "refresh-runtime";
@@ -80,7 +80,7 @@ export async function showWork(
 	for (;;) {
 		const saved = service.inspectWork(workId);
 		const work = currentWorkSnapshot(saved, refreshed);
-		const section = await pickSection(work, context, keybindings);
+		const section = await pickSection(work, context, keybindings, actor);
 		if (section === null) return "back";
 		refreshed = await showWorkSection(section, service, context, work, actor, runAction);
 	}
@@ -100,7 +100,7 @@ export async function showArchiveWork(
 }
 
 async function showWorkSection(
-	selection: WorkSelection,
+	selection: WorkSection,
 	service: ApplicationService,
 	context: ExtensionContext,
 	work: WorkView,
@@ -109,63 +109,67 @@ async function showWorkSection(
 ): Promise<WorkView | undefined> {
 	const handlers = {
 		actions: () => chooseAction(service, context, work, actor, runAction),
+		activity: () => showExecutorActivity(service, context, work),
 		evidence: () => showEvidence(service, work, context, actor),
 		archive: () => showArchive(service, context, work, actor),
 		"peer-review": () => showPeerReview(work, context),
 		"blocking-signal": () => showBlockingSignal(work, context),
 	} satisfies Record<WorkSection, () => Promise<void | WorkView>>;
-	return (await handlers[selection.section]()) ?? work;
+	return (await handlers[selection]()) ?? work;
 }
 
 async function pickSection(
 	work: WorkView,
 	context: ExtensionContext,
 	keybindings: KhalaConfig["keybindings"],
-): Promise<WorkSelection | null> {
-	const choices = new Map<string, WorkSelection>(
-		WORK_SECTIONS.map((section) => [section, { kind: "section", section }] as const),
-	);
+	actor: Actor,
+): Promise<WorkSection | null> {
+	const choices = new Map<string, WorkSection>(WORK_SECTIONS.map((section) => [section, section]));
 	const hasReview = work.reviewRequest !== undefined || work.providerOutcome !== undefined;
 	const items: SelectItem[] = [
 		{ value: "actions", label: "Actions" },
+		...executorActivityItems(work, actor),
 		{ value: "evidence", label: "Evidence" },
 		...(hasReview ? [{ value: "peer-review", label: "Peer-Review" }] : []),
 		{ value: "archive", label: "Archive" },
 		...(hasCurrentBlockedSignal(work) ? [{ value: "blocking-signal", label: "Inspect blocking signal" }] : []),
 	];
-	return context.ui.custom<WorkSelection | null>((tui, theme, _keybindings, done) => {
-		const rows = workOverviewRows(work);
-		const list = new SelectList(items, 4, selectorTheme(theme));
-		list.onSelect = (item) => done(choices.get(item.value) ?? null);
-		list.onCancel = () => done(null);
-		const container = new Container();
-		addHeading(container, theme, truncateWorkName(work.terms.title));
-		container.addChild(new Spacer(1));
-		const statusRows = workOverviewStatusRows(work);
-		const labelWidth = Math.max(...[...rows, ...statusRows].map(([label]) => label.length));
-		addKeyValueRows(container, theme, rows, labelWidth);
-		if (statusRows.length > 0) {
+	return context.ui.custom<WorkSection | null>(
+		(tui, theme, _keybindings, done) => {
+			const rows = workOverviewRows(work);
+			const list = new SelectList(items, 4, selectorTheme(theme));
+			list.onSelect = (item) => done(choices.get(item.value) ?? null);
+			list.onCancel = () => done(null);
+			const container = new Container();
+			addHeading(container, theme, truncateWorkName(work.terms.title));
 			container.addChild(new Spacer(1));
-			addKeyValueRows(container, theme, statusRows, labelWidth);
-		}
-		const scroll = new ScrollView(container, { overscroll: "contain", scrollbar: "auto" });
-		const controls = new Container();
-		controls.addChild(list);
-		const footer = !hasReview ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
-		addPanelKeybindings(controls, theme, `escape back  pgup/pgdn details  ${footer}`);
-		return selectableComponent(
-			new VStack([scroll, new Spacer(1), { component: controls, shrink: 0 }]),
-			list,
-			tui,
-			() => done(null),
-			(data) => {
-				if (isDetailScroll(data)) return scrollPage(scroll, data);
-				if (!hasReview || parseKey(data) !== keybindings.comments) return false;
-				done({ kind: "section", section: "peer-review" });
-				return true;
-			},
-		);
-	});
+			const statusRows = workOverviewStatusRows(work);
+			const labelWidth = Math.max(...[...rows, ...statusRows].map(([label]) => label.length));
+			addKeyValueRows(container, theme, rows, labelWidth);
+			if (statusRows.length > 0) {
+				container.addChild(new Spacer(1));
+				addKeyValueRows(container, theme, statusRows, labelWidth);
+			}
+			const scroll = new ScrollView(container, { overscroll: "contain", scrollbar: "auto" });
+			const controls = new Container();
+			controls.addChild(list);
+			const footer = !hasReview ? NAVIGATION_FOOTER : `${NAVIGATION_FOOTER}  ${keybindings.comments} peer-review`;
+			addPanelKeybindings(controls, theme, `escape back  pgup/pgdn details  ${footer}`);
+			return selectableComponent(
+				scrollOverlay(tui, scroll, controls),
+				list,
+				tui,
+				() => done(null),
+				(data) => {
+					if (isDetailScroll(data)) return scrollPage(scroll, data);
+					if (!hasReview || parseKey(data) !== keybindings.comments) return false;
+					done("peer-review");
+					return true;
+				},
+			);
+		},
+		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" } },
+	);
 }
 
 function isDetailScroll(data: string): boolean {
@@ -593,8 +597,6 @@ async function showRecovery(
 		};
 	});
 }
-
-const WORK_SECTIONS: readonly WorkSection[] = ["actions", "evidence", "archive", "peer-review", "blocking-signal"];
 
 function formatStatus(value: string): string {
 	return value.replace(/-/g, " ");

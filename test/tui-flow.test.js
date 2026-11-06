@@ -7,7 +7,9 @@ import { showKhala } from "../dist/src/tui.js";
 initTheme("dark");
 const theme = { fg: (_color, text) => text, bold: (text) => text };
 const turn = () => new Promise((resolve) => setImmediate(resolve));
+let terminalRows = 32;
 function renderScreen(component, columns, rows) {
+	terminalRows = rows;
 	let output = "";
 	const terminal = {
 		columns, rows, kittyProtocolActive: false,
@@ -31,6 +33,7 @@ const work = {
 	nextAction: "Inspect the result", budget: { maxTokens: 100, consumedTokens: 0, reservedTokens: 0 },
 };
 function harness(overrides = {}) {
+	terminalRows = 32;
 	const screens = [];
 	const notices = [];
 	const reads = [];
@@ -48,7 +51,7 @@ function harness(overrides = {}) {
 		select: async (title, choices) => { menus.push({ title, choices }); return undefined; },
 		custom: (factory) => new Promise((resolve) => {
 			const done = (value) => { component.dispose?.(); resolve(value); };
-			const component = factory({ requestRender() {} }, theme, getKeybindings(), done);
+			const component = factory({ terminal: { get rows() { return terminalRows; } }, requestRender() {} }, theme, getKeybindings(), done);
 			screens.push(component);
 		}),
 	} };
@@ -93,6 +96,21 @@ test("opening saved Work is lazy and short-terminal overview keeps controls reac
 	assert.notEqual(after, before);
 	assert.match(after, /Actions/);
 	await close(h);
+});
+
+test("a short-terminal Work picker keeps the selected row and footer visible", async () => {
+	const items = Array.from({ length: 8 }, (_, index) => ({ workId: `work-${index}`, title: `Item ${index}`, state: "active" }));
+	const h = harness({ listWork: () => items });
+	await turn();
+	const picker = h.screens[0];
+	for (let index = 0; index < items.length; index += 1) {
+		const screen = renderScreen(picker, 40, 12).join("\n");
+		assert.match(screen, new RegExp(`→\\s+Item ${index}`));
+		assert.match(screen, /escape/);
+		picker.handleInput("\u001b[B");
+	}
+	picker.handleInput("\u001b");
+	await h.result;
 });
 
 test("Work overview nests actions and separates the summary from navigation", async () => {

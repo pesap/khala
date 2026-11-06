@@ -10,6 +10,7 @@ import {
 	type SelectListTheme,
 	Spacer,
 	Text,
+	type TUI,
 	truncateToWidth,
 	VStack,
 	wrapTextWithAnsi,
@@ -169,6 +170,29 @@ function wrappedFieldRows(
 			truncateToWidth(`${index === 0 ? prefix : " ".repeat(prefix.length)}${line}`, width, ""),
 		);
 	});
+}
+
+export function scrollOverlay(
+	tui: TUI,
+	scroll: ScrollView,
+	footer: Component,
+	header: Component = new Container(),
+): Component {
+	return {
+		render: (width: number) => {
+			const top = header.render(width);
+			const bottom = footer.render(width);
+			const lines = scroll.render(width);
+			const height = Math.max(0, tui.terminal.rows - top.length - bottom.length - 1);
+			scroll.updateLayout(lines.length, height, () => tui.requestRender());
+			return [...top, ...lines.slice(scroll.scrollTop, scroll.scrollTop + height), "", ...bottom];
+		},
+		invalidate: () => {
+			header.invalidate();
+			scroll.invalidate();
+			footer.invalidate();
+		},
+	};
 }
 
 export function selectorTheme(theme: Theme): SelectListTheme {

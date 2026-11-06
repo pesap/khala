@@ -49,7 +49,7 @@ test("read-only Khala archive display includes history without lifecycle actions
 			custom: (factory) =>
 				new Promise((resolve) => {
 					const done = (value) => resolve(value);
-					screens.push(factory({ requestRender() {} }, theme, tuiKeybindings, done));
+					screens.push(factory({ terminal: { rows: 32 }, requestRender() {} }, theme, tuiKeybindings, done));
 				}),
 		},
 	};

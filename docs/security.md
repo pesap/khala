@@ -98,6 +98,14 @@ Khala never silently writes lessons into `AGENTS.md`, global Pi settings, or rep
 ## Privacy and failure behavior
 
 Raw child transcripts are not copied into the Archive or User conversation.
+Child Pi sessions retain a bounded in-memory activity feed of assistant text and tool names and reported status while the child is attached.
+The User can inspect the Executor's potentially sensitive text on demand in the Work view.
+The feed excludes thinking, tool arguments, and tool results, and is not an Archive record.
+The supervising User can submit guidance through the service for an active in-process Conclave invocation.
+Guidance is queued until the current assistant response and tool calls finish, and is discarded if the invocation, supervision, Mission, or Execution is no longer current.
+An `inserted` receipt means the guidance was included in a request passed to Pi's model API, not that a provider received it or the model followed it.
+Steering receipts and text are kept only in memory, with at most 200 receipts per invocation and the 16 most recent completed invocations retained.
+They are not available after the supervising process exits.
 Retained context, logs, provider text, validation output, and artifact reads are bounded and role-scoped.
 Process bindings and capability material are not ordinary user-facing technical metadata.
 Untrusted project-local configuration is ignored; trusted overrides cannot grant unrelated repository authority.
