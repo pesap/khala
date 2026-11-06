@@ -58,12 +58,12 @@ export default function(pi) {
 		tmux("resize-window", "-t", session, "-x", "40", "-y", "12");
 		await waitFor(screen, (output) => ["Attached", "incomplete", "discarded", "Deterministic fixture activity", "escape"].every((text) => output.includes(text)));
 		keys("Escape");
-		await waitFor(screen, (output) => output.includes("Fixture Work") && output.includes("Executor activity") && output.includes("escape"));
+		await waitFor(screen, (output) => /^\s*→\s+Actions\s*$/m.test(output));
 		keys("Escape");
-		await waitFor(screen, (output) => output.includes("Fixture Wo") && output.includes("escape"));
+		await waitFor(screen, (output) => /^\s*Scope:/m.test(output) && /^\s*→\s+Fixture Wo/m.test(output));
 		tmux("resize-window", "-t", session, "-x", "100", "-y", "32");
 		keys("Escape");
-		await waitFor(screen, (output) => output.includes("draft tail"));
+		await waitFor(screen, (output) => !/^\s*Scope:/m.test(output) && output.includes("draft tail"));
 		keys("-l", "X");
 		await waitFor(screen, (output) => output.includes("draftX tail"));
 	} finally {

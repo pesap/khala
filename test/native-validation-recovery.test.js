@@ -70,7 +70,7 @@ test("Pi rejects source-mutating validation and recovers the same idle Execution
 		terminal.keys("Escape");
 		await waitUntil(terminal.screen, (screen) => !screen.includes("Source verification") && screen.includes("Evidence"), diagnostic);
 		terminal.keys("Escape");
-		await see("Freshness");
+		await waitUntil(terminal.screen, (screen) => /^\s*→\s+Actions\s*$/m.test(screen), diagnostic);
 		options.greeting = "hello\n";
 		fixture.steps.executor = 0;
 		terminal.keys("Enter");

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture } from "./helpers/native-workflow.mjs";
+import { readProcessStartTime } from "../dist/src/runtime-process.js";
 
 function processWorkingDirectory(pid) {
 	if (process.platform === "linux") return readlinkSync(`/proc/${pid}/cwd`);
@@ -30,6 +31,8 @@ test(`Pi Recover continues the same Execution after its Executor becomes ${lost 
 		assert.ok(pid > 1);
 		assert.notEqual(pid, process.pid);
 		assert.equal(realpathSync(processWorkingDirectory(pid)), realpathSync(idle.execution.sandbox.path));
+		assert.ok(idle.execution.pi.processStartTime);
+		assert.equal(readProcessStartTime(pid), idle.execution.pi.processStartTime);
 		if (lost) process.kill(pid, "SIGKILL");
 		terminal.send("/khala");
 		await waitUntil(terminal.screen, (screen) => /^\s*→\s+Native greeting\b/m.test(screen), diagnostic);
@@ -47,8 +50,7 @@ test(`Pi Recover continues the same Execution after its Executor becomes ${lost 
 		await waitUntil(terminal.screen, (screen) => !screen.includes("Runtime checked") && screen.includes("Freshness"), diagnostic);
 		terminal.keys("Enter");
 		await waitUntil(terminal.screen, (screen) => /^\s*Actions\s*$/m.test(screen), diagnostic);
-		await see("Recover");
-		terminal.keys("Enter");
+		await selectNativeListItem(terminal, "Recover", diagnostic);
 		const reviewed = await waitUntil(terminal.readWork, (work) => work.state === "awaiting-review" && work.budget.reservedTokens === 0, diagnostic);
 		assert.equal(reviewed.workId, idle.workId);
 		assert.equal(reviewed.mission.missionId, idle.mission.missionId);

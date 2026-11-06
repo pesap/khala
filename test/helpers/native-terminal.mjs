@@ -16,12 +16,14 @@ export async function waitUntil(read, accepts, diagnostic) {
 	assert.fail(diagnostic());
 }
 
+function selectedRow(screen) {
+	return screen.split("\n").map((line) => line.trim()).find((line) => line.startsWith("→ "));
+}
+
 /** Panel rows carry descriptions, so a selected row is matched by its label prefix. */
 function isSelectedRow(screen, label) {
-	return screen
-		.split("\n")
-		.map((line) => line.trim())
-		.some((line) => line === `→ ${label}` || line.startsWith(`→ ${label} `));
+	const line = selectedRow(screen);
+	return line === `→ ${label}` || line?.startsWith(`→ ${label} `) === true;
 }
 
 export async function selectNativeListItem(terminal, label, diagnostic) {
@@ -31,8 +33,9 @@ export async function selectNativeListItem(terminal, label, diagnostic) {
 			terminal.keys("Enter");
 			return;
 		}
+		const selected = selectedRow(screen);
 		terminal.keys("Down");
-		await waitUntil(terminal.screen, (next) => next !== screen, diagnostic);
+		await waitUntil(terminal.screen, (next) => selectedRow(next) !== selected, diagnostic);
 	}
 	assert.fail(`Could not select native TUI item ${label}. ${diagnostic()}`);
 }
