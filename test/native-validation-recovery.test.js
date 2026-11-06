@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createNativeTerminal, waitUntil } from "./helpers/native-terminal.mjs";
+import { createNativeTerminal, selectNativeListItem, waitUntil } from "./helpers/native-terminal.mjs";
 import { createNativeWorkflowFixture, git } from "./helpers/native-workflow.mjs";
 
 function selectedEvidenceLine(screen) {
@@ -58,11 +58,11 @@ test("Pi rejects source-mutating validation and recovers the same idle Execution
 		assert.equal(readFileSync(join(rejected.execution.sandbox.path, "greeting.txt"), "utf8"), "bad");
 
 		terminal.send("/khala");
-		await see("Native greeting");
+		await waitUntil(terminal.screen, (screen) => /^\s*→\s+Native greeting\b/m.test(screen), diagnostic);
 		terminal.keys("Enter");
 		await see("Freshness");
-		terminal.keys("Down", "Enter");
-		await see("Evidence");
+		await selectNativeListItem(terminal, "Evidence", diagnostic);
+		await waitUntil(terminal.screen, (screen) => /^\s*Evidence\s*$/m.test(screen), diagnostic);
 		await selectValidationEvidence(terminal, diagnostic);
 		terminal.keys("Enter");
 		await see("Source verification");
@@ -74,8 +74,8 @@ test("Pi rejects source-mutating validation and recovers the same idle Execution
 		options.greeting = "hello\n";
 		fixture.steps.executor = 0;
 		terminal.keys("Enter");
-		await see("Recover");
-		terminal.keys("Enter");
+		await waitUntil(terminal.screen, (screen) => /^\s*Actions\s*$/m.test(screen), diagnostic);
+		await selectNativeListItem(terminal, "Recover", diagnostic);
 		const corrected = await waitUntil(
 			terminal.readWork,
 			(work) => work.state === "awaiting-review" && work.budget.reservedTokens === 0,

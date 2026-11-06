@@ -48,10 +48,12 @@ export default function(pi) {
 		keys("-l", "draft tail");
 		keys("Left", "Left", "Left", "Left", "Left");
 		keys("M-o");
-		await waitFor(screen, (output) => output.includes("Fixture Work"));
+		await waitFor(screen, (output) => /^\s*→\s+Fixture Work\b/m.test(output));
 		keys("Enter");
-		await waitFor(screen, (output) => output.includes("Fixture Work") && output.includes("Executor activity"));
-		keys("Down", "Enter");
+		await waitFor(screen, (output) => /^\s*Freshness\s+Saved revision/m.test(output));
+		keys("Down");
+		await waitFor(screen, (output) => /^\s*→\s+Executor activity\s*$/m.test(output));
+		keys("Enter");
 		await waitFor(screen, (output) => output.includes("Deterministic fixture activity"));
 		tmux("resize-window", "-t", session, "-x", "40", "-y", "12");
 		await waitFor(screen, (output) => ["Attached", "incomplete", "discarded", "Deterministic fixture activity", "escape"].every((text) => output.includes(text)));

@@ -58,6 +58,7 @@ Both modes require an installed supported Node executable on the trusted inherit
 `test/native-preparation-recovery.test.js` retries a missing-lockfile failure through Pi, verifies that unsuccessful recovery remains visibly failed, and follows the same Mission to review after its target branch is repaired.
 `test/native-cancelled-preparation-recovery.test.js` cancels failed preparation through Pi and recovers through fresh admission after the target branch is repaired.
 `test/native-runtime-recovery.test.js` refreshes lost and reachable idle Executors in Pi, then uses Recover to continue the same Execution and persistent session through review publication.
+It can also run directly on macOS with `tmux` and `/usr/sbin/lsof` after compilation.
 `test/native-provider-closure.test.js` polls a closed review through Pi and verifies explicit failure, preserved closure evidence, and the failure reason in History.
 `test/native-provider-feedback.test.js` follows provider feedback through Conclave authorization, correction by the same Executor, and publication of the corrected head before a second handoff.
 `test/native-resumed-cancellation.test.js` cancels a held, authorized provider-feedback turn in Pi and verifies stopped runtime activity, settled usage, and cancellation preserved by project recovery.
